@@ -44,10 +44,7 @@ body {
   margin: 0;
   min-width: 1120px;
   min-height: 100vh;
-  background:
-    radial-gradient(120% 90% at 86% -6%, rgba(160, 205, 246, 0.22), transparent 46%),
-    radial-gradient(120% 80% at 8% 100%, rgba(120, 180, 232, 0.2), transparent 54%),
-    linear-gradient(170deg, #e3effc 0%, #ecf4fe 34%, #f4f9ff 62%, #fbfdff 100%);
+  background: transparent;
 }
 
 button,
@@ -139,9 +136,10 @@ button:disabled {
   height: 100vh;
   min-height: 0;
   border: 0;
-  border-radius: 0;
+  border-radius: 18px;
   box-shadow: none;
   backdrop-filter: none;
+  overflow: hidden;
   background:
     radial-gradient(120% 90% at 86% -6%, rgba(160, 205, 246, 0.18), transparent 46%),
     radial-gradient(120% 80% at 8% 100%, rgba(120, 180, 232, 0.14), transparent 54%),
@@ -162,27 +160,9 @@ button:disabled {
 }
 
 .traffic-lights {
-  display: flex;
-  gap: 8px;
+  min-width: 88px;
+  min-height: 100%;
   --wails-draggable: no-drag;
-}
-
-.traffic-light {
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  border: 0;
-  padding: 0;
-  cursor: default;
-  box-shadow: inset 0 0 0 1px rgba(50, 34, 42, 0.08);
-}
-
-.traffic-light--close { background: #ff6b72; }
-.traffic-light--minimise { background: #f6c453; }
-.traffic-light--maximise { background: #5fcf72; }
-
-.traffic-light:hover {
-  filter: brightness(0.95) saturate(1.1);
 }
 
 .window-title {
@@ -4024,9 +4004,10 @@ button:disabled {
   height: 100vh;
   min-height: 0;
   border: 0;
-  border-radius: 0;
+  border-radius: 18px;
   box-shadow: none;
   backdrop-filter: none;
+  overflow: hidden;
   background:
     radial-gradient(120% 90% at 86% -6%, rgba(160, 205, 246, 0.18), transparent 46%),
     radial-gradient(120% 80% at 8% 100%, rgba(120, 180, 232, 0.14), transparent 54%),
@@ -4177,7 +4158,7 @@ button:disabled {
     width: 100vw;
     height: 100vh;
     min-height: 0;
-    border-radius: 0;
+    border-radius: 18px;
   }
 
   .fairy-titlebar {

@@ -19,6 +19,9 @@
 *.log
 /web/node_modules/
 /web/dist/
+/web/package.json.md5
+/web/src/wailsjs/
+/internal/runtime/data/
 /atri
 /atri-desktop
 /build/
