@@ -118,6 +118,36 @@ button:disabled {
   mix-blend-mode: screen;
 }
 
+.app-frame.is-desktop-runtime,
+.app-frame.is-desktop-runtime .fairy-desktop {
+  min-height: 100vh;
+}
+
+.app-frame.is-desktop-runtime .fairy-desktop {
+  padding: 0;
+  place-items: stretch;
+}
+
+.app-frame.is-desktop-runtime .fairy-desktop::before,
+.app-frame.is-desktop-runtime .fairy-window::after {
+  content: none;
+  display: none;
+}
+
+.app-frame.is-desktop-runtime .fairy-window {
+  width: 100vw;
+  height: 100vh;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  background:
+    radial-gradient(120% 90% at 86% -6%, rgba(160, 205, 246, 0.18), transparent 46%),
+    radial-gradient(120% 80% at 8% 100%, rgba(120, 180, 232, 0.14), transparent 54%),
+    linear-gradient(170deg, #e8f2ff 0%, #f1f7ff 42%, #fbfdff 100%);
+}
+
 .fairy-titlebar {
   position: relative;
   z-index: 5;
@@ -128,22 +158,32 @@ button:disabled {
   border-bottom: 1px solid var(--line-soft);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.2));
   backdrop-filter: blur(10px);
+  --wails-draggable: drag;
 }
 
 .traffic-lights {
   display: flex;
   gap: 8px;
+  --wails-draggable: no-drag;
 }
 
-.traffic-lights i {
+.traffic-light {
   width: 11px;
   height: 11px;
   border-radius: 50%;
+  border: 0;
+  padding: 0;
+  cursor: default;
+  box-shadow: inset 0 0 0 1px rgba(50, 34, 42, 0.08);
 }
 
-.traffic-lights i:nth-child(1) { background: #ff6b72; }
-.traffic-lights i:nth-child(2) { background: #f6c453; }
-.traffic-lights i:nth-child(3) { background: #5fcf72; }
+.traffic-light--close { background: #ff6b72; }
+.traffic-light--minimise { background: #f6c453; }
+.traffic-light--maximise { background: #5fcf72; }
+
+.traffic-light:hover {
+  filter: brightness(0.95) saturate(1.1);
+}
 
 .window-title {
   justify-self: center;
@@ -166,6 +206,7 @@ button:disabled {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+  --wails-draggable: no-drag;
 }
 
 .fairy-shell {
@@ -3963,6 +4004,33 @@ button:disabled {
 .fairy-window::after {
   opacity: 0.28;
   mix-blend-mode: normal;
+}
+
+/* 桌面优先：Wails 窗口本身就是外框，不再叠一层网页展示容器。 */
+.fairy-desktop {
+  padding: 0;
+  place-items: stretch;
+  overflow: hidden;
+}
+
+.fairy-desktop::before,
+.fairy-window::after {
+  content: none;
+  display: none;
+}
+
+.fairy-window {
+  width: 100vw;
+  height: 100vh;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  background:
+    radial-gradient(120% 90% at 86% -6%, rgba(160, 205, 246, 0.18), transparent 46%),
+    radial-gradient(120% 80% at 8% 100%, rgba(120, 180, 232, 0.14), transparent 54%),
+    linear-gradient(170deg, #e8f2ff 0%, #f1f7ff 42%, #fbfdff 100%);
 }
 
 .fairy-titlebar,

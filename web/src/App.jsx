@@ -93,6 +93,19 @@ const configTabs = [
   { id: "runtime", label: "运行" }
 ];
 
+function desktopWindow() {
+  if (typeof window === "undefined") return null;
+  return window.go?.desktop?.App || null;
+}
+
+function runDesktopWindowAction(action) {
+  const app = desktopWindow();
+  if (!app) return;
+  if (action === "close" && app.WindowClose) app.WindowClose();
+  if (action === "minimise" && app.WindowMinimise) app.WindowMinimise();
+  if (action === "maximise" && app.WindowToggleMaximise) app.WindowToggleMaximise();
+}
+
 const volcengineResourceOptions = [
   { value: "seed-icl-2.0", label: "SeedICL 2.0 声音复刻" },
   { value: "seed-icl-1.0", label: "SeedICL 1.0 声音复刻" },
@@ -1426,9 +1439,10 @@ export function App() {
 
   const renderedView = activeView === "stage" && !canEnterStage ? "director" : activeView;
   const shellView = shellViewMeta(renderedView, { busy, logs: logs.length, sessions: sessions.length });
+  const isDesktopRuntime = runtimeMode() === "desktop";
 
   return (
-    <main className={`app-frame ${renderedView === "stage" ? "is-stage" : ""}`}>
+    <main className={`app-frame ${renderedView === "stage" ? "is-stage" : ""} ${isDesktopRuntime ? "is-desktop-runtime" : ""}`}>
       {renderedView === "stage" ? (
         <StageErrorBoundary resetKey={`${activeSession?.id || "draft"}:${lessonWorkflow?.current_node_id || ""}`} onBack={() => { setActiveView("history"); refreshSessions(); }}>
           <GalgameStageView
@@ -1462,7 +1476,11 @@ export function App() {
         <section className="fairy-desktop">
           <section className="fairy-window">
             <header className="fairy-titlebar">
-              <div className="traffic-lights" aria-hidden="true"><i /><i /><i /></div>
+              <div className="traffic-lights" aria-label="窗口控制">
+                <button className="traffic-light traffic-light--close" type="button" aria-label="关闭窗口" onClick={() => runDesktopWindowAction("close")} />
+                <button className="traffic-light traffic-light--minimise" type="button" aria-label="最小化窗口" onClick={() => runDesktopWindowAction("minimise")} />
+                <button className="traffic-light traffic-light--maximise" type="button" aria-label="最大化窗口" onClick={() => runDesktopWindowAction("maximise")} />
+              </div>
               <div className="window-title"><b>FAIRY</b><span>{shellView.title}</span></div>
               <div className="top-actions">
                 <button className="ghost-button" type="button" onClick={() => { setActiveView("history"); refreshSessions(); }}>历史</button>

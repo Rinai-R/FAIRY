@@ -7,12 +7,13 @@ import (
 	"github.com/Rinai-R/FAIRY/internal/adapters/health"
 	"github.com/Rinai-R/FAIRY/internal/app"
 	"github.com/Rinai-R/FAIRY/internal/app/bootstrap"
-	"github.com/Rinai-R/FAIRY/internal/runtime"
+	domainruntime "github.com/Rinai-R/FAIRY/internal/runtime"
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 type App struct {
 	ctx     context.Context
-	runtime *runtime.Runtime
+	runtime *domainruntime.Runtime
 }
 
 func New(config bootstrap.Config, logger *slog.Logger) *App {
@@ -77,6 +78,18 @@ func (a *App) Sessions() ([]app.SessionRecord, error) {
 
 func (a *App) Session(id string) (app.SessionRecord, error) {
 	return a.runtime.Session(id)
+}
+
+func (a *App) WindowMinimise() {
+	wailsruntime.WindowMinimise(a.context())
+}
+
+func (a *App) WindowToggleMaximise() {
+	wailsruntime.WindowToggleMaximise(a.context())
+}
+
+func (a *App) WindowClose() {
+	wailsruntime.Quit(a.context())
 }
 
 func (a *App) context() context.Context {
