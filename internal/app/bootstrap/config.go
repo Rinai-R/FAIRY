@@ -1,0 +1,248 @@
+package bootstrap
+
+import (
+	"log/slog"
+
+	"github.com/Rinai-R/FAIRY/internal/adapters/agent"
+	agentcodex "github.com/Rinai-R/FAIRY/internal/adapters/agent/codex"
+	agentfairy "github.com/Rinai-R/FAIRY/internal/adapters/agent/fairy"
+	agentmock "github.com/Rinai-R/FAIRY/internal/adapters/agent/mock"
+	"github.com/Rinai-R/FAIRY/internal/adapters/image"
+	imagecomfyui "github.com/Rinai-R/FAIRY/internal/adapters/image/comfyui"
+	imagemock "github.com/Rinai-R/FAIRY/internal/adapters/image/mock"
+	llmopenaicompatible "github.com/Rinai-R/FAIRY/internal/adapters/llm/openaicompatible"
+	"github.com/Rinai-R/FAIRY/internal/adapters/scene"
+	scenecodex "github.com/Rinai-R/FAIRY/internal/adapters/scene/codex"
+	scenemock "github.com/Rinai-R/FAIRY/internal/adapters/scene/mock"
+	"github.com/Rinai-R/FAIRY/internal/adapters/voice"
+	voicegptsovits "github.com/Rinai-R/FAIRY/internal/adapters/voice/gptsovits"
+	voicehttp "github.com/Rinai-R/FAIRY/internal/adapters/voice/httpvoice"
+	voicemacos "github.com/Rinai-R/FAIRY/internal/adapters/voice/macos"
+	voicemock "github.com/Rinai-R/FAIRY/internal/adapters/voice/mock"
+	voicevolcengine "github.com/Rinai-R/FAIRY/internal/adapters/voice/volcengine"
+	"github.com/Rinai-R/FAIRY/internal/app"
+	"github.com/Rinai-R/FAIRY/internal/llm"
+	"github.com/Rinai-R/FAIRY/internal/plugins"
+	"github.com/Rinai-R/FAIRY/internal/runtime"
+)
+
+type Config struct {
+	AgentProvider agent.Provider
+	VoiceProvider voice.Provider
+	ImageProvider image.Provider
+	SceneProvider scene.Provider
+
+	CodexBin           string
+	CodexModel         string
+	CodexWorkDir       string
+	CodexTimeout       int
+	FairyAgentEndpoint string
+	FairyAgentAPIKey   string
+	FairyAgentModel    string
+	FairyAgentTimeout  int
+	SessionPath        string
+	AppSessionPath     string
+	UserConfigPath     string
+
+	AudioDir     string
+	ImageDir     string
+	MaterialDir  string
+	ImageBaseURL string
+	MacOSVoice   string
+	MacOSBaseURL string
+
+	ComfyUIEndpoint string
+
+	GPTSoVITSEndpoint        string
+	GPTSoVITSRefAudioPath    string
+	GPTSoVITSPromptText      string
+	GPTSoVITSTextLang        string
+	GPTSoVITSPromptLang      string
+	GPTSoVITSMediaType       string
+	GPTSoVITSTextSplitMethod string
+
+	VolcengineEndpoint   string
+	VolcengineAPIKey     string
+	VolcengineResourceID string
+	VolcengineSpeaker    string
+	VolcengineFormat     string
+	VolcengineUserID     string
+	VolcengineSampleRate int
+
+	PluginManifestPath string
+	PluginDir          string
+}
+
+func DefaultConfig() Config {
+	return Config{
+		AgentProvider:            agent.ProviderMock,
+		VoiceProvider:            voice.ProviderMacOS,
+		ImageProvider:            image.ProviderMock,
+		SceneProvider:            scene.ProviderMock,
+		CodexBin:                 agentcodex.DefaultBin,
+		CodexWorkDir:             agentcodex.DefaultWorkDir,
+		CodexTimeout:             120,
+		FairyAgentTimeout:        llmopenaicompatible.DefaultTimeout,
+		SessionPath:              agentcodex.DefaultSessionPath,
+		AppSessionPath:           "data/sessions.json",
+		UserConfigPath:           "data/user-config.json",
+		AudioDir:                 voicemacos.DefaultOutputDir,
+		ImageDir:                 imagecomfyui.DefaultOutputDir,
+		MaterialDir:              runtime.DefaultMaterialDir,
+		ImageBaseURL:             imagecomfyui.DefaultBaseURL,
+		MacOSVoice:               voicemacos.DefaultVoiceName,
+		MacOSBaseURL:             voicemacos.DefaultBaseURL,
+		ComfyUIEndpoint:          imagecomfyui.DefaultEndpoint,
+		GPTSoVITSEndpoint:        voicegptsovits.DefaultEndpoint,
+		GPTSoVITSTextLang:        voicegptsovits.DefaultTextLang,
+		GPTSoVITSPromptLang:      voicegptsovits.DefaultPromptLang,
+		GPTSoVITSMediaType:       voicegptsovits.DefaultMediaType,
+		GPTSoVITSTextSplitMethod: voicegptsovits.DefaultTextSplitMethod,
+		VolcengineEndpoint:       voicevolcengine.DefaultEndpoint,
+		VolcengineResourceID:     voicevolcengine.DefaultResourceID,
+		VolcengineSpeaker:        voicevolcengine.DefaultSpeaker,
+		VolcengineFormat:         voicevolcengine.DefaultFormat,
+		VolcengineUserID:         voicevolcengine.DefaultUserID,
+		VolcengineSampleRate:     voicevolcengine.DefaultSampleRate,
+		PluginManifestPath:       "configs/plugins.json",
+		PluginDir:                "plugins",
+	}
+}
+
+func NewRuntime(config Config, logger *slog.Logger) *runtime.Runtime {
+	pluginCatalog := plugins.NewCatalog(config.PluginManifestPath, config.PluginDir)
+	return runtime.NewRuntime(runtime.Dependencies{
+		Agents: map[agent.Provider]agent.Engine{
+			agent.ProviderMock:  agentmock.MockEngine{},
+			agent.ProviderCodex: buildCodex(config, logger),
+			agent.ProviderFairy: buildFairyAgent(config),
+		},
+		Voices: buildVoices(config, pluginCatalog.Load()),
+		Images: map[image.Provider]image.Engine{
+			image.ProviderMock:    imagemock.Engine{},
+			image.ProviderComfyUI: buildComfyUI(config),
+		},
+		Scenes: map[scene.Provider]scene.Engine{
+			scene.ProviderMock:  scenemock.Engine{},
+			scene.ProviderCodex: buildCodexScene(config),
+		},
+		DefaultAgent: config.AgentProvider,
+		DefaultVoice: config.VoiceProvider,
+		DefaultImage: config.ImageProvider,
+		DefaultScene: config.SceneProvider,
+		MaterialDir:  config.MaterialDir,
+		Sessions:     runtime.NewFileSessionStore(config.AppSessionPath),
+		Plugins:      pluginCatalog,
+		Logger:       logger,
+	})
+}
+
+func buildFairyAgent(config Config) agent.Engine {
+	return agentfairy.NewEngine(agentfairy.Options{
+		Model: llmopenaicompatible.NewAdapter(llmopenaicompatible.Options{
+			Profile: llm.Profile{
+				Endpoint: config.FairyAgentEndpoint,
+				APIKey:   config.FairyAgentAPIKey,
+				Model:    config.FairyAgentModel,
+			},
+			TimeoutSec: config.FairyAgentTimeout,
+		}),
+	})
+}
+
+func buildVoices(config Config, catalog app.PluginCatalog) map[voice.Provider]voice.Engine {
+	voices := map[voice.Provider]voice.Engine{
+		voice.ProviderMock:       voicemock.MockEngine{},
+		voice.ProviderMacOS:      voicemacos.NewMacOSEngine(config.AudioDir, config.MacOSBaseURL, config.MacOSVoice),
+		voice.ProviderGPTSoVITS:  buildGPTSoVITS(config),
+		voice.ProviderGPTSoVITS2: buildGPTSoVITS(config),
+		voice.ProviderVolcengine: buildVolcengine(config),
+	}
+	for _, manifest := range catalog.Manifests {
+		for _, provider := range manifest.Providers {
+			if provider.Domain != "voice" || provider.Adapter != "http_voice" || provider.HTTPVoice == nil || provider.ID == "" {
+				continue
+			}
+			spec := provider.HTTPVoice
+			voices[voice.Provider(provider.ID)] = voicehttp.NewEngine(voicehttp.Options{
+				Provider:     provider.ID,
+				Endpoint:     firstNonEmpty(spec.Endpoint, provider.DefaultEndpoint),
+				Method:       spec.Method,
+				Path:         spec.Path,
+				ContentType:  spec.ContentType,
+				BodyTemplate: spec.BodyTemplate,
+				OutputFormat: spec.OutputFormat,
+				HealthPath:   spec.HealthPath,
+				Headers:      spec.Headers,
+				OutputDir:    config.AudioDir,
+				BaseURL:      config.MacOSBaseURL,
+			})
+		}
+	}
+	return voices
+}
+
+func buildComfyUI(config Config) image.Engine {
+	return imagecomfyui.NewEngine(imagecomfyui.Options{
+		Endpoint:  config.ComfyUIEndpoint,
+		OutputDir: config.ImageDir,
+		BaseURL:   config.ImageBaseURL,
+	})
+}
+
+func buildCodexScene(config Config) scene.Engine {
+	return scenecodex.NewEngine(scenecodex.Options{
+		CodexBin:     config.CodexBin,
+		CodexModel:   config.CodexModel,
+		CodexWorkDir: config.CodexWorkDir,
+		CodexTimeout: config.CodexTimeout,
+	})
+}
+
+func buildCodex(config Config, logger *slog.Logger) agent.Engine {
+	return agentcodex.NewRuntime(agentcodex.Options{
+		CodexBin:     config.CodexBin,
+		CodexModel:   config.CodexModel,
+		CodexWorkDir: config.CodexWorkDir,
+		CodexTimeout: config.CodexTimeout,
+		SessionPath:  config.SessionPath,
+		Logger:       logger,
+	})
+}
+
+func buildGPTSoVITS(config Config) voice.Engine {
+	return voicegptsovits.NewEngine(voicegptsovits.Options{
+		Endpoint:        config.GPTSoVITSEndpoint,
+		OutputDir:       config.AudioDir,
+		BaseURL:         config.MacOSBaseURL,
+		RefAudioPath:    config.GPTSoVITSRefAudioPath,
+		PromptText:      config.GPTSoVITSPromptText,
+		TextLang:        config.GPTSoVITSTextLang,
+		PromptLang:      config.GPTSoVITSPromptLang,
+		MediaType:       config.GPTSoVITSMediaType,
+		TextSplitMethod: config.GPTSoVITSTextSplitMethod,
+	})
+}
+
+func buildVolcengine(config Config) voice.Engine {
+	return voicevolcengine.NewEngine(voicevolcengine.Options{
+		Endpoint:   config.VolcengineEndpoint,
+		APIKey:     config.VolcengineAPIKey,
+		ResourceID: config.VolcengineResourceID,
+		Speaker:    config.VolcengineSpeaker,
+		Format:     config.VolcengineFormat,
+		UserID:     config.VolcengineUserID,
+		OutputDir:  config.AudioDir,
+		BaseURL:    config.MacOSBaseURL,
+		SampleRate: config.VolcengineSampleRate,
+	})
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}

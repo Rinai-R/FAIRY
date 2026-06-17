@@ -1,0 +1,62 @@
+{
+  "version": "0.1.0",
+  "providers": [
+    {
+      "domain": "agent",
+      "id": "mock",
+      "display_name": "Mock Agent",
+      "description": "本地预览用角色回复 provider。"
+    },
+    {
+      "domain": "agent",
+      "id": "codex",
+      "display_name": "Codex CLI Agent",
+      "description": "使用本机 codex exec/resume 管理角色会话上下文。"
+    },
+    {
+      "domain": "voice",
+      "id": "mock",
+      "display_name": "Mock Voice",
+      "description": "返回占位音频元数据。"
+    },
+    {
+      "domain": "voice",
+      "id": "macos",
+      "display_name": "macOS say",
+      "description": "调用 macOS 系统 say 命令生成本地 m4a 音频。"
+    },
+    {
+      "domain": "voice",
+      "id": "gpt-sovits",
+      "display_name": "GPT-SoVITS",
+      "description": "调用本地 GPT-SoVITS /tts HTTP API 生成语音。",
+      "default_endpoint": "http://127.0.0.1:9880"
+    },
+    {
+      "domain": "voice",
+      "id": "volcengine",
+      "display_name": "火山声音复刻",
+      "description": "使用火山 SeedICL 训练角色复刻声音，并调用 V3 语音接口生成对话音频。",
+      "default_endpoint": "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
+    },
+    {
+      "domain": "image",
+      "id": "mock",
+      "display_name": "Mock Image",
+      "description": "返回占位角色 CG 结果。"
+    },
+    {
+      "domain": "image",
+      "id": "comfyui",
+      "display_name": "ComfyUI",
+      "description": "调用本地 ComfyUI /prompt、/history、/view API 生成教学 Galgame 角色 CG。",
+      "default_endpoint": "http://127.0.0.1:8188"
+    },
+    {
+      "domain": "scene",
+      "id": "mock",
+      "display_name": "Mock Scene",
+      "description": "根据前端注入的文档、学习目标、角色和 prompt 搭建玩家驱动的教学 Galgame 互动舞台。"
+    }
+  ]
+}

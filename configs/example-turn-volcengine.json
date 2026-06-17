@@ -1,0 +1,76 @@
+{
+  "session": {
+    "id": "lesson-attention:default",
+    "user_id": "default",
+    "active_character_id": "tutor",
+    "participant_ids": ["tutor"]
+  },
+  "characters": [
+    {
+      "id": "tutor",
+      "display_name": "Tutor",
+      "voice_id": "S_替换为复刻声音ID",
+      "persona": "温和、清晰，会把文档知识放进玩家可自由提问的 Galgame 场景。",
+      "style_rules": ["自然な日本語で説明する。", "ユーザーの入力に応答する。", "一度に一つの要点だけ進める。"]
+    }
+  ],
+  "character": {
+    "id": "tutor",
+    "display_name": "Tutor",
+    "voice_id": "S_替换为复刻声音ID",
+    "persona": "温和、清晰，会把文档知识放进玩家可自由提问的 Galgame 场景。",
+    "style_rules": ["自然な日本語で説明する。", "ユーザーの入力に応答する。", "一度に一つの要点だけ進める。"]
+  },
+  "scene": {
+    "id": "lesson-attention",
+    "title": "文档教学：Self-Attention",
+    "location": "interactive classroom",
+    "phase": "lesson",
+    "variables": {
+      "topic": "Self-Attention",
+      "learning_goal": "理解 token 之间如何互相参考。",
+      "interaction": "player_driven",
+      "language": "ja"
+    }
+  },
+  "relation": {
+    "user_id": "default",
+    "affinity": 0.36,
+    "trust": 0.58,
+    "tension": 0.02,
+    "closeness": 0.4
+  },
+  "prompt": {
+    "system": "あなたは FAIRY の文書 Galgame 教学 Agent です。",
+    "developer": "完全な脚本を一度に生成しないでください。Tutor として、ユーザーの入力に応じて説明してください。",
+    "scene_instruction": "Self-Attention について、文書に基づいて短く自然に説明してください。",
+    "response_contract": "display_text は画面表示用、speech_text は音声合成用です。speech_text は現在のキャラクターの性格、呼び方、語尾、間、口癖に合わせて自然な台詞にしてください。直訳は禁止です。"
+  },
+  "runtime": {
+    "agent_provider": "mock",
+    "voice_provider": "volcengine",
+    "image_provider": "mock",
+    "voice": {
+      "voice_id": "S_替换为复刻声音ID",
+      "media_type": "mp3",
+      "extra": {
+        "app_id": "替换为火山控制台 APP ID",
+        "access_token": "替换为火山控制台 Access Token",
+        "resource_id": "seed-icl-2.0",
+        "speaker": "S_替换为复刻声音ID",
+        "explicit_language": "ja"
+      }
+    },
+    "image": {
+      "enabled": true,
+      "prompt": "anime visual novel character CG, tutor heroine teaching self-attention",
+      "style": "galgame character cg",
+      "size": "1280x720"
+    }
+  },
+  "user": {
+    "user_id": "default",
+    "text": "Self-Attention は何をしているの？",
+    "mode": "text"
+  }
+}

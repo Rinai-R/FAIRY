@@ -1,0 +1,25 @@
+{
+  "topic": "贝叶斯公式",
+  "learning_goal": "理解先验、似然和后验之间的关系",
+  "document_text": "贝叶斯公式描述了在观察到证据后如何更新一个假设的概率。它把先验概率、似然和证据概率组合起来，得到后验概率。",
+  "characters": [
+    {
+      "id": "tutor",
+      "display_name": "Tutor",
+      "voice_id": "tutor_default",
+      "persona": "耐心、清晰、会把复杂内容拆成可以跟读和复述的小步骤。",
+      "style_rules": [
+        "优先解释概念。",
+        "每次只推进一个重点。",
+        "必要时给出练习问题。"
+      ]
+    }
+  ],
+  "runtime": {
+    "scene_provider": "codex"
+  },
+  "variables": {
+    "difficulty": "intro",
+    "interaction": "player_driven"
+  }
+}
