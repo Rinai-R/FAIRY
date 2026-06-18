@@ -27,6 +27,12 @@ import { emotionLabel, expressionLabel, motionLabel } from "./views/displayLabel
 const CONFIG_STORAGE_KEY = "fairy.user-config.v1";
 const MAX_DOCUMENT_ASSET_BYTES = 64 * 1024 * 1024;
 const EXPRESSION_PRESETS = ["calm", "soft_smile", "happy", "curious", "surprised", "thinking", "serious", "worried", "embarrassed", "angry"];
+const DEFAULT_LANGUAGE_PLAN = Object.freeze({
+  display_language: "zh-CN",
+  speech_language: "ja-JP",
+  translation_provider: "agent",
+  mode: "translate_for_voice"
+});
 
 const defaultCharacters = [
   {
@@ -182,12 +188,7 @@ export function App() {
     speaker: "",
     language: "ja"
   });
-  const [languagePlan, setLanguagePlan] = useState(savedConfigRef.current?.languagePlan || {
-    display_language: "zh-CN",
-    speech_language: "ja",
-    translation_provider: "agent",
-    mode: "translate_for_voice"
-  });
+  const [languagePlan, setLanguagePlan] = useState(() => normalizeLanguagePlan(savedConfigRef.current?.languagePlan || DEFAULT_LANGUAGE_PLAN));
   const [voiceClone, setVoiceClone] = useState({
     speaker_id: "",
     status: "idle",
@@ -371,7 +372,7 @@ export function App() {
     if (typeof config.documentURL === "string") setDocumentURL(config.documentURL);
     if (Object.prototype.hasOwnProperty.call(config, "documentAsset")) setDocumentAsset(config.documentAsset || null);
     // interactionMode removed
-    if (config.languagePlan) setLanguagePlan(config.languagePlan);
+    if (config.languagePlan) setLanguagePlan(normalizeLanguagePlan(config.languagePlan));
     if (config.prompt) setPrompt(config.prompt);
     if (config.cgConfig) setCgConfig(config.cgConfig);
     if (config.voiceProfile) setVoiceProfile(config.voiceProfile);
@@ -386,14 +387,14 @@ export function App() {
   }
 
   function buildCurrentConfig(overrides = {}) {
-    return {
+    const next = {
       activeCharacterID,
       cgConfig,
       characters,
       documentAsset,
       documentTitle,
       documentURL,
-      languagePlan,
+      languagePlan: normalizeLanguagePlan(overrides.languagePlan || languagePlan),
       learningGoal,
       generationRequirement,
       prompt,
@@ -403,6 +404,11 @@ export function App() {
       volcengineProfile,
       ...overrides
     };
+    next.languagePlan = normalizeLanguagePlan(next.languagePlan || DEFAULT_LANGUAGE_PLAN);
+    if (Array.isArray(next.characters)) {
+      next.characters = next.characters.map((character) => normalizeSavedCharacter(character)).filter(Boolean);
+    }
+    return next;
   }
 
   function persistCurrentConfig(overrides = {}, options = {}) {
@@ -566,7 +572,7 @@ export function App() {
       ...item,
       runtime: pruneEmptyObject({
         ...(item.runtime || {}),
-        language: pruneEmptyObject({ ...(item.runtime?.language || {}), [field]: value })
+        language: normalizeLanguageOverride({ ...(item.runtime?.language || {}), [field]: value })
       })
     }));
   }
@@ -694,8 +700,9 @@ export function App() {
   }
 
   function buildVoiceProfile(provider = voiceProvider) {
+    const speechLanguage = languageCodeForVoiceProvider(effectiveLanguagePlan().speech_language);
     if (activeCharacter?.runtime?.voice && Object.keys(activeCharacter.runtime.voice).length > 0) {
-      return activeCharacter.runtime.voice;
+      return normalizeVoiceProfileLanguage(activeCharacter.runtime.voice, provider, speechLanguage);
     }
     if (provider === "volcengine") {
       return {
@@ -706,11 +713,11 @@ export function App() {
           access_token: volcengineProfile.access_token,
           resource_id: volcengineProfile.resource_id,
           speaker: volcengineProfile.speaker,
-          explicit_language: volcengineProfile.language
+          explicit_language: speechLanguage || volcengineProfile.language
         }
       };
     }
-    return voiceProfile;
+    return normalizeVoiceProfileLanguage(voiceProfile, provider, speechLanguage);
   }
 
   async function startVoiceClone() {
@@ -720,6 +727,7 @@ export function App() {
       const profile = buildVoiceProfile("volcengine");
       const extra = profile.extra || {};
       const speaker = extra.speaker || profile.voice_id || activeCharacter?.voice_id || "";
+      const speechLanguage = languageCodeForVoiceProvider(effectiveLanguagePlan().speech_language || extra.explicit_language || volcengineProfile.language);
       if (!speaker.trim()) {
         throw new Error("请先填写 S_ 开头的声音 ID。");
       }
@@ -733,7 +741,7 @@ export function App() {
         access_token: extra.access_token || volcengineProfile.access_token,
         resource_id: extra.resource_id || volcengineProfile.resource_id,
         speaker_id: speaker,
-        language: activeCharacter?.runtime?.language?.speech_language || extra.explicit_language || languagePlan.speech_language || volcengineProfile.language,
+        language: speechLanguage,
         samples
       });
       const speakerID = payload.speaker_id || speaker;
@@ -758,13 +766,14 @@ export function App() {
       const profile = buildVoiceProfile("volcengine");
       const extra = profile.extra || {};
       const speaker = extra.speaker || profile.voice_id || activeCharacter?.voice_id || "";
+      const speechLanguage = languageCodeForVoiceProvider(effectiveLanguagePlan().speech_language || extra.explicit_language || volcengineProfile.language);
       const payload = await cloneVoiceStatus({
         provider: "volcengine",
         app_id: extra.app_id || volcengineProfile.app_id,
         access_token: extra.access_token || volcengineProfile.access_token,
         resource_id: extra.resource_id || volcengineProfile.resource_id,
         speaker_id: speaker,
-        language: activeCharacter?.runtime?.language?.speech_language || extra.explicit_language || languagePlan.speech_language || volcengineProfile.language
+        language: speechLanguage
       });
       setVoiceClone(payload);
       appendLog("info", `声音复刻状态：${payload.status || "unknown"} ${payload.message || ""}`);
@@ -791,7 +800,8 @@ export function App() {
       if (effectiveVoiceProvider === "volcengine" && !speaker.trim()) {
         throw new Error("请先填写复刻声音 ID。");
       }
-      const cacheKey = [activeCharacter?.id || "", effectiveVoiceProvider, speaker, text].join("\n");
+      const speechLanguage = languageCodeForVoiceProvider(effectiveLanguagePlan().speech_language);
+      const cacheKey = [activeCharacter?.id || "", effectiveVoiceProvider, speaker, speechLanguage, text].join("\n");
       if (voiceTestCacheRef.current.key === cacheKey && voiceTestCacheRef.current.url) {
         setLastAudioURL(voiceTestCacheRef.current.url);
         playAudio(voiceTestCacheRef.current.url);
@@ -891,8 +901,12 @@ export function App() {
       agent: buildAgentProfile(),
       voice: buildVoiceProfile(effectiveVoiceProvider),
       image: buildImageRequest(scene),
-      language: activeCharacter?.runtime?.language || languagePlan
+      language: effectiveLanguagePlan()
     };
+  }
+
+  function effectiveLanguagePlan() {
+    return mergeLanguagePlan(languagePlan, activeCharacter?.runtime?.language);
   }
 
   function buildAgentProfile() {
@@ -2274,6 +2288,7 @@ function ConfigView(props) {
                   <CharacterConfigModal
                     inline
                     character={editingCharacter}
+                    languagePlan={languagePlan}
                     isDefault={editingCharacter.id === activeCharacterID}
                     onSetDefault={() => setActiveCharacterID(editingCharacter.id)}
                     onClose={() => setEditorOpen(false)}
@@ -2333,6 +2348,7 @@ function CharacterConfigModal({
   cloneBusy,
   inline = false,
   isDefault = false,
+  languagePlan = DEFAULT_LANGUAGE_PLAN,
   onSetDefault,
   onClose,
   providerOptions,
@@ -2367,6 +2383,7 @@ function CharacterConfigModal({
   const voice = character.runtime?.voice || {};
   const voiceExtra = voice.extra || {};
   const language = character.runtime?.language || {};
+  const effectiveLanguage = mergeLanguagePlan(languagePlan, language);
   const image = character.runtime?.image || {};
   const speaker = voiceExtra.speaker || voice.voice_id || character.voice_id || "";
   const [provTab, setProvTab] = useState("agent");
@@ -2391,6 +2408,7 @@ function CharacterConfigModal({
           <button className="h-btn ghost" type="button" onClick={onClose}>关闭</button>
         </div>
 
+        <div className="m-scroll">
         <div className="m-top">
           <div>
             <div className="lbl">角色名</div>
@@ -2408,6 +2426,22 @@ function CharacterConfigModal({
         <div className="m-prompt">
           <div className="lbl">角色 Prompt</div>
           <textarea className="ch-ta" rows={4} value={character.persona || ""} onChange={(event) => setCharacterField(character.id, "persona", event.target.value)} placeholder="描述这个主讲角色的口吻、讲解方式与边界。" />
+        </div>
+
+        <div className="m-language">
+          <div className="m-language__head">
+            <div>
+              <div className="lbl">语言配置</div>
+              <p>屏幕字幕和语音台词可以分开设置；保存后影响重新生成、后续分幕和自由讨论，当前已生成历史不会自动翻译。</p>
+            </div>
+            <span>当前：{languageLabel(effectiveLanguage.display_language)} / {languageLabel(effectiveLanguage.speech_language)}</span>
+          </div>
+          <div className="language-fields">
+            <SelectField label="屏幕显示语言" value={normalizeLanguageCode(language.display_language) || ""} onChange={(value) => setCharacterRuntimeLanguageField(character.id, "display_language", value)} options={languageSelectOptions} />
+            <SelectField label="发声语言" value={normalizeLanguageCode(language.speech_language) || ""} onChange={(value) => setCharacterRuntimeLanguageField(character.id, "speech_language", value)} options={languageSelectOptions} />
+            <SelectField label="语言模式" value={language.mode || ""} onChange={(value) => setCharacterRuntimeLanguageField(character.id, "mode", value)} options={languageModeOptions} />
+            <SelectField label="翻译策略" value={language.translation_provider || ""} onChange={(value) => setCharacterRuntimeLanguageField(character.id, "translation_provider", value)} options={translationProviderOptions} />
+          </div>
         </div>
 
         <div className="m-prov">
@@ -2449,17 +2483,13 @@ function CharacterConfigModal({
             )}
             {provTab === "image" && (
               <div className="ch-fields">
-                <p className="ch-hint">图片配置只影响该角色的 Galgame CG；语言配置决定显示文本和语音文本的关系。</p>
+                <p className="ch-hint">图片配置只影响该角色的 Galgame CG。</p>
                 <SelectField label="图片服务" value={character.runtime?.image_provider || ""} onChange={(value) => setCharacterRuntimeField(character.id, "image_provider", value)} options={providerOptionsWithInherit(providerOptions.images)} />
                 <TextField label="图片 Endpoint" value={image.endpoint || ""} onChange={(value) => setCharacterRuntimeImageField(character.id, "endpoint", value)} />
                 <TextField label="图片尺寸" value={image.size || ""} onChange={(value) => setCharacterRuntimeImageField(character.id, "size", value)} />
                 <TextField label="图片风格" value={image.style || ""} onChange={(value) => setCharacterRuntimeImageField(character.id, "style", value)} />
                 <TextField label="负向提示词" value={image.negative_prompt || ""} onChange={(value) => setCharacterRuntimeImageField(character.id, "negative_prompt", value)} />
                 <TextAreaField label="角色图片提示词覆盖" value={image.prompt || ""} onChange={(value) => setCharacterRuntimeImageField(character.id, "prompt", value)} rows={2} className="ch-field-wide" />
-                <TextField label="屏幕显示语言" value={language.display_language || ""} onChange={(value) => setCharacterRuntimeLanguageField(character.id, "display_language", value)} />
-                <TextField label="语音合成语言" value={language.speech_language || ""} onChange={(value) => setCharacterRuntimeLanguageField(character.id, "speech_language", value)} />
-                <SelectField label="翻译策略" value={language.translation_provider || ""} onChange={(value) => setCharacterRuntimeLanguageField(character.id, "translation_provider", value)} options={[{ value: "", label: "运行默认值" }, { value: "agent", label: "Agent 生成语音文本" }, { value: "external", label: "外部翻译 Provider" }]} />
-                <SelectField label="语言模式" value={language.mode || ""} onChange={(value) => setCharacterRuntimeLanguageField(character.id, "mode", value)} options={[{ value: "", label: "运行默认值" }, { value: "translate_for_voice", label: "显示与语音可不同" }, { value: "same", label: "显示与语音相同" }]} />
               </div>
             )}
             {provTab === "voice" && (
@@ -2475,10 +2505,6 @@ function CharacterConfigModal({
                       setCharacterField(character.id, "voice_id", value);
                       setCharacterRuntimeVoiceField(character.id, "voice_id", value);
                       setCharacterRuntimeVoiceExtraField(character.id, "speaker", value);
-                    }} />
-                    <TextField label="发声语言" value={voiceExtra.explicit_language || language.speech_language || ""} onChange={(value) => {
-                      setCharacterRuntimeVoiceExtraField(character.id, "explicit_language", value);
-                      setCharacterRuntimeLanguageField(character.id, "speech_language", value);
                     }} />
                     <SelectField label="音频格式" value={voice.media_type || "mp3"} onChange={(value) => setCharacterRuntimeVoiceField(character.id, "media_type", value)} options={[{ value: "mp3", label: "mp3" }, { value: "wav", label: "wav" }]} />
                     <div className="ch-field-wide clone-workbench">
@@ -2506,9 +2532,8 @@ function CharacterConfigModal({
                 ) : (
                   <>
                     <TextField label="Endpoint" value={voice.endpoint || ""} onChange={(value) => setCharacterRuntimeVoiceField(character.id, "endpoint", value)} />
-                    <TextField label="Text Lang" value={voice.text_lang || ""} onChange={(value) => setCharacterRuntimeVoiceField(character.id, "text_lang", value)} />
                     <TextField label="参考音频语言" value={voice.prompt_lang || ""} onChange={(value) => setCharacterRuntimeVoiceField(character.id, "prompt_lang", value)} />
-                    <TextField label="Ref Audio" value={voice.ref_audio_path || ""} onChange={(value) => setCharacterRuntimeVoiceField(character.id, "ref_audio_path", value)} />
+                    <TextField label="参考音频路径" value={voice.ref_audio_path || ""} onChange={(value) => setCharacterRuntimeVoiceField(character.id, "ref_audio_path", value)} />
                     <TextField label="参考音频文本" value={voice.prompt_text || ""} onChange={(value) => setCharacterRuntimeVoiceField(character.id, "prompt_text", value)} />
                     <SelectField label="音频格式" value={voice.media_type || ""} onChange={(value) => setCharacterRuntimeVoiceField(character.id, "media_type", value)} options={[{ value: "", label: "运行默认值" }, { value: "wav", label: "wav" }, { value: "mp3", label: "mp3" }]} />
                   </>
@@ -2559,6 +2584,7 @@ function CharacterConfigModal({
         <div className="m-foot">
           <span className="note">保存后，新建情节会使用该角色 Prompt 和 Provider 配置；已有脚本不会被静默覆盖。</span>
           <button className="h-btn primary" type="button" onClick={handleSave}>保存档案</button>
+        </div>
         </div>
       </section>
   );
@@ -2790,6 +2816,40 @@ function providerOptionsWithInherit(items = []) {
   return [{ value: "", label: "运行默认值" }, ...toOptions(items)];
 }
 
+const languageSelectOptions = [
+  { value: "", label: "继承运行默认" },
+  { value: "zh-CN", label: "中文（简体）" },
+  { value: "ja-JP", label: "日语" },
+  { value: "en-US", label: "英语" }
+];
+
+const languageModeOptions = [
+  { value: "", label: "运行默认值" },
+  { value: "translate_for_voice", label: "字幕与发声可不同" },
+  { value: "same", label: "字幕与发声相同" }
+];
+
+const translationProviderOptions = [
+  { value: "", label: "运行默认值" },
+  { value: "agent", label: "Agent 生成语音稿" },
+  { value: "external", label: "外部翻译 Provider" }
+];
+
+function languageLabel(value) {
+  switch (normalizeLanguageCode(value)) {
+    case "zh-CN":
+      return "中文";
+    case "ja-JP":
+      return "日语";
+    case "en-US":
+      return "英语";
+    case "":
+      return "继承默认";
+    default:
+      return value;
+  }
+}
+
 function agentHint(id) {
   switch (id) {
     case "fairy-agent":
@@ -2977,6 +3037,7 @@ function sanitizeSavedConfig(payload) {
   return {
     ...payload,
     prompt: sanitizePromptConfig(payload.prompt),
+    languagePlan: normalizeLanguagePlan(payload.languagePlan || DEFAULT_LANGUAGE_PLAN),
     characters: mergeSavedCharacters(payload.characters)
   };
 }
@@ -2991,6 +3052,93 @@ function firstNonEmpty(...values) {
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return "";
+}
+
+function normalizeLanguageCode(value) {
+  const raw = String(value || "").trim();
+  const normalized = raw.toLowerCase().replaceAll("_", "-");
+  switch (normalized) {
+    case "":
+      return "";
+    case "cn":
+    case "zh":
+    case "zh-cn":
+    case "zh-hans":
+    case "zh-hans-cn":
+      return "zh-CN";
+    case "jp":
+    case "ja":
+    case "ja-jp":
+      return "ja-JP";
+    case "en":
+    case "en-us":
+      return "en-US";
+    default:
+      return raw;
+  }
+}
+
+function normalizeLanguagePlan(plan = {}, defaults = DEFAULT_LANGUAGE_PLAN) {
+  const merged = { ...(defaults || {}), ...(plan || {}) };
+  const mode = String(merged.mode || DEFAULT_LANGUAGE_PLAN.mode).trim() || DEFAULT_LANGUAGE_PLAN.mode;
+  const displayLanguage = normalizeLanguageCode(merged.display_language) || DEFAULT_LANGUAGE_PLAN.display_language;
+  const speechLanguage = mode === "same"
+    ? displayLanguage
+    : normalizeLanguageCode(merged.speech_language) || displayLanguage;
+  const translationProvider = String(merged.translation_provider || DEFAULT_LANGUAGE_PLAN.translation_provider).trim() || DEFAULT_LANGUAGE_PLAN.translation_provider;
+  return {
+    display_language: displayLanguage,
+    speech_language: speechLanguage,
+    translation_provider: translationProvider,
+    mode
+  };
+}
+
+function normalizeLanguageOverride(plan = {}) {
+  const out = {};
+  const displayLanguage = normalizeLanguageCode(plan.display_language);
+  const speechLanguage = normalizeLanguageCode(plan.speech_language);
+  const mode = String(plan.mode || "").trim();
+  const translationProvider = String(plan.translation_provider || "").trim();
+  if (displayLanguage) out.display_language = displayLanguage;
+  if (speechLanguage) out.speech_language = mode === "same" && displayLanguage ? displayLanguage : speechLanguage;
+  if (translationProvider) out.translation_provider = translationProvider;
+  if (mode) out.mode = mode;
+  return pruneEmptyObject(out);
+}
+
+function mergeLanguagePlan(base = DEFAULT_LANGUAGE_PLAN, override = {}) {
+  const merged = { ...(base || {}) };
+  for (const [key, value] of Object.entries(override || {})) {
+    if (typeof value === "string" && value.trim() === "") continue;
+    if (value == null) continue;
+    merged[key] = value;
+  }
+  return normalizeLanguagePlan(merged);
+}
+
+function languageCodeForVoiceProvider(value) {
+  const language = normalizeLanguageCode(value);
+  if (language === "zh-CN") return "zh";
+  if (language === "ja-JP") return "ja";
+  if (language === "en-US") return "en";
+  return language || String(value || "").trim();
+}
+
+function normalizeVoiceProfileLanguage(profile = {}, provider = "", speechLanguage = "") {
+  const voiceLanguage = languageCodeForVoiceProvider(speechLanguage);
+  const next = { ...(profile || {}) };
+  if (provider === "volcengine") {
+    next.extra = {
+      ...(profile?.extra || {}),
+      explicit_language: voiceLanguage || profile?.extra?.explicit_language || ""
+    };
+    return next;
+  }
+  if (voiceLanguage) {
+    next.text_lang = voiceLanguage;
+  }
+  return next;
 }
 
 function mergeSessionCharacters(currentCharacters, sessionCharacters) {
@@ -3046,6 +3194,10 @@ function normalizeSavedCharacter(character) {
   const runtime = character.runtime ? { ...character.runtime } : {};
   const voice = runtime.voice ? { ...runtime.voice } : undefined;
   const voiceExtra = voice?.extra || {};
+  const language = normalizeLanguageOverride({
+    ...(runtime.language || {}),
+    speech_language: runtime.language?.speech_language || voiceExtra.explicit_language || ""
+  });
   const hasVolcengineCredential = Boolean(
     voiceExtra.app_id ||
     voiceExtra.access_token ||
@@ -3059,6 +3211,13 @@ function normalizeSavedCharacter(character) {
   if (voice && !voice.voice_id && voiceExtra.speaker) {
     voice.voice_id = voiceExtra.speaker;
   }
+  if (voice) {
+    const speechLanguage = languageCodeForVoiceProvider(language?.speech_language || voiceExtra.explicit_language || "");
+    voice.extra = pruneEmptyObject({
+      ...(voice.extra || {}),
+      explicit_language: voice.extra?.explicit_language ? speechLanguage : voice.extra?.explicit_language
+    });
+  }
   return {
     ...character,
     voice_id: character.voice_id || voiceExtra.speaker || voice?.voice_id || "",
@@ -3069,7 +3228,8 @@ function normalizeSavedCharacter(character) {
     },
     runtime: pruneEmptyObject({
       ...runtime,
-      voice
+      voice,
+      language
     }),
     prompt: sanitizePromptConfig(character.prompt),
     style_rules: sanitizeStyleRules(character.style_rules)

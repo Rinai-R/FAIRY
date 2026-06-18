@@ -58,7 +58,7 @@ func TestBuildDiscussPromptCarriesTeachingSceneAndResponseContract(t *testing.T)
 		"文档摘要：注意力机制让模型关注输入中的重要信息。",
 		"speech_text 必须适合直接语音播放。",
 		"display_text 必须使用屏幕显示语言：zh-CN",
-		"speech_text 必须使用语音合成语言：ja",
+		"speech_text 必须使用语音合成语言：ja-JP",
 		"speech_text 必须是适合语音模型朗读的角色台词",
 		"等义角色化转写",
 		"translation_provider=agent",
@@ -80,7 +80,7 @@ func TestLanguageContractDefaultsToDisplayLanguage(t *testing.T) {
 		"display_text 必须使用屏幕显示语言：zh-CN",
 		"speech_text 必须使用语音合成语言：zh-CN",
 		"保留当前角色的性格、称呼、语气、停顿、口癖和情绪",
-		"mode=same",
+		"mode=translate_for_voice",
 		"translation_provider=agent",
 	} {
 		if !strings.Contains(contract, want) {

@@ -558,10 +558,8 @@ func promptBrief(primary app.PromptConfig, characterPrompt app.PromptConfig, cha
 }
 
 func languageBrief(plan app.LanguagePlan) string {
-	display := firstNonEmpty(plan.DisplayLanguage, "未指定")
-	speech := firstNonEmpty(plan.SpeechLanguage, display)
-	mode := firstNonEmpty(plan.Mode, "未指定")
-	return "- display_language: " + display + "\n- speech_language: " + speech + "\n- mode: " + mode
+	language := plan.Normalize()
+	return "- display_language: " + language.DisplayLanguage + "\n- speech_language: " + language.SpeechLanguage + "\n- mode: " + language.Mode
 }
 
 func truncateForRepair(text string, limit int) string {

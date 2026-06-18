@@ -268,22 +268,11 @@ func buildActPrompt(input agent.ActInput, body string) string {
 }
 
 func languageContract(plan app.LanguagePlan) string {
-	displayLanguage := plan.DisplayLanguage
-	if displayLanguage == "" {
-		displayLanguage = "zh-CN"
-	}
-	speechLanguage := plan.SpeechLanguage
-	if speechLanguage == "" {
-		speechLanguage = displayLanguage
-	}
-	mode := plan.Mode
-	if mode == "" {
-		mode = "same"
-	}
-	translationProvider := plan.TranslationProvider
-	if translationProvider == "" {
-		translationProvider = "agent"
-	}
+	language := plan.Normalize()
+	displayLanguage := language.DisplayLanguage
+	speechLanguage := language.SpeechLanguage
+	mode := language.Mode
+	translationProvider := language.TranslationProvider
 	return fmt.Sprintf(`- display_text 必须使用屏幕显示语言：%s。
 - speech_text 必须使用语音合成语言：%s。
 - speech_text 必须是适合语音模型朗读的角色台词：保留当前角色的性格、称呼、语气、停顿、口癖和情绪，不要逐字硬翻译。

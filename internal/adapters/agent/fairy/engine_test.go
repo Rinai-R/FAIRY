@@ -104,6 +104,24 @@ func TestGenerateActUsesUnderlyingLLMAdapter(t *testing.T) {
 	}
 }
 
+func TestLanguageBriefNormalizesAliases(t *testing.T) {
+	t.Parallel()
+
+	got := languageBrief(app.LanguagePlan{
+		DisplayLanguage: "cn",
+		SpeechLanguage:  "en",
+	})
+	for _, want := range []string{
+		"display_language: zh-CN",
+		"speech_language: en-US",
+		"mode: translate_for_voice",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("languageBrief missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestDiscussUsesUnderlyingLLMAdapter(t *testing.T) {
 	t.Parallel()
 

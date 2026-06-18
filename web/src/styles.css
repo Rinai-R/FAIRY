@@ -2038,13 +2038,19 @@ button:disabled {
   z-index: 7;
   inset: 0;
   display: grid;
-  grid-template-rows: auto auto auto 1fr auto;
+  grid-template-rows: auto minmax(0, 1fr);
   border-radius: 20px;
   border: 1px solid rgba(255, 255, 255, 0.9);
   background: rgba(255, 255, 255, 0.88);
   backdrop-filter: blur(26px);
   box-shadow: 0 44px 90px -34px rgba(60, 110, 175, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.85);
   overflow: hidden;
+}
+
+.ch-modal .m-scroll {
+  min-height: 0;
+  overflow: auto;
+  display: block;
 }
 
 .ch-modal .m-head {
@@ -2134,11 +2140,67 @@ button:disabled {
   outline: none;
 }
 
+.ch-modal .m-language {
+  margin: 4px 20px 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(244, 249, 255, 0.64));
+}
+
+.m-language__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.m-language__head p {
+  margin: 5px 0 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.m-language__head > span {
+  flex: none;
+  padding-top: 1px;
+  font-size: 11.5px;
+  color: var(--brand-deep);
+  font-weight: 800;
+}
+
+.language-fields {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.language-fields .field {
+  gap: 5px;
+}
+
+.language-fields .field > span {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.language-fields .field select {
+  height: 34px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.86);
+  padding: 0 10px;
+  font-size: 12px;
+}
+
 .ch-modal .m-prov {
-  padding: 2px 20px 8px;
+  padding: 0 20px 8px;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto auto;
 }
 
 .ch-tabs {
@@ -2167,7 +2229,6 @@ button:disabled {
 
 .ch-prov-body {
   min-height: 0;
-  overflow: auto;
   padding: 14px 2px 4px;
 }
 
@@ -4252,6 +4313,7 @@ button:disabled {
   .field-grid,
   .credential-grid,
   .language-grid,
+  .language-fields,
   .mood-grid,
   .intake-fields {
     grid-template-columns: 1fr 1fr;
@@ -4394,10 +4456,15 @@ button:disabled {
   .field-grid,
   .credential-grid,
   .language-grid,
+  .language-fields,
   .mood-grid,
   .clone-status,
   .expression-asset__head {
     grid-template-columns: 1fr;
+  }
+
+  .m-language__head {
+    display: grid;
   }
 
   .home-main {

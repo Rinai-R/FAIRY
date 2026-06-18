@@ -15,7 +15,8 @@ import (
 type MockEngine struct{}
 
 func wantsJapaneseSpeech(plan app.LanguagePlan) bool {
-	return plan.Mode != "same" && (plan.SpeechLanguage == "ja" || plan.SpeechLanguage == "jp" || plan.SpeechLanguage == "ja-JP")
+	language := plan.Normalize()
+	return language.Mode != "same" && app.IsJapaneseLanguage(language.SpeechLanguage)
 }
 
 func (MockEngine) GenerateAct(_ context.Context, input agent.ActInput) (agent.ActOutput, error) {

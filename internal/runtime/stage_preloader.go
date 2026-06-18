@@ -749,15 +749,15 @@ func dialogueSpeechText(line app.DialogueLine) (string, bool) {
 }
 
 func normalizeLanguageCode(language string) string {
-	return strings.ToLower(strings.TrimSpace(language))
+	return app.NormalizeLanguageCode(language)
 }
 
 func isChineseLanguage(language string) bool {
-	return strings.HasPrefix(language, "zh") || strings.HasPrefix(language, "cn")
+	return app.IsChineseLanguage(language)
 }
 
 func isJapaneseLanguage(language string) bool {
-	return strings.HasPrefix(language, "ja") || strings.HasPrefix(language, "jp")
+	return app.IsJapaneseLanguage(language)
 }
 
 func containsJapaneseKana(text string) bool {

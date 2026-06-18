@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -206,6 +207,68 @@ type LanguagePlan struct {
 	SpeechLanguage      string `json:"speech_language,omitempty"`
 	TranslationProvider string `json:"translation_provider,omitempty"`
 	Mode                string `json:"mode,omitempty"`
+}
+
+const (
+	DefaultDisplayLanguage     = "zh-CN"
+	DefaultTranslationProvider = "agent"
+	DefaultLanguageMode        = "translate_for_voice"
+)
+
+func (plan LanguagePlan) Normalize() LanguagePlan {
+	displayLanguage := NormalizeLanguageCode(plan.DisplayLanguage)
+	if displayLanguage == "" {
+		displayLanguage = DefaultDisplayLanguage
+	}
+	mode := strings.TrimSpace(plan.Mode)
+	if mode == "" {
+		mode = DefaultLanguageMode
+	}
+	speechLanguage := NormalizeLanguageCode(plan.SpeechLanguage)
+	if speechLanguage == "" {
+		speechLanguage = displayLanguage
+	}
+	translationProvider := strings.TrimSpace(plan.TranslationProvider)
+	if translationProvider == "" {
+		translationProvider = DefaultTranslationProvider
+	}
+	if mode == "same" {
+		speechLanguage = displayLanguage
+	}
+	return LanguagePlan{
+		DisplayLanguage:     displayLanguage,
+		SpeechLanguage:      speechLanguage,
+		TranslationProvider: translationProvider,
+		Mode:                mode,
+	}
+}
+
+func NormalizeLanguageCode(language string) string {
+	value := strings.TrimSpace(language)
+	switch strings.ToLower(strings.ReplaceAll(value, "_", "-")) {
+	case "":
+		return ""
+	case "cn", "zh", "zh-cn", "zh-hans", "zh-hans-cn":
+		return "zh-CN"
+	case "jp", "ja", "ja-jp":
+		return "ja-JP"
+	case "en", "en-us":
+		return "en-US"
+	default:
+		return value
+	}
+}
+
+func IsChineseLanguage(language string) bool {
+	return NormalizeLanguageCode(language) == "zh-CN"
+}
+
+func IsJapaneseLanguage(language string) bool {
+	return NormalizeLanguageCode(language) == "ja-JP"
+}
+
+func IsEnglishLanguage(language string) bool {
+	return NormalizeLanguageCode(language) == "en-US"
 }
 
 type SceneGenerateRequest struct {

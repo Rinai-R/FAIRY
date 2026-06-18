@@ -38,6 +38,30 @@ func TestBuildPromptRequiresPlayerDrivenTeachingScene(t *testing.T) {
 	}
 }
 
+func TestBuildPromptNormalizesLanguageAliases(t *testing.T) {
+	t.Parallel()
+
+	req := app.SceneGenerateRequest{
+		Topic:        "GMP 调度",
+		DocumentText: "G、M、P 共同完成 goroutine 调度。",
+		Runtime: app.RuntimeConfig{
+			Language: app.LanguagePlan{
+				DisplayLanguage: "cn",
+				SpeechLanguage:  "en",
+			},
+		},
+	}
+	prompt := buildPrompt(req, `{"request":{"topic":"GMP 调度"}}`)
+	for _, want := range []string{
+		"workflow.nodes[].lines[].text 必须使用屏幕显示语言：zh-CN",
+		"workflow.nodes[].lines[].speech_text 必须使用语音合成语言：en-US",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestNormalizeResponseFillsRequiredSceneRuntimeFields(t *testing.T) {
 	t.Parallel()
 

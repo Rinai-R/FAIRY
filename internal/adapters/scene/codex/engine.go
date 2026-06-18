@@ -88,8 +88,9 @@ func buildPrompt(req app.SceneGenerateRequest, body string) string {
 	if goal == "" {
 		goal = "理解核心概念，并能用自己的话复述。"
 	}
-	displayLanguage := firstNonEmpty(req.Runtime.Language.DisplayLanguage, "zh-CN")
-	speechLanguage := firstNonEmpty(req.Runtime.Language.SpeechLanguage, displayLanguage)
+	language := req.Runtime.Language.Normalize()
+	displayLanguage := language.DisplayLanguage
+	speechLanguage := language.SpeechLanguage
 
 	return fmt.Sprintf(`你是 FAIRY 的材料视觉小说编排 Agent。
 
