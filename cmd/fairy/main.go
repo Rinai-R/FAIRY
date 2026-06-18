@@ -22,7 +22,6 @@ import (
 
 const (
 	defaultHTTPAddr           = ":8787"
-	defaultWebDir             = "web/dist"
 	defaultMaxRequestBodySize = 72 << 20
 )
 
@@ -46,7 +45,6 @@ func main() {
 		hertzserver.WithMaxRequestBodySize(maxRequestBodySize),
 	)
 	server.Register(h, rt, server.Options{
-		WebDir:         optionalString(os.LookupEnv, "FAIRY_WEB_DIR", defaultWebDir),
 		AudioDir:       config.AudioDir,
 		ImageDir:       config.ImageDir,
 		UserConfigPath: config.UserConfigPath,

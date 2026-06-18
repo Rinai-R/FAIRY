@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 
 	"github.com/Rinai-R/FAIRY/internal/adapters/health"
@@ -13,10 +14,11 @@ import (
 type App struct {
 	ctx     context.Context
 	runtime *domainruntime.Runtime
+	config  bootstrap.Config
 }
 
 func New(config bootstrap.Config, logger *slog.Logger) *App {
-	return &App{runtime: bootstrap.NewRuntime(config, logger)}
+	return &App{runtime: bootstrap.NewRuntime(config, logger), config: config}
 }
 
 func (a *App) Startup(ctx context.Context) {
@@ -77,6 +79,39 @@ func (a *App) Sessions() ([]app.SessionRecord, error) {
 
 func (a *App) Session(id string) (app.SessionRecord, error) {
 	return a.runtime.Session(id)
+}
+
+func (a *App) DeleteSession(id string) (map[string]bool, error) {
+	if err := a.runtime.DeleteSession(id); err != nil {
+		return nil, err
+	}
+	return map[string]bool{"deleted": true}, nil
+}
+
+func (a *App) UserConfig() (map[string]any, error) {
+	raw, exists, err := domainruntime.NewUserConfigStore(a.config.UserConfigPath).Load()
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return map[string]any{"exists": false}, nil
+	}
+	var config map[string]any
+	if err := json.Unmarshal(raw, &config); err != nil {
+		return nil, err
+	}
+	return map[string]any{"exists": true, "config": config}, nil
+}
+
+func (a *App) SaveUserConfig(config map[string]any) (map[string]bool, error) {
+	raw, err := json.Marshal(config)
+	if err != nil {
+		return nil, err
+	}
+	if err := domainruntime.NewUserConfigStore(a.config.UserConfigPath).Save(raw); err != nil {
+		return nil, err
+	}
+	return map[string]bool{"ok": true}, nil
 }
 
 func (a *App) context() context.Context {

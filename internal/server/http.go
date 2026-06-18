@@ -19,7 +19,6 @@ import (
 )
 
 type Options struct {
-	WebDir         string
 	AudioDir       string
 	ImageDir       string
 	UserConfigPath string
@@ -70,12 +69,6 @@ func Register(h *hertzserver.Hertz, runtime *runtime.Runtime, options Options) {
 	if options.ImageDir != "" {
 		h.GET("/images/*filepath", s.image)
 		h.HEAD("/images/*filepath", s.image)
-	}
-	if options.WebDir != "" {
-		h.GET("/", s.index)
-		h.GET("/assets/*filepath", s.asset)
-		h.HEAD("/assets/*filepath", s.asset)
-		h.NoRoute(s.webFallback)
 	}
 }
 
@@ -376,19 +369,6 @@ func (s *Server) cloneVoiceStatus(ctx context.Context, c *hertzapp.RequestContex
 	writeOK(c, resp)
 }
 
-func (s *Server) index(_ context.Context, c *hertzapp.RequestContext) {
-	hertzapp.ServeFile(c, filepath.Join(s.options.WebDir, "index.html"))
-}
-
-func (s *Server) asset(_ context.Context, c *hertzapp.RequestContext) {
-	name := strings.TrimPrefix(c.Param("filepath"), "/")
-	if name == "" || strings.Contains(name, "..") {
-		c.Status(consts.StatusNotFound)
-		return
-	}
-	hertzapp.ServeFile(c, filepath.Join(s.options.WebDir, "assets", name))
-}
-
 func (s *Server) audio(_ context.Context, c *hertzapp.RequestContext) {
 	s.serveStaticFile(c, s.options.AudioDir, c.Param("filepath"))
 }
@@ -404,15 +384,6 @@ func (s *Server) serveStaticFile(c *hertzapp.RequestContext, root string, raw st
 		return
 	}
 	hertzapp.ServeFile(c, filepath.Join(root, name))
-}
-
-func (s *Server) webFallback(_ context.Context, c *hertzapp.RequestContext) {
-	path := string(c.Path())
-	if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/audio/") || strings.HasPrefix(path, "/images/") {
-		c.Status(consts.StatusNotFound)
-		return
-	}
-	hertzapp.ServeFile(c, filepath.Join(s.options.WebDir, "index.html"))
 }
 
 func writeOK(c *hertzapp.RequestContext, data any) {
