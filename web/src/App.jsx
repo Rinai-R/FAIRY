@@ -1719,19 +1719,10 @@ function HomeView({
     <section className="page home-page" ref={homePageRef}>
       <section className="home-layout">
         <div className="home-main">
-          <header className={`hero-block ${homeStep === "target" ? "is-target" : ""}`}>
-            {homeStep === "source" ? (
-              <>
-                <span className="eyebrow">文档 · 单角色视觉小说教学</span>
-                <h1>放进一份文档，<br />生成一段可玩的 <span>Galgame</span>。</h1>
-              </>
-            ) : (
-              <>
-                <span className="eyebrow">第 2 步 · 生成目标</span>
-                <h1>生成目标</h1>
-                <p>定义这段 Galgame 要讲清什么，以及用什么节奏讲。</p>
-              </>
-            )}
+          <header className="hero-block">
+            <span className="eyebrow">{homeStep === "source" ? "文档 · 单角色视觉小说教学" : "第 2 步 · 生成目标"}</span>
+            <h1>放进一份文档，<br />生成一段可玩的 <span>Galgame</span>。</h1>
+            {homeStep === "target" ? <p>定义这段 Galgame 要讲清什么，以及用什么节奏讲。</p> : null}
           </header>
 
           <article className="intake-panel">
@@ -1743,61 +1734,63 @@ function HomeView({
               <span className="doc-support">{homeStep === "source" ? "支持 PDF · DOCX · PPT · Markdown · URL · 目录" : `当前文档：${docLabel} · ${documentStats.chars} 字符`}</span>
             </div>
 
-            {homeStep === "source" ? (
-              <>
-                <div className="source-methods">
-                  <button className={`source-method ${sourceMethod === "upload" ? "is-active" : ""}`} type="button" onClick={() => setSourceMethod("upload")}><b>上传文件</b><span>PDF、PPT、DOCX、图片笔记</span></button>
-                  <button className={`source-method ${sourceMethod === "text" ? "is-active" : ""}`} type="button" onClick={() => setSourceMethod("text")}><b>粘贴正文</b><span>文章、课件、脚本</span></button>
-                  <button className={`source-method ${sourceMethod === "url" ? "is-active" : ""}`} type="button" onClick={() => setSourceMethod("url")}><b>导入链接</b><span>网页正文与结构</span></button>
-                  <button className={`source-method ${sourceMethod === "directory" ? "is-active" : ""}`} type="button" onClick={() => setSourceMethod("directory")}><b>本地目录</b><span>代码仓库、知识库</span></button>
-                </div>
-
-                {sourceMethod === "upload" && (
-                  <label
-                    className={`document-drop ${documentAsset?.path ? "has-file" : ""}`}
-                    onDragOver={(event) => event.preventDefault()}
-                    onDrop={(event) => {
-                      event.preventDefault();
-                      importDocumentFile(event.dataTransfer.files?.[0]);
-                    }}
-                  >
-                    <input type="file" onChange={(event) => importDocumentFile(event.target.files?.[0])} />
-                    <strong>{documentAsset?.filename || "把文档拖到这里"}</strong>
-                    <span>{documentAsset?.path ? `${documentAsset.content_type || "file"} · ${formatBytes(documentAsset.size_bytes || 0)}` : "松手后 FAIRY 会先整理结构与重点，再带你设定这段剧情的学习目标。"}</span>
-                    <em>选择文件</em>
-                  </label>
-                )}
-
-                {sourceMethod === "text" && (
-                  <div className="source-editor">
-                    <TextAreaField label="材料正文" value={documentText} onChange={setDocumentText} rows={9} placeholder="粘贴文章、课件、脚本或笔记正文。" />
+            <div className="intake-body">
+              {homeStep === "source" ? (
+                <>
+                  <div className="source-methods">
+                    <button className={`source-method ${sourceMethod === "upload" ? "is-active" : ""}`} type="button" onClick={() => setSourceMethod("upload")}><b>上传文件</b><span>PDF、PPT、DOCX、图片笔记</span></button>
+                    <button className={`source-method ${sourceMethod === "text" ? "is-active" : ""}`} type="button" onClick={() => setSourceMethod("text")}><b>粘贴正文</b><span>文章、课件、脚本</span></button>
+                    <button className={`source-method ${sourceMethod === "url" ? "is-active" : ""}`} type="button" onClick={() => setSourceMethod("url")}><b>导入链接</b><span>网页正文与结构</span></button>
+                    <button className={`source-method ${sourceMethod === "directory" ? "is-active" : ""}`} type="button" onClick={() => setSourceMethod("directory")}><b>本地目录</b><span>代码仓库、知识库</span></button>
                   </div>
-                )}
 
-                {sourceMethod === "url" && (
-                  <div className="source-editor">
-                    <div className="document-url-row">
-                      <TextField label="网络文档 URL" value={documentURL} onChange={setDocumentURL} placeholder="https://example.com/doc 或飞书文档链接" />
-                      <button className="ghost-button" type="button" onClick={importDocumentURL} disabled={busy || !documentURL.trim()}>导入</button>
+                  {sourceMethod === "upload" && (
+                    <label
+                      className={`document-drop ${documentAsset?.path ? "has-file" : ""}`}
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        importDocumentFile(event.dataTransfer.files?.[0]);
+                      }}
+                    >
+                      <input type="file" onChange={(event) => importDocumentFile(event.target.files?.[0])} />
+                      <strong>{documentAsset?.filename || "把文档拖到这里"}</strong>
+                      <span>{documentAsset?.path ? `${documentAsset.content_type || "file"} · ${formatBytes(documentAsset.size_bytes || 0)}` : "松手后 FAIRY 会先整理结构与重点，再带你设定这段剧情的学习目标。"}</span>
+                      <em>选择文件</em>
+                    </label>
+                  )}
+
+                  {sourceMethod === "text" && (
+                    <div className="source-editor">
+                      <TextAreaField label="材料正文" value={documentText} onChange={setDocumentText} rows={9} placeholder="粘贴文章、课件、脚本或笔记正文。" />
                     </div>
-                    <p className="source-hint">链接内容会作为材料入口交给 Agent；复杂网页、飞书文档或图片型资料后续由 Agent 工具链理解。</p>
-                  </div>
-                )}
+                  )}
 
-                {sourceMethod === "directory" && (
-                  <div className="source-editor">
-                    <TextAreaField label="本地目录 / Agent 指令" value={documentText} onChange={setDocumentText} rows={8} placeholder="例如：请读取 /Users/rinai/project/demo 下的 README、docs 和核心代码，整理成教学剧情。" />
-                    <p className="source-hint">目录模式先用文本指令表达，后续接入本地目录选择和 Agent 工具调用。</p>
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className="target-form">
-                <TextField label="文档标题" value={documentTitle} onChange={setDocumentTitle} />
-                <TextAreaField label="学习目标" value={learningGoal} onChange={setLearningGoal} rows={4} placeholder="这段 Galgame 要讲清什么？例如：让玩家理解文档核心结构、关键概念和使用边界。" />
-                <TextAreaField label="生成要求" value={generationRequirement} onChange={setGenerationRequirement} rows={6} placeholder="写给剧情 Agent 的补充要求，例如：面向刚接触项目的玩家；先讲清主流程，再解释关键术语；控制在 5-7 个剧情节点；只让主讲角色发言。" />
-              </div>
-            )}
+                  {sourceMethod === "url" && (
+                    <div className="source-editor">
+                      <div className="document-url-row">
+                        <TextField label="网络文档 URL" value={documentURL} onChange={setDocumentURL} placeholder="https://example.com/doc 或飞书文档链接" />
+                        <button className="ghost-button" type="button" onClick={importDocumentURL} disabled={busy || !documentURL.trim()}>导入</button>
+                      </div>
+                      <p className="source-hint">链接内容会作为材料入口交给 Agent；复杂网页、飞书文档或图片型资料后续由 Agent 工具链理解。</p>
+                    </div>
+                  )}
+
+                  {sourceMethod === "directory" && (
+                    <div className="source-editor">
+                      <TextAreaField label="本地目录 / Agent 指令" value={documentText} onChange={setDocumentText} rows={8} placeholder="例如：请读取 /Users/rinai/project/demo 下的 README、docs 和核心代码，整理成教学剧情。" />
+                      <p className="source-hint">目录模式先用文本指令表达，后续接入本地目录选择和 Agent 工具调用。</p>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="target-form">
+                  <TextField label="文档标题" value={documentTitle} onChange={setDocumentTitle} />
+                  <TextAreaField label="学习目标" value={learningGoal} onChange={setLearningGoal} rows={4} placeholder="这段 Galgame 要讲清什么？例如：让玩家理解文档核心结构、关键概念和使用边界。" />
+                  <TextAreaField label="生成要求" value={generationRequirement} onChange={setGenerationRequirement} rows={6} placeholder="写给剧情 Agent 的补充要求，例如：面向刚接触项目的玩家；先讲清主流程，再解释关键术语；控制在 5-7 个剧情节点；只让主讲角色发言。" />
+                </div>
+              )}
+            </div>
 
             <div className={`generate-status generate-status--${documentImport.status}`}>
               <span>{homeStep === "source" ? documentImport.message : sourceReady ? `文档源已就绪：${docLabel}` : "还没有文档源，仍可以先填写目标，但建议先导入材料。"}</span>

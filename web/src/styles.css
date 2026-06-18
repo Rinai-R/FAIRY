@@ -469,18 +469,24 @@ button:disabled {
 
 /* 首页 */
 .home-page {
-  overflow: auto;
+  overflow: hidden;
   padding: 0;
 }
 
 .home-layout {
+  height: 100%;
   min-height: 100%;
+  min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 452px;
+  overflow: hidden;
 }
 
 .home-main {
   min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
   padding: 38px 30px 26px;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -502,11 +508,6 @@ button:disabled {
   line-height: 1.7;
 }
 
-.hero-block.is-target h1 {
-  font-size: 34px;
-  line-height: 1.18;
-}
-
 .hero-block h1 span {
   background: var(--grad);
   color: transparent;
@@ -517,7 +518,7 @@ button:disabled {
 .intake-panel {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, auto) auto auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   border-radius: 18px;
   border: 1px solid rgba(255, 255, 255, 0.82);
   overflow: hidden;
@@ -534,6 +535,12 @@ button:disabled {
   gap: 16px;
   padding: 14px 20px;
   border-bottom: 1px solid var(--line-soft);
+}
+
+.intake-body {
+  min-height: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .segmented-tabs {
@@ -677,13 +684,23 @@ button:disabled {
 .source-editor,
 .target-form {
   display: grid;
+  min-height: 0;
   gap: 14px;
   padding: 16px 20px 18px;
 }
 
 .source-editor {
-  min-height: 244px;
   align-content: start;
+}
+
+.source-editor .field,
+.target-form .field {
+  min-height: 0;
+}
+
+.source-editor .field textarea {
+  height: clamp(156px, 23vh, 280px);
+  min-height: 0;
 }
 
 .target-form {
@@ -691,11 +708,13 @@ button:disabled {
 }
 
 .target-form .field textarea {
-  min-height: 118px;
+  height: clamp(104px, 17vh, 148px);
+  min-height: 0;
 }
 
 .target-form .field:last-child textarea {
-  min-height: 154px;
+  height: clamp(128px, 22vh, 188px);
+  min-height: 0;
 }
 
 .source-hint {
@@ -772,6 +791,8 @@ button:disabled {
 .cast-panel {
   position: relative;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
   overflow: hidden;
   border-left: 1px solid var(--line-soft);
   background:
@@ -915,6 +936,40 @@ button:disabled {
   font-family: var(--serif);
   font-size: 14.5px;
   line-height: 1.8;
+}
+
+@media (max-height: 860px) {
+  .home-main {
+    padding-top: 28px;
+    padding-bottom: 22px;
+    gap: 18px;
+  }
+
+  .hero-block h1 {
+    font-size: clamp(32px, 3.8vw, 40px);
+    line-height: 1.12;
+  }
+
+  .source-methods {
+    padding: 14px 20px 6px;
+  }
+
+  .source-method {
+    min-height: 76px;
+    padding: 10px 12px;
+  }
+
+  .source-editor .field textarea {
+    height: 156px;
+  }
+
+  .target-form .field textarea {
+    height: 72px;
+  }
+
+  .target-form .field:last-child textarea {
+    height: 92px;
+  }
 }
 
 .mini-panel,
