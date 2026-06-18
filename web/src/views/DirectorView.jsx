@@ -7,22 +7,14 @@ export function DirectorView({
   busy,
   documentAsset,
   documentTitle,
-  effectiveProviders,
-  lastAudioURL,
   lastCG,
   lessonWorkflow,
-  logs,
   messages,
   mood,
-  playAudio,
-  providerLine,
   runtimeState,
   scene,
   sessions,
-  advanceLessonWorkflow,
-  sendChoice,
-  setActiveView,
-  speaking
+  setActiveView
 }) {
   const allNodes = Array.isArray(lessonWorkflow?.nodes) ? lessonWorkflow.nodes : [];
   const beats = allNodes.filter((n) => n.kind === "lesson" || n.kind === "opening");
@@ -45,16 +37,14 @@ export function DirectorView({
   const hasPlayableBeat = Boolean(currentBeat && currentBeat.kind !== "draft" && (beats.length > 0 || choices.length > 0 || currentBeat.free_discussion));
   const previewStyle = galSceneBackgroundStyle(backgroundURL, "rgba(20, 19, 22, 0.02)", "rgba(20, 19, 22, 0.28)");
   const beatLines = currentBeat?.lines?.length ? currentBeat.lines : (currentBeat?.line ? [{ speaker: currentBeat.speaker, text: currentBeat.line }] : []);
-  const previewLines = beatLines.slice(0, 4);
-  const lineText = visibleAssistant?.text || currentBeat?.line || (beatLines.length ? beatLines[0].text : "还没有生成剧情。先从主页导入材料并生成教学篇章。");
-  const speechText = visibleAssistant?.speechText || currentBeat?.speech_text || (beatLines.length ? workflowLineSpeechText(beatLines[0]) : "");
+  const previewLines = hasPlayableBeat ? makePreviewLines(beatLines, visibleAssistant, 2) : [];
   const materialName = documentAsset?.filename || documentTitle || "未导入材料";
   const directorTitle = hasPlayableBeat ? (scene.title || lessonWorkflow?.title || "演出预览") : "演出预览";
   const coverTitle = hasPlayableBeat
     ? (currentBeat?.title || "当前章节")
     : "还没有可播放的剧情";
   const coverLine = hasPlayableBeat
-    ? lineText
+    ? previewLines.map((line) => line.text).join(" ")
     : "先回到主页生成教学剧情。生成完成后，这里会变成正式的演出入口。";
   const chapterText = beats.length ? `${beatIndex + 1}/${beats.length}` : "0/0";
   const enterLabel = hasPlayableBeat ? "进入演出" : "去生成";
@@ -69,7 +59,6 @@ export function DirectorView({
         </div>
         <div className="director-hero-actions">
           <button className="ghost-button" type="button" onClick={() => setActiveView("history")}>记录</button>
-          <button className="ghost-button" type="button" onClick={() => playAudio()} disabled={!lastAudioURL || speaking}>{speaking ? "播放中" : "重读"}</button>
           <button className="primary-button" type="button" onClick={() => setActiveView(hasPlayableBeat ? "stage" : "dashboard")}>{enterLabel}</button>
         </div>
       </header>
@@ -81,7 +70,7 @@ export function DirectorView({
               <span className="director-preview__badge">{hasPlayableBeat ? `CHAPTER ${chapterText}` : "DRAFT"}</span>
               <h2>{coverTitle}</h2>
             </div>
-            <button className="ghost-button" type="button" onClick={() => setActiveView(hasPlayableBeat ? "stage" : "dashboard")}>{enterLabel}</button>
+            <span className="director-preview__hint">{hasPlayableBeat ? "使用顶部入口进入正式演出" : "等待生成剧情"}</span>
           </div>
           <div className="director-character-layer">
             {portrait ? (
@@ -93,28 +82,21 @@ export function DirectorView({
               </div>
             )}
           </div>
-          {choices.length ? (
-            <div className="director-choice-list">
-              {choices.map((choice) => (
-                <button key={choice.id || choice.label} type="button" onClick={() => sendChoice(choice)} disabled={busy}>
-                  <strong>{choice.label}</strong>
-                  {choice.hint ? <span>{choice.hint}</span> : null}
-                </button>
-              ))}
-            </div>
-          ) : null}
           <div className="director-dialogue">
             <div className="director-dialogue__head">
               <strong>{currentBeat?.speaker || activeCharacter?.display_name || activeCharacterID || "角色"}</strong>
               <span>{activeExpressionLabel} · {activeMotionLabel}</span>
             </div>
-            <p>{coverLine}</p>
-            {speechText && speechText !== lineText ? <small>发声台词：{speechText}</small> : null}
-            <div className="director-dialogue__actions">
-              <button type="button" onClick={() => playAudio()} disabled={!lastAudioURL || speaking}>{speaking ? "播放中" : "重读"}</button>
-              <button type="button" onClick={() => currentBeat?.next_node_id ? advanceLessonWorkflow(currentBeat.next_node_id) : undefined} disabled={busy || !currentBeat?.next_node_id || choices.length > 0}>继续</button>
-              <button type="button" onClick={() => setActiveView(hasPlayableBeat ? "stage" : "dashboard")}>{enterLabel}</button>
-            </div>
+            {previewLines.length ? (
+              <div className="director-dialogue__lines" aria-label="当前幕摘录">
+                {previewLines.map((line, index) => (
+                  <p key={`${currentBeat?.id || "preview"}-${index}`}>{line.text}</p>
+                ))}
+              </div>
+            ) : (
+              <p>{coverLine}</p>
+            )}
+            {choices.length ? <small>{`本幕包含 ${choices.length} 个正式演出选项`}</small> : null}
           </div>
         </section>
 
@@ -130,7 +112,6 @@ export function DirectorView({
               <span>{backgroundURL ? "背景已绑定" : "等待背景"}</span>
             </div>
             <p>{hasPlayableBeat ? "章节已经具备台词，可以进入全屏演出。" : "还没有生成可播放章节，请先从主页生成剧情。"}</p>
-            <button className="primary-button director-side-action" type="button" onClick={() => setActiveView(hasPlayableBeat ? "stage" : "dashboard")}>{enterLabel}</button>
           </section>
           <section className="director-status-card">
             <div className="director-card-head">
@@ -156,7 +137,7 @@ export function DirectorView({
             </div>
             <div className="director-resource-list">
               <StageMetric label="记录" value={String(sessions.length)} />
-              <StageMetric label="音频" value={lastAudioURL ? "已缓存" : runtimeState.audio || "-"} />
+              <StageMetric label="音频" value={runtimeState.audio || "-"} />
             </div>
           </section>
         </aside>
@@ -172,7 +153,6 @@ export function DirectorView({
               key={beat.id}
               type="button"
               className={`film-card ${isCurrent ? "is-active" : ""} ${visited ? "is-visited" : ""}`}
-              onClick={() => visited && !isCurrent ? advanceLessonWorkflow(beat.id, "", true) : undefined}
               disabled={busy || !visited || isCurrent}
             >
               <div className="film-card__top">
@@ -216,25 +196,6 @@ function findLatestBeatMessage(messages, beatID) {
   return null;
 }
 
-function sceneKindLabel(kind) {
-  switch (kind) {
-    case "opening":
-      return "开场";
-    case "lesson":
-      return "讲解";
-    case "choice":
-      return "选择";
-    case "challenge":
-      return "问答";
-    case "summary":
-      return "总结";
-    case "free_discussion":
-      return "讨论";
-    default:
-      return "剧情";
-  }
-}
-
 function galSceneBackgroundStyle(url, topOverlay, bottomOverlay) {
   const fallback = "linear-gradient(180deg, #dfecfb 0%, #e9f2fd 46%, #f4f9ff 100%)";
   if (!url) {
@@ -266,6 +227,28 @@ function normalizeMood(value) {
   return raw;
 }
 
-function workflowLineSpeechText(line) {
-  return String(line?.speech_text || line?.speechText || line?.text || "").trim();
+function makePreviewLines(lines, visibleAssistant, limit) {
+  const source = Array.isArray(lines) && lines.length
+    ? lines
+    : (visibleAssistant?.text ? [{ text: visibleAssistant.text }] : []);
+  return source
+    .map((line) => previewLineText(line?.text || line?.display_text || line?.displayText || ""))
+    .filter(Boolean)
+    .slice(0, limit)
+    .map((text) => ({ text }));
+}
+
+function previewLineText(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  const limit = looksMostlyASCII(text) ? 112 : 46;
+  const chars = Array.from(text);
+  if (chars.length <= limit) return text;
+  return `${chars.slice(0, limit).join("").trim()}...`;
+}
+
+function looksMostlyASCII(value) {
+  const chars = Array.from(value);
+  if (!chars.length) return false;
+  const ascii = chars.filter((char) => char.charCodeAt(0) <= 0x7f).length;
+  return ascii / chars.length > 0.75;
 }

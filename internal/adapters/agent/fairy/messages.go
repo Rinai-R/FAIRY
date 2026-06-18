@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/Rinai-R/FAIRY/internal/adapters/agent"
 	"github.com/Rinai-R/FAIRY/internal/app"
@@ -143,13 +144,15 @@ func buildGenerateActMessages(input agent.ActInput, plan actPlan) ([]llm.Message
 				"1. 只生成当前 planned_node/current_act_plan 对应的一幕，不要生成其他幕。",
 				"2. node.summary 必须概括当前幕 theme；node.lines[].text 必须围绕 current_act_plan.must_cover 展开。",
 				"3. 台词要先把知识讲细，再用角色口吻润色；不能只说标题或空泛鼓励。",
-				"4. opening/lesson/summary 的 node.lines 至少 3 段；每段 1-2 句。",
-				"5. opening/lesson 必须给 1-3 个 choices；选项服务于 current_act_plan.choice_goal。",
-				"6. lines[].text 是屏幕字幕；lines[].speech_text 是语音稿。显示语言和语音语言不同的时候，必须分别生成，不能混写。",
-				"7. expression 必须从角色已有差分语义中选择，若没有足够信息，使用 soft_smile/thinking/curious/calm/serious。",
-				"8. decision 必须跟当前幕规划一致；中间幕 continue，总结幕 free_discussion。",
-				"9. 输出 JSON 必须符合 ActOutput：{\"decision\":\"continue|summarize|free_discussion\",\"node\":{\"summary\":\"...\",\"speaker\":\"...\",\"lines\":[{\"speaker\":\"...\",\"text\":\"...\",\"speech_text\":\"...\",\"expression\":\"...\"}],\"choices\":[{\"id\":\"...\",\"label\":\"...\",\"text\":\"...\",\"hint\":\"...\"}]}}。",
-				"10. 只返回 JSON object，不要 Markdown，不要解释。",
+				"4. node.lines 是视觉小说文本框逐次展示的单位；lines[].text 必须是一屏文本框能直接显示的一句话或短句组，不是一整幕段落。",
+				"5. opening/lesson 的 node.lines 至少 4 条；summary 也应拆成多条短台词。每条 line 只推进一个小知识步，长解释必须拆成多条 lines。",
+				"6. 中文或日文 lines[].text 不超过 52 个可见字符；英文 lines[].text 不超过 120 个可见字符。超过预算时必须拆成多条 lines。",
+				"7. lines[].text 是屏幕字幕；lines[].speech_text 是同一条字幕对应的语音稿。显示语言和语音语言不同的时候，必须分别生成，不能混写，也不能把多条字幕合并成一条 speech_text。",
+				"8. opening/lesson 必须给 1-3 个 choices；选项服务于 current_act_plan.choice_goal。",
+				"9. expression 必须从角色已有差分语义中选择，若没有足够信息，使用 soft_smile/thinking/curious/calm/serious。",
+				"10. decision 必须跟当前幕规划一致；中间幕 continue，总结幕 free_discussion。",
+				"11. 输出 JSON 必须符合 ActOutput：{\"decision\":\"continue|summarize|free_discussion\",\"node\":{\"summary\":\"...\",\"speaker\":\"...\",\"lines\":[{\"speaker\":\"...\",\"text\":\"...\",\"speech_text\":\"...\",\"expression\":\"...\"}],\"choices\":[{\"id\":\"...\",\"label\":\"...\",\"text\":\"...\",\"hint\":\"...\"}]}}。",
+				"12. 只返回 JSON object，不要 Markdown，不要解释。",
 				"",
 				"输入：",
 				string(payload),
@@ -196,11 +199,12 @@ func buildRewriteActMessages(input agent.ActInput, plan actPlan, draft agent.Act
 				"改写合约：",
 				"1. 必须保留 decision 的含义，不要把 continue/summarize/free_discussion 改错。",
 				"2. 必须保留 node.summary 的知识主题，可以让表达更自然。",
-				"3. 必须保留 lines 数量和 choices 数量；不要删减台词，也不要新增大量台词。",
-				"4. 改写 lines[].text 时，要更像角色自然说话，但不能牺牲知识精度。",
-				"5. 改写 lines[].speech_text 时，要符合 speech_language 和角色口吻。",
-				"6. expression 可以根据语气微调，但必须是角色可用的表情语义。",
-				"7. 只返回完整 ActOutput JSON object，不要 Markdown，不要解释。",
+				"3. 若原稿存在超长 line，必须优先拆短并保留知识点；不要把整幕解释塞进一条 lines[].text。",
+				"4. 中文或日文 lines[].text 不超过 52 个可见字符；英文 lines[].text 不超过 120 个可见字符。",
+				"5. 改写 lines[].text 时，要更像角色自然说话，但不能牺牲知识精度。",
+				"6. 改写 lines[].speech_text 时，要符合 speech_language 和角色口吻，并与同序号 text 一一对应。",
+				"7. expression 可以根据语气微调，但必须是角色可用的表情语义。",
+				"8. 只返回完整 ActOutput JSON object，不要 Markdown，不要解释。",
 				"",
 				"原始输入：",
 				string(payload),
@@ -385,7 +389,7 @@ func validateFairyActOutput(input agent.ActInput, output agent.ActOutput) error 
 		return errors.New("node.kind 不能为空，且 planned_node.kind 也为空")
 	}
 	if isTeachingActKind(kind) {
-		if err := validateTeachingLines(output.Node.Lines); err != nil {
+		if err := validateTeachingLines(kind, output.Node.Lines, input.Request.Runtime.Language); err != nil {
 			return err
 		}
 	}
@@ -423,10 +427,13 @@ func selectCurrentActPlan(input agent.ActInput, plan actPlan) actPlanItem {
 	return actPlanItem{}
 }
 
-func validateTeachingLines(lines []app.DialogueLine) error {
-	if len(lines) < 3 {
-		return fmt.Errorf("node.lines 至少需要 3 段，当前 %d 段", len(lines))
+func validateTeachingLines(kind string, lines []app.DialogueLine, language app.LanguagePlan) error {
+	minLines := minimumTeachingLines(kind)
+	if len(lines) < minLines {
+		return fmt.Errorf("node.lines 至少需要 %d 条文本框台词，当前 %d 条", minLines, len(lines))
 	}
+	displayLanguage := language.Normalize().DisplayLanguage
+	textLimit := lineTextLimitForLanguage(displayLanguage)
 	for index, line := range lines {
 		text := strings.TrimSpace(line.Text)
 		if text == "" {
@@ -435,11 +442,41 @@ func validateTeachingLines(lines []app.DialogueLine) error {
 		if genericActText(text) {
 			return fmt.Errorf("node.lines[%d].text 不能是骨架标题: %s", index, text)
 		}
+		if count := visibleCharacterCount(text); count > textLimit {
+			return fmt.Errorf("node.lines[%d].text 超过文本框预算: %d/%d，可拆成多条 lines", index, count, textLimit)
+		}
 		if strings.TrimSpace(line.Expression) == "" {
 			return fmt.Errorf("node.lines[%d].expression 不能为空", index)
 		}
 	}
 	return nil
+}
+
+func minimumTeachingLines(kind string) int {
+	switch strings.TrimSpace(kind) {
+	case "opening", "lesson":
+		return 4
+	default:
+		return 2
+	}
+}
+
+func lineTextLimitForLanguage(language string) int {
+	if app.IsEnglishLanguage(language) {
+		return 120
+	}
+	return 52
+}
+
+func visibleCharacterCount(text string) int {
+	count := 0
+	for _, char := range text {
+		if unicode.IsSpace(char) {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 func validateTeachingChoices(choices []app.SceneChoice) error {

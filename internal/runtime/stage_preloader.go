@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/Rinai-R/FAIRY/internal/adapters/agent"
 	"github.com/Rinai-R/FAIRY/internal/adapters/voice"
@@ -91,6 +92,9 @@ func (r *Runtime) generateWorkflowNodeAct(
 ) (app.TeachingWorkflowNode, agent.ActDecision, error) {
 	if !nodeNeedsGeneratedDialogue(node) {
 		syncWorkflowNodeLegacyFields(&node)
+		if err := validateGeneratedActDialogueUnits(node, request.Runtime.Language); err != nil {
+			return node, normalizeActDecision(node, agent.ActDecisionContinue), err
+		}
 		return node, normalizeActDecision(node, agent.ActDecisionContinue), nil
 	}
 	engine, err := r.agent(request.Runtime.AgentProvider)
@@ -118,6 +122,9 @@ func (r *Runtime) generateWorkflowNodeAct(
 	merged := mergeGeneratedActNode(node, out.Node)
 	merged.Decision = string(decision)
 	if err := validateGeneratedActLanguage(merged, request.Runtime.Language); err != nil {
+		return node, decision, err
+	}
+	if err := validateGeneratedActDialogueUnits(merged, request.Runtime.Language); err != nil {
 		return node, decision, err
 	}
 	if err := (agent.ActOutput{
@@ -148,6 +155,56 @@ func validateGeneratedActLanguage(node app.TeachingWorkflowNode, plan app.Langua
 		}
 	}
 	return nil
+}
+
+func validateGeneratedActDialogueUnits(node app.TeachingWorkflowNode, plan app.LanguagePlan) error {
+	if !nodeNeedsPreparedVoice(node) {
+		return nil
+	}
+	lines := workflowNodeDialogueLines(node, app.Character{})
+	minLines := minimumGeneratedActLines(node.Kind)
+	if len(lines) < minLines {
+		return fmt.Errorf("node %q lines 至少需要 %d 条文本框台词，当前 %d 条", node.ID, minLines, len(lines))
+	}
+	displayLanguage := normalizeLanguageCode(plan.DisplayLanguage)
+	textLimit := generatedActLineTextLimit(displayLanguage)
+	for index, line := range lines {
+		text := strings.TrimSpace(line.Text)
+		if text == "" {
+			return fmt.Errorf("node %q lines[%d].text 不能为空", node.ID, index)
+		}
+		if count := visibleCharacterCount(text); count > textLimit {
+			return fmt.Errorf("node %q lines[%d].text 超过文本框预算: %d/%d，可拆成多条 lines", node.ID, index, count, textLimit)
+		}
+	}
+	return nil
+}
+
+func minimumGeneratedActLines(kind string) int {
+	switch strings.TrimSpace(kind) {
+	case "opening", "lesson":
+		return 4
+	default:
+		return 2
+	}
+}
+
+func generatedActLineTextLimit(language string) int {
+	if app.IsEnglishLanguage(language) {
+		return 120
+	}
+	return 52
+}
+
+func visibleCharacterCount(text string) int {
+	count := 0
+	for _, char := range text {
+		if unicode.IsSpace(char) {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 func (r *Runtime) prepareWorkflowNodeVoice(ctx context.Context, request app.SceneGenerateRequest, node app.TeachingWorkflowNode) (app.TeachingWorkflowNode, error) {

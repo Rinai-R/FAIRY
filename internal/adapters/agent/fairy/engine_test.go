@@ -61,7 +61,7 @@ func TestGenerateActUsesUnderlyingLLMAdapter(t *testing.T) {
 	model := &stubLLM{
 		contents: []string{
 			validPlanJSON(),
-			`{"decision":"continue","node":{"id":"opening","kind":"opening","title":"开场","summary":"注意力机制","lines":[{"speaker":"亚托莉","text":"第一句","speech_text":"一つ目。","expression":"soft_smile"},{"speaker":"亚托莉","text":"第二句","speech_text":"二つ目。","expression":"thinking"},{"speaker":"亚托莉","text":"第三句","speech_text":"三つ目。","expression":"curious"}],"choices":[{"id":"example","label":"看例子","text":"用例子继续。"}]}}`,
+			`{"decision":"continue","node":{"id":"opening","kind":"opening","title":"开场","summary":"注意力机制","lines":[{"speaker":"亚托莉","text":"第一句","speech_text":"一つ目。","expression":"soft_smile"},{"speaker":"亚托莉","text":"第二句","speech_text":"二つ目。","expression":"thinking"},{"speaker":"亚托莉","text":"第三句","speech_text":"三つ目。","expression":"curious"},{"speaker":"亚托莉","text":"第四句","speech_text":"四つ目。","expression":"calm"}],"choices":[{"id":"example","label":"看例子","text":"用例子继续。"}]}}`,
 		},
 	}
 	out, err := NewEngine(Options{Model: model}).GenerateAct(context.Background(), agent.ActInput{
@@ -96,8 +96,28 @@ func TestGenerateActUsesUnderlyingLLMAdapter(t *testing.T) {
 	if !strings.Contains(model.requests[1].Messages[1].Content, "总规划书") {
 		t.Fatalf("act plan missing: %#v", model.requests[1].Messages)
 	}
+	for _, want := range []string{
+		"node.lines 是视觉小说文本框逐次展示的单位",
+		"中文或日文 lines[].text 不超过 52 个可见字符",
+		"英文 lines[].text 不超过 120 个可见字符",
+		"不能把多条字幕合并成一条 speech_text",
+	} {
+		if !strings.Contains(model.requests[1].Messages[1].Content, want) {
+			t.Fatalf("generate prompt missing %q:\n%s", want, model.requests[1].Messages[1].Content)
+		}
+	}
 	if !strings.Contains(model.lastRequest.Messages[0].Content, "角色台词改写 Agent") {
 		t.Fatalf("rewrite prompt missing: %#v", model.lastRequest.Messages)
+	}
+	for _, want := range []string{
+		"若原稿存在超长 line，必须优先拆短",
+		"中文或日文 lines[].text 不超过 52 个可见字符",
+		"英文 lines[].text 不超过 120 个可见字符",
+		"与同序号 text 一一对应",
+	} {
+		if !strings.Contains(model.lastRequest.Messages[1].Content, want) {
+			t.Fatalf("rewrite prompt missing %q:\n%s", want, model.lastRequest.Messages[1].Content)
+		}
 	}
 	if out.Node.ID != "opening" {
 		t.Fatalf("node id = %q", out.Node.ID)
@@ -151,7 +171,7 @@ func TestGenerateActAllowsPlannedNodeToOwnScaffoldFields(t *testing.T) {
 	model := &stubLLM{
 		contents: []string{
 			validPlanJSON(),
-			`{"decision":"continue","node":{"summary":"GMP 初始化","speaker":"亚托莉","lines":[{"speaker":"亚托莉","text":"第一句","speech_text":"一つ目。","expression":"soft_smile"},{"speaker":"亚托莉","text":"第二句","speech_text":"二つ目。","expression":"thinking"},{"speaker":"亚托莉","text":"第三句","speech_text":"三つ目。","expression":"curious"}],"choices":[{"id":"term","label":"拆术语","text":"先解释术语。"}]}}`,
+			`{"decision":"continue","node":{"summary":"GMP 初始化","speaker":"亚托莉","lines":[{"speaker":"亚托莉","text":"第一句","speech_text":"一つ目。","expression":"soft_smile"},{"speaker":"亚托莉","text":"第二句","speech_text":"二つ目。","expression":"thinking"},{"speaker":"亚托莉","text":"第三句","speech_text":"三つ目。","expression":"curious"},{"speaker":"亚托莉","text":"第四句","speech_text":"四つ目。","expression":"calm"}],"choices":[{"id":"term","label":"拆术语","text":"先解释术语。"}]}}`,
 		},
 	}
 	out, err := NewEngine(Options{Model: model}).GenerateAct(context.Background(), agent.ActInput{
@@ -178,8 +198,8 @@ func TestGenerateActAllowsPlannedNodeToOwnScaffoldFields(t *testing.T) {
 	if out.Node.ID != "" {
 		t.Fatalf("raw act output should not invent scaffold id, got %q", out.Node.ID)
 	}
-	if len(out.Node.Lines) != 3 {
-		t.Fatalf("lines = %d, want 3", len(out.Node.Lines))
+	if len(out.Node.Lines) != 4 {
+		t.Fatalf("lines = %d, want 4", len(out.Node.Lines))
 	}
 }
 
@@ -190,7 +210,7 @@ func TestGenerateActRetriesWhenOutputViolatesContract(t *testing.T) {
 		contents: []string{
 			validPlanJSON(),
 			`{"decision":"continue","node":{"kind":"lesson","title":"第一幕","lines":[{"speaker":"亚托莉","text":"第一幕","speech_text":"第一幕","expression":"soft_smile"}]}}`,
-			`{"decision":"continue","node":{"kind":"lesson","title":"第一幕","summary":"GMP 调度","speaker":"亚托莉","lines":[{"speaker":"亚托莉","text":"G 代表 goroutine，是等待运行的轻量任务。","speech_text":"G は goroutine です。","expression":"soft_smile"},{"speaker":"亚托莉","text":"M 代表系统线程，真正承载执行。","speech_text":"M は OS スレッドです。","expression":"thinking"},{"speaker":"亚托莉","text":"P 代表处理器上下文，管理本地运行队列。","speech_text":"P は実行コンテキストです。","expression":"curious"}],"choices":[{"id":"queue","label":"继续队列","text":"继续讲运行队列。"}]}}`,
+			`{"decision":"continue","node":{"kind":"lesson","title":"第一幕","summary":"GMP 调度","speaker":"亚托莉","lines":[{"speaker":"亚托莉","text":"G 代表 goroutine，是等待运行的轻量任务。","speech_text":"G は goroutine です。","expression":"soft_smile"},{"speaker":"亚托莉","text":"M 代表系统线程，真正承载执行。","speech_text":"M は OS スレッドです。","expression":"thinking"},{"speaker":"亚托莉","text":"P 代表处理器上下文，管理本地运行队列。","speech_text":"P は実行コンテキストです。","expression":"curious"},{"speaker":"亚托莉","text":"三者合起来，才让任务排队、领取并执行。","speech_text":"三つがそろって、タスクの待機、受け取り、実行ができます。","expression":"calm"}],"choices":[{"id":"queue","label":"继续队列","text":"继续讲运行队列。"}]}}`,
 		},
 	}
 	out, err := NewEngine(Options{Model: model}).GenerateAct(context.Background(), agent.ActInput{
@@ -224,10 +244,10 @@ func TestGenerateActReusesActPlanCacheForSameSession(t *testing.T) {
 	model := &stubLLM{
 		contents: []string{
 			validPlanJSON(),
-			`{"decision":"continue","node":{"kind":"opening","title":"开场","summary":"建立 GMP 直觉","lines":[{"speaker":"亚托莉","text":"我们先认识 G、M、P。","speech_text":"まず G、M、P を見ましょう。","expression":"soft_smile"},{"speaker":"亚托莉","text":"G 是等待运行的任务。","speech_text":"G は待っているタスクです。","expression":"thinking"},{"speaker":"亚托莉","text":"M 和 P 会决定它怎么跑起来。","speech_text":"M と P がどう動くかを決めます。","expression":"curious"}],"choices":[{"id":"next","label":"继续","text":"继续第一幕。"}]}}`,
-			`{"decision":"continue","node":{"kind":"opening","title":"开场","summary":"建立 GMP 直觉","lines":[{"speaker":"亚托莉","text":"嗯，我们先别急着背。G、M、P 这三个名字，先把它们当成一组分工来看。","speech_text":"うん、まず急いで覚えなくて大丈夫です。G、M、P は役割の分担として見てみましょう。","expression":"soft_smile"},{"speaker":"亚托莉","text":"G 是等着被运行的小任务，像排队等叫号的人。","speech_text":"G は実行を待つ小さなタスクです。順番を待っている人みたいなものです。","expression":"thinking"},{"speaker":"亚托莉","text":"M 和 P 会一起决定它什么时候、在哪里真正跑起来。","speech_text":"M と P が、それをいつ、どこで実際に動かすかを決めます。","expression":"curious"}],"choices":[{"id":"next","label":"继续","text":"继续第一幕。"}]}}`,
-			`{"decision":"continue","node":{"kind":"lesson","title":"第一幕","summary":"GMP 协作","lines":[{"speaker":"亚托莉","text":"G 像任务，排队等待。","speech_text":"G はタスクのように待ちます。","expression":"soft_smile"},{"speaker":"亚托莉","text":"M 是真正工作的线程。","speech_text":"M は実際に働くスレッドです。","expression":"thinking"},{"speaker":"亚托莉","text":"P 管着能运行的上下文。","speech_text":"P は実行の文脈を管理します。","expression":"curious"}],"choices":[{"id":"queue","label":"看队列","text":"继续讲队列。"}]}}`,
-			`{"decision":"continue","node":{"kind":"lesson","title":"第一幕","summary":"GMP 协作","lines":[{"speaker":"亚托莉","text":"你可以把 G 想成等待安排的小任务，它不会自己决定何时上场。","speech_text":"G は、割り当てを待つ小さなタスクだと思ってください。自分だけでは出番を決めません。","expression":"soft_smile"},{"speaker":"亚托莉","text":"M 才是真正干活的系统线程，负责把任务跑起来。","speech_text":"M は実際に働く OS スレッドで、タスクを動かします。","expression":"thinking"},{"speaker":"亚托莉","text":"而 P 像工作台，管理可以运行的上下文和本地队列。这样三者才配合起来。","speech_text":"そして P は作業台のように、実行できる文脈とローカルキューを管理します。だから三つが協力できるんです。","expression":"curious"}],"choices":[{"id":"queue","label":"看队列","text":"继续讲队列。"}]}}`,
+			`{"decision":"continue","node":{"kind":"opening","title":"开场","summary":"建立 GMP 直觉","lines":[{"speaker":"亚托莉","text":"我们先认识 G、M、P。","speech_text":"まず G、M、P を見ましょう。","expression":"soft_smile"},{"speaker":"亚托莉","text":"G 是等待运行的任务。","speech_text":"G は待っているタスクです。","expression":"thinking"},{"speaker":"亚托莉","text":"M 负责承载真正执行。","speech_text":"M は実際の実行を担います。","expression":"curious"},{"speaker":"亚托莉","text":"P 会把任务和线程接起来。","speech_text":"P はタスクとスレッドをつなぎます。","expression":"calm"}],"choices":[{"id":"next","label":"继续","text":"继续第一幕。"}]}}`,
+			`{"decision":"continue","node":{"kind":"opening","title":"开场","summary":"建立 GMP 直觉","lines":[{"speaker":"亚托莉","text":"嗯，我们先别急着背。G、M、P 是一组分工。","speech_text":"うん、急いで覚えなくて大丈夫です。G、M、P は役割分担です。","expression":"soft_smile"},{"speaker":"亚托莉","text":"G 是等着被运行的小任务。","speech_text":"G は実行を待つ小さなタスクです。","expression":"thinking"},{"speaker":"亚托莉","text":"M 是真正干活的系统线程。","speech_text":"M は実際に働く OS スレッドです。","expression":"curious"},{"speaker":"亚托莉","text":"P 决定任务何时被交给 M。","speech_text":"P はタスクをいつ M に渡すか決めます。","expression":"calm"}],"choices":[{"id":"next","label":"继续","text":"继续第一幕。"}]}}`,
+			`{"decision":"continue","node":{"kind":"lesson","title":"第一幕","summary":"GMP 协作","lines":[{"speaker":"亚托莉","text":"G 像任务，排队等待。","speech_text":"G はタスクのように待ちます。","expression":"soft_smile"},{"speaker":"亚托莉","text":"M 是真正工作的线程。","speech_text":"M は実際に働くスレッドです。","expression":"thinking"},{"speaker":"亚托莉","text":"P 管着能运行的上下文。","speech_text":"P は実行の文脈を管理します。","expression":"curious"},{"speaker":"亚托莉","text":"三者一起决定调度顺序。","speech_text":"三つが一緒に順番を決めます。","expression":"calm"}],"choices":[{"id":"queue","label":"看队列","text":"继续讲队列。"}]}}`,
+			`{"decision":"continue","node":{"kind":"lesson","title":"第一幕","summary":"GMP 协作","lines":[{"speaker":"亚托莉","text":"你可以把 G 想成等待安排的小任务。","speech_text":"G は割り当てを待つ小さなタスクです。","expression":"soft_smile"},{"speaker":"亚托莉","text":"它不会自己决定何时上场。","speech_text":"自分だけでは出番を決めません。","expression":"thinking"},{"speaker":"亚托莉","text":"M 才是真正干活的系统线程。","speech_text":"M は実際に働く OS スレッドです。","expression":"curious"},{"speaker":"亚托莉","text":"P 像工作台，管理本地队列。","speech_text":"P は作業台のようにローカルキューを管理します。","expression":"calm"}],"choices":[{"id":"queue","label":"看队列","text":"继续讲队列。"}]}}`,
 		},
 	}
 	engine := NewEngine(Options{Model: model})
@@ -273,7 +293,7 @@ func TestGenerateActAcceptsCompleteFencedJSON(t *testing.T) {
 	model := &stubLLM{
 		contents: []string{
 			validPlanJSON(),
-			"```json\n" + `{"decision":"continue","node":{"kind":"lesson","title":"第一幕","summary":"GMP","lines":[{"speaker":"亚托莉","text":"G 是 goroutine。","speech_text":"G は goroutine です。","expression":"soft_smile"},{"speaker":"亚托莉","text":"M 是系统线程。","speech_text":"M は OS スレッドです。","expression":"thinking"},{"speaker":"亚托莉","text":"P 是处理器上下文。","speech_text":"P はコンテキストです。","expression":"curious"}],"choices":[{"id":"next","label":"继续","text":"继续下一点。"}]}}` + "\n```",
+			"```json\n" + `{"decision":"continue","node":{"kind":"lesson","title":"第一幕","summary":"GMP","lines":[{"speaker":"亚托莉","text":"G 是 goroutine。","speech_text":"G は goroutine です。","expression":"soft_smile"},{"speaker":"亚托莉","text":"M 是系统线程。","speech_text":"M は OS スレッドです。","expression":"thinking"},{"speaker":"亚托莉","text":"P 是处理器上下文。","speech_text":"P はコンテキストです。","expression":"curious"},{"speaker":"亚托莉","text":"这三者共同完成调度。","speech_text":"三つが一緒にスケジューリングします。","expression":"calm"}],"choices":[{"id":"next","label":"继续","text":"继续下一点。"}]}}` + "\n```",
 		},
 	}
 	_, err := NewEngine(Options{Model: model}).GenerateAct(context.Background(), agent.ActInput{

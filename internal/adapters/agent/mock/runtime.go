@@ -49,9 +49,10 @@ func (MockEngine) GenerateAct(_ context.Context, input agent.ActInput) (agent.Ac
 		Speaker:    speaker,
 		NextNodeID: fmt.Sprintf("lesson-%d", input.ActIndex+1),
 		Lines: []app.DialogueLine{
-			{Speaker: speaker, Text: "我们先把这一幕的直觉抓住：" + point + "。", SpeechText: mockSpeech("まず、この場面の直感をつかみましょう。", input.Request.Runtime.Language), Expression: "soft_smile"},
+			{Speaker: speaker, Text: "我们先把这一幕的直觉抓住。", SpeechText: mockSpeech("まず、この場面の直感をつかみましょう。", input.Request.Runtime.Language), Expression: "soft_smile"},
 			{Speaker: speaker, Text: "不要急着背定义，先看它解决了材料里的哪个问题。", SpeechText: mockSpeech("定義を急いで覚える前に、それが資料のどんな問題を解くのか見てみましょう。", input.Request.Runtime.Language), Expression: "thinking"},
-			{Speaker: speaker, Text: "接下来我会用一个小选择，让你决定我们从例子还是术语继续。", SpeechText: mockSpeech("次は小さな選択で、例から進むか用語から進むかを決めましょう。", input.Request.Runtime.Language), Expression: "curious"},
+			{Speaker: speaker, Text: "这一幕的主题会围绕材料要点展开。", SpeechText: mockSpeech("この場面のテーマは資料の要点に沿って進めます。", input.Request.Runtime.Language), Expression: "curious"},
+			{Speaker: speaker, Text: "接下来你可以选择从例子或术语继续。", SpeechText: mockSpeech("次は例から進むか用語から進むかを選べます。", input.Request.Runtime.Language), Expression: "calm"},
 		},
 		Choices: []app.SceneChoice{
 			{ID: "example", Label: "先看例子", Text: "先用例子讲清楚。", Hint: "更直观"},

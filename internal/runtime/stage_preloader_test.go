@@ -95,6 +95,78 @@ func TestPrepareWorkflowNodeVoiceWaitsAllLines(t *testing.T) {
 	}
 }
 
+func TestValidateGeneratedActDialogueUnitsRejectsChineseOverBudget(t *testing.T) {
+	t.Parallel()
+
+	node := app.TeachingWorkflowNode{
+		ID:    "lesson-1",
+		Kind:  "lesson",
+		Title: "第一幕",
+		Lines: []app.DialogueLine{
+			{Text: "这是第一条短台词。", SpeechText: "一つ目。", Expression: "soft_smile"},
+			{Text: "这是第二条短台词。", SpeechText: "二つ目。", Expression: "thinking"},
+			{Text: "这是第三条短台词。", SpeechText: "三つ目。", Expression: "curious"},
+			{Text: strings.Repeat("很", 53), SpeechText: "四つ目。", Expression: "calm"},
+		},
+	}
+
+	err := validateGeneratedActDialogueUnits(node, app.LanguagePlan{DisplayLanguage: "cn"})
+	if err == nil {
+		t.Fatal("validateGeneratedActDialogueUnits() expected error")
+	}
+	for _, want := range []string{"lesson-1", "lines[3].text", "53/52"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error missing %q: %v", want, err)
+		}
+	}
+}
+
+func TestValidateGeneratedActDialogueUnitsRejectsEnglishOverBudget(t *testing.T) {
+	t.Parallel()
+
+	node := app.TeachingWorkflowNode{
+		ID:    "lesson-en",
+		Kind:  "lesson",
+		Title: "Act",
+		Lines: []app.DialogueLine{
+			{Text: "First short line.", SpeechText: "First short line.", Expression: "soft_smile"},
+			{Text: "Second short line.", SpeechText: "Second short line.", Expression: "thinking"},
+			{Text: "Third short line.", SpeechText: "Third short line.", Expression: "curious"},
+			{Text: strings.Repeat("a", 121), SpeechText: "Fourth line.", Expression: "calm"},
+		},
+	}
+
+	err := validateGeneratedActDialogueUnits(node, app.LanguagePlan{DisplayLanguage: "en"})
+	if err == nil {
+		t.Fatal("validateGeneratedActDialogueUnits() expected error")
+	}
+	for _, want := range []string{"lesson-en", "lines[3].text", "121/120"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error missing %q: %v", want, err)
+		}
+	}
+}
+
+func TestValidateGeneratedActDialogueUnitsAcceptsFourShortLines(t *testing.T) {
+	t.Parallel()
+
+	node := app.TeachingWorkflowNode{
+		ID:    "opening",
+		Kind:  "opening",
+		Title: "开场",
+		Lines: []app.DialogueLine{
+			{Text: "我们先看核心直觉。", SpeechText: "一つ目。", Expression: "soft_smile"},
+			{Text: "再把术语慢慢拆开。", SpeechText: "二つ目。", Expression: "thinking"},
+			{Text: "然后用材料里的例子验证。", SpeechText: "三つ目。", Expression: "curious"},
+			{Text: "最后再回到你的选择。", SpeechText: "四つ目。", Expression: "calm"},
+		},
+	}
+
+	if err := validateGeneratedActDialogueUnits(node, app.LanguagePlan{DisplayLanguage: "zh-CN"}); err != nil {
+		t.Fatalf("validateGeneratedActDialogueUnits() error = %v", err)
+	}
+}
+
 func TestPreloadRemainingWorkflowNodesStopsWhenPendingNodeIsNotMaterialized(t *testing.T) {
 	store := &stageSessionStore{
 		record: app.SessionRecord{
@@ -436,7 +508,7 @@ func TestPreloadDoesNotExposeNodeBeforeVoiceReady(t *testing.T) {
 			next.ID == "lesson-1" &&
 			next.Status == app.WorkflowNodeStatusReady &&
 			next.VoiceStatus == app.WorkflowNodeStatusReady &&
-			len(next.Lines) == 3
+			len(next.Lines) == 4
 	}, "workflow should append ready node only after all line voices are done")
 }
 
@@ -632,6 +704,7 @@ func (e *stageBlockingAgent) GenerateAct(ctx context.Context, input agent.ActInp
 				{Speaker: speaker, Text: "G 是 goroutine。", SpeechText: "G は goroutine です。", Expression: "soft_smile"},
 				{Speaker: speaker, Text: "M 是系统线程。", SpeechText: "M は OS スレッドです。", Expression: "thinking"},
 				{Speaker: speaker, Text: "P 管理可执行上下文。", SpeechText: "P は実行できる文脈を管理します。", Expression: "curious"},
+				{Speaker: speaker, Text: "三者合起来决定任务如何运行。", SpeechText: "三つが一緒に動かし方を決めます。", Expression: "calm"},
 			},
 		},
 	}, nil
@@ -662,6 +735,7 @@ func (stageLanguageAgent) GenerateAct(context.Context, agent.ActInput) (agent.Ac
 				{Speaker: "亚托莉", Text: "こんにちは、今日は GMP を見ます。", SpeechText: "こんにちは、今日は GMP を見ます。", Expression: "soft_smile"},
 				{Speaker: "亚托莉", Text: "M はスレッドです。", SpeechText: "M はスレッドです。", Expression: "thinking"},
 				{Speaker: "亚托莉", Text: "P は文脈です。", SpeechText: "P は文脈です。", Expression: "curious"},
+				{Speaker: "亚托莉", Text: "G は待っている仕事です。", SpeechText: "G は待っている仕事です。", Expression: "calm"},
 			},
 		},
 	}, nil

@@ -109,8 +109,9 @@ func buildPrompt(req app.SceneGenerateRequest, body string) string {
 - opening 也是多轮对话，角色之间自然引入主题，不要像 PPT 开场白。
 
 lines 字段：
-- 每个 lesson 和 opening 节点必须包含 lines 数组（而不是 line 字段）。lines 是这条教学点多轮角色对话，每条包含 speaker（说话人）、text（屏幕显示文本）、speech_text（语音合成文本，如果和显示语言不同）、expression（表情，可选）。
-- 每幕的 lines 至少要有 6 条（角色之间有来有回），内容要自然——不是一个人在讲课，而是两个角色在讨论。追问者可以表示疑惑、要求举例、或者用另一种方式重述刚讲的概念。
+- 每个 lesson 和 opening 节点必须包含 lines 数组（而不是 line 字段）。lines 是视觉小说文本框逐次展示的单位，每条包含 speaker（说话人）、text（屏幕显示文本）、speech_text（语音合成文本，如果和显示语言不同）、expression（表情，可选）。
+- 每幕的 lines 至少要有 4 条短台词；summary 也要拆成多条短台词。内容要自然，但不能把整幕解释压缩成一条长句。
+- 中文或日文 lines[].text 不超过 52 个可见字符；英文 lines[].text 不超过 120 个可见字符。长解释必须拆成多条 lines，每条只推进一个小知识步。
 - 禁止使用“镜头”“线索”“骨架”“纹理”“光束”“舞台”等抽象比喻——像真人聊天一样说话。
 
 约束：
@@ -118,6 +119,7 @@ lines 字段：
 - learning_goal: %s
 - workflow.nodes[].lines[].text 必须使用屏幕显示语言：%s。
 - workflow.nodes[].lines[].speech_text 必须使用语音合成语言：%s。
+- workflow.nodes[].lines[].speech_text 必须与同序号 text 一一对应，不能把多条字幕合并成一条语音稿。
 - opening_message 控制在 2 到 4 句，像角色开场对白。
 - prompt.scene_instruction 必须携带材料摘要、互动约束和教学边界。
 - prompt.response_contract 必须要求 display_text 与 speech_text 分离，speech_text 做角色化发声本地化；每轮自由讨论回应 2 到 5 句。

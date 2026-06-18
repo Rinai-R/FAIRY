@@ -244,7 +244,9 @@ func buildActPrompt(input agent.ActInput, body string) string {
 
 剧情模式：
 - 你现在只负责生成教学工作流中的当前一幕。
-- 一幕至少 3 句对白。
+- opening/lesson 至少 4 条台词，summary 也要拆成多条短台词。
+- lines 是视觉小说文本框逐次展示的单位；lines[].text 必须是一屏文本框能直接显示的一句话或短句组，不是一整幕段落。
+- 中文或日文 lines[].text 不超过 52 个可见字符；英文 lines[].text 不超过 120 个可见字符。长解释必须拆成多条 lines，每条只推进一个小知识步。
 - 主线未讲完前，不要进入 free_discussion。
 - 非总结幕需要 1 到 3 个选项。
 - 结合角色设定、学习目标、已覆盖知识点和玩家上一轮选择推进。
@@ -255,7 +257,8 @@ func buildActPrompt(input agent.ActInput, body string) string {
 输出契约：
 - 只返回符合 schema 的 JSON。
 - node 必须完整，包含 id、kind、title、summary、speaker、lines。
-- lines 中每句都要有 speaker、text、speech_text、expression。
+- lines 中每条文本框单位都要有 speaker、text、speech_text、expression。
+- lines[].speech_text 必须与同序号 text 一一对应，不能把多条字幕合并成一条语音稿。
 - decision 只能是 continue、summarize、free_discussion。
 - 不要提到 OpenSpec、Superpowers、Phase 0、复杂度判定、AGENTS.md、RTK 或开发流程词汇。
 

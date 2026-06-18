@@ -114,6 +114,107 @@ func TestCompleteJSONDoesNotOverrideConfiguredResponseFormat(t *testing.T) {
 	}
 }
 
+func TestCompleteJSONAcceptsContentPartArray(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{
+					"content": []map[string]any{{
+						"type": "text",
+						"text": `{"ok":true}`,
+					}},
+				},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	content, err := NewAdapter(Options{
+		Profile: llm.Profile{
+			Endpoint: server.URL,
+			APIKey:   "secret-key",
+			Model:    "deepseek-chat",
+		},
+	}).CompleteJSON(context.Background(), llm.Request{
+		Messages: []llm.Message{{Role: "user", Content: "user"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteJSON() error = %v", err)
+	}
+	if content != `{"ok":true}` {
+		t.Fatalf("content = %q", content)
+	}
+}
+
+func TestCompleteJSONRejectsReasoningContentWithoutMessageContent(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{
+					"content":           "",
+					"reasoning_content": `{"ok":true}`,
+				},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	_, err := NewAdapter(Options{
+		Profile: llm.Profile{
+			Endpoint: server.URL,
+			APIKey:   "secret-key",
+			Model:    "deepseek-chat",
+		},
+	}).CompleteJSON(context.Background(), llm.Request{
+		Messages: []llm.Message{{Role: "user", Content: "user"}},
+	})
+	if err == nil {
+		t.Fatal("CompleteJSON() error = nil")
+	}
+	if !strings.Contains(err.Error(), "reasoning_content") {
+		t.Fatalf("error = %q, want reasoning_content", err)
+	}
+}
+
+func TestCompleteJSONReportsRefusal(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{
+					"content": "",
+					"refusal": "cannot comply",
+				},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	_, err := NewAdapter(Options{
+		Profile: llm.Profile{
+			Endpoint: server.URL,
+			APIKey:   "secret-key",
+			Model:    "deepseek-chat",
+		},
+	}).CompleteJSON(context.Background(), llm.Request{
+		Messages: []llm.Message{{Role: "user", Content: "user"}},
+	})
+	if err == nil {
+		t.Fatal("CompleteJSON() error = nil")
+	}
+	if !strings.Contains(err.Error(), "拒绝内容") {
+		t.Fatalf("error = %q, want refusal", err)
+	}
+}
+
 func TestValidateFailsExplicitlyWhenMissingFields(t *testing.T) {
 	t.Parallel()
 

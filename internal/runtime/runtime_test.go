@@ -275,8 +275,8 @@ func TestGenerateSceneMergesPlannedWorkflowNodeScaffold(t *testing.T) {
 	if node.ID == "" || node.Kind == "" || node.Title == "" {
 		t.Fatalf("merged node scaffold missing: %+v", node)
 	}
-	if len(node.Lines) != 3 {
-		t.Fatalf("lines = %d, want 3", len(node.Lines))
+	if len(node.Lines) != 4 {
+		t.Fatalf("lines = %d, want 4", len(node.Lines))
 	}
 }
 
@@ -1144,6 +1144,7 @@ func (leakingAgent) GenerateAct(context.Context, agent.ActInput) (agent.ActOutpu
 				{Speaker: "亚托莉", Text: "第一句", SpeechText: "第一句", Expression: "soft_smile"},
 				{Speaker: "亚托莉", Text: "第二句", SpeechText: "第二句", Expression: "soft_smile"},
 				{Speaker: "亚托莉", Text: "第三句", SpeechText: "第三句", Expression: "soft_smile"},
+				{Speaker: "亚托莉", Text: "第四句", SpeechText: "第四句", Expression: "calm"},
 			},
 		},
 	}, nil
@@ -1171,6 +1172,7 @@ func (scaffoldlessAgent) GenerateAct(context.Context, agent.ActInput) (agent.Act
 				{Speaker: "亚托莉", Text: "第一句", SpeechText: "一つ目", Expression: "soft_smile"},
 				{Speaker: "亚托莉", Text: "第二句", SpeechText: "二つ目", Expression: "thinking"},
 				{Speaker: "亚托莉", Text: "第三句", SpeechText: "三つ目", Expression: "curious"},
+				{Speaker: "亚托莉", Text: "第四句", SpeechText: "四つ目", Expression: "calm"},
 			},
 		},
 	}, nil
@@ -1200,6 +1202,7 @@ func (bilingualAgent) GenerateAct(context.Context, agent.ActInput) (agent.ActOut
 				{Speaker: "亚托莉", Text: "第一句", SpeechText: "一つ目", Expression: "soft_smile"},
 				{Speaker: "亚托莉", Text: "第二句", SpeechText: "二つ目", Expression: "soft_smile"},
 				{Speaker: "亚托莉", Text: "第三句", SpeechText: "三つ目", Expression: "soft_smile"},
+				{Speaker: "亚托莉", Text: "第四句", SpeechText: "四つ目", Expression: "calm"},
 			},
 		},
 	}, nil
@@ -1238,6 +1241,7 @@ func (e *recordingAgentEngine) GenerateAct(_ context.Context, input agent.ActInp
 				{Speaker: character.DisplayName, Text: "我们按角色资源来解释。", SpeechText: "角色資源に従って説明します。", Expression: "soft_smile"},
 				{Speaker: character.DisplayName, Text: "第二句。", SpeechText: "二つ目。", Expression: "soft_smile"},
 				{Speaker: character.DisplayName, Text: "第三句。", SpeechText: "三つ目。", Expression: "soft_smile"},
+				{Speaker: character.DisplayName, Text: "第四句。", SpeechText: "四つ目。", Expression: "calm"},
 			},
 		},
 	}, nil

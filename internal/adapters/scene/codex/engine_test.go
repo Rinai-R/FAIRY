@@ -27,6 +27,10 @@ func TestBuildPromptRequiresPlayerDrivenTeachingScene(t *testing.T) {
 		"不要替玩家发言",
 		"JSON schema 中 workflow.nodes 是内部字段名",
 		"场景必须围绕文档内容和学习目标",
+		"lines 是视觉小说文本框逐次展示的单位",
+		"中文或日文 lines[].text 不超过 52 个可见字符",
+		"英文 lines[].text 不超过 120 个可见字符",
+		"speech_text 必须与同序号 text 一一对应",
 
 		"speech_text 做角色化发声本地化",
 		"只返回符合 schema 的 JSON 内容",

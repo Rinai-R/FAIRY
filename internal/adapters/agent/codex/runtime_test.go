@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Rinai-R/FAIRY/internal/adapters/agent"
 	"github.com/Rinai-R/FAIRY/internal/app"
 )
 
@@ -85,6 +86,32 @@ func TestLanguageContractDefaultsToDisplayLanguage(t *testing.T) {
 	} {
 		if !strings.Contains(contract, want) {
 			t.Fatalf("language contract missing %q:\n%s", want, contract)
+		}
+	}
+}
+
+func TestBuildActPromptDefinesLinesAsTextboxUnits(t *testing.T) {
+	t.Parallel()
+
+	prompt := buildActPrompt(agent.ActInput{
+		Request: app.SceneGenerateRequest{
+			Characters: []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+			Runtime: app.RuntimeConfig{
+				Language: app.LanguagePlan{DisplayLanguage: "zh-CN", SpeechLanguage: "ja-JP"},
+			},
+		},
+	}, `{"planned_node":{"id":"lesson-1"}}`)
+
+	for _, want := range []string{
+		"lines 是视觉小说文本框逐次展示的单位",
+		"不是一整幕段落",
+		"中文或日文 lines[].text 不超过 52 个可见字符",
+		"英文 lines[].text 不超过 120 个可见字符",
+		"speech_text 必须与同序号 text 一一对应",
+		"不能把多条字幕合并成一条语音稿",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("act prompt missing %q:\n%s", want, prompt)
 		}
 	}
 }
