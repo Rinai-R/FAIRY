@@ -16,6 +16,11 @@ import (
 
 type SessionStore interface {
 	BeginScene(req app.SceneGenerateRequest, resp app.SceneGenerateResponse) (app.SessionRecord, error)
+	CreateGeneration(record app.SessionRecord) (app.SessionRecord, error)
+	CompleteGeneration(sessionID string, resp app.SceneGenerateResponse) (app.SessionRecord, error)
+	FailGeneration(sessionID string, message string) (app.SessionRecord, error)
+	GenerationByFingerprint(fingerprint string) (app.SessionRecord, bool, error)
+	ListGeneration(status string) ([]app.SessionRecord, error)
 	AppendTurn(req app.TurnRequest, resp app.TurnResponse) (app.SessionRecord, error)
 	AdvanceWorkflow(req app.WorkflowAdvanceRequest) (app.SessionRecord, error)
 	AttachWorkflowAudio(sessionID string, nodeID string, audio app.AudioResult) (app.SessionRecord, error)
@@ -47,64 +52,146 @@ func (s *FileSessionStore) BeginScene(req app.SceneGenerateRequest, resp app.Sce
 		return app.SessionRecord{}, err
 	}
 
-	now := time.Now().UTC()
-	session := resp.Session
-	if session.ID == "" {
-		session.ID = resp.Scene.ID + ":default"
-	}
-	if session.UserID == "" {
-		session.UserID = "default"
-	}
-	if session.ActiveCharacterID == "" && len(req.Characters) > 0 {
-		session.ActiveCharacterID = req.Characters[0].ID
-	}
-	if len(session.ParticipantIDs) == 0 {
-		session.ParticipantIDs = characterIDs(req.Characters)
-	}
-
-	scene := resp.Scene
-	if scene.LastActiveAt.IsZero() {
-		scene.LastActiveAt = now
-	}
-
-	record := app.SessionRecord{
-		Session:     session,
-		Scene:       scene,
-		Teaching:    teachingSnapshot(req, resp.Prompt),
-		Characters:  req.Characters,
-		Interaction: resp.Interaction,
-		Workflow:    resp.Workflow,
-		Relation:    resp.Relation,
-		UpdatedAt:   now,
-	}
-	for index := range record.Workflow.Nodes {
-		syncWorkflowNodeLegacyFields(&record.Workflow.Nodes[index])
-	}
-	ensureWorkflowHistory(&record.Workflow, now)
-	if record.Relation.UserID == "" {
-		record.Relation.UserID = session.UserID
-	}
-	if record.Relation.UpdatedAt.IsZero() {
-		record.Relation.UpdatedAt = now
-	}
-	if resp.OpeningMessage != "" {
-		record.Messages = append(record.Messages, app.Message{
-			ID:          messageID("scene"),
-			SessionID:   session.ID,
-			Role:        "assistant",
-			CharacterID: session.ActiveCharacterID,
-			Text:        resp.OpeningMessage,
-			DisplayText: resp.OpeningMessage,
-			SpeechText:  resp.OpeningMessage,
-			Emotion:     "welcoming",
-			Expression:  "soft_smile",
-			Motion:      "opening",
-			CreatedAt:   now,
-		})
-	}
-
-	state[session.ID] = record
+	record := sceneRecordFromResponse(req, resp, time.Now().UTC())
+	state[record.Session.ID] = record
 	return record, s.save(state)
+}
+
+func (s *FileSessionStore) CreateGeneration(record app.SessionRecord) (app.SessionRecord, error) {
+	if strings.TrimSpace(record.Session.ID) == "" {
+		return app.SessionRecord{}, errors.New("session.id 不能为空")
+	}
+	if strings.TrimSpace(record.Generation.Fingerprint) == "" {
+		return app.SessionRecord{}, errors.New("generation.fingerprint 不能为空")
+	}
+	if record.Generation.Status != app.SceneGenerationStatusGenerating {
+		return app.SessionRecord{}, fmt.Errorf("generation.status 必须是 generating: %s", record.Generation.Status)
+	}
+	if len(record.Generation.Request.Characters) == 0 || strings.TrimSpace(record.Generation.Request.Characters[0].ID) == "" {
+		return app.SessionRecord{}, errors.New("generation.request.characters[0].id 不能为空")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.load()
+	if err != nil {
+		return app.SessionRecord{}, err
+	}
+	if existing, ok := state[record.Session.ID]; ok && existing.Generation.Status == app.SceneGenerationStatusGenerating {
+		return existing, nil
+	}
+	now := time.Now().UTC()
+	if record.Generation.StartedAt.IsZero() {
+		record.Generation.StartedAt = now
+	}
+	record.UpdatedAt = now
+	state[record.Session.ID] = record
+	return record, s.save(state)
+}
+
+func (s *FileSessionStore) CompleteGeneration(sessionID string, resp app.SceneGenerateResponse) (app.SessionRecord, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return app.SessionRecord{}, errors.New("session_id 不能为空")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.load()
+	if err != nil {
+		return app.SessionRecord{}, err
+	}
+	existing, ok := state[sessionID]
+	if !ok {
+		return app.SessionRecord{}, fmt.Errorf("session 不存在: %s", sessionID)
+	}
+	if existing.Generation.Status != app.SceneGenerationStatusGenerating {
+		return app.SessionRecord{}, fmt.Errorf("generation.status 必须是 generating: %s", existing.Generation.Status)
+	}
+
+	resp.Session.ID = sessionID
+	record := sceneRecordFromResponse(existing.Generation.Request, resp, time.Now().UTC())
+	record.Generation = existing.Generation
+	record.Generation.Status = app.SceneGenerationStatusReady
+	record.Generation.Error = ""
+	record.Generation.CompletedAt = record.UpdatedAt
+	state[sessionID] = record
+	return record, s.save(state)
+}
+
+func (s *FileSessionStore) FailGeneration(sessionID string, message string) (app.SessionRecord, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return app.SessionRecord{}, errors.New("session_id 不能为空")
+	}
+	if strings.TrimSpace(message) == "" {
+		return app.SessionRecord{}, errors.New("generation error 不能为空")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.load()
+	if err != nil {
+		return app.SessionRecord{}, err
+	}
+	record, ok := state[sessionID]
+	if !ok {
+		return app.SessionRecord{}, fmt.Errorf("session 不存在: %s", sessionID)
+	}
+	now := time.Now().UTC()
+	record.Generation.Status = app.SceneGenerationStatusFailed
+	record.Generation.Error = message
+	record.Generation.CompletedAt = now
+	record.UpdatedAt = now
+	state[sessionID] = record
+	return record, s.save(state)
+}
+
+func (s *FileSessionStore) GenerationByFingerprint(fingerprint string) (app.SessionRecord, bool, error) {
+	fingerprint = strings.TrimSpace(fingerprint)
+	if fingerprint == "" {
+		return app.SessionRecord{}, false, errors.New("generation.fingerprint 不能为空")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.load()
+	if err != nil {
+		return app.SessionRecord{}, false, err
+	}
+	for _, record := range state {
+		if record.Generation.Fingerprint == fingerprint && record.Generation.Status == app.SceneGenerationStatusGenerating {
+			return record, true, nil
+		}
+	}
+	return app.SessionRecord{}, false, nil
+}
+
+func (s *FileSessionStore) ListGeneration(status string) ([]app.SessionRecord, error) {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return nil, errors.New("generation.status 不能为空")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.load()
+	if err != nil {
+		return nil, err
+	}
+	records := make([]app.SessionRecord, 0)
+	for _, record := range state {
+		if record.Generation.Status == status {
+			records = append(records, record)
+		}
+	}
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].UpdatedAt.After(records[j].UpdatedAt)
+	})
+	return records, nil
 }
 
 func (s *FileSessionStore) AdvanceWorkflow(req app.WorkflowAdvanceRequest) (app.SessionRecord, error) {
@@ -136,6 +223,14 @@ func (s *FileSessionStore) AdvanceWorkflow(req app.WorkflowAdvanceRequest) (app.
 	if next.ID == "" {
 		return app.SessionRecord{}, fmt.Errorf("workflow 节点不存在: %s", req.NextNodeID)
 	}
+	var selectedChoice app.SceneChoice
+	if req.ChoiceID != "" {
+		choice, _, ok := workflowChoiceByID(current, req.ChoiceID)
+		if !ok {
+			return app.SessionRecord{}, fmt.Errorf("当前节点不包含选项: %s", req.ChoiceID)
+		}
+		selectedChoice = choice
+	}
 	if req.ChoiceID != "" && !nodeHasChoice(current, req.ChoiceID) {
 		return app.SessionRecord{}, fmt.Errorf("当前节点不包含选项: %s", req.ChoiceID)
 	}
@@ -146,7 +241,9 @@ func (s *FileSessionStore) AdvanceWorkflow(req app.WorkflowAdvanceRequest) (app.
 	if replay && !workflowVisited(record.Workflow, req.NextNodeID) {
 		return app.SessionRecord{}, fmt.Errorf("只能回溯到已访问节点: %s", req.NextNodeID)
 	}
-	if !replay && current.NextNodeID != "" && req.NextNodeID != current.NextNodeID {
+	choiceTarget := strings.TrimSpace(selectedChoice.TargetNodeID)
+	choiceAdvance := req.ChoiceID != "" && choiceTarget != "" && req.NextNodeID == choiceTarget
+	if !replay && current.NextNodeID != "" && req.NextNodeID != current.NextNodeID && !choiceAdvance {
 		return app.SessionRecord{}, fmt.Errorf("workflow 不允许从 %s 跳转到 %s", current.ID, req.NextNodeID)
 	}
 
@@ -432,6 +529,64 @@ func teachingSnapshot(req app.SceneGenerateRequest, prompt app.PromptConfig) app
 		Runtime:      req.Runtime,
 		Variables:    cloneStringMap(req.Variables),
 	}
+}
+
+func sceneRecordFromResponse(req app.SceneGenerateRequest, resp app.SceneGenerateResponse, now time.Time) app.SessionRecord {
+	session := resp.Session
+	if session.ID == "" {
+		session.ID = resp.Scene.ID + ":default"
+	}
+	if session.UserID == "" {
+		session.UserID = "default"
+	}
+	if session.ActiveCharacterID == "" && len(req.Characters) > 0 {
+		session.ActiveCharacterID = req.Characters[0].ID
+	}
+	if len(session.ParticipantIDs) == 0 {
+		session.ParticipantIDs = characterIDs(req.Characters)
+	}
+
+	scene := resp.Scene
+	if scene.LastActiveAt.IsZero() {
+		scene.LastActiveAt = now
+	}
+
+	record := app.SessionRecord{
+		Session:     session,
+		Scene:       scene,
+		Teaching:    teachingSnapshot(req, resp.Prompt),
+		Characters:  req.Characters,
+		Interaction: resp.Interaction,
+		Workflow:    resp.Workflow,
+		Relation:    resp.Relation,
+		UpdatedAt:   now,
+	}
+	for index := range record.Workflow.Nodes {
+		syncWorkflowNodeLegacyFields(&record.Workflow.Nodes[index])
+	}
+	ensureWorkflowHistory(&record.Workflow, now)
+	if record.Relation.UserID == "" {
+		record.Relation.UserID = session.UserID
+	}
+	if record.Relation.UpdatedAt.IsZero() {
+		record.Relation.UpdatedAt = now
+	}
+	if resp.OpeningMessage != "" {
+		record.Messages = append(record.Messages, app.Message{
+			ID:          messageID("scene"),
+			SessionID:   session.ID,
+			Role:        "assistant",
+			CharacterID: session.ActiveCharacterID,
+			Text:        resp.OpeningMessage,
+			DisplayText: resp.OpeningMessage,
+			SpeechText:  resp.OpeningMessage,
+			Emotion:     "welcoming",
+			Expression:  "soft_smile",
+			Motion:      "opening",
+			CreatedAt:   now,
+		})
+	}
+	return record
 }
 
 func updateTeachingSnapshot(current app.TeachingSnapshot, req app.TurnRequest) app.TeachingSnapshot {

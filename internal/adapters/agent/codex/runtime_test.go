@@ -105,8 +105,9 @@ func TestBuildActPromptDefinesLinesAsTextboxUnits(t *testing.T) {
 	for _, want := range []string{
 		"lines 是视觉小说文本框逐次展示的单位",
 		"不是一整幕段落",
-		"中文或日文 lines[].text 不超过 52 个可见字符",
-		"英文 lines[].text 不超过 120 个可见字符",
+		"中文或日文单条 lines[].text 不超过 52 个可见字符",
+		"英文单条 lines[].text 不超过 120 个可见字符",
+		"不限制章节数量",
 		"speech_text 必须与同序号 text 一一对应",
 		"不能把多条字幕合并成一条语音稿",
 	} {

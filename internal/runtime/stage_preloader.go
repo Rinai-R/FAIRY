@@ -66,7 +66,18 @@ func (r *Runtime) prepareWorkflowNodeActAndVoice(
 	workflow app.TeachingWorkflow,
 	node app.TeachingWorkflowNode,
 ) (app.TeachingWorkflowNode, agent.ActDecision, error) {
-	preparedNode, decision, err := r.generateWorkflowNodeAct(ctx, request, session, workflow, node)
+	return r.prepareWorkflowNodeActAndVoiceWithChoice(ctx, request, session, workflow, node, app.SceneChoice{})
+}
+
+func (r *Runtime) prepareWorkflowNodeActAndVoiceWithChoice(
+	ctx context.Context,
+	request app.SceneGenerateRequest,
+	session app.Session,
+	workflow app.TeachingWorkflow,
+	node app.TeachingWorkflowNode,
+	choice app.SceneChoice,
+) (app.TeachingWorkflowNode, agent.ActDecision, error) {
+	preparedNode, decision, err := r.generateWorkflowNodeAct(ctx, request, session, workflow, node, choice)
 	if err != nil {
 		preparedNode.Status = app.WorkflowNodeStatusError
 		preparedNode.VoiceStatus = app.WorkflowNodeStatusError
@@ -89,9 +100,11 @@ func (r *Runtime) generateWorkflowNodeAct(
 	session app.Session,
 	workflow app.TeachingWorkflow,
 	node app.TeachingWorkflowNode,
+	choice app.SceneChoice,
 ) (app.TeachingWorkflowNode, agent.ActDecision, error) {
 	if !nodeNeedsGeneratedDialogue(node) {
 		syncWorkflowNodeLegacyFields(&node)
+		assignChoiceTargets(&node)
 		if err := validateGeneratedActDialogueUnits(node, request.Runtime.Language); err != nil {
 			return node, normalizeActDecision(node, agent.ActDecisionContinue), err
 		}
@@ -114,12 +127,14 @@ func (r *Runtime) generateWorkflowNodeAct(
 		PreviousNode:  previous,
 		CoveredPoints: coveredTeachingPoints(workflow.Nodes, node.ID),
 		ActIndex:      index,
+		Choice:        choice,
 	})
 	if err != nil {
 		return node, "", err
 	}
 	decision := normalizeActDecision(node, out.Decision)
 	merged := mergeGeneratedActNode(node, out.Node)
+	assignChoiceTargets(&merged)
 	merged.Decision = string(decision)
 	if err := validateGeneratedActLanguage(merged, request.Runtime.Language); err != nil {
 		return node, decision, err
@@ -184,6 +199,8 @@ func minimumGeneratedActLines(kind string) int {
 	switch strings.TrimSpace(kind) {
 	case "opening", "lesson":
 		return 4
+	case "choice":
+		return 2
 	default:
 		return 2
 	}
@@ -598,14 +615,14 @@ func workflowNodeDialogueLines(node app.TeachingWorkflowNode, character app.Char
 }
 
 func nodeNeedsGeneratedDialogue(node app.TeachingWorkflowNode) bool {
-	if node.Kind != "opening" && node.Kind != "lesson" && node.Kind != "summary" {
+	if node.Kind != "opening" && node.Kind != "lesson" && node.Kind != "summary" && node.Kind != "choice" {
 		return false
 	}
 	return len(node.Lines) == 0
 }
 
 func nodeNeedsPreparedVoice(node app.TeachingWorkflowNode) bool {
-	return node.Kind == "opening" || node.Kind == "lesson" || node.Kind == "summary"
+	return node.Kind == "opening" || node.Kind == "lesson" || node.Kind == "summary" || node.Kind == "choice"
 }
 
 func workflowNodeActIndex(nodes []app.TeachingWorkflowNode, nodeID string) int {
@@ -627,7 +644,7 @@ func workflowNodeActIndex(nodes []app.TeachingWorkflowNode, nodeID string) int {
 func countTeachingActs(nodes []app.TeachingWorkflowNode) int {
 	count := 0
 	for _, node := range nodes {
-		if node.Kind == "opening" || node.Kind == "lesson" || node.Kind == "summary" {
+		if node.Kind == "opening" || node.Kind == "lesson" || node.Kind == "summary" || node.Kind == "choice" {
 			count++
 		}
 	}
@@ -692,6 +709,69 @@ func mergeGeneratedActNode(planned app.TeachingWorkflowNode, generated app.Teach
 	}
 	syncWorkflowNodeLegacyFields(&planned)
 	return planned
+}
+
+func assignChoiceTargets(node *app.TeachingWorkflowNode) {
+	if node == nil || strings.TrimSpace(node.ID) == "" || len(node.Choices) == 0 {
+		return
+	}
+	seen := map[string]int{}
+	for index := range node.Choices {
+		if strings.TrimSpace(node.Choices[index].ID) == "" {
+			node.Choices[index].ID = fmt.Sprintf("choice-%d", index+1)
+		}
+		if strings.TrimSpace(node.Choices[index].TargetNodeID) == "" {
+			base := choiceBranchNodeID(*node, node.Choices[index], index)
+			if count := seen[base]; count > 0 {
+				node.Choices[index].TargetNodeID = fmt.Sprintf("%s-%d", base, count+1)
+			} else {
+				node.Choices[index].TargetNodeID = base
+			}
+			seen[base]++
+			continue
+		}
+		seen[node.Choices[index].TargetNodeID]++
+	}
+}
+
+func choiceBranchNodeID(node app.TeachingWorkflowNode, choice app.SceneChoice, index int) string {
+	base := firstNonEmpty(choice.ID, choice.Label, fmt.Sprintf("choice-%d", index+1))
+	return strings.TrimSpace(node.ID) + "-choice-" + stableWorkflowIDPart(base, fmt.Sprintf("choice-%d", index+1))
+}
+
+func stableWorkflowIDPart(value string, fallback string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	lastDash := false
+	for _, char := range value {
+		if unicode.IsLetter(char) || unicode.IsDigit(char) {
+			builder.WriteRune(char)
+			lastDash = false
+			continue
+		}
+		if !lastDash && builder.Len() > 0 {
+			builder.WriteByte('-')
+			lastDash = true
+		}
+	}
+	part := strings.Trim(builder.String(), "-")
+	if part == "" {
+		part = fallback
+	}
+	return part
+}
+
+func workflowChoiceByID(node app.TeachingWorkflowNode, choiceID string) (app.SceneChoice, int, bool) {
+	choiceID = strings.TrimSpace(choiceID)
+	if choiceID == "" {
+		return app.SceneChoice{}, -1, false
+	}
+	for index, choice := range node.Choices {
+		if choice.ID == choiceID {
+			return choice, index, true
+		}
+	}
+	return app.SceneChoice{}, -1, false
 }
 
 func normalizeActDecision(node app.TeachingWorkflowNode, decision agent.ActDecision) agent.ActDecision {

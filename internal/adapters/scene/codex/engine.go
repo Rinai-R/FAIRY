@@ -103,15 +103,15 @@ func buildPrompt(req app.SceneGenerateRequest, body string) string {
 
 结构要求：
 - workflow.nodes 的结构是：opening → lesson-1 → free-1 → lesson-2 → free-2 → ... → lesson-N → free-N → summary → free-discussion
-- 每个 lesson 节点覆盖材料中的一个教学点（按文档的章节/论证结构提取），lesson 的数量取决于材料长度（通常 3-8 个）。
+- 每个 lesson 节点覆盖材料中的一个教学点（按文档的章节/论证结构提取），lesson 的数量取决于材料长度和学习目标；长材料可以生成更多 lesson，不设硬性上限。
 - 每个 lesson 节点后面紧跟一个 free_discussion 节点，玩家可以针对刚讲的内容自由提问，也可以点跳过进入下一幕。
 - 最后的 free-discussion 是全局自由讨论，玩家可以讨论任何与材料相关的内容。
 - opening 也是多轮对话，角色之间自然引入主题，不要像 PPT 开场白。
 
 lines 字段：
 - 每个 lesson 和 opening 节点必须包含 lines 数组（而不是 line 字段）。lines 是视觉小说文本框逐次展示的单位，每条包含 speaker（说话人）、text（屏幕显示文本）、speech_text（语音合成文本，如果和显示语言不同）、expression（表情，可选）。
-- 每幕的 lines 至少要有 4 条短台词；summary 也要拆成多条短台词。内容要自然，但不能把整幕解释压缩成一条长句。
-- 中文或日文 lines[].text 不超过 52 个可见字符；英文 lines[].text 不超过 120 个可见字符。长解释必须拆成多条 lines，每条只推进一个小知识步。
+- 每幕的 lines 至少要有 4 条短台词；summary 也要拆成多条短台词。章节可以多，台词可以多，但不能把整幕解释压缩成一条长句。
+- 中文或日文单条 lines[].text 不超过 52 个可见字符；英文单条 lines[].text 不超过 120 个可见字符。这个限制只针对单条 line，不限制 lesson/chapter 总数；长解释必须拆成更多 lines 或更多 lesson，每条只推进一个小知识步。
 - 禁止使用“镜头”“线索”“骨架”“纹理”“光束”“舞台”等抽象比喻——像真人聊天一样说话。
 
 约束：

@@ -1294,8 +1294,8 @@ export function App() {
       return true;
     }
     setLastAudioURL(urls[0]);
-    appendLog("info", `播放预生成剧情语音：${urls.length} 段`);
-    await playAudioQueue(urls);
+    appendLog("info", `播放预生成剧情语音：第 1 / ${urls.length} 段`);
+    playAudio(urls[0]);
     return true;
   }
 

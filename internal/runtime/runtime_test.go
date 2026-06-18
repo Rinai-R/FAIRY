@@ -340,6 +340,69 @@ func TestAdvanceWorkflowPersistsCurrentNode(t *testing.T) {
 	}
 }
 
+func TestAdvanceWorkflowChoiceCreatesBranchNode(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Agents: map[agent.Provider]agent.Engine{
+			agent.ProviderMock: agentmock.MockEngine{},
+		},
+		Scenes: map[scene.Provider]scene.Engine{
+			scene.ProviderMock: scenemock.Engine{},
+		},
+		Voices: map[voice.Provider]voice.Engine{
+			voice.ProviderMock: voicemock.MockEngine{},
+		},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: voice.ProviderMock,
+		DefaultScene: scene.ProviderMock,
+		Sessions:     store,
+		Logger:       slog.Default(),
+	})
+
+	resp, err := rt.GenerateScene(context.Background(), app.SceneGenerateRequest{
+		Topic:        "分支剧情",
+		DocumentText: "分支剧情应该让每个选择进入不同文本，再回到材料主线。",
+		Characters:   []app.Character{{ID: "tutor", DisplayName: "Tutor"}},
+	})
+	if err != nil {
+		t.Fatalf("GenerateScene() error = %v", err)
+	}
+	opening := workflowNodeByID(resp.Workflow.Nodes, "opening")
+	if len(opening.Choices) == 0 {
+		t.Fatal("opening choices is empty")
+	}
+	choice := opening.Choices[0]
+	if choice.TargetNodeID == "" {
+		t.Fatal("choice target_node_id is empty")
+	}
+	mainlineNext := opening.NextNodeID
+
+	advanced, err := rt.AdvanceWorkflow(context.Background(), app.WorkflowAdvanceRequest{
+		SessionID:     resp.Session.ID,
+		CurrentNodeID: "opening",
+		NextNodeID:    mainlineNext,
+		ChoiceID:      choice.ID,
+	})
+	if err != nil {
+		t.Fatalf("AdvanceWorkflow(choice) error = %v", err)
+	}
+	if !advanced.Ready || advanced.Node.ID != choice.TargetNodeID {
+		t.Fatalf("advanced node = %q ready=%v, want branch %q", advanced.Node.ID, advanced.Ready, choice.TargetNodeID)
+	}
+	if advanced.Node.Kind != "choice" {
+		t.Fatalf("branch kind = %q, want choice", advanced.Node.Kind)
+	}
+	if advanced.Node.NextNodeID != mainlineNext {
+		t.Fatalf("branch next_node_id = %q, want %q", advanced.Node.NextNodeID, mainlineNext)
+	}
+	if !strings.Contains(advanced.Node.Summary, choice.Label) {
+		t.Fatalf("branch summary = %q, want choice label %q", advanced.Node.Summary, choice.Label)
+	}
+	if len(advanced.Node.Lines) < 2 || advanced.Node.Lines[0].Audio.Format == "" {
+		t.Fatalf("branch missing prepared lines/audio: %+v", advanced.Node)
+	}
+}
+
 func TestAdvanceWorkflowWaitsForPendingNode(t *testing.T) {
 	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
 	rt := runtime.NewRuntime(runtime.Dependencies{
@@ -887,6 +950,208 @@ func TestUpdateWorkflowNodePersistsReadyAudio(t *testing.T) {
 	}
 }
 
+func TestFileSessionStoreGenerationLifecycle(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	request := app.SceneGenerateRequest{
+		Topic:        "调度器",
+		DocumentText: "GMP 调度模型",
+		LearningGoal: "理解 GMP",
+		Characters:   []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+		Runtime:      app.RuntimeConfig{SceneProvider: "mock"},
+	}
+	record := app.SessionRecord{
+		Session: app.Session{
+			ID:                "generation:one",
+			UserID:            "default",
+			ActiveCharacterID: "atri",
+			ParticipantIDs:    []string{"atri"},
+		},
+		Scene:      app.Scene{ID: "generation:one", Title: "调度器"},
+		Characters: request.Characters,
+		Generation: app.SceneGeneration{
+			Status:      app.SceneGenerationStatusGenerating,
+			Fingerprint: "fp-1",
+			Request:     request,
+		},
+	}
+	if _, err := store.CreateGeneration(record); err != nil {
+		t.Fatalf("CreateGeneration() error = %v", err)
+	}
+	found, ok, err := store.GenerationByFingerprint("fp-1")
+	if err != nil {
+		t.Fatalf("GenerationByFingerprint() error = %v", err)
+	}
+	if !ok || found.Session.ID != "generation:one" {
+		t.Fatalf("GenerationByFingerprint() = (%q, %v), want generation:one true", found.Session.ID, ok)
+	}
+	generating, err := store.ListGeneration(app.SceneGenerationStatusGenerating)
+	if err != nil {
+		t.Fatalf("ListGeneration() error = %v", err)
+	}
+	if len(generating) != 1 {
+		t.Fatalf("generating records = %d, want 1", len(generating))
+	}
+
+	resp := app.SceneGenerateResponse{
+		Scene:   app.Scene{ID: "lesson", Title: "课程"},
+		Session: app.Session{UserID: "default", ActiveCharacterID: "atri"},
+		Workflow: app.TeachingWorkflow{
+			ID:            "wf",
+			CurrentNodeID: "opening",
+			Nodes: []app.TeachingWorkflowNode{{
+				ID:      "opening",
+				Kind:    "opening",
+				Title:   "开场",
+				Speaker: "亚托莉",
+				Line:    "你好",
+			}},
+		},
+		OpeningMessage: "你好",
+	}
+	completed, err := store.CompleteGeneration("generation:one", resp)
+	if err != nil {
+		t.Fatalf("CompleteGeneration() error = %v", err)
+	}
+	if completed.Generation.Status != app.SceneGenerationStatusReady {
+		t.Fatalf("completed status = %q, want ready", completed.Generation.Status)
+	}
+	if completed.Session.ID != "generation:one" {
+		t.Fatalf("completed session id = %q, want original generation id", completed.Session.ID)
+	}
+	if len(completed.Messages) != 1 || completed.Messages[0].Text != "你好" {
+		t.Fatalf("completed opening message missing: %+v", completed.Messages)
+	}
+}
+
+func TestFileSessionStoreGenerationFailureAndDelete(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	request := app.SceneGenerateRequest{
+		Topic:      "调度器",
+		Characters: []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+	}
+	_, err := store.CreateGeneration(app.SessionRecord{
+		Session: app.Session{ID: "generation:fail", UserID: "default", ActiveCharacterID: "atri"},
+		Scene:   app.Scene{ID: "generation:fail", Title: "调度器"},
+		Generation: app.SceneGeneration{
+			Status:      app.SceneGenerationStatusGenerating,
+			Fingerprint: "fp-fail",
+			Request:     request,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateGeneration() error = %v", err)
+	}
+	failed, err := store.FailGeneration("generation:fail", "provider down")
+	if err != nil {
+		t.Fatalf("FailGeneration() error = %v", err)
+	}
+	if failed.Generation.Status != app.SceneGenerationStatusFailed || !strings.Contains(failed.Generation.Error, "provider down") {
+		t.Fatalf("failed generation = %+v", failed.Generation)
+	}
+	if err := store.Delete("generation:fail"); err != nil {
+		t.Fatalf("Delete(existing) error = %v", err)
+	}
+	if err := store.Delete("generation:missing"); err == nil {
+		t.Fatal("Delete(missing) error = nil")
+	}
+}
+
+func TestStartSceneGenerationCreatesPendingAndDeduplicates(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	started := make(chan struct{})
+	release := make(chan struct{})
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentmock.MockEngine{}},
+		Voices:       map[voice.Provider]voice.Engine{voice.ProviderMock: voicemock.MockEngine{}},
+		Images:       map[image.Provider]image.Engine{image.ProviderMock: imagemock.Engine{}},
+		Scenes:       map[scene.Provider]scene.Engine{scene.ProviderMock: blockingSceneEngine{started: started, release: release}},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: voice.ProviderMock,
+		DefaultImage: image.ProviderMock,
+		DefaultScene: scene.ProviderMock,
+		Sessions:     store,
+		Logger:       slog.Default(),
+	})
+	request := asyncSceneRequest()
+	first, err := rt.StartSceneGeneration(context.Background(), request)
+	if err != nil {
+		t.Fatalf("StartSceneGeneration() error = %v", err)
+	}
+	waitForSignal(t, started, "scene generation started")
+	if first.Record.Generation.Status != app.SceneGenerationStatusGenerating {
+		t.Fatalf("first status = %q, want generating", first.Record.Generation.Status)
+	}
+	second, err := rt.StartSceneGeneration(context.Background(), request)
+	if err != nil {
+		t.Fatalf("StartSceneGeneration(duplicate) error = %v", err)
+	}
+	if !second.Duplicate || second.Record.Session.ID != first.Record.Session.ID {
+		t.Fatalf("duplicate = %v session=%q, want same %q", second.Duplicate, second.Record.Session.ID, first.Record.Session.ID)
+	}
+	close(release)
+	record := waitForGenerationStatus(t, store, first.Record.Session.ID, app.SceneGenerationStatusReady)
+	if record.Scene.ID == "" || len(record.Workflow.Nodes) == 0 {
+		t.Fatalf("ready record missing scene/workflow: %+v", record)
+	}
+}
+
+func TestStartSceneGenerationStoresFailure(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentmock.MockEngine{}},
+		Voices:       map[voice.Provider]voice.Engine{voice.ProviderMock: voicemock.MockEngine{}},
+		Images:       map[image.Provider]image.Engine{image.ProviderMock: imagemock.Engine{}},
+		Scenes:       map[scene.Provider]scene.Engine{scene.ProviderMock: failingSceneEngine{err: errors.New("scene provider down")}},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: voice.ProviderMock,
+		DefaultImage: image.ProviderMock,
+		DefaultScene: scene.ProviderMock,
+		Sessions:     store,
+		Logger:       slog.Default(),
+	})
+	resp, err := rt.StartSceneGeneration(context.Background(), asyncSceneRequest())
+	if err != nil {
+		t.Fatalf("StartSceneGeneration() error = %v", err)
+	}
+	record := waitForGenerationStatus(t, store, resp.Record.Session.ID, app.SceneGenerationStatusFailed)
+	if !strings.Contains(record.Generation.Error, "scene provider down") {
+		t.Fatalf("generation error = %q", record.Generation.Error)
+	}
+}
+
+func TestRuntimeResumesGeneratingTasksOnStartup(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	request := asyncSceneRequest()
+	pending := app.SessionRecord{
+		Session: app.Session{ID: "generation:resume", UserID: "default", ActiveCharacterID: "atri", ParticipantIDs: []string{"atri"}},
+		Scene:   app.Scene{ID: "generation:resume", Title: "恢复生成"},
+		Generation: app.SceneGeneration{
+			Status:      app.SceneGenerationStatusGenerating,
+			Fingerprint: "resume-fp",
+			Request:     request,
+		},
+	}
+	if _, err := store.CreateGeneration(pending); err != nil {
+		t.Fatalf("CreateGeneration() error = %v", err)
+	}
+	_ = runtime.NewRuntime(runtime.Dependencies{
+		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentmock.MockEngine{}},
+		Voices:       map[voice.Provider]voice.Engine{voice.ProviderMock: voicemock.MockEngine{}},
+		Images:       map[image.Provider]image.Engine{image.ProviderMock: imagemock.Engine{}},
+		Scenes:       map[scene.Provider]scene.Engine{scene.ProviderMock: scenemock.Engine{}},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: voice.ProviderMock,
+		DefaultImage: image.ProviderMock,
+		DefaultScene: scene.ProviderMock,
+		Sessions:     store,
+		Logger:       slog.Default(),
+	})
+	record := waitForGenerationStatus(t, store, "generation:resume", app.SceneGenerationStatusReady)
+	if record.Session.ID != "generation:resume" {
+		t.Fatalf("resumed session id = %q", record.Session.ID)
+	}
+}
+
 func TestSessionStoreNormalizesLegacyWorkflowAudio(t *testing.T) {
 	path := t.TempDir() + "/sessions.json"
 	state := map[string]app.SessionRecord{
@@ -1301,6 +1566,81 @@ func (e *cloneVoiceEngine) CloneVoice(_ context.Context, request app.VoiceCloneR
 func (e *cloneVoiceEngine) CloneStatus(_ context.Context, request app.VoiceCloneRequest) (app.VoiceCloneResult, error) {
 	e.provider = request.Provider
 	return app.VoiceCloneResult{SpeakerID: request.SpeakerID, ResourceID: request.ResourceID, Status: "success"}, nil
+}
+
+type blockingSceneEngine struct {
+	started chan<- struct{}
+	release <-chan struct{}
+}
+
+func (e blockingSceneEngine) Generate(ctx context.Context, input scene.Input) (app.SceneGenerateResponse, error) {
+	if e.started != nil {
+		select {
+		case e.started <- struct{}{}:
+		default:
+		}
+	}
+	if e.release != nil {
+		select {
+		case <-e.release:
+		case <-ctx.Done():
+			return app.SceneGenerateResponse{}, ctx.Err()
+		}
+	}
+	return scenemock.Engine{}.Generate(ctx, input)
+}
+
+type failingSceneEngine struct {
+	err error
+}
+
+func (e failingSceneEngine) Generate(context.Context, scene.Input) (app.SceneGenerateResponse, error) {
+	if e.err != nil {
+		return app.SceneGenerateResponse{}, e.err
+	}
+	return app.SceneGenerateResponse{}, errors.New("scene provider failed")
+}
+
+func asyncSceneRequest() app.SceneGenerateRequest {
+	return app.SceneGenerateRequest{
+		Topic:        "异步生成",
+		DocumentText: "异步生成需要先创建生成中的记录，然后后台完成情景和语音准备。",
+		LearningGoal: "理解非阻塞生成流程。",
+		Characters:   []app.Character{{ID: "atri", DisplayName: "亚托莉", VoiceID: "mock"}},
+		Runtime: app.RuntimeConfig{
+			SceneProvider: string(scene.ProviderMock),
+			AgentProvider: string(agent.ProviderMock),
+			VoiceProvider: string(voice.ProviderMock),
+			ImageProvider: string(image.ProviderMock),
+		},
+	}
+}
+
+func waitForSignal(t *testing.T, ch <-chan struct{}, label string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout waiting for %s", label)
+	}
+}
+
+func waitForGenerationStatus(t *testing.T, store *runtime.FileSessionStore, sessionID string, status string) app.SessionRecord {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		record, err := store.Get(sessionID)
+		if err != nil {
+			t.Fatalf("Get() while waiting generation status error = %v", err)
+		}
+		if record.Generation.Status == status {
+			return record
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("generation status = %q, want %q", record.Generation.Status, status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func nextWorkflowNodeID(t *testing.T, workflow app.TeachingWorkflow, currentID string) string {

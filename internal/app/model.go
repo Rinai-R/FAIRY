@@ -45,6 +45,10 @@ const (
 	DialogueAudioStatusPending = "pending"
 	DialogueAudioStatusReady   = "ready"
 	DialogueAudioStatusError   = "error"
+
+	SceneGenerationStatusGenerating = "generating"
+	SceneGenerationStatusReady      = "ready"
+	SceneGenerationStatusFailed     = "failed"
 )
 
 type Session struct {
@@ -63,7 +67,17 @@ type SessionRecord struct {
 	Workflow    TeachingWorkflow `json:"workflow,omitempty"`
 	Relation    Relationship     `json:"relation"`
 	Messages    []Message        `json:"messages,omitempty"`
+	Generation  SceneGeneration  `json:"generation,omitempty"`
 	UpdatedAt   time.Time        `json:"updated_at"`
+}
+
+type SceneGeneration struct {
+	Status      string               `json:"status,omitempty"`
+	Fingerprint string               `json:"fingerprint,omitempty"`
+	Request     SceneGenerateRequest `json:"request,omitempty"`
+	Error       string               `json:"error,omitempty"`
+	StartedAt   time.Time            `json:"started_at,omitempty"`
+	CompletedAt time.Time            `json:"completed_at,omitempty"`
 }
 
 type TeachingSnapshot struct {
@@ -293,16 +307,22 @@ type SceneGenerateResponse struct {
 	Prompt         PromptConfig     `json:"prompt,omitempty"`
 }
 
+type SceneGenerationStartResponse struct {
+	Record    SessionRecord `json:"record"`
+	Duplicate bool          `json:"duplicate,omitempty"`
+}
+
 type SceneInteraction struct {
 	Mode    string        `json:"mode,omitempty"`
 	Choices []SceneChoice `json:"choices,omitempty"`
 }
 
 type SceneChoice struct {
-	ID    string `json:"id"`
-	Label string `json:"label"`
-	Text  string `json:"text"`
-	Hint  string `json:"hint,omitempty"`
+	ID           string `json:"id"`
+	Label        string `json:"label"`
+	Text         string `json:"text"`
+	Hint         string `json:"hint,omitempty"`
+	TargetNodeID string `json:"target_node_id,omitempty"`
 }
 
 type DialogueLine struct {

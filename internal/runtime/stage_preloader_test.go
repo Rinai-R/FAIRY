@@ -626,7 +626,7 @@ func TestGenerateWorkflowNodeActRejectsDisplaySpeechLanguageMix(t *testing.T) {
 		Kind:    "lesson",
 		Title:   "第一幕",
 		Speaker: "亚托莉",
-	})
+	}, app.SceneChoice{})
 	if err == nil {
 		t.Fatal("generateWorkflowNodeAct() error = nil")
 	}
@@ -772,6 +772,26 @@ type stageSessionStore struct {
 
 func (s *stageSessionStore) BeginScene(app.SceneGenerateRequest, app.SceneGenerateResponse) (app.SessionRecord, error) {
 	return app.SessionRecord{}, fmt.Errorf("not implemented")
+}
+
+func (s *stageSessionStore) CreateGeneration(app.SessionRecord) (app.SessionRecord, error) {
+	return app.SessionRecord{}, fmt.Errorf("not implemented")
+}
+
+func (s *stageSessionStore) CompleteGeneration(string, app.SceneGenerateResponse) (app.SessionRecord, error) {
+	return app.SessionRecord{}, fmt.Errorf("not implemented")
+}
+
+func (s *stageSessionStore) FailGeneration(string, string) (app.SessionRecord, error) {
+	return app.SessionRecord{}, fmt.Errorf("not implemented")
+}
+
+func (s *stageSessionStore) GenerationByFingerprint(string) (app.SessionRecord, bool, error) {
+	return app.SessionRecord{}, false, nil
+}
+
+func (s *stageSessionStore) ListGeneration(string) ([]app.SessionRecord, error) {
+	return nil, nil
 }
 
 func (s *stageSessionStore) AppendTurn(app.TurnRequest, app.TurnResponse) (app.SessionRecord, error) {

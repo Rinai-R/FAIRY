@@ -66,7 +66,7 @@ func NewRuntime(deps Dependencies) *Runtime {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Runtime{
+	rt := &Runtime{
 		agents:       deps.Agents,
 		voices:       deps.Voices,
 		images:       deps.Images,
@@ -84,6 +84,8 @@ func NewRuntime(deps Dependencies) *Runtime {
 		voicePool:    mustNewPool(defaultVoicePoolSize),
 		preloadJobs:  map[string]struct{}{},
 	}
+	rt.ResumeGenerationTasks(context.Background())
+	return rt
 }
 
 func mustNewPool(size int) *async.Pool {
@@ -103,13 +105,105 @@ func (r *Runtime) Plugins() app.PluginCatalog {
 
 func (r *Runtime) GenerateScene(ctx context.Context, request app.SceneGenerateRequest) (app.SceneGenerateResponse, error) {
 	var err error
-	request, err = r.hydrateSceneDocumentText(request)
+	request, err = r.prepareSceneGenerateRequest(request)
 	if err != nil {
 		return app.SceneGenerateResponse{}, err
 	}
-	if err := validateSceneGenerateRequest(request); err != nil {
+	resp, err := r.buildSceneGenerateResponse(ctx, request)
+	if err != nil {
 		return app.SceneGenerateResponse{}, err
 	}
+	if r.sessions != nil {
+		record, err := r.sessions.BeginScene(request, resp)
+		if err != nil {
+			r.logger.Warn("写入教学场景失败", "error", err)
+		} else {
+			resp.Workflow = record.Workflow
+			resp.Session = record.Session
+			if shouldQueueNextAct(currentWorkflowNode(resp.Workflow)) {
+				r.preloadRemainingWorkflowNodes(request, record.Session.ID, resp.Workflow.CurrentNodeID)
+			}
+		}
+	}
+	return resp, nil
+}
+
+func (r *Runtime) StartSceneGeneration(ctx context.Context, request app.SceneGenerateRequest) (app.SceneGenerationStartResponse, error) {
+	if r.sessions == nil {
+		return app.SceneGenerationStartResponse{}, errors.New("session store 未启用")
+	}
+	var err error
+	request, err = r.prepareSceneGenerateRequest(request)
+	if err != nil {
+		return app.SceneGenerationStartResponse{}, err
+	}
+	fingerprint, err := sceneGenerationFingerprint(request)
+	if err != nil {
+		return app.SceneGenerationStartResponse{}, err
+	}
+	if existing, ok, err := r.sessions.GenerationByFingerprint(fingerprint); err != nil {
+		return app.SceneGenerationStartResponse{}, err
+	} else if ok {
+		return app.SceneGenerationStartResponse{Record: existing, Duplicate: true}, nil
+	}
+
+	record := pendingSceneGenerationRecord(request, fingerprint, time.Now().UTC())
+	record, err = r.sessions.CreateGeneration(record)
+	if err != nil {
+		return app.SceneGenerationStartResponse{}, err
+	}
+	go r.runSceneGenerationTask(context.Background(), record.Session.ID, request)
+	return app.SceneGenerationStartResponse{Record: record}, nil
+}
+
+func (r *Runtime) ResumeGenerationTasks(ctx context.Context) {
+	if r.sessions == nil {
+		return
+	}
+	records, err := r.sessions.ListGeneration(app.SceneGenerationStatusGenerating)
+	if err != nil {
+		r.logger.Warn("恢复生成任务失败", "error", err)
+		return
+	}
+	for _, record := range records {
+		sessionID := record.Session.ID
+		request := record.Generation.Request
+		go r.runSceneGenerationTask(ctx, sessionID, request)
+	}
+}
+
+func (r *Runtime) runSceneGenerationTask(ctx context.Context, sessionID string, request app.SceneGenerateRequest) {
+	resp, err := r.buildSceneGenerateResponse(ctx, request)
+	if err != nil {
+		if _, saveErr := r.sessions.FailGeneration(sessionID, err.Error()); saveErr != nil {
+			r.logger.Warn("写入生成任务失败状态失败", "error", saveErr, "session_id", sessionID)
+		}
+		return
+	}
+	resp.Session.ID = sessionID
+	record, err := r.sessions.CompleteGeneration(sessionID, resp)
+	if err != nil {
+		r.logger.Warn("写入生成任务完成状态失败", "error", err, "session_id", sessionID)
+		return
+	}
+	if shouldQueueNextAct(currentWorkflowNode(record.Workflow)) {
+		r.preloadRemainingWorkflowNodes(request, record.Session.ID, record.Workflow.CurrentNodeID)
+	}
+}
+
+func (r *Runtime) prepareSceneGenerateRequest(request app.SceneGenerateRequest) (app.SceneGenerateRequest, error) {
+	var err error
+	request, err = r.hydrateSceneDocumentText(request)
+	if err != nil {
+		return app.SceneGenerateRequest{}, err
+	}
+	if err := validateSceneGenerateRequest(request); err != nil {
+		return app.SceneGenerateRequest{}, err
+	}
+	return request, nil
+}
+
+func (r *Runtime) buildSceneGenerateResponse(ctx context.Context, request app.SceneGenerateRequest) (app.SceneGenerateResponse, error) {
 	engine, err := r.scene(request.Runtime.SceneProvider)
 	if err != nil {
 		return app.SceneGenerateResponse{}, err
@@ -139,19 +233,72 @@ func (r *Runtime) GenerateScene(ctx context.Context, request app.SceneGenerateRe
 	resp.Workflow.Preparing = false
 	resp.Workflow.PendingNodeID = ""
 	ensureWorkflowHistory(&resp.Workflow, time.Now().UTC())
-	if r.sessions != nil {
-		record, err := r.sessions.BeginScene(request, resp)
-		if err != nil {
-			r.logger.Warn("写入教学场景失败", "error", err)
-		} else {
-			resp.Workflow = record.Workflow
-			resp.Session = record.Session
-			if shouldQueueNextAct(prepared) {
-				r.preloadRemainingWorkflowNodes(request, record.Session.ID, prepared.ID)
-			}
+	return resp, nil
+}
+
+func sceneGenerationFingerprint(request app.SceneGenerateRequest) (string, error) {
+	raw, err := json.Marshal(request)
+	if err != nil {
+		return "", fmt.Errorf("序列化生成请求失败: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func pendingSceneGenerationRecord(request app.SceneGenerateRequest, fingerprint string, now time.Time) app.SessionRecord {
+	character := request.Characters[0]
+	sessionID := "generation-" + fingerprint[:16] + "-" + hex.EncodeToString([]byte(fmt.Sprintf("%d", now.UnixNano())))[0:12]
+	title := strings.TrimSpace(request.Topic)
+	if title == "" {
+		title = "生成中的情景"
+	}
+	return app.SessionRecord{
+		Session: app.Session{
+			ID:                sessionID,
+			UserID:            "default",
+			ActiveCharacterID: character.ID,
+			ParticipantIDs:    []string{character.ID},
+		},
+		Scene: app.Scene{
+			ID:           sessionID,
+			Title:        title,
+			Phase:        app.SceneGenerationStatusGenerating,
+			Variables:    request.Variables,
+			LastActiveAt: now,
+		},
+		Teaching: app.TeachingSnapshot{
+			Topic:        request.Topic,
+			DocumentText: request.DocumentText,
+			LearningGoal: request.LearningGoal,
+			Prompt:       request.Prompt,
+			Runtime:      request.Runtime,
+			Variables:    request.Variables,
+		},
+		Characters: request.Characters,
+		Relation: app.Relationship{
+			UserID:    "default",
+			UpdatedAt: now,
+		},
+		Generation: app.SceneGeneration{
+			Status:      app.SceneGenerationStatusGenerating,
+			Fingerprint: fingerprint,
+			Request:     request,
+			StartedAt:   now,
+		},
+		UpdatedAt: now,
+	}
+}
+
+func currentWorkflowNode(workflow app.TeachingWorkflow) app.TeachingWorkflowNode {
+	for _, node := range workflow.Nodes {
+		if node.ID == workflow.CurrentNodeID {
+			return node
 		}
 	}
-	return resp, nil
+	if len(workflow.Nodes) > 0 {
+		return workflow.Nodes[0]
+	}
+	return app.TeachingWorkflowNode{}
 }
 
 func (r *Runtime) Sessions() ([]app.SessionRecord, error) {
@@ -175,13 +322,19 @@ func (r *Runtime) DeleteSession(id string) error {
 	return r.sessions.Delete(id)
 }
 
-func (r *Runtime) AdvanceWorkflow(_ context.Context, req app.WorkflowAdvanceRequest) (app.WorkflowAdvanceResponse, error) {
+func (r *Runtime) AdvanceWorkflow(ctx context.Context, req app.WorkflowAdvanceRequest) (app.WorkflowAdvanceResponse, error) {
 	if r.sessions == nil {
 		return app.WorkflowAdvanceResponse{}, errors.New("session store 未启用")
 	}
 	record, err := r.sessions.Get(req.SessionID)
 	if err != nil {
 		return app.WorkflowAdvanceResponse{}, err
+	}
+	if req.ChoiceID != "" && !req.Replay {
+		record, req, err = r.ensureChoiceBranch(ctx, record, req)
+		if err != nil {
+			return app.WorkflowAdvanceResponse{}, err
+		}
 	}
 	next := findWorkflowNode(record.Workflow.Nodes, req.NextNodeID)
 	current := findWorkflowNode(record.Workflow.Nodes, record.Workflow.CurrentNodeID)
@@ -231,15 +384,7 @@ func (r *Runtime) AdvanceWorkflow(_ context.Context, req app.WorkflowAdvanceRequ
 		}
 	}
 	if shouldQueueNextAct(node) {
-		r.preloadRemainingWorkflowNodes(app.SceneGenerateRequest{
-			Topic:        record.Teaching.Topic,
-			DocumentText: record.Teaching.DocumentText,
-			LearningGoal: record.Teaching.LearningGoal,
-			Prompt:       record.Teaching.Prompt,
-			Characters:   record.Characters,
-			Runtime:      record.Teaching.Runtime,
-			Variables:    record.Teaching.Variables,
-		}, record.Session.ID, node.ID)
+		r.preloadRemainingWorkflowNodes(sceneGenerateRequestFromRecord(record), record.Session.ID, node.ID)
 	}
 	return app.WorkflowAdvanceResponse{
 		Session:  record,
@@ -247,6 +392,95 @@ func (r *Runtime) AdvanceWorkflow(_ context.Context, req app.WorkflowAdvanceRequ
 		Node:     node,
 		Ready:    true,
 	}, nil
+}
+
+func (r *Runtime) ensureChoiceBranch(ctx context.Context, record app.SessionRecord, req app.WorkflowAdvanceRequest) (app.SessionRecord, app.WorkflowAdvanceRequest, error) {
+	current := findWorkflowNode(record.Workflow.Nodes, record.Workflow.CurrentNodeID)
+	if current.ID == "" {
+		return record, req, fmt.Errorf("workflow 当前节点不存在: %s", record.Workflow.CurrentNodeID)
+	}
+	choice, choiceIndex, ok := workflowChoiceByID(current, req.ChoiceID)
+	if !ok {
+		return record, req, fmt.Errorf("当前节点不包含选项: %s", req.ChoiceID)
+	}
+	if strings.TrimSpace(choice.TargetNodeID) == "" {
+		choice.TargetNodeID = choiceBranchNodeID(current, choice, choiceIndex)
+		current.Choices[choiceIndex].TargetNodeID = choice.TargetNodeID
+	}
+	req.NextNodeID = choice.TargetNodeID
+	if existing := findWorkflowNode(record.Workflow.Nodes, req.NextNodeID); existing.ID != "" {
+		return record, req, nil
+	}
+
+	branch := plannedChoiceBranchNode(current, choice)
+	request := sceneGenerateRequestFromRecord(record)
+	prepared, decision, err := r.prepareWorkflowNodeActAndVoiceWithChoice(ctx, request, record.Session, record.Workflow, branch, choice)
+	if err != nil {
+		prepared = workflowStageErrorNode(prepared, err)
+	}
+	prepared.Decision = string(decision)
+	if !replaceWorkflowNode(&record.Workflow, current) {
+		return record, req, fmt.Errorf("workflow 当前节点不存在: %s", current.ID)
+	}
+	record.Workflow.Nodes = append(record.Workflow.Nodes, prepared)
+	record.Workflow.Preparing = false
+	record.Workflow.PendingNodeID = ""
+	saved, saveErr := r.sessions.SaveWorkflow(record.Session.ID, record.Workflow)
+	if saveErr != nil {
+		return record, req, saveErr
+	}
+	return saved, req, nil
+}
+
+func plannedChoiceBranchNode(current app.TeachingWorkflowNode, choice app.SceneChoice) app.TeachingWorkflowNode {
+	title := firstNonEmpty(choice.Label, choice.Text, "选择分支")
+	summary := firstNonEmpty(choice.Text, choice.Hint, choice.Label, current.Summary)
+	return app.TeachingWorkflowNode{
+		ID:            choice.TargetNodeID,
+		Kind:          "choice",
+		Title:         title,
+		Summary:       summary,
+		Speaker:       current.Speaker,
+		BackgroundKey: current.BackgroundKey,
+		BackgroundURL: current.BackgroundURL,
+		NextNodeID:    current.NextNodeID,
+		Status:        app.WorkflowNodeStatusPending,
+		VoiceStatus:   app.WorkflowNodeStatusPending,
+	}
+}
+
+func sceneGenerateRequestFromRecord(record app.SessionRecord) app.SceneGenerateRequest {
+	req := record.Generation.Request
+	if len(req.Characters) == 0 {
+		req.Characters = record.Characters
+	}
+	if strings.TrimSpace(req.Topic) == "" {
+		req.Topic = record.Teaching.Topic
+	}
+	if strings.TrimSpace(req.DocumentText) == "" {
+		req.DocumentText = record.Teaching.DocumentText
+	}
+	if strings.TrimSpace(req.LearningGoal) == "" {
+		req.LearningGoal = record.Teaching.LearningGoal
+	}
+	if promptConfigEmpty(req.Prompt) {
+		req.Prompt = record.Teaching.Prompt
+	}
+	if req.Runtime.AgentProvider == "" && req.Runtime.VoiceProvider == "" && req.Runtime.SceneProvider == "" && req.Runtime.ImageProvider == "" {
+		req.Runtime = record.Teaching.Runtime
+	}
+	if req.Variables == nil {
+		req.Variables = record.Teaching.Variables
+	}
+	return req
+}
+
+func promptConfigEmpty(prompt app.PromptConfig) bool {
+	return strings.TrimSpace(prompt.System) == "" &&
+		strings.TrimSpace(prompt.Developer) == "" &&
+		strings.TrimSpace(prompt.SceneInstruction) == "" &&
+		strings.TrimSpace(prompt.ResponseContract) == "" &&
+		len(prompt.StyleRules) == 0
 }
 
 func (r *Runtime) Turn(ctx context.Context, req app.TurnRequest) (app.TurnResponse, error) {

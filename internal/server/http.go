@@ -96,6 +96,7 @@ func registerAPIRoutes(h *hertzserver.Hertz, s *Server, prefix string) {
 
 	scenes := api.Group("/scenes")
 	scenes.POST("/generate", s.generateScene)
+	scenes.POST("/generate-task", s.startSceneGeneration)
 
 	workflows := api.Group("/workflows")
 	workflows.POST("/advance", s.advanceWorkflow)
@@ -186,6 +187,20 @@ func (s *Server) generateScene(ctx context.Context, c *hertzapp.RequestContext) 
 		return
 	}
 	resp, err := s.runtime.GenerateScene(ctx, body)
+	if err != nil {
+		writeError(c, consts.StatusBadRequest, errCodeScene, err)
+		return
+	}
+	writeOK(c, resp)
+}
+
+func (s *Server) startSceneGeneration(ctx context.Context, c *hertzapp.RequestContext) {
+	var body app.SceneGenerateRequest
+	if err := c.BindJSON(&body); err != nil {
+		writeError(c, consts.StatusBadRequest, errCodeInvalidRequest, err)
+		return
+	}
+	resp, err := s.runtime.StartSceneGeneration(ctx, body)
 	if err != nil {
 		writeError(c, consts.StatusBadRequest, errCodeScene, err)
 		return

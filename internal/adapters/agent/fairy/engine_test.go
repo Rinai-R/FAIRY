@@ -97,9 +97,18 @@ func TestGenerateActUsesUnderlyingLLMAdapter(t *testing.T) {
 		t.Fatalf("act plan missing: %#v", model.requests[1].Messages)
 	}
 	for _, want := range []string{
+		"可以增加 acts/章节数量，不设硬性上限",
+		"act_count 示例不是上限",
+	} {
+		if !strings.Contains(model.requests[0].Messages[1].Content, want) {
+			t.Fatalf("plan prompt missing %q:\n%s", want, model.requests[0].Messages[1].Content)
+		}
+	}
+	for _, want := range []string{
 		"node.lines 是视觉小说文本框逐次展示的单位",
-		"中文或日文 lines[].text 不超过 52 个可见字符",
-		"英文 lines[].text 不超过 120 个可见字符",
+		"中文或日文单条 lines[].text 不超过 52 个可见字符",
+		"英文单条 lines[].text 不超过 120 个可见字符",
+		"不限制当前幕或整篇章节数量",
 		"不能把多条字幕合并成一条 speech_text",
 	} {
 		if !strings.Contains(model.requests[1].Messages[1].Content, want) {
@@ -111,8 +120,9 @@ func TestGenerateActUsesUnderlyingLLMAdapter(t *testing.T) {
 	}
 	for _, want := range []string{
 		"若原稿存在超长 line，必须优先拆短",
-		"中文或日文 lines[].text 不超过 52 个可见字符",
-		"英文 lines[].text 不超过 120 个可见字符",
+		"中文或日文单条 lines[].text 不超过 52 个可见字符",
+		"英文单条 lines[].text 不超过 120 个可见字符",
+		"不限制章节数量",
 		"与同序号 text 一一对应",
 	} {
 		if !strings.Contains(model.lastRequest.Messages[1].Content, want) {

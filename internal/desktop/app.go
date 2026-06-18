@@ -57,6 +57,10 @@ func (a *App) GenerateScene(request app.SceneGenerateRequest) (app.SceneGenerate
 	return a.runtime.GenerateScene(a.context(), request)
 }
 
+func (a *App) StartSceneGeneration(request app.SceneGenerateRequest) (app.SceneGenerationStartResponse, error) {
+	return a.runtime.StartSceneGeneration(a.context(), request)
+}
+
 func (a *App) ExportWebGAL(request app.WebGALExportRequest) (app.WebGALExportResponse, error) {
 	return a.runtime.ExportWebGAL(a.context(), request)
 }

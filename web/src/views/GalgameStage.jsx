@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { deriveStagePlaybackState, NEXT_ACTION } from "./stagePlayback";
 
 export function GalgameStageView({
   activeCharacter, activeCharacterID, busy, input, isTyping, lastCG,
@@ -8,6 +9,8 @@ export function GalgameStageView({
 }) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [closing, setClosing] = useState(false);
+  const [lineIndex, setLineIndex] = useState(0);
+  const [pendingChoiceID, setPendingChoiceID] = useState("");
   const backlogListRef = useRef(null);
   const closeTimerRef = useRef(null);
   const dialogueRef = useRef(null);
@@ -40,29 +43,55 @@ export function GalgameStageView({
     || scene?.variables?.background_url || lastCG?.url || "";
 
   const nodeLines = currentNode?.lines?.length
-    ? currentNode.lines.map((line) => ({ ...line, speechText: workflowLineSpeechText(line) }))
-    : (currentNode?.line ? [{ speaker: currentNode.speaker || speaker, text: currentNode.line, speechText: currentNode.speech_text || "" }] : []);
+    ? currentNode.lines.map((line) => ({ ...line, speechText: workflowLineSpeechText(line), audioURL: workflowLineAudioURL(line) }))
+    : (currentNode?.line ? [{ speaker: currentNode.speaker || speaker, text: currentNode.line, speechText: currentNode.speech_text || "", audioURL: "" }] : []);
 
   const dialogueLines = visibleAssistant?.segments?.length
-    ? visibleAssistant.segments.map((s) => ({ speaker, text: s.text, speechText: s.speech_text || "", expression: s.expression }))
+    ? visibleAssistant.segments.map((s, index) => ({ speaker, text: s.text, speechText: s.speech_text || "", expression: s.expression, audioURL: nodeLines[index]?.audioURL || "" }))
     : nodeLines;
-  const lastDialogueText = dialogueLines[dialogueLines.length - 1]?.text || "";
-  const typewriterKey = `${currentNode?.id || "scene"}:${lastDialogueText}`;
-  const [typedText, setTypedText] = useState(lastDialogueText);
+  const safeLineIndex = Math.min(lineIndex, Math.max(dialogueLines.length - 1, 0));
+  const currentDialogueLine = dialogueLines[safeLineIndex] || null;
+  const currentDialogueText = currentDialogueLine?.text || "";
+  const currentLineAudioURL = currentDialogueLine?.audioURL || "";
+  const typewriterKey = `${currentNode?.id || "scene"}:${safeLineIndex}:${currentDialogueText}`;
+  const [typedText, setTypedText] = useState(currentDialogueText);
   const [typewriterDone, setTypewriterDone] = useState(true);
 
   const currentNodeIdx = workflowNodes.findIndex((n) => n.id === currentNode?.id);
-  const typingActive = !!(visibleAssistant?.typing || isTyping || !typewriterDone);
+  const typingActive = !!((visibleAssistant?.meta !== "script" && visibleAssistant?.typing) || isTyping || !typewriterDone);
   const stageWaiting = Boolean(runtimeState?.stageWaiting);
+  const isLastDialogueLine = dialogueLines.length > 0 && safeLineIndex >= dialogueLines.length - 1;
+  const shouldShowStageChoices = stageChoices.length > 0
+    && !isFreeDiscussionNode
+    && isLastDialogueLine
+    && typewriterDone
+    && !stageWaiting
+    && !pendingChoiceID;
+  const playbackState = useMemo(() => deriveStagePlaybackState({
+    busy,
+    hasNextNode: Boolean(currentNode?.next_node_id),
+    lineCount: dialogueLines.length,
+    lineIndex: safeLineIndex,
+    stageWaiting,
+    typewriterDone,
+  }), [busy, currentNode?.next_node_id, dialogueLines.length, safeLineIndex, stageWaiting, typewriterDone]);
   const visibleDialogueLines = useMemo(() => {
-    if (!dialogueLines.length) return dialogueLines;
-    return dialogueLines.map((line, index) => (
-      index === dialogueLines.length - 1 ? { ...line, text: typedText } : line
-    ));
-  }, [dialogueLines, typedText]);
+    if (!currentDialogueLine) return [];
+    return [{ ...currentDialogueLine, text: typedText }];
+  }, [currentDialogueLine, typedText]);
 
   useEffect(() => {
-    const chars = Array.from(lastDialogueText);
+    setLineIndex(0);
+    setPendingChoiceID("");
+  }, [currentNode?.id]);
+
+  useEffect(() => {
+    if (lineIndex <= safeLineIndex) return;
+    setLineIndex(safeLineIndex);
+  }, [lineIndex, safeLineIndex]);
+
+  useEffect(() => {
+    const chars = Array.from(currentDialogueText);
     if (!chars.length) {
       setTypedText("");
       setTypewriterDone(true);
@@ -74,7 +103,7 @@ export function GalgameStageView({
     const timer = window.setInterval(() => {
       index += chars[index]?.match(/[，。！？；、,.!?;:]/) ? 1 : 2;
       if (index >= chars.length) {
-        setTypedText(lastDialogueText);
+        setTypedText(currentDialogueText);
         setTypewriterDone(true);
         window.clearInterval(timer);
         return;
@@ -82,7 +111,49 @@ export function GalgameStageView({
       setTypedText(chars.slice(0, index).join(""));
     }, 28);
     return () => window.clearInterval(timer);
-  }, [typewriterKey, lastDialogueText]);
+  }, [typewriterKey, currentDialogueText]);
+
+  const playLineAudio = useCallback((index) => {
+    const url = dialogueLines[index]?.audioURL || "";
+    if (url) playAudio(url);
+  }, [dialogueLines, playAudio]);
+
+  const goPreviousLine = useCallback(() => {
+    if (safeLineIndex <= 0 || busy) return;
+    const nextIndex = safeLineIndex - 1;
+    setLineIndex(nextIndex);
+    playLineAudio(nextIndex);
+  }, [busy, playLineAudio, safeLineIndex]);
+
+  const goNextLineOrNode = useCallback(() => {
+    switch (playbackState.nextAction) {
+      case NEXT_ACTION.COMPLETE_TYPEWRITER:
+        setTypedText(currentDialogueText);
+        setTypewriterDone(true);
+        return;
+      case NEXT_ACTION.NEXT_LINE: {
+        const nextIndex = safeLineIndex + 1;
+        setLineIndex(nextIndex);
+        playLineAudio(nextIndex);
+        return;
+      }
+      case NEXT_ACTION.ADVANCE_NODE:
+        if (currentNode?.next_node_id) advanceLessonWorkflow(currentNode.next_node_id);
+        return;
+      case NEXT_ACTION.WAIT_NEXT_NODE:
+      case NEXT_ACTION.NONE:
+      default:
+        return;
+    }
+  }, [advanceLessonWorkflow, currentDialogueText, currentNode?.next_node_id, playLineAudio, playbackState.nextAction, safeLineIndex]);
+
+  const handleChoice = useCallback((choice) => {
+    if (!shouldShowStageChoices || busy || pendingChoiceID) return;
+    setPendingChoiceID(choice?.id || choice?.label || "choice");
+    Promise.resolve(sendChoice(choice)).catch(() => {
+      setPendingChoiceID("");
+    });
+  }, [busy, pendingChoiceID, sendChoice, shouldShowStageChoices]);
 
   // Auto-scroll dialogue
   useEffect(() => {
@@ -121,7 +192,7 @@ export function GalgameStageView({
 
       if ((e.key === " " || e.key === "Enter") && !isFreeDiscussionNode) {
         e.preventDefault();
-        if (currentNode?.next_node_id) advanceLessonWorkflow(currentNode.next_node_id);
+        goNextLineOrNode();
         return;
       }
       if (e.key === "b" || e.key === "B") {
@@ -131,14 +202,14 @@ export function GalgameStageView({
       }
       // Number keys for choices
       const num = parseInt(e.key, 10);
-      if (num >= 1 && num <= 9 && stageChoices.length >= num) {
+      if (num >= 1 && num <= 9 && shouldShowStageChoices && stageChoices.length >= num) {
         e.preventDefault();
-        sendChoice(stageChoices[num - 1]);
+        handleChoice(stageChoices[num - 1]);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [historyOpen, busy, isFreeDiscussionNode, currentNode, stageChoices, advanceLessonWorkflow, sendChoice, closeBacklog]);
+  }, [historyOpen, busy, isFreeDiscussionNode, currentNode, stageChoices, goNextLineOrNode, handleChoice, closeBacklog, shouldShowStageChoices]);
 
   return (
     <div className="vn-stage-frame">
@@ -167,10 +238,10 @@ export function GalgameStageView({
       </div>
 
       {/* Choices */}
-      {stageChoices.length > 0 && !isFreeDiscussionNode && (
+      {shouldShowStageChoices && (
         <div className="vn-choice-layer" key={`choices-${currentNode?.id}`}>
           {stageChoices.map((choice, idx) => (
-            <button key={choice.id || choice.label} onClick={() => sendChoice(choice)} disabled={busy}>
+            <button key={choice.id || choice.label} onClick={() => handleChoice(choice)} disabled={busy || Boolean(pendingChoiceID)}>
               <kbd>{String.fromCharCode(65 + idx)}</kbd>
               <span>
                 <strong>{choice.label}</strong>
@@ -223,13 +294,13 @@ export function GalgameStageView({
             </form>
           ) : (
             <>
-              <button className="vn-ctrl-btn" type="button" disabled>上一句</button>
-              <button className="vn-ctrl-btn" onClick={() => playAudio()} disabled={!runtimeState.audio || runtimeState.audio === "-" || speaking}>
+              <button className="vn-ctrl-btn" type="button" onClick={goPreviousLine} disabled={safeLineIndex <= 0 || busy}>上一句</button>
+              <button className="vn-ctrl-btn" onClick={() => playAudio(currentLineAudioURL)} disabled={!currentLineAudioURL || speaking}>
                 {speaking ? "播放中" : "重播"}
               </button>
-              {currentNode?.next_node_id && (
-                <button className="vn-ctrl-btn vn-ctrl-advance" onClick={() => advanceLessonWorkflow(currentNode.next_node_id)} disabled={busy || stageWaiting}>
-                  {stageWaiting ? "准备中" : "下一句"}
+              {playbackState.shouldShowAdvance && (
+                <button className="vn-ctrl-btn vn-ctrl-advance" onClick={goNextLineOrNode} disabled={playbackState.advanceDisabled}>
+                  {playbackState.advanceLabel}
                 </button>
               )}
               <button className="vn-ctrl-btn" type="button" disabled>自动</button>
@@ -255,7 +326,7 @@ export function GalgameStageView({
             </div>
             <div className="vn-backlog-body">
               <div className="vn-backlog-list" ref={backlogListRef}>
-                {buildBacklogItems(messages, workflowHistory, workflowNodes, currentNode?.id, speaker).reverse().map((item, i) => (
+                {buildBacklogItems(messages, workflowHistory, workflowNodes, currentNode?.id, safeLineIndex, speaker).reverse().map((item, i) => (
                   <article key={`bl-${i}`} className={`vn-backlog-item ${item.active ? "is-active" : ""} ${item.kind === "user" ? "is-player" : ""}`}>
                     <span className="vn-backlog-number">{String(i + 1).padStart(2, "0")}</span>
                     <div>
@@ -264,7 +335,7 @@ export function GalgameStageView({
                       {item.kind === "script" && item.nodeID ? (
                         <div className="vn-backlog-actions">
                           <button type="button" onClick={() => { advanceLessonWorkflow(item.nodeID, "", true); closeBacklog(); }}>跳转</button>
-                          <button type="button" onClick={() => playWorkflowNodeVoice?.(item.node)}>复读</button>
+                          <button type="button" onClick={() => item.audioURL ? playAudio(item.audioURL) : playWorkflowNodeVoice?.(item.node)}>复读</button>
                         </div>
                       ) : null}
                     </div>
@@ -292,33 +363,109 @@ function findLatestForNode(messages, nodeID) {
   return null;
 }
 
-function buildBacklogItems(messages, workflowHistory, workflowNodes, currentNodeID, assistantSpeaker) {
+function buildBacklogItems(messages, workflowHistory, workflowNodes, currentNodeID, currentLineIndex, assistantSpeaker) {
   const nodeByID = new Map(workflowNodes.map((n) => [n.id, n]));
-  const items = workflowHistory.map((h) => {
-    const node = nodeByID.get(h.node_id);
-    return {
-      kind: "script", active: h.node_id === currentNodeID,
-      nodeID: h.node_id,
-      node,
-      speaker: node?.speaker || "角色",
-      text: h.choice_label ? `选择：${h.choice_label}` : (workflowNodeDisplayText(node) || h.action || "进入剧情"),
-    };
+  const scriptItems = workflowHistory.flatMap((h) => {
+    if (h?.action === "audio") return [];
+    const nodeID = h?.node_id || h?.nodeID || "";
+    const node = nodeByID.get(nodeID);
+    const items = [];
+    if (h?.choice_label) {
+      items.push({ kind: "user", active: false, speaker: "你", text: `选择：${cleanBacklogText(h.choice_label, "你")}` });
+    }
+    const lines = workflowNodeBacklogLines(node);
+    if (!lines.length) {
+      const speaker = cleanBacklogSpeaker(node?.speaker || assistantSpeaker || "角色");
+      const text = cleanBacklogText(workflowNodeDisplayText(node), speaker) || h?.action || "进入剧情";
+      return [...items, {
+        kind: "script",
+        active: nodeID === currentNodeID,
+        nodeID,
+        node,
+        speaker,
+        text,
+        audioURL: workflowLineAudioURL(node),
+      }];
+    }
+    lines.forEach((line, index) => {
+      const speaker = cleanBacklogSpeaker(line.speaker || node?.speaker || assistantSpeaker || "角色");
+      const text = cleanBacklogText(line.text, speaker);
+      if (!text) return;
+      const isLastLine = index === lines.length - 1;
+      items.push({
+        kind: "script",
+        active: nodeID === currentNodeID && index === currentLineIndex,
+        nodeID: isLastLine ? nodeID : "",
+        node: isLastLine ? node : null,
+        speaker,
+        text,
+        audioURL: workflowLineAudioURL(line),
+      });
+    });
+    return items;
   });
-  return [...items, ...messages.filter((m) => m?.text).map((m) => ({
-    kind: m.role || "message", active: false,
-    speaker: m.role === "user" ? "你" : assistantSpeaker || "角色",
-    text: m.text,
-  }))].slice(-40);
+  const messageItems = messages.flatMap((m) => buildMessageBacklogItems(m, assistantSpeaker));
+  return [...scriptItems, ...messageItems].slice(-40);
 }
 
 function workflowLineSpeechText(line) {
   return String(line?.speech_text || line?.speechText || line?.text || "").trim();
 }
 
+function workflowLineAudioURL(line) {
+  return String(line?.audio?.url || line?.audio_url || line?.audioURL || "").trim();
+}
+
+function buildMessageBacklogItems(message, assistantSpeaker) {
+  if (!message || message.meta === "script" || message.nodeID || message.workflow_node_id) return [];
+  const speaker = message.role === "user" ? "你" : assistantSpeaker || "角色";
+  const segments = Array.isArray(message.segments) ? message.segments : [];
+  if (message.role !== "user" && segments.length) {
+    return segments.map((segment) => ({
+      kind: message.role || "message",
+      active: false,
+      speaker,
+      text: cleanBacklogText(segment?.text, speaker),
+    })).filter((item) => item.text);
+  }
+  const text = cleanBacklogText(message.text, speaker);
+  if (!text) return [];
+  return [{ kind: message.role || "message", active: false, speaker, text }];
+}
+
+function workflowNodeBacklogLines(node) {
+  const lines = Array.isArray(node?.lines) ? node.lines : [];
+  if (lines.length) return lines;
+  const text = workflowNodeDisplayText(node);
+  if (!text) return [];
+  return [{ speaker: node?.speaker || "角色", text }];
+}
+
 function workflowNodeDisplayText(node) {
   const lines = Array.isArray(node?.lines) ? node.lines : [];
   if (lines.length) return lines.map((line) => String(line?.text || "").trim()).filter(Boolean).join(" ");
   return String(node?.line || "").trim();
+}
+
+function cleanBacklogSpeaker(value) {
+  return String(value || "角色").replace(/[【】[\]：:]/g, "").trim() || "角色";
+}
+
+function cleanBacklogText(value, speaker) {
+  let text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  const names = [speaker, cleanBacklogSpeaker(speaker)].filter(Boolean);
+  for (const name of [...new Set(names)]) {
+    const escaped = escapeRegExp(name);
+    text = text
+      .replace(new RegExp(`(^|\\s)[【\\[]\\s*${escaped}\\s*[】\\]]\\s*`, "g"), " ")
+      .replace(new RegExp(`(^|\\s)${escaped}\\s*[：:]\\s*`, "g"), " ");
+  }
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function stageBG(url) {

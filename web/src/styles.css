@@ -3825,10 +3825,10 @@ button:disabled {
   min-height: 0;
   padding: 0 64px 40px;
   display: grid;
-  grid-template-columns: minmax(0, 720px) auto;
-  grid-template-rows: auto minmax(0, 1fr);
-  align-content: end;
-  align-items: end;
+  grid-template-columns: minmax(0, 720px) minmax(max-content, 1fr);
+  grid-template-rows: auto minmax(112px, 1fr);
+  align-content: stretch;
+  align-items: start;
   column-gap: 22px;
   isolation: isolate;
 }
@@ -3875,8 +3875,12 @@ button:disabled {
   z-index: 1;
   grid-column: 1;
   grid-row: 2;
+  align-self: start;
+  width: 100%;
+  height: 178px;
   max-width: 720px;
-  max-height: 178px;
+  max-height: 100%;
+  min-height: 0;
   overflow: hidden auto;
   padding-top: 14px;
   font-family: var(--serif);
@@ -3973,6 +3977,24 @@ button:disabled {
 .vn-stage-waiting,
 .vn-dialogue-empty {
   color: var(--muted);
+}
+
+.vn-stage-waiting {
+  position: absolute;
+  top: -24px;
+  right: 0;
+  margin: 0;
+  max-width: 52%;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 170, 215, 0.2);
+  background: rgba(255, 255, 255, 0.58);
+  font-family: var(--sans);
+  font-size: 11.5px;
+  font-weight: 800;
+  line-height: 1.4;
+  text-align: right;
+  pointer-events: none;
 }
 
 .vn-backlog-overlay {

@@ -97,6 +97,15 @@ export async function generateScene(body) {
   });
 }
 
+export async function startSceneGeneration(body) {
+  const app = wailsApp();
+  if (app?.StartSceneGeneration) return app.StartSceneGeneration(body);
+  return request(`${apiPrefix}/scenes/generate-task`, {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
+}
+
 export async function exportWebGAL(body) {
   const app = wailsApp();
   if (app?.ExportWebGAL) return app.ExportWebGAL(body);

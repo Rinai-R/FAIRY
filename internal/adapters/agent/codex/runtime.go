@@ -246,7 +246,7 @@ func buildActPrompt(input agent.ActInput, body string) string {
 - 你现在只负责生成教学工作流中的当前一幕。
 - opening/lesson 至少 4 条台词，summary 也要拆成多条短台词。
 - lines 是视觉小说文本框逐次展示的单位；lines[].text 必须是一屏文本框能直接显示的一句话或短句组，不是一整幕段落。
-- 中文或日文 lines[].text 不超过 52 个可见字符；英文 lines[].text 不超过 120 个可见字符。长解释必须拆成多条 lines，每条只推进一个小知识步。
+- 中文或日文单条 lines[].text 不超过 52 个可见字符；英文单条 lines[].text 不超过 120 个可见字符。这个限制只针对单条 line，不限制章节数量；长解释必须拆成更多 lines 或更多后续幕，每条只推进一个小知识步。
 - 主线未讲完前，不要进入 free_discussion。
 - 非总结幕需要 1 到 3 个选项。
 - 结合角色设定、学习目标、已覆盖知识点和玩家上一轮选择推进。
