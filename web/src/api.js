@@ -27,7 +27,8 @@ function unwrapResponse(payload) {
 }
 
 function responseMessage(payload, fallback) {
-  return payload?.msg || payload?.error || fallback;
+  if (typeof payload === "string") return payload || fallback;
+  return payload?.msg || payload?.message || payload?.error || payload?.detail || payload?.reason || fallback;
 }
 
 export function runtimeMode() {

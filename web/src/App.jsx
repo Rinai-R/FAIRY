@@ -121,7 +121,7 @@ class StageErrorBoundary extends React.Component {
       <section className="stage-error-panel">
         <span className="eyebrow">舞台渲染失败</span>
         <h2>记录数据没有完整恢复</h2>
-        <p>{this.state.error.message || "未知前端错误"}</p>
+        <p>{errorMessage(this.state.error, "未知前端错误")}</p>
         <div className="header-actions">
           <button className="primary-button" type="button" onClick={this.props.onBack}>返回记录</button>
           <button className="ghost-button" type="button" onClick={() => this.setState({ error: null })}>重试</button>
@@ -279,7 +279,7 @@ export function App() {
         }
         appendLog("info", "Capabilities 加载完成。");
       })
-      .catch((error) => appendLog("error", `Capabilities 加载失败：${error.message}`));
+      .catch((error) => appendLog("error", `Capabilities 加载失败：${errorMessage(error, "未知错误")}`));
   }, []);
 
   useEffect(() => {
@@ -355,8 +355,9 @@ export function App() {
         }
       }
     } catch (error) {
-      setConfigStatus({ state: "error", message: `本机配置加载失败：${error.message}` });
-      appendLog("error", `本机配置加载失败：${error.message}`);
+      const message = errorMessage(error, "未知错误");
+      setConfigStatus({ state: "error", message: `本机配置加载失败：${message}` });
+      appendLog("error", `本机配置加载失败：${message}`);
     }
   }
 
@@ -431,8 +432,9 @@ export function App() {
       saveUserConfigRemote(config)
         .then(() => setConfigStatus({ state: "ready", message: "配置已保存到本机。" }))
         .catch((error) => {
-          setConfigStatus({ state: "error", message: `配置保存失败：${error.message}` });
-          appendLog("error", `配置保存失败：${error.message}`);
+          const message = errorMessage(error, "未知错误");
+          setConfigStatus({ state: "error", message: `配置保存失败：${message}` });
+          appendLog("error", `配置保存失败：${message}`);
         });
     };
     if (immediate) {
@@ -643,8 +645,9 @@ export function App() {
       appendLog("info", `角色资源已保存：${character?.display_name || id}`);
       return true;
     } catch (error) {
-      setConfigStatus({ state: "error", message: `配置保存失败：${error.message}` });
-      appendLog("error", `角色资源保存失败：${error.message}`);
+      const message = errorMessage(error, "未知错误");
+      setConfigStatus({ state: "error", message: `配置保存失败：${message}` });
+      appendLog("error", `角色资源保存失败：${message}`);
       return false;
     }
   }
@@ -669,8 +672,9 @@ export function App() {
       });
       appendLog("info", `已上传教学材料：${payload.path || file.name}`);
     } catch (error) {
-      setDocumentImport({ status: "error", message: error.message, pages: 0 });
-      appendLog("error", `文档导入失败：${error.message}`);
+      const message = errorMessage(error, "未知错误");
+      setDocumentImport({ status: "error", message, pages: 0 });
+      appendLog("error", `文档导入失败：${message}`);
     }
   }
 
@@ -739,8 +743,9 @@ export function App() {
       setCharacterRuntimeVoiceExtraField(activeCharacterID, "speaker", speakerID);
       appendLog("info", `声音复刻已提交：${speakerID} / ${samples.length} 段音频`);
     } catch (error) {
-      setVoiceClone((current) => ({ ...current, status: "error", message: error.message }));
-      appendLog("error", `声音复刻提交失败：${error.message}`);
+      const message = errorMessage(error, "未知错误");
+      setVoiceClone((current) => ({ ...current, status: "error", message }));
+      appendLog("error", `声音复刻提交失败：${message}`);
     } finally {
       setCloneBusy(false);
     }
@@ -764,8 +769,9 @@ export function App() {
       setVoiceClone(payload);
       appendLog("info", `声音复刻状态：${payload.status || "unknown"} ${payload.message || ""}`);
     } catch (error) {
-      setVoiceClone((current) => ({ ...current, status: "error", message: error.message }));
-      appendLog("error", `声音复刻状态查询失败：${error.message}`);
+      const message = errorMessage(error, "未知错误");
+      setVoiceClone((current) => ({ ...current, status: "error", message }));
+      appendLog("error", `声音复刻状态查询失败：${message}`);
     } finally {
       setCloneBusy(false);
     }
@@ -816,7 +822,7 @@ export function App() {
       }
       appendLog("info", payload.url ? `测试语音已生成，可再次点击试听：${payload.url}` : `测试语音已生成：${payload.format}`);
     } catch (error) {
-      appendLog("error", `测试语音失败：${error.message}`);
+      appendLog("error", `测试语音失败：${errorMessage(error, "未知错误")}`);
     } finally {
       setVoiceTestBusy(false);
     }
@@ -971,8 +977,9 @@ export function App() {
       setActiveView("stage");
       refreshSessions();
     } catch (error) {
-      appendLog("error", `互动剧情生成失败：${error.message}`);
-      setMessages((items) => [...items, { id: messageID("error"), role: "assistant", text: `互动剧情生成失败：${error.message}`, meta: "error" }]);
+      const message = errorMessage(error, "未知错误");
+      appendLog("error", `互动剧情生成失败：${message}`);
+      setMessages((items) => [...items, { id: messageID("error"), role: "assistant", text: `互动剧情生成失败：${message}`, meta: "error" }]);
     } finally {
       setBusy(false);
     }
@@ -1039,8 +1046,9 @@ export function App() {
       renderTurn(payload);
       refreshSessions();
     } catch (error) {
-      appendLog("error", `对话失败：${error.message}`);
-      setMessages((items) => [...items, { id: messageID("error"), role: "assistant", text: `后端出错：${error.message}`, meta: "error" }]);
+      const message = errorMessage(error, "未知错误");
+      appendLog("error", `对话失败：${message}`);
+      setMessages((items) => [...items, { id: messageID("error"), role: "assistant", text: `后端出错：${message}`, meta: "error" }]);
     } finally {
       setBusy(false);
     }
@@ -1072,8 +1080,9 @@ export function App() {
       setWebgalExport(payload);
       appendLog("info", `WebGAL 脚本已生成：${payload.entry_file || "start.txt"}`);
     } catch (error) {
-      appendLog("error", `WebGAL 导出失败：${error.message}`);
-      setWebgalExport({ error: error.message });
+      const message = errorMessage(error, "未知错误");
+      appendLog("error", `WebGAL 导出失败：${message}`);
+      setWebgalExport({ error: message });
     } finally {
       setBusy(false);
     }
@@ -1218,7 +1227,7 @@ export function App() {
       refreshSessions();
       return true;
     } catch (error) {
-      appendLog("error", `教学阶段推进失败：${error.message}`);
+      appendLog("error", `教学阶段推进失败：${errorMessage(error, "未知错误")}`);
       return false;
     } finally {
       setBusy(false);
@@ -1340,7 +1349,7 @@ export function App() {
         appendLog("info", `剧情语音已处理：${payload.format || "placeholder"}`);
       }
     } catch (error) {
-      appendLog("warn", `剧情语音生成失败：${error.message}`);
+      appendLog("warn", `剧情语音生成失败：${errorMessage(error, "未知错误")}`);
     }
   }
 
@@ -1350,7 +1359,7 @@ export function App() {
       setSessions(payload.sessions || []);
       appendLog("info", `会话历史已刷新：${payload.sessions?.length || 0} 条。`);
     } catch (error) {
-      appendLog("error", `会话历史刷新失败：${error.message}`);
+      appendLog("error", `会话历史刷新失败：${errorMessage(error, "未知错误")}`);
     }
   }
 
@@ -1377,7 +1386,7 @@ export function App() {
         audio: waiting ? "下一幕准备中..." : current.audio
       }));
     } catch (error) {
-      appendLog("warn", `会话轮询失败：${error.message}`);
+      appendLog("warn", `会话轮询失败：${errorMessage(error, "未知错误")}`);
     }
   }
 
@@ -1433,7 +1442,7 @@ export function App() {
       setProviderHealth(payload.providers || []);
       appendLog("info", `Provider 状态已检测：${payload.providers?.length || 0} 项。`);
     } catch (error) {
-      appendLog("error", `Provider 状态检测失败：${error.message}`);
+      appendLog("error", `Provider 状态检测失败：${errorMessage(error, "未知错误")}`);
     }
   }
 
@@ -1443,7 +1452,7 @@ export function App() {
       setPluginCatalog(payload);
       appendLog("info", `插件清单已加载：${payload.manifests?.length || 0} 个 manifest。`);
     } catch (error) {
-      appendLog("error", `插件清单加载失败：${error.message}`);
+      appendLog("error", `插件清单加载失败：${errorMessage(error, "未知错误")}`);
     }
   }
 
@@ -3107,6 +3116,25 @@ async function readAudioSample(file) {
     format: file.name.split(".").pop() || "",
     data_base64: dataBase64
   };
+}
+
+function errorMessage(error, fallback = "未知错误") {
+  if (!error) return fallback;
+  if (typeof error === "string") return error.trim() || fallback;
+  if (typeof error === "number" || typeof error === "boolean") return String(error);
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "object") {
+    const direct = error.message || error.msg || error.error || error.detail || error.reason;
+    if (direct) return String(direct);
+    try {
+      const serialized = JSON.stringify(error);
+      if (serialized && serialized !== "{}") return serialized;
+    } catch {
+      // Ignore serialization failures and fall back to String().
+    }
+  }
+  const text = String(error);
+  return text && text !== "[object Object]" ? text : fallback;
 }
 
 function normalizeMood(value) {
