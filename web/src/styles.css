@@ -373,6 +373,7 @@ button:disabled {
   white-space: nowrap;
   text-decoration: none;
   box-shadow: 0 2px 6px rgba(46, 86, 140, 0.06);
+  transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease, border-color 160ms ease;
 }
 
 .primary-button {
@@ -380,6 +381,16 @@ button:disabled {
   border: 0;
   background: var(--grad);
   box-shadow: 0 12px 26px -10px rgba(58, 120, 220, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+.primary-button:not(:disabled):hover,
+.ghost-button:not(:disabled):hover {
+  transform: translateY(-1px);
+}
+
+.primary-button:not(:disabled):active,
+.ghost-button:not(:disabled):active {
+  transform: translateY(0);
 }
 
 .primary-button svg,
@@ -889,6 +900,67 @@ button:disabled {
   background: rgba(255, 255, 255, 0.32);
   font-weight: 900;
   font-size: 13px;
+}
+
+.cast-selector {
+  position: absolute;
+  z-index: 5;
+  left: 24px;
+  right: 24px;
+  bottom: 184px;
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  overflow: auto;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  background: rgba(255, 255, 255, 0.54);
+  backdrop-filter: blur(14px);
+}
+
+.cast-option {
+  min-width: 116px;
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.56);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 900;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.cast-option:not(:disabled):hover {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.cast-option.is-active {
+  color: var(--brand-deep);
+  border-color: rgba(63, 155, 255, 0.42);
+  background: #fff;
+  box-shadow: inset 0 0 0 1px rgba(90, 160, 236, 0.08);
+}
+
+.cast-option span {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: rgba(90, 160, 236, 0.16) center/cover;
+  color: var(--brand-deep);
+  font-size: 12px;
+}
+
+.cast-option b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cast-bubble {
@@ -1593,15 +1665,27 @@ button:disabled {
   min-height: 76px;
   border-bottom: 1px solid var(--line-soft);
   cursor: pointer;
+  transition: background 160ms ease, transform 160ms ease, box-shadow 160ms ease;
 }
 
 .h-table .row.item:last-child {
   border-bottom: 0;
 }
 
+.h-table .row.item:hover {
+  background: rgba(255, 255, 255, 0.46);
+}
+
 .h-table .row.item.on {
   background: linear-gradient(120deg, rgba(255, 255, 255, 0.7), rgba(234, 244, 255, 0.58));
   box-shadow: inset 3px 0 0 var(--brand);
+}
+
+.h-table .row.item.is-deleting {
+  pointer-events: none;
+  opacity: 0.46;
+  transform: translateX(8px) scale(0.99);
+  background: rgba(223, 138, 138, 0.08);
 }
 
 .h-table .no {
@@ -1682,6 +1766,22 @@ button:disabled {
 
 .h-chip.draft {
   color: var(--warn);
+}
+
+.h-chip.generating {
+  color: var(--brand-deep);
+}
+
+.h-chip.generating::before {
+  animation: fairy-pulse 1.2s ease-in-out infinite;
+}
+
+.h-chip.failed {
+  color: var(--bad);
+}
+
+.h-chip.is-deleting {
+  color: var(--muted);
 }
 
 .h-empty {
@@ -1806,6 +1906,36 @@ button:disabled {
   height: 28px;
   padding: 0 12px;
   font-size: 11.5px;
+}
+
+.h-delete-confirm {
+  margin-top: 12px;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(223, 138, 138, 0.42);
+  background: linear-gradient(135deg, rgba(255, 248, 248, 0.86), rgba(255, 255, 255, 0.62));
+  animation: historyConfirmIn 160ms ease-out both;
+}
+
+.h-delete-confirm b {
+  font-size: 12.5px;
+  font-weight: 900;
+  color: #a84f4f;
+}
+
+.h-delete-confirm p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.h-delete-confirm__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .hist2 .speaker {
@@ -1946,6 +2076,13 @@ button:disabled {
   gap: 16px;
 }
 
+.ch-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .ch-head h2 {
   margin: 0;
   font-size: 26px;
@@ -1956,6 +2093,39 @@ button:disabled {
   margin: 8px 0 0;
   font-size: 13px;
   color: var(--ink-2);
+}
+
+.character-pack-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.character-pack-actions > input[type="file"] {
+  display: none;
+}
+
+.character-pack-redact {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.56);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.character-pack-redact input {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  accent-color: var(--brand);
 }
 
 .ch-body {
@@ -3771,6 +3941,7 @@ button:disabled {
   display: grid;
   gap: 14px;
   transform: translateY(-50%);
+  animation: fairy-rise-in 220ms ease both;
 }
 
 .vn-choice-layer button {
@@ -3789,6 +3960,16 @@ button:disabled {
   font-size: 15.5px;
   font-weight: 500;
   text-align: left;
+  transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.vn-choice-layer button:not(:disabled):hover {
+  transform: translateX(4px);
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.vn-choice-layer button:not(:disabled):active {
+  transform: translateX(2px);
 }
 
 .vn-choice-layer kbd {
@@ -4259,6 +4440,39 @@ button:disabled {
 
 @keyframes blink {
   50% { opacity: 0; }
+}
+
+@keyframes fairy-pulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 14%, transparent);
+  }
+  50% {
+    transform: scale(1.22);
+    box-shadow: 0 0 0 7px color-mix(in srgb, currentColor 8%, transparent);
+  }
+}
+
+@keyframes fairy-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(-50% + 10px));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(-50%);
+  }
+}
+
+@keyframes historyConfirmIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @keyframes fadeIn {

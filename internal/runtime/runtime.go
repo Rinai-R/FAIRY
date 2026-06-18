@@ -247,7 +247,7 @@ func sceneGenerationFingerprint(request app.SceneGenerateRequest) (string, error
 
 func pendingSceneGenerationRecord(request app.SceneGenerateRequest, fingerprint string, now time.Time) app.SessionRecord {
 	character := request.Characters[0]
-	sessionID := "generation-" + fingerprint[:16] + "-" + hex.EncodeToString([]byte(fmt.Sprintf("%d", now.UnixNano())))[0:12]
+	sessionID := fmt.Sprintf("generation-%s-%d", fingerprint[:16], now.UnixNano())
 	title := strings.TrimSpace(request.Topic)
 	if title == "" {
 		title = "生成中的情景"

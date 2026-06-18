@@ -6,7 +6,6 @@ import {
   cloneVoiceStatus,
   deleteSession,
   exportWebGAL,
-  generateScene as generateSceneRequest,
   getCapabilities,
   getSession,
   getPlugins,
@@ -14,7 +13,9 @@ import {
   getSessions,
   getUserConfig,
   runtimeMode,
+  saveCharacterPackage,
   saveUserConfig as saveUserConfigRemote,
+  startSceneGeneration,
   streamTurn,
   synthesizeVoice,
   turn,
@@ -22,6 +23,7 @@ import {
 } from "./api";
 import { DirectorView } from "./views/DirectorView";
 import { GalgameStageView } from "./views/GalgameStage";
+import { createCharacterPackage, mergeCharacterPackage } from "./characterPackage";
 import { emotionLabel, expressionLabel, motionLabel } from "./views/displayLabels";
 
 const CONFIG_STORAGE_KEY = "fairy.user-config.v1";
@@ -213,6 +215,7 @@ export function App() {
   const [logs, setLogs] = useState([{ level: "info", message: "FAIRY 已启动。", time: new Date().toLocaleTimeString() }]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [generationBusy, setGenerationBusy] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [lastAudioURL, setLastAudioURL] = useState("");
   const [lastCG, setLastCG] = useState(null);
@@ -261,6 +264,10 @@ export function App() {
     () => hasPlayableWorkflow(lessonWorkflow, scene, activeSession),
     [activeSession, lessonWorkflow, scene]
   );
+  const hasGeneratingSessions = useMemo(
+    () => sessions.some((record) => recordGenerationStatus(record) === "generating"),
+    [sessions]
+  );
 
   useEffect(() => {
     if (remoteHydrateStartedRef.current) return;
@@ -297,6 +304,14 @@ export function App() {
     syncActiveSession(activeSession.id);
     return () => window.clearInterval(timer);
   }, [activeSession?.id, activeView]);
+
+  useEffect(() => {
+    if (!hasGeneratingSessions) return undefined;
+    const timer = window.setInterval(() => {
+      refreshSessions({ quiet: true });
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [hasGeneratingSessions, sessions.length]);
 
   useEffect(() => {
     if (!configHydratedRef.current) return;
@@ -658,6 +673,52 @@ export function App() {
     }
   }
 
+  async function exportCharacterPackage(scope = "active", options = {}) {
+    try {
+      const selected = scope === "all" ? characters : characters.filter((item) => item.id === activeCharacterID);
+      const redactSensitive = options.redactSensitive !== false;
+      const pack = createCharacterPackage(selected.length ? selected : characters.slice(0, 1), { redactSensitive });
+      const filenameBase = scope === "all" ? "fairy-character-pack" : (selected[0]?.display_name || selected[0]?.id || "fairy-character");
+      const filename = `${safeFileName(filenameBase)}.fairy-character.json`;
+      const content = JSON.stringify(pack, null, 2);
+      const credentialNote = redactSensitive ? "敏感凭据已脱敏" : "包含敏感凭据";
+      const saved = await saveCharacterPackage(filename, content);
+      if (saved?.cancelled) {
+        appendLog("info", "已取消导出角色包。");
+        return;
+      }
+      if (saved?.path) {
+        appendLog("info", `角色包已保存到：${saved.path}（${credentialNote}）`);
+        setConfigStatus({ state: "ready", message: `角色包已保存到：${saved.path}（${credentialNote}）` });
+        return;
+      }
+      downloadJSONContent(content, filename);
+      appendLog("info", `角色包已交给浏览器下载：${filename}（${credentialNote}）。保存位置由浏览器下载设置决定。`);
+      setConfigStatus({ state: "ready", message: `角色包已交给浏览器下载：${filename}（${credentialNote}）` });
+    } catch (error) {
+      const message = errorMessage(error, "未知错误");
+      setConfigStatus({ state: "error", message: `角色包导出失败：${message}` });
+      appendLog("error", `角色包导出失败：${message}`);
+    }
+  }
+
+  async function importCharacterPackageFile(file) {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const merged = mergeCharacterPackage(characters, text);
+      setCharacters(merged.characters);
+      if (merged.firstCharacterID) setActiveCharacterID(merged.firstCharacterID);
+      await saveConfigNow({ characters: merged.characters, activeCharacterID: merged.firstCharacterID || activeCharacterID });
+      appendLog("info", `角色包已导入：${merged.importedCount} 个角色。`);
+      setConfigStatus({ state: "ready", message: `角色包已导入：${merged.importedCount} 个角色。` });
+    } catch (error) {
+      const message = errorMessage(error, "未知错误");
+      setConfigStatus({ state: "error", message: `角色包导入失败：${message}` });
+      appendLog("error", `角色包导入失败：${message}`);
+    }
+  }
+
   async function importDocumentFile(file) {
     if (!file) return;
     if (file.size > MAX_DOCUMENT_ASSET_BYTES) {
@@ -942,10 +1003,10 @@ export function App() {
   }
 
   async function generateLesson() {
-    if (busy) return;
-    setBusy(true);
+    if (generationBusy) return;
+    setGenerationBusy(true);
     try {
-      const payload = await generateSceneRequest({
+      const payload = await startSceneGeneration({
         topic: documentTitle,
         document_text: documentText,
         learning_goal: learningGoal,
@@ -958,44 +1019,27 @@ export function App() {
         },
         variables: buildSceneVariables()
       });
-      setActiveSession(payload.session || {
-        id: `${payload.scene?.id || "lesson"}:default`,
-        user_id: "default",
-        active_character_id: activeCharacter?.id || "",
-        participant_ids: activeCharacter?.id ? [activeCharacter.id] : []
-      });
-      setScene(payload.scene);
-      // scene interaction removed
-      const workflow = normalizeTeachingWorkflow(payload.workflow, payload.scene);
-      setLessonWorkflow(workflow);
-      setRelation(payload.relation || defaultRelation);
-      setPrompt(payload.prompt || prompt);
-      setLastCG(payload.image || null);
-      setOpeningMessage(payload.opening_message || "");
-      setWebgalExport(null);
-      setMessages([]);
+      const record = payload?.record;
+      if (record?.session?.id) {
+        upsertSessionRecord(record);
+      }
       setRuntimeState((current) => ({
         ...current,
-        cg: payload.image?.prompt || "已生成 CG 计划",
-        stageWaiting: stageWorkflowWaiting(workflow),
-        audio: stageWorkflowWaiting(workflow) ? "下一幕准备中..." : current.audio
+        cg: "生成任务已创建",
+        audio: "后台生成中",
+        stageWaiting: false
       }));
-      const currentNode = workflow.nodes?.find((node) => node.id === workflow.current_node_id) || workflow.nodes?.[0];
-      if (currentNode?.line || currentNode?.lines?.length) {
-        appendWorkflowNodeMessage(currentNode);
-      } else if (payload.opening_message) {
-        appendAssistantMessage({ text: payload.opening_message, meta: "stage generated" });
-      }
-      playPreparedWorkflowNodeAudio(currentNode);
-      appendLog("info", `互动剧情已生成：${payload.scene?.title || "untitled"}`);
-      setActiveView("stage");
-      refreshSessions();
+      appendLog("info", payload?.duplicate
+        ? `已有相同生成任务：${record?.scene?.title || record?.session?.id || documentTitle}`
+        : `生成任务已创建：${record?.scene?.title || documentTitle}`);
+      setActiveView("history");
+      refreshSessions({ quiet: true });
     } catch (error) {
       const message = errorMessage(error, "未知错误");
       appendLog("error", `互动剧情生成失败：${message}`);
       setMessages((items) => [...items, { id: messageID("error"), role: "assistant", text: `互动剧情生成失败：${message}`, meta: "error" }]);
     } finally {
-      setBusy(false);
+      setGenerationBusy(false);
     }
   }
 
@@ -1367,11 +1411,29 @@ export function App() {
     }
   }
 
-  async function refreshSessions() {
+  function upsertSessionRecord(record) {
+    if (!record?.session?.id) return;
+    setSessions((items) => {
+      const next = Array.isArray(items) ? [...items] : [];
+      const index = next.findIndex((item) => item?.session?.id === record.session.id);
+      if (index >= 0) next[index] = record;
+      else next.unshift(record);
+      return next.sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0));
+    });
+  }
+
+  function removeSessionRecord(sessionID) {
+    if (!sessionID) return;
+    setSessions((items) => (Array.isArray(items) ? items.filter((item) => item?.session?.id !== sessionID) : []));
+  }
+
+  async function refreshSessions(options = {}) {
     try {
       const payload = await getSessions();
       setSessions(payload.sessions || []);
-      appendLog("info", `会话历史已刷新：${payload.sessions?.length || 0} 条。`);
+      if (!options.quiet) {
+        appendLog("info", `会话历史已刷新：${payload.sessions?.length || 0} 条。`);
+      }
     } catch (error) {
       appendLog("error", `会话历史刷新失败：${errorMessage(error, "未知错误")}`);
     }
@@ -1382,13 +1444,7 @@ export function App() {
     try {
       const record = await getSession(sessionID);
       if (!record?.session || !record?.workflow) return;
-      setSessions((items) => {
-        const next = Array.isArray(items) ? [...items] : [];
-        const index = next.findIndex((item) => item?.session?.id === record.session.id);
-        if (index >= 0) next[index] = record;
-        else next.unshift(record);
-        return next;
-      });
+      upsertSessionRecord(record);
       setActiveSession(record.session);
       setScene(record.scene || scene);
       setRelation(record.relation || defaultRelation);
@@ -1406,6 +1462,10 @@ export function App() {
 
   function restoreSession(record) {
     if (!record?.session || !record?.scene) return;
+    if (recordGenerationStatus(record) !== "ready") {
+      appendLog("warn", `记录尚不可演出：${historyStatusLabel(recordGenerationStatus(record))}`);
+      return;
+    }
     setWebgalExport(null);
     setActiveSession(record.session);
     setScene(record.scene);
@@ -1554,6 +1614,7 @@ export function App() {
             documentTitle={documentTitle}
             documentURL={documentURL}
             effectiveProviders={effectiveProviders}
+            generationBusy={generationBusy}
             generateLesson={generateLesson}
             importDocumentFile={importDocumentFile}
             importDocumentURL={importDocumentURL}
@@ -1584,6 +1645,7 @@ export function App() {
             appendLog={appendLog}
             busy={busy}
             refreshSessions={refreshSessions}
+            removeSessionRecord={removeSessionRecord}
             restoreSession={restoreSession}
             sessions={sessions}
             setActiveView={routeView}
@@ -1634,6 +1696,8 @@ export function App() {
             refreshVoiceCloneStatus={refreshVoiceCloneStatus}
             runtimeState={runtimeState}
             sessions={sessions}
+            exportCharacterPackage={exportCharacterPackage}
+            importCharacterPackageFile={importCharacterPackageFile}
             setActiveCharacterID={setActiveCharacterID}
             setCgConfig={setCgConfig}
             setCharacterAsset={setCharacterAsset}
@@ -1725,6 +1789,7 @@ function HomeView({
   documentTitle,
   documentURL,
   effectiveProviders,
+  generationBusy,
   generationRequirement,
   generateLesson,
   importDocumentFile,
@@ -1768,7 +1833,6 @@ function HomeView({
           <header className="hero-block">
             <span className="eyebrow">{homeStep === "source" ? "文档 · 单角色视觉小说教学" : "第 2 步 · 生成目标"}</span>
             <h1>放进一份文档，<br />生成一段可玩的 <span>Galgame</span>。</h1>
-            {homeStep === "target" ? <p>定义这段 Galgame 要讲清什么，以及用什么节奏讲。</p> : null}
           </header>
 
           <article className="intake-panel">
@@ -1850,8 +1914,8 @@ function HomeView({
                 <span><i className="is-idle" />语音服务</span>
                 <span><i className="is-idle" />素材服务</span>
               </div>
-              <button className="primary-button" type="button" onClick={homeStep === "source" ? () => setHomeStep("target") : generateLesson} disabled={busy}>
-                {busy ? "生成中..." : homeStep === "source" ? "继续到生成目标" : "生成章节"}
+              <button className="primary-button" type="button" onClick={homeStep === "source" ? () => setHomeStep("target") : generateLesson} disabled={generationBusy || (homeStep === "target" && !sourceReady)}>
+                {generationBusy ? "创建任务..." : homeStep === "source" ? "继续到生成目标" : "生成章节"}
               </button>
             </footer>
           </article>
@@ -1874,6 +1938,25 @@ function HomeView({
           ) : (
             <div className="cast-empty"><span>未绑定立绘</span></div>
           )}
+          <div className="cast-selector" aria-label="选择生成角色">
+            {characters.map((character) => {
+              const portrait = character?.assets?.portrait_url || character?.avatar_url || "";
+              const selected = character.id === activeCharacterID;
+              return (
+                <button
+                  key={character.id}
+                  type="button"
+                  className={`cast-option ${selected ? "is-active" : ""}`}
+                  onClick={() => setActiveCharacterID(character.id)}
+                  disabled={generationBusy}
+                  title={character.display_name || character.id}
+                >
+                  <span style={portrait ? { backgroundImage: `url("${portrait}")` } : undefined}>{portrait ? "" : (character.display_name || character.id || "?").slice(0, 1)}</span>
+                  <b>{character.display_name || character.id}</b>
+                </button>
+              );
+            })}
+          </div>
           <div className="cast-bubble">
             <div className="cast-bubble__who">
               <span className="cast-bubble__pin" aria-hidden="true" />
@@ -1890,67 +1973,63 @@ function HomeView({
 
 function HistoryView(props) {
   const {
-    appendLog, busy, refreshSessions, restoreSession, sessions, setActiveView
+    appendLog, busy, refreshSessions, removeSessionRecord, restoreSession, sessions, setActiveView
   } = props;
   const [selectedSessionID, setSelectedSessionID] = useState("");
-  const [checkedIDs, setCheckedIDs] = useState(new Set());
   const [deleteError, setDeleteError] = useState("");
+  const [confirmDeleteID, setConfirmDeleteID] = useState("");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [deletingIDs, setDeletingIDs] = useState(new Set());
   const sortedSessions = [...sessions].sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0));
   const visibleSessions = sortedSessions.filter((record) => {
-    const generated = hasPlayableWorkflow(record.workflow, record.scene, record.session);
-    if (statusFilter === "generated" && !generated) return false;
-    if (statusFilter === "draft" && generated) return false;
+    const status = recordGenerationStatus(record);
+    if (statusFilter === "generated" && status !== "ready") return false;
+    if (statusFilter === "draft" && status !== "draft") return false;
+    if (statusFilter === "generating" && status !== "generating") return false;
+    if (statusFilter === "failed" && status !== "failed") return false;
     if (!query.trim()) return true;
     const q = query.trim().toLowerCase();
     return [sessionTitle(record), sessionGoal(record), sessionSource(record)].some((text) => (text || "").toLowerCase().includes(q));
   });
   const selectedRecord = visibleSessions.find((record) => record.session.id === selectedSessionID) || visibleSessions[0];
-  const allChecked = visibleSessions.length > 0 && visibleSessions.every((record) => checkedIDs.has(record.session.id));
 
-  function toggleCheck(id) {
-    setCheckedIDs((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
-  }
-  function toggleAll() {
-    if (allChecked) { setCheckedIDs(new Set()); } else { setCheckedIDs(new Set(visibleSessions.map((r) => r.session.id))); }
-  }
-  async function handleDelete(record) {
-    if (!window.confirm(`确定删除「${sessionTitle(record)}」？`)) return;
+  useEffect(() => {
+    if (!confirmDeleteID) return;
+    if (!sessions.some((record) => record?.session?.id === confirmDeleteID)) setConfirmDeleteID("");
+  }, [confirmDeleteID, sessions]);
+
+  function requestDelete(record) {
+    const sessionID = record?.session?.id || "";
+    if (!sessionID || deletingIDs.has(sessionID)) return;
     setDeleteError("");
+    setConfirmDeleteID(sessionID);
+  }
+
+  async function handleDelete(record) {
+    const sessionID = record?.session?.id || "";
+    if (!sessionID || deletingIDs.has(sessionID)) return;
+    setDeleteError("");
+    setConfirmDeleteID("");
+    setDeletingIDs((prev) => new Set(prev).add(sessionID));
     try {
-      await deleteSession(record.session.id);
-      if (selectedSessionID === record.session.id) setSelectedSessionID("");
-      setCheckedIDs((prev) => { const next = new Set(prev); next.delete(record.session.id); return next; });
-      await refreshSessions();
+      await deleteSession(sessionID);
+      if (selectedSessionID === sessionID) setSelectedSessionID("");
+      removeSessionRecord?.(sessionID);
+      appendLog?.("info", `已删除记录：${sessionTitle(record)}`);
+      await refreshSessions({ quiet: true });
     } catch (e) {
       const message = `删除记录失败：${e.message}`;
       setDeleteError(message);
       appendLog?.("error", message);
+    } finally {
+      setDeletingIDs((prev) => { const next = new Set(prev); next.delete(sessionID); return next; });
     }
   }
-  const [deleting, setDeleting] = useState(false);
-  async function handleBatchDelete() {
-    if (checkedIDs.size === 0) return;
-    if (!window.confirm(`确定删除选中的 ${checkedIDs.size} 条记录？此操作不可撤销。`)) return;
-    setDeleting(true);
-    setDeleteError("");
-    const failures = [];
-    for (const id of checkedIDs) {
-      try { await deleteSession(id); } catch (e) { failures.push(`${id}: ${e.message}`); }
-    }
-    if (failures.length) {
-      const message = `批量删除失败 ${failures.length} 条：${failures.join("；")}`;
-      setDeleteError(message);
-      appendLog?.("error", message);
-    }
-    setCheckedIDs(new Set());
-    await refreshSessions();
-    setDeleting(false);
-  }
-  const pills = [{ id: "all", label: "全部" }, { id: "generated", label: "已生成" }, { id: "draft", label: "草稿" }];
+  const pills = [{ id: "all", label: "全部" }, { id: "generated", label: "已生成" }, { id: "generating", label: "生成中" }, { id: "failed", label: "失败" }, { id: "draft", label: "草稿" }];
   const sel = selectedRecord;
-  const selGenerated = sel ? hasPlayableWorkflow(sel.workflow, sel.scene, sel.session) : false;
+  const selStatus = sel ? recordGenerationStatus(sel) : "draft";
+  const selGenerated = selStatus === "ready";
   const selCharacter = sel ? sessionCharacter(sel) : null;
   const selPortrait = selCharacter?.assets?.portrait_url || selCharacter?.avatar_url || "";
   const selNodes = sel?.workflow?.nodes || [];
@@ -1998,15 +2077,16 @@ function HistoryView(props) {
             <div className="row head"><span>编号</span><span>标题</span><span>文档源</span><span>保存时间</span><span>状态</span></div>
             <div className="rows">
               {visibleSessions.length ? visibleSessions.map((record, index) => {
-                const generated = hasPlayableWorkflow(record.workflow, record.scene, record.session);
+                const status = recordGenerationStatus(record);
                 const on = sel?.session.id === record.session.id;
+                const deleting = deletingIDs.has(record.session.id);
                 return (
-                  <div className={`row item ${on ? "on" : ""}`} key={record.session.id} onClick={() => setSelectedSessionID(record.session.id)}>
+                  <div className={`row item ${on ? "on" : ""} ${deleting ? "is-deleting" : ""}`} key={record.session.id} onClick={() => setSelectedSessionID(record.session.id)}>
                     <span className="no">{String(index + 1).padStart(2, "0")}</span>
                     <div className="ttl"><b>{sessionTitle(record)}</b><span>{sessionGoal(record)}</span></div>
                     <span className="src">{sessionSource(record)}</span>
                     <span className="time">{formatHistoryTime(record.updated_at)}</span>
-                    <span className={`h-chip ${generated ? "ok" : "draft"}`}>{generated ? "已生成" : "草稿"}</span>
+                    <span className={`h-chip ${historyStatusClass(status)} ${deleting ? "is-deleting" : ""}`}>{deleting ? "删除中" : historyStatusLabel(status)}</span>
                   </div>
                 );
               }) : (
@@ -2023,17 +2103,31 @@ function HistoryView(props) {
               <div className="h-panel">
                 <h4>选中记录</h4>
                 <div className="h-name">{sessionTitle(sel)}</div>
-                <p className="h-desc">{selGenerated ? "已生成完整章节脚本，可直接进入剧情演出；不再需要的记录可以删除。" : "草稿尚未生成完整章节，可继续补全或删除。"}</p>
+                <p className="h-desc">{historyStatusDescription(selStatus)}</p>
                 <div className="h-kv-list">
                   <div className="kv"><span>文档源</span><b>{sessionSource(sel)}</b></div>
                   <div className="kv"><span>章节</span><b>{selNodes.length} 个章节</b></div>
-                  <div className="kv"><span>状态</span><b style={{ color: selGenerated ? "var(--ok)" : "var(--warn)" }}>{selGenerated ? "可演出" : "草稿"}</b></div>
+                  <div className="kv"><span>状态</span><b style={{ color: historyStatusColor(selStatus) }}>{historyStatusLabel(selStatus)}</b></div>
                   <div className="kv"><span>保存时间</span><b>{formatHistoryTime(sel.updated_at)}</b></div>
                 </div>
                 <div className="insp-actions">
-                  <button className="h-btn primary sm" type="button" onClick={() => restoreSession(sel)}>进入演出</button>
-                  <button className="h-btn danger sm" type="button" onClick={() => handleDelete(sel)}>删除记录</button>
+                  <button className="h-btn primary sm" type="button" onClick={() => restoreSession(sel)} disabled={!selGenerated || busy}>进入演出</button>
+                  <button className="h-btn danger sm" type="button" onClick={() => requestDelete(sel)} disabled={deletingIDs.has(sel.session.id)}>
+                    {deletingIDs.has(sel.session.id) ? "删除中" : "删除记录"}
+                  </button>
                 </div>
+                {confirmDeleteID === sel.session.id ? (
+                  <div className="h-delete-confirm" role="alertdialog" aria-live="polite" aria-label="确认删除历史记录">
+                    <div>
+                      <b>删除这条历史记录？</b>
+                      <p>这会从本机历史中移除该记录。</p>
+                    </div>
+                    <div className="h-delete-confirm__actions">
+                      <button className="h-btn ghost sm" type="button" onClick={() => setConfirmDeleteID("")}>取消</button>
+                      <button className="h-btn danger sm" type="button" onClick={() => handleDelete(sel)} disabled={deletingIDs.has(sel.session.id)}>确认删除</button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               <div className="h-panel">
@@ -2132,12 +2226,63 @@ function sessionTitle(record) {
 }
 
 function sessionGoal(record) {
+  if (recordGenerationStatus(record) === "failed" && record?.generation?.error) {
+    return cleanHistoryText(record.generation.error);
+  }
   return cleanHistoryText(record?.teaching?.learning_goal || record?.scene?.variables?.learning_goal || "继续此前的教学场景。");
 }
 
 function sessionSource(record) {
   const vars = record?.scene?.variables || {};
   return cleanHistoryText(vars.document_asset_name || vars.source_url || vars.document_url || vars.document_title || "—");
+}
+
+function recordGenerationStatus(record) {
+  const status = String(record?.generation?.status || "").trim();
+  if (status === "generating") return "generating";
+  if (status === "failed") return "failed";
+  if (status === "ready") return "ready";
+  return hasPlayableWorkflow(record?.workflow, record?.scene, record?.session) ? "ready" : "draft";
+}
+
+function historyStatusLabel(status) {
+  switch (status) {
+    case "generating": return "生成中";
+    case "failed": return "失败";
+    case "ready": return "已生成";
+    default: return "草稿";
+  }
+}
+
+function historyStatusClass(status) {
+  switch (status) {
+    case "generating": return "generating";
+    case "failed": return "failed";
+    case "ready": return "ok";
+    default: return "draft";
+  }
+}
+
+function historyStatusColor(status) {
+  switch (status) {
+    case "generating": return "var(--accent)";
+    case "failed": return "var(--bad)";
+    case "ready": return "var(--ok)";
+    default: return "var(--warn)";
+  }
+}
+
+function historyStatusDescription(status) {
+  switch (status) {
+    case "generating":
+      return "剧情正在后台生成，可以继续新建下一条任务；完成后这里会自动变成可演出记录。";
+    case "failed":
+      return "这条生成任务失败了，记录中保留了错误信息，修正配置后可以重新发起。";
+    case "ready":
+      return "已生成完整章节脚本，可直接进入剧情演出；不再需要的记录可以删除。";
+    default:
+      return "草稿尚未生成完整章节，可继续补全或删除。";
+  }
 }
 
 function sessionCharacter(record) {
@@ -2235,6 +2380,7 @@ function ConfigView(props) {
   const {
     activeCharacterID, cgConfig, characters, cloneBusy, configStatus, configTab, languagePlan, pluginCatalog, prompt, providerHealth, providerOptions,
     refreshPlugins, refreshProviderHealth, refreshSessions, refreshVoiceCloneStatus, runtimeState, sessions, setActiveCharacterID,
+    exportCharacterPackage, importCharacterPackageFile,
     setActiveView, setCgConfig, setCharacterAsset, setCharacterBackgroundAsset, setCharacterField, addCharacterMoodAsset, removeCharacterMoodAsset,
     renameCharacterMoodAsset, setCharacterMoodAsset, setCharacterPromptField,
     setCharacterRuntimeAgentField, setCharacterRuntimeField, setCharacterRuntimeImageField, setCharacterRuntimeLanguageField, setCharacterRuntimeVoiceExtraField,
@@ -2245,6 +2391,8 @@ function ConfigView(props) {
   } = props;
   const [editingCharacterID, setEditingCharacterID] = useState(null);
   const [editorOpen, setEditorOpen] = useState(false);
+  const [redactCharacterPackage, setRedactCharacterPackage] = useState(true);
+  const packageInputRef = useRef(null);
   const editId = editingCharacterID || activeCharacterID;
   const editingCharacter = characters.find((character) => character.id === editId) || characters[0];
   const castPortrait = editingCharacter?.assets?.portrait_url || editingCharacter?.avatar_url || "";
@@ -2256,8 +2404,28 @@ function ConfigView(props) {
       <div className="char2">
           <section className="char2-stage">
             <div className="ch-head">
-              <h2>主讲角色设定</h2>
-              <p>先选角色槽位，再在弹窗里编辑 Prompt、剧情 Agent、模型与语音服务。{configStatus?.message ? <em className="ch-status">· {configStatus.message}</em> : null}</p>
+              <div>
+                <h2>主讲角色设定</h2>
+                <p>先选角色槽位，再在弹窗里编辑 Prompt、剧情 Agent、模型与语音服务。{configStatus?.message ? <em className="ch-status">· {configStatus.message}</em> : null}</p>
+              </div>
+              <div className="character-pack-actions">
+                <input
+                  ref={packageInputRef}
+                  type="file"
+                  accept="application/json,.json,.fairy-character.json"
+                  onChange={(event) => {
+                    importCharacterPackageFile?.(event.target.files?.[0]);
+                    event.target.value = "";
+                  }}
+                />
+                <button className="h-btn ghost sm" type="button" onClick={() => packageInputRef.current?.click()}>导入角色包</button>
+                <label className="character-pack-redact">
+                  <input type="checkbox" checked={redactCharacterPackage} onChange={(event) => setRedactCharacterPackage(event.target.checked)} />
+                  <span>导出时脱敏凭据</span>
+                </label>
+                <button className="h-btn ghost sm" type="button" onClick={() => exportCharacterPackage?.("active", { redactSensitive: redactCharacterPackage })}>另存当前角色</button>
+                <button className="h-btn ghost sm" type="button" onClick={() => exportCharacterPackage?.("all", { redactSensitive: redactCharacterPackage })}>另存全部角色</button>
+              </div>
             </div>
             <div className="ch-body">
               <div className="ch-slots">
@@ -2934,6 +3102,26 @@ function formatBytes(value) {
     index += 1;
   }
   return `${size.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function downloadJSONContent(content, filename) {
+  const blob = new Blob([content], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function safeFileName(value) {
+  return String(value || "fairy-character")
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, "-")
+    .slice(0, 64) || "fairy-character";
 }
 
 function formatHistoryTime(value) {

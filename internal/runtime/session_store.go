@@ -231,9 +231,6 @@ func (s *FileSessionStore) AdvanceWorkflow(req app.WorkflowAdvanceRequest) (app.
 		}
 		selectedChoice = choice
 	}
-	if req.ChoiceID != "" && !nodeHasChoice(current, req.ChoiceID) {
-		return app.SessionRecord{}, fmt.Errorf("当前节点不包含选项: %s", req.ChoiceID)
-	}
 	replay := req.Replay
 	if !replay && current.NextNodeID != "" && req.NextNodeID != current.NextNodeID && workflowVisited(record.Workflow, req.NextNodeID) {
 		replay = true

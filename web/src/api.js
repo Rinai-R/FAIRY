@@ -56,6 +56,12 @@ export async function saveUserConfig(config) {
   });
 }
 
+export async function saveCharacterPackage(filename, content) {
+  const app = wailsApp();
+  if (app?.SaveCharacterPackage) return app.SaveCharacterPackage(filename, content);
+  return null;
+}
+
 export async function getPlugins() {
   const app = wailsApp();
   if (app) return app.Plugins();

@@ -3,12 +3,17 @@ package desktop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/Rinai-R/FAIRY/internal/adapters/health"
 	"github.com/Rinai-R/FAIRY/internal/app"
 	"github.com/Rinai-R/FAIRY/internal/app/bootstrap"
 	domainruntime "github.com/Rinai-R/FAIRY/internal/runtime"
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 type App struct {
@@ -90,6 +95,39 @@ func (a *App) DeleteSession(id string) (map[string]bool, error) {
 		return nil, err
 	}
 	return map[string]bool{"deleted": true}, nil
+}
+
+func (a *App) SaveCharacterPackage(filename string, content string) (map[string]any, error) {
+	filename = strings.TrimSpace(filename)
+	if filename == "" {
+		filename = "fairy-character.fairy-character.json"
+	}
+	if strings.TrimSpace(content) == "" {
+		return nil, errors.New("角色包内容不能为空")
+	}
+	path, err := wailsruntime.SaveFileDialog(a.context(), wailsruntime.SaveDialogOptions{
+		Title:                "保存 FAIRY 角色包",
+		DefaultFilename:      filename,
+		CanCreateDirectories: true,
+		Filters: []wailsruntime.FileFilter{
+			{DisplayName: "FAIRY 角色包 (*.json)", Pattern: "*.json"},
+			{DisplayName: "所有文件 (*.*)", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return map[string]any{"cancelled": true}, nil
+	}
+	if filepath.Ext(path) == "" {
+		path += ".json"
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return nil, err
+	}
+	return map[string]any{"path": path, "cancelled": false}, nil
 }
 
 func (a *App) UserConfig() (map[string]any, error) {
