@@ -138,6 +138,8 @@ export function App() {
   const configHydratedRef = useRef(false);
   const remoteHydrateStartedRef = useRef(false);
   const remoteSaveTimerRef = useRef(null);
+  const autoplayBlockRef = useRef({ url: "", time: 0 });
+  const voiceTestCacheRef = useRef({ key: "", url: "" });
   const [activeView, setActiveView] = useState(() => {
     const hash = typeof window !== "undefined" ? window.location.hash.replace("#", "") : "";
     return ["dashboard", "history", "director", "config", "logs", "stage"].includes(hash) ? hash : "dashboard";
@@ -639,9 +641,11 @@ export function App() {
     try {
       await saveConfigNow({ characters: nextCharacters });
       appendLog("info", `角色资源已保存：${character?.display_name || id}`);
+      return true;
     } catch (error) {
       setConfigStatus({ state: "error", message: `配置保存失败：${error.message}` });
       appendLog("error", `角色资源保存失败：${error.message}`);
+      return false;
     }
   }
 
@@ -781,6 +785,12 @@ export function App() {
       if (effectiveVoiceProvider === "volcengine" && !speaker.trim()) {
         throw new Error("请先填写复刻声音 ID。");
       }
+      const cacheKey = [activeCharacter?.id || "", effectiveVoiceProvider, speaker, text].join("\n");
+      if (voiceTestCacheRef.current.key === cacheKey && voiceTestCacheRef.current.url) {
+        setLastAudioURL(voiceTestCacheRef.current.url);
+        playAudio(voiceTestCacheRef.current.url);
+        return;
+      }
       const payload = await synthesizeVoice({
         provider: effectiveVoiceProvider,
         text,
@@ -800,10 +810,11 @@ export function App() {
         audio: payload.url ? `${payload.format} · ${Math.round((payload.duration_ms || 0) / 1000)}s` : payload.format || "mock"
       }));
       if (payload.url) {
+        voiceTestCacheRef.current = { key: cacheKey, url: payload.url };
         setLastAudioURL(payload.url);
-        playAudio(payload.url);
+        playAudio(payload.url, { quietAutoplayBlock: true });
       }
-      appendLog("info", `测试语音已生成：${payload.url || payload.format}`);
+      appendLog("info", payload.url ? `测试语音已生成，可再次点击试听：${payload.url}` : `测试语音已生成：${payload.format}`);
     } catch (error) {
       appendLog("error", `测试语音失败：${error.message}`);
     } finally {
@@ -1100,12 +1111,25 @@ export function App() {
     }
   }
 
-  function playAudio(url = lastAudioURL) {
+  function noteAutoplayBlocked(url) {
+    const now = Date.now();
+    const last = autoplayBlockRef.current;
+    if (last.url !== url || now - last.time > 5000) {
+      appendLog("warn", "浏览器拦截了自动播放，音频已保留，请点击重播。");
+    }
+    autoplayBlockRef.current = { url, time: now };
+    setRuntimeState((current) => ({ ...current, audio: "等待点击播放" }));
+  }
+
+  function playAudio(url = lastAudioURL, options = {}) {
     if (!url || !audioRef.current) return;
     audioRef.current.src = url;
     audioRef.current.play().catch(() => {
-      appendLog("warn", "浏览器拦截了自动播放，请手动点击重播。");
-      setRuntimeState((current) => ({ ...current, audio: "等待点击播放" }));
+      if (options.quietAutoplayBlock) {
+        setRuntimeState((current) => ({ ...current, audio: "等待点击播放" }));
+        return;
+      }
+      noteAutoplayBlocked(url);
     });
   }
 
@@ -1127,8 +1151,7 @@ export function App() {
           audio.addEventListener("error", finish);
         });
       } catch {
-        appendLog("warn", "浏览器拦截了自动播放，请手动点击重播。");
-        setRuntimeState((current) => ({ ...current, audio: "等待点击播放" }));
+        noteAutoplayBlocked(url);
         return;
       }
     }
@@ -2198,7 +2221,7 @@ function ConfigView(props) {
     voiceTestBusy, voiceTestText
   } = props;
   const [editingCharacterID, setEditingCharacterID] = useState(null);
-  const [editorOpen, setEditorOpen] = useState(true);
+  const [editorOpen, setEditorOpen] = useState(false);
   const editId = editingCharacterID || activeCharacterID;
   const editingCharacter = characters.find((character) => character.id === editId) || characters[0];
   const castPortrait = editingCharacter?.assets?.portrait_url || editingCharacter?.avatar_url || "";
@@ -2338,6 +2361,10 @@ function CharacterConfigModal({
   const image = character.runtime?.image || {};
   const speaker = voiceExtra.speaker || voice.voice_id || character.voice_id || "";
   const [provTab, setProvTab] = useState("agent");
+  const handleSave = async () => {
+    const saved = await saveRoleConfig(character.id);
+    if (saved) onClose?.();
+  };
   const provTabs = [
     { id: "agent", label: "剧情 Agent" },
     { id: "image", label: "图片服务" },
@@ -2479,7 +2506,7 @@ function CharacterConfigModal({
                 )}
                 <div className="ch-field-wide voice-test-card">
                   <TextAreaField label="测试台词" value={voiceTestText} onChange={setVoiceTestText} rows={2} />
-                  <button className="primary-button" type="button" onClick={testVoiceSynthesis} disabled={voiceTestBusy || (voiceProvider === "volcengine" && !speaker)}>{voiceTestBusy ? "合成中" : "播放角色语音"}</button>
+                  <button className="primary-button" type="button" onClick={testVoiceSynthesis} disabled={voiceTestBusy || (voiceProvider === "volcengine" && !speaker)}>{voiceTestBusy ? "合成中" : "试听角色语音"}</button>
                 </div>
               </div>
             )}
@@ -2522,7 +2549,7 @@ function CharacterConfigModal({
 
         <div className="m-foot">
           <span className="note">保存后，新建情节会使用该角色 Prompt 和 Provider 配置；已有脚本不会被静默覆盖。</span>
-          <button className="h-btn primary" type="button" onClick={() => saveRoleConfig(character.id)}>保存档案</button>
+          <button className="h-btn primary" type="button" onClick={handleSave}>保存档案</button>
         </div>
       </section>
   );

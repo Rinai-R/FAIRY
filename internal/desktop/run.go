@@ -2,8 +2,10 @@ package desktop
 
 import (
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/Rinai-R/FAIRY/internal/app/bootstrap"
 	"github.com/wailsapp/wails/v2"
@@ -24,12 +26,28 @@ func Run(config bootstrap.Config, logger *slog.Logger) error {
 			TitleBar: mac.TitleBarHiddenInset(),
 		},
 		AssetServer: &assetserver.Options{
-			Assets: os.DirFS(assetsDir()),
+			Assets:  os.DirFS(assetsDir()),
+			Handler: runtimeAssetHandler(config),
 		},
 		OnStartup: app.Startup,
 		Bind: []interface{}{
 			app,
 		},
+	})
+}
+
+func runtimeAssetHandler(config bootstrap.Config) http.Handler {
+	audioFiles := http.StripPrefix("/audio/", http.FileServer(http.Dir(config.AudioDir)))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.NotFound(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/audio/") {
+			audioFiles.ServeHTTP(w, r)
+			return
+		}
+		http.NotFound(w, r)
 	})
 }
 

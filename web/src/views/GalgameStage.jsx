@@ -4,12 +4,10 @@ export function GalgameStageView({
   activeCharacter, activeCharacterID, busy, input, isTyping, lastCG,
   lessonWorkflow, messages, mood, playAudio, providerLine, runtimeState, scene,
   advanceLessonWorkflow, playWorkflowNodeVoice, returnToRecords, sendChoice, sendTurn, setInput, speaking, submit,
-  // Menu
-  onOpenHome, onOpenHistory, onOpenConfig, onOpenLogs
+  onOpenHome
 }) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [closing, setClosing] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
   const backlogListRef = useRef(null);
   const closeTimerRef = useRef(null);
   const dialogueRef = useRef(null);
@@ -19,7 +17,6 @@ export function GalgameStageView({
   const workflowHistory = Array.isArray(lessonWorkflow?.history) ? lessonWorkflow.history : [];
   const isFreeDiscussionNode = currentNode?.free_discussion || currentNode?.kind === "free_discussion";
   const stageChoices = currentNode?.choices?.length ? currentNode.choices : [];
-  const visitedNodeIDs = new Set((lessonWorkflow?.history || []).map((item) => item.node_id));
   const speaker = activeCharacter?.display_name || activeCharacterID || "角色";
 
   const latestAssistant = useMemo(() => findLatest(messages, "assistant"), [messages]);
@@ -54,7 +51,6 @@ export function GalgameStageView({
   const [typedText, setTypedText] = useState(lastDialogueText);
   const [typewriterDone, setTypewriterDone] = useState(true);
 
-  const lessonNodes = workflowNodes.filter((n) => n.kind === "lesson" || n.kind === "opening");
   const currentNodeIdx = workflowNodes.findIndex((n) => n.id === currentNode?.id);
   const typingActive = !!(visibleAssistant?.typing || isTyping || !typewriterDone);
   const stageWaiting = Boolean(runtimeState?.stageWaiting);
@@ -121,7 +117,6 @@ export function GalgameStageView({
         return;
       }
 
-      if (e.key === "Escape" && menuOpen) { e.preventDefault(); setMenuOpen(false); return; }
       if (busy) return;
 
       if ((e.key === " " || e.key === "Enter") && !isFreeDiscussionNode) {
@@ -129,21 +124,21 @@ export function GalgameStageView({
         if (currentNode?.next_node_id) advanceLessonWorkflow(currentNode.next_node_id);
         return;
       }
-      if ((e.key === "b" || e.key === "B") && !menuOpen) {
+      if (e.key === "b" || e.key === "B") {
         e.preventDefault();
         setHistoryOpen(true);
         return;
       }
       // Number keys for choices
       const num = parseInt(e.key, 10);
-      if (num >= 1 && num <= 9 && stageChoices.length >= num && !menuOpen) {
+      if (num >= 1 && num <= 9 && stageChoices.length >= num) {
         e.preventDefault();
         sendChoice(stageChoices[num - 1]);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [historyOpen, menuOpen, busy, isFreeDiscussionNode, currentNode, stageChoices, advanceLessonWorkflow, sendChoice, closeBacklog]);
+  }, [historyOpen, busy, isFreeDiscussionNode, currentNode, stageChoices, advanceLessonWorkflow, sendChoice, closeBacklog]);
 
   return (
     <div className="vn-stage-frame">
@@ -161,48 +156,22 @@ export function GalgameStageView({
         )}
       </div>
 
-      {/* Chapter progress dots - top left */}
+      {/* Back to preview */}
       <button className="vn-back-btn" onClick={onOpenHome} aria-label="返回剧情预览" title="返回剧情预览">
         ←
       </button>
-      {lessonNodes.length > 1 && (
-        <nav className="vn-chapter-dots" aria-label="剧情进度">
-          {lessonNodes.map((node, i) => (
-            <button
-              key={node.id}
-              className={`vn-dot ${node.id === currentNode?.id || (currentNode?.kind === "free_discussion" && lessonNodes[i]?.id === currentNode?.id) ? "is-active" : ""} ${visitedNodeIDs.has(node.id) ? "is-visited" : ""}`}
-              onClick={() => { if (visitedNodeIDs.has(node.id)) advanceLessonWorkflow(node.id, "", true); }}
-              disabled={busy || !visitedNodeIDs.has(node.id)}
-              title={node.title}
-            >
-              <span />
-            </button>
-          ))}
-        </nav>
-      )}
 
-      {/* Top-right floating menu */}
-      <button className="vn-menu-btn" onClick={() => setMenuOpen(!menuOpen)} aria-label="菜单">
-        <span className="vn-menu-icon" />
-      </button>
-
-      {menuOpen && (
-        <div className="vn-menu-overlay" onClick={(e) => { if (e.target === e.currentTarget) setMenuOpen(false); }}>
-          <div className="vn-menu-panel">
-            <button onClick={() => { setMenuOpen(false); onOpenHome?.(); }}>导入材料</button>
-            <button onClick={() => { setMenuOpen(false); onOpenHistory?.(); }}>读取记录</button>
-            <button onClick={() => { setMenuOpen(false); onOpenConfig?.(); }}>角色配置</button>
-            <button onClick={() => { setMenuOpen(false); onOpenLogs?.(); }}>系统日志</button>
-          </div>
-        </div>
-      )}
+      <div className="vn-chapter-label" aria-label="当前章节">
+        <small>{currentNodeIdx >= 0 ? `CHAPTER ${String(currentNodeIdx + 1).padStart(2, "0")}` : "CHAPTER"}</small>
+        <b>{currentNode?.title || scene?.title || "剧情演出"}</b>
+      </div>
 
       {/* Choices */}
       {stageChoices.length > 0 && !isFreeDiscussionNode && (
         <div className="vn-choice-layer" key={`choices-${currentNode?.id}`}>
           {stageChoices.map((choice, idx) => (
             <button key={choice.id || choice.label} onClick={() => sendChoice(choice)} disabled={busy}>
-              <kbd>{idx + 1}</kbd>
+              <kbd>{String.fromCharCode(65 + idx)}</kbd>
               <span>
                 <strong>{choice.label}</strong>
                 {choice.hint ? <em>{choice.hint}</em> : null}
@@ -254,15 +223,19 @@ export function GalgameStageView({
             </form>
           ) : (
             <>
-              <button className="vn-ctrl-btn" onClick={() => setHistoryOpen(true)}>记录</button>
+              <button className="vn-ctrl-btn" type="button" disabled>上一句</button>
               <button className="vn-ctrl-btn" onClick={() => playAudio()} disabled={!runtimeState.audio || runtimeState.audio === "-" || speaking}>
-                {speaking ? "播放中..." : "重读"}
+                {speaking ? "播放中" : "重播"}
               </button>
               {currentNode?.next_node_id && (
                 <button className="vn-ctrl-btn vn-ctrl-advance" onClick={() => advanceLessonWorkflow(currentNode.next_node_id)} disabled={busy || stageWaiting}>
-                  {stageWaiting ? "准备中..." : "继续 ▸"}
+                  {stageWaiting ? "准备中" : "下一句"}
                 </button>
               )}
+              <button className="vn-ctrl-btn" type="button" disabled>自动</button>
+              <button className="vn-ctrl-btn" type="button" disabled>快进</button>
+              <button className="vn-ctrl-btn" type="button" onClick={() => setHistoryOpen(true)}>历史</button>
+              <button className="vn-ctrl-btn" type="button" disabled>存档</button>
             </>
           )}
         </div>

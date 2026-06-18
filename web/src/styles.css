@@ -1652,25 +1652,36 @@ button:disabled {
 }
 
 .h-chip {
-  height: 24px;
-  padding: 0 11px;
+  justify-self: start;
+  width: max-content;
+  height: 22px;
+  padding: 0;
   display: inline-flex;
   align-items: center;
-  border-radius: 999px;
-  font-size: 11.5px;
-  font-weight: 800;
+  gap: 7px;
+  border: 0;
+  background: transparent;
+  border-radius: 0;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.h-chip::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 14%, transparent);
 }
 
 .h-chip.ok {
   color: var(--ok);
-  background: rgba(70, 180, 138, 0.12);
-  border: 1px solid rgba(70, 180, 138, 0.3);
 }
 
 .h-chip.draft {
   color: var(--warn);
-  background: rgba(207, 154, 82, 0.12);
-  border: 1px solid rgba(207, 154, 82, 0.3);
 }
 
 .h-empty {
@@ -3623,26 +3634,34 @@ button:disabled {
 .vn-character-layer {
   position: absolute;
   z-index: 2;
-  inset: 5vh 0 18vh;
+  top: 30px;
+  right: 40px;
+  bottom: 0;
+  left: auto;
+  width: min(700px, 52vw);
   display: grid;
-  place-items: end center;
+  place-items: stretch;
   pointer-events: none;
 }
 
 .vn-character-sprite {
-  height: min(88vh, 920px);
-  max-width: min(70vw, 900px);
-  object-fit: contain;
-  object-position: center bottom;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 12%;
   filter: drop-shadow(0 32px 38px rgba(40, 80, 130, 0.2));
+  -webkit-mask-image:
+    linear-gradient(180deg, transparent 0, #000 8%, #000 78%, transparent 99%),
+    linear-gradient(90deg, transparent 0, #000 16%, #000 84%, transparent 100%);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
 }
 
 .vn-character-fallback {
   display: none;
 }
 
-.vn-back-btn,
-.vn-menu-btn {
+.vn-back-btn {
   position: absolute;
   z-index: 9;
   width: 42px;
@@ -3661,126 +3680,67 @@ button:disabled {
   font-size: 22px;
 }
 
-.vn-menu-btn {
-  right: 24px;
-  top: 28px;
+.vn-chapter-label {
+  position: absolute;
+  z-index: 8;
+  right: 26px;
+  top: 24px;
+  text-align: right;
+  font-family: var(--sans);
 }
 
-.vn-menu-icon,
-.vn-menu-icon::before,
-.vn-menu-icon::after {
+.vn-chapter-label small {
   display: block;
-  width: 18px;
-  height: 2px;
-  border-radius: 999px;
-  background: currentColor;
-  margin: auto;
+  color: rgba(80, 110, 140, 0.7);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.24em;
 }
 
-.vn-menu-icon::before,
-.vn-menu-icon::after {
-  content: "";
-  position: relative;
-}
-
-.vn-menu-icon::before { top: -6px; }
-.vn-menu-icon::after { top: 4px; }
-
-.vn-chapter-dots {
-  position: absolute;
-  z-index: 9;
-  left: 78px;
-  top: 38px;
-  display: flex;
-  gap: 8px;
-}
-
-.vn-dot {
-  width: 18px;
-  height: 18px;
-  border: 0;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.34);
-}
-
-.vn-dot span {
+.vn-chapter-label b {
   display: block;
-  width: 8px;
-  height: 8px;
-  margin: auto;
-  border-radius: 50%;
-  background: rgba(101, 124, 146, 0.48);
-}
-
-.vn-dot.is-active span {
-  background: var(--coral);
-}
-
-.vn-dot.is-visited span {
-  background: var(--brand);
-}
-
-.vn-menu-overlay {
-  position: absolute;
-  z-index: 20;
-  inset: 0;
-  background: rgba(31, 47, 62, 0.14);
-}
-
-.vn-menu-panel {
-  position: absolute;
-  right: 24px;
-  top: 78px;
-  width: 180px;
-  display: grid;
-  gap: 8px;
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.86);
-  background: rgba(255, 255, 255, 0.78);
-  padding: 10px;
-  backdrop-filter: blur(16px);
-}
-
-.vn-menu-panel button {
-  min-height: 36px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.68);
+  margin-top: 3px;
+  color: rgba(50, 78, 102, 0.92);
+  font-size: 14px;
   font-weight: 900;
 }
 
 .vn-choice-layer {
   position: absolute;
   z-index: 6;
-  left: 8vw;
-  top: 46%;
-  width: min(560px, 44vw);
+  left: min(230px, 16vw);
+  top: 47%;
+  width: min(520px, 42vw);
   display: grid;
   gap: 14px;
   transform: translateY(-50%);
 }
 
 .vn-choice-layer button {
-  min-height: 62px;
+  min-height: 58px;
   display: flex;
   align-items: center;
   gap: 14px;
-  border-radius: 16px;
+  border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.86);
   background: rgba(255, 255, 255, 0.74);
   backdrop-filter: blur(16px);
   box-shadow: 0 20px 40px -20px rgba(40, 80, 140, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  padding: 12px 18px;
+  padding: 0 22px;
+  color: #34485a;
+  font-family: var(--serif);
+  font-size: 15.5px;
+  font-weight: 500;
   text-align: left;
 }
 
 .vn-choice-layer kbd {
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   flex: none;
   display: grid;
   place-items: center;
-  border-radius: 8px;
+  border-radius: 7px;
   border: 0;
   background: var(--grad);
   color: #fff;
@@ -3804,47 +3764,75 @@ button:disabled {
   left: 0;
   right: 0;
   bottom: 0;
-  min-height: 270px;
-  padding: 0 7vw 38px;
+  height: 300px;
+  min-height: 0;
+  padding: 0 64px 40px;
   display: grid;
+  grid-template-columns: minmax(0, 720px) auto;
+  grid-template-rows: auto minmax(0, 1fr);
   align-content: end;
+  align-items: end;
+  column-gap: 22px;
+  isolation: isolate;
+}
+
+.vn-dialogue-box::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  pointer-events: none;
   background:
-    linear-gradient(180deg, transparent 0, rgba(244, 250, 255, 0.5) 32%, rgba(247, 251, 255, 0.94) 72%);
-  backdrop-filter: blur(2px);
-  -webkit-mask-image: linear-gradient(180deg, transparent, #000 28%);
+    linear-gradient(180deg, transparent 0, rgba(244, 250, 255, 0.52) 32%, rgba(248, 252, 255, 0.97) 74%);
+  backdrop-filter: blur(6px);
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 35%);
+  mask-image: linear-gradient(180deg, transparent 0, #000 35%);
 }
 
 .vn-dialogue-speaker {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  border-bottom: 1px solid rgba(101, 158, 200, 0.3);
-  padding-bottom: 10px;
+  position: relative;
+  z-index: 1;
+  grid-column: 1;
+  grid-row: 1;
+  display: block;
+  border-bottom: 1px solid rgba(72, 118, 160, 0.34);
+  padding-bottom: 8px;
 }
 
 .vn-dialogue-speaker span {
   font-family: var(--serif);
-  font-size: clamp(28px, 3.4vw, 42px);
+  font-size: 24px;
+  line-height: 1.2;
   font-weight: 900;
-  text-shadow: 0 2px 0 rgba(255, 255, 255, 0.8);
+  color: #243b50;
+  letter-spacing: 0.04em;
+  text-shadow: 0 2px 0 rgba(255, 255, 255, 0.86);
 }
 
 .vn-dialogue-speaker small {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 800;
+  display: none;
 }
 
 .vn-dialogue-text {
-  max-width: min(980px, 68vw);
-  max-height: 160px;
+  position: relative;
+  z-index: 1;
+  grid-column: 1;
+  grid-row: 2;
+  max-width: 720px;
+  max-height: 178px;
   overflow: hidden auto;
-  padding-top: 18px;
+  padding-top: 14px;
   font-family: var(--serif);
-  font-size: clamp(20px, 2vw, 28px);
-  line-height: 1.82;
-  font-weight: 700;
+  font-size: 18px;
+  line-height: 1.86;
+  font-weight: 500;
+  color: #25384b;
+  scrollbar-width: none;
+}
+
+.vn-dialogue-text::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .vn-dialogue-text p {
@@ -3868,30 +3856,46 @@ button:disabled {
 }
 
 .vn-dialogue-actions {
-  position: absolute;
-  right: 7vw;
-  bottom: 42px;
+  position: static;
+  z-index: 1;
+  grid-column: 2;
+  grid-row: 1;
+  align-self: end;
   display: flex;
-  gap: 6px;
+  gap: 4px;
   align-items: center;
+  padding-bottom: 1px;
 }
 
 .vn-ctrl-btn,
 .vn-composer button {
-  min-height: 34px;
-  border: 1px solid rgba(101, 158, 200, 0.2);
+  height: 30px;
+  min-height: 30px;
+  border: 1px solid rgba(84, 132, 174, 0.26);
   border-radius: 10px 10px 0 0;
-  background: rgba(255, 255, 255, 0.58);
-  color: rgba(58, 84, 104, 0.82);
+  background: rgba(255, 255, 255, 0.72);
+  color: rgba(47, 72, 92, 0.82);
   padding: 0 13px;
-  font-weight: 900;
+  font-size: 11.5px;
+  font-weight: 800;
+}
+
+.vn-dialogue-actions .vn-ctrl-btn:disabled {
+  opacity: 0.78;
+  color: rgba(62, 86, 106, 0.66);
 }
 
 .vn-ctrl-advance,
 .vn-composer button[type="submit"] {
-  color: #fff;
-  border: 0;
-  background: var(--grad);
+  color: var(--brand-deep);
+  border-color: rgba(74, 130, 190, 0.32);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 -6px 16px -8px rgba(76, 134, 198, 0.48);
+}
+
+.vn-dialogue-actions .vn-ctrl-advance:disabled {
+  opacity: 0.86;
+  color: rgba(63, 128, 207, 0.72);
 }
 
 .vn-composer {
@@ -4084,7 +4088,6 @@ button:disabled {
 .director-inspector,
 .director-status-card,
 .director-dialogue,
-.vn-menu-panel,
 .vn-choice-layer button,
 .vn-backlog-panel {
   border-color: rgba(255, 255, 255, 0.66);
@@ -4120,14 +4123,11 @@ button:disabled {
 .field textarea,
 .field select,
 .document-url-row input,
-.vn-ctrl-btn,
-.vn-composer button,
 .vn-composer input,
 .vn-backlog-item,
 .vn-backlog-actions button,
 .vn-backlog-top button,
-.vn-back-btn,
-.vn-menu-btn {
+.vn-back-btn {
   border-color: rgba(255, 255, 255, 0.66);
   background-color: rgba(255, 255, 255, 0.5);
   backdrop-filter: blur(14px);
@@ -4135,7 +4135,6 @@ button:disabled {
 }
 
 .primary-button,
-.vn-ctrl-advance,
 .vn-composer button[type="submit"] {
   background-image: var(--grad);
   box-shadow: 0 14px 26px -16px rgba(63, 128, 207, 0.7);
@@ -4160,8 +4159,7 @@ button:disabled {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5), 0 18px 34px -30px rgba(60, 110, 170, 0.5);
 }
 
-.vn-back-btn,
-.vn-menu-btn {
+.vn-back-btn {
   border-radius: 12px;
 }
 
@@ -4173,12 +4171,6 @@ button:disabled {
   background:
     linear-gradient(90deg, rgba(238, 247, 255, 0.24), transparent 35%, rgba(238, 247, 255, 0.22)),
     linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(242, 249, 255, 0.54) 82%, rgba(248, 252, 255, 0.94));
-}
-
-.vn-dialogue-box {
-  background:
-    linear-gradient(180deg, transparent 0, rgba(241, 248, 255, 0.58) 28%, rgba(250, 253, 255, 0.96) 72%);
-  backdrop-filter: blur(12px);
 }
 
 @keyframes pulse {
