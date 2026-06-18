@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { deriveStagePlaybackState, NEXT_ACTION } from "./stagePlayback";
+import { buildBacklogItems, workflowLineAudioURL, workflowLineSpeechText } from "./stageBacklog";
 
 export function GalgameStageView({
   activeCharacter, activeCharacterID, busy, input, isTyping, lastCG,
@@ -326,7 +327,7 @@ export function GalgameStageView({
             </div>
             <div className="vn-backlog-body">
               <div className="vn-backlog-list" ref={backlogListRef}>
-                {buildBacklogItems(messages, workflowHistory, workflowNodes, currentNode?.id, safeLineIndex, speaker).reverse().map((item, i) => (
+                {buildBacklogItems(workflowHistory, workflowNodes, currentNode?.id, safeLineIndex, speaker).map((item, i) => (
                   <article key={`bl-${i}`} className={`vn-backlog-item ${item.active ? "is-active" : ""} ${item.kind === "user" ? "is-player" : ""}`}>
                     <span className="vn-backlog-number">{String(i + 1).padStart(2, "0")}</span>
                     <div>
@@ -361,111 +362,6 @@ function findLatestForNode(messages, nodeID) {
   if (!nodeID) return null;
   for (let i = messages.length - 1; i >= 0; i--) if (messages[i]?.role === "assistant" && messages[i].nodeID === nodeID) return messages[i];
   return null;
-}
-
-function buildBacklogItems(messages, workflowHistory, workflowNodes, currentNodeID, currentLineIndex, assistantSpeaker) {
-  const nodeByID = new Map(workflowNodes.map((n) => [n.id, n]));
-  const scriptItems = workflowHistory.flatMap((h) => {
-    if (h?.action === "audio") return [];
-    const nodeID = h?.node_id || h?.nodeID || "";
-    const node = nodeByID.get(nodeID);
-    const items = [];
-    if (h?.choice_label) {
-      items.push({ kind: "user", active: false, speaker: "你", text: `选择：${cleanBacklogText(h.choice_label, "你")}` });
-    }
-    const lines = workflowNodeBacklogLines(node);
-    if (!lines.length) {
-      const speaker = cleanBacklogSpeaker(node?.speaker || assistantSpeaker || "角色");
-      const text = cleanBacklogText(workflowNodeDisplayText(node), speaker) || h?.action || "进入剧情";
-      return [...items, {
-        kind: "script",
-        active: nodeID === currentNodeID,
-        nodeID,
-        node,
-        speaker,
-        text,
-        audioURL: workflowLineAudioURL(node),
-      }];
-    }
-    lines.forEach((line, index) => {
-      const speaker = cleanBacklogSpeaker(line.speaker || node?.speaker || assistantSpeaker || "角色");
-      const text = cleanBacklogText(line.text, speaker);
-      if (!text) return;
-      const isLastLine = index === lines.length - 1;
-      items.push({
-        kind: "script",
-        active: nodeID === currentNodeID && index === currentLineIndex,
-        nodeID: isLastLine ? nodeID : "",
-        node: isLastLine ? node : null,
-        speaker,
-        text,
-        audioURL: workflowLineAudioURL(line),
-      });
-    });
-    return items;
-  });
-  const messageItems = messages.flatMap((m) => buildMessageBacklogItems(m, assistantSpeaker));
-  return [...scriptItems, ...messageItems].slice(-40);
-}
-
-function workflowLineSpeechText(line) {
-  return String(line?.speech_text || line?.speechText || line?.text || "").trim();
-}
-
-function workflowLineAudioURL(line) {
-  return String(line?.audio?.url || line?.audio_url || line?.audioURL || "").trim();
-}
-
-function buildMessageBacklogItems(message, assistantSpeaker) {
-  if (!message || message.meta === "script" || message.nodeID || message.workflow_node_id) return [];
-  const speaker = message.role === "user" ? "你" : assistantSpeaker || "角色";
-  const segments = Array.isArray(message.segments) ? message.segments : [];
-  if (message.role !== "user" && segments.length) {
-    return segments.map((segment) => ({
-      kind: message.role || "message",
-      active: false,
-      speaker,
-      text: cleanBacklogText(segment?.text, speaker),
-    })).filter((item) => item.text);
-  }
-  const text = cleanBacklogText(message.text, speaker);
-  if (!text) return [];
-  return [{ kind: message.role || "message", active: false, speaker, text }];
-}
-
-function workflowNodeBacklogLines(node) {
-  const lines = Array.isArray(node?.lines) ? node.lines : [];
-  if (lines.length) return lines;
-  const text = workflowNodeDisplayText(node);
-  if (!text) return [];
-  return [{ speaker: node?.speaker || "角色", text }];
-}
-
-function workflowNodeDisplayText(node) {
-  const lines = Array.isArray(node?.lines) ? node.lines : [];
-  if (lines.length) return lines.map((line) => String(line?.text || "").trim()).filter(Boolean).join(" ");
-  return String(node?.line || "").trim();
-}
-
-function cleanBacklogSpeaker(value) {
-  return String(value || "角色").replace(/[【】[\]：:]/g, "").trim() || "角色";
-}
-
-function cleanBacklogText(value, speaker) {
-  let text = String(value || "").replace(/\s+/g, " ").trim();
-  if (!text) return "";
-  const names = [speaker, cleanBacklogSpeaker(speaker)].filter(Boolean);
-  for (const name of [...new Set(names)]) {
-    const escaped = escapeRegExp(name);
-    text = text
-      .replace(new RegExp(`(^|\\s)[【\\[]\\s*${escaped}\\s*[】\\]]\\s*`, "g"), " ")
-      .replace(new RegExp(`(^|\\s)${escaped}\\s*[：:]\\s*`, "g"), " ");
-  }
-  return text.replace(/\s+/g, " ").trim();
-}
-
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function stageBG(url) {

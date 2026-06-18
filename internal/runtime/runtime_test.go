@@ -340,6 +340,84 @@ func TestAdvanceWorkflowPersistsCurrentNode(t *testing.T) {
 	}
 }
 
+func TestAdvanceWorkflowReplayTruncatesCanonicalHistory(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Sessions: store,
+		Logger:   slog.Default(),
+	})
+	readyNode := func(id string, next string) app.TeachingWorkflowNode {
+		return app.TeachingWorkflowNode{
+			ID:          id,
+			Kind:        "lesson",
+			Title:       id,
+			NextNodeID:  next,
+			Status:      app.WorkflowNodeStatusReady,
+			VoiceStatus: app.WorkflowNodeStatusReady,
+			Lines: []app.DialogueLine{{
+				Text:        id,
+				SpeechText:  id,
+				AudioStatus: app.DialogueAudioStatusReady,
+				Audio:       app.AudioResult{URL: "/audio/" + id + ".mp3", Format: "mp3"},
+			}},
+		}
+	}
+	_, err := store.BeginScene(app.SceneGenerateRequest{
+		Topic:      "回看跳转",
+		Characters: []app.Character{{ID: "tutor", DisplayName: "Tutor"}},
+	}, app.SceneGenerateResponse{
+		Scene:   app.Scene{ID: "replay", Title: "回看跳转"},
+		Session: app.Session{ID: "replay:default", UserID: "default"},
+		Workflow: app.TeachingWorkflow{
+			ID:            "wf",
+			CurrentNodeID: "opening",
+			Nodes: []app.TeachingWorkflowNode{
+				readyNode("opening", "lesson-1"),
+				readyNode("lesson-1", "lesson-2"),
+				readyNode("lesson-2", ""),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BeginScene() error = %v", err)
+	}
+	if _, err := rt.AdvanceWorkflow(context.Background(), app.WorkflowAdvanceRequest{
+		SessionID:     "replay:default",
+		CurrentNodeID: "opening",
+		NextNodeID:    "lesson-1",
+	}); err != nil {
+		t.Fatalf("AdvanceWorkflow(lesson-1) error = %v", err)
+	}
+	if _, err := rt.AdvanceWorkflow(context.Background(), app.WorkflowAdvanceRequest{
+		SessionID:     "replay:default",
+		CurrentNodeID: "lesson-1",
+		NextNodeID:    "lesson-2",
+	}); err != nil {
+		t.Fatalf("AdvanceWorkflow(lesson-2) error = %v", err)
+	}
+
+	replayed, err := rt.AdvanceWorkflow(context.Background(), app.WorkflowAdvanceRequest{
+		SessionID:     "replay:default",
+		CurrentNodeID: "lesson-2",
+		NextNodeID:    "lesson-1",
+		Replay:        true,
+	})
+	if err != nil {
+		t.Fatalf("AdvanceWorkflow(replay) error = %v", err)
+	}
+	if replayed.Workflow.CurrentNodeID != "lesson-1" {
+		t.Fatalf("current_node_id = %q, want lesson-1", replayed.Workflow.CurrentNodeID)
+	}
+	got := make([]string, 0, len(replayed.Workflow.History))
+	for _, item := range replayed.Workflow.History {
+		got = append(got, item.NodeID+":"+item.Action)
+	}
+	want := []string{"opening:enter", "lesson-1:advance"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("history = %#v, want %#v", got, want)
+	}
+}
+
 func TestAdvanceWorkflowChoiceCreatesBranchNode(t *testing.T) {
 	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
 	rt := runtime.NewRuntime(runtime.Dependencies{

@@ -249,13 +249,15 @@ func (s *FileSessionStore) AdvanceWorkflow(req app.WorkflowAdvanceRequest) (app.
 	record.Scene.Phase = next.Kind
 	record.Scene.LastActiveAt = now
 	record.UpdatedAt = now
-	action := "advance"
 	if replay {
-		action = "replay"
-	} else if req.ChoiceID != "" {
-		action = "choice"
+		truncateWorkflowHistory(&record.Workflow, next.ID)
+	} else {
+		action := "advance"
+		if req.ChoiceID != "" {
+			action = "choice"
+		}
+		appendWorkflowHistory(&record.Workflow, next, req.ChoiceID, choiceLabel(current, req.ChoiceID), action, now)
 	}
-	appendWorkflowHistory(&record.Workflow, next, req.ChoiceID, choiceLabel(current, req.ChoiceID), action, now)
 	state[req.SessionID] = record
 	return record, s.save(state)
 }
@@ -421,11 +423,23 @@ func ensureWorkflowHistory(workflow *app.TeachingWorkflow, now time.Time) {
 
 func workflowVisited(workflow app.TeachingWorkflow, nodeID string) bool {
 	for _, item := range workflow.History {
-		if item.NodeID == nodeID {
+		if item.NodeID == nodeID && item.Action != "audio" {
 			return true
 		}
 	}
 	return false
+}
+
+func truncateWorkflowHistory(workflow *app.TeachingWorkflow, nodeID string) {
+	if workflow == nil || nodeID == "" {
+		return
+	}
+	for index, item := range workflow.History {
+		if item.NodeID == nodeID && item.Action != "audio" {
+			workflow.History = append([]app.WorkflowHistoryItem(nil), workflow.History[:index+1]...)
+			return
+		}
+	}
 }
 
 func appendWorkflowHistory(workflow *app.TeachingWorkflow, node app.TeachingWorkflowNode, choiceID string, choiceLabel string, action string, occurredAt time.Time) {
