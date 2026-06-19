@@ -9,8 +9,6 @@ import (
 type Provider string
 
 const (
-	ProviderMock       Provider = "mock"
-	ProviderMacOS      Provider = "macos"
 	ProviderVolcengine Provider = "volcengine"
 )
 

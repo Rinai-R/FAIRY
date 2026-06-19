@@ -123,10 +123,10 @@ func configFromLookup(lookup func(string) (string, bool)) (bootstrap.Config, err
 	config.AppSessionPath = optionalString(lookup, "FAIRY_SESSION_PATH", config.AppSessionPath)
 	config.UserConfigPath = optionalString(lookup, "FAIRY_USER_CONFIG_PATH", config.UserConfigPath)
 	config.AudioDir = optionalString(lookup, "FAIRY_AUDIO_DIR", config.AudioDir)
+	config.AudioBaseURL = optionalString(lookup, "FAIRY_AUDIO_BASE_URL", config.AudioBaseURL)
 	config.ImageDir = optionalString(lookup, "FAIRY_IMAGE_DIR", config.ImageDir)
 	config.MaterialDir = optionalString(lookup, "FAIRY_MATERIAL_DIR", config.MaterialDir)
 	config.ImageBaseURL = optionalString(lookup, "FAIRY_IMAGE_BASE_URL", config.ImageBaseURL)
-	config.MacOSVoice = optionalString(lookup, "FAIRY_MACOS_VOICE", config.MacOSVoice)
 	config.ComfyUIEndpoint = optionalString(lookup, "FAIRY_COMFYUI_ENDPOINT", config.ComfyUIEndpoint)
 	config.VolcengineEndpoint = optionalString(lookup, "FAIRY_VOLCENGINE_TTS_ENDPOINT", config.VolcengineEndpoint)
 	config.VolcengineAPIKey = optionalSecret(lookup, "FAIRY_VOLCENGINE_TTS_API_KEY", config.VolcengineAPIKey)
@@ -192,8 +192,10 @@ func parseAgentProvider(value string) (agent.Provider, error) {
 func parseVoiceProvider(value string) (voice.Provider, error) {
 	provider := voice.Provider(strings.TrimSpace(value))
 	switch provider {
-	case voice.ProviderMock, voice.ProviderMacOS, voice.ProviderVolcengine:
+	case voice.ProviderVolcengine:
 		return provider, nil
+	case "mock", "macos":
+		return "", fmt.Errorf("FAIRY_VOICE_ENGINE 不再内置开发语音 provider %q，请改用 voice-service 或第三方语音适配器", value)
 	case "gpt-sovits", "gptsovits":
 		return "", fmt.Errorf("FAIRY_VOICE_ENGINE 不再支持直连模型 provider %q，请改用 voice-service", value)
 	default:

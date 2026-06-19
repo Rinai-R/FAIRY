@@ -17,10 +17,11 @@ import (
 	"github.com/Rinai-R/FAIRY/internal/adapters/scene"
 	scenemock "github.com/Rinai-R/FAIRY/internal/adapters/scene/mock"
 	"github.com/Rinai-R/FAIRY/internal/adapters/voice"
-	voicemock "github.com/Rinai-R/FAIRY/internal/adapters/voice/mock"
 	"github.com/Rinai-R/FAIRY/internal/app"
 	"github.com/Rinai-R/FAIRY/internal/runtime"
 )
+
+const testVoiceProvider voice.Provider = "test-voice"
 
 func TestGenerateScenePersistsTeachingSessionAndTurns(t *testing.T) {
 	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
@@ -29,7 +30,7 @@ func TestGenerateScenePersistsTeachingSessionAndTurns(t *testing.T) {
 			agent.ProviderMock: agentmock.MockEngine{},
 		},
 		Voices: map[voice.Provider]voice.Engine{
-			voice.ProviderMock: voicemock.MockEngine{},
+			testVoiceProvider: &recordingVoiceEngine{},
 		},
 		Images: map[image.Provider]image.Engine{
 			image.ProviderMock: imagemock.Engine{},
@@ -38,7 +39,7 @@ func TestGenerateScenePersistsTeachingSessionAndTurns(t *testing.T) {
 			scene.ProviderMock: scenemock.Engine{},
 		},
 		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		DefaultImage: image.ProviderMock,
 		DefaultScene: scene.ProviderMock,
 		Sessions:     store,
@@ -142,7 +143,7 @@ func TestGenerateScenePersistsTeachingSessionAndTurns(t *testing.T) {
 		Prompt:     sceneResp.Prompt,
 		Runtime: app.RuntimeConfig{
 			AgentProvider: string(agent.ProviderMock),
-			VoiceProvider: string(voice.ProviderMock),
+			VoiceProvider: string(testVoiceProvider),
 			ImageProvider: string(image.ProviderMock),
 			Image: app.ImageRequest{
 				Enabled: true,
@@ -183,10 +184,10 @@ func TestGenerateScenePersistsTeachingSessionAndTurns(t *testing.T) {
 func TestCapabilitiesExposeStandardVoiceService(t *testing.T) {
 	rt := runtime.NewRuntime(runtime.Dependencies{
 		Voices: map[voice.Provider]voice.Engine{
-			voice.ProviderMock:              voicemock.MockEngine{},
-			voice.Provider("voice-service"): voicemock.MockEngine{},
+			voice.ProviderVolcengine:        &recordingVoiceEngine{},
+			voice.Provider("voice-service"): &recordingVoiceEngine{},
 		},
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: voice.Provider("voice-service"),
 		Logger:       slog.Default(),
 	})
 
@@ -198,6 +199,12 @@ func TestCapabilitiesExposeStandardVoiceService(t *testing.T) {
 	if !voiceIDs["voice-service"] {
 		t.Fatalf("capabilities voices missing standard voice-service provider: %#v", capabilities.Providers.Voices)
 	}
+	if !voiceIDs["volcengine"] {
+		t.Fatalf("capabilities voices missing volcengine provider: %#v", capabilities.Providers.Voices)
+	}
+	if voiceIDs["mock"] || voiceIDs["macos"] {
+		t.Fatalf("capabilities voices exposed removed built-in voice providers: %#v", capabilities.Providers.Voices)
+	}
 
 	healthIDs := map[string]bool{}
 	for _, item := range rt.ProviderHealth(context.Background()) {
@@ -207,6 +214,12 @@ func TestCapabilitiesExposeStandardVoiceService(t *testing.T) {
 	}
 	if !healthIDs["voice-service"] {
 		t.Fatalf("provider health missing standard voice-service provider")
+	}
+	if !healthIDs["volcengine"] {
+		t.Fatalf("provider health missing volcengine provider")
+	}
+	if healthIDs["mock"] || healthIDs["macos"] {
+		t.Fatalf("provider health exposed removed built-in voice providers: %#v", healthIDs)
 	}
 }
 
@@ -274,13 +287,13 @@ func TestGenerateSceneMergesPlannedWorkflowNodeScaffold(t *testing.T) {
 			agent.ProviderFairy: scaffoldlessAgent{},
 		},
 		Voices: map[voice.Provider]voice.Engine{
-			voice.ProviderMock: voicemock.MockEngine{},
+			testVoiceProvider: &recordingVoiceEngine{},
 		},
 		Scenes: map[scene.Provider]scene.Engine{
 			scene.ProviderMock: scenemock.Engine{},
 		},
 		DefaultAgent: agent.ProviderFairy,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		DefaultScene: scene.ProviderMock,
 		Sessions:     store,
 		Logger:       slog.Default(),
@@ -294,7 +307,7 @@ func TestGenerateSceneMergesPlannedWorkflowNodeScaffold(t *testing.T) {
 		Runtime: app.RuntimeConfig{
 			SceneProvider: string(scene.ProviderMock),
 			AgentProvider: string(agent.ProviderFairy),
-			VoiceProvider: string(voice.ProviderMock),
+			VoiceProvider: string(testVoiceProvider),
 		},
 	})
 	if err != nil {
@@ -320,10 +333,10 @@ func TestAdvanceWorkflowPersistsCurrentNode(t *testing.T) {
 			scene.ProviderMock: scenemock.Engine{},
 		},
 		Voices: map[voice.Provider]voice.Engine{
-			voice.ProviderMock: voicemock.MockEngine{},
+			testVoiceProvider: &recordingVoiceEngine{},
 		},
 		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		DefaultScene: scene.ProviderMock,
 		Sessions:     store,
 		Logger:       slog.Default(),
@@ -627,10 +640,10 @@ func TestGenerateSceneAcceptsURLAndUploadedFileSources(t *testing.T) {
 			scene.ProviderMock: scenemock.Engine{},
 		},
 		Voices: map[voice.Provider]voice.Engine{
-			voice.ProviderMock: voicemock.MockEngine{},
+			testVoiceProvider: &recordingVoiceEngine{},
 		},
 		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		DefaultScene: scene.ProviderMock,
 		Logger:       slog.Default(),
 	})
@@ -672,10 +685,10 @@ func TestGenerateSceneInjectsUploadedTextAsset(t *testing.T) {
 			scene.ProviderMock: scenemock.Engine{},
 		},
 		Voices: map[voice.Provider]voice.Engine{
-			voice.ProviderMock: voicemock.MockEngine{},
+			testVoiceProvider: &recordingVoiceEngine{},
 		},
 		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		DefaultScene: scene.ProviderMock,
 		MaterialDir:  materialDir,
 		Sessions:     store,
@@ -719,7 +732,7 @@ func TestTurnPersistsDisplayAndSpeechTextSeparately(t *testing.T) {
 			agent.ProviderMock: bilingualAgent{},
 		},
 		Voices: map[voice.Provider]voice.Engine{
-			voice.ProviderMock: voiceEngine,
+			testVoiceProvider: voiceEngine,
 		},
 		Images: map[image.Provider]image.Engine{
 			image.ProviderMock: imagemock.Engine{},
@@ -728,7 +741,7 @@ func TestTurnPersistsDisplayAndSpeechTextSeparately(t *testing.T) {
 			scene.ProviderMock: scenemock.Engine{},
 		},
 		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		DefaultImage: image.ProviderMock,
 		DefaultScene: scene.ProviderMock,
 		Sessions:     store,
@@ -741,7 +754,7 @@ func TestTurnPersistsDisplayAndSpeechTextSeparately(t *testing.T) {
 		Scene:     app.Scene{ID: "lesson", Title: "双语测试"},
 		Runtime: app.RuntimeConfig{
 			AgentProvider: string(agent.ProviderMock),
-			VoiceProvider: string(voice.ProviderMock),
+			VoiceProvider: string(testVoiceProvider),
 			ImageProvider: string(image.ProviderMock),
 		},
 		User: app.UserInput{UserID: "default", Text: "解释一下注意力。"},
@@ -776,10 +789,10 @@ func TestTurnRejectsInvalidSingleCharacterBoundary(t *testing.T) {
 			agent.ProviderMock: agentmock.MockEngine{},
 		},
 		Voices: map[voice.Provider]voice.Engine{
-			voice.ProviderMock: voicemock.MockEngine{},
+			testVoiceProvider: &recordingVoiceEngine{},
 		},
 		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		Logger:       slog.Default(),
 	})
 
@@ -850,7 +863,7 @@ func TestCloneVoiceDefaultsToVolcengineProvider(t *testing.T) {
 		Voices: map[voice.Provider]voice.Engine{
 			voice.ProviderVolcengine: trainer,
 		},
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		Logger:       slog.Default(),
 	})
 
@@ -878,7 +891,7 @@ func TestCloneVoiceStatusDefaultsToVolcengineProvider(t *testing.T) {
 		Voices: map[voice.Provider]voice.Engine{
 			voice.ProviderVolcengine: trainer,
 		},
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		Logger:       slog.Default(),
 	})
 
@@ -906,7 +919,7 @@ func TestSynthesizeVoiceUsesProvidedTextAndProfile(t *testing.T) {
 		Voices: map[voice.Provider]voice.Engine{
 			voice.ProviderVolcengine: voiceEngine,
 		},
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		Logger:       slog.Default(),
 	})
 
@@ -997,11 +1010,11 @@ func TestSynthesizeVoicePersistsWorkflowNodeAudio(t *testing.T) {
 			scene.ProviderMock: scenemock.Engine{},
 		},
 		Voices: map[voice.Provider]voice.Engine{
-			voice.ProviderMock: voiceEngine,
+			testVoiceProvider: voiceEngine,
 		},
 		DefaultAgent: agent.ProviderMock,
 		DefaultScene: scene.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		Sessions:     store,
 		Logger:       slog.Default(),
 	})
@@ -1022,7 +1035,7 @@ func TestSynthesizeVoicePersistsWorkflowNodeAudio(t *testing.T) {
 		t.Fatalf("AdvanceWorkflow() error = %v", err)
 	}
 	audio, err := rt.SynthesizeVoice(context.Background(), app.VoiceSynthesisRequest{
-		Provider:       string(voice.ProviderMock),
+		Provider:       string(testVoiceProvider),
 		Text:           "同じ台詞です。",
 		SessionID:      sceneResp.Session.ID,
 		WorkflowNodeID: nodeID,
@@ -1208,11 +1221,11 @@ func TestStartSceneGenerationCreatesPendingAndDeduplicates(t *testing.T) {
 	release := make(chan struct{})
 	rt := runtime.NewRuntime(runtime.Dependencies{
 		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentmock.MockEngine{}},
-		Voices:       map[voice.Provider]voice.Engine{voice.ProviderMock: voicemock.MockEngine{}},
+		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: &recordingVoiceEngine{}},
 		Images:       map[image.Provider]image.Engine{image.ProviderMock: imagemock.Engine{}},
 		Scenes:       map[scene.Provider]scene.Engine{scene.ProviderMock: blockingSceneEngine{started: started, release: release}},
 		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		DefaultImage: image.ProviderMock,
 		DefaultScene: scene.ProviderMock,
 		Sessions:     store,
@@ -1245,11 +1258,11 @@ func TestStartSceneGenerationStoresFailure(t *testing.T) {
 	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
 	rt := runtime.NewRuntime(runtime.Dependencies{
 		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentmock.MockEngine{}},
-		Voices:       map[voice.Provider]voice.Engine{voice.ProviderMock: voicemock.MockEngine{}},
+		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: &recordingVoiceEngine{}},
 		Images:       map[image.Provider]image.Engine{image.ProviderMock: imagemock.Engine{}},
 		Scenes:       map[scene.Provider]scene.Engine{scene.ProviderMock: failingSceneEngine{err: errors.New("scene provider down")}},
 		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		DefaultImage: image.ProviderMock,
 		DefaultScene: scene.ProviderMock,
 		Sessions:     store,
@@ -1282,11 +1295,11 @@ func TestRuntimeResumesGeneratingTasksOnStartup(t *testing.T) {
 	}
 	_ = runtime.NewRuntime(runtime.Dependencies{
 		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentmock.MockEngine{}},
-		Voices:       map[voice.Provider]voice.Engine{voice.ProviderMock: voicemock.MockEngine{}},
+		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: &recordingVoiceEngine{}},
 		Images:       map[image.Provider]image.Engine{image.ProviderMock: imagemock.Engine{}},
 		Scenes:       map[scene.Provider]scene.Engine{scene.ProviderMock: scenemock.Engine{}},
 		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		DefaultImage: image.ProviderMock,
 		DefaultScene: scene.ProviderMock,
 		Sessions:     store,
@@ -1346,14 +1359,14 @@ func TestSessionStoreNormalizesLegacyWorkflowAudio(t *testing.T) {
 func TestSynthesizeVoiceRequiresText(t *testing.T) {
 	rt := runtime.NewRuntime(runtime.Dependencies{
 		Voices: map[voice.Provider]voice.Engine{
-			voice.ProviderMock: &recordingVoiceEngine{},
+			testVoiceProvider: &recordingVoiceEngine{},
 		},
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		Logger:       slog.Default(),
 	})
 
 	_, err := rt.SynthesizeVoice(context.Background(), app.VoiceSynthesisRequest{
-		Provider: string(voice.ProviderMock),
+		Provider: string(testVoiceProvider),
 	})
 	if err == nil {
 		t.Fatal("SynthesizeVoice() error = nil, want text error")
@@ -1366,13 +1379,13 @@ func TestTurnRejectsWorkflowContextLeak(t *testing.T) {
 			agent.ProviderMock: leakingAgent{},
 		},
 		Voices: map[voice.Provider]voice.Engine{
-			voice.ProviderMock: &recordingVoiceEngine{},
+			testVoiceProvider: &recordingVoiceEngine{},
 		},
 		Images: map[image.Provider]image.Engine{
 			image.ProviderMock: imagemock.Engine{},
 		},
 		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		DefaultImage: image.ProviderMock,
 		Logger:       slog.Default(),
 	})
@@ -1382,7 +1395,7 @@ func TestTurnRejectsWorkflowContextLeak(t *testing.T) {
 		Scene:     app.Scene{ID: "lesson", Title: "测试课程"},
 		Runtime: app.RuntimeConfig{
 			AgentProvider: string(agent.ProviderMock),
-			VoiceProvider: string(voice.ProviderMock),
+			VoiceProvider: string(testVoiceProvider),
 			ImageProvider: string(image.ProviderMock),
 		},
 		User: app.UserInput{UserID: "default", Text: "你是谁？"},
@@ -1405,7 +1418,7 @@ func TestTurnKeepsSpeechWhenSceneImageFails(t *testing.T) {
 			agent.ProviderMock: agentmock.MockEngine{},
 		},
 		Voices: map[voice.Provider]voice.Engine{
-			voice.ProviderMock: voicemock.MockEngine{},
+			testVoiceProvider: &recordingVoiceEngine{},
 		},
 		Images: map[image.Provider]image.Engine{
 			image.ProviderMock: failingImageEngine{},
@@ -1414,7 +1427,7 @@ func TestTurnKeepsSpeechWhenSceneImageFails(t *testing.T) {
 			scene.ProviderMock: scenemock.Engine{},
 		},
 		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		DefaultImage: image.ProviderMock,
 		DefaultScene: scene.ProviderMock,
 		Sessions:     store,
@@ -1432,7 +1445,7 @@ func TestTurnKeepsSpeechWhenSceneImageFails(t *testing.T) {
 		Scene:      app.Scene{ID: "lesson", Title: "测试课程"},
 		Runtime: app.RuntimeConfig{
 			AgentProvider: string(agent.ProviderMock),
-			VoiceProvider: string(voice.ProviderMock),
+			VoiceProvider: string(testVoiceProvider),
 			ImageProvider: string(image.ProviderMock),
 			Image: app.ImageRequest{
 				Enabled: true,
@@ -1482,7 +1495,7 @@ func TestTurnUsesRuntimeProvidersFromActiveCharacterResource(t *testing.T) {
 			image.Provider("role-image"): imageEngine,
 		},
 		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		DefaultImage: image.ProviderMock,
 		Logger:       slog.Default(),
 	})
@@ -1756,7 +1769,7 @@ func asyncSceneRequest() app.SceneGenerateRequest {
 		Runtime: app.RuntimeConfig{
 			SceneProvider: string(scene.ProviderMock),
 			AgentProvider: string(agent.ProviderMock),
-			VoiceProvider: string(voice.ProviderMock),
+			VoiceProvider: string(testVoiceProvider),
 			ImageProvider: string(image.ProviderMock),
 		},
 	}

@@ -176,7 +176,7 @@ export function App() {
   const [relation, setRelation] = useState(defaultRelation);
   const [prompt, setPrompt] = useState(savedConfigRef.current?.prompt || defaultPrompt);
   const [agentProvider, setAgentProvider] = useState(savedConfigRef.current?.providers?.agentProvider || "mock");
-  const [voiceProvider, setVoiceProvider] = useState(normalizeVoiceProviderID(savedConfigRef.current?.providers?.voiceProvider) || "macos");
+  const [voiceProvider, setVoiceProvider] = useState(normalizeVoiceProviderID(savedConfigRef.current?.providers?.voiceProvider) || "voice-service");
   const [imageProvider, setImageProvider] = useState(savedConfigRef.current?.providers?.imageProvider || "mock");
   const [sceneProvider, setSceneProvider] = useState(savedConfigRef.current?.providers?.sceneProvider || "mock");
   const [voiceProfile, setVoiceProfile] = useState(() => normalizeVoiceServiceProfile(savedConfigRef.current?.voiceProfile, DEFAULT_VOICE_SERVICE_PROFILE, DEFAULT_LANGUAGE_PLAN.speech_language));
@@ -233,7 +233,7 @@ export function App() {
 
   const providerOptions = capabilities?.providers || {
     agents: [{ id: "mock", display_name: "Mock Agent" }, { id: "codex", display_name: "Codex CLI Agent" }, { id: "fairy-agent", display_name: "FAIRY Agent" }],
-    voices: [{ id: "macos", display_name: "macOS say" }, { id: "mock", display_name: "Mock Voice" }, { id: "volcengine", display_name: "火山声音复刻" }],
+    voices: [{ id: "voice-service", display_name: "标准语音服务" }, { id: "volcengine", display_name: "火山声音复刻" }],
     images: [{ id: "mock", display_name: "Mock CG" }, { id: "comfyui", display_name: "ComfyUI" }],
     scenes: [{ id: "mock", display_name: "Teaching Scene" }, { id: "codex", display_name: "Codex Scene" }]
   };
@@ -278,7 +278,7 @@ export function App() {
         setCapabilities(payload);
         if (!savedConfigRef.current?.providers) {
           setAgentProvider(payload.defaults?.agent_provider || "mock");
-          setVoiceProvider(normalizeVoiceProviderID(payload.defaults?.voice_provider) || "macos");
+          setVoiceProvider(normalizeVoiceProviderID(payload.defaults?.voice_provider) || "voice-service");
           setImageProvider(payload.defaults?.image_provider || "mock");
           setSceneProvider(payload.defaults?.scene_provider || "mock");
         }
@@ -2557,7 +2557,7 @@ function CharacterConfigModal({
   const image = character.runtime?.image || {};
   const speaker = voiceExtra.speaker || voice.voice_id || character.voice_id || "";
   const isStandardVoiceService = isStandardVoiceServiceProvider(effectiveVoiceProvider);
-  const isBuiltinVoice = !effectiveVoiceProvider || effectiveVoiceProvider === "macos" || effectiveVoiceProvider === "mock";
+  const isBuiltinVoice = !effectiveVoiceProvider;
   const [provTab, setProvTab] = useState("agent");
   const handleSave = async () => {
     const saved = await saveRoleConfig(character.id);
@@ -3309,7 +3309,7 @@ function isStandardVoiceServiceProvider(value) {
 
 function normalizeVoiceProviderID(value = "") {
   const provider = String(value || "").trim();
-  if (provider === "gpt-sovits" || provider === "gptsovits") return "voice-service";
+  if (provider === "gpt-sovits" || provider === "gptsovits" || provider === "mock" || provider === "macos") return "voice-service";
   return provider;
 }
 

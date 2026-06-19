@@ -129,7 +129,7 @@ func providerInfo(domain string, id string) app.ProviderInfo {
 		Domain:      domain,
 		DisplayName: id,
 		Kind:        "adapter",
-		Local:       id == "mock" || id == "macos" || id == "codex" || id == "comfyui",
+		Local:       id == "mock" || id == "codex" || id == "comfyui",
 	}
 	switch id {
 	case "mock":
@@ -144,8 +144,6 @@ func providerInfo(domain string, id string) app.ProviderInfo {
 		info.DisplayName = "FAIRY Agent"
 		info.Local = false
 		info.Config = map[string]string{"endpoint": "http://127.0.0.1:8788"}
-	case "macos":
-		info.DisplayName = "macOS say"
 	case "volcengine":
 		info.DisplayName = "火山声音复刻"
 		info.Config = map[string]string{"endpoint": "https://openspeech.bytedance.com/api/v3/tts/unidirectional", "resource_id": "seed-icl-2.0", "voice_clone": "true", "format": "mp3"}

@@ -15,18 +15,6 @@
     },
     {
       "domain": "voice",
-      "id": "mock",
-      "display_name": "Mock Voice",
-      "description": "返回占位音频元数据。"
-    },
-    {
-      "domain": "voice",
-      "id": "macos",
-      "display_name": "macOS say",
-      "description": "调用 macOS 系统 say 命令生成本地 m4a 音频。"
-    },
-    {
-      "domain": "voice",
       "id": "voice-service",
       "display_name": "标准语音服务",
       "description": "调用本机已部署的 Voice Service HTTP 接口。",

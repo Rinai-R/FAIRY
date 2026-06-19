@@ -16,8 +16,6 @@ import (
 	scenemock "github.com/Rinai-R/FAIRY/internal/adapters/scene/mock"
 	"github.com/Rinai-R/FAIRY/internal/adapters/voice"
 	voicehttp "github.com/Rinai-R/FAIRY/internal/adapters/voice/httpvoice"
-	voicemacos "github.com/Rinai-R/FAIRY/internal/adapters/voice/macos"
-	voicemock "github.com/Rinai-R/FAIRY/internal/adapters/voice/mock"
 	voicevolcengine "github.com/Rinai-R/FAIRY/internal/adapters/voice/volcengine"
 	"github.com/Rinai-R/FAIRY/internal/app"
 	"github.com/Rinai-R/FAIRY/internal/llm"
@@ -46,9 +44,8 @@ type Config struct {
 	AudioDir     string
 	ImageDir     string
 	MaterialDir  string
+	AudioBaseURL string
 	ImageBaseURL string
-	MacOSVoice   string
-	MacOSBaseURL string
 
 	ComfyUIEndpoint string
 
@@ -66,32 +63,31 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		AgentProvider:            agent.ProviderMock,
-		VoiceProvider:            voice.ProviderMacOS,
-		ImageProvider:            image.ProviderMock,
-		SceneProvider:            scene.ProviderMock,
-		CodexBin:                 agentcodex.DefaultBin,
-		CodexWorkDir:             agentcodex.DefaultWorkDir,
-		CodexTimeout:             120,
-		FairyAgentTimeout:        llmopenaicompatible.DefaultTimeout,
-		SessionPath:              agentcodex.DefaultSessionPath,
-		AppSessionPath:           "data/sessions.json",
-		UserConfigPath:           "data/user-config.json",
-		AudioDir:                 voicemacos.DefaultOutputDir,
-		ImageDir:                 imagecomfyui.DefaultOutputDir,
-		MaterialDir:              runtime.DefaultMaterialDir,
-		ImageBaseURL:             imagecomfyui.DefaultBaseURL,
-		MacOSVoice:               voicemacos.DefaultVoiceName,
-		MacOSBaseURL:             voicemacos.DefaultBaseURL,
-		ComfyUIEndpoint:          imagecomfyui.DefaultEndpoint,
-		VolcengineEndpoint:       voicevolcengine.DefaultEndpoint,
-		VolcengineResourceID:     voicevolcengine.DefaultResourceID,
-		VolcengineSpeaker:        voicevolcengine.DefaultSpeaker,
-		VolcengineFormat:         voicevolcengine.DefaultFormat,
-		VolcengineUserID:         voicevolcengine.DefaultUserID,
-		VolcengineSampleRate:     voicevolcengine.DefaultSampleRate,
-		PluginManifestPath:       "configs/plugins.json",
-		PluginDir:                "plugins",
+		AgentProvider:        agent.ProviderMock,
+		VoiceProvider:        voice.Provider("voice-service"),
+		ImageProvider:        image.ProviderMock,
+		SceneProvider:        scene.ProviderMock,
+		CodexBin:             agentcodex.DefaultBin,
+		CodexWorkDir:         agentcodex.DefaultWorkDir,
+		CodexTimeout:         120,
+		FairyAgentTimeout:    llmopenaicompatible.DefaultTimeout,
+		SessionPath:          agentcodex.DefaultSessionPath,
+		AppSessionPath:       "data/sessions.json",
+		UserConfigPath:       "data/user-config.json",
+		AudioDir:             "tmp/audio",
+		ImageDir:             imagecomfyui.DefaultOutputDir,
+		MaterialDir:          runtime.DefaultMaterialDir,
+		AudioBaseURL:         "/audio/",
+		ImageBaseURL:         imagecomfyui.DefaultBaseURL,
+		ComfyUIEndpoint:      imagecomfyui.DefaultEndpoint,
+		VolcengineEndpoint:   voicevolcengine.DefaultEndpoint,
+		VolcengineResourceID: voicevolcengine.DefaultResourceID,
+		VolcengineSpeaker:    voicevolcengine.DefaultSpeaker,
+		VolcengineFormat:     voicevolcengine.DefaultFormat,
+		VolcengineUserID:     voicevolcengine.DefaultUserID,
+		VolcengineSampleRate: voicevolcengine.DefaultSampleRate,
+		PluginManifestPath:   "configs/plugins.json",
+		PluginDir:            "plugins",
 	}
 }
 
@@ -138,8 +134,6 @@ func buildFairyAgent(config Config) agent.Engine {
 
 func buildVoices(config Config, catalog app.PluginCatalog) map[voice.Provider]voice.Engine {
 	voices := map[voice.Provider]voice.Engine{
-		voice.ProviderMock:       voicemock.MockEngine{},
-		voice.ProviderMacOS:      voicemacos.NewMacOSEngine(config.AudioDir, config.MacOSBaseURL, config.MacOSVoice),
 		voice.ProviderVolcengine: buildVolcengine(config),
 	}
 	for _, manifest := range catalog.Manifests {
@@ -159,7 +153,7 @@ func buildVoices(config Config, catalog app.PluginCatalog) map[voice.Provider]vo
 				HealthPath:   spec.HealthPath,
 				Headers:      spec.Headers,
 				OutputDir:    config.AudioDir,
-				BaseURL:      config.MacOSBaseURL,
+				BaseURL:      config.AudioBaseURL,
 			})
 		}
 	}
@@ -203,7 +197,7 @@ func buildVolcengine(config Config) voice.Engine {
 		Format:     config.VolcengineFormat,
 		UserID:     config.VolcengineUserID,
 		OutputDir:  config.AudioDir,
-		BaseURL:    config.MacOSBaseURL,
+		BaseURL:    config.AudioBaseURL,
 		SampleRate: config.VolcengineSampleRate,
 	})
 }

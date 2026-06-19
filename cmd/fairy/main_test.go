@@ -31,30 +31,30 @@ func TestConfigFromLookupUsesDefaults(t *testing.T) {
 
 func TestConfigFromLookupAppliesValidOverrides(t *testing.T) {
 	config, err := configFromLookup(mapLookup(map[string]string{
-		"FAIRY_AGENT_ENGINE":                "codex",
-		"FAIRY_VOICE_ENGINE":                "volcengine",
-		"FAIRY_IMAGE_ENGINE":                "comfyui",
-		"FAIRY_SCENE_ENGINE":                "codex",
-		"FAIRY_CODEX_TIMEOUT_SECONDS":       "30",
-		"FAIRY_VOLCENGINE_TTS_SAMPLE_RATE":  "24000",
-		"FAIRY_VOLCENGINE_TTS_API_KEY":      "secret with spaces inside",
-		"FAIRY_VOLCENGINE_TTS_RESOURCE_ID":  "volc.tts",
-		"FAIRY_COMFYUI_ENDPOINT":            "http://127.0.0.1:8188",
-		"FAIRY_PLUGIN_MANIFEST":             "configs/plugins.json",
-		"FAIRY_PLUGIN_DIR":                  "plugins",
-		"FAIRY_CODEX_MODEL":                 "gpt-5-codex",
-		"FAIRY_CODEX_WORKDIR":               "/tmp/fairy",
-		"FAIRY_CODEX_SESSION_PATH":          "data/codex-session.json",
-		"FAIRY_SESSION_PATH":                "data/sessions.json",
-		"FAIRY_AUDIO_DIR":                   "data/audio",
-		"FAIRY_IMAGE_DIR":                   "data/images",
-		"FAIRY_MATERIAL_DIR":                "data/materials",
-		"FAIRY_IMAGE_BASE_URL":              "/images",
-		"FAIRY_MACOS_VOICE":                 "Kyoko",
-		"FAIRY_VOLCENGINE_TTS_ENDPOINT":     "https://openspeech.bytedance.com/api/v3/tts/unidirectional",
-		"FAIRY_VOLCENGINE_TTS_SPEAKER":      "zh_female",
-		"FAIRY_VOLCENGINE_TTS_FORMAT":       "mp3",
-		"FAIRY_VOLCENGINE_TTS_USER_ID":      "fairy-local",
+		"FAIRY_AGENT_ENGINE":               "codex",
+		"FAIRY_VOICE_ENGINE":               "volcengine",
+		"FAIRY_IMAGE_ENGINE":               "comfyui",
+		"FAIRY_SCENE_ENGINE":               "codex",
+		"FAIRY_CODEX_TIMEOUT_SECONDS":      "30",
+		"FAIRY_VOLCENGINE_TTS_SAMPLE_RATE": "24000",
+		"FAIRY_VOLCENGINE_TTS_API_KEY":     "secret with spaces inside",
+		"FAIRY_VOLCENGINE_TTS_RESOURCE_ID": "volc.tts",
+		"FAIRY_COMFYUI_ENDPOINT":           "http://127.0.0.1:8188",
+		"FAIRY_PLUGIN_MANIFEST":            "configs/plugins.json",
+		"FAIRY_PLUGIN_DIR":                 "plugins",
+		"FAIRY_CODEX_MODEL":                "gpt-5-codex",
+		"FAIRY_CODEX_WORKDIR":              "/tmp/fairy",
+		"FAIRY_CODEX_SESSION_PATH":         "data/codex-session.json",
+		"FAIRY_SESSION_PATH":               "data/sessions.json",
+		"FAIRY_AUDIO_DIR":                  "data/audio",
+		"FAIRY_AUDIO_BASE_URL":             "/audio",
+		"FAIRY_IMAGE_DIR":                  "data/images",
+		"FAIRY_MATERIAL_DIR":               "data/materials",
+		"FAIRY_IMAGE_BASE_URL":             "/images",
+		"FAIRY_VOLCENGINE_TTS_ENDPOINT":    "https://openspeech.bytedance.com/api/v3/tts/unidirectional",
+		"FAIRY_VOLCENGINE_TTS_SPEAKER":     "zh_female",
+		"FAIRY_VOLCENGINE_TTS_FORMAT":      "mp3",
+		"FAIRY_VOLCENGINE_TTS_USER_ID":     "fairy-local",
 	}))
 	if err != nil {
 		t.Fatalf("configFromLookup() error = %v", err)
@@ -111,7 +111,7 @@ func TestConfigFromLookupRejectsInvalidProvider(t *testing.T) {
 }
 
 func TestConfigFromLookupRejectsLegacyRawModelVoiceProvider(t *testing.T) {
-	for _, provider := range []string{"gpt-sovits", "gptsovits"} {
+	for _, provider := range []string{"gpt-sovits", "gptsovits", "mock", "macos"} {
 		t.Run(provider, func(t *testing.T) {
 			_, err := configFromLookup(mapLookup(map[string]string{
 				"FAIRY_VOICE_ENGINE": provider,

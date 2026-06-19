@@ -14,18 +14,20 @@ import (
 	"github.com/Rinai-R/FAIRY/internal/app"
 )
 
+const testVoiceProvider voice.Provider = "test-voice"
+
 func TestPrepareWorkflowNodeVoiceUsesSpeechText(t *testing.T) {
 	voiceEngine := &stageRecordingVoiceEngine{}
 	rt := NewRuntime(Dependencies{
-		Voices:       map[voice.Provider]voice.Engine{voice.ProviderMock: voiceEngine},
-		DefaultVoice: voice.ProviderMock,
+		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: voiceEngine},
+		DefaultVoice: testVoiceProvider,
 		Logger:       slog.Default(),
 	})
 
 	node, err := rt.prepareWorkflowNodeVoice(context.Background(), app.SceneGenerateRequest{
 		Characters: []app.Character{{ID: "atri", DisplayName: "亚托莉", VoiceID: "voice-atri"}},
 		Runtime: app.RuntimeConfig{
-			VoiceProvider: string(voice.ProviderMock),
+			VoiceProvider: string(testVoiceProvider),
 			Voice:         app.VoiceProfile{MediaType: "mp3"},
 			Language: app.LanguagePlan{
 				DisplayLanguage: "cn",
@@ -61,14 +63,14 @@ func TestPrepareWorkflowNodeVoiceUsesSpeechText(t *testing.T) {
 func TestPrepareWorkflowNodeVoiceWaitsAllLines(t *testing.T) {
 	voiceEngine := &stageRecordingVoiceEngine{}
 	rt := NewRuntime(Dependencies{
-		Voices:       map[voice.Provider]voice.Engine{voice.ProviderMock: voiceEngine},
-		DefaultVoice: voice.ProviderMock,
+		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: voiceEngine},
+		DefaultVoice: testVoiceProvider,
 		Logger:       slog.Default(),
 	})
 
 	node, err := rt.prepareWorkflowNodeVoice(context.Background(), app.SceneGenerateRequest{
 		Characters: []app.Character{{ID: "atri", DisplayName: "亚托莉", VoiceID: "voice-atri"}},
-		Runtime:    app.RuntimeConfig{VoiceProvider: string(voice.ProviderMock), Voice: app.VoiceProfile{MediaType: "mp3"}},
+		Runtime:    app.RuntimeConfig{VoiceProvider: string(testVoiceProvider), Voice: app.VoiceProfile{MediaType: "mp3"}},
 	}, app.TeachingWorkflowNode{
 		ID:      "lesson-1",
 		Kind:    "lesson",
@@ -184,7 +186,7 @@ func TestPreloadRemainingWorkflowNodesResumesPendingNodeAfterRestart(t *testing.
 			Teaching: app.TeachingSnapshot{
 				Runtime: app.RuntimeConfig{
 					AgentProvider: string(agent.ProviderMock),
-					VoiceProvider: string(voice.ProviderMock),
+					VoiceProvider: string(testVoiceProvider),
 				},
 			},
 			Workflow: app.TeachingWorkflow{
@@ -206,9 +208,9 @@ func TestPreloadRemainingWorkflowNodesResumesPendingNodeAfterRestart(t *testing.
 	}
 	rt := NewRuntime(Dependencies{
 		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentEngine},
-		Voices:       map[voice.Provider]voice.Engine{voice.ProviderMock: &stageRecordingVoiceEngine{}},
+		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: &stageRecordingVoiceEngine{}},
 		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		Sessions:     store,
 		Logger:       slog.Default(),
 	})
@@ -217,7 +219,7 @@ func TestPreloadRemainingWorkflowNodesResumesPendingNodeAfterRestart(t *testing.
 		Characters: store.record.Characters,
 		Runtime: app.RuntimeConfig{
 			AgentProvider: string(agent.ProviderMock),
-			VoiceProvider: string(voice.ProviderMock),
+			VoiceProvider: string(testVoiceProvider),
 		},
 	}, "lesson:test", "opening")
 
@@ -247,7 +249,7 @@ func TestPreloadRemainingWorkflowNodesCoalescesDuplicateJobs(t *testing.T) {
 			Teaching: app.TeachingSnapshot{
 				Runtime: app.RuntimeConfig{
 					AgentProvider: string(agent.ProviderMock),
-					VoiceProvider: string(voice.ProviderMock),
+					VoiceProvider: string(testVoiceProvider),
 				},
 			},
 			Workflow: app.TeachingWorkflow{
@@ -267,9 +269,9 @@ func TestPreloadRemainingWorkflowNodesCoalescesDuplicateJobs(t *testing.T) {
 	}
 	rt := NewRuntime(Dependencies{
 		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentEngine},
-		Voices:       map[voice.Provider]voice.Engine{voice.ProviderMock: &stageRecordingVoiceEngine{}},
+		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: &stageRecordingVoiceEngine{}},
 		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		Sessions:     store,
 		Logger:       slog.Default(),
 	})
@@ -278,7 +280,7 @@ func TestPreloadRemainingWorkflowNodesCoalescesDuplicateJobs(t *testing.T) {
 		Characters: store.record.Characters,
 		Runtime: app.RuntimeConfig{
 			AgentProvider: string(agent.ProviderMock),
-			VoiceProvider: string(voice.ProviderMock),
+			VoiceProvider: string(testVoiceProvider),
 		},
 	}
 	rt.preloadRemainingWorkflowNodes(request, "lesson:test", "opening")
@@ -318,7 +320,7 @@ func TestPreloadMarksPendingWithoutSkeletonThenAppendsPreparedNode(t *testing.T)
 				DocumentText: "GMP 模型用于解释 goroutine、线程和处理器上下文如何配合。",
 				Runtime: app.RuntimeConfig{
 					AgentProvider: string(agent.ProviderMock),
-					VoiceProvider: string(voice.ProviderMock),
+					VoiceProvider: string(testVoiceProvider),
 				},
 			},
 			Workflow: app.TeachingWorkflow{
@@ -341,10 +343,10 @@ func TestPreloadMarksPendingWithoutSkeletonThenAppendsPreparedNode(t *testing.T)
 			agent.ProviderMock: agentEngine,
 		},
 		Voices: map[voice.Provider]voice.Engine{
-			voice.ProviderMock: &stageRecordingVoiceEngine{},
+			testVoiceProvider: &stageRecordingVoiceEngine{},
 		},
 		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		Sessions:     store,
 		Logger:       slog.Default(),
 	})
@@ -353,7 +355,7 @@ func TestPreloadMarksPendingWithoutSkeletonThenAppendsPreparedNode(t *testing.T)
 		Characters: store.record.Characters,
 		Runtime: app.RuntimeConfig{
 			AgentProvider: string(agent.ProviderMock),
-			VoiceProvider: string(voice.ProviderMock),
+			VoiceProvider: string(testVoiceProvider),
 		},
 	}, "lesson:test", "opening")
 
@@ -400,7 +402,7 @@ func TestPreloadRemainingWorkflowNodesPreparesDirectChoiceBranches(t *testing.T)
 			Teaching: app.TeachingSnapshot{
 				Runtime: app.RuntimeConfig{
 					AgentProvider: string(agent.ProviderMock),
-					VoiceProvider: string(voice.ProviderMock),
+					VoiceProvider: string(testVoiceProvider),
 				},
 			},
 			Workflow: app.TeachingWorkflow{
@@ -424,9 +426,9 @@ func TestPreloadRemainingWorkflowNodesPreparesDirectChoiceBranches(t *testing.T)
 	}
 	rt := NewRuntime(Dependencies{
 		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentEngine},
-		Voices:       map[voice.Provider]voice.Engine{voice.ProviderMock: &stageRecordingVoiceEngine{}},
+		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: &stageRecordingVoiceEngine{}},
 		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		Sessions:     store,
 		Logger:       slog.Default(),
 	})
@@ -435,7 +437,7 @@ func TestPreloadRemainingWorkflowNodesPreparesDirectChoiceBranches(t *testing.T)
 		Characters: store.record.Characters,
 		Runtime: app.RuntimeConfig{
 			AgentProvider: string(agent.ProviderMock),
-			VoiceProvider: string(voice.ProviderMock),
+			VoiceProvider: string(testVoiceProvider),
 		},
 	}, "lesson:test", "opening")
 
@@ -480,7 +482,7 @@ func TestSessionPreloadsChoiceBranchesWhenDecisionMissing(t *testing.T) {
 			Teaching: app.TeachingSnapshot{
 				Runtime: app.RuntimeConfig{
 					AgentProvider: string(agent.ProviderMock),
-					VoiceProvider: string(voice.ProviderMock),
+					VoiceProvider: string(testVoiceProvider),
 				},
 			},
 			Workflow: app.TeachingWorkflow{
@@ -517,9 +519,9 @@ func TestSessionPreloadsChoiceBranchesWhenDecisionMissing(t *testing.T) {
 	}
 	rt := NewRuntime(Dependencies{
 		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentEngine},
-		Voices:       map[voice.Provider]voice.Engine{voice.ProviderMock: &stageRecordingVoiceEngine{}},
+		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: &stageRecordingVoiceEngine{}},
 		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		Sessions:     store,
 		Logger:       slog.Default(),
 	})
@@ -561,7 +563,7 @@ func TestPreloadDoesNotStartFollowingActBeforeAdvance(t *testing.T) {
 			Teaching: app.TeachingSnapshot{
 				Runtime: app.RuntimeConfig{
 					AgentProvider: string(agent.ProviderMock),
-					VoiceProvider: string(voice.ProviderMock),
+					VoiceProvider: string(testVoiceProvider),
 				},
 			},
 			Workflow: app.TeachingWorkflow{
@@ -581,9 +583,9 @@ func TestPreloadDoesNotStartFollowingActBeforeAdvance(t *testing.T) {
 	}
 	rt := NewRuntime(Dependencies{
 		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentEngine},
-		Voices:       map[voice.Provider]voice.Engine{voice.ProviderMock: &stageRecordingVoiceEngine{}},
+		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: &stageRecordingVoiceEngine{}},
 		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		Sessions:     store,
 		Logger:       slog.Default(),
 	})
@@ -592,7 +594,7 @@ func TestPreloadDoesNotStartFollowingActBeforeAdvance(t *testing.T) {
 		Characters: store.record.Characters,
 		Runtime: app.RuntimeConfig{
 			AgentProvider: string(agent.ProviderMock),
-			VoiceProvider: string(voice.ProviderMock),
+			VoiceProvider: string(testVoiceProvider),
 		},
 	}, "lesson:test", "opening")
 
@@ -640,7 +642,7 @@ func TestPreloadDoesNotExposeNodeBeforeVoiceReady(t *testing.T) {
 			Teaching: app.TeachingSnapshot{
 				Runtime: app.RuntimeConfig{
 					AgentProvider: string(agent.ProviderMock),
-					VoiceProvider: string(voice.ProviderMock),
+					VoiceProvider: string(testVoiceProvider),
 				},
 			},
 			Workflow: app.TeachingWorkflow{
@@ -660,9 +662,9 @@ func TestPreloadDoesNotExposeNodeBeforeVoiceReady(t *testing.T) {
 	}
 	rt := NewRuntime(Dependencies{
 		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentEngine},
-		Voices:       map[voice.Provider]voice.Engine{voice.ProviderMock: voiceEngine},
+		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: voiceEngine},
 		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
+		DefaultVoice: testVoiceProvider,
 		Sessions:     store,
 		Logger:       slog.Default(),
 	})
@@ -671,7 +673,7 @@ func TestPreloadDoesNotExposeNodeBeforeVoiceReady(t *testing.T) {
 		Characters: store.record.Characters,
 		Runtime: app.RuntimeConfig{
 			AgentProvider: string(agent.ProviderMock),
-			VoiceProvider: string(voice.ProviderMock),
+			VoiceProvider: string(testVoiceProvider),
 		},
 	}, "lesson:test", "opening")
 
