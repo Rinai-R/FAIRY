@@ -25,6 +25,7 @@ import { DirectorView } from "./views/DirectorView";
 import { GalgameStageView } from "./views/GalgameStage";
 import { createCharacterPackage, mergeCharacterPackage } from "./characterPackage";
 import { emotionLabel, expressionLabel, motionLabel } from "./views/displayLabels";
+import { stageWorkflowWaiting } from "./views/workflowReadiness";
 
 const CONFIG_STORAGE_KEY = "fairy.user-config.v1";
 const MAX_DOCUMENT_ASSET_BYTES = 64 * 1024 * 1024;
@@ -3189,26 +3190,6 @@ function hasPlayableWorkflow(workflow, scene, session) {
   });
 }
 
-function stageWorkflowWaiting(workflow) {
-  const nodes = Array.isArray(workflow?.nodes) ? workflow.nodes : [];
-  const current = nodes.find((node) => node.id === workflow?.current_node_id) || nodes[0];
-  if (!current || current.free_discussion || current.kind === "free_discussion") return false;
-  if (current.next_node_id) {
-    const next = nodes.find((node) => node.id === current.next_node_id);
-    if (!next) return Boolean(workflow?.preparing || workflow?.pending_node_id);
-    return !workflowNodeReady(next);
-  }
-  if (["continue", "summarize", "free_discussion"].includes(String(current.decision || "").trim())) {
-    return true;
-  }
-  return Boolean(workflow?.preparing || workflow?.pending_node_id);
-}
-
-function workflowNodeReady(node) {
-  if (!node) return false;
-  if (node.free_discussion || node.kind === "free_discussion") return true;
-  return node.status === "ready" && node.voice_status === "ready";
-}
 function loadSavedConfig() {
   if (typeof window === "undefined") return null;
   const raw = window.localStorage.getItem(CONFIG_STORAGE_KEY);

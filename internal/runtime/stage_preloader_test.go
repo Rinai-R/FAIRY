@@ -167,10 +167,26 @@ func TestValidateGeneratedActDialogueUnitsAcceptsFourShortLines(t *testing.T) {
 	}
 }
 
-func TestPreloadRemainingWorkflowNodesStopsWhenPendingNodeIsNotMaterialized(t *testing.T) {
+func TestPreloadRemainingWorkflowNodesResumesPendingNodeAfterRestart(t *testing.T) {
+	agentEngine := &stageBlockingAgent{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	close(agentEngine.release)
 	store := &stageSessionStore{
 		record: app.SessionRecord{
 			Session: app.Session{ID: "lesson:test", UserID: "default"},
+			Characters: []app.Character{{
+				ID:          "atri",
+				DisplayName: "亚托莉",
+				VoiceID:     "voice-atri",
+			}},
+			Teaching: app.TeachingSnapshot{
+				Runtime: app.RuntimeConfig{
+					AgentProvider: string(agent.ProviderMock),
+					VoiceProvider: string(voice.ProviderMock),
+				},
+			},
 			Workflow: app.TeachingWorkflow{
 				CurrentNodeID: "opening",
 				Preparing:     true,
@@ -189,21 +205,30 @@ func TestPreloadRemainingWorkflowNodesStopsWhenPendingNodeIsNotMaterialized(t *t
 		},
 	}
 	rt := NewRuntime(Dependencies{
-		Sessions: store,
-		Logger:   slog.Default(),
+		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentEngine},
+		Voices:       map[voice.Provider]voice.Engine{voice.ProviderMock: &stageRecordingVoiceEngine{}},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: voice.ProviderMock,
+		Sessions:     store,
+		Logger:       slog.Default(),
 	})
 
-	rt.preloadRemainingWorkflowNodes(app.SceneGenerateRequest{}, "lesson:test", "opening")
-	time.Sleep(120 * time.Millisecond)
+	rt.preloadRemainingWorkflowNodes(app.SceneGenerateRequest{
+		Characters: store.record.Characters,
+		Runtime: app.RuntimeConfig{
+			AgentProvider: string(agent.ProviderMock),
+			VoiceProvider: string(voice.ProviderMock),
+		},
+	}, "lesson:test", "opening")
 
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if store.updateCalls != 0 {
-		t.Fatalf("update calls = %d, want 0", store.updateCalls)
-	}
-	if store.lastUpdatedID != "" {
-		t.Fatalf("last updated id = %q, want empty", store.lastUpdatedID)
-	}
+	waitForStageStore(t, store, func(record app.SessionRecord) bool {
+		next := findWorkflowNode(record.Workflow.Nodes, "lesson-1")
+		return !record.Workflow.Preparing &&
+			record.Workflow.PendingNodeID == "" &&
+			next.ID == "lesson-1" &&
+			next.Status == app.WorkflowNodeStatusReady &&
+			next.VoiceStatus == app.WorkflowNodeStatusReady
+	}, "workflow should resume materializing a pending node after restart")
 }
 
 func TestPreloadRemainingWorkflowNodesCoalescesDuplicateJobs(t *testing.T) {
@@ -356,6 +381,168 @@ func TestPreloadMarksPendingWithoutSkeletonThenAppendsPreparedNode(t *testing.T)
 			next.Status == app.WorkflowNodeStatusReady &&
 			len(next.Lines) >= 3
 	}, "workflow should append only the prepared next node")
+}
+
+func TestPreloadRemainingWorkflowNodesPreparesDirectChoiceBranches(t *testing.T) {
+	agentEngine := &stageBlockingAgent{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	close(agentEngine.release)
+	store := &stageSessionStore{
+		record: app.SessionRecord{
+			Session: app.Session{ID: "lesson:test", UserID: "default"},
+			Characters: []app.Character{{
+				ID:          "atri",
+				DisplayName: "亚托莉",
+				VoiceID:     "voice-atri",
+			}},
+			Teaching: app.TeachingSnapshot{
+				Runtime: app.RuntimeConfig{
+					AgentProvider: string(agent.ProviderMock),
+					VoiceProvider: string(voice.ProviderMock),
+				},
+			},
+			Workflow: app.TeachingWorkflow{
+				CurrentNodeID: "opening",
+				Nodes: []app.TeachingWorkflowNode{
+					{
+						ID:          "opening",
+						Kind:        "opening",
+						Title:       "开场",
+						Decision:    string(agent.ActDecisionContinue),
+						Status:      app.WorkflowNodeStatusReady,
+						VoiceStatus: app.WorkflowNodeStatusReady,
+						Choices: []app.SceneChoice{
+							{ID: "example", Label: "先看例子", Text: "先用例子继续。"},
+							{ID: "term", Label: "先拆术语", Text: "先解释术语。"},
+						},
+					},
+				},
+			},
+		},
+	}
+	rt := NewRuntime(Dependencies{
+		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentEngine},
+		Voices:       map[voice.Provider]voice.Engine{voice.ProviderMock: &stageRecordingVoiceEngine{}},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: voice.ProviderMock,
+		Sessions:     store,
+		Logger:       slog.Default(),
+	})
+
+	rt.preloadRemainingWorkflowNodes(app.SceneGenerateRequest{
+		Characters: store.record.Characters,
+		Runtime: app.RuntimeConfig{
+			AgentProvider: string(agent.ProviderMock),
+			VoiceProvider: string(voice.ProviderMock),
+		},
+	}, "lesson:test", "opening")
+
+	waitForStageStore(t, store, func(record app.SessionRecord) bool {
+		opening := findWorkflowNode(record.Workflow.Nodes, "opening")
+		if opening.NextNodeID == "" || len(opening.Choices) != 2 {
+			return false
+		}
+		if findWorkflowNode(record.Workflow.Nodes, opening.NextNodeID).Status != app.WorkflowNodeStatusReady {
+			return false
+		}
+		for _, choice := range opening.Choices {
+			if strings.TrimSpace(choice.TargetNodeID) == "" {
+				return false
+			}
+			branch := findWorkflowNode(record.Workflow.Nodes, choice.TargetNodeID)
+			if branch.ID == "" || branch.Kind != "choice" || !workflowNodeIsReady(branch) {
+				return false
+			}
+		}
+		return !record.Workflow.Preparing && record.Workflow.PendingNodeID == ""
+	}, "workflow should prepare mainline and every direct choice branch")
+	if got := agentEngine.callCount(); got != 3 {
+		t.Fatalf("agent calls = %d, want mainline plus two choice branches", got)
+	}
+}
+
+func TestSessionPreloadsChoiceBranchesWhenDecisionMissing(t *testing.T) {
+	agentEngine := &stageBlockingAgent{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	close(agentEngine.release)
+	store := &stageSessionStore{
+		record: app.SessionRecord{
+			Session: app.Session{ID: "lesson:test", UserID: "default"},
+			Characters: []app.Character{{
+				ID:          "atri",
+				DisplayName: "亚托莉",
+				VoiceID:     "voice-atri",
+			}},
+			Teaching: app.TeachingSnapshot{
+				Runtime: app.RuntimeConfig{
+					AgentProvider: string(agent.ProviderMock),
+					VoiceProvider: string(voice.ProviderMock),
+				},
+			},
+			Workflow: app.TeachingWorkflow{
+				CurrentNodeID: "opening",
+				Nodes: []app.TeachingWorkflowNode{
+					{
+						ID:          "opening",
+						Kind:        "opening",
+						Title:       "开场",
+						NextNodeID:  "lesson-1",
+						Status:      app.WorkflowNodeStatusReady,
+						VoiceStatus: app.WorkflowNodeStatusReady,
+						Choices: []app.SceneChoice{
+							{ID: "example", Label: "先看例子", Text: "先用例子继续。"},
+							{ID: "term", Label: "先拆术语", Text: "先解释术语。"},
+						},
+					},
+					{
+						ID:          "lesson-1",
+						Kind:        "lesson",
+						Title:       "第一幕",
+						Status:      app.WorkflowNodeStatusReady,
+						VoiceStatus: app.WorkflowNodeStatusReady,
+						Lines: []app.DialogueLine{{
+							Text:        "主线已经准备好了。",
+							SpeechText:  "主线已经准备好了。",
+							AudioStatus: app.DialogueAudioStatusReady,
+							Audio:       app.AudioResult{URL: "/audio/lesson-1.mp3", Format: "mp3"},
+						}},
+					},
+				},
+			},
+		},
+	}
+	rt := NewRuntime(Dependencies{
+		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentEngine},
+		Voices:       map[voice.Provider]voice.Engine{voice.ProviderMock: &stageRecordingVoiceEngine{}},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: voice.ProviderMock,
+		Sessions:     store,
+		Logger:       slog.Default(),
+	})
+
+	if _, err := rt.Session("lesson:test"); err != nil {
+		t.Fatalf("Session() error = %v", err)
+	}
+
+	waitForStageStore(t, store, func(record app.SessionRecord) bool {
+		opening := findWorkflowNode(record.Workflow.Nodes, "opening")
+		for _, choice := range opening.Choices {
+			if strings.TrimSpace(choice.TargetNodeID) == "" {
+				return false
+			}
+			if !workflowNodeIsReady(findWorkflowNode(record.Workflow.Nodes, choice.TargetNodeID)) {
+				return false
+			}
+		}
+		return !record.Workflow.Preparing && record.Workflow.PendingNodeID == ""
+	}, "Session should preload choices even when decision is absent")
+	if got := agentEngine.callCount(); got != 2 {
+		t.Fatalf("agent calls = %d, want two choice branches", got)
+	}
 }
 
 func TestPreloadDoesNotStartFollowingActBeforeAdvance(t *testing.T) {

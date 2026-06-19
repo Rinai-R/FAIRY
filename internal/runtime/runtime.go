@@ -120,7 +120,7 @@ func (r *Runtime) GenerateScene(ctx context.Context, request app.SceneGenerateRe
 		} else {
 			resp.Workflow = record.Workflow
 			resp.Session = record.Session
-			if shouldQueueNextAct(currentWorkflowNode(resp.Workflow)) {
+			if shouldQueueWorkflowFollowups(currentWorkflowNode(resp.Workflow)) {
 				r.preloadRemainingWorkflowNodes(request, record.Session.ID, resp.Workflow.CurrentNodeID)
 			}
 		}
@@ -186,7 +186,7 @@ func (r *Runtime) runSceneGenerationTask(ctx context.Context, sessionID string, 
 		r.logger.Warn("写入生成任务完成状态失败", "error", err, "session_id", sessionID)
 		return
 	}
-	if shouldQueueNextAct(currentWorkflowNode(record.Workflow)) {
+	if shouldQueueWorkflowFollowups(currentWorkflowNode(record.Workflow)) {
 		r.preloadRemainingWorkflowNodes(request, record.Session.ID, record.Workflow.CurrentNodeID)
 	}
 }
@@ -312,7 +312,15 @@ func (r *Runtime) Session(id string) (app.SessionRecord, error) {
 	if r.sessions == nil {
 		return app.SessionRecord{}, errors.New("session store 未启用")
 	}
-	return r.sessions.Get(id)
+	record, err := r.sessions.Get(id)
+	if err != nil {
+		return app.SessionRecord{}, err
+	}
+	current := currentWorkflowNode(record.Workflow)
+	if shouldQueueWorkflowFollowups(current) && !workflowFollowupsReady(record.Workflow, current) {
+		r.preloadRemainingWorkflowNodes(sceneGenerateRequestFromRecord(record), record.Session.ID, current.ID)
+	}
+	return record, nil
 }
 
 func (r *Runtime) DeleteSession(id string) error {
@@ -331,14 +339,15 @@ func (r *Runtime) AdvanceWorkflow(ctx context.Context, req app.WorkflowAdvanceRe
 		return app.WorkflowAdvanceResponse{}, err
 	}
 	if req.ChoiceID != "" && !req.Replay {
-		record, req, err = r.ensureChoiceBranch(ctx, record, req)
+		record, req, err = r.resolveChoiceBranchAdvance(record, req)
 		if err != nil {
 			return app.WorkflowAdvanceResponse{}, err
 		}
 	}
 	next := findWorkflowNode(record.Workflow.Nodes, req.NextNodeID)
 	current := findWorkflowNode(record.Workflow.Nodes, record.Workflow.CurrentNodeID)
-	if next.ID == "" && !req.Replay && workflowNextNodePending(record.Workflow, current, req.NextNodeID) {
+	if next.ID == "" && !req.Replay && (workflowNextNodePending(record.Workflow, current, req.NextNodeID) || req.ChoiceID != "" || strings.TrimSpace(current.NextNodeID) == strings.TrimSpace(req.NextNodeID)) {
+		r.preloadRemainingWorkflowNodes(sceneGenerateRequestFromRecord(record), record.Session.ID, current.ID)
 		return app.WorkflowAdvanceResponse{
 			Session:  record,
 			Workflow: record.Workflow,
@@ -383,7 +392,7 @@ func (r *Runtime) AdvanceWorkflow(ctx context.Context, req app.WorkflowAdvanceRe
 			break
 		}
 	}
-	if shouldQueueNextAct(node) {
+	if shouldQueueWorkflowFollowups(node) {
 		r.preloadRemainingWorkflowNodes(sceneGenerateRequestFromRecord(record), record.Session.ID, node.ID)
 	}
 	return app.WorkflowAdvanceResponse{
@@ -394,10 +403,21 @@ func (r *Runtime) AdvanceWorkflow(ctx context.Context, req app.WorkflowAdvanceRe
 	}, nil
 }
 
-func (r *Runtime) ensureChoiceBranch(ctx context.Context, record app.SessionRecord, req app.WorkflowAdvanceRequest) (app.SessionRecord, app.WorkflowAdvanceRequest, error) {
+func (r *Runtime) resolveChoiceBranchAdvance(record app.SessionRecord, req app.WorkflowAdvanceRequest) (app.SessionRecord, app.WorkflowAdvanceRequest, error) {
 	current := findWorkflowNode(record.Workflow.Nodes, record.Workflow.CurrentNodeID)
 	if current.ID == "" {
 		return record, req, fmt.Errorf("workflow 当前节点不存在: %s", record.Workflow.CurrentNodeID)
+	}
+	if assignChoiceTargets(&current) {
+		if !replaceWorkflowNode(&record.Workflow, current) {
+			return record, req, fmt.Errorf("workflow 当前节点不存在: %s", current.ID)
+		}
+		saved, err := r.sessions.SaveWorkflow(record.Session.ID, record.Workflow)
+		if err != nil {
+			return record, req, err
+		}
+		record = saved
+		current = findWorkflowNode(record.Workflow.Nodes, record.Workflow.CurrentNodeID)
 	}
 	choice, choiceIndex, ok := workflowChoiceByID(current, req.ChoiceID)
 	if !ok {
@@ -406,30 +426,20 @@ func (r *Runtime) ensureChoiceBranch(ctx context.Context, record app.SessionReco
 	if strings.TrimSpace(choice.TargetNodeID) == "" {
 		choice.TargetNodeID = choiceBranchNodeID(current, choice, choiceIndex)
 		current.Choices[choiceIndex].TargetNodeID = choice.TargetNodeID
+		if !replaceWorkflowNode(&record.Workflow, current) {
+			return record, req, fmt.Errorf("workflow 当前节点不存在: %s", current.ID)
+		}
+		saved, err := r.sessions.SaveWorkflow(record.Session.ID, record.Workflow)
+		if err != nil {
+			return record, req, err
+		}
+		record = saved
 	}
 	req.NextNodeID = choice.TargetNodeID
-	if existing := findWorkflowNode(record.Workflow.Nodes, req.NextNodeID); existing.ID != "" {
-		return record, req, nil
+	if workflowNodeNeedsPreload(record.Workflow, req.NextNodeID) {
+		r.preloadRemainingWorkflowNodes(sceneGenerateRequestFromRecord(record), record.Session.ID, current.ID)
 	}
-
-	branch := plannedChoiceBranchNode(current, choice)
-	request := sceneGenerateRequestFromRecord(record)
-	prepared, decision, err := r.prepareWorkflowNodeActAndVoiceWithChoice(ctx, request, record.Session, record.Workflow, branch, choice)
-	if err != nil {
-		prepared = workflowStageErrorNode(prepared, err)
-	}
-	prepared.Decision = string(decision)
-	if !replaceWorkflowNode(&record.Workflow, current) {
-		return record, req, fmt.Errorf("workflow 当前节点不存在: %s", current.ID)
-	}
-	record.Workflow.Nodes = append(record.Workflow.Nodes, prepared)
-	record.Workflow.Preparing = false
-	record.Workflow.PendingNodeID = ""
-	saved, saveErr := r.sessions.SaveWorkflow(record.Session.ID, record.Workflow)
-	if saveErr != nil {
-		return record, req, saveErr
-	}
-	return saved, req, nil
+	return record, req, nil
 }
 
 func plannedChoiceBranchNode(current app.TeachingWorkflowNode, choice app.SceneChoice) app.TeachingWorkflowNode {

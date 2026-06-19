@@ -418,66 +418,103 @@ func TestAdvanceWorkflowReplayTruncatesCanonicalHistory(t *testing.T) {
 	}
 }
 
-func TestAdvanceWorkflowChoiceCreatesBranchNode(t *testing.T) {
+func TestAdvanceWorkflowChoiceWaitsForMissingBranch(t *testing.T) {
 	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
 	rt := runtime.NewRuntime(runtime.Dependencies{
-		Agents: map[agent.Provider]agent.Engine{
-			agent.ProviderMock: agentmock.MockEngine{},
-		},
-		Scenes: map[scene.Provider]scene.Engine{
-			scene.ProviderMock: scenemock.Engine{},
-		},
-		Voices: map[voice.Provider]voice.Engine{
-			voice.ProviderMock: voicemock.MockEngine{},
-		},
-		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: voice.ProviderMock,
-		DefaultScene: scene.ProviderMock,
-		Sessions:     store,
-		Logger:       slog.Default(),
+		Sessions: store,
+		Logger:   slog.Default(),
 	})
-
-	resp, err := rt.GenerateScene(context.Background(), app.SceneGenerateRequest{
-		Topic:        "分支剧情",
-		DocumentText: "分支剧情应该让每个选择进入不同文本，再回到材料主线。",
-		Characters:   []app.Character{{ID: "tutor", DisplayName: "Tutor"}},
-	})
-	if err != nil {
-		t.Fatalf("GenerateScene() error = %v", err)
+	opening := readyWorkflowNode("opening", "opening", "lesson-1")
+	opening.Choices = []app.SceneChoice{{
+		ID:           "example",
+		Label:        "先看例子",
+		Text:         "先用例子继续。",
+		TargetNodeID: "opening-choice-example",
+	}}
+	resp := app.SceneGenerateResponse{
+		Scene:   app.Scene{ID: "lesson", Title: "课程"},
+		Session: app.Session{ID: "lesson:default", UserID: "default"},
+		Workflow: app.TeachingWorkflow{
+			ID:            "wf",
+			CurrentNodeID: "opening",
+			Nodes: []app.TeachingWorkflowNode{
+				opening,
+				readyWorkflowNode("lesson-1", "lesson", ""),
+			},
+		},
 	}
-	opening := workflowNodeByID(resp.Workflow.Nodes, "opening")
-	if len(opening.Choices) == 0 {
-		t.Fatal("opening choices is empty")
+	if _, err := store.BeginScene(app.SceneGenerateRequest{
+		Characters: []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+	}, resp); err != nil {
+		t.Fatalf("BeginScene() error = %v", err)
 	}
-	choice := opening.Choices[0]
-	if choice.TargetNodeID == "" {
-		t.Fatal("choice target_node_id is empty")
-	}
-	mainlineNext := opening.NextNodeID
 
 	advanced, err := rt.AdvanceWorkflow(context.Background(), app.WorkflowAdvanceRequest{
-		SessionID:     resp.Session.ID,
+		SessionID:     "lesson:default",
 		CurrentNodeID: "opening",
-		NextNodeID:    mainlineNext,
-		ChoiceID:      choice.ID,
+		NextNodeID:    "opening-choice-example",
+		ChoiceID:      "example",
 	})
 	if err != nil {
 		t.Fatalf("AdvanceWorkflow(choice) error = %v", err)
 	}
-	if !advanced.Ready || advanced.Node.ID != choice.TargetNodeID {
-		t.Fatalf("advanced node = %q ready=%v, want branch %q", advanced.Node.ID, advanced.Ready, choice.TargetNodeID)
+	if !advanced.Waiting || advanced.Ready {
+		t.Fatalf("advance flags = ready:%v waiting:%v, want false/true", advanced.Ready, advanced.Waiting)
 	}
-	if advanced.Node.Kind != "choice" {
-		t.Fatalf("branch kind = %q, want choice", advanced.Node.Kind)
+	if advanced.Node.ID != "opening" || advanced.Workflow.CurrentNodeID != "opening" {
+		t.Fatalf("advanced current = node:%q workflow:%q, want opening", advanced.Node.ID, advanced.Workflow.CurrentNodeID)
 	}
-	if advanced.Node.NextNodeID != mainlineNext {
-		t.Fatalf("branch next_node_id = %q, want %q", advanced.Node.NextNodeID, mainlineNext)
+}
+
+func TestAdvanceWorkflowChoiceUsesReadyBranch(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Sessions: store,
+		Logger:   slog.Default(),
+	})
+	opening := readyWorkflowNode("opening", "opening", "lesson-1")
+	opening.Choices = []app.SceneChoice{{
+		ID:           "example",
+		Label:        "先看例子",
+		Text:         "先用例子继续。",
+		TargetNodeID: "opening-choice-example",
+	}}
+	branch := readyWorkflowNode("opening-choice-example", "choice", "lesson-1")
+	branch.Title = "先看例子"
+	branch.Summary = "先用例子继续。"
+	resp := app.SceneGenerateResponse{
+		Scene:   app.Scene{ID: "lesson", Title: "课程"},
+		Session: app.Session{ID: "lesson:default", UserID: "default"},
+		Workflow: app.TeachingWorkflow{
+			ID:            "wf",
+			CurrentNodeID: "opening",
+			Nodes: []app.TeachingWorkflowNode{
+				opening,
+				readyWorkflowNode("lesson-1", "lesson", ""),
+				branch,
+			},
+		},
 	}
-	if !strings.Contains(advanced.Node.Summary, choice.Label) {
-		t.Fatalf("branch summary = %q, want choice label %q", advanced.Node.Summary, choice.Label)
+	if _, err := store.BeginScene(app.SceneGenerateRequest{
+		Characters: []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+	}, resp); err != nil {
+		t.Fatalf("BeginScene() error = %v", err)
 	}
-	if len(advanced.Node.Lines) < 2 || advanced.Node.Lines[0].Audio.Format == "" {
-		t.Fatalf("branch missing prepared lines/audio: %+v", advanced.Node)
+
+	advanced, err := rt.AdvanceWorkflow(context.Background(), app.WorkflowAdvanceRequest{
+		SessionID:     "lesson:default",
+		CurrentNodeID: "opening",
+		NextNodeID:    "opening-choice-example",
+		ChoiceID:      "example",
+	})
+	if err != nil {
+		t.Fatalf("AdvanceWorkflow(choice) error = %v", err)
+	}
+	if !advanced.Ready || advanced.Waiting || advanced.Node.ID != "opening-choice-example" {
+		t.Fatalf("advanced node = %q ready=%v waiting=%v, want ready branch", advanced.Node.ID, advanced.Ready, advanced.Waiting)
+	}
+	if advanced.Workflow.CurrentNodeID != "opening-choice-example" {
+		t.Fatalf("current node = %q, want branch", advanced.Workflow.CurrentNodeID)
 	}
 }
 
@@ -1761,6 +1798,25 @@ func workflowNodeByID(nodes []app.TeachingWorkflowNode, id string) app.TeachingW
 		}
 	}
 	return app.TeachingWorkflowNode{}
+}
+
+func readyWorkflowNode(id string, kind string, nextID string) app.TeachingWorkflowNode {
+	return app.TeachingWorkflowNode{
+		ID:          id,
+		Kind:        kind,
+		Title:       id,
+		Speaker:     "亚托莉",
+		NextNodeID:  nextID,
+		Status:      app.WorkflowNodeStatusReady,
+		VoiceStatus: app.WorkflowNodeStatusReady,
+		Lines: []app.DialogueLine{{
+			Speaker:     "亚托莉",
+			Text:        id,
+			SpeechText:  id,
+			AudioStatus: app.DialogueAudioStatusReady,
+			Audio:       app.AudioResult{URL: "/audio/" + id + ".mp3", Format: "mp3"},
+		}},
+	}
 }
 
 func waitForWorkflowSettled(t *testing.T, rt *runtime.Runtime, sessionID string) {

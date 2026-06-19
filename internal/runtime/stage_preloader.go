@@ -34,6 +34,11 @@ type workflowStageResult struct {
 	err           error
 }
 
+type workflowFollowupTarget struct {
+	node   app.TeachingWorkflowNode
+	choice app.SceneChoice
+}
+
 func initializeDynamicWorkflow(template app.TeachingWorkflow, sceneID string, topic string, goal string) app.TeachingWorkflow {
 	workflowID := strings.TrimSpace(template.ID)
 	if workflowID == "" {
@@ -362,6 +367,80 @@ func workflowNextNodePending(workflow app.TeachingWorkflow, current app.Teaching
 	return workflow.Preparing && strings.TrimSpace(current.NextNodeID) == nextNodeID
 }
 
+func workflowNodeNeedsPreload(workflow app.TeachingWorkflow, nodeID string) bool {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return false
+	}
+	existing := findWorkflowNode(workflow.Nodes, nodeID)
+	if existing.ID == "" {
+		return true
+	}
+	return !workflowNodeIsReady(existing) && !workflowNodeHasError(existing)
+}
+
+func workflowFollowupsReady(workflow app.TeachingWorkflow, current app.TeachingWorkflowNode) bool {
+	if current.ID == "" || current.FreeDiscussion || current.Kind == "free_discussion" {
+		return true
+	}
+	_, targets, _ := workflowFollowupTargets(workflow, current)
+	if len(targets) == 0 {
+		return true
+	}
+	for _, target := range targets {
+		node := findWorkflowNode(workflow.Nodes, target.node.ID)
+		if node.ID == "" || !workflowNodeIsReady(node) {
+			return false
+		}
+	}
+	return true
+}
+
+func workflowFollowupTargets(workflow app.TeachingWorkflow, current app.TeachingWorkflowNode) (app.TeachingWorkflowNode, []workflowFollowupTarget, bool) {
+	if current.ID == "" || current.FreeDiscussion || current.Kind == "free_discussion" {
+		return current, nil, false
+	}
+	updated := current
+	changed := assignChoiceTargets(&updated)
+	targets := make([]workflowFollowupTarget, 0, 1+len(updated.Choices))
+	if mainline, nextCurrent, ok := planWorkflowMainlineFollowup(workflow, updated); ok {
+		if nextCurrent.NextNodeID != updated.NextNodeID {
+			updated = nextCurrent
+			changed = true
+		}
+		targets = append(targets, workflowFollowupTarget{node: mainline})
+	}
+	for _, choice := range updated.Choices {
+		branch := plannedChoiceBranchNode(updated, choice)
+		if existing := findWorkflowNode(workflow.Nodes, branch.ID); existing.ID != "" {
+			branch = existing
+		}
+		targets = append(targets, workflowFollowupTarget{
+			node:   branch,
+			choice: choice,
+		})
+	}
+	return updated, targets, changed
+}
+
+func planWorkflowMainlineFollowup(workflow app.TeachingWorkflow, current app.TeachingWorkflowNode) (app.TeachingWorkflowNode, app.TeachingWorkflowNode, bool) {
+	decision := normalizeStoredDecision(current)
+	planned, ok := plannedNodeForDecision(current, countLessonNodes(workflow.Nodes)+1, decision)
+	if !ok {
+		return app.TeachingWorkflowNode{}, current, false
+	}
+	if nextID := strings.TrimSpace(current.NextNodeID); nextID != "" {
+		existing := findWorkflowNode(workflow.Nodes, nextID)
+		if existing.ID != "" {
+			return existing, current, true
+		}
+		planned.ID = nextID
+		return planned, current, true
+	}
+	current.NextNodeID = planned.ID
+	return planned, current, true
+}
+
 func (r *Runtime) preloadRemainingWorkflowNodes(request app.SceneGenerateRequest, sessionID string, currentNodeID string) {
 	if r.sessions == nil || strings.TrimSpace(sessionID) == "" || r.stagePool == nil {
 		return
@@ -399,45 +478,61 @@ func (r *Runtime) runWorkflowStageWaiter(ctx context.Context, jobKey string, tas
 		r.logger.Warn("剧情续写起点不存在", "session_id", task.sessionID, "node_id", task.currentNodeID)
 		return
 	}
-	if strings.TrimSpace(current.NextNodeID) != "" {
-		if existing := findWorkflowNode(record.Workflow.Nodes, current.NextNodeID); existing.ID != "" {
-			return
-		}
-		if workflowNextNodePending(record.Workflow, current, current.NextNodeID) {
-			return
-		}
-		r.logger.Warn("剧情续写下一幕指向丢失，重新规划", "session_id", task.sessionID, "current_node_id", current.ID, "next_node_id", current.NextNodeID)
-		current.NextNodeID = ""
-		replaceWorkflowNode(&record.Workflow, current)
-	}
-	decision := normalizeStoredDecision(current)
-	planned, ok := plannedNodeForDecision(current, countLessonNodes(record.Workflow.Nodes)+1, decision)
+	current, targets, currentChanged := workflowFollowupTargets(record.Workflow, current)
+	progressChanged := record.Workflow.Preparing || strings.TrimSpace(record.Workflow.PendingNodeID) != ""
 	record.Workflow.Preparing = false
 	record.Workflow.PendingNodeID = ""
-	if !ok {
-		if _, err := r.sessions.SaveWorkflow(task.sessionID, record.Workflow); err != nil {
-			r.logger.Warn("写入剧情结束状态失败", "error", err, "session_id", task.sessionID)
+	if currentChanged {
+		if !replaceWorkflowNode(&record.Workflow, current) {
+			r.logger.Warn("剧情续写起点保存失败", "session_id", task.sessionID, "node_id", current.ID)
+			return
 		}
-		return
 	}
-	if existing := findWorkflowNode(record.Workflow.Nodes, planned.ID); existing.ID != "" {
-		return
-	} else {
-		current.NextNodeID = planned.ID
-		record.Workflow.PendingNodeID = planned.ID
-		record.Workflow.Preparing = true
-		replaceWorkflowNode(&record.Workflow, current)
+	if currentChanged || progressChanged {
 		saved, err := r.sessions.SaveWorkflow(task.sessionID, record.Workflow)
 		if err != nil {
-			r.logger.Warn("写入剧情准备状态失败", "error", err, "session_id", task.sessionID, "node_id", planned.ID)
+			r.logger.Warn("写入剧情后续规划失败", "error", err, "session_id", task.sessionID, "node_id", current.ID)
 			return
 		}
 		record = saved
 	}
+	for _, target := range targets {
+		if !workflowNodeNeedsPreload(record.Workflow, target.node.ID) {
+			continue
+		}
+		var err error
+		record, err = r.prepareWorkflowFollowup(ctx, task, record, target.node, target.choice)
+		if err != nil {
+			r.logger.Warn("准备剧情后续失败", "error", err, "session_id", task.sessionID, "node_id", target.node.ID, "choice_id", target.choice.ID)
+			return
+		}
+	}
+}
+
+func (r *Runtime) prepareWorkflowFollowup(
+	ctx context.Context,
+	task workflowStageTask,
+	record app.SessionRecord,
+	planned app.TeachingWorkflowNode,
+	choice app.SceneChoice,
+) (app.SessionRecord, error) {
+	if strings.TrimSpace(planned.ID) == "" {
+		return record, errors.New("剧情幕 id 不能为空")
+	}
+	if !workflowNodeNeedsPreload(record.Workflow, planned.ID) {
+		return record, nil
+	}
+	record.Workflow.PendingNodeID = planned.ID
+	record.Workflow.Preparing = true
+	saved, err := r.sessions.SaveWorkflow(task.sessionID, record.Workflow)
+	if err != nil {
+		return record, fmt.Errorf("写入剧情准备状态失败: %w", err)
+	}
+	record = saved
 	resultCh := make(chan workflowStageResult, 1)
 	workerTask := task
 	if err := r.stagePool.Submit(func() {
-		resultCh <- r.runWorkflowStageWorker(ctx, workerTask, record.Session, record.Workflow, planned)
+		resultCh <- r.runWorkflowStageWorker(ctx, workerTask, record.Session, record.Workflow, planned, choice)
 	}); err != nil {
 		resultCh <- workflowStageResult{
 			sessionID:     task.sessionID,
@@ -449,6 +544,11 @@ func (r *Runtime) runWorkflowStageWaiter(ctx context.Context, jobKey string, tas
 	}
 	result := <-resultCh
 	r.applyWorkflowStageResult(result)
+	latest, err := r.sessions.Get(task.sessionID)
+	if err != nil {
+		return record, fmt.Errorf("刷新剧情准备结果失败: %w", err)
+	}
+	return latest, nil
 }
 
 func (r *Runtime) runWorkflowStageWorker(
@@ -457,8 +557,9 @@ func (r *Runtime) runWorkflowStageWorker(
 	session app.Session,
 	workflow app.TeachingWorkflow,
 	planned app.TeachingWorkflowNode,
+	choice app.SceneChoice,
 ) workflowStageResult {
-	prepared, nextDecision, err := r.prepareWorkflowNodeActAndVoice(ctx, task.request, session, workflow, planned)
+	prepared, nextDecision, err := r.prepareWorkflowNodeActAndVoiceWithChoice(ctx, task.request, session, workflow, planned, choice)
 	if err != nil {
 		prepared = workflowStageErrorNode(prepared, err)
 	}
@@ -711,14 +812,16 @@ func mergeGeneratedActNode(planned app.TeachingWorkflowNode, generated app.Teach
 	return planned
 }
 
-func assignChoiceTargets(node *app.TeachingWorkflowNode) {
+func assignChoiceTargets(node *app.TeachingWorkflowNode) bool {
 	if node == nil || strings.TrimSpace(node.ID) == "" || len(node.Choices) == 0 {
-		return
+		return false
 	}
+	changed := false
 	seen := map[string]int{}
 	for index := range node.Choices {
 		if strings.TrimSpace(node.Choices[index].ID) == "" {
 			node.Choices[index].ID = fmt.Sprintf("choice-%d", index+1)
+			changed = true
 		}
 		if strings.TrimSpace(node.Choices[index].TargetNodeID) == "" {
 			base := choiceBranchNodeID(*node, node.Choices[index], index)
@@ -727,11 +830,13 @@ func assignChoiceTargets(node *app.TeachingWorkflowNode) {
 			} else {
 				node.Choices[index].TargetNodeID = base
 			}
+			changed = true
 			seen[base]++
 			continue
 		}
 		seen[node.Choices[index].TargetNodeID]++
 	}
+	return changed
 }
 
 func choiceBranchNodeID(node app.TeachingWorkflowNode, choice app.SceneChoice, index int) string {
@@ -842,6 +947,19 @@ func shouldQueueNextAct(node app.TeachingWorkflowNode) bool {
 		return false
 	}
 	return decision == agent.ActDecisionContinue || decision == agent.ActDecisionSummarize || decision == agent.ActDecisionFreeDiscussion
+}
+
+func shouldQueueWorkflowFollowups(node app.TeachingWorkflowNode) bool {
+	if node.Kind == "free_discussion" || node.FreeDiscussion {
+		return false
+	}
+	if !workflowNodeIsReady(node) {
+		return false
+	}
+	if len(node.Choices) > 0 {
+		return true
+	}
+	return shouldQueueNextAct(node)
 }
 
 func syncWorkflowNodeLegacyFields(node *app.TeachingWorkflowNode) {
