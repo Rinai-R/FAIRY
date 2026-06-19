@@ -3155,7 +3155,7 @@ button:disabled {
 }
 
 .clone-workbench,
-.gptsovits-workbench,
+.voice-service-workbench,
 .voice-test-card,
 .asset-list {
   display: grid;

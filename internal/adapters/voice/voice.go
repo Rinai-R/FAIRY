@@ -11,8 +11,6 @@ type Provider string
 const (
 	ProviderMock       Provider = "mock"
 	ProviderMacOS      Provider = "macos"
-	ProviderGPTSoVITS  Provider = "gpt-sovits"
-	ProviderGPTSoVITS2 Provider = "gptsovits"
 	ProviderVolcengine Provider = "volcengine"
 )
 

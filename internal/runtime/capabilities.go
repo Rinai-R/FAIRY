@@ -102,7 +102,6 @@ func voiceProviders(items map[voice.Provider]voice.Engine) []app.ProviderInfo {
 	out := make([]app.ProviderInfo, 0, len(items))
 	for provider := range items {
 		info := providerInfo("voice", string(provider))
-		info.Streaming = provider == voice.ProviderGPTSoVITS || provider == voice.ProviderGPTSoVITS2
 		out = append(out, info)
 	}
 	return sortProviders(out)
@@ -130,7 +129,7 @@ func providerInfo(domain string, id string) app.ProviderInfo {
 		Domain:      domain,
 		DisplayName: id,
 		Kind:        "adapter",
-		Local:       id == "mock" || id == "macos" || id == "codex" || id == "gpt-sovits" || id == "gptsovits" || id == "comfyui",
+		Local:       id == "mock" || id == "macos" || id == "codex" || id == "comfyui",
 	}
 	switch id {
 	case "mock":
@@ -147,9 +146,6 @@ func providerInfo(domain string, id string) app.ProviderInfo {
 		info.Config = map[string]string{"endpoint": "http://127.0.0.1:8788"}
 	case "macos":
 		info.DisplayName = "macOS say"
-	case "gpt-sovits", "gptsovits":
-		info.DisplayName = "GPT-SoVITS"
-		info.Config = map[string]string{"endpoint": "http://127.0.0.1:9880"}
 	case "volcengine":
 		info.DisplayName = "火山声音复刻"
 		info.Config = map[string]string{"endpoint": "https://openspeech.bytedance.com/api/v3/tts/unidirectional", "resource_id": "seed-icl-2.0", "voice_clone": "true", "format": "mp3"}

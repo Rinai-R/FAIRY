@@ -128,13 +128,6 @@ func configFromLookup(lookup func(string) (string, bool)) (bootstrap.Config, err
 	config.ImageBaseURL = optionalString(lookup, "FAIRY_IMAGE_BASE_URL", config.ImageBaseURL)
 	config.MacOSVoice = optionalString(lookup, "FAIRY_MACOS_VOICE", config.MacOSVoice)
 	config.ComfyUIEndpoint = optionalString(lookup, "FAIRY_COMFYUI_ENDPOINT", config.ComfyUIEndpoint)
-	config.GPTSoVITSEndpoint = optionalString(lookup, "FAIRY_GPTSOVITS_ENDPOINT", config.GPTSoVITSEndpoint)
-	config.GPTSoVITSRefAudioPath = optionalString(lookup, "FAIRY_GPTSOVITS_REF_AUDIO_PATH", config.GPTSoVITSRefAudioPath)
-	config.GPTSoVITSPromptText = optionalString(lookup, "FAIRY_GPTSOVITS_PROMPT_TEXT", config.GPTSoVITSPromptText)
-	config.GPTSoVITSTextLang = optionalString(lookup, "FAIRY_GPTSOVITS_TEXT_LANG", config.GPTSoVITSTextLang)
-	config.GPTSoVITSPromptLang = optionalString(lookup, "FAIRY_GPTSOVITS_PROMPT_LANG", config.GPTSoVITSPromptLang)
-	config.GPTSoVITSMediaType = optionalString(lookup, "FAIRY_GPTSOVITS_MEDIA_TYPE", config.GPTSoVITSMediaType)
-	config.GPTSoVITSTextSplitMethod = optionalString(lookup, "FAIRY_GPTSOVITS_TEXT_SPLIT_METHOD", config.GPTSoVITSTextSplitMethod)
 	config.VolcengineEndpoint = optionalString(lookup, "FAIRY_VOLCENGINE_TTS_ENDPOINT", config.VolcengineEndpoint)
 	config.VolcengineAPIKey = optionalSecret(lookup, "FAIRY_VOLCENGINE_TTS_API_KEY", config.VolcengineAPIKey)
 	config.VolcengineResourceID = optionalString(lookup, "FAIRY_VOLCENGINE_TTS_RESOURCE_ID", config.VolcengineResourceID)
@@ -199,8 +192,10 @@ func parseAgentProvider(value string) (agent.Provider, error) {
 func parseVoiceProvider(value string) (voice.Provider, error) {
 	provider := voice.Provider(strings.TrimSpace(value))
 	switch provider {
-	case voice.ProviderMock, voice.ProviderMacOS, voice.ProviderGPTSoVITS, voice.ProviderGPTSoVITS2, voice.ProviderVolcengine:
+	case voice.ProviderMock, voice.ProviderMacOS, voice.ProviderVolcengine:
 		return provider, nil
+	case "gpt-sovits", "gptsovits":
+		return "", fmt.Errorf("FAIRY_VOICE_ENGINE 不再支持直连模型 provider %q，请改用 voice-service", value)
 	default:
 		if isProviderID(string(provider)) {
 			return provider, nil

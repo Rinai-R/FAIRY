@@ -180,6 +180,36 @@ func TestGenerateScenePersistsTeachingSessionAndTurns(t *testing.T) {
 	}
 }
 
+func TestCapabilitiesExposeStandardVoiceService(t *testing.T) {
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Voices: map[voice.Provider]voice.Engine{
+			voice.ProviderMock:              voicemock.MockEngine{},
+			voice.Provider("voice-service"): voicemock.MockEngine{},
+		},
+		DefaultVoice: voice.ProviderMock,
+		Logger:       slog.Default(),
+	})
+
+	capabilities := rt.Capabilities()
+	voiceIDs := map[string]bool{}
+	for _, item := range capabilities.Providers.Voices {
+		voiceIDs[item.ID] = true
+	}
+	if !voiceIDs["voice-service"] {
+		t.Fatalf("capabilities voices missing standard voice-service provider: %#v", capabilities.Providers.Voices)
+	}
+
+	healthIDs := map[string]bool{}
+	for _, item := range rt.ProviderHealth(context.Background()) {
+		if item.Domain == "voice" {
+			healthIDs[item.Provider] = true
+		}
+	}
+	if !healthIDs["voice-service"] {
+		t.Fatalf("provider health missing standard voice-service provider")
+	}
+}
+
 func TestGenerateSceneRejectsInvalidTeachingBoundary(t *testing.T) {
 	rt := runtime.NewRuntime(runtime.Dependencies{
 		Scenes: map[scene.Provider]scene.Engine{

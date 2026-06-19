@@ -498,15 +498,11 @@ type HTTPVoicePlugin struct {
 }
 
 type VoiceProfile struct {
-	Endpoint        string            `json:"endpoint,omitempty"`
-	VoiceID         string            `json:"voice_id,omitempty"`
-	RefAudioPath    string            `json:"ref_audio_path,omitempty"`
-	PromptText      string            `json:"prompt_text,omitempty"`
-	TextLang        string            `json:"text_lang,omitempty"`
-	PromptLang      string            `json:"prompt_lang,omitempty"`
-	MediaType       string            `json:"media_type,omitempty"`
-	TextSplitMethod string            `json:"text_split_method,omitempty"`
-	Extra           map[string]string `json:"extra,omitempty"`
+	Endpoint  string            `json:"endpoint,omitempty"`
+	VoiceID   string            `json:"voice_id,omitempty"`
+	TextLang  string            `json:"text_lang,omitempty"`
+	MediaType string            `json:"media_type,omitempty"`
+	Extra     map[string]string `json:"extra,omitempty"`
 }
 
 type VoiceCloneSample struct {

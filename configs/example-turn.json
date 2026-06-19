@@ -54,9 +54,6 @@
     "agent_provider": "mock",
     "voice_provider": "mock",
     "image_provider": "mock",
-    "voice": {
-      "endpoint": "http://127.0.0.1:9880"
-    },
     "image": {
       "enabled": true,
       "prompt": "anime visual novel character CG, tutor heroine teaching Bayes formula",

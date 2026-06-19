@@ -3,6 +3,7 @@ package httpvoice
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -50,6 +51,9 @@ func NewEngine(options Options) *Engine {
 	if options.Method == "" {
 		options.Method = http.MethodPost
 	}
+	if options.Path == "" {
+		options.Path = "/v1/synthesize"
+	}
 	if options.ContentType == "" {
 		options.ContentType = "application/json"
 	}
@@ -67,7 +71,7 @@ func NewEngine(options Options) *Engine {
 	}
 	return &Engine{
 		Provider:     options.Provider,
-		Endpoint:     strings.TrimRight(options.Endpoint, "/"),
+		Endpoint:     normalizeEndpoint(options.Endpoint),
 		Method:       options.Method,
 		Path:         options.Path,
 		ContentType:  options.ContentType,
@@ -86,11 +90,15 @@ func (e *Engine) Synthesize(ctx context.Context, input voice.Input) (app.AudioRe
 	if text == "" {
 		return app.AudioResult{Format: e.OutputFormat, Placeholder: true}, nil
 	}
-	if e.Endpoint == "" {
+	endpoint := normalizeEndpoint(first(input.Profile.Endpoint, e.Endpoint))
+	if endpoint == "" {
 		return app.AudioResult{}, fmt.Errorf("%s endpoint 不能为空", e.Provider)
 	}
-	body := e.renderBody(input)
-	req, err := http.NewRequestWithContext(ctx, e.Method, e.Endpoint+e.Path, strings.NewReader(body))
+	body, err := e.renderBody(input)
+	if err != nil {
+		return app.AudioResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, e.Method, endpointWithPath(endpoint, e.Path), strings.NewReader(body))
 	if err != nil {
 		return app.AudioResult{}, err
 	}
@@ -106,12 +114,16 @@ func (e *Engine) Synthesize(ctx context.Context, input voice.Input) (app.AudioRe
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return app.AudioResult{}, fmt.Errorf("%s voice http 失败: %s: %s", e.Provider, resp.Status, strings.TrimSpace(string(msg)))
+		return app.AudioResult{}, fmt.Errorf("%s voice http 失败: %s: %s%s", e.Provider, resp.Status, strings.TrimSpace(string(msg)), endpointHint(e.Provider, endpoint, resp.StatusCode))
 	}
+	if isJSONResponse(resp.Header.Get("content-type")) {
+		return parseStandardResponse(resp.Body, e.OutputFormat)
+	}
+	format := formatFromContentType(resp.Header.Get("content-type"), first(input.Profile.MediaType, e.OutputFormat))
 	if err := os.MkdirAll(e.OutputDir, 0o755); err != nil {
 		return app.AudioResult{}, err
 	}
-	name := fmt.Sprintf("%d.%s", time.Now().UnixNano(), e.OutputFormat)
+	name := fmt.Sprintf("%d.%s", time.Now().UnixNano(), extension(format))
 	path := filepath.Join(e.OutputDir, name)
 	file, err := os.Create(path)
 	if err != nil {
@@ -126,7 +138,7 @@ func (e *Engine) Synthesize(ctx context.Context, input voice.Input) (app.AudioRe
 	}
 	return app.AudioResult{
 		URL:         e.BaseURL + name,
-		Format:      e.OutputFormat,
+		Format:      format,
 		DurationMS:  estimateDuration(text),
 		Placeholder: false,
 	}, nil
@@ -143,7 +155,7 @@ func (e *Engine) Check(ctx context.Context) health.Result {
 		}
 		checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
-		req, err := http.NewRequestWithContext(checkCtx, http.MethodGet, e.Endpoint+path, bytes.NewReader(nil))
+		req, err := http.NewRequestWithContext(checkCtx, http.MethodGet, endpointWithPath(e.Endpoint, path), bytes.NewReader(nil))
 		if err != nil {
 			return health.StatusDown, err.Error(), nil
 		}
@@ -162,10 +174,23 @@ func (e *Engine) Check(ctx context.Context) health.Result {
 	})(ctx)
 }
 
-func (e *Engine) renderBody(input voice.Input) string {
+func (e *Engine) renderBody(input voice.Input) (string, error) {
 	template := e.BodyTemplate
 	if template == "" {
-		template = `{"text":"{{text}}"}`
+		payload := standardSynthesisRequest{
+			VoiceID:  input.Profile.VoiceID,
+			Text:     strings.TrimSpace(input.Text),
+			Language: input.Profile.TextLang,
+			Format:   first(input.Profile.MediaType, e.OutputFormat),
+			Style:    input.Plan.Style,
+			Speed:    input.Plan.Speed,
+			Pitch:    input.Plan.Pitch,
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return "", err
+		}
+		return string(raw), nil
 	}
 	replacements := map[string]string{
 		"{{text}}":     jsonEscape(input.Text),
@@ -177,7 +202,105 @@ func (e *Engine) renderBody(input voice.Input) string {
 	for key, value := range replacements {
 		template = strings.ReplaceAll(template, key, value)
 	}
-	return template
+	return template, nil
+}
+
+type standardSynthesisRequest struct {
+	VoiceID  string  `json:"voice_id,omitempty"`
+	Text     string  `json:"text"`
+	Language string  `json:"language,omitempty"`
+	Format   string  `json:"format,omitempty"`
+	Style    string  `json:"style,omitempty"`
+	Speed    float64 `json:"speed,omitempty"`
+	Pitch    float64 `json:"pitch,omitempty"`
+}
+
+type standardSynthesisResponse struct {
+	AudioURL   string `json:"audio_url"`
+	Format     string `json:"format,omitempty"`
+	DurationMS int    `json:"duration_ms,omitempty"`
+}
+
+func parseStandardResponse(body io.Reader, fallbackFormat string) (app.AudioResult, error) {
+	var payload standardSynthesisResponse
+	if err := json.NewDecoder(io.LimitReader(body, 1<<20)).Decode(&payload); err != nil {
+		return app.AudioResult{}, fmt.Errorf("voice service response 必须是 JSON: %w", err)
+	}
+	if strings.TrimSpace(payload.AudioURL) == "" {
+		return app.AudioResult{}, fmt.Errorf("voice service response audio_url 不能为空")
+	}
+	return app.AudioResult{
+		URL:         strings.TrimSpace(payload.AudioURL),
+		Format:      first(payload.Format, fallbackFormat),
+		DurationMS:  payload.DurationMS,
+		Placeholder: false,
+	}, nil
+}
+
+func isJSONResponse(value string) bool {
+	contentType := strings.ToLower(strings.TrimSpace(strings.Split(value, ";")[0]))
+	return contentType == "application/json" || contentType == "application/problem+json"
+}
+
+func formatFromContentType(value string, fallback string) string {
+	contentType := strings.ToLower(strings.TrimSpace(strings.Split(value, ";")[0]))
+	switch contentType {
+	case "audio/mpeg", "audio/mp3":
+		return "mp3"
+	case "audio/ogg", "application/ogg":
+		return "ogg"
+	case "audio/aac", "audio/aacp":
+		return "aac"
+	case "audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave":
+		return "wav"
+	default:
+		return strings.TrimPrefix(first(fallback, "wav"), ".")
+	}
+}
+
+func extension(format string) string {
+	switch strings.ToLower(format) {
+	case "mp3", "ogg", "aac":
+		return strings.ToLower(format)
+	default:
+		return "wav"
+	}
+}
+
+func normalizeEndpoint(value string) string {
+	endpoint := strings.TrimSpace(value)
+	if endpoint == "" {
+		return ""
+	}
+	if !strings.HasPrefix(strings.ToLower(endpoint), "http://") && !strings.HasPrefix(strings.ToLower(endpoint), "https://") {
+		endpoint = "http://" + endpoint
+	}
+	return strings.TrimRight(endpoint, "/")
+}
+
+func endpointWithPath(endpoint string, path string) string {
+	endpoint = normalizeEndpoint(endpoint)
+	if path == "" || path == "/" {
+		return endpoint
+	}
+	normalizedPath := "/" + strings.TrimLeft(path, "/")
+	if strings.HasSuffix(strings.ToLower(endpoint), strings.ToLower(normalizedPath)) {
+		return endpoint
+	}
+	return strings.TrimRight(endpoint, "/") + normalizedPath
+}
+
+func endpointHint(provider string, endpoint string, statusCode int) string {
+	if provider != "voice-service" || statusCode != http.StatusNotFound || !isLikelyRawLocalTTSEndpoint(endpoint) {
+		return ""
+	}
+	return "；voice-service endpoint 应指向本机 Gateway/标准语音服务，默认 http://127.0.0.1:8791，不是原始模型服务端口 9880"
+}
+
+func isLikelyRawLocalTTSEndpoint(endpoint string) bool {
+	host := strings.TrimPrefix(strings.TrimPrefix(strings.ToLower(strings.TrimSpace(endpoint)), "http://"), "https://")
+	host = strings.TrimRight(host, "/")
+	return strings.HasPrefix(host, "127.0.0.1:9880") || strings.HasPrefix(host, "localhost:9880")
 }
 
 func (e *Engine) client() *http.Client {

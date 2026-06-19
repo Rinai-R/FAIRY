@@ -27,10 +27,17 @@
     },
     {
       "domain": "voice",
-      "id": "gpt-sovits",
-      "display_name": "GPT-SoVITS",
-      "description": "调用本地 GPT-SoVITS /tts HTTP API 生成语音。",
-      "default_endpoint": "http://127.0.0.1:9880"
+      "id": "voice-service",
+      "display_name": "标准语音服务",
+      "description": "调用本机已部署的 Voice Service HTTP 接口。",
+      "default_endpoint": "http://127.0.0.1:8791",
+      "adapter": "http_voice",
+      "http_voice": {
+        "endpoint": "http://127.0.0.1:8791",
+        "path": "/v1/synthesize",
+        "health_path": "/health",
+        "output_format": "wav"
+      }
     },
     {
       "domain": "voice",

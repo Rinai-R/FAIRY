@@ -15,7 +15,6 @@ import (
 	scenecodex "github.com/Rinai-R/FAIRY/internal/adapters/scene/codex"
 	scenemock "github.com/Rinai-R/FAIRY/internal/adapters/scene/mock"
 	"github.com/Rinai-R/FAIRY/internal/adapters/voice"
-	voicegptsovits "github.com/Rinai-R/FAIRY/internal/adapters/voice/gptsovits"
 	voicehttp "github.com/Rinai-R/FAIRY/internal/adapters/voice/httpvoice"
 	voicemacos "github.com/Rinai-R/FAIRY/internal/adapters/voice/macos"
 	voicemock "github.com/Rinai-R/FAIRY/internal/adapters/voice/mock"
@@ -53,14 +52,6 @@ type Config struct {
 
 	ComfyUIEndpoint string
 
-	GPTSoVITSEndpoint        string
-	GPTSoVITSRefAudioPath    string
-	GPTSoVITSPromptText      string
-	GPTSoVITSTextLang        string
-	GPTSoVITSPromptLang      string
-	GPTSoVITSMediaType       string
-	GPTSoVITSTextSplitMethod string
-
 	VolcengineEndpoint   string
 	VolcengineAPIKey     string
 	VolcengineResourceID string
@@ -93,11 +84,6 @@ func DefaultConfig() Config {
 		MacOSVoice:               voicemacos.DefaultVoiceName,
 		MacOSBaseURL:             voicemacos.DefaultBaseURL,
 		ComfyUIEndpoint:          imagecomfyui.DefaultEndpoint,
-		GPTSoVITSEndpoint:        voicegptsovits.DefaultEndpoint,
-		GPTSoVITSTextLang:        voicegptsovits.DefaultTextLang,
-		GPTSoVITSPromptLang:      voicegptsovits.DefaultPromptLang,
-		GPTSoVITSMediaType:       voicegptsovits.DefaultMediaType,
-		GPTSoVITSTextSplitMethod: voicegptsovits.DefaultTextSplitMethod,
 		VolcengineEndpoint:       voicevolcengine.DefaultEndpoint,
 		VolcengineResourceID:     voicevolcengine.DefaultResourceID,
 		VolcengineSpeaker:        voicevolcengine.DefaultSpeaker,
@@ -154,8 +140,6 @@ func buildVoices(config Config, catalog app.PluginCatalog) map[voice.Provider]vo
 	voices := map[voice.Provider]voice.Engine{
 		voice.ProviderMock:       voicemock.MockEngine{},
 		voice.ProviderMacOS:      voicemacos.NewMacOSEngine(config.AudioDir, config.MacOSBaseURL, config.MacOSVoice),
-		voice.ProviderGPTSoVITS:  buildGPTSoVITS(config),
-		voice.ProviderGPTSoVITS2: buildGPTSoVITS(config),
 		voice.ProviderVolcengine: buildVolcengine(config),
 	}
 	for _, manifest := range catalog.Manifests {
@@ -207,20 +191,6 @@ func buildCodex(config Config, logger *slog.Logger) agent.Engine {
 		CodexTimeout: config.CodexTimeout,
 		SessionPath:  config.SessionPath,
 		Logger:       logger,
-	})
-}
-
-func buildGPTSoVITS(config Config) voice.Engine {
-	return voicegptsovits.NewEngine(voicegptsovits.Options{
-		Endpoint:        config.GPTSoVITSEndpoint,
-		RefAudioPath:    config.GPTSoVITSRefAudioPath,
-		PromptText:      config.GPTSoVITSPromptText,
-		TextLang:        config.GPTSoVITSTextLang,
-		PromptLang:      config.GPTSoVITSPromptLang,
-		MediaType:       config.GPTSoVITSMediaType,
-		TextSplitMethod: config.GPTSoVITSTextSplitMethod,
-		OutputDir:       config.AudioDir,
-		BaseURL:         config.MacOSBaseURL,
 	})
 }
 
