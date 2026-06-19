@@ -82,6 +82,10 @@ func (a *App) StoreDocumentAsset(request app.DocumentUploadRequest) (app.Documen
 	return a.runtime.StoreDocumentAsset(a.context(), request)
 }
 
+func (a *App) StoreVoiceReferenceAudio(request app.DocumentUploadRequest) (app.DocumentAsset, error) {
+	return a.runtime.StoreVoiceReferenceAudio(a.context(), request)
+}
+
 func (a *App) Sessions() ([]app.SessionRecord, error) {
 	return a.runtime.Sessions()
 }

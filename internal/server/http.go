@@ -109,6 +109,7 @@ func registerAPIRoutes(h *hertzserver.Hertz, s *Server, prefix string) {
 
 	voices := api.Group("/voices")
 	voices.POST("/synthesize", s.synthesizeVoice)
+	voices.POST("/reference/upload", s.uploadVoiceReference)
 	voices.POST("/clone", s.cloneVoice)
 	voices.POST("/clone/status", s.cloneVoiceStatus)
 }
@@ -279,6 +280,40 @@ func (s *Server) uploadDocument(ctx context.Context, c *hertzapp.RequestContext)
 	resp, err := s.runtime.StoreDocumentAssetBytes(ctx, file.Filename, contentType, data)
 	if err != nil {
 		writeError(c, consts.StatusBadRequest, errCodeDocument, err)
+		return
+	}
+	writeOK(c, resp)
+}
+
+func (s *Server) uploadVoiceReference(ctx context.Context, c *hertzapp.RequestContext) {
+	file, err := c.FormFile("file")
+	if err != nil {
+		writeError(c, consts.StatusBadRequest, errCodeInvalidRequest, err)
+		return
+	}
+	if file.Size > runtime.MaxVoiceReferenceAudioBytes {
+		writeError(c, consts.StatusBadRequest, errCodeVoice, fmt.Errorf("文件过大: %d bytes，当前上限 %d bytes", file.Size, runtime.MaxVoiceReferenceAudioBytes))
+		return
+	}
+	opened, err := file.Open()
+	if err != nil {
+		writeError(c, consts.StatusBadRequest, errCodeVoice, fmt.Errorf("打开上传文件失败: %w", err))
+		return
+	}
+	defer opened.Close()
+
+	data, err := io.ReadAll(io.LimitReader(opened, runtime.MaxVoiceReferenceAudioBytes+1))
+	if err != nil {
+		writeError(c, consts.StatusBadRequest, errCodeVoice, fmt.Errorf("读取上传文件失败: %w", err))
+		return
+	}
+	contentType := file.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	resp, err := s.runtime.StoreVoiceReferenceAudioBytes(file.Filename, contentType, data)
+	if err != nil {
+		writeError(c, consts.StatusBadRequest, errCodeVoice, err)
 		return
 	}
 	writeOK(c, resp)

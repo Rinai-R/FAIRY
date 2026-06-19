@@ -55,11 +55,7 @@
     "voice_provider": "mock",
     "image_provider": "mock",
     "voice": {
-      "endpoint": "http://127.0.0.1:9880",
-      "text_lang": "zh",
-      "prompt_lang": "zh",
-      "media_type": "wav",
-      "text_split_method": "cut5"
+      "endpoint": "http://127.0.0.1:9880"
     },
     "image": {
       "enabled": true,

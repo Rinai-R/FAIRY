@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -30,27 +29,27 @@ const (
 
 type Engine struct {
 	Endpoint        string
-	OutputDir       string
-	BaseURL         string
 	RefAudioPath    string
 	PromptText      string
 	TextLang        string
 	PromptLang      string
 	MediaType       string
 	TextSplitMethod string
+	OutputDir       string
+	BaseURL         string
 	Client          *http.Client
 }
 
 type Options struct {
 	Endpoint        string
-	OutputDir       string
-	BaseURL         string
 	RefAudioPath    string
 	PromptText      string
 	TextLang        string
 	PromptLang      string
 	MediaType       string
 	TextSplitMethod string
+	OutputDir       string
+	BaseURL         string
 	Timeout         time.Duration
 }
 
@@ -80,15 +79,15 @@ func NewEngine(options Options) *Engine {
 		options.Timeout = 2 * time.Minute
 	}
 	return &Engine{
-		Endpoint:        strings.TrimRight(options.Endpoint, "/"),
+		Endpoint:        normalizeEndpoint(options.Endpoint),
+		RefAudioPath:    strings.TrimSpace(options.RefAudioPath),
+		PromptText:      strings.TrimSpace(options.PromptText),
+		TextLang:        strings.TrimSpace(options.TextLang),
+		PromptLang:      strings.TrimSpace(options.PromptLang),
+		MediaType:       strings.TrimSpace(options.MediaType),
+		TextSplitMethod: strings.TrimSpace(options.TextSplitMethod),
 		OutputDir:       options.OutputDir,
 		BaseURL:         options.BaseURL,
-		RefAudioPath:    options.RefAudioPath,
-		PromptText:      options.PromptText,
-		TextLang:        options.TextLang,
-		PromptLang:      options.PromptLang,
-		MediaType:       options.MediaType,
-		TextSplitMethod: options.TextSplitMethod,
 		Client:          &http.Client{Timeout: options.Timeout},
 	}
 }
@@ -96,33 +95,37 @@ func NewEngine(options Options) *Engine {
 func (e *Engine) Synthesize(ctx context.Context, input voice.Input) (app.AudioResult, error) {
 	text := strings.TrimSpace(input.Text)
 	if text == "" {
-		return app.AudioResult{Format: e.mediaType(input.Profile), Placeholder: true}, nil
+		return app.AudioResult{Format: DefaultMediaType, Placeholder: true}, nil
 	}
-	refAudioPath := first(input.Profile.RefAudioPath, e.RefAudioPath)
+
+	profile := input.Profile
+	refAudioPath := first(profile.RefAudioPath, e.RefAudioPath)
 	if refAudioPath == "" {
-		return app.AudioResult{}, errors.New("gpt-sovits ref_audio_path 不能为空")
+		return app.AudioResult{}, fmt.Errorf("gpt-sovits ref_audio_path 不能为空，请先上传参考音频")
 	}
+	refAudioPath = normalizeReferenceAudioPath(refAudioPath)
+	textLang := first(profile.TextLang, e.TextLang, DefaultTextLang)
+	promptLang := first(profile.PromptLang, e.PromptLang, textLang, DefaultPromptLang)
+	mediaType := first(profile.MediaType, e.MediaType, DefaultMediaType)
+	textSplitMethod := first(profile.TextSplitMethod, e.TextSplitMethod, DefaultTextSplitMethod)
 
 	payload := map[string]any{
 		"text":              text,
-		"text_lang":         first(input.Profile.TextLang, e.TextLang),
+		"text_lang":         textLang,
 		"ref_audio_path":    refAudioPath,
-		"prompt_lang":       first(input.Profile.PromptLang, e.PromptLang),
-		"prompt_text":       first(input.Profile.PromptText, e.PromptText),
-		"text_split_method": first(input.Profile.TextSplitMethod, e.TextSplitMethod),
+		"prompt_lang":       promptLang,
+		"prompt_text":       first(profile.PromptText, e.PromptText),
+		"text_split_method": textSplitMethod,
 		"batch_size":        1,
-		"media_type":        e.mediaType(input.Profile),
+		"media_type":        mediaType,
 		"streaming_mode":    false,
-	}
-	for key, value := range input.Profile.Extra {
-		payload[key] = value
 	}
 
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return app.AudioResult{}, err
 	}
-	endpoint := strings.TrimRight(first(input.Profile.Endpoint, e.Endpoint), "/") + "/tts"
+	endpoint := ttsEndpoint(first(profile.Endpoint, e.Endpoint))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
 	if err != nil {
 		return app.AudioResult{}, err
@@ -144,7 +147,7 @@ func (e *Engine) Synthesize(ctx context.Context, input voice.Input) (app.AudioRe
 		return app.AudioResult{}, fmt.Errorf("gpt-sovits tts 失败: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
 	}
 
-	format := e.mediaType(input.Profile)
+	format := formatFromContentType(resp.Header.Get("content-type"), mediaType)
 	if err := os.MkdirAll(e.OutputDir, 0o755); err != nil {
 		return app.AudioResult{}, err
 	}
@@ -197,14 +200,6 @@ func (e *Engine) client() *http.Client {
 	return http.DefaultClient
 }
 
-func (e *Engine) mediaType(profile app.VoiceProfile) string {
-	value := first(profile.MediaType, e.MediaType)
-	if value == "" {
-		return DefaultMediaType
-	}
-	return strings.TrimPrefix(value, ".")
-}
-
 func first(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -214,9 +209,59 @@ func first(values ...string) string {
 	return ""
 }
 
+func normalizeEndpoint(value string) string {
+	endpoint := strings.TrimSpace(value)
+	if endpoint == "" {
+		endpoint = DefaultEndpoint
+	}
+	if !strings.HasPrefix(strings.ToLower(endpoint), "http://") && !strings.HasPrefix(strings.ToLower(endpoint), "https://") {
+		endpoint = "http://" + endpoint
+	}
+	endpoint = strings.TrimRight(endpoint, "/")
+	if strings.HasSuffix(strings.ToLower(endpoint), "/tts") {
+		endpoint = strings.TrimRight(endpoint[:len(endpoint)-len("/tts")], "/")
+	}
+	return endpoint
+}
+
+func ttsEndpoint(value string) string {
+	return normalizeEndpoint(value) + "/tts"
+}
+
+func normalizeReferenceAudioPath(value string) string {
+	path := strings.TrimSpace(value)
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	if _, err := os.Stat(absolute); err == nil {
+		return absolute
+	}
+	return path
+}
+
+func formatFromContentType(value string, fallback string) string {
+	contentType := strings.ToLower(strings.TrimSpace(strings.Split(value, ";")[0]))
+	switch contentType {
+	case "audio/mpeg", "audio/mp3":
+		return "mp3"
+	case "audio/ogg", "application/ogg":
+		return "ogg"
+	case "audio/aac", "audio/aacp":
+		return "aac"
+	case "audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave":
+		return "wav"
+	default:
+		return first(fallback, DefaultMediaType)
+	}
+}
+
 func extension(format string) string {
 	switch strings.ToLower(format) {
-	case "ogg", "aac", "raw":
+	case "mp3", "ogg", "aac", "raw":
 		return strings.ToLower(format)
 	default:
 		return "wav"

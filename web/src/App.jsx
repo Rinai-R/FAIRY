@@ -19,7 +19,8 @@ import {
   streamTurn,
   synthesizeVoice,
   turn,
-  uploadDocumentAsset
+  uploadDocumentAsset,
+  uploadVoiceReferenceAudio
 } from "./api";
 import { DirectorView } from "./views/DirectorView";
 import { GalgameStageView } from "./views/GalgameStage";
@@ -35,6 +36,13 @@ const DEFAULT_LANGUAGE_PLAN = Object.freeze({
   speech_language: "ja-JP",
   translation_provider: "agent",
   mode: "translate_for_voice"
+});
+const DEFAULT_VOICE_TEST_TEXT = "わかりました。これから一緒に勉強しましょう。";
+const DEFAULT_GPTSOVITS_PROFILE = Object.freeze({
+  endpoint: "http://127.0.0.1:9880",
+  ref_audio_path: "",
+  media_type: "wav",
+  text_split_method: "cut5"
 });
 
 const defaultCharacters = [
@@ -175,15 +183,7 @@ export function App() {
   const [voiceProvider, setVoiceProvider] = useState(savedConfigRef.current?.providers?.voiceProvider || "macos");
   const [imageProvider, setImageProvider] = useState(savedConfigRef.current?.providers?.imageProvider || "mock");
   const [sceneProvider, setSceneProvider] = useState(savedConfigRef.current?.providers?.sceneProvider || "mock");
-  const [voiceProfile, setVoiceProfile] = useState(savedConfigRef.current?.voiceProfile || {
-    endpoint: "http://127.0.0.1:9880",
-    text_lang: "ja",
-    prompt_lang: "ja",
-    media_type: "wav",
-    text_split_method: "cut5",
-    ref_audio_path: "",
-    prompt_text: ""
-  });
+  const [voiceProfile, setVoiceProfile] = useState(savedConfigRef.current?.voiceProfile ? { ...DEFAULT_GPTSOVITS_PROFILE, ...savedConfigRef.current.voiceProfile } : { ...DEFAULT_GPTSOVITS_PROFILE });
   const [volcengineProfile, setVolcengineProfile] = useState(savedConfigRef.current?.volcengineProfile || {
     app_id: "",
     access_token: "",
@@ -200,7 +200,8 @@ export function App() {
   });
   const [voiceCloneFiles, setVoiceCloneFiles] = useState([]);
   const [cloneBusy, setCloneBusy] = useState(false);
-  const [voiceTestText, setVoiceTestText] = useState(savedConfigRef.current?.voiceTestText || "わかりました。これから一緒に勉強しましょう。");
+  const [voiceReferenceBusy, setVoiceReferenceBusy] = useState(false);
+  const [voiceTestText, setVoiceTestText] = useState(savedConfigRef.current?.voiceTestText || DEFAULT_VOICE_TEST_TEXT);
   const [voiceTestBusy, setVoiceTestBusy] = useState(false);
   const [cgConfig, setCgConfig] = useState(savedConfigRef.current?.cgConfig || {
     enabled: true,
@@ -391,9 +392,9 @@ export function App() {
     if (config.languagePlan) setLanguagePlan(normalizeLanguagePlan(config.languagePlan));
     if (config.prompt) setPrompt(config.prompt);
     if (config.cgConfig) setCgConfig(config.cgConfig);
-    if (config.voiceProfile) setVoiceProfile(config.voiceProfile);
-    if (config.volcengineProfile) setVolcengineProfile(config.volcengineProfile);
+    if (config.voiceProfile) setVoiceProfile({ ...DEFAULT_GPTSOVITS_PROFILE, ...config.voiceProfile });
     if (typeof config.voiceTestText === "string") setVoiceTestText(config.voiceTestText);
+    if (config.volcengineProfile) setVolcengineProfile(config.volcengineProfile);
     if (config.providers) {
       if (config.providers.agentProvider) setAgentProvider(config.providers.agentProvider);
       if (config.providers.voiceProvider) setVoiceProvider(config.providers.voiceProvider);
@@ -761,10 +762,32 @@ export function App() {
     appendLog("info", `已导入网络文档链接：${url}`);
   }
 
+  async function uploadGPTSoVITSReference(file) {
+    if (!file || voiceReferenceBusy) return;
+    setVoiceReferenceBusy(true);
+    try {
+      const payload = await uploadVoiceReferenceAudio(file);
+      setVoiceProfile((current) => ({
+        ...DEFAULT_GPTSOVITS_PROFILE,
+        ...(current || {}),
+        ref_audio_path: payload.path || "",
+        ref_audio_filename: payload.filename || file.name
+      }));
+      appendLog("info", `已上传 GPT-SoVITS 参考音频：${payload.filename || file.name} · ${formatBytes(payload.size_bytes || file.size)}`);
+    } catch (error) {
+      appendLog("error", `参考音频上传失败：${errorMessage(error, "未知错误")}`);
+    } finally {
+      setVoiceReferenceBusy(false);
+    }
+  }
+
   function buildVoiceProfile(provider = voiceProvider) {
     const speechLanguage = languageCodeForVoiceProvider(effectiveLanguagePlan().speech_language);
+    if (isGPTSoVITSProvider(provider)) {
+      return normalizeGPTSoVITSVoiceProfile(voiceProfile, activeCharacter?.runtime?.voice, speechLanguage);
+    }
     if (activeCharacter?.runtime?.voice && Object.keys(activeCharacter.runtime.voice).length > 0) {
-      return normalizeVoiceProfileLanguage(activeCharacter.runtime.voice, provider, speechLanguage);
+      return normalizeProviderVoiceProfile(activeCharacter.runtime.voice, provider, speechLanguage);
     }
     if (provider === "volcengine") {
       return {
@@ -779,7 +802,7 @@ export function App() {
         }
       };
     }
-    return normalizeVoiceProfileLanguage(voiceProfile, provider, speechLanguage);
+    return normalizeProviderVoiceProfile(voiceProfile, provider, speechLanguage);
   }
 
   async function startVoiceClone() {
@@ -854,7 +877,7 @@ export function App() {
     try {
       const text = voiceTestText.trim();
       if (!text) {
-        throw new Error("请先填写测试台词。");
+        throw new Error("试听文本为空。");
       }
       const effectiveVoiceProvider = activeCharacter?.runtime?.voice_provider || voiceProvider;
       const profile = buildVoiceProfile(effectiveVoiceProvider);
@@ -863,7 +886,7 @@ export function App() {
         throw new Error("请先填写复刻声音 ID。");
       }
       const speechLanguage = languageCodeForVoiceProvider(effectiveLanguagePlan().speech_language);
-      const cacheKey = [activeCharacter?.id || "", effectiveVoiceProvider, speaker, speechLanguage, text].join("\n");
+      const cacheKey = [activeCharacter?.id || "", effectiveVoiceProvider, speaker, speechLanguage, voiceProfileCacheKey(profile), text].join("\n");
       if (voiceTestCacheRef.current.key === cacheKey && voiceTestCacheRef.current.url) {
         setLastAudioURL(voiceTestCacheRef.current.url);
         playAudio(voiceTestCacheRef.current.url);
@@ -1722,12 +1745,17 @@ export function App() {
             setVoiceCloneFiles={setVoiceCloneFiles}
             startVoiceClone={startVoiceClone}
             testVoiceSynthesis={testVoiceSynthesis}
+            uploadGPTSoVITSReference={uploadGPTSoVITSReference}
             voiceClone={voiceClone}
             voiceCloneFiles={voiceCloneFiles}
+            voiceProfile={voiceProfile}
+            voiceProvider={voiceProvider}
+            voiceReferenceBusy={voiceReferenceBusy}
             voiceTestBusy={voiceTestBusy}
             voiceTestText={voiceTestText}
-            saveRoleConfig={saveRoleConfig}
+            setVoiceProfile={setVoiceProfile}
             setVoiceTestText={setVoiceTestText}
+            saveRoleConfig={saveRoleConfig}
           />
         )}
         {renderedView === "logs" && <LogsView logs={logs} setActiveView={routeView} setLogs={setLogs} documentTitle={documentTitle} activeCharacter={activeCharacter} lessonWorkflow={lessonWorkflow} effectiveProviders={effectiveProviders} />}
@@ -2387,8 +2415,9 @@ function ConfigView(props) {
     setCharacterRuntimeAgentField, setCharacterRuntimeField, setCharacterRuntimeImageField, setCharacterRuntimeLanguageField, setCharacterRuntimeVoiceExtraField,
     setCharacterRuntimeVoiceField, setConfigTab, setPrompt,
     setLanguagePlan, setVoiceCloneFiles, startVoiceClone, voiceClone,
-    voiceCloneFiles, saveRoleConfig, setVoiceTestText, testVoiceSynthesis,
-    voiceTestBusy, voiceTestText
+    voiceCloneFiles, saveRoleConfig, testVoiceSynthesis, uploadGPTSoVITSReference,
+    voiceProfile, voiceProvider, voiceReferenceBusy, voiceTestBusy, voiceTestText,
+    setVoiceProfile, setVoiceTestText
   } = props;
   const [editingCharacterID, setEditingCharacterID] = useState(null);
   const [editorOpen, setEditorOpen] = useState(false);
@@ -2482,10 +2511,15 @@ function ConfigView(props) {
                 setVoiceCloneFiles={setVoiceCloneFiles}
                 startVoiceClone={startVoiceClone}
                 testVoiceSynthesis={testVoiceSynthesis}
+                uploadGPTSoVITSReference={uploadGPTSoVITSReference}
                 voiceClone={voiceClone}
                 voiceCloneFiles={voiceCloneFiles}
+                voiceProfile={voiceProfile}
+                defaultVoiceProvider={voiceProvider}
+                voiceReferenceBusy={voiceReferenceBusy}
                 voiceTestBusy={voiceTestBusy}
                 voiceTestText={voiceTestText}
+                setVoiceProfile={setVoiceProfile}
                 setVoiceTestText={setVoiceTestText}
                   />
                 </>
@@ -2515,6 +2549,7 @@ function ConfigView(props) {
 function CharacterConfigModal({
   character,
   cloneBusy,
+  defaultVoiceProvider = "",
   inline = false,
   isDefault = false,
   languagePlan = DEFAULT_LANGUAGE_PLAN,
@@ -2538,23 +2573,30 @@ function CharacterConfigModal({
   setCharacterRuntimeVoiceExtraField,
   setCharacterRuntimeVoiceField,
   setVoiceCloneFiles,
-  setVoiceTestText,
   startVoiceClone,
   testVoiceSynthesis,
+  uploadGPTSoVITSReference,
   voiceClone,
   voiceCloneFiles,
+  voiceProfile = DEFAULT_GPTSOVITS_PROFILE,
+  voiceReferenceBusy = false,
   voiceTestBusy,
-  voiceTestText
+  voiceTestText = DEFAULT_VOICE_TEST_TEXT,
+  setVoiceProfile,
+  setVoiceTestText
 }) {
   const agentProvider = character.runtime?.agent_provider || "";
   const agentProfile = character.runtime?.agent || {};
   const voiceProvider = character.runtime?.voice_provider || "";
+  const effectiveVoiceProvider = voiceProvider || defaultVoiceProvider || "";
   const voice = character.runtime?.voice || {};
   const voiceExtra = voice.extra || {};
   const language = character.runtime?.language || {};
   const effectiveLanguage = mergeLanguagePlan(languagePlan, language);
   const image = character.runtime?.image || {};
   const speaker = voiceExtra.speaker || voice.voice_id || character.voice_id || "";
+  const isGPTSoVITSVoice = isGPTSoVITSProvider(effectiveVoiceProvider);
+  const isBuiltinVoice = !effectiveVoiceProvider || effectiveVoiceProvider === "macos" || effectiveVoiceProvider === "mock";
   const [provTab, setProvTab] = useState("agent");
   const handleSave = async () => {
     const saved = await saveRoleConfig(character.id);
@@ -2566,6 +2608,14 @@ function CharacterConfigModal({
     { id: "voice", label: "语音服务" },
     { id: "asset", label: "素材服务" }
   ];
+  const setServiceVoiceField = (field, value) => {
+    setVoiceProfile?.((current) => ({
+      ...DEFAULT_GPTSOVITS_PROFILE,
+      ...(current || {}),
+      [field]: value
+    }));
+  };
+  const referenceAudioName = voiceProfile?.ref_audio_filename || String(voiceProfile?.ref_audio_path || "").split(/[\\/]/).filter(Boolean).at(-1) || "";
 
   const editor = (
       <section className="ch-modal" role="dialog" aria-modal="true" aria-label="角色配置">
@@ -2663,9 +2713,8 @@ function CharacterConfigModal({
             )}
             {provTab === "voice" && (
               <div className="ch-fields">
-                <p className="ch-hint">{voiceProvider === "volcengine" ? "火山声音复刻使用 APP ID、Access Token、资源 ID 和 S_ 声音 ID。" : "本地语音或 HTTP voice 插件使用 Endpoint、参考音频和语言参数。"}</p>
                 <SelectField label="语音服务" value={character.runtime?.voice_provider || ""} onChange={(value) => setCharacterRuntimeField(character.id, "voice_provider", value)} options={providerOptionsWithInherit(providerOptions.voices)} />
-                {voiceProvider === "volcengine" ? (
+                {effectiveVoiceProvider === "volcengine" ? (
                   <>
                     <TextField label="APP ID" value={voiceExtra.app_id || ""} onChange={(value) => setCharacterRuntimeVoiceExtraField(character.id, "app_id", value)} />
                     <TextField label="Access Token" value={voiceExtra.access_token || ""} onChange={(value) => setCharacterRuntimeVoiceExtraField(character.id, "access_token", value)} type="password" />
@@ -2698,18 +2747,36 @@ function CharacterConfigModal({
                       </div>
                     </div>
                   </>
+                ) : isGPTSoVITSVoice ? (
+                  <div className="ch-field-wide gptsovits-workbench">
+                    <TextField label="Endpoint" value={voiceProfile?.endpoint || ""} onChange={(value) => setServiceVoiceField("endpoint", value)} placeholder="http://127.0.0.1:9880" />
+                    <div className="reference-upload">
+                      <label className="file-button">
+                        {voiceReferenceBusy ? "上传中" : "上传参考音频"}
+                        <input
+                          type="file"
+                          accept="audio/*,.wav,.mp3,.m4a,.aac,.flac,.ogg,.opus"
+                          disabled={voiceReferenceBusy}
+                          onChange={(event) => {
+                            uploadGPTSoVITSReference?.(event.target.files?.[0]);
+                            event.target.value = "";
+                          }}
+                        />
+                      </label>
+                      <span>{referenceAudioName || "未选择参考音频"}</span>
+                    </div>
+                    <TextAreaField label="测试台词" value={voiceTestText} onChange={(value) => setVoiceTestText?.(value)} rows={3} />
+                  </div>
+                ) : isBuiltinVoice ? (
+                  null
                 ) : (
                   <>
                     <TextField label="Endpoint" value={voice.endpoint || ""} onChange={(value) => setCharacterRuntimeVoiceField(character.id, "endpoint", value)} />
-                    <TextField label="参考音频语言" value={voice.prompt_lang || ""} onChange={(value) => setCharacterRuntimeVoiceField(character.id, "prompt_lang", value)} />
-                    <TextField label="参考音频路径" value={voice.ref_audio_path || ""} onChange={(value) => setCharacterRuntimeVoiceField(character.id, "ref_audio_path", value)} />
-                    <TextField label="参考音频文本" value={voice.prompt_text || ""} onChange={(value) => setCharacterRuntimeVoiceField(character.id, "prompt_text", value)} />
                     <SelectField label="音频格式" value={voice.media_type || ""} onChange={(value) => setCharacterRuntimeVoiceField(character.id, "media_type", value)} options={[{ value: "", label: "运行默认值" }, { value: "wav", label: "wav" }, { value: "mp3", label: "mp3" }]} />
                   </>
                 )}
                 <div className="ch-field-wide voice-test-card">
-                  <TextAreaField label="测试台词" value={voiceTestText} onChange={setVoiceTestText} rows={2} />
-                  <button className="primary-button" type="button" onClick={testVoiceSynthesis} disabled={voiceTestBusy || (voiceProvider === "volcengine" && !speaker)}>{voiceTestBusy ? "合成中" : "试听角色语音"}</button>
+                  <button className="primary-button" type="button" onClick={testVoiceSynthesis} disabled={voiceTestBusy || (effectiveVoiceProvider === "volcengine" && !speaker)}>{voiceTestBusy ? "合成中" : "试听角色语音"}</button>
                 </div>
               </div>
             )}
@@ -3292,6 +3359,54 @@ function languageCodeForVoiceProvider(value) {
   if (language === "ja-JP") return "ja";
   if (language === "en-US") return "en";
   return language || String(value || "").trim();
+}
+
+function isGPTSoVITSProvider(value) {
+  return value === "gpt-sovits" || value === "gptsovits";
+}
+
+function normalizeProviderVoiceProfile(profile = {}, provider = "", speechLanguage = "") {
+  if (!isGPTSoVITSProvider(provider)) {
+    return normalizeVoiceProfileLanguage(profile, provider, speechLanguage);
+  }
+  return normalizeGPTSoVITSVoiceProfile(profile, {}, speechLanguage);
+}
+
+function normalizeGPTSoVITSVoiceProfile(serviceProfile = {}, characterProfile = {}, speechLanguage = "") {
+  const voiceLanguage = languageCodeForVoiceProvider(speechLanguage);
+  const extra = { ...(serviceProfile?.extra || {}) };
+  for (const key of ["ref_audio_path", "prompt_text", "prompt_lang", "text_lang", "text_split_method", "media_type"]) {
+    delete extra[key];
+  }
+  return pruneEmptyObject({
+    endpoint: serviceProfile?.endpoint || DEFAULT_GPTSOVITS_PROFILE.endpoint,
+    voice_id: characterProfile?.voice_id || serviceProfile?.voice_id || "",
+    ref_audio_path: serviceProfile?.ref_audio_path || "",
+    prompt_text: serviceProfile?.prompt_text || "",
+    text_lang: serviceProfile?.text_lang || voiceLanguage || "",
+    prompt_lang: serviceProfile?.prompt_lang || voiceLanguage || "",
+    media_type: serviceProfile?.media_type || DEFAULT_GPTSOVITS_PROFILE.media_type,
+    text_split_method: serviceProfile?.text_split_method || DEFAULT_GPTSOVITS_PROFILE.text_split_method,
+    extra
+  });
+}
+
+function voiceProfileCacheKey(profile = {}) {
+  const extra = Object.entries(profile.extra || {})
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}:${value}`)
+    .join("|");
+  return [
+    profile.endpoint || "",
+    profile.voice_id || "",
+    profile.ref_audio_path || "",
+    profile.prompt_text || "",
+    profile.text_lang || "",
+    profile.prompt_lang || "",
+    profile.media_type || "",
+    profile.text_split_method || "",
+    extra
+  ].join("\n");
 }
 
 function normalizeVoiceProfileLanguage(profile = {}, provider = "", speechLanguage = "") {

@@ -585,6 +585,7 @@ func TestAdvanceWorkflowWaitsForPendingNode(t *testing.T) {
 	if record.Workflow.CurrentNodeID != "opening" {
 		t.Fatalf("persisted current node = %q, want opening", record.Workflow.CurrentNodeID)
 	}
+	waitForWorkflowSettled(t, rt, "lesson:default")
 }
 
 func TestGenerateSceneAcceptsURLAndUploadedFileSources(t *testing.T) {

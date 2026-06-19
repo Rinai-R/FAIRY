@@ -3155,6 +3155,7 @@ button:disabled {
 }
 
 .clone-workbench,
+.gptsovits-workbench,
 .voice-test-card,
 .asset-list {
   display: grid;
@@ -3165,6 +3166,23 @@ button:disabled {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.reference-upload {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.reference-upload span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .file-button {

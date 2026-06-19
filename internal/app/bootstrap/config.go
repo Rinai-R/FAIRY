@@ -213,14 +213,14 @@ func buildCodex(config Config, logger *slog.Logger) agent.Engine {
 func buildGPTSoVITS(config Config) voice.Engine {
 	return voicegptsovits.NewEngine(voicegptsovits.Options{
 		Endpoint:        config.GPTSoVITSEndpoint,
-		OutputDir:       config.AudioDir,
-		BaseURL:         config.MacOSBaseURL,
 		RefAudioPath:    config.GPTSoVITSRefAudioPath,
 		PromptText:      config.GPTSoVITSPromptText,
 		TextLang:        config.GPTSoVITSTextLang,
 		PromptLang:      config.GPTSoVITSPromptLang,
 		MediaType:       config.GPTSoVITSMediaType,
 		TextSplitMethod: config.GPTSoVITSTextSplitMethod,
+		OutputDir:       config.AudioDir,
+		BaseURL:         config.MacOSBaseURL,
 	})
 }
 

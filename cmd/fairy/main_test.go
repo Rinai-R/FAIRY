@@ -39,8 +39,6 @@ func TestConfigFromLookupAppliesValidOverrides(t *testing.T) {
 		"FAIRY_VOLCENGINE_TTS_SAMPLE_RATE":  "24000",
 		"FAIRY_VOLCENGINE_TTS_API_KEY":      "secret with spaces inside",
 		"FAIRY_VOLCENGINE_TTS_RESOURCE_ID":  "volc.tts",
-		"FAIRY_GPTSOVITS_TEXT_SPLIT_METHOD": "cut5",
-		"FAIRY_GPTSOVITS_PROMPT_TEXT":       "日语参考文本",
 		"FAIRY_COMFYUI_ENDPOINT":            "http://127.0.0.1:8188",
 		"FAIRY_PLUGIN_MANIFEST":             "configs/plugins.json",
 		"FAIRY_PLUGIN_DIR":                  "plugins",
@@ -54,10 +52,12 @@ func TestConfigFromLookupAppliesValidOverrides(t *testing.T) {
 		"FAIRY_IMAGE_BASE_URL":              "/images",
 		"FAIRY_MACOS_VOICE":                 "Kyoko",
 		"FAIRY_GPTSOVITS_ENDPOINT":          "http://127.0.0.1:9880/tts",
-		"FAIRY_GPTSOVITS_REF_AUDIO_PATH":    "data/ref.wav",
+		"FAIRY_GPTSOVITS_REF_AUDIO_PATH":    "/tmp/fairy/ref.wav",
+		"FAIRY_GPTSOVITS_PROMPT_TEXT":       "こんにちは。",
 		"FAIRY_GPTSOVITS_TEXT_LANG":         "ja",
 		"FAIRY_GPTSOVITS_PROMPT_LANG":       "ja",
-		"FAIRY_GPTSOVITS_MEDIA_TYPE":        "wav",
+		"FAIRY_GPTSOVITS_MEDIA_TYPE":        "mp3",
+		"FAIRY_GPTSOVITS_TEXT_SPLIT_METHOD": "cut5",
 		"FAIRY_VOLCENGINE_TTS_ENDPOINT":     "https://openspeech.bytedance.com/api/v3/tts/unidirectional",
 		"FAIRY_VOLCENGINE_TTS_SPEAKER":      "zh_female",
 		"FAIRY_VOLCENGINE_TTS_FORMAT":       "mp3",
@@ -90,6 +90,18 @@ func TestConfigFromLookupAppliesValidOverrides(t *testing.T) {
 	}
 	if config.MaterialDir != "data/materials" {
 		t.Fatalf("MaterialDir = %q, want data/materials", config.MaterialDir)
+	}
+	if config.GPTSoVITSRefAudioPath != "/tmp/fairy/ref.wav" {
+		t.Fatalf("GPTSoVITSRefAudioPath = %q", config.GPTSoVITSRefAudioPath)
+	}
+	if config.GPTSoVITSPromptText != "こんにちは。" {
+		t.Fatalf("GPTSoVITSPromptText = %q", config.GPTSoVITSPromptText)
+	}
+	if config.GPTSoVITSTextLang != "ja" || config.GPTSoVITSPromptLang != "ja" {
+		t.Fatalf("GPTSoVITS language = %q/%q", config.GPTSoVITSTextLang, config.GPTSoVITSPromptLang)
+	}
+	if config.GPTSoVITSMediaType != "mp3" || config.GPTSoVITSTextSplitMethod != "cut5" {
+		t.Fatalf("GPTSoVITS media/split = %q/%q", config.GPTSoVITSMediaType, config.GPTSoVITSTextSplitMethod)
 	}
 }
 

@@ -147,6 +147,23 @@ export async function uploadDocumentAsset(file) {
   return unwrapResponse(payload);
 }
 
+export async function uploadVoiceReferenceAudio(file) {
+  const app = wailsApp();
+  if (app?.StoreVoiceReferenceAudio) return app.StoreVoiceReferenceAudio(await documentUploadPayload(file));
+
+  const form = new FormData();
+  form.append("file", file);
+  const response = await fetch(`${apiPrefix}/voices/reference/upload`, {
+    method: "POST",
+    body: form
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(responseMessage(payload, "参考音频上传失败"));
+  }
+  return unwrapResponse(payload);
+}
+
 export async function turn(body) {
   const app = wailsApp();
   if (app) return app.Turn(body);
