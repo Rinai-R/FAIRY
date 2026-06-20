@@ -208,6 +208,7 @@ func workflowNeedsResume(workflow app.TeachingWorkflow) bool {
 func (r *Runtime) runSceneGenerationTask(ctx context.Context, sessionID string, request app.SceneGenerateRequest) {
 	resp, err := r.buildSceneGenerateResponse(ctx, request)
 	if err != nil {
+		r.logger.Warn("生成任务失败", "error", err, "session_id", sessionID)
 		if _, saveErr := r.sessions.FailGeneration(sessionID, err.Error()); saveErr != nil {
 			r.logger.Warn("写入生成任务失败状态失败", "error", saveErr, "session_id", sessionID)
 		}

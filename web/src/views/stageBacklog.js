@@ -1,5 +1,6 @@
-export function buildBacklogItems(workflowHistory, workflowNodes, currentNodeID, currentLineIndex, assistantSpeaker) {
+export function buildBacklogItems(workflowHistory, workflowNodes, currentNodeID, currentLineIndex, assistantSpeaker, assistantSpeakerAliases = []) {
   const nodeByID = new Map((Array.isArray(workflowNodes) ? workflowNodes : []).map((node) => [node.id, node]));
+  const speakerAliases = buildBacklogSpeakerAliases(assistantSpeaker, assistantSpeakerAliases);
   return replayAwareHistory(workflowHistory).flatMap((historyItem) => {
     if (historyItem?.action === "audio") return [];
     const nodeID = historyItem?.node_id || historyItem?.nodeID || "";
@@ -10,8 +11,9 @@ export function buildBacklogItems(workflowHistory, workflowNodes, currentNodeID,
     }
     const lines = visibleWorkflowNodeLines(node, nodeID, currentNodeID, currentLineIndex);
     if (!lines.length) {
-      const speaker = cleanBacklogSpeaker(node?.speaker || assistantSpeaker || "角色");
-      const text = cleanBacklogText(workflowNodeDisplayText(node), speaker) || historyItem?.action || "进入剧情";
+      const rawSpeaker = node?.speaker || assistantSpeaker || "角色";
+      const speaker = resolveBacklogSpeaker(rawSpeaker, assistantSpeaker, speakerAliases);
+      const text = cleanBacklogText(workflowNodeDisplayText(node), speaker, [rawSpeaker, ...speakerAliases]) || historyItem?.action || "进入剧情";
       return [...items, {
         kind: "script",
         active: nodeID === currentNodeID,
@@ -23,8 +25,9 @@ export function buildBacklogItems(workflowHistory, workflowNodes, currentNodeID,
       }];
     }
     lines.forEach((line, index) => {
-      const speaker = cleanBacklogSpeaker(line.speaker || node?.speaker || assistantSpeaker || "角色");
-      const text = cleanBacklogText(line.text, speaker);
+      const rawSpeaker = line.speaker || node?.speaker || assistantSpeaker || "角色";
+      const speaker = resolveBacklogSpeaker(rawSpeaker, assistantSpeaker, speakerAliases);
+      const text = cleanBacklogText(line.text, speaker, [rawSpeaker, ...speakerAliases]);
       if (!text) return;
       const isLastVisibleLine = index === lines.length - 1;
       items.push({
@@ -85,17 +88,27 @@ function cleanBacklogSpeaker(value) {
   return String(value || "角色").replace(/[【】[\]：:]/g, "").trim() || "角色";
 }
 
-function cleanBacklogText(value, speaker) {
+function cleanBacklogText(value, speaker, aliases = []) {
   let text = String(value || "").replace(/\s+/g, " ").trim();
   if (!text) return "";
-  const names = [speaker, cleanBacklogSpeaker(speaker)].filter(Boolean);
+  const names = [speaker, cleanBacklogSpeaker(speaker), ...aliases].filter(Boolean);
   for (const name of [...new Set(names)]) {
-    const escaped = escapeRegExp(name);
+    const escaped = escapeRegExp(cleanBacklogSpeaker(name));
     text = text
       .replace(new RegExp(`(^|\\s)[【\\[]\\s*${escaped}\\s*[】\\]]\\s*`, "g"), " ")
       .replace(new RegExp(`(^|\\s)${escaped}\\s*[：:]\\s*`, "g"), " ");
   }
   return text.replace(/\s+/g, " ").trim();
+}
+
+function buildBacklogSpeakerAliases(assistantSpeaker, aliases) {
+  return [...new Set([assistantSpeaker, ...(Array.isArray(aliases) ? aliases : [])].map(cleanBacklogSpeaker).filter(Boolean))];
+}
+
+function resolveBacklogSpeaker(value, assistantSpeaker, aliases) {
+  const speaker = cleanBacklogSpeaker(value);
+  if (aliases.includes(speaker)) return cleanBacklogSpeaker(assistantSpeaker);
+  return speaker;
 }
 
 function escapeRegExp(value) {

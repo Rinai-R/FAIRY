@@ -186,15 +186,10 @@ func validateGeneratedActDialogueUnits(node app.TeachingWorkflowNode, plan app.L
 	if len(lines) < minLines {
 		return fmt.Errorf("node %q lines 至少需要 %d 条文本框台词，当前 %d 条", node.ID, minLines, len(lines))
 	}
-	displayLanguage := normalizeLanguageCode(plan.DisplayLanguage)
-	textLimit := generatedActLineTextLimit(displayLanguage)
 	for index, line := range lines {
 		text := strings.TrimSpace(line.Text)
 		if text == "" {
 			return fmt.Errorf("node %q lines[%d].text 不能为空", node.ID, index)
-		}
-		if count := visibleCharacterCount(text); count > textLimit {
-			return fmt.Errorf("node %q lines[%d].text 超过文本框预算: %d/%d，可拆成多条 lines", node.ID, index, count, textLimit)
 		}
 	}
 	return nil
@@ -209,24 +204,6 @@ func minimumGeneratedActLines(kind string) int {
 	default:
 		return 2
 	}
-}
-
-func generatedActLineTextLimit(language string) int {
-	if app.IsEnglishLanguage(language) {
-		return 120
-	}
-	return 52
-}
-
-func visibleCharacterCount(text string) int {
-	count := 0
-	for _, char := range text {
-		if unicode.IsSpace(char) {
-			continue
-		}
-		count++
-	}
-	return count
 }
 
 func (r *Runtime) prepareWorkflowNodeVoice(ctx context.Context, request app.SceneGenerateRequest, node app.TeachingWorkflowNode) (app.TeachingWorkflowNode, error) {
@@ -349,11 +326,32 @@ func workflowNodeHasError(node app.TeachingWorkflowNode) bool {
 		return true
 	}
 	for _, line := range node.Lines {
-		if line.AudioStatus == app.DialogueAudioStatusError {
+		if line.AudioStatus == app.DialogueAudioStatusError || strings.TrimSpace(line.AudioError) != "" {
 			return true
 		}
 	}
 	return false
+}
+
+func workflowNodeErrorMessage(node app.TeachingWorkflowNode) string {
+	if message := strings.TrimSpace(node.PrepareError); message != "" {
+		return message
+	}
+	for index, line := range node.Lines {
+		if message := strings.TrimSpace(line.AudioError); message != "" {
+			return fmt.Sprintf("node %s lines[%d] audio failed: %s", node.ID, index, message)
+		}
+		if line.AudioStatus == app.DialogueAudioStatusError {
+			return fmt.Sprintf("node %s lines[%d] audio failed", node.ID, index)
+		}
+	}
+	if node.VoiceStatus == app.WorkflowNodeStatusError {
+		return fmt.Sprintf("workflow node %s voice failed", node.ID)
+	}
+	if node.Status == app.WorkflowNodeStatusError {
+		return fmt.Sprintf("workflow node %s failed", node.ID)
+	}
+	return ""
 }
 
 func workflowHasPendingMarker(workflow app.TeachingWorkflow) bool {
@@ -398,6 +396,39 @@ func workflowFollowupsReady(workflow app.TeachingWorkflow, current app.TeachingW
 		}
 	}
 	return true
+}
+
+func workflowGenerationStatus(workflow app.TeachingWorkflow) (string, string) {
+	if len(workflow.Nodes) == 0 {
+		return app.SceneGenerationStatusPreparing, ""
+	}
+	if workflowHasPendingMarker(workflow) {
+		return app.SceneGenerationStatusPreparing, ""
+	}
+	for _, node := range workflow.Nodes {
+		if node.ID == "" {
+			continue
+		}
+		if workflowNodeHasError(node) {
+			message := workflowNodeErrorMessage(node)
+			if message == "" {
+				message = fmt.Sprintf("workflow node %s failed", node.ID)
+			}
+			return app.SceneGenerationStatusFailed, message
+		}
+		if !workflowNodeIsReady(node) {
+			return app.SceneGenerationStatusPreparing, ""
+		}
+	}
+	for _, node := range workflow.Nodes {
+		if node.ID == "" || !shouldQueueWorkflowFollowups(node) {
+			continue
+		}
+		if !workflowFollowupsReady(workflow, node) {
+			return app.SceneGenerationStatusPreparing, ""
+		}
+	}
+	return app.SceneGenerationStatusReady, ""
 }
 
 func workflowFollowupTargets(workflow app.TeachingWorkflow, current app.TeachingWorkflowNode) (app.TeachingWorkflowNode, []workflowFollowupTarget, bool) {
@@ -559,7 +590,17 @@ func (r *Runtime) prepareWorkflowFollowup(
 	if err != nil {
 		return record, fmt.Errorf("刷新剧情准备结果失败: %w", err)
 	}
+	if shouldPreloadWorkflowDescendants(latest) {
+		prepared := findWorkflowNode(latest.Workflow.Nodes, planned.ID)
+		if shouldQueueWorkflowFollowups(prepared) {
+			r.preloadRemainingWorkflowNodes(task.request, task.sessionID, prepared.ID)
+		}
+	}
 	return latest, nil
+}
+
+func shouldPreloadWorkflowDescendants(record app.SessionRecord) bool {
+	return strings.TrimSpace(record.Generation.Fingerprint) != "" && record.Generation.Status != app.SceneGenerationStatusFailed
 }
 
 func (r *Runtime) runWorkflowStageWorker(

@@ -248,6 +248,35 @@ func TestGenerateActRetriesWhenOutputViolatesContract(t *testing.T) {
 	}
 }
 
+func TestGenerateActAcceptsMissingDecisionForRuntimeNormalization(t *testing.T) {
+	t.Parallel()
+
+	model := &stubLLM{
+		contents: []string{
+			validPlanJSON(),
+			`{"node":{"kind":"lesson","title":"第一幕","summary":"GMP 调度","speaker":"亚托莉","lines":[{"speaker":"亚托莉","text":"G 代表等待运行的轻量任务。","speech_text":"G は待機中の軽いタスクです。","expression":"soft_smile"},{"speaker":"亚托莉","text":"M 代表真正执行任务的系统线程。","speech_text":"M は実行する OS スレッドです。","expression":"thinking"},{"speaker":"亚托莉","text":"P 负责把可运行任务交给 M。","speech_text":"P は実行可能なタスクを M に渡します。","expression":"curious"},{"speaker":"亚托莉","text":"三者配合，调度器才能持续推进程序。","speech_text":"三つが協力してプログラムを進めます。","expression":"calm"}],"choices":[{"id":"queue","label":"继续队列","text":"继续讲运行队列。"}]}}`,
+			`{"node":{"kind":"lesson","title":"第一幕","summary":"GMP 调度","speaker":"亚托莉","lines":[{"speaker":"亚托莉","text":"G 代表等待运行的轻量任务。","speech_text":"G は待機中の軽いタスクです。","expression":"soft_smile"},{"speaker":"亚托莉","text":"M 代表真正执行任务的系统线程。","speech_text":"M は実行する OS スレッドです。","expression":"thinking"},{"speaker":"亚托莉","text":"P 负责把可运行任务交给 M。","speech_text":"P は実行可能なタスクを M に渡します。","expression":"curious"},{"speaker":"亚托莉","text":"三者配合，调度器才能持续推进程序。","speech_text":"三つが協力してプログラムを進めます。","expression":"calm"}],"choices":[{"id":"queue","label":"继续队列","text":"继续讲运行队列。"}]}}`,
+		},
+	}
+	out, err := NewEngine(Options{Model: model}).GenerateAct(context.Background(), agent.ActInput{
+		Request: app.SceneGenerateRequest{
+			Characters: []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+		},
+		PlannedNode: app.TeachingWorkflowNode{
+			ID:    "lesson-1",
+			Kind:  "lesson",
+			Title: "第一幕",
+		},
+		ActIndex: 2,
+	})
+	if err != nil {
+		t.Fatalf("GenerateAct() error = %v", err)
+	}
+	if out.Decision != "" {
+		t.Fatalf("decision = %q, want empty for runtime normalization", out.Decision)
+	}
+}
+
 func TestGenerateActReusesActPlanCacheForSameSession(t *testing.T) {
 	t.Parallel()
 

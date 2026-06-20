@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1182,8 +1183,8 @@ func TestFileSessionStoreGenerationLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompleteGeneration() error = %v", err)
 	}
-	if completed.Generation.Status != app.SceneGenerationStatusReady {
-		t.Fatalf("completed status = %q, want ready", completed.Generation.Status)
+	if completed.Generation.Status != app.SceneGenerationStatusPreparing {
+		t.Fatalf("completed status = %q, want preparing", completed.Generation.Status)
 	}
 	if completed.Session.ID != "generation:one" {
 		t.Fatalf("completed session id = %q, want original generation id", completed.Session.ID)
@@ -1259,9 +1260,61 @@ func TestStartSceneGenerationCreatesPendingAndDeduplicates(t *testing.T) {
 		t.Fatalf("duplicate = %v session=%q, want same %q", second.Duplicate, second.Record.Session.ID, first.Record.Session.ID)
 	}
 	close(release)
-	record := waitForGenerationStatus(t, store, first.Record.Session.ID, app.SceneGenerationStatusReady)
+	record := waitForGenerationStatus(t, store, first.Record.Session.ID, app.SceneGenerationStatusPreparing)
 	if record.Scene.ID == "" || len(record.Workflow.Nodes) == 0 {
-		t.Fatalf("ready record missing scene/workflow: %+v", record)
+		t.Fatalf("preparing record missing scene/workflow: %+v", record)
+	}
+}
+
+func TestStartSceneGenerationKeepsPreparingUntilWorkflowCompleteAndDeduplicates(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	agentEngine := &controlledGenerationAgent{
+		secondStarted: make(chan struct{}),
+		secondRelease: make(chan struct{}),
+	}
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentEngine},
+		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: &recordingVoiceEngine{}},
+		Images:       map[image.Provider]image.Engine{image.ProviderMock: imagemock.Engine{}},
+		Scenes:       map[scene.Provider]scene.Engine{scene.ProviderMock: scenemock.Engine{}},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: testVoiceProvider,
+		DefaultImage: image.ProviderMock,
+		DefaultScene: scene.ProviderMock,
+		Sessions:     store,
+		Logger:       slog.Default(),
+	})
+	request := asyncSceneRequest()
+	first, err := rt.StartSceneGeneration(context.Background(), request)
+	if err != nil {
+		t.Fatalf("StartSceneGeneration() error = %v", err)
+	}
+	waitForSignal(t, agentEngine.secondStarted, "followup generation started")
+	preparing, err := store.Get(first.Record.Session.ID)
+	if err != nil {
+		t.Fatalf("Get(preparing) error = %v", err)
+	}
+	if preparing.Generation.Status != app.SceneGenerationStatusPreparing {
+		t.Fatalf("generation status after opening = %q, want preparing", preparing.Generation.Status)
+	}
+	duplicate, err := rt.StartSceneGeneration(context.Background(), request)
+	if err != nil {
+		t.Fatalf("StartSceneGeneration(duplicate while preparing) error = %v", err)
+	}
+	if !duplicate.Duplicate || duplicate.Record.Session.ID != first.Record.Session.ID {
+		t.Fatalf("duplicate while preparing = %v session=%q, want same %q", duplicate.Duplicate, duplicate.Record.Session.ID, first.Record.Session.ID)
+	}
+
+	close(agentEngine.secondRelease)
+	ready := waitForGenerationStatus(t, store, first.Record.Session.ID, app.SceneGenerationStatusReady)
+	if workflowNodeByID(ready.Workflow.Nodes, "lesson-1").Status != app.WorkflowNodeStatusReady {
+		t.Fatalf("lesson-1 not ready after generation completes: %+v", ready.Workflow.Nodes)
+	}
+	if workflowNodeByID(ready.Workflow.Nodes, "free-discussion").Kind != "free_discussion" {
+		t.Fatalf("free discussion terminal node missing: %+v", ready.Workflow.Nodes)
+	}
+	if calls := agentEngine.callCount(); calls != 2 {
+		t.Fatalf("agent calls = %d, want opening + lesson", calls)
 	}
 }
 
@@ -1316,7 +1369,7 @@ func TestRuntimeResumesGeneratingTasksOnStartup(t *testing.T) {
 		Sessions:     store,
 		Logger:       slog.Default(),
 	})
-	record := waitForGenerationStatus(t, store, "generation:resume", app.SceneGenerationStatusReady)
+	record := waitForGenerationStatus(t, store, "generation:resume", app.SceneGenerationStatusPreparing)
 	if record.Session.ID != "generation:resume" {
 		t.Fatalf("resumed session id = %q", record.Session.ID)
 	}
@@ -1779,6 +1832,75 @@ func (e *recordingAgentEngine) Discuss(_ context.Context, input agent.DiscussInp
 		Motion:      "idle",
 		Voice:       app.VoicePlan{VoiceID: input.Turn.Character.VoiceID, Style: "clear", Speed: 1, Pitch: 1},
 	}, nil
+}
+
+type controlledGenerationAgent struct {
+	calls         atomic.Int32
+	secondStarted chan struct{}
+	secondRelease chan struct{}
+	secondOnce    atomic.Bool
+}
+
+func (e *controlledGenerationAgent) GenerateAct(ctx context.Context, input agent.ActInput) (agent.ActOutput, error) {
+	call := e.calls.Add(1)
+	speaker := "亚托莉"
+	if len(input.Request.Characters) > 0 {
+		speaker = input.Request.Characters[0].DisplayName
+	}
+	if call == 2 {
+		if e.secondOnce.CompareAndSwap(false, true) {
+			close(e.secondStarted)
+		}
+		select {
+		case <-ctx.Done():
+			return agent.ActOutput{}, ctx.Err()
+		case <-e.secondRelease:
+		}
+		return generatedTestAct(input.PlannedNode, speaker, agent.ActDecisionFreeDiscussion), nil
+	}
+	return generatedTestAct(input.PlannedNode, speaker, agent.ActDecisionContinue), nil
+}
+
+func (e *controlledGenerationAgent) Discuss(context.Context, agent.DiscussInput) (agent.Output, error) {
+	return agent.Output{
+		DisplayText: "继续自由讨论。",
+		SpeechText:  "自由に話しましょう。",
+		Emotion:     "calm",
+		Expression:  "soft_smile",
+		Motion:      "idle",
+	}, nil
+}
+
+func (e *controlledGenerationAgent) callCount() int {
+	return int(e.calls.Load())
+}
+
+func generatedTestAct(planned app.TeachingWorkflowNode, speaker string, decision agent.ActDecision) agent.ActOutput {
+	return agent.ActOutput{
+		Decision: decision,
+		Node: app.TeachingWorkflowNode{
+			ID:      planned.ID,
+			Kind:    planned.Kind,
+			Title:   planned.Title,
+			Summary: firstNonEmptyTest(planned.Summary, planned.Title, "测试章节"),
+			Speaker: speaker,
+			Lines: []app.DialogueLine{
+				{Speaker: speaker, Text: "第一句。", SpeechText: "一つ目。", Expression: "soft_smile"},
+				{Speaker: speaker, Text: "第二句。", SpeechText: "二つ目。", Expression: "thinking"},
+				{Speaker: speaker, Text: "第三句。", SpeechText: "三つ目。", Expression: "curious"},
+				{Speaker: speaker, Text: "第四句。", SpeechText: "四つ目。", Expression: "calm"},
+			},
+		},
+	}
+}
+
+func firstNonEmptyTest(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 type recordingImageEngine struct {

@@ -22,6 +22,11 @@ export function GalgameStageView({
   const isFreeDiscussionNode = currentNode?.free_discussion || currentNode?.kind === "free_discussion";
   const stageChoices = currentNode?.choices?.length ? currentNode.choices : [];
   const speaker = activeCharacter?.display_name || activeCharacterID || "角色";
+  const speakerAliases = useMemo(
+    () => buildStageSpeakerAliases(activeCharacter, activeCharacterID, speaker),
+    [activeCharacter, activeCharacterID, speaker],
+  );
+  const nodeSpeaker = resolveStageSpeaker(currentNode?.speaker, speaker, speakerAliases);
 
   const latestAssistant = useMemo(() => findLatest(messages, "assistant"), [messages]);
   const latestUser = useMemo(() => findLatest(messages, "user"), [messages]);
@@ -44,14 +49,21 @@ export function GalgameStageView({
     || scene?.variables?.background_url || lastCG?.url || "";
 
   const nodeLines = currentNode?.lines?.length
-    ? currentNode.lines.map((line) => ({ ...line, speechText: workflowLineSpeechText(line), audioURL: workflowLineAudioURL(line) }))
-    : (currentNode?.line ? [{ speaker: currentNode.speaker || speaker, text: currentNode.line, speechText: currentNode.speech_text || "", audioURL: "" }] : []);
+    ? currentNode.lines.map((line) => normalizeStageLine(line, nodeSpeaker, speakerAliases))
+    : (currentNode?.line ? [normalizeStageLine({ speaker: currentNode.speaker || nodeSpeaker, text: currentNode.line, speech_text: currentNode.speech_text, audioURL: "" }, nodeSpeaker, speakerAliases)] : []);
 
   const dialogueLines = visibleAssistant?.segments?.length
-    ? visibleAssistant.segments.map((s, index) => ({ speaker, text: s.text, speechText: s.speech_text || "", expression: s.expression, audioURL: nodeLines[index]?.audioURL || "" }))
+    ? visibleAssistant.segments.map((s, index) => normalizeStageLine({
+      speaker,
+      text: s.text,
+      speech_text: s.speech_text || "",
+      expression: s.expression,
+      audioURL: nodeLines[index]?.audioURL || "",
+    }, nodeSpeaker, speakerAliases))
     : nodeLines;
   const safeLineIndex = Math.min(lineIndex, Math.max(dialogueLines.length - 1, 0));
   const currentDialogueLine = dialogueLines[safeLineIndex] || null;
+  const currentSpeaker = currentDialogueLine?.speaker || nodeSpeaker;
   const currentDialogueText = currentDialogueLine?.text || "";
   const currentLineAudioURL = currentDialogueLine?.audioURL || "";
   const typewriterKey = `${currentNode?.id || "scene"}:${safeLineIndex}:${currentDialogueText}`;
@@ -256,7 +268,7 @@ export function GalgameStageView({
       {/* Dialogue box */}
       <div className="vn-dialogue-box">
         <div className="vn-dialogue-speaker">
-          <span>{currentNode?.speaker || speaker}</span>
+          <span>{currentSpeaker}</span>
           {currentNode?.summary && !isFreeDiscussionNode ? (
             <small>{currentNode.summary}</small>
           ) : null}
@@ -266,7 +278,7 @@ export function GalgameStageView({
           {stageWaiting ? <p className="vn-stage-waiting">{runtimeState.audio || "下一幕准备中..."}</p> : null}
           {visibleDialogueLines.length ? visibleDialogueLines.map((line, i) => (
             <p key={`${currentNode?.id}-ln-${i}`} className={i === visibleDialogueLines.length - 1 && typingActive ? "is-typing" : ""}>
-              {line.speaker !== speaker ? <b>{line.speaker}：</b> : null}
+              {line.speaker !== currentSpeaker ? <b>{line.speaker}：</b> : null}
               {line.text}
               {i === visibleDialogueLines.length - 1 && typingActive ? <i className="vn-cursor" /> : null}
             </p>
@@ -327,7 +339,7 @@ export function GalgameStageView({
             </div>
             <div className="vn-backlog-body">
               <div className="vn-backlog-list" ref={backlogListRef}>
-                {buildBacklogItems(workflowHistory, workflowNodes, currentNode?.id, safeLineIndex, speaker).map((item, i) => (
+                {buildBacklogItems(workflowHistory, workflowNodes, currentNode?.id, safeLineIndex, speaker, speakerAliases).map((item, i) => (
                   <article key={`bl-${i}`} className={`vn-backlog-item ${item.active ? "is-active" : ""} ${item.kind === "user" ? "is-player" : ""}`}>
                     <span className="vn-backlog-number">{String(i + 1).padStart(2, "0")}</span>
                     <div>
@@ -362,6 +374,58 @@ function findLatestForNode(messages, nodeID) {
   if (!nodeID) return null;
   for (let i = messages.length - 1; i >= 0; i--) if (messages[i]?.role === "assistant" && messages[i].nodeID === nodeID) return messages[i];
   return null;
+}
+
+function normalizeStageLine(line, fallbackSpeaker, speakerAliases) {
+  const rawSpeaker = line?.speaker || fallbackSpeaker;
+  const displaySpeaker = resolveStageSpeaker(rawSpeaker, fallbackSpeaker, speakerAliases);
+  return {
+    ...line,
+    speaker: displaySpeaker,
+    text: stripStageSpeakerPrefix(line?.text, [rawSpeaker, displaySpeaker, ...speakerAliases]),
+    speechText: workflowLineSpeechText(line),
+    audioURL: workflowLineAudioURL(line),
+  };
+}
+
+function buildStageSpeakerAliases(activeCharacter, activeCharacterID, displaySpeaker) {
+  return uniqueStageNames([
+    displaySpeaker,
+    activeCharacter?.display_name,
+    activeCharacter?.id,
+    activeCharacterID,
+  ]);
+}
+
+function resolveStageSpeaker(value, fallbackSpeaker, speakerAliases) {
+  const speaker = cleanStageSpeaker(value);
+  if (!speaker) return fallbackSpeaker;
+  return speakerAliases.includes(speaker) ? fallbackSpeaker : speaker;
+}
+
+function stripStageSpeakerPrefix(value, names) {
+  let text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  for (const name of uniqueStageNames(names).sort((a, b) => b.length - a.length)) {
+    const escaped = escapeStageRegExp(name);
+    text = text
+      .replace(new RegExp(`^[【\\[]\\s*${escaped}\\s*[】\\]]\\s*`), "")
+      .replace(new RegExp(`^${escaped}\\s*[：:]\\s*`), "")
+      .trim();
+  }
+  return text;
+}
+
+function cleanStageSpeaker(value) {
+  return String(value || "").replace(/[【】[\]：:]/g, "").trim();
+}
+
+function uniqueStageNames(values) {
+  return [...new Set((Array.isArray(values) ? values : []).map(cleanStageSpeaker).filter(Boolean))];
+}
+
+function escapeStageRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function stageBG(url) {

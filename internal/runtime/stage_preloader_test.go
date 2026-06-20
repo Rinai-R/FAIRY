@@ -112,7 +112,7 @@ func TestWorkflowNodeReadyRequiresDialogueText(t *testing.T) {
 	}
 }
 
-func TestValidateGeneratedActDialogueUnitsRejectsChineseOverBudget(t *testing.T) {
+func TestValidateGeneratedActDialogueUnitsAcceptsChineseOverPromptBudget(t *testing.T) {
 	t.Parallel()
 
 	node := app.TeachingWorkflowNode{
@@ -127,18 +127,12 @@ func TestValidateGeneratedActDialogueUnitsRejectsChineseOverBudget(t *testing.T)
 		},
 	}
 
-	err := validateGeneratedActDialogueUnits(node, app.LanguagePlan{DisplayLanguage: "cn"})
-	if err == nil {
-		t.Fatal("validateGeneratedActDialogueUnits() expected error")
-	}
-	for _, want := range []string{"lesson-1", "lines[3].text", "53/52"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error missing %q: %v", want, err)
-		}
+	if err := validateGeneratedActDialogueUnits(node, app.LanguagePlan{DisplayLanguage: "cn"}); err != nil {
+		t.Fatalf("validateGeneratedActDialogueUnits() error = %v", err)
 	}
 }
 
-func TestValidateGeneratedActDialogueUnitsRejectsEnglishOverBudget(t *testing.T) {
+func TestValidateGeneratedActDialogueUnitsAcceptsEnglishOverPromptBudget(t *testing.T) {
 	t.Parallel()
 
 	node := app.TeachingWorkflowNode{
@@ -153,14 +147,8 @@ func TestValidateGeneratedActDialogueUnitsRejectsEnglishOverBudget(t *testing.T)
 		},
 	}
 
-	err := validateGeneratedActDialogueUnits(node, app.LanguagePlan{DisplayLanguage: "en"})
-	if err == nil {
-		t.Fatal("validateGeneratedActDialogueUnits() expected error")
-	}
-	for _, want := range []string{"lesson-en", "lines[3].text", "121/120"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error missing %q: %v", want, err)
-		}
+	if err := validateGeneratedActDialogueUnits(node, app.LanguagePlan{DisplayLanguage: "en"}); err != nil {
+		t.Fatalf("validateGeneratedActDialogueUnits() error = %v", err)
 	}
 }
 
@@ -181,6 +169,30 @@ func TestValidateGeneratedActDialogueUnitsAcceptsFourShortLines(t *testing.T) {
 
 	if err := validateGeneratedActDialogueUnits(node, app.LanguagePlan{DisplayLanguage: "zh-CN"}); err != nil {
 		t.Fatalf("validateGeneratedActDialogueUnits() error = %v", err)
+	}
+}
+
+func TestWorkflowGenerationStatusReportsLineAudioError(t *testing.T) {
+	t.Parallel()
+
+	workflow := app.TeachingWorkflow{
+		Nodes: []app.TeachingWorkflowNode{{
+			ID:   "lesson-1",
+			Kind: "lesson",
+			Lines: []app.DialogueLine{{
+				Text:        "这句台词有语音错误。",
+				AudioStatus: app.DialogueAudioStatusError,
+				AudioError:  "voice provider unavailable",
+			}},
+		}},
+	}
+
+	status, message := workflowGenerationStatus(workflow)
+	if status != app.SceneGenerationStatusFailed {
+		t.Fatalf("status = %q, want failed", status)
+	}
+	if !strings.Contains(message, "lesson-1") || !strings.Contains(message, "voice provider unavailable") {
+		t.Fatalf("message = %q", message)
 	}
 }
 

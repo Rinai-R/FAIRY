@@ -151,4 +151,24 @@ const nodes = [
   );
 }
 
+{
+  const items = buildBacklogItems(
+    [{ node_id: "opening", action: "enter" }],
+    [{
+      id: "opening",
+      speaker: "tutor",
+      lines: [
+        { speaker: "tutor", text: "tutor: 我试着整理了四个问题，理解系统一下就清晰了。" },
+      ],
+    }],
+    "opening",
+    0,
+    "亚托莉",
+    ["tutor"],
+  );
+
+  assert.equal(items[0].speaker, "亚托莉");
+  assert.equal(items[0].text, "我试着整理了四个问题，理解系统一下就清晰了。");
+}
+
 console.log("stageBacklog tests passed");

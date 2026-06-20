@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"unicode"
 
 	"github.com/Rinai-R/FAIRY/internal/adapters/agent"
 	"github.com/Rinai-R/FAIRY/internal/app"
@@ -380,7 +379,7 @@ func normalizeJSONContent(content string) (string, error) {
 
 func validateFairyActOutput(input agent.ActInput, output agent.ActOutput) error {
 	switch output.Decision {
-	case agent.ActDecisionContinue, agent.ActDecisionSummarize, agent.ActDecisionFreeDiscussion:
+	case "", agent.ActDecisionContinue, agent.ActDecisionSummarize, agent.ActDecisionFreeDiscussion:
 	default:
 		return fmt.Errorf("decision 不支持: %s", output.Decision)
 	}
@@ -432,8 +431,6 @@ func validateTeachingLines(kind string, lines []app.DialogueLine, language app.L
 	if len(lines) < minLines {
 		return fmt.Errorf("node.lines 至少需要 %d 条文本框台词，当前 %d 条", minLines, len(lines))
 	}
-	displayLanguage := language.Normalize().DisplayLanguage
-	textLimit := lineTextLimitForLanguage(displayLanguage)
 	for index, line := range lines {
 		text := strings.TrimSpace(line.Text)
 		if text == "" {
@@ -441,9 +438,6 @@ func validateTeachingLines(kind string, lines []app.DialogueLine, language app.L
 		}
 		if genericActText(text) {
 			return fmt.Errorf("node.lines[%d].text 不能是骨架标题: %s", index, text)
-		}
-		if count := visibleCharacterCount(text); count > textLimit {
-			return fmt.Errorf("node.lines[%d].text 超过文本框预算: %d/%d，可拆成多条 lines", index, count, textLimit)
 		}
 		if strings.TrimSpace(line.Expression) == "" {
 			return fmt.Errorf("node.lines[%d].expression 不能为空", index)
@@ -459,24 +453,6 @@ func minimumTeachingLines(kind string) int {
 	default:
 		return 2
 	}
-}
-
-func lineTextLimitForLanguage(language string) int {
-	if app.IsEnglishLanguage(language) {
-		return 120
-	}
-	return 52
-}
-
-func visibleCharacterCount(text string) int {
-	count := 0
-	for _, char := range text {
-		if unicode.IsSpace(char) {
-			continue
-		}
-		count++
-	}
-	return count
 }
 
 func validateTeachingChoices(choices []app.SceneChoice) error {

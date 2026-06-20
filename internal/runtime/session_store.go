@@ -113,9 +113,9 @@ func (s *FileSessionStore) CompleteGeneration(sessionID string, resp app.SceneGe
 	resp.Session.ID = sessionID
 	record := sceneRecordFromResponse(existing.Generation.Request, resp, time.Now().UTC())
 	record.Generation = existing.Generation
-	record.Generation.Status = app.SceneGenerationStatusReady
 	record.Generation.Error = ""
 	record.Generation.CompletedAt = record.UpdatedAt
+	applyWorkflowGenerationStatus(&record)
 	state[sessionID] = record
 	return record, s.save(state)
 }
@@ -162,7 +162,7 @@ func (s *FileSessionStore) GenerationByFingerprint(fingerprint string) (app.Sess
 		return app.SessionRecord{}, false, err
 	}
 	for _, record := range state {
-		if record.Generation.Fingerprint == fingerprint && record.Generation.Status == app.SceneGenerationStatusGenerating {
+		if record.Generation.Fingerprint == fingerprint && generationStillInProgress(record.Generation.Status) {
 			return record, true, nil
 		}
 	}
@@ -375,8 +375,39 @@ func (s *FileSessionStore) SaveWorkflow(sessionID string, workflow app.TeachingW
 	record.Scene.Phase = findWorkflowNode(workflow.Nodes, workflow.CurrentNodeID).Kind
 	record.Scene.LastActiveAt = time.Now().UTC()
 	record.UpdatedAt = time.Now().UTC()
+	applyWorkflowGenerationStatus(&record)
 	state[sessionID] = record
 	return record, s.save(state)
+}
+
+func generationStillInProgress(status string) bool {
+	return status == app.SceneGenerationStatusGenerating || status == app.SceneGenerationStatusPreparing
+}
+
+func applyWorkflowGenerationStatus(record *app.SessionRecord) {
+	if record == nil || strings.TrimSpace(record.Generation.Fingerprint) == "" {
+		return
+	}
+	switch record.Generation.Status {
+	case app.SceneGenerationStatusGenerating, app.SceneGenerationStatusPreparing, app.SceneGenerationStatusReady, app.SceneGenerationStatusFailed:
+	default:
+		return
+	}
+	status, message := workflowGenerationStatus(record.Workflow)
+	record.Generation.Status = status
+	if status == app.SceneGenerationStatusFailed {
+		record.Generation.Error = message
+		if record.Generation.CompletedAt.IsZero() {
+			record.Generation.CompletedAt = record.UpdatedAt
+		}
+		return
+	}
+	record.Generation.Error = ""
+	if status == app.SceneGenerationStatusReady {
+		record.Generation.CompletedAt = record.UpdatedAt
+		return
+	}
+	record.Generation.CompletedAt = time.Time{}
 }
 
 func validateWorkflowAdvanceRequest(req app.WorkflowAdvanceRequest) error {

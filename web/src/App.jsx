@@ -25,7 +25,7 @@ import { DirectorView } from "./views/DirectorView";
 import { GalgameStageView } from "./views/GalgameStage";
 import { createCharacterPackage, mergeCharacterPackage } from "./characterPackage";
 import { emotionLabel, expressionLabel, motionLabel } from "./views/displayLabels";
-import { stageWorkflowWaiting } from "./views/workflowReadiness";
+import { stageWorkflowWaiting, workflowNodeReady } from "./views/workflowReadiness";
 
 const CONFIG_STORAGE_KEY = "fairy.user-config.v1";
 const MAX_DOCUMENT_ASSET_BYTES = 64 * 1024 * 1024;
@@ -1436,7 +1436,7 @@ export function App() {
 
   function restoreSession(record) {
     if (!record?.session || !record?.scene) return;
-    if (recordGenerationStatus(record) !== "ready") {
+    if (!recordPlayable(record)) {
       appendLog("warn", `记录尚不可演出：${historyStatusLabel(recordGenerationStatus(record))}`);
       return;
     }
@@ -2004,7 +2004,8 @@ function HistoryView(props) {
   const pills = [{ id: "all", label: "全部" }, { id: "generated", label: "已生成" }, { id: "generating", label: "生成中" }, { id: "failed", label: "失败" }, { id: "draft", label: "草稿" }];
   const sel = selectedRecord;
   const selStatus = sel ? recordGenerationStatus(sel) : "draft";
-  const selGenerated = selStatus === "ready";
+  const selPlayable = sel ? recordPlayable(sel) : false;
+  const selFailureMessage = selStatus === "failed" ? recordFailureMessage(sel) : "";
   const selCharacter = sel ? sessionCharacter(sel) : null;
   const selPortrait = selCharacter?.assets?.portrait_url || selCharacter?.avatar_url || "";
   const selNodes = sel?.workflow?.nodes || [];
@@ -2078,7 +2079,7 @@ function HistoryView(props) {
               <div className="h-panel">
                 <h4>选中记录</h4>
                 <div className="h-name">{sessionTitle(sel)}</div>
-                <p className="h-desc">{historyStatusDescription(selStatus)}</p>
+                <p className="h-desc">{selFailureMessage ? cleanHistoryText(selFailureMessage) : historyStatusDescription(selStatus)}</p>
                 <div className="h-kv-list">
                   <div className="kv"><span>文档源</span><b>{sessionSource(sel)}</b></div>
                   <div className="kv"><span>章节</span><b>{selNodes.length} 个章节</b></div>
@@ -2086,7 +2087,7 @@ function HistoryView(props) {
                   <div className="kv"><span>保存时间</span><b>{formatHistoryTime(sel.updated_at)}</b></div>
                 </div>
                 <div className="insp-actions">
-                  <button className="h-btn primary sm" type="button" onClick={() => restoreSession(sel)} disabled={!selGenerated || busy}>进入演出</button>
+                  <button className="h-btn primary sm" type="button" onClick={() => restoreSession(sel)} disabled={!selPlayable || busy}>进入演出</button>
                   <button className="h-btn danger sm" type="button" onClick={() => requestDelete(sel)} disabled={deletingIDs.has(sel.session.id)}>
                     {deletingIDs.has(sel.session.id) ? "删除中" : "删除记录"}
                   </button>
@@ -2139,6 +2140,7 @@ function HistoryView(props) {
 
 function SavePreview({ record, restoreSession }) {
   if (!record) return null;
+  const playable = recordPlayable(record);
   const title = sessionTitle(record);
   const goal = sessionGoal(record);
   const nodeCount = record.workflow?.nodes?.length || 0;
@@ -2191,7 +2193,7 @@ function SavePreview({ record, restoreSession }) {
           })}
         </div>
       ) : null}
-      <button className="primary-button" type="button" onClick={() => restoreSession(record)}>读取记录</button>
+      <button className="primary-button" type="button" onClick={() => restoreSession(record)} disabled={!playable}>读取记录</button>
     </aside>
   );
 }
@@ -2201,8 +2203,9 @@ function sessionTitle(record) {
 }
 
 function sessionGoal(record) {
-  if (recordGenerationStatus(record) === "failed" && record?.generation?.error) {
-    return cleanHistoryText(record.generation.error);
+  if (recordGenerationStatus(record) === "failed") {
+    const message = recordFailureMessage(record);
+    if (message) return cleanHistoryText(message);
   }
   return cleanHistoryText(record?.teaching?.learning_goal || record?.scene?.variables?.learning_goal || "继续此前的教学场景。");
 }
@@ -2215,9 +2218,59 @@ function sessionSource(record) {
 function recordGenerationStatus(record) {
   const status = String(record?.generation?.status || "").trim();
   if (status === "generating") return "generating";
+  if (status === "preparing") return "generating";
   if (status === "failed") return "failed";
-  if (status === "ready") return "ready";
+  if (status === "ready") {
+    if (workflowArchiveFailed(record?.workflow)) return "failed";
+    return workflowArchiveComplete(record?.workflow) ? "ready" : "generating";
+  }
   return hasPlayableWorkflow(record?.workflow, record?.scene, record?.session) ? "ready" : "draft";
+}
+
+function recordPlayable(record) {
+  return hasPlayableWorkflow(record?.workflow, record?.scene, record?.session);
+}
+
+function workflowArchiveFailed(workflow) {
+  return Boolean(workflowArchiveFailureMessage(workflow));
+}
+
+function recordFailureMessage(record) {
+  return String(record?.generation?.error || workflowArchiveFailureMessage(record?.workflow) || "").trim();
+}
+
+function workflowArchiveFailureMessage(workflow) {
+  const nodes = Array.isArray(workflow?.nodes) ? workflow.nodes : [];
+  for (const node of nodes) {
+    const nodeLabel = cleanHistoryText(node?.title || node?.summary || node?.id || "剧情节点");
+    if (node?.prepare_error) return node.prepare_error;
+    if (node?.voice_status === "error") return `${nodeLabel} 语音生成失败`;
+    if (node?.status === "error") return `${nodeLabel} 生成失败`;
+    for (const [index, line] of (Array.isArray(node?.lines) ? node.lines : []).entries()) {
+      if (line?.audio_error) return `${nodeLabel} 第 ${index + 1} 句语音生成失败：${line.audio_error}`;
+      if (line?.audio_status === "error") return `${nodeLabel} 第 ${index + 1} 句语音生成失败`;
+    }
+  }
+  return "";
+}
+
+function workflowArchiveComplete(workflow) {
+  const nodes = Array.isArray(workflow?.nodes) ? workflow.nodes : [];
+  if (!nodes.length || workflow?.preparing || workflow?.pending_node_id) return false;
+  const byID = new Map(nodes.filter((node) => node?.id).map((node) => [node.id, node]));
+  for (const node of nodes) {
+    if (!workflowNodeReady(node)) return false;
+  }
+  for (const node of nodes) {
+    if (!node?.id || node.free_discussion || node.kind === "free_discussion") continue;
+    if (node.next_node_id && !workflowNodeReady(byID.get(node.next_node_id))) return false;
+    if (!node.next_node_id && ["continue", "summarize", "free_discussion"].includes(String(node.decision || "").trim())) return false;
+    for (const choice of Array.isArray(node.choices) ? node.choices : []) {
+      const targetID = String(choice?.target_node_id || "").trim();
+      if (!targetID || !workflowNodeReady(byID.get(targetID))) return false;
+    }
+  }
+  return true;
 }
 
 function historyStatusLabel(status) {
@@ -2250,7 +2303,7 @@ function historyStatusColor(status) {
 function historyStatusDescription(status) {
   switch (status) {
     case "generating":
-      return "剧情正在后台生成，可以继续新建下一条任务；完成后这里会自动变成可演出记录。";
+      return "剧情仍在后台补完章节；已有可播放内容时可以先进入演出，后续章节会继续准备。";
     case "failed":
       return "这条生成任务失败了，记录中保留了错误信息，修正配置后可以重新发起。";
     case "ready":

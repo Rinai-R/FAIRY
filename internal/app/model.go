@@ -47,6 +47,7 @@ const (
 	DialogueAudioStatusError   = "error"
 
 	SceneGenerationStatusGenerating = "generating"
+	SceneGenerationStatusPreparing  = "preparing"
 	SceneGenerationStatusReady      = "ready"
 	SceneGenerationStatusFailed     = "failed"
 )
