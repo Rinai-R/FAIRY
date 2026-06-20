@@ -356,6 +356,10 @@ func workflowNodeHasError(node app.TeachingWorkflowNode) bool {
 	return false
 }
 
+func workflowHasPendingMarker(workflow app.TeachingWorkflow) bool {
+	return workflow.Preparing || strings.TrimSpace(workflow.PendingNodeID) != ""
+}
+
 func workflowNextNodePending(workflow app.TeachingWorkflow, current app.TeachingWorkflowNode, nextNodeID string) bool {
 	nextNodeID = strings.TrimSpace(nextNodeID)
 	if nextNodeID == "" {
@@ -479,16 +483,13 @@ func (r *Runtime) runWorkflowStageWaiter(ctx context.Context, jobKey string, tas
 		return
 	}
 	current, targets, currentChanged := workflowFollowupTargets(record.Workflow, current)
-	progressChanged := record.Workflow.Preparing || strings.TrimSpace(record.Workflow.PendingNodeID) != ""
-	record.Workflow.Preparing = false
-	record.Workflow.PendingNodeID = ""
 	if currentChanged {
 		if !replaceWorkflowNode(&record.Workflow, current) {
 			r.logger.Warn("剧情续写起点保存失败", "session_id", task.sessionID, "node_id", current.ID)
 			return
 		}
 	}
-	if currentChanged || progressChanged {
+	if currentChanged {
 		saved, err := r.sessions.SaveWorkflow(task.sessionID, record.Workflow)
 		if err != nil {
 			r.logger.Warn("写入剧情后续规划失败", "error", err, "session_id", task.sessionID, "node_id", current.ID)
@@ -496,6 +497,7 @@ func (r *Runtime) runWorkflowStageWaiter(ctx context.Context, jobKey string, tas
 		}
 		record = saved
 	}
+	preloaded := false
 	for _, target := range targets {
 		if !workflowNodeNeedsPreload(record.Workflow, target.node.ID) {
 			continue
@@ -504,6 +506,15 @@ func (r *Runtime) runWorkflowStageWaiter(ctx context.Context, jobKey string, tas
 		record, err = r.prepareWorkflowFollowup(ctx, task, record, target.node, target.choice)
 		if err != nil {
 			r.logger.Warn("准备剧情后续失败", "error", err, "session_id", task.sessionID, "node_id", target.node.ID, "choice_id", target.choice.ID)
+			return
+		}
+		preloaded = true
+	}
+	if !preloaded && workflowHasPendingMarker(record.Workflow) {
+		record.Workflow.Preparing = false
+		record.Workflow.PendingNodeID = ""
+		if _, err := r.sessions.SaveWorkflow(task.sessionID, record.Workflow); err != nil {
+			r.logger.Warn("清理剧情准备状态失败", "error", err, "session_id", task.sessionID, "node_id", current.ID)
 			return
 		}
 	}

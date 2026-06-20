@@ -383,7 +383,7 @@ func TestAdvanceWorkflowPersistsCurrentNode(t *testing.T) {
 	}
 }
 
-func TestAdvanceWorkflowReplayTruncatesCanonicalHistory(t *testing.T) {
+func TestAdvanceWorkflowReplayAppendsHistory(t *testing.T) {
 	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
 	rt := runtime.NewRuntime(runtime.Dependencies{
 		Sessions: store,
@@ -455,9 +455,27 @@ func TestAdvanceWorkflowReplayTruncatesCanonicalHistory(t *testing.T) {
 	for _, item := range replayed.Workflow.History {
 		got = append(got, item.NodeID+":"+item.Action)
 	}
-	want := []string{"opening:enter", "lesson-1:advance"}
+	want := []string{"opening:enter", "lesson-1:advance", "lesson-2:advance", "lesson-1:replay"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("history = %#v, want %#v", got, want)
+	}
+
+	replayed, err = rt.AdvanceWorkflow(context.Background(), app.WorkflowAdvanceRequest{
+		SessionID:     "replay:default",
+		CurrentNodeID: "lesson-1",
+		NextNodeID:    "lesson-1",
+		Replay:        true,
+	})
+	if err != nil {
+		t.Fatalf("AdvanceWorkflow(replay same node) error = %v", err)
+	}
+	got = got[:0]
+	for _, item := range replayed.Workflow.History {
+		got = append(got, item.NodeID+":"+item.Action)
+	}
+	want = []string{"opening:enter", "lesson-1:advance", "lesson-2:advance", "lesson-1:replay", "lesson-1:replay"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("history after repeated replay = %#v, want %#v", got, want)
 	}
 }
 
@@ -1311,6 +1329,93 @@ func TestRuntimeResumesGeneratingTasksOnStartup(t *testing.T) {
 	}
 }
 
+func TestRuntimeResumesWorkflowFollowupsOnStartup(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	request := asyncSceneRequest()
+	request.Topic = "节点恢复"
+	request.DocumentText = "第一幕完成后，第二幕必须在重启后继续生成。"
+	request.LearningGoal = "理解节点级恢复。"
+	_, err := store.BeginScene(request, app.SceneGenerateResponse{
+		Scene:   app.Scene{ID: "lesson", Title: "节点恢复"},
+		Session: app.Session{ID: "lesson:resume", UserID: "default", ActiveCharacterID: "atri"},
+		Workflow: app.TeachingWorkflow{
+			ID:            "wf",
+			CurrentNodeID: "opening",
+			Preparing:     true,
+			PendingNodeID: "lesson-1",
+			Nodes: []app.TeachingWorkflowNode{
+				readyWorkflowNode("opening", "opening", "lesson-1"),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BeginScene() error = %v", err)
+	}
+
+	_ = runtime.NewRuntime(runtime.Dependencies{
+		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentmock.MockEngine{}},
+		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: &recordingVoiceEngine{}},
+		Images:       map[image.Provider]image.Engine{image.ProviderMock: imagemock.Engine{}},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: testVoiceProvider,
+		DefaultImage: image.ProviderMock,
+		Sessions:     store,
+		Logger:       slog.Default(),
+	})
+
+	record := waitForStoredWorkflowNodeReady(t, store, "lesson:resume", "lesson-1")
+	if record.Workflow.Preparing || record.Workflow.PendingNodeID != "" {
+		t.Fatalf("workflow preparing state = %v/%q, want cleared", record.Workflow.Preparing, record.Workflow.PendingNodeID)
+	}
+}
+
+func TestRuntimeResumesMissingChoiceBranchOnStartup(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	request := asyncSceneRequest()
+	request.Topic = "分支恢复"
+	request.DocumentText = "选项分支必须在重启后补齐。"
+	request.LearningGoal = "理解分支预加载。"
+	opening := readyWorkflowNode("opening", "opening", "lesson-1")
+	opening.Choices = []app.SceneChoice{{
+		ID:           "example",
+		Label:        "先看例子",
+		Text:         "先用例子继续。",
+		TargetNodeID: "opening-choice-example",
+	}}
+	_, err := store.BeginScene(request, app.SceneGenerateResponse{
+		Scene:   app.Scene{ID: "lesson", Title: "分支恢复"},
+		Session: app.Session{ID: "lesson:branch-resume", UserID: "default", ActiveCharacterID: "atri"},
+		Workflow: app.TeachingWorkflow{
+			ID:            "wf",
+			CurrentNodeID: "opening",
+			Nodes: []app.TeachingWorkflowNode{
+				opening,
+				readyWorkflowNode("lesson-1", "lesson", ""),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BeginScene() error = %v", err)
+	}
+
+	_ = runtime.NewRuntime(runtime.Dependencies{
+		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentmock.MockEngine{}},
+		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: &recordingVoiceEngine{}},
+		Images:       map[image.Provider]image.Engine{image.ProviderMock: imagemock.Engine{}},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: testVoiceProvider,
+		DefaultImage: image.ProviderMock,
+		Sessions:     store,
+		Logger:       slog.Default(),
+	})
+
+	record := waitForStoredWorkflowNodeReady(t, store, "lesson:branch-resume", "opening-choice-example")
+	branch := workflowNodeByID(record.Workflow.Nodes, "opening-choice-example")
+	if branch.Kind != "choice" {
+		t.Fatalf("branch kind = %q, want choice", branch.Kind)
+	}
+}
+
 func TestSessionStoreNormalizesLegacyWorkflowAudio(t *testing.T) {
 	path := t.TempDir() + "/sessions.json"
 	state := map[string]app.SessionRecord{
@@ -1797,6 +1902,25 @@ func waitForGenerationStatus(t *testing.T, store *runtime.FileSessionStore, sess
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("generation status = %q, want %q", record.Generation.Status, status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func waitForStoredWorkflowNodeReady(t *testing.T, store *runtime.FileSessionStore, sessionID string, nodeID string) app.SessionRecord {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		record, err := store.Get(sessionID)
+		if err != nil {
+			t.Fatalf("Get() while waiting workflow node error = %v", err)
+		}
+		node := workflowNodeByID(record.Workflow.Nodes, nodeID)
+		if node.Status == app.WorkflowNodeStatusReady && node.VoiceStatus == app.WorkflowNodeStatusReady {
+			return record
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("workflow node %s status = %q/%q, preparing=%v pending=%q, want ready/ready", nodeID, node.Status, node.VoiceStatus, record.Workflow.Preparing, record.Workflow.PendingNodeID)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

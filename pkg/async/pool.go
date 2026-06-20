@@ -34,6 +34,45 @@ func (p *Pool) Submit(task func()) error {
 	return nil
 }
 
+func (p *Pool) Tune(size int) error {
+	if p == nil || p.inner == nil {
+		return fmt.Errorf("async pool 未初始化")
+	}
+	if size <= 0 {
+		return fmt.Errorf("async pool size 必须大于 0: %d", size)
+	}
+	p.inner.Tune(size)
+	return nil
+}
+
+func (p *Pool) Cap() int {
+	if p == nil || p.inner == nil {
+		return 0
+	}
+	return p.inner.Cap()
+}
+
+func (p *Pool) Running() int {
+	if p == nil || p.inner == nil {
+		return 0
+	}
+	return p.inner.Running()
+}
+
+func (p *Pool) Waiting() int {
+	if p == nil || p.inner == nil {
+		return 0
+	}
+	return p.inner.Waiting()
+}
+
+func (p *Pool) Free() int {
+	if p == nil || p.inner == nil {
+		return 0
+	}
+	return p.inner.Free()
+}
+
 func (p *Pool) Release() {
 	if p == nil || p.inner == nil {
 		return

@@ -249,15 +249,13 @@ func (s *FileSessionStore) AdvanceWorkflow(req app.WorkflowAdvanceRequest) (app.
 	record.Scene.Phase = next.Kind
 	record.Scene.LastActiveAt = now
 	record.UpdatedAt = now
+	action := "advance"
 	if replay {
-		truncateWorkflowHistory(&record.Workflow, next.ID)
-	} else {
-		action := "advance"
-		if req.ChoiceID != "" {
-			action = "choice"
-		}
-		appendWorkflowHistory(&record.Workflow, next, req.ChoiceID, choiceLabel(current, req.ChoiceID), action, now)
+		action = "replay"
+	} else if req.ChoiceID != "" {
+		action = "choice"
 	}
+	appendWorkflowHistory(&record.Workflow, next, req.ChoiceID, choiceLabel(current, req.ChoiceID), action, now)
 	state[req.SessionID] = record
 	return record, s.save(state)
 }
@@ -742,6 +740,9 @@ func workflowNodeHasReadyAudio(node app.TeachingWorkflowNode) bool {
 		return false
 	}
 	for _, line := range node.Lines {
+		if text, _ := dialogueSpeechText(line); text == "" {
+			return false
+		}
 		if line.AudioStatus != app.DialogueAudioStatusReady || line.Audio.URL == "" {
 			return false
 		}

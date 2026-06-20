@@ -97,6 +97,21 @@ func TestPrepareWorkflowNodeVoiceWaitsAllLines(t *testing.T) {
 	}
 }
 
+func TestWorkflowNodeReadyRequiresDialogueText(t *testing.T) {
+	t.Parallel()
+
+	if workflowNodeIsReady(app.TeachingWorkflowNode{
+		ID:   "lesson-empty",
+		Kind: "lesson",
+		Lines: []app.DialogueLine{{
+			AudioStatus: app.DialogueAudioStatusReady,
+			Audio:       app.AudioResult{URL: "/audio/empty.mp3", Format: "mp3"},
+		}},
+	}) {
+		t.Fatal("workflowNodeIsReady() = true, want false for audio without dialogue text")
+	}
+}
+
 func TestValidateGeneratedActDialogueUnitsRejectsChineseOverBudget(t *testing.T) {
 	t.Parallel()
 
@@ -231,6 +246,77 @@ func TestPreloadRemainingWorkflowNodesResumesPendingNodeAfterRestart(t *testing.
 			next.Status == app.WorkflowNodeStatusReady &&
 			next.VoiceStatus == app.WorkflowNodeStatusReady
 	}, "workflow should resume materializing a pending node after restart")
+}
+
+func TestPreloadKeepsPendingMarkerUntilResult(t *testing.T) {
+	agentEngine := &stageBlockingAgent{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	store := &stageSessionStore{
+		record: app.SessionRecord{
+			Session: app.Session{ID: "lesson:test", UserID: "default"},
+			Characters: []app.Character{{
+				ID:          "atri",
+				DisplayName: "亚托莉",
+				VoiceID:     "voice-atri",
+			}},
+			Teaching: app.TeachingSnapshot{
+				Runtime: app.RuntimeConfig{
+					AgentProvider: string(agent.ProviderMock),
+					VoiceProvider: string(testVoiceProvider),
+				},
+			},
+			Workflow: app.TeachingWorkflow{
+				CurrentNodeID: "opening",
+				Preparing:     true,
+				PendingNodeID: "lesson-1",
+				Nodes: []app.TeachingWorkflowNode{
+					{
+						ID:          "opening",
+						Kind:        "opening",
+						Title:       "开场",
+						Decision:    string(agent.ActDecisionContinue),
+						NextNodeID:  "lesson-1",
+						Status:      app.WorkflowNodeStatusReady,
+						VoiceStatus: app.WorkflowNodeStatusReady,
+					},
+				},
+			},
+		},
+	}
+	rt := NewRuntime(Dependencies{
+		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentEngine},
+		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: &stageRecordingVoiceEngine{}},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: testVoiceProvider,
+		Sessions:     store,
+		Logger:       slog.Default(),
+	})
+
+	rt.preloadRemainingWorkflowNodes(app.SceneGenerateRequest{
+		Characters: store.record.Characters,
+		Runtime: app.RuntimeConfig{
+			AgentProvider: string(agent.ProviderMock),
+			VoiceProvider: string(testVoiceProvider),
+		},
+	}, "lesson:test", "opening")
+
+	select {
+	case <-agentEngine.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("agent was not called")
+	}
+	for _, workflow := range store.savedWorkflowSnapshots() {
+		if !workflow.Preparing && workflow.PendingNodeID == "" && findWorkflowNode(workflow.Nodes, "lesson-1").ID == "" {
+			t.Fatalf("workflow had an unrecoverable pending gap: %+v", workflow)
+		}
+	}
+
+	close(agentEngine.release)
+	waitForStageStore(t, store, func(record app.SessionRecord) bool {
+		return findWorkflowNode(record.Workflow.Nodes, "lesson-1").Status == app.WorkflowNodeStatusReady
+	}, "workflow should finish after preserving pending marker")
 }
 
 func TestPreloadRemainingWorkflowNodesCoalescesDuplicateJobs(t *testing.T) {
@@ -953,10 +1039,11 @@ func waitForStageStore(t *testing.T, store *stageSessionStore, ready func(app.Se
 }
 
 type stageSessionStore struct {
-	mu            sync.Mutex
-	record        app.SessionRecord
-	updateCalls   int
-	lastUpdatedID string
+	mu             sync.Mutex
+	record         app.SessionRecord
+	updateCalls    int
+	lastUpdatedID  string
+	savedWorkflows []app.TeachingWorkflow
 }
 
 func (s *stageSessionStore) BeginScene(app.SceneGenerateRequest, app.SceneGenerateResponse) (app.SessionRecord, error) {
@@ -1007,7 +1094,16 @@ func (s *stageSessionStore) SaveWorkflow(_ string, workflow app.TeachingWorkflow
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.record.Workflow = workflow
+	s.savedWorkflows = append(s.savedWorkflows, workflow)
 	return s.record, nil
+}
+
+func (s *stageSessionStore) savedWorkflowSnapshots() []app.TeachingWorkflow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]app.TeachingWorkflow, len(s.savedWorkflows))
+	copy(out, s.savedWorkflows)
+	return out
 }
 
 func (s *stageSessionStore) List() ([]app.SessionRecord, error) {

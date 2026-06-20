@@ -21,8 +21,8 @@ import (
 )
 
 const (
-	defaultStagePoolSize = 8
-	defaultVoicePoolSize = 12
+	defaultStagePoolSize = 16
+	defaultVoicePoolSize = 32
 )
 
 type Runtime struct {
@@ -85,6 +85,7 @@ func NewRuntime(deps Dependencies) *Runtime {
 		preloadJobs:  map[string]struct{}{},
 	}
 	rt.ResumeGenerationTasks(context.Background())
+	rt.ResumeWorkflowTasks(context.Background())
 	return rt
 }
 
@@ -170,6 +171,38 @@ func (r *Runtime) ResumeGenerationTasks(ctx context.Context) {
 		request := record.Generation.Request
 		go r.runSceneGenerationTask(ctx, sessionID, request)
 	}
+}
+
+func (r *Runtime) ResumeWorkflowTasks(ctx context.Context) {
+	if r.sessions == nil {
+		return
+	}
+	records, err := r.sessions.List()
+	if err != nil {
+		r.logger.Warn("恢复剧情后续任务失败", "error", err)
+		return
+	}
+	for _, record := range records {
+		if !workflowNeedsResume(record.Workflow) {
+			continue
+		}
+		current := currentWorkflowNode(record.Workflow)
+		if current.ID == "" {
+			continue
+		}
+		r.preloadRemainingWorkflowNodes(sceneGenerateRequestFromRecord(record), record.Session.ID, current.ID)
+	}
+}
+
+func workflowNeedsResume(workflow app.TeachingWorkflow) bool {
+	current := currentWorkflowNode(workflow)
+	if current.ID == "" {
+		return false
+	}
+	if workflowHasPendingMarker(workflow) {
+		return true
+	}
+	return shouldQueueWorkflowFollowups(current) && !workflowFollowupsReady(workflow, current)
 }
 
 func (r *Runtime) runSceneGenerationTask(ctx context.Context, sessionID string, request app.SceneGenerateRequest) {
