@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 	"time"
 )
@@ -34,6 +35,75 @@ type CharacterMood struct {
 	PortraitURL string `json:"portrait_url,omitempty"`
 	CGPrompt    string `json:"cg_prompt,omitempty"`
 	VoiceStyle  string `json:"voice_style,omitempty"`
+}
+
+type ExpressionOption struct {
+	Key           string `json:"key"`
+	Label         string `json:"label,omitempty"`
+	Description   string `json:"description,omitempty"`
+	PortraitURL   string `json:"portrait_url,omitempty"`
+	HasPortrait   bool   `json:"has_portrait,omitempty"`
+	IsDefault     bool   `json:"is_default,omitempty"`
+	DefaultReason string `json:"default_reason,omitempty"`
+}
+
+func ExpressionOptionsForCharacter(character Character) []ExpressionOption {
+	options := []ExpressionOption{
+		{Key: "soft_smile", Label: "默认微笑", IsDefault: true, DefaultReason: "没有更精确差分时的默认表情"},
+		{Key: "thinking", Label: "思考", IsDefault: true, DefaultReason: "解释概念或推理时的默认表情"},
+		{Key: "curious", Label: "好奇", IsDefault: true, DefaultReason: "追问或引出选择时的默认表情"},
+		{Key: "calm", Label: "平静", IsDefault: true, DefaultReason: "总结或稳定讲解时的默认表情"},
+		{Key: "serious", Label: "认真", IsDefault: true, DefaultReason: "纠错或强调边界时的默认表情"},
+	}
+	for key, mood := range character.Assets.Moods {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		options = append(options, ExpressionOption{
+			Key:         key,
+			Label:       mood.Label,
+			Description: firstNonEmptyString(mood.Description, mood.CGPrompt, mood.VoiceStyle),
+			PortraitURL: mood.PortraitURL,
+			HasPortrait: strings.TrimSpace(mood.PortraitURL) != "",
+		})
+	}
+	return sortedExpressionOptions(dedupeExpressionOptions(options))
+}
+
+func dedupeExpressionOptions(options []ExpressionOption) []ExpressionOption {
+	seen := map[string]bool{}
+	out := make([]ExpressionOption, 0, len(options))
+	for _, option := range options {
+		key := strings.TrimSpace(option.Key)
+		if key == "" || seen[key] {
+			continue
+		}
+		option.Key = key
+		out = append(out, option)
+		seen[key] = true
+	}
+	return out
+}
+
+func sortedExpressionOptions(options []ExpressionOption) []ExpressionOption {
+	out := dedupeExpressionOptions(options)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].IsDefault != out[j].IsDefault {
+			return !out[i].IsDefault
+		}
+		return out[i].Key < out[j].Key
+	})
+	return out
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 const (
@@ -82,12 +152,14 @@ type SceneGeneration struct {
 }
 
 type TeachingSnapshot struct {
-	Topic        string            `json:"topic,omitempty"`
-	DocumentText string            `json:"document_text,omitempty"`
-	LearningGoal string            `json:"learning_goal,omitempty"`
-	Prompt       PromptConfig      `json:"prompt,omitempty"`
-	Runtime      RuntimeConfig     `json:"runtime,omitempty"`
-	Variables    map[string]string `json:"variables,omitempty"`
+	Topic           string            `json:"topic,omitempty"`
+	DocumentText    string            `json:"document_text,omitempty"`
+	LearningGoal    string            `json:"learning_goal,omitempty"`
+	Prompt          PromptConfig      `json:"prompt,omitempty"`
+	Runtime         RuntimeConfig     `json:"runtime,omitempty"`
+	MaterialSource  MaterialSource    `json:"material_source,omitempty"`
+	MaterialContext MaterialContext   `json:"material_context,omitempty"`
+	Variables       map[string]string `json:"variables,omitempty"`
 }
 
 type Message struct {
@@ -294,7 +366,58 @@ type SceneGenerateRequest struct {
 	Prompt          PromptConfig      `json:"prompt,omitempty"`
 	Characters      []Character       `json:"characters,omitempty"`
 	Runtime         RuntimeConfig     `json:"runtime,omitempty"`
+	MaterialSource  MaterialSource    `json:"material_source,omitempty"`
+	MaterialContext MaterialContext   `json:"material_context,omitempty"`
 	Variables       map[string]string `json:"variables,omitempty"`
+}
+
+type MaterialSourceMode string
+
+const (
+	MaterialSourceText           MaterialSourceMode = "text"
+	MaterialSourceUploadedFile   MaterialSourceMode = "uploaded_file"
+	MaterialSourceURL            MaterialSourceMode = "url"
+	MaterialSourceLocalDirectory MaterialSourceMode = "local_directory"
+)
+
+type MaterialSource struct {
+	Mode        MaterialSourceMode `json:"mode,omitempty"`
+	Text        string             `json:"text,omitempty"`
+	URL         string             `json:"url,omitempty"`
+	Path        string             `json:"path,omitempty"`
+	AssetID     string             `json:"asset_id,omitempty"`
+	AssetName   string             `json:"asset_name,omitempty"`
+	AssetType   string             `json:"asset_type,omitempty"`
+	AssetPath   string             `json:"asset_path,omitempty"`
+	DisplayName string             `json:"display_name,omitempty"`
+}
+
+type MaterialContext struct {
+	Brief  string               `json:"brief,omitempty"`
+	Text   string               `json:"text,omitempty"`
+	Report MaterialSourceReport `json:"report,omitempty"`
+}
+
+type MaterialSourceReport struct {
+	Mode       MaterialSourceMode `json:"mode,omitempty"`
+	Summary    string             `json:"summary,omitempty"`
+	Items      []MaterialItem     `json:"items,omitempty"`
+	TotalBytes int64              `json:"total_bytes,omitempty"`
+	Truncated  bool               `json:"truncated,omitempty"`
+	Errors     []string           `json:"errors,omitempty"`
+}
+
+type MaterialItem struct {
+	SourceType  string `json:"source_type,omitempty"`
+	Path        string `json:"path,omitempty"`
+	URL         string `json:"url,omitempty"`
+	Filename    string `json:"filename,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
+	Status      string `json:"status,omitempty"`
+	Message     string `json:"message,omitempty"`
+	SizeBytes   int64  `json:"size_bytes,omitempty"`
+	TextBytes   int    `json:"text_bytes,omitempty"`
+	Truncated   bool   `json:"truncated,omitempty"`
 }
 
 type SceneGenerateResponse struct {

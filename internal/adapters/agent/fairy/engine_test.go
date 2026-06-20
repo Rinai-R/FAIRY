@@ -66,7 +66,8 @@ func TestGenerateActUsesUnderlyingLLMAdapter(t *testing.T) {
 	}
 	out, err := NewEngine(Options{Model: model}).GenerateAct(context.Background(), agent.ActInput{
 		Request: app.SceneGenerateRequest{
-			Characters: []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+			DocumentText: "GMP 模型解释 goroutine、线程和处理器上下文如何协作。",
+			Characters:   []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
 			Runtime: app.RuntimeConfig{
 				Agent: app.AgentProfile{
 					Endpoint:  "https://example.com/v1",
@@ -99,6 +100,8 @@ func TestGenerateActUsesUnderlyingLLMAdapter(t *testing.T) {
 	for _, want := range []string{
 		"可以增加 acts/章节数量，不设硬性上限",
 		"act_count 示例不是上限",
+		"材料摘要（runtime 已经通过受控材料工具读取",
+		"GMP 模型解释 goroutine",
 	} {
 		if !strings.Contains(model.requests[0].Messages[1].Content, want) {
 			t.Fatalf("plan prompt missing %q:\n%s", want, model.requests[0].Messages[1].Content)
@@ -110,6 +113,7 @@ func TestGenerateActUsesUnderlyingLLMAdapter(t *testing.T) {
 		"英文单条 lines[].text 不超过 120 个可见字符",
 		"不限制当前幕或整篇章节数量",
 		"不能把多条字幕合并成一条 speech_text",
+		"可用角色差分 expression contract",
 	} {
 		if !strings.Contains(model.requests[1].Messages[1].Content, want) {
 			t.Fatalf("generate prompt missing %q:\n%s", want, model.requests[1].Messages[1].Content)
@@ -186,7 +190,8 @@ func TestGenerateActAllowsPlannedNodeToOwnScaffoldFields(t *testing.T) {
 	}
 	out, err := NewEngine(Options{Model: model}).GenerateAct(context.Background(), agent.ActInput{
 		Request: app.SceneGenerateRequest{
-			Characters: []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+			DocumentText: "GMP 模型解释 goroutine、线程和处理器上下文如何协作。",
+			Characters:   []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
 			Runtime: app.RuntimeConfig{
 				Agent: app.AgentProfile{
 					Endpoint: "https://example.com/v1",
@@ -225,7 +230,8 @@ func TestGenerateActRetriesWhenOutputViolatesContract(t *testing.T) {
 	}
 	out, err := NewEngine(Options{Model: model}).GenerateAct(context.Background(), agent.ActInput{
 		Request: app.SceneGenerateRequest{
-			Characters: []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+			DocumentText: "GMP 模型解释 goroutine、线程和处理器上下文如何协作。",
+			Characters:   []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
 		},
 		PlannedNode: app.TeachingWorkflowNode{
 			ID:    "lesson-1",
@@ -260,7 +266,8 @@ func TestGenerateActAcceptsMissingDecisionForRuntimeNormalization(t *testing.T) 
 	}
 	out, err := NewEngine(Options{Model: model}).GenerateAct(context.Background(), agent.ActInput{
 		Request: app.SceneGenerateRequest{
-			Characters: []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+			DocumentText: "GMP 模型解释 goroutine、线程和处理器上下文如何协作。",
+			Characters:   []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
 		},
 		PlannedNode: app.TeachingWorkflowNode{
 			ID:    "lesson-1",
@@ -337,7 +344,8 @@ func TestGenerateActAcceptsCompleteFencedJSON(t *testing.T) {
 	}
 	_, err := NewEngine(Options{Model: model}).GenerateAct(context.Background(), agent.ActInput{
 		Request: app.SceneGenerateRequest{
-			Characters: []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+			DocumentText: "GMP 模型解释 goroutine、线程和处理器上下文如何协作。",
+			Characters:   []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
 		},
 		PlannedNode: app.TeachingWorkflowNode{
 			ID:    "lesson-1",

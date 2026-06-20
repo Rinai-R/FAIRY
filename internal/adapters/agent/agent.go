@@ -37,6 +37,8 @@ type ActInput struct {
 	PlannedNode   app.TeachingWorkflowNode `json:"planned_node,omitempty"`
 	PreviousNode  app.TeachingWorkflowNode `json:"previous_node,omitempty"`
 	Choice        app.SceneChoice          `json:"choice,omitempty"`
+	Material      app.MaterialContext      `json:"material,omitempty"`
+	Expressions   []app.ExpressionOption   `json:"expressions,omitempty"`
 	CoveredPoints []string                 `json:"covered_points,omitempty"`
 	ActIndex      int                      `json:"act_index"`
 	Correction    string                   `json:"correction,omitempty"`

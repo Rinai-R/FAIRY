@@ -114,20 +114,22 @@ func actPlanCacheKey(input agent.ActInput) (string, error) {
 		characters[index].Runtime.Voice.Extra = nil
 	}
 	body, err := json.Marshal(struct {
-		SessionID    string           `json:"session_id,omitempty"`
-		Topic        string           `json:"topic,omitempty"`
-		DocumentText string           `json:"document_text,omitempty"`
-		LearningGoal string           `json:"learning_goal,omitempty"`
-		Prompt       app.PromptConfig `json:"prompt,omitempty"`
-		Characters   []app.Character  `json:"characters,omitempty"`
-		Language     app.LanguagePlan `json:"language,omitempty"`
+		SessionID    string                 `json:"session_id,omitempty"`
+		Topic        string                 `json:"topic,omitempty"`
+		Material     app.MaterialContext    `json:"material,omitempty"`
+		LearningGoal string                 `json:"learning_goal,omitempty"`
+		Prompt       app.PromptConfig       `json:"prompt,omitempty"`
+		Characters   []app.Character        `json:"characters,omitempty"`
+		Expressions  []app.ExpressionOption `json:"expressions,omitempty"`
+		Language     app.LanguagePlan       `json:"language,omitempty"`
 	}{
 		SessionID:    input.Session.ID,
 		Topic:        input.Request.Topic,
-		DocumentText: input.Request.DocumentText,
+		Material:     materialContextForInput(input),
 		LearningGoal: input.Request.LearningGoal,
 		Prompt:       input.Request.Prompt,
 		Characters:   characters,
+		Expressions:  expressionOptionsForInput(input),
 		Language:     input.Request.Runtime.Language,
 	})
 	if err != nil {

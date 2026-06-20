@@ -132,6 +132,8 @@ func (r *Runtime) generateWorkflowNodeAct(
 		Workflow:      workflow,
 		PlannedNode:   node,
 		PreviousNode:  previous,
+		Material:      request.MaterialContext,
+		Expressions:   app.ExpressionOptionsForCharacter(request.Characters[0]),
 		CoveredPoints: coveredTeachingPoints(workflow.Nodes, node.ID),
 		ActIndex:      index,
 		Choice:        choice,
@@ -150,6 +152,8 @@ func (r *Runtime) generateWorkflowNodeAct(
 		merged.Decision = string(decision)
 		if err := validateGeneratedActLanguage(merged, request.Runtime.Language); err != nil {
 			lastErr = err
+		} else if err := validateGeneratedActExpressions(merged, request.Characters[0]); err != nil {
+			lastErr = err
 		} else if err := validateGeneratedActDialogueUnits(merged, request.Runtime.Language); err != nil {
 			lastErr = err
 		} else if err := (agent.ActOutput{
@@ -167,6 +171,25 @@ func (r *Runtime) generateWorkflowNodeAct(
 		}
 	}
 	return node, lastDecision, fmt.Errorf("GenerateAct 修正后仍不符合运行时合约: %w", lastErr)
+}
+
+func validateGeneratedActExpressions(node app.TeachingWorkflowNode, character app.Character) error {
+	allowed := map[string]bool{}
+	for _, option := range app.ExpressionOptionsForCharacter(character) {
+		if strings.TrimSpace(option.Key) != "" {
+			allowed[option.Key] = true
+		}
+	}
+	for index, line := range workflowNodeDialogueLines(node, app.Character{}) {
+		expression := strings.TrimSpace(line.Expression)
+		if expression == "" {
+			return fmt.Errorf("node.lines[%d].expression 不能为空", index)
+		}
+		if !allowed[expression] {
+			return fmt.Errorf("node.lines[%d].expression %q 不在角色差分 contract 中", index, expression)
+		}
+	}
+	return nil
 }
 
 func validateGeneratedActLanguage(node app.TeachingWorkflowNode, plan app.LanguagePlan) error {

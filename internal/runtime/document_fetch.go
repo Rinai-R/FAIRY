@@ -30,8 +30,7 @@ func (r *Runtime) FetchDocument(ctx context.Context, req app.DocumentFetchReques
 	}
 	httpReq.Header.Set("User-Agent", "FAIRY document fetcher/0.1")
 
-	client := &http.Client{Timeout: 20 * time.Second}
-	resp, err := client.Do(httpReq)
+	resp, err := r.documentClient().Do(httpReq)
 	if err != nil {
 		return app.DocumentFetchResponse{}, fmt.Errorf("抓取网络文档失败: %w", err)
 	}
@@ -62,6 +61,13 @@ func (r *Runtime) FetchDocument(ctx context.Context, req app.DocumentFetchReques
 		DataBase64:  base64.StdEncoding.EncodeToString(data),
 		SizeBytes:   int64(len(data)),
 	}, nil
+}
+
+func (r *Runtime) documentClient() *http.Client {
+	if r.documentHTTP != nil {
+		return r.documentHTTP
+	}
+	return &http.Client{Timeout: 20 * time.Second}
 }
 
 func parseDocumentURL(raw string) (*url.URL, error) {

@@ -962,6 +962,55 @@ func TestGenerateWorkflowNodeActRetriesRuntimeLanguageContract(t *testing.T) {
 	}
 }
 
+func TestGenerateWorkflowNodeActRetriesInvalidExpressionContract(t *testing.T) {
+	ag := &stageRepairingExpressionAgent{}
+	rt := NewRuntime(Dependencies{
+		Agents: map[agent.Provider]agent.Engine{
+			agent.ProviderMock: ag,
+		},
+		DefaultAgent: agent.ProviderMock,
+		Logger:       slog.Default(),
+	})
+
+	node, _, err := rt.generateWorkflowNodeAct(context.Background(), app.SceneGenerateRequest{
+		Characters: []app.Character{{
+			ID:          "atri",
+			DisplayName: "亚托莉",
+			Assets: app.CharacterAssets{Moods: map[string]app.CharacterMood{
+				"focused": {Label: "专注", PortraitURL: "/focused.png"},
+			}},
+		}},
+		MaterialContext: app.MaterialContext{Brief: "GMP 调度材料"},
+		Runtime: app.RuntimeConfig{
+			AgentProvider: string(agent.ProviderMock),
+			Language: app.LanguagePlan{
+				DisplayLanguage: "zh-CN",
+				SpeechLanguage:  "ja",
+				Mode:            "translate_for_voice",
+			},
+		},
+	}, app.Session{ID: "lesson:test"}, app.TeachingWorkflow{}, app.TeachingWorkflowNode{
+		ID:      "lesson-1",
+		Kind:    "lesson",
+		Title:   "第一幕",
+		Speaker: "亚托莉",
+	}, app.SceneChoice{})
+	if err != nil {
+		t.Fatalf("generateWorkflowNodeAct() error = %v", err)
+	}
+	if ag.calls != 2 {
+		t.Fatalf("GenerateAct calls = %d, want 2", ag.calls)
+	}
+	if !strings.Contains(ag.correction, "不在角色差分 contract") {
+		t.Fatalf("correction = %q, want expression contract feedback", ag.correction)
+	}
+	for index, line := range node.Lines {
+		if line.Expression != "focused" {
+			t.Fatalf("line[%d].Expression = %q, want focused", index, line.Expression)
+		}
+	}
+}
+
 type stageRecordingVoiceEngine struct {
 	mu       sync.Mutex
 	lastText string
@@ -1102,6 +1151,41 @@ func (e *stageRepairingLanguageAgent) GenerateAct(_ context.Context, input agent
 }
 
 func (e *stageRepairingLanguageAgent) Discuss(context.Context, agent.DiscussInput) (agent.Output, error) {
+	return agent.Output{}, fmt.Errorf("not implemented")
+}
+
+type stageRepairingExpressionAgent struct {
+	calls      int
+	correction string
+}
+
+func (e *stageRepairingExpressionAgent) GenerateAct(_ context.Context, input agent.ActInput) (agent.ActOutput, error) {
+	e.calls++
+	expression := "angry"
+	if e.calls > 1 {
+		e.correction = input.Correction
+		expression = "focused"
+	}
+	return agent.ActOutput{
+		Decision: agent.ActDecisionContinue,
+		Node: app.TeachingWorkflowNode{
+			ID:      "lesson-1",
+			Kind:    "lesson",
+			Title:   "第一幕",
+			Summary: "GMP",
+			Speaker: "亚托莉",
+			Lines: []app.DialogueLine{
+				{Speaker: "亚托莉", Text: "今天先看 GMP 的分工。", SpeechText: "今日はまず GMP の役割を見ます。", Expression: expression},
+				{Speaker: "亚托莉", Text: "M 负责真正执行代码。", SpeechText: "M は実際にコードを実行します。", Expression: expression},
+				{Speaker: "亚托莉", Text: "P 持有可运行任务队列。", SpeechText: "P は実行可能なタスク列を持っています。", Expression: expression},
+				{Speaker: "亚托莉", Text: "G 就是等待运行的任务。", SpeechText: "G は実行を待っているタスクです。", Expression: expression},
+			},
+			Choices: []app.SceneChoice{{ID: "next", Label: "继续", Text: "继续讲。"}},
+		},
+	}, nil
+}
+
+func (e *stageRepairingExpressionAgent) Discuss(context.Context, agent.DiscussInput) (agent.Output, error) {
 	return agent.Output{}, fmt.Errorf("not implemented")
 }
 

@@ -1,10 +1,11 @@
 package runtime_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -13,15 +14,22 @@ import (
 )
 
 func TestFetchDocumentDownloadsHTTPDocument(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-		w.Header().Set("Content-Disposition", `attachment; filename="lesson.md"`)
-		_, _ = w.Write([]byte("# 课程\n注意力机制用于关注重要信息。"))
-	}))
-	defer server.Close()
-
-	rt := runtime.NewRuntime(runtime.Dependencies{})
-	resp, err := rt.FetchDocument(context.Background(), app.DocumentFetchRequest{URL: server.URL + "/doc"})
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		DocumentHTTP: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.String() != "https://example.com/doc" {
+				t.Fatalf("request URL = %s", req.URL.String())
+			}
+			return &http.Response{
+				StatusCode:    http.StatusOK,
+				Status:        "200 OK",
+				Header:        http.Header{"Content-Type": {"text/markdown; charset=utf-8"}, "Content-Disposition": {`attachment; filename="lesson.md"`}},
+				Body:          io.NopCloser(bytes.NewBufferString("# 课程\n注意力机制用于关注重要信息。")),
+				ContentLength: int64(len("# 课程\n注意力机制用于关注重要信息。")),
+				Request:       req,
+			}, nil
+		})},
+	})
+	resp, err := rt.FetchDocument(context.Background(), app.DocumentFetchRequest{URL: "https://example.com/doc"})
 	if err != nil {
 		t.Fatalf("FetchDocument() error = %v", err)
 	}
@@ -38,6 +46,12 @@ func TestFetchDocumentDownloadsHTTPDocument(t *testing.T) {
 	if string(raw) != "# 课程\n注意力机制用于关注重要信息。" {
 		t.Fatalf("document body = %q", raw)
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
 }
 
 func TestFetchDocumentRejectsUnsupportedScheme(t *testing.T) {

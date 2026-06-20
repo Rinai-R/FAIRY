@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,7 @@ type Runtime struct {
 	materialDir  string
 	sessions     SessionStore
 	plugins      interface{ Load() app.PluginCatalog }
+	documentHTTP *http.Client
 	logger       *slog.Logger
 	voiceCache   map[string]app.AudioResult
 	cacheMu      sync.Mutex
@@ -58,6 +60,7 @@ type Dependencies struct {
 	MaterialDir  string
 	Sessions     SessionStore
 	Plugins      interface{ Load() app.PluginCatalog }
+	DocumentHTTP *http.Client
 	Logger       *slog.Logger
 }
 
@@ -78,6 +81,7 @@ func NewRuntime(deps Dependencies) *Runtime {
 		materialDir:  deps.MaterialDir,
 		sessions:     deps.Sessions,
 		plugins:      deps.Plugins,
+		documentHTTP: deps.DocumentHTTP,
 		logger:       logger,
 		voiceCache:   map[string]app.AudioResult{},
 		stagePool:    mustNewPool(defaultStagePoolSize),
@@ -106,7 +110,7 @@ func (r *Runtime) Plugins() app.PluginCatalog {
 
 func (r *Runtime) GenerateScene(ctx context.Context, request app.SceneGenerateRequest) (app.SceneGenerateResponse, error) {
 	var err error
-	request, err = r.prepareSceneGenerateRequest(request)
+	request, err = r.prepareSceneGenerateRequest(ctx, request)
 	if err != nil {
 		return app.SceneGenerateResponse{}, err
 	}
@@ -134,7 +138,7 @@ func (r *Runtime) StartSceneGeneration(ctx context.Context, request app.SceneGen
 		return app.SceneGenerationStartResponse{}, errors.New("session store 未启用")
 	}
 	var err error
-	request, err = r.prepareSceneGenerateRequest(request)
+	request, err = r.prepareSceneGenerateRequest(ctx, request)
 	if err != nil {
 		return app.SceneGenerationStartResponse{}, err
 	}
@@ -225,9 +229,9 @@ func (r *Runtime) runSceneGenerationTask(ctx context.Context, sessionID string, 
 	}
 }
 
-func (r *Runtime) prepareSceneGenerateRequest(request app.SceneGenerateRequest) (app.SceneGenerateRequest, error) {
+func (r *Runtime) prepareSceneGenerateRequest(ctx context.Context, request app.SceneGenerateRequest) (app.SceneGenerateRequest, error) {
 	var err error
-	request, err = r.hydrateSceneDocumentText(request)
+	request, err = r.prepareMaterialContext(ctx, request)
 	if err != nil {
 		return app.SceneGenerateRequest{}, err
 	}
@@ -301,12 +305,14 @@ func pendingSceneGenerationRecord(request app.SceneGenerateRequest, fingerprint 
 			LastActiveAt: now,
 		},
 		Teaching: app.TeachingSnapshot{
-			Topic:        request.Topic,
-			DocumentText: request.DocumentText,
-			LearningGoal: request.LearningGoal,
-			Prompt:       request.Prompt,
-			Runtime:      request.Runtime,
-			Variables:    request.Variables,
+			Topic:           request.Topic,
+			DocumentText:    request.DocumentText,
+			LearningGoal:    request.LearningGoal,
+			Prompt:          request.Prompt,
+			Runtime:         request.Runtime,
+			MaterialSource:  request.MaterialSource,
+			MaterialContext: request.MaterialContext,
+			Variables:       request.Variables,
 		},
 		Characters: request.Characters,
 		Relation: app.Relationship{
@@ -503,6 +509,15 @@ func sceneGenerateRequestFromRecord(record app.SessionRecord) app.SceneGenerateR
 	}
 	if strings.TrimSpace(req.DocumentText) == "" {
 		req.DocumentText = record.Teaching.DocumentText
+	}
+	if req.MaterialSource.Mode == "" {
+		req.MaterialSource = record.Teaching.MaterialSource
+	}
+	if strings.TrimSpace(req.MaterialContext.Brief) == "" {
+		req.MaterialContext = record.Teaching.MaterialContext
+	}
+	if strings.TrimSpace(req.DocumentText) == "" && strings.TrimSpace(req.MaterialContext.Brief) != "" {
+		req.DocumentText = firstNonEmpty(req.MaterialContext.Text, req.MaterialContext.Brief)
 	}
 	if strings.TrimSpace(req.LearningGoal) == "" {
 		req.LearningGoal = record.Teaching.LearningGoal
@@ -880,8 +895,8 @@ func (r *Runtime) generateSceneImage(ctx context.Context, req app.TurnRequest, c
 }
 
 func validateSceneGenerateRequest(req app.SceneGenerateRequest) error {
-	if strings.TrimSpace(req.DocumentText) == "" && documentSource(req.Variables) == "" {
-		return errors.New("document_text、document_url 或 document_asset 不能为空")
+	if strings.TrimSpace(req.DocumentText) == "" && strings.TrimSpace(req.MaterialContext.Brief) == "" && req.MaterialSource.Mode == "" && documentSource(req.Variables) == "" {
+		return errors.New("document_text、material_source、document_url 或 document_asset 不能为空")
 	}
 	if len(req.Characters) != 1 {
 		return fmt.Errorf("当前阶段每个教学场景只支持 1 个角色，收到 %d 个", len(req.Characters))
@@ -893,7 +908,7 @@ func validateSceneGenerateRequest(req app.SceneGenerateRequest) error {
 }
 
 func documentSource(variables map[string]string) string {
-	for _, key := range []string{"document_url", "source_url", "document_asset_path", "material_file_path"} {
+	for _, key := range []string{"document_url", "source_url", "document_asset_path", "material_file_path", "local_directory_path"} {
 		if value := strings.TrimSpace(variables[key]); value != "" {
 			return value
 		}

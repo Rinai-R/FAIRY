@@ -96,10 +96,10 @@ func buildPrompt(req app.SceneGenerateRequest, body string) string {
 
 任务：
 - 基于用户提供的文档材料生成一个教学 Galgame 篇章。最重要的是：每幕必须包含多轮角色对话（lines），而不是一句独白。角色之间要像真实对话一样有来有回——讲解者解释一段、追问者追问或质疑、讲解者回应，这样交替进行。
-- 文档材料可能是 document_text、variables.document_url 指向的网页、或 variables.document_asset_path 指向的本地文件；优先读取这些材料源。
+- 文档材料已经由 FAIRY runtime 读取并整理到 request.material_context 和 document_text；你只能基于这些已提供内容生成，不要自行读取 URL、本地路径或外部文件。
 - 不要替玩家发言，玩家只在每幕末尾的自由讨论环节参与。
 - 场景必须围绕文档内容和学习目标，不要编造材料外事实。
-- 如果 URL 或本地文件无法读取，opening_message 需要自然地请玩家补充正文。
+- 如果 material_context 显示材料被截断或跳过，opening_message 可以自然提醒玩家补充更明确的材料。
 
 结构要求：
 - workflow.nodes 的结构是：opening → lesson-1 → free-1 → lesson-2 → free-2 → ... → lesson-N → free-N → summary → free-discussion

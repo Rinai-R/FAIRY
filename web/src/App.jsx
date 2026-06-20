@@ -38,6 +38,7 @@ const DEFAULT_LANGUAGE_PLAN = Object.freeze({
   mode: "translate_for_voice"
 });
 const DEFAULT_VOICE_TEST_TEXT = "わかりました。これから一緒に勉強しましょう。";
+const DOCUMENT_SOURCE_MODES = Object.freeze(["upload", "text", "url", "directory"]);
 
 const defaultCharacters = [
   {
@@ -162,6 +163,7 @@ export function App() {
   const [documentTitle, setDocumentTitle] = useState(savedConfigRef.current?.documentTitle || "新的文档");
   const [learningGoal, setLearningGoal] = useState(savedConfigRef.current?.learningGoal || "理解核心概念，并能用自己的话复述。");
   const [generationRequirement, setGenerationRequirement] = useState(savedConfigRef.current?.generationRequirement || "");
+  const [documentSourceMode, setDocumentSourceMode] = useState(() => normalizeDocumentSourceMode(savedConfigRef.current?.documentSourceMode || inferDocumentSourceMode(savedConfigRef.current)));
   const [documentText, setDocumentText] = useState("");
   const [documentURL, setDocumentURL] = useState(savedConfigRef.current?.documentURL || "");
   const [documentAsset, setDocumentAsset] = useState(savedConfigRef.current?.documentAsset || null);
@@ -316,6 +318,7 @@ export function App() {
     cgConfig,
     characters,
     documentAsset,
+    documentSourceMode,
     documentTitle,
     documentURL,
     imageProvider,
@@ -377,6 +380,7 @@ export function App() {
     if (config.documentTitle) setDocumentTitle(config.documentTitle);
     if (typeof config.learningGoal === "string") setLearningGoal(config.learningGoal);
     if (typeof config.generationRequirement === "string") setGenerationRequirement(config.generationRequirement);
+    setDocumentSourceMode(normalizeDocumentSourceMode(config.documentSourceMode || inferDocumentSourceMode(config)));
     if (typeof config.documentURL === "string") setDocumentURL(config.documentURL);
     if (Object.prototype.hasOwnProperty.call(config, "documentAsset")) setDocumentAsset(config.documentAsset || null);
     // interactionMode removed
@@ -399,6 +403,7 @@ export function App() {
       cgConfig,
       characters,
       documentAsset,
+      documentSourceMode: normalizeDocumentSourceMode(documentSourceMode),
       documentTitle,
       documentURL,
       languagePlan: normalizeLanguagePlan(overrides.languagePlan || languagePlan),
@@ -722,6 +727,7 @@ export function App() {
     try {
       const payload = await uploadDocumentAsset(file);
       setDocumentAsset(payload);
+      setDocumentSourceMode("upload");
       if (documentTitle === "新的文档") setDocumentTitle(file.name.replace(/\.[^.]+$/, ""));
       setDocumentImport({
         status: "ready",
@@ -743,6 +749,7 @@ export function App() {
       return;
     }
     if (documentTitle === "新的文档") setDocumentTitle("网络文档");
+    setDocumentSourceMode("url");
     setDocumentImport({
       status: "ready",
       message: "已导入网络文档链接。",
@@ -950,23 +957,24 @@ export function App() {
   }
 
   function buildSceneVariables() {
+    const sourceMode = normalizeDocumentSourceMode(documentSourceMode);
     const variables = {
       source: runtimeMode(),
       active_character_id: activeCharacter?.id || "",
       topic: documentTitle,
       document_title: documentTitle,
       learning_goal: learningGoal,
-      generation_requirement: generationRequirement
+      generation_requirement: generationRequirement,
+      source_mode: sourceMode
     };
     if (activeCharacter?.assets?.background_url) {
       variables.background_url = activeCharacter.assets.background_url;
     }
-    if (documentURL.trim()) {
+    if (sourceMode === "url" && documentURL.trim()) {
       variables.document_url = documentURL.trim();
       variables.source_url = documentURL.trim();
-      variables.source_mode = "url";
     }
-    if (documentAsset?.path) {
+    if (sourceMode === "upload" && documentAsset?.path) {
       variables.document_asset_id = documentAsset.id || "";
       variables.document_asset_name = documentAsset.filename || "";
       variables.document_asset_type = documentAsset.content_type || "";
@@ -974,7 +982,46 @@ export function App() {
       variables.material_file_path = documentAsset.path;
       variables.source_mode = "uploaded_file";
     }
+    if (sourceMode === "directory") {
+      variables.source_mode = "directory";
+      variables.local_directory_path = documentText.trim();
+    }
     return variables;
+  }
+
+  function buildMaterialSource() {
+    const sourceMode = normalizeDocumentSourceMode(documentSourceMode);
+    switch (sourceMode) {
+      case "text":
+        return { mode: "text", text: documentText };
+      case "url":
+        return { mode: "url", url: documentURL.trim() };
+      case "upload":
+        return documentAsset?.path ? {
+          mode: "uploaded_file",
+          asset_id: documentAsset.id || "",
+          asset_name: documentAsset.filename || "",
+          asset_type: documentAsset.content_type || "",
+          asset_path: documentAsset.path
+        } : { mode: "uploaded_file" };
+      case "directory":
+        return { mode: "local_directory", path: documentText.trim(), display_name: "本地目录" };
+      default:
+        return {};
+    }
+  }
+
+  function documentTextForGeneration() {
+    const sourceMode = normalizeDocumentSourceMode(documentSourceMode);
+    switch (sourceMode) {
+      case "text":
+        return documentText;
+      case "upload":
+      case "url":
+      case "directory":
+      default:
+        return "";
+    }
   }
 
   async function generateLesson() {
@@ -983,10 +1030,11 @@ export function App() {
     try {
       const payload = await startSceneGeneration({
         topic: documentTitle,
-        document_text: documentText,
+        document_text: documentTextForGeneration(),
         learning_goal: learningGoal,
         generation_requirement: generationRequirement,
         characters: activeCharacters,
+        material_source: buildMaterialSource(),
         prompt: buildEffectivePrompt(),
         runtime: {
           ...buildEffectiveRuntime(),
@@ -1450,7 +1498,18 @@ export function App() {
     if (record.session.active_character_id) setActiveCharacterID(record.session.active_character_id);
     if (record.teaching?.topic || record.scene?.variables?.topic) setDocumentTitle(record.teaching?.topic || record.scene.variables.topic);
     if (record.teaching?.learning_goal || record.scene?.variables?.learning_goal) setLearningGoal(record.teaching?.learning_goal || record.scene.variables.learning_goal);
-    if (record.teaching?.document_text) setDocumentText(record.teaching.document_text);
+    const restoredSource = documentSourceStateFromRecord(record);
+    if (restoredSource) {
+      setDocumentSourceMode(restoredSource.mode);
+      setDocumentText(restoredSource.documentText || "");
+      setDocumentURL(restoredSource.documentURL || "");
+      setDocumentAsset(restoredSource.documentAsset || null);
+      setDocumentImport({
+        status: restoredSource.documentAsset?.path ? "ready" : "idle",
+        message: restoredSource.message || documentSourceStatusMessage(restoredSource.mode, restoredSource, documentImport),
+        pages: 0
+      });
+    }
     if (record.teaching?.prompt) setPrompt(record.teaching.prompt);
     const restoredMessages = record.messages?.map((message) => ({
       role: message.role === "user" ? "user" : "assistant",
@@ -1584,6 +1643,7 @@ export function App() {
             characters={characters}
             documentAsset={documentAsset}
             documentImport={documentImport}
+            documentSourceMode={documentSourceMode}
             documentStats={documentStats}
             documentText={documentText}
             documentTitle={documentTitle}
@@ -1606,6 +1666,7 @@ export function App() {
             runtimeState={runtimeState}
             scene={scene}
             setActiveCharacterID={setActiveCharacterID}
+            setDocumentSourceMode={setDocumentSourceMode}
             setDocumentText={setDocumentText}
             setDocumentTitle={setDocumentTitle}
             setDocumentURL={setDocumentURL}
@@ -1760,6 +1821,7 @@ function HomeView({
   characters,
   documentAsset,
   documentImport,
+  documentSourceMode,
   documentStats,
   documentText,
   documentTitle,
@@ -1782,6 +1844,7 @@ function HomeView({
   runtimeState,
   scene,
   setActiveCharacterID,
+  setDocumentSourceMode,
   setDocumentText,
   setDocumentTitle,
   setDocumentURL,
@@ -1791,14 +1854,16 @@ function HomeView({
   sessions
 }) {
   const [homeStep, setHomeStep] = useState("source");
-  const [sourceMethod, setSourceMethod] = useState(documentURL ? "url" : documentText ? "text" : "upload");
+  const sourceMethod = normalizeDocumentSourceMode(documentSourceMode);
   const homePageRef = useRef(null);
   const recentSessions = [...sessions].sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0)).slice(0, 5);
   const audioCacheCount = sessions.reduce((total, record) => total + countHistoryAudio(record), 0);
   const healthyProviders = providerHealth.filter((item) => item.status === "ok" || item.status === "ready").length;
   const castPortrait = resolveCharacterPortrait(activeCharacter, runtimeState?.expression, runtimeState?.emotion);
-  const sourceReady = Boolean(documentAsset?.path || documentText.trim() || documentURL.trim());
-  const docLabel = documentAsset?.filename || (documentURL.trim() ? "网络文档" : documentText.trim() ? "粘贴正文" : "尚未选择文档");
+  const sourceReady = documentSourceReady(sourceMethod, { documentAsset, documentText, documentURL });
+  const docLabel = documentSourceLabel(sourceMethod, { documentAsset, documentText, documentURL });
+  const sourceMessage = documentSourceStatusMessage(sourceMethod, { documentAsset, documentText, documentURL }, documentImport);
+  const sourceStatus = sourceMethod === "upload" ? documentImport.status : sourceReady ? "ready" : "idle";
   useEffect(() => {
     homePageRef.current?.scrollTo({ top: 0 });
   }, [homeStep]);
@@ -1817,17 +1882,17 @@ function HomeView({
                 <button className={homeStep === "source" ? "is-active" : ""} type="button" onClick={() => setHomeStep("source")}>文档源</button>
                 <button className={homeStep === "target" ? "is-active" : ""} type="button" onClick={() => setHomeStep("target")}>生成目标</button>
               </div>
-              <span className="doc-support">{homeStep === "source" ? "支持 PDF · DOCX · PPT · Markdown · URL · 目录" : `当前文档：${docLabel} · ${documentStats.chars} 字符`}</span>
+              <span className="doc-support">{homeStep === "source" ? "支持 PDF · Markdown · HTML · URL · 本地目录" : `当前文档：${docLabel} · ${documentStats.chars} 字符`}</span>
             </div>
 
             <div className="intake-body">
               {homeStep === "source" ? (
                 <>
                   <div className="source-methods">
-                    <button className={`source-method ${sourceMethod === "upload" ? "is-active" : ""}`} type="button" onClick={() => setSourceMethod("upload")}><b>上传文件</b><span>PDF、PPT、DOCX、图片笔记</span></button>
-                    <button className={`source-method ${sourceMethod === "text" ? "is-active" : ""}`} type="button" onClick={() => setSourceMethod("text")}><b>粘贴正文</b><span>文章、课件、脚本</span></button>
-                    <button className={`source-method ${sourceMethod === "url" ? "is-active" : ""}`} type="button" onClick={() => setSourceMethod("url")}><b>导入链接</b><span>网页正文与结构</span></button>
-                    <button className={`source-method ${sourceMethod === "directory" ? "is-active" : ""}`} type="button" onClick={() => setSourceMethod("directory")}><b>本地目录</b><span>代码仓库、知识库</span></button>
+                    <button className={`source-method ${sourceMethod === "upload" ? "is-active" : ""}`} type="button" onClick={() => setDocumentSourceMode("upload")}><b>上传文件</b><span>PDF、PPT、DOCX、图片笔记</span></button>
+                    <button className={`source-method ${sourceMethod === "text" ? "is-active" : ""}`} type="button" onClick={() => setDocumentSourceMode("text")}><b>粘贴正文</b><span>文章、课件、脚本</span></button>
+                    <button className={`source-method ${sourceMethod === "url" ? "is-active" : ""}`} type="button" onClick={() => setDocumentSourceMode("url")}><b>导入链接</b><span>网页正文与结构</span></button>
+                    <button className={`source-method ${sourceMethod === "directory" ? "is-active" : ""}`} type="button" onClick={() => setDocumentSourceMode("directory")}><b>本地目录</b><span>代码仓库、知识库</span></button>
                   </div>
 
                   {sourceMethod === "upload" && (
@@ -1864,8 +1929,8 @@ function HomeView({
 
                   {sourceMethod === "directory" && (
                     <div className="source-editor">
-                      <TextAreaField label="本地目录 / Agent 指令" value={documentText} onChange={setDocumentText} rows={8} placeholder="例如：请读取 /Users/rinai/project/demo 下的 README、docs 和核心代码，整理成教学剧情。" />
-                      <p className="source-hint">目录模式先用文本指令表达，后续接入本地目录选择和 Agent 工具调用。</p>
+                      <TextAreaField label="本地目录路径" value={documentText} onChange={setDocumentText} rows={4} placeholder="/Users/rinai/project/demo" />
+                      <p className="source-hint">FAIRY 会读取该目录内的 Markdown、文本、HTML、PDF 和常见代码文件，并跳过构建产物与依赖目录。</p>
                     </div>
                   )}
                 </>
@@ -1878,8 +1943,8 @@ function HomeView({
               )}
             </div>
 
-            <div className={`generate-status generate-status--${documentImport.status}`}>
-              <span>{homeStep === "source" ? documentImport.message : sourceReady ? `文档源已就绪：${docLabel}` : "还没有文档源，仍可以先填写目标，但建议先导入材料。"}</span>
+            <div className={`generate-status generate-status--${sourceStatus}`}>
+              <span>{homeStep === "source" ? sourceMessage : sourceReady ? `文档源已就绪：${docLabel}` : "还没有文档源，仍可以先填写目标，但建议先导入材料。"}</span>
               <strong>{documentStats.chars} 字符 · {documentStats.paragraphs} 段</strong>
             </div>
 
@@ -2217,8 +2282,95 @@ function sessionGoal(record) {
 }
 
 function sessionSource(record) {
-  const vars = record?.scene?.variables || {};
-  return cleanHistoryText(vars.document_asset_name || vars.source_url || vars.document_url || vars.document_title || "—");
+  const restoredSource = documentSourceStateFromRecord(record);
+  if (!restoredSource) return "—";
+  if (restoredSource.mode === "upload") return cleanHistoryText(restoredSource.documentAsset?.filename || restoredSource.documentAsset?.path || "上传文件");
+  if (restoredSource.mode === "url") return cleanHistoryText(restoredSource.documentURL || "网络文档");
+  if (restoredSource.mode === "directory") return cleanHistoryText(restoredSource.documentText || "本地目录");
+  return "粘贴正文";
+}
+
+function documentSourceStateFromRecord(record) {
+  const source = record?.teaching?.material_source || record?.generation?.request?.material_source || {};
+  const vars = {
+    ...(record?.generation?.request?.variables || {}),
+    ...(record?.teaching?.variables || {}),
+    ...(record?.scene?.variables || {})
+  };
+  const mode = String(source.mode || vars.source_mode || "").trim();
+  if (mode === "text") {
+    return {
+      mode: "text",
+      documentText: source.text || record?.generation?.request?.document_text || record?.teaching?.document_text || "",
+      documentURL: "",
+      documentAsset: null,
+      message: "粘贴正文已就绪。"
+    };
+  }
+  if (mode === "url") {
+    return {
+      mode: "url",
+      documentText: "",
+      documentURL: source.url || vars.document_url || vars.source_url || "",
+      documentAsset: null,
+      message: "网络文档链接已就绪。"
+    };
+  }
+  if (mode === "uploaded_file" || mode === "upload") {
+    const assetPath = source.asset_path || vars.document_asset_path || vars.material_file_path || "";
+    return {
+      mode: "upload",
+      documentText: "",
+      documentURL: "",
+      documentAsset: assetPath ? {
+        id: source.asset_id || vars.document_asset_id || "",
+        filename: source.asset_name || vars.document_asset_name || assetPath.split("/").at(-1) || "上传文件",
+        content_type: source.asset_type || vars.document_asset_type || "",
+        path: assetPath
+      } : null,
+      message: assetPath ? "上传文件已就绪。" : "选择一个本地材料文件。"
+    };
+  }
+  if (mode === "local_directory" || mode === "directory") {
+    return {
+      mode: "directory",
+      documentText: source.path || vars.local_directory_path || "",
+      documentURL: "",
+      documentAsset: null,
+      message: "本地目录路径已就绪。"
+    };
+  }
+  if (vars.local_directory_path) {
+    return { mode: "directory", documentText: vars.local_directory_path, documentURL: "", documentAsset: null, message: "本地目录路径已就绪。" };
+  }
+  if (vars.document_url || vars.source_url) {
+    return { mode: "url", documentText: "", documentURL: vars.document_url || vars.source_url, documentAsset: null, message: "网络文档链接已就绪。" };
+  }
+  if (vars.document_asset_path || vars.material_file_path) {
+    const assetPath = vars.document_asset_path || vars.material_file_path;
+    return {
+      mode: "upload",
+      documentText: "",
+      documentURL: "",
+      documentAsset: {
+        id: vars.document_asset_id || "",
+        filename: vars.document_asset_name || assetPath.split("/").at(-1) || "上传文件",
+        content_type: vars.document_asset_type || "",
+        path: assetPath
+      },
+      message: "上传文件已就绪。"
+    };
+  }
+  if (record?.teaching?.document_text || record?.generation?.request?.document_text) {
+    return {
+      mode: "text",
+      documentText: record?.generation?.request?.document_text || record?.teaching?.document_text || "",
+      documentURL: "",
+      documentAsset: null,
+      message: "粘贴正文已就绪。"
+    };
+  }
+  return null;
 }
 
 function recordGenerationStatus(record) {
@@ -3399,6 +3551,62 @@ function mergeSessionCharacters(currentCharacters, sessionCharacters) {
   });
   const mergedIDs = new Set(merged.map((character) => character.id));
   return [...merged, ...current.filter((character) => !mergedIDs.has(character.id))];
+}
+
+function normalizeDocumentSourceMode(value) {
+  return DOCUMENT_SOURCE_MODES.includes(value) ? value : "upload";
+}
+
+function inferDocumentSourceMode(config) {
+  if (!config) return "upload";
+  if (DOCUMENT_SOURCE_MODES.includes(config.documentSourceMode)) return config.documentSourceMode;
+  if (typeof config.documentURL === "string" && config.documentURL.trim()) return "url";
+  if (config.documentAsset?.path) return "upload";
+  return "upload";
+}
+
+function documentSourceReady(mode, source) {
+  switch (normalizeDocumentSourceMode(mode)) {
+    case "upload":
+      return Boolean(source.documentAsset?.path);
+    case "text":
+    case "directory":
+      return Boolean(source.documentText?.trim());
+    case "url":
+      return Boolean(source.documentURL?.trim());
+    default:
+      return false;
+  }
+}
+
+function documentSourceLabel(mode, source) {
+  switch (normalizeDocumentSourceMode(mode)) {
+    case "upload":
+      return source.documentAsset?.filename || "尚未选择上传文件";
+    case "text":
+      return source.documentText?.trim() ? "粘贴正文" : "尚未粘贴正文";
+    case "directory":
+      return source.documentText?.trim() ? "本地目录" : "尚未填写本地目录路径";
+    case "url":
+      return source.documentURL?.trim() ? "网络文档" : "尚未填写网络文档";
+    default:
+      return "尚未选择文档源";
+  }
+}
+
+function documentSourceStatusMessage(mode, source, documentImport) {
+  switch (normalizeDocumentSourceMode(mode)) {
+    case "upload":
+      return documentImport?.message || "选择一个本地材料文件。";
+    case "text":
+      return source.documentText?.trim() ? "粘贴正文已就绪。" : "请粘贴文章、课件、脚本或笔记正文。";
+    case "directory":
+      return source.documentText?.trim() ? "本地目录路径已就绪。" : "请填写本地目录路径。";
+    case "url":
+      return source.documentURL?.trim() ? "网络文档链接已就绪。" : "请填写网络文档 URL。";
+    default:
+      return "请选择文档源。";
+  }
 }
 
 function normalizeSavedCharacter(character) {

@@ -59,6 +59,14 @@ func buildActPlanMessages(input agent.ActInput) ([]llm.Message, error) {
 	if err != nil {
 		return nil, fmt.Errorf("序列化 ActPlan 输入失败: %w", err)
 	}
+	material, err := requireMaterialContext(input)
+	if err != nil {
+		return nil, err
+	}
+	materialReport, err := json.MarshalIndent(material.Report, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("序列化材料读取报告失败: %w", err)
+	}
 	character := firstInputCharacter(input.Request.Characters)
 	return []llm.Message{
 		{
@@ -81,6 +89,12 @@ func buildActPlanMessages(input agent.ActInput) ([]llm.Message, error) {
 				"语言计划：",
 				languageBrief(input.Request.Runtime.Language),
 				"",
+				"材料摘要（runtime 已经通过受控材料工具读取，禁止要求模型自行读取 URL 或本地路径）：",
+				truncateForPrompt(material.Brief, 12000),
+				"",
+				"材料读取报告：",
+				truncateForPrompt(string(materialReport), 5000),
+				"",
 				"规划合约：",
 				"1. material_summary 要总结材料主线，不是摘几个关键词。",
 				"2. expanded_notes 要把关键概念扩展成更细的讲解要点，供后续每幕写台词使用。",
@@ -102,6 +116,14 @@ func buildGenerateActMessages(input agent.ActInput, plan actPlan) ([]llm.Message
 	payload, err := json.MarshalIndent(input, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("序列化 GenerateAct 输入失败: %w", err)
+	}
+	material, err := requireMaterialContext(input)
+	if err != nil {
+		return nil, err
+	}
+	expressions, err := json.MarshalIndent(expressionOptionsForInput(input), "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("序列化 expression contract 失败: %w", err)
 	}
 	planPayload, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
@@ -139,6 +161,12 @@ func buildGenerateActMessages(input agent.ActInput, plan actPlan) ([]llm.Message
 				"语言计划：",
 				languageBrief(input.Request.Runtime.Language),
 				"",
+				"材料摘要（只围绕这些已读取内容生成，不要要求读取 URL 或本地路径）：",
+				truncateForPrompt(material.Brief, 12000),
+				"",
+				"可用角色差分 expression contract：",
+				truncateForPrompt(string(expressions), 5000),
+				"",
 				correctionBrief(input.Correction),
 				"",
 				"台词生成合约：",
@@ -150,7 +178,7 @@ func buildGenerateActMessages(input agent.ActInput, plan actPlan) ([]llm.Message
 				"6. 中文或日文单条 lines[].text 不超过 52 个可见字符；英文单条 lines[].text 不超过 120 个可见字符。这个限制只针对单条 line，不限制当前幕或整篇章节数量。",
 				"7. lines[].text 是屏幕字幕；lines[].speech_text 是同一条字幕对应的语音稿。显示语言和语音语言不同的时候，必须分别生成，不能混写，也不能把多条字幕合并成一条 speech_text。",
 				"8. opening/lesson 必须给 1-3 个 choices；选项服务于 current_act_plan.choice_goal。",
-				"9. expression 必须从角色已有差分语义中选择，若没有足够信息，使用 soft_smile/thinking/curious/calm/serious。",
+				"9. expression 必须优先从 expression contract 的 key 中选择；只有 contract 标记为默认表情时，才可使用默认 key。",
 				"10. decision 必须跟当前幕规划一致；中间幕 continue，总结幕 free_discussion。",
 				"11. 输出 JSON 必须符合 ActOutput：{\"decision\":\"continue|summarize|free_discussion\",\"node\":{\"summary\":\"...\",\"speaker\":\"...\",\"lines\":[{\"speaker\":\"...\",\"text\":\"...\",\"speech_text\":\"...\",\"expression\":\"...\"}],\"choices\":[{\"id\":\"...\",\"label\":\"...\",\"text\":\"...\",\"hint\":\"...\"}]}}。",
 				"12. 只返回 JSON object，不要 Markdown，不要解释。",
@@ -166,6 +194,10 @@ func buildRewriteActMessages(input agent.ActInput, plan actPlan, draft agent.Act
 	payload, err := json.MarshalIndent(input, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("序列化 RewriteAct 输入失败: %w", err)
+	}
+	expressions, err := json.MarshalIndent(expressionOptionsForInput(input), "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("序列化 expression contract 失败: %w", err)
 	}
 	planPayload, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
@@ -196,6 +228,9 @@ func buildRewriteActMessages(input agent.ActInput, plan actPlan, draft agent.Act
 				"",
 				"前端注入 Prompt：",
 				promptBrief(input.Request.Prompt, character.Prompt, character.StyleRules),
+				"",
+				"可用角色差分 expression contract：",
+				truncateForPrompt(string(expressions), 5000),
 				"",
 				correctionBrief(input.Correction),
 				"",
@@ -518,6 +553,48 @@ func firstInputCharacter(characters []app.Character) app.Character {
 	return characters[0]
 }
 
+func requireMaterialContext(input agent.ActInput) (app.MaterialContext, error) {
+	material := materialContextForInput(input)
+	if strings.TrimSpace(material.Brief) == "" {
+		return app.MaterialContext{}, errors.New("material.brief 不能为空")
+	}
+	return material, nil
+}
+
+func materialContextForInput(input agent.ActInput) app.MaterialContext {
+	if strings.TrimSpace(input.Material.Brief) != "" {
+		return input.Material
+	}
+	if strings.TrimSpace(input.Request.MaterialContext.Brief) != "" {
+		return input.Request.MaterialContext
+	}
+	if text := strings.TrimSpace(input.Request.DocumentText); text != "" {
+		return app.MaterialContext{
+			Brief: text,
+			Text:  text,
+			Report: app.MaterialSourceReport{
+				Mode:    app.MaterialSourceText,
+				Summary: "来自旧 document_text 字段的兼容材料",
+				Items: []app.MaterialItem{{
+					SourceType: "text",
+					Status:     "read",
+					TextBytes:  len(text),
+					SizeBytes:  int64(len(text)),
+				}},
+				TotalBytes: int64(len(text)),
+			},
+		}
+	}
+	return app.MaterialContext{}
+}
+
+func expressionOptionsForInput(input agent.ActInput) []app.ExpressionOption {
+	if len(input.Expressions) > 0 {
+		return input.Expressions
+	}
+	return app.ExpressionOptionsForCharacter(firstInputCharacter(input.Request.Characters))
+}
+
 func characterBrief(character app.Character) string {
 	lines := []string{
 		"- id: " + firstNonEmpty(character.ID, "未指定"),
@@ -593,6 +670,10 @@ func correctionBrief(correction string) string {
 }
 
 func truncateForRepair(text string, limit int) string {
+	return truncateForPrompt(text, limit)
+}
+
+func truncateForPrompt(text string, limit int) string {
 	text = strings.TrimSpace(text)
 	runes := []rune(text)
 	if len(runes) <= limit {

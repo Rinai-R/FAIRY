@@ -1,11 +1,15 @@
 package runtime_test
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -236,7 +240,7 @@ func TestGenerateSceneRejectsInvalidTeachingBoundary(t *testing.T) {
 			request: app.SceneGenerateRequest{
 				Characters: []app.Character{{ID: "tutor"}},
 			},
-			want: "document_text、document_url 或 document_asset 不能为空",
+			want: "document_text、material_source、document_url 或 document_asset 不能为空",
 		},
 		{
 			name: "missing character",
@@ -643,7 +647,7 @@ func TestAdvanceWorkflowWaitsForPendingNode(t *testing.T) {
 	waitForWorkflowSettled(t, rt, "lesson:default")
 }
 
-func TestGenerateSceneAcceptsURLAndUploadedFileSources(t *testing.T) {
+func TestGenerateSceneRejectsUnfetchedURLSource(t *testing.T) {
 	rt := runtime.NewRuntime(runtime.Dependencies{
 		Agents: map[agent.Provider]agent.Engine{
 			agent.ProviderMock: agentmock.MockEngine{},
@@ -660,29 +664,16 @@ func TestGenerateSceneAcceptsURLAndUploadedFileSources(t *testing.T) {
 		Logger:       slog.Default(),
 	})
 
-	for _, tt := range []struct {
-		name      string
-		variables map[string]string
-	}{
-		{
-			name:      "url source",
-			variables: map[string]string{"document_url": "https://example.com/lesson"},
-		},
-		{
-			name:      "uploaded file source",
-			variables: map[string]string{"document_asset_path": "data/materials/lesson.png"},
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := rt.GenerateScene(context.Background(), app.SceneGenerateRequest{
-				Topic:      "网络材料",
-				Characters: []app.Character{{ID: "tutor"}},
-				Variables:  tt.variables,
-			})
-			if err != nil {
-				t.Fatalf("GenerateScene() error = %v", err)
-			}
-		})
+	_, err := rt.GenerateScene(context.Background(), app.SceneGenerateRequest{
+		Topic:      "网络材料",
+		Characters: []app.Character{{ID: "tutor"}},
+		Variables:  map[string]string{"source_mode": "url", "document_url": "https://example.invalid/lesson"},
+	})
+	if err == nil {
+		t.Fatal("GenerateScene() error = nil, want fetch error")
+	}
+	if !strings.Contains(err.Error(), "material.url") {
+		t.Fatalf("GenerateScene() error = %v, want material.url", err)
 	}
 }
 
@@ -730,10 +721,278 @@ func TestGenerateSceneInjectsUploadedTextAsset(t *testing.T) {
 	if !strings.Contains(record.Teaching.DocumentText, "沿负梯度方向更新参数") {
 		t.Fatalf("teaching document text was not injected: %q", record.Teaching.DocumentText)
 	}
-	if record.Teaching.Variables["document_text_source"] != "uploaded_text_asset" {
-		t.Fatalf("document_text_source = %q, want uploaded_text_asset", record.Teaching.Variables["document_text_source"])
+	if record.Teaching.MaterialSource.Mode != app.MaterialSourceUploadedFile {
+		t.Fatalf("material source mode = %q, want uploaded_file", record.Teaching.MaterialSource.Mode)
+	}
+	if record.Teaching.MaterialContext.Report.Mode != app.MaterialSourceUploadedFile {
+		t.Fatalf("material report mode = %q, want uploaded_file", record.Teaching.MaterialContext.Report.Mode)
+	}
+	if len(record.Teaching.MaterialContext.Report.Items) == 0 {
+		t.Fatal("material report items empty")
 	}
 	waitForWorkflowSettled(t, rt, resp.Session.ID)
+}
+
+func TestGenerateSceneExtractsUploadedPDFTextLayer(t *testing.T) {
+	materialDir := t.TempDir()
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Agents: map[agent.Provider]agent.Engine{
+			agent.ProviderMock: agentmock.MockEngine{},
+		},
+		Scenes: map[scene.Provider]scene.Engine{
+			scene.ProviderMock: scenemock.Engine{},
+		},
+		Voices: map[voice.Provider]voice.Engine{
+			testVoiceProvider: &recordingVoiceEngine{},
+		},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: testVoiceProvider,
+		DefaultScene: scene.ProviderMock,
+		MaterialDir:  materialDir,
+		Sessions:     store,
+		Logger:       slog.Default(),
+	})
+	asset, err := rt.StoreDocumentAssetBytes(context.Background(), "lesson.pdf", "application/pdf", simplePDFWithText("Hello GMP Scheduler"))
+	if err != nil {
+		t.Fatalf("StoreDocumentAssetBytes() error = %v", err)
+	}
+
+	resp, err := rt.GenerateScene(context.Background(), app.SceneGenerateRequest{
+		Topic:        "GMP",
+		LearningGoal: "理解调度器。",
+		Characters:   []app.Character{{ID: "tutor", DisplayName: "Tutor"}},
+		MaterialSource: app.MaterialSource{
+			Mode:      app.MaterialSourceUploadedFile,
+			AssetName: asset.Filename,
+			AssetType: asset.ContentType,
+			AssetPath: asset.Path,
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateScene() error = %v", err)
+	}
+	record, err := rt.Session(resp.Session.ID)
+	if err != nil {
+		t.Fatalf("Session() error = %v", err)
+	}
+	if !strings.Contains(record.Teaching.MaterialContext.Brief, "Hello GMP Scheduler") {
+		t.Fatalf("material brief = %q, want PDF text", record.Teaching.MaterialContext.Brief)
+	}
+	waitForWorkflowSettled(t, rt, resp.Session.ID)
+}
+
+func TestGenerateSceneReadsLocalDirectoryMaterialSource(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Go 调度器\nG、M、P 共同完成调度。"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "node_modules"), 0o755); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "node_modules", "noise.md"), []byte("不应该读取"), 0o600); err != nil {
+		t.Fatalf("WriteFile(noise) error = %v", err)
+	}
+
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Agents: map[agent.Provider]agent.Engine{
+			agent.ProviderMock: agentmock.MockEngine{},
+		},
+		Scenes: map[scene.Provider]scene.Engine{
+			scene.ProviderMock: scenemock.Engine{},
+		},
+		Voices: map[voice.Provider]voice.Engine{
+			testVoiceProvider: &recordingVoiceEngine{},
+		},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: testVoiceProvider,
+		DefaultScene: scene.ProviderMock,
+		Sessions:     store,
+		Logger:       slog.Default(),
+	})
+
+	resp, err := rt.GenerateScene(context.Background(), app.SceneGenerateRequest{
+		Topic:        "Go 调度器",
+		LearningGoal: "理解 GMP。",
+		Characters:   []app.Character{{ID: "tutor", DisplayName: "Tutor"}},
+		MaterialSource: app.MaterialSource{
+			Mode: app.MaterialSourceLocalDirectory,
+			Path: dir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateScene() error = %v", err)
+	}
+	record, err := rt.Session(resp.Session.ID)
+	if err != nil {
+		t.Fatalf("Session() error = %v", err)
+	}
+	if !strings.Contains(record.Teaching.MaterialContext.Brief, "G、M、P") {
+		t.Fatalf("material brief = %q, want directory content", record.Teaching.MaterialContext.Brief)
+	}
+	if strings.Contains(record.Teaching.MaterialContext.Brief, "不应该读取") {
+		t.Fatalf("material brief read skipped directory: %q", record.Teaching.MaterialContext.Brief)
+	}
+	if record.Teaching.MaterialSource.Mode != app.MaterialSourceLocalDirectory {
+		t.Fatalf("material source mode = %q, want local_directory", record.Teaching.MaterialSource.Mode)
+	}
+	waitForWorkflowSettled(t, rt, resp.Session.ID)
+}
+
+func TestGenerateSceneReadsLocalDirectoryMaterialSourceWithHomePath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, "fairy-materials")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("# Actor 模型\n消息通过 mailbox 串行处理。"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Agents: map[agent.Provider]agent.Engine{
+			agent.ProviderMock: agentmock.MockEngine{},
+		},
+		Scenes: map[scene.Provider]scene.Engine{
+			scene.ProviderMock: scenemock.Engine{},
+		},
+		Voices: map[voice.Provider]voice.Engine{
+			testVoiceProvider: &recordingVoiceEngine{},
+		},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: testVoiceProvider,
+		DefaultScene: scene.ProviderMock,
+		Sessions:     store,
+		Logger:       slog.Default(),
+	})
+
+	resp, err := rt.GenerateScene(context.Background(), app.SceneGenerateRequest{
+		Topic:        "Actor 模型",
+		LearningGoal: "理解消息处理。",
+		Characters:   []app.Character{{ID: "tutor", DisplayName: "Tutor"}},
+		MaterialSource: app.MaterialSource{
+			Mode: app.MaterialSourceLocalDirectory,
+			Path: "~/fairy-materials",
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateScene() error = %v", err)
+	}
+	record, err := rt.Session(resp.Session.ID)
+	if err != nil {
+		t.Fatalf("Session() error = %v", err)
+	}
+	if !strings.Contains(record.Teaching.MaterialContext.Brief, "mailbox") {
+		t.Fatalf("material brief = %q, want directory content", record.Teaching.MaterialContext.Brief)
+	}
+	waitForWorkflowSettled(t, rt, resp.Session.ID)
+}
+
+func TestGenerateSceneReadsLocalDirectoryDOCXMaterialSource(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "lesson.docx"), simpleDOCXWithParagraphs("第一段：协程负责表达并发。", "第二段：通道负责同步。"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Agents: map[agent.Provider]agent.Engine{
+			agent.ProviderMock: agentmock.MockEngine{},
+		},
+		Scenes: map[scene.Provider]scene.Engine{
+			scene.ProviderMock: scenemock.Engine{},
+		},
+		Voices: map[voice.Provider]voice.Engine{
+			testVoiceProvider: &recordingVoiceEngine{},
+		},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: testVoiceProvider,
+		DefaultScene: scene.ProviderMock,
+		Sessions:     store,
+		Logger:       slog.Default(),
+	})
+
+	resp, err := rt.GenerateScene(context.Background(), app.SceneGenerateRequest{
+		Topic:        "Go 并发",
+		LearningGoal: "理解协程和通道。",
+		Characters:   []app.Character{{ID: "tutor", DisplayName: "Tutor"}},
+		MaterialSource: app.MaterialSource{
+			Mode: app.MaterialSourceLocalDirectory,
+			Path: dir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateScene() error = %v", err)
+	}
+	record, err := rt.Session(resp.Session.ID)
+	if err != nil {
+		t.Fatalf("Session() error = %v", err)
+	}
+	if !strings.Contains(record.Teaching.MaterialContext.Brief, "通道负责同步") {
+		t.Fatalf("material brief = %q, want docx content", record.Teaching.MaterialContext.Brief)
+	}
+	waitForWorkflowSettled(t, rt, resp.Session.ID)
+}
+
+func simpleDOCXWithParagraphs(paragraphs ...string) []byte {
+	var out bytes.Buffer
+	writer := zip.NewWriter(&out)
+	file, err := writer.Create("word/document.xml")
+	if err != nil {
+		panic(err)
+	}
+	var body strings.Builder
+	body.WriteString(`<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>`)
+	for _, paragraph := range paragraphs {
+		body.WriteString(`<w:p><w:r><w:t>`)
+		body.WriteString(escapeXMLText(paragraph))
+		body.WriteString(`</w:t></w:r></w:p>`)
+	}
+	body.WriteString(`</w:body></w:document>`)
+	if _, err := file.Write([]byte(body.String())); err != nil {
+		panic(err)
+	}
+	if err := writer.Close(); err != nil {
+		panic(err)
+	}
+	return out.Bytes()
+}
+
+func escapeXMLText(value string) string {
+	value = strings.ReplaceAll(value, "&", "&amp;")
+	value = strings.ReplaceAll(value, "<", "&lt;")
+	value = strings.ReplaceAll(value, ">", "&gt;")
+	return value
+}
+
+func simplePDFWithText(text string) []byte {
+	text = strings.NewReplacer(`\`, `\\`, `(`, `\(`, `)`, `\)`).Replace(text)
+	var out bytes.Buffer
+	write := func(value string) {
+		out.WriteString(value)
+	}
+	offsets := make([]int, 6)
+	write("%PDF-1.4\n")
+	writeObject := func(index int, body string) {
+		offsets[index] = out.Len()
+		write(fmt.Sprintf("%d 0 obj\n%s\nendobj\n", index, body))
+	}
+	writeObject(1, "<< /Type /Catalog /Pages 2 0 R >>")
+	writeObject(2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>")
+	writeObject(3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>")
+	writeObject(4, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+	stream := "BT /F1 24 Tf 72 720 Td (" + text + ") Tj ET"
+	writeObject(5, fmt.Sprintf("<< /Length %d >>\nstream\n%s\nendstream", len(stream), stream))
+	startXref := out.Len()
+	write("xref\n0 6\n0000000000 65535 f \n")
+	for index := 1; index <= 5; index++ {
+		write(fmt.Sprintf("%010d 00000 n \n", offsets[index]))
+	}
+	write(fmt.Sprintf("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", startXref))
+	return out.Bytes()
 }
 
 func TestTurnPersistsDisplayAndSpeechTextSeparately(t *testing.T) {
@@ -2111,7 +2370,7 @@ func waitForWorkflowSettled(t *testing.T, rt *runtime.Runtime, sessionID string)
 		if err != nil {
 			t.Fatalf("Session() while waiting settled error = %v", err)
 		}
-		settled := true
+		settled := !record.Workflow.Preparing && strings.TrimSpace(record.Workflow.PendingNodeID) == ""
 		for _, node := range record.Workflow.Nodes {
 			if node.Kind == "free_discussion" {
 				continue

@@ -562,12 +562,14 @@ func (s *FileSessionStore) AppendTurn(req app.TurnRequest, resp app.TurnResponse
 
 func teachingSnapshot(req app.SceneGenerateRequest, prompt app.PromptConfig) app.TeachingSnapshot {
 	return app.TeachingSnapshot{
-		Topic:        req.Topic,
-		DocumentText: req.DocumentText,
-		LearningGoal: req.LearningGoal,
-		Prompt:       firstPrompt(prompt, req.Prompt),
-		Runtime:      req.Runtime,
-		Variables:    cloneStringMap(req.Variables),
+		Topic:           req.Topic,
+		DocumentText:    req.DocumentText,
+		LearningGoal:    req.LearningGoal,
+		Prompt:          firstPrompt(prompt, req.Prompt),
+		Runtime:         req.Runtime,
+		MaterialSource:  req.MaterialSource,
+		MaterialContext: req.MaterialContext,
+		Variables:       cloneStringMap(req.Variables),
 	}
 }
 
