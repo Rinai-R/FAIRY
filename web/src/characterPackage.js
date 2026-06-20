@@ -107,8 +107,24 @@ function normalizeCharacter(character) {
     id,
     display_name: String(character.display_name || character.name || id).trim(),
     assets: character.assets && typeof character.assets === "object" ? character.assets : {},
-    runtime: character.runtime && typeof character.runtime === "object" ? character.runtime : {},
+    runtime: normalizeRuntime(character.runtime),
     prompt: character.prompt && typeof character.prompt === "object" ? character.prompt : undefined,
     style_rules: Array.isArray(character.style_rules) ? character.style_rules : [],
   };
+}
+
+function normalizeRuntime(runtime) {
+  if (!runtime || typeof runtime !== "object") return {};
+  const out = { ...runtime, voice_provider: "volcengine" };
+  if (out.voice && typeof out.voice === "object") {
+    const voice = { ...out.voice };
+    delete voice.endpoint;
+    if (voice.extra && typeof voice.extra === "object") {
+      const extra = { ...voice.extra };
+      delete extra.endpoint;
+      voice.extra = extra;
+    }
+    out.voice = voice;
+  }
+  return out;
 }

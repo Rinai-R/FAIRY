@@ -52,10 +52,14 @@
   },
   "runtime": {
     "agent_provider": "mock",
-    "voice_provider": "voice-service",
+    "voice_provider": "volcengine",
     "image_provider": "mock",
     "voice": {
-      "endpoint": "http://127.0.0.1:8791"
+      "media_type": "mp3",
+      "extra": {
+        "resource_id": "seed-icl-2.0",
+        "speaker": "tutor_default"
+      }
     },
     "image": {
       "enabled": true,

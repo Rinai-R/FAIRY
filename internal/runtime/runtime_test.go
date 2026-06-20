@@ -181,13 +181,12 @@ func TestGenerateScenePersistsTeachingSessionAndTurns(t *testing.T) {
 	}
 }
 
-func TestCapabilitiesExposeStandardVoiceService(t *testing.T) {
+func TestCapabilitiesExposeOnlyVolcengineVoiceProvider(t *testing.T) {
 	rt := runtime.NewRuntime(runtime.Dependencies{
 		Voices: map[voice.Provider]voice.Engine{
-			voice.ProviderVolcengine:        &recordingVoiceEngine{},
-			voice.Provider("voice-service"): &recordingVoiceEngine{},
+			voice.ProviderVolcengine: &recordingVoiceEngine{},
 		},
-		DefaultVoice: voice.Provider("voice-service"),
+		DefaultVoice: voice.ProviderVolcengine,
 		Logger:       slog.Default(),
 	})
 
@@ -196,14 +195,11 @@ func TestCapabilitiesExposeStandardVoiceService(t *testing.T) {
 	for _, item := range capabilities.Providers.Voices {
 		voiceIDs[item.ID] = true
 	}
-	if !voiceIDs["voice-service"] {
-		t.Fatalf("capabilities voices missing standard voice-service provider: %#v", capabilities.Providers.Voices)
-	}
 	if !voiceIDs["volcengine"] {
 		t.Fatalf("capabilities voices missing volcengine provider: %#v", capabilities.Providers.Voices)
 	}
-	if voiceIDs["mock"] || voiceIDs["macos"] {
-		t.Fatalf("capabilities voices exposed removed built-in voice providers: %#v", capabilities.Providers.Voices)
+	if len(voiceIDs) != 1 {
+		t.Fatalf("capabilities voices exposed unexpected providers: %#v", capabilities.Providers.Voices)
 	}
 
 	healthIDs := map[string]bool{}
@@ -212,14 +208,11 @@ func TestCapabilitiesExposeStandardVoiceService(t *testing.T) {
 			healthIDs[item.Provider] = true
 		}
 	}
-	if !healthIDs["voice-service"] {
-		t.Fatalf("provider health missing standard voice-service provider")
-	}
 	if !healthIDs["volcengine"] {
 		t.Fatalf("provider health missing volcengine provider")
 	}
-	if healthIDs["mock"] || healthIDs["macos"] {
-		t.Fatalf("provider health exposed removed built-in voice providers: %#v", healthIDs)
+	if len(healthIDs) != 1 {
+		t.Fatalf("provider health exposed unexpected voice providers: %#v", healthIDs)
 	}
 }
 

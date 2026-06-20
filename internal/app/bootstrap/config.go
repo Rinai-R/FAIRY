@@ -15,9 +15,7 @@ import (
 	scenecodex "github.com/Rinai-R/FAIRY/internal/adapters/scene/codex"
 	scenemock "github.com/Rinai-R/FAIRY/internal/adapters/scene/mock"
 	"github.com/Rinai-R/FAIRY/internal/adapters/voice"
-	voicehttp "github.com/Rinai-R/FAIRY/internal/adapters/voice/httpvoice"
 	voicevolcengine "github.com/Rinai-R/FAIRY/internal/adapters/voice/volcengine"
-	"github.com/Rinai-R/FAIRY/internal/app"
 	"github.com/Rinai-R/FAIRY/internal/llm"
 	"github.com/Rinai-R/FAIRY/internal/plugins"
 	"github.com/Rinai-R/FAIRY/internal/runtime"
@@ -64,7 +62,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		AgentProvider:        agent.ProviderMock,
-		VoiceProvider:        voice.Provider("voice-service"),
+		VoiceProvider:        voice.ProviderVolcengine,
 		ImageProvider:        image.ProviderMock,
 		SceneProvider:        scene.ProviderMock,
 		CodexBin:             agentcodex.DefaultBin,
@@ -99,7 +97,7 @@ func NewRuntime(config Config, logger *slog.Logger) *runtime.Runtime {
 			agent.ProviderCodex: buildCodex(config, logger),
 			agent.ProviderFairy: buildFairyAgent(config),
 		},
-		Voices: buildVoices(config, pluginCatalog.Load()),
+		Voices: buildVoices(config),
 		Images: map[image.Provider]image.Engine{
 			image.ProviderMock:    imagemock.Engine{},
 			image.ProviderComfyUI: buildComfyUI(config),
@@ -132,32 +130,10 @@ func buildFairyAgent(config Config) agent.Engine {
 	})
 }
 
-func buildVoices(config Config, catalog app.PluginCatalog) map[voice.Provider]voice.Engine {
-	voices := map[voice.Provider]voice.Engine{
+func buildVoices(config Config) map[voice.Provider]voice.Engine {
+	return map[voice.Provider]voice.Engine{
 		voice.ProviderVolcengine: buildVolcengine(config),
 	}
-	for _, manifest := range catalog.Manifests {
-		for _, provider := range manifest.Providers {
-			if provider.Domain != "voice" || provider.Adapter != "http_voice" || provider.HTTPVoice == nil || provider.ID == "" {
-				continue
-			}
-			spec := provider.HTTPVoice
-			voices[voice.Provider(provider.ID)] = voicehttp.NewEngine(voicehttp.Options{
-				Provider:     provider.ID,
-				Endpoint:     firstNonEmpty(spec.Endpoint, provider.DefaultEndpoint),
-				Method:       spec.Method,
-				Path:         spec.Path,
-				ContentType:  spec.ContentType,
-				BodyTemplate: spec.BodyTemplate,
-				OutputFormat: spec.OutputFormat,
-				HealthPath:   spec.HealthPath,
-				Headers:      spec.Headers,
-				OutputDir:    config.AudioDir,
-				BaseURL:      config.AudioBaseURL,
-			})
-		}
-	}
-	return voices
 }
 
 func buildComfyUI(config Config) image.Engine {
@@ -200,13 +176,4 @@ func buildVolcengine(config Config) voice.Engine {
 		BaseURL:    config.AudioBaseURL,
 		SampleRate: config.VolcengineSampleRate,
 	})
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
 }

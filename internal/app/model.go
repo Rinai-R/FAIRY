@@ -477,24 +477,12 @@ type PluginManifest struct {
 }
 
 type PluginProvider struct {
-	Domain          string           `json:"domain"`
-	ID              string           `json:"id"`
-	DisplayName     string           `json:"display_name"`
-	Description     string           `json:"description,omitempty"`
-	DefaultEndpoint string           `json:"default_endpoint,omitempty"`
-	Adapter         string           `json:"adapter,omitempty"`
-	HTTPVoice       *HTTPVoicePlugin `json:"http_voice,omitempty"`
-}
-
-type HTTPVoicePlugin struct {
-	Endpoint     string            `json:"endpoint,omitempty"`
-	Method       string            `json:"method,omitempty"`
-	Path         string            `json:"path,omitempty"`
-	ContentType  string            `json:"content_type,omitempty"`
-	BodyTemplate string            `json:"body_template,omitempty"`
-	OutputFormat string            `json:"output_format,omitempty"`
-	HealthPath   string            `json:"health_path,omitempty"`
-	Headers      map[string]string `json:"headers,omitempty"`
+	Domain          string `json:"domain"`
+	ID              string `json:"id"`
+	DisplayName     string `json:"display_name"`
+	Description     string `json:"description,omitempty"`
+	DefaultEndpoint string `json:"default_endpoint,omitempty"`
+	Adapter         string `json:"adapter,omitempty"`
 }
 
 type VoiceProfile struct {

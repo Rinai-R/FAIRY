@@ -37,9 +37,6 @@ const DEFAULT_LANGUAGE_PLAN = Object.freeze({
   mode: "translate_for_voice"
 });
 const DEFAULT_VOICE_TEST_TEXT = "わかりました。これから一緒に勉強しましょう。";
-const DEFAULT_VOICE_SERVICE_PROFILE = Object.freeze({
-  endpoint: "http://127.0.0.1:8791"
-});
 
 const defaultCharacters = [
   {
@@ -176,10 +173,9 @@ export function App() {
   const [relation, setRelation] = useState(defaultRelation);
   const [prompt, setPrompt] = useState(savedConfigRef.current?.prompt || defaultPrompt);
   const [agentProvider, setAgentProvider] = useState(savedConfigRef.current?.providers?.agentProvider || "mock");
-  const [voiceProvider, setVoiceProvider] = useState(normalizeVoiceProviderID(savedConfigRef.current?.providers?.voiceProvider) || "voice-service");
+  const [voiceProvider, setVoiceProvider] = useState(normalizeVoiceProviderID(savedConfigRef.current?.providers?.voiceProvider));
   const [imageProvider, setImageProvider] = useState(savedConfigRef.current?.providers?.imageProvider || "mock");
   const [sceneProvider, setSceneProvider] = useState(savedConfigRef.current?.providers?.sceneProvider || "mock");
-  const [voiceProfile, setVoiceProfile] = useState(() => normalizeVoiceServiceProfile(savedConfigRef.current?.voiceProfile, DEFAULT_VOICE_SERVICE_PROFILE, DEFAULT_LANGUAGE_PLAN.speech_language));
   const [volcengineProfile, setVolcengineProfile] = useState(savedConfigRef.current?.volcengineProfile || {
     app_id: "",
     access_token: "",
@@ -233,7 +229,7 @@ export function App() {
 
   const providerOptions = capabilities?.providers || {
     agents: [{ id: "mock", display_name: "Mock Agent" }, { id: "codex", display_name: "Codex CLI Agent" }, { id: "fairy-agent", display_name: "FAIRY Agent" }],
-    voices: [{ id: "voice-service", display_name: "标准语音服务" }, { id: "volcengine", display_name: "火山声音复刻" }],
+    voices: [{ id: "volcengine", display_name: "火山声音复刻" }],
     images: [{ id: "mock", display_name: "Mock CG" }, { id: "comfyui", display_name: "ComfyUI" }],
     scenes: [{ id: "mock", display_name: "Teaching Scene" }, { id: "codex", display_name: "Codex Scene" }]
   };
@@ -278,7 +274,7 @@ export function App() {
         setCapabilities(payload);
         if (!savedConfigRef.current?.providers) {
           setAgentProvider(payload.defaults?.agent_provider || "mock");
-          setVoiceProvider(normalizeVoiceProviderID(payload.defaults?.voice_provider) || "voice-service");
+          setVoiceProvider(normalizeVoiceProviderID(payload.defaults?.voice_provider));
           setImageProvider(payload.defaults?.image_provider || "mock");
           setSceneProvider(payload.defaults?.scene_provider || "mock");
         }
@@ -327,7 +323,6 @@ export function App() {
     generationRequirement,
     prompt,
     sceneProvider,
-    voiceProfile,
     voiceProvider,
     voiceTestText,
     volcengineProfile
@@ -387,7 +382,6 @@ export function App() {
     if (config.languagePlan) setLanguagePlan(normalizeLanguagePlan(config.languagePlan));
     if (config.prompt) setPrompt(config.prompt);
     if (config.cgConfig) setCgConfig(config.cgConfig);
-    if (config.voiceProfile) setVoiceProfile(normalizeVoiceServiceProfile(config.voiceProfile, DEFAULT_VOICE_SERVICE_PROFILE, languagePlan.speech_language));
     if (typeof config.voiceTestText === "string") setVoiceTestText(config.voiceTestText);
     if (config.volcengineProfile) setVolcengineProfile(config.volcengineProfile);
     if (config.providers) {
@@ -411,7 +405,6 @@ export function App() {
       generationRequirement,
       prompt,
       providers: { agentProvider, voiceProvider: normalizeVoiceProviderID(voiceProvider), imageProvider, sceneProvider },
-      voiceProfile,
       voiceTestText,
       volcengineProfile,
       ...overrides
@@ -757,26 +750,16 @@ export function App() {
     appendLog("info", `已导入网络文档链接：${url}`);
   }
 
-  function buildVoiceProfile(provider = voiceProvider) {
-    const voiceProviderID = normalizeVoiceProviderID(provider);
+  function buildVoiceProfile() {
     const speechLanguage = languageCodeForVoiceProvider(effectiveLanguagePlan().speech_language);
-    if (voiceProviderID === "volcengine") {
-      return normalizeVolcengineVoiceProfile(activeCharacter?.runtime?.voice, volcengineProfile, speechLanguage);
-    }
-    if (isStandardVoiceServiceProvider(voiceProviderID)) {
-      return normalizeVoiceServiceProfile(activeCharacter?.runtime?.voice, voiceProfile, speechLanguage);
-    }
-    if (activeCharacter?.runtime?.voice && Object.keys(activeCharacter.runtime.voice).length > 0) {
-      return normalizeThirdPartyVoiceProfile(activeCharacter.runtime.voice, voiceProviderID, speechLanguage);
-    }
-    return normalizeThirdPartyVoiceProfile({}, voiceProviderID, speechLanguage);
+    return normalizeVolcengineVoiceProfile(activeCharacter?.runtime?.voice, volcengineProfile, speechLanguage);
   }
 
   async function startVoiceClone() {
     if (cloneBusy) return;
     setCloneBusy(true);
     try {
-      const profile = buildVoiceProfile("volcengine");
+      const profile = buildVoiceProfile();
       const extra = profile.extra || {};
       const speaker = extra.speaker || profile.voice_id || activeCharacter?.voice_id || "";
       const speechLanguage = languageCodeForVoiceProvider(effectiveLanguagePlan().speech_language || extra.explicit_language || volcengineProfile.language);
@@ -815,7 +798,7 @@ export function App() {
     if (cloneBusy) return;
     setCloneBusy(true);
     try {
-      const profile = buildVoiceProfile("volcengine");
+      const profile = buildVoiceProfile();
       const extra = profile.extra || {};
       const speaker = extra.speaker || profile.voice_id || activeCharacter?.voice_id || "";
       const speechLanguage = languageCodeForVoiceProvider(effectiveLanguagePlan().speech_language || extra.explicit_language || volcengineProfile.language);
@@ -847,13 +830,13 @@ export function App() {
         throw new Error("试听文本为空。");
       }
       const effectiveVoiceProvider = normalizeVoiceProviderID(activeCharacter?.runtime?.voice_provider || voiceProvider);
-      const profile = buildVoiceProfile(effectiveVoiceProvider);
+      const profile = buildVoiceProfile();
       const speaker = profile.extra?.speaker || profile.voice_id || activeCharacter?.voice_id || "";
-      if (effectiveVoiceProvider === "volcengine" && !speaker.trim()) {
+      if (!speaker.trim()) {
         throw new Error("请先填写复刻声音 ID。");
       }
       const speechLanguage = languageCodeForVoiceProvider(effectiveLanguagePlan().speech_language);
-      const cacheKey = [activeCharacter?.id || "", effectiveVoiceProvider, speaker, speechLanguage, voiceProfileCacheKey(profile), text].join("\n");
+      const cacheKey = [activeCharacter?.id || "", effectiveVoiceProvider, speaker, speechLanguage, voiceConfigCacheKey(profile), text].join("\n");
       if (voiceTestCacheRef.current.key === cacheKey && voiceTestCacheRef.current.url) {
         setLastAudioURL(voiceTestCacheRef.current.url);
         playAudio(voiceTestCacheRef.current.url);
@@ -863,7 +846,7 @@ export function App() {
         provider: effectiveVoiceProvider,
         text,
         plan: {
-          voice_id: effectiveVoiceProvider === "volcengine" ? speaker : activeCharacter?.voice_id || "",
+          voice_id: speaker,
           style: "test",
           speed: 1,
           pitch: 1
@@ -874,7 +857,7 @@ export function App() {
       });
       setRuntimeState((current) => ({
         ...current,
-        voice: effectiveVoiceProvider === "volcengine" ? speaker : activeCharacter?.voice_id || "-",
+        voice: speaker,
         audio: payload.url ? `${payload.format} · ${Math.round((payload.duration_ms || 0) / 1000)}s` : payload.format || "mock"
       }));
       if (payload.url) {
@@ -951,7 +934,7 @@ export function App() {
       image_provider: effectiveImageProvider,
       scene_provider: effectiveSceneProvider,
       agent: buildAgentProfile(),
-      voice: buildVoiceProfile(effectiveVoiceProvider),
+      voice: buildVoiceProfile(),
       image: buildImageRequest(scene),
       language: effectiveLanguagePlan()
     };
@@ -1356,7 +1339,7 @@ export function App() {
     }
     try {
       const effectiveVoiceProvider = normalizeVoiceProviderID(activeCharacter?.runtime?.voice_provider || voiceProvider);
-      const profile = buildVoiceProfile(effectiveVoiceProvider);
+      const profile = buildVoiceProfile();
       const expression = normalizeMood(node.expression || runtimeState.expression || "soft_smile");
       const payload = await synthesizeVoice({
         provider: effectiveVoiceProvider,
@@ -1714,11 +1697,9 @@ export function App() {
             testVoiceSynthesis={testVoiceSynthesis}
             voiceClone={voiceClone}
             voiceCloneFiles={voiceCloneFiles}
-            voiceProfile={voiceProfile}
             voiceProvider={voiceProvider}
             voiceTestBusy={voiceTestBusy}
             voiceTestText={voiceTestText}
-            setVoiceProfile={setVoiceProfile}
             setVoiceTestText={setVoiceTestText}
             saveRoleConfig={saveRoleConfig}
           />
@@ -2381,8 +2362,8 @@ function ConfigView(props) {
     setCharacterRuntimeVoiceField, setConfigTab, setPrompt,
     setLanguagePlan, setVoiceCloneFiles, startVoiceClone, voiceClone,
     voiceCloneFiles, saveRoleConfig, testVoiceSynthesis,
-    voiceProfile, voiceProvider, voiceTestBusy, voiceTestText,
-    setVoiceProfile, setVoiceTestText
+    voiceProvider, voiceTestBusy, voiceTestText,
+    setVoiceTestText
   } = props;
   const [editingCharacterID, setEditingCharacterID] = useState(null);
   const [editorOpen, setEditorOpen] = useState(false);
@@ -2478,11 +2459,9 @@ function ConfigView(props) {
                 testVoiceSynthesis={testVoiceSynthesis}
                 voiceClone={voiceClone}
                 voiceCloneFiles={voiceCloneFiles}
-                voiceProfile={voiceProfile}
                 defaultVoiceProvider={voiceProvider}
                 voiceTestBusy={voiceTestBusy}
                 voiceTestText={voiceTestText}
-                setVoiceProfile={setVoiceProfile}
                 setVoiceTestText={setVoiceTestText}
                   />
                 </>
@@ -2540,10 +2519,8 @@ function CharacterConfigModal({
   testVoiceSynthesis,
   voiceClone,
   voiceCloneFiles,
-  voiceProfile = DEFAULT_VOICE_SERVICE_PROFILE,
   voiceTestBusy,
   voiceTestText = DEFAULT_VOICE_TEST_TEXT,
-  setVoiceProfile,
   setVoiceTestText
 }) {
   const agentProvider = character.runtime?.agent_provider || "";
@@ -2556,8 +2533,6 @@ function CharacterConfigModal({
   const effectiveLanguage = mergeLanguagePlan(languagePlan, language);
   const image = character.runtime?.image || {};
   const speaker = voiceExtra.speaker || voice.voice_id || character.voice_id || "";
-  const isStandardVoiceService = isStandardVoiceServiceProvider(effectiveVoiceProvider);
-  const isBuiltinVoice = !effectiveVoiceProvider;
   const [provTab, setProvTab] = useState("agent");
   const handleSave = async () => {
     const saved = await saveRoleConfig(character.id);
@@ -2666,59 +2641,39 @@ function CharacterConfigModal({
             {provTab === "voice" && (
               <div className="ch-fields">
                 <SelectField label="语音服务" value={voiceProvider} onChange={(value) => setCharacterRuntimeField(character.id, "voice_provider", normalizeVoiceProviderID(value))} options={providerOptionsWithInherit(providerOptions.voices)} />
-                {effectiveVoiceProvider === "volcengine" ? (
-                  <>
-                    <TextField label="APP ID" value={voiceExtra.app_id || ""} onChange={(value) => setCharacterRuntimeVoiceExtraField(character.id, "app_id", value)} />
-                    <TextField label="Access Token" value={voiceExtra.access_token || ""} onChange={(value) => setCharacterRuntimeVoiceExtraField(character.id, "access_token", value)} type="password" />
-                    <SelectField label="模型资源" value={voiceExtra.resource_id || "seed-icl-2.0"} onChange={(value) => setCharacterRuntimeVoiceExtraField(character.id, "resource_id", value)} options={volcengineResourceOptions} />
-                    <TextField label="复刻声音 ID" value={speaker} onChange={(value) => {
-                      setCharacterField(character.id, "voice_id", value);
-                      setCharacterRuntimeVoiceField(character.id, "voice_id", value);
-                      setCharacterRuntimeVoiceExtraField(character.id, "speaker", value);
-                    }} />
-                    <SelectField label="音频格式" value={voice.media_type || "mp3"} onChange={(value) => setCharacterRuntimeVoiceField(character.id, "media_type", value)} options={[{ value: "mp3", label: "mp3" }, { value: "wav", label: "wav" }]} />
-                    <div className="ch-field-wide clone-workbench">
-                      <div className="clone-actions">
-                        <label className="file-button">上传训练音频<input type="file" accept="audio/*" multiple onChange={(event) => setVoiceCloneFiles(Array.from(event.target.files || []))} /></label>
-                        <button className="primary-button" type="button" onClick={startVoiceClone} disabled={cloneBusy || voiceCloneFiles.length !== 1}>{cloneBusy ? "处理中" : "提交复刻训练"}</button>
-                        <button className="ghost-button" type="button" onClick={refreshVoiceCloneStatus} disabled={cloneBusy || !speaker}>查询状态</button>
-                      </div>
-                      <div className="clone-status">
-                        <StateRow label="files" value={`${voiceCloneFiles.length} 段`} />
-                        <StateRow label="submitted" value={voiceClone.sample_count ? `${voiceClone.sample_count} 段` : "-"} />
-                        <StateRow label="speaker" value={voiceClone.speaker_id || speaker || "-"} />
-                        <StateRow label="status" value={voiceClone.status || "idle"} />
-                      </div>
-                      <div className="clone-file-list">
-                        {voiceCloneFiles.length ? voiceCloneFiles.map((file) => (
-                          <div key={`${file.name}-${file.size}`} className="clone-file-item">
-                            <strong>{file.name}</strong>
-                            <span>{formatBytes(file.size)} · {file.type || "audio"}</span>
-                          </div>
-                        )) : <div className="clone-file-empty">还没有选择训练音频。当前只支持单文件训练。</div>}
-                      </div>
-                    </div>
-                  </>
-                ) : isStandardVoiceService ? (
-                  <div className="ch-field-wide voice-service-workbench">
-                    <TextField
-                      label="Endpoint"
-                      value={voiceServiceEndpointForForm(firstNonEmpty(voice.endpoint, voiceProfile?.endpoint))}
-                      onChange={(value) => setCharacterRuntimeVoiceField(character.id, "endpoint", value)}
-                      placeholder="http://127.0.0.1:8791"
-                    />
+                <TextField label="APP ID" value={voiceExtra.app_id || ""} onChange={(value) => setCharacterRuntimeVoiceExtraField(character.id, "app_id", value)} />
+                <TextField label="Access Token" value={voiceExtra.access_token || ""} onChange={(value) => setCharacterRuntimeVoiceExtraField(character.id, "access_token", value)} type="password" />
+                <SelectField label="模型资源" value={voiceExtra.resource_id || "seed-icl-2.0"} onChange={(value) => setCharacterRuntimeVoiceExtraField(character.id, "resource_id", value)} options={volcengineResourceOptions} />
+                <TextField label="复刻声音 ID" value={speaker} onChange={(value) => {
+                  setCharacterField(character.id, "voice_id", value);
+                  setCharacterRuntimeVoiceField(character.id, "voice_id", value);
+                  setCharacterRuntimeVoiceExtraField(character.id, "speaker", value);
+                }} />
+                <SelectField label="音频格式" value={voice.media_type || "mp3"} onChange={(value) => setCharacterRuntimeVoiceField(character.id, "media_type", value)} options={[{ value: "mp3", label: "mp3" }, { value: "wav", label: "wav" }]} />
+                <div className="ch-field-wide clone-workbench">
+                  <div className="clone-actions">
+                    <label className="file-button">上传训练音频<input type="file" accept="audio/*" multiple onChange={(event) => setVoiceCloneFiles(Array.from(event.target.files || []))} /></label>
+                    <button className="primary-button" type="button" onClick={startVoiceClone} disabled={cloneBusy || voiceCloneFiles.length !== 1}>{cloneBusy ? "处理中" : "提交复刻训练"}</button>
+                    <button className="ghost-button" type="button" onClick={refreshVoiceCloneStatus} disabled={cloneBusy || !speaker}>查询状态</button>
                   </div>
-                ) : isBuiltinVoice ? (
-                  null
-                ) : (
-                  <>
-                    <TextField label="Endpoint" value={voice.endpoint || ""} onChange={(value) => setCharacterRuntimeVoiceField(character.id, "endpoint", value)} />
-                    <SelectField label="音频格式" value={voice.media_type || ""} onChange={(value) => setCharacterRuntimeVoiceField(character.id, "media_type", value)} options={[{ value: "", label: "运行默认值" }, { value: "wav", label: "wav" }, { value: "mp3", label: "mp3" }]} />
-                  </>
-                )}
+                  <div className="clone-status">
+                    <StateRow label="files" value={`${voiceCloneFiles.length} 段`} />
+                    <StateRow label="submitted" value={voiceClone.sample_count ? `${voiceClone.sample_count} 段` : "-"} />
+                    <StateRow label="speaker" value={voiceClone.speaker_id || speaker || "-"} />
+                    <StateRow label="status" value={voiceClone.status || "idle"} />
+                  </div>
+                  <div className="clone-file-list">
+                    {voiceCloneFiles.length ? voiceCloneFiles.map((file) => (
+                      <div key={`${file.name}-${file.size}`} className="clone-file-item">
+                        <strong>{file.name}</strong>
+                        <span>{formatBytes(file.size)} · {file.type || "audio"}</span>
+                      </div>
+                    )) : <div className="clone-file-empty">还没有选择训练音频。当前只支持单文件训练。</div>}
+                  </div>
+                </div>
                 <TextAreaField label="测试台词" value={voiceTestText} onChange={(value) => setVoiceTestText?.(value)} rows={3} className="ch-field-wide" />
                 <div className="ch-field-wide voice-test-card">
-                  <button className="primary-button" type="button" onClick={testVoiceSynthesis} disabled={voiceTestBusy || (effectiveVoiceProvider === "volcengine" && !speaker)}>{voiceTestBusy ? "合成中" : "试听角色语音"}</button>
+                  <button className="primary-button" type="button" onClick={testVoiceSynthesis} disabled={voiceTestBusy || !speaker}>{voiceTestBusy ? "合成中" : "试听角色语音"}</button>
                 </div>
               </div>
             )}
@@ -3303,32 +3258,8 @@ function languageCodeForVoiceProvider(value) {
   return language || String(value || "").trim();
 }
 
-function isStandardVoiceServiceProvider(value) {
-  return value === "voice-service";
-}
-
-function normalizeVoiceProviderID(value = "") {
-  const provider = String(value || "").trim();
-  if (provider === "gpt-sovits" || provider === "gptsovits" || provider === "mock" || provider === "macos") return "voice-service";
-  return provider;
-}
-
-function voiceServiceEndpointForForm(value = "") {
-  return isLegacyRawLocalTTSEndpoint(value) ? DEFAULT_VOICE_SERVICE_PROFILE.endpoint : (value || DEFAULT_VOICE_SERVICE_PROFILE.endpoint);
-}
-
-function normalizeVoiceServiceProfile(profile = {}, serviceProfile = DEFAULT_VOICE_SERVICE_PROFILE, speechLanguage = "") {
-  const voiceLanguage = languageCodeForVoiceProvider(speechLanguage);
-  return pruneEmptyObject({
-    endpoint: voiceServiceEndpointForForm(firstNonEmpty(profile?.endpoint, serviceProfile?.endpoint)),
-    text_lang: voiceLanguage || "",
-    media_type: profile?.media_type || serviceProfile?.media_type || ""
-  });
-}
-
-function isLegacyRawLocalTTSEndpoint(value = "") {
-  const endpoint = String(value || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
-  return endpoint === "127.0.0.1:9880" || endpoint === "localhost:9880";
+function normalizeVoiceProviderID() {
+  return "volcengine";
 }
 
 function normalizeVolcengineVoiceProfile(profile = {}, fallback = {}, speechLanguage = "") {
@@ -3349,22 +3280,7 @@ function normalizeVolcengineVoiceProfile(profile = {}, fallback = {}, speechLang
   });
 }
 
-function normalizeThirdPartyVoiceProfile(profile = {}, provider = "", speechLanguage = "") {
-  const voiceLanguage = languageCodeForVoiceProvider(speechLanguage);
-  const extra = { ...(profile?.extra || {}) };
-  if (provider === "volcengine") {
-    delete extra.endpoint;
-  }
-  return pruneEmptyObject({
-    endpoint: profile?.endpoint || "",
-    voice_id: profile?.voice_id || "",
-    media_type: profile?.media_type || "",
-    text_lang: voiceLanguage || profile?.text_lang || "",
-    extra: pruneEmptyObject(extra)
-  });
-}
-
-function voiceProfileCacheKey(profile = {}) {
+function voiceConfigCacheKey(profile = {}) {
   const extra = Object.entries(profile.extra || {})
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => `${key}:${value}`)
@@ -3436,30 +3352,17 @@ function normalizeSavedCharacter(character) {
     ...(runtime.language || {}),
     speech_language: runtime.language?.speech_language || voiceExtra.explicit_language || ""
   });
-  const hasLegacyRawLocalEndpoint = Boolean(voice?.endpoint && isLegacyRawLocalTTSEndpoint(voice.endpoint));
-  const hasVolcengineCredential = Boolean(
-    voiceExtra.app_id ||
-    voiceExtra.access_token ||
-    voiceExtra.resource_id ||
-    voiceExtra.speaker ||
-    String(voice?.voice_id || character.voice_id || "").startsWith("S_")
-  );
-  if (!runtime.voice_provider && hasVolcengineCredential) {
-    runtime.voice_provider = "volcengine";
-  } else if (!runtime.voice_provider && hasLegacyRawLocalEndpoint) {
-    runtime.voice_provider = "voice-service";
-  }
-  if (voice && isStandardVoiceServiceProvider(runtime.voice_provider)) {
-    voice.endpoint = voiceServiceEndpointForForm(voice.endpoint);
-  }
   if (voice && !voice.voice_id && voiceExtra.speaker) {
     voice.voice_id = voiceExtra.speaker;
   }
   if (voice) {
+    delete voice.endpoint;
+    const normalizedExtra = { ...(voice.extra || {}) };
+    delete normalizedExtra.endpoint;
     const speechLanguage = languageCodeForVoiceProvider(language?.speech_language || voiceExtra.explicit_language || "");
     voice.extra = pruneEmptyObject({
-      ...(voice.extra || {}),
-      explicit_language: voice.extra?.explicit_language ? speechLanguage : voice.extra?.explicit_language
+      ...normalizedExtra,
+      explicit_language: normalizedExtra.explicit_language ? speechLanguage : normalizedExtra.explicit_language
     });
   }
   return {

@@ -194,15 +194,8 @@ func parseVoiceProvider(value string) (voice.Provider, error) {
 	switch provider {
 	case voice.ProviderVolcengine:
 		return provider, nil
-	case "mock", "macos":
-		return "", fmt.Errorf("FAIRY_VOICE_ENGINE 不再内置开发语音 provider %q，请改用 voice-service 或第三方语音适配器", value)
-	case "gpt-sovits", "gptsovits":
-		return "", fmt.Errorf("FAIRY_VOICE_ENGINE 不再支持直连模型 provider %q，请改用 voice-service", value)
 	default:
-		if isProviderID(string(provider)) {
-			return provider, nil
-		}
-		return "", fmt.Errorf("FAIRY_VOICE_ENGINE 不是有效 provider ID: %q", value)
+		return "", fmt.Errorf("FAIRY_VOICE_ENGINE 当前只支持 provider %q，收到 %q", voice.ProviderVolcengine, value)
 	}
 }
 

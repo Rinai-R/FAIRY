@@ -86,15 +86,15 @@ func TestConfigFromLookupAppliesValidOverrides(t *testing.T) {
 	}
 }
 
-func TestConfigFromLookupAllowsCustomVoiceProviderID(t *testing.T) {
-	config, err := configFromLookup(mapLookup(map[string]string{
+func TestConfigFromLookupRejectsCustomVoiceProviderID(t *testing.T) {
+	_, err := configFromLookup(mapLookup(map[string]string{
 		"FAIRY_VOICE_ENGINE": "my-voice.plugin_1",
 	}))
-	if err != nil {
-		t.Fatalf("configFromLookup() error = %v", err)
+	if err == nil {
+		t.Fatal("configFromLookup() error = nil, want unsupported provider error")
 	}
-	if config.VoiceProvider != voice.Provider("my-voice.plugin_1") {
-		t.Fatalf("VoiceProvider = %q", config.VoiceProvider)
+	if !strings.Contains(err.Error(), "FAIRY_VOICE_ENGINE") {
+		t.Fatalf("error = %q, want FAIRY_VOICE_ENGINE context", err)
 	}
 }
 
@@ -110,8 +110,8 @@ func TestConfigFromLookupRejectsInvalidProvider(t *testing.T) {
 	}
 }
 
-func TestConfigFromLookupRejectsLegacyRawModelVoiceProvider(t *testing.T) {
-	for _, provider := range []string{"gpt-sovits", "gptsovits", "mock", "macos"} {
+func TestConfigFromLookupRejectsUnsupportedVoiceProvider(t *testing.T) {
+	for _, provider := range []string{"custom-voice", "local-voice"} {
 		t.Run(provider, func(t *testing.T) {
 			_, err := configFromLookup(mapLookup(map[string]string{
 				"FAIRY_VOICE_ENGINE": provider,

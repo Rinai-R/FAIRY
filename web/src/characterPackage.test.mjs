@@ -16,8 +16,10 @@ const character = {
       endpoint: "https://example.com",
     },
     voice: {
+      endpoint: "https://local.invalid/voice",
       extra: {
         access_token: "token-value",
+        endpoint: "https://local.invalid/raw",
         speaker: "S_atri",
       },
     },
@@ -32,6 +34,9 @@ const character = {
   assert.equal(pack.type, CHARACTER_PACKAGE_TYPE);
   assert.equal(pack.characters[0].runtime.agent.api_key, "");
   assert.equal(pack.characters[0].runtime.voice.extra.access_token, "");
+  assert.equal(pack.characters[0].runtime.voice_provider, "volcengine");
+  assert.equal(pack.characters[0].runtime.voice.endpoint, undefined);
+  assert.equal(pack.characters[0].runtime.voice.extra.endpoint, undefined);
   assert.equal(pack.characters[0].runtime.agent.endpoint, "https://example.com");
   assert.equal(pack.characters[0].assets.portrait_url, "/atri.png");
 }
@@ -40,6 +45,8 @@ const character = {
   const pack = createCharacterPackage([character], { redactSensitive: false });
   assert.equal(pack.characters[0].runtime.agent.api_key, "sk-secret");
   assert.equal(pack.characters[0].runtime.voice.extra.access_token, "token-value");
+  assert.equal(pack.characters[0].runtime.voice_provider, "volcengine");
+  assert.equal(pack.characters[0].runtime.voice.endpoint, undefined);
 }
 
 {
@@ -76,5 +83,3 @@ assert.throws(
   () => parseCharacterPackage({ characters: [] }),
   /缺少 characters 数组/,
 );
-
-console.log("characterPackage tests passed");
