@@ -39,6 +39,7 @@ type ActInput struct {
 	Choice        app.SceneChoice          `json:"choice,omitempty"`
 	CoveredPoints []string                 `json:"covered_points,omitempty"`
 	ActIndex      int                      `json:"act_index"`
+	Correction    string                   `json:"correction,omitempty"`
 }
 
 func (input ActInput) Validate() error {

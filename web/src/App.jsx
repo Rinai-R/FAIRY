@@ -24,6 +24,7 @@ import {
 import { DirectorView } from "./views/DirectorView";
 import { GalgameStageView } from "./views/GalgameStage";
 import { createCharacterPackage, mergeCharacterPackage } from "./characterPackage";
+import { characterVisualStyle, resolveCharacterPortrait } from "./views/characterVisualLayout";
 import { emotionLabel, expressionLabel, motionLabel } from "./views/displayLabels";
 import { stageWorkflowWaiting, workflowNodeReady } from "./views/workflowReadiness";
 
@@ -1795,7 +1796,7 @@ function HomeView({
   const recentSessions = [...sessions].sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0)).slice(0, 5);
   const audioCacheCount = sessions.reduce((total, record) => total + countHistoryAudio(record), 0);
   const healthyProviders = providerHealth.filter((item) => item.status === "ok" || item.status === "ready").length;
-  const portraitURL = activeCharacter?.assets?.portrait_url || activeCharacter?.avatar_url || "";
+  const castPortrait = resolveCharacterPortrait(activeCharacter, runtimeState?.expression, runtimeState?.emotion);
   const sourceReady = Boolean(documentAsset?.path || documentText.trim() || documentURL.trim());
   const docLabel = documentAsset?.filename || (documentURL.trim() ? "网络文档" : documentText.trim() ? "粘贴正文" : "尚未选择文档");
   useEffect(() => {
@@ -1908,8 +1909,13 @@ function HomeView({
             </span>
           </div>
           <div className="cast-halo" aria-hidden="true" />
-          {portraitURL ? (
-            <img className="cast-heroine" src={portraitURL} alt={activeCharacter?.display_name || "主讲角色"} />
+          {castPortrait.url ? (
+            <img
+              className="cast-heroine"
+              src={castPortrait.url}
+              alt={activeCharacter?.display_name || "主讲角色"}
+              style={characterVisualStyle(castPortrait.layout, "home")}
+            />
           ) : (
             <div className="cast-empty"><span>未绑定立绘</span></div>
           )}

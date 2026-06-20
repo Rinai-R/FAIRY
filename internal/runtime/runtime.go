@@ -22,7 +22,7 @@ import (
 
 const (
 	defaultStagePoolSize = 16
-	defaultVoicePoolSize = 32
+	defaultVoicePoolSize = 10
 )
 
 type Runtime struct {
@@ -737,7 +737,9 @@ func (r *Runtime) synthesizeWithCache(ctx context.Context, provider string, engi
 		cached.Cached = true
 		return cached, nil
 	}
-	audio, err := engine.Synthesize(ctx, input)
+	audio, err := synthesizeVoiceWithRetry(ctx, func(ctx context.Context) (app.AudioResult, error) {
+		return engine.Synthesize(ctx, input)
+	})
 	if err != nil {
 		return app.AudioResult{}, err
 	}
@@ -745,6 +747,61 @@ func (r *Runtime) synthesizeWithCache(ctx context.Context, provider string, engi
 		r.storeCachedAudio(key, audio)
 	}
 	return audio, nil
+}
+
+var voiceSynthesisRetryBackoffs = []time.Duration{
+	300 * time.Millisecond,
+	700 * time.Millisecond,
+	1200 * time.Millisecond,
+}
+
+var voiceSynthesisSleep = sleepWithContext
+
+func synthesizeVoiceWithRetry(ctx context.Context, synth func(context.Context) (app.AudioResult, error)) (app.AudioResult, error) {
+	for attempt := 0; ; attempt++ {
+		audio, err := synth(ctx)
+		if err == nil {
+			return audio, nil
+		}
+		if attempt >= len(voiceSynthesisRetryBackoffs) || !retryableVoiceSynthesisError(err) {
+			return app.AudioResult{}, err
+		}
+		if sleepErr := voiceSynthesisSleep(ctx, voiceSynthesisRetryBackoffs[attempt]); sleepErr != nil {
+			return app.AudioResult{}, fmt.Errorf("语音合成重试被取消: %w；上一次错误: %v", sleepErr, err)
+		}
+	}
+}
+
+func retryableVoiceSynthesisError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "code=45000292") {
+		return true
+	}
+	if strings.Contains(message, "quota exceeded") && strings.Contains(message, "concurrency") {
+		return true
+	}
+	if strings.Contains(message, "too many requests") || strings.Contains(message, "rate limit") {
+		return true
+	}
+	return strings.Contains(message, "429") &&
+		(strings.Contains(message, "quota") || strings.Contains(message, "concurrency"))
+}
+
+func sleepWithContext(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (r *Runtime) cachedAudio(key string) (app.AudioResult, bool) {

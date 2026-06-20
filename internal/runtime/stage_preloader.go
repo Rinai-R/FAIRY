@@ -39,6 +39,8 @@ type workflowFollowupTarget struct {
 	choice app.SceneChoice
 }
 
+const maxGeneratedActRuntimeRepairAttempts = 2
+
 func initializeDynamicWorkflow(template app.TeachingWorkflow, sceneID string, topic string, goal string) app.TeachingWorkflow {
 	workflowID := strings.TrimSpace(template.ID)
 	if workflowID == "" {
@@ -124,7 +126,7 @@ func (r *Runtime) generateWorkflowNodeAct(
 		index = countTeachingActs(workflow.Nodes) + 1
 	}
 	previous := previousTeachingNode(workflow.Nodes, node.ID)
-	out, err := engine.GenerateAct(ctx, agent.ActInput{
+	input := agent.ActInput{
 		Request:       request,
 		Session:       session,
 		Workflow:      workflow,
@@ -133,29 +135,38 @@ func (r *Runtime) generateWorkflowNodeAct(
 		CoveredPoints: coveredTeachingPoints(workflow.Nodes, node.ID),
 		ActIndex:      index,
 		Choice:        choice,
-	})
-	if err != nil {
-		return node, "", err
 	}
-	decision := normalizeActDecision(node, out.Decision)
-	merged := mergeGeneratedActNode(node, out.Node)
-	assignChoiceTargets(&merged)
-	merged.Decision = string(decision)
-	if err := validateGeneratedActLanguage(merged, request.Runtime.Language); err != nil {
-		return node, decision, err
+	var lastErr error
+	var lastDecision agent.ActDecision
+	for attempt := 1; attempt <= maxGeneratedActRuntimeRepairAttempts; attempt++ {
+		out, err := engine.GenerateAct(ctx, input)
+		if err != nil {
+			return node, "", err
+		}
+		decision := normalizeActDecision(node, out.Decision)
+		lastDecision = decision
+		merged := mergeGeneratedActNode(node, out.Node)
+		assignChoiceTargets(&merged)
+		merged.Decision = string(decision)
+		if err := validateGeneratedActLanguage(merged, request.Runtime.Language); err != nil {
+			lastErr = err
+		} else if err := validateGeneratedActDialogueUnits(merged, request.Runtime.Language); err != nil {
+			lastErr = err
+		} else if err := (agent.ActOutput{
+			Node:          merged,
+			Decision:      decision,
+			CoveredPoints: out.CoveredPoints,
+			Summary:       out.Summary,
+		}).Validate(); err != nil {
+			lastErr = err
+		} else {
+			return merged, decision, nil
+		}
+		if attempt < maxGeneratedActRuntimeRepairAttempts {
+			input.Correction = lastErr.Error()
+		}
 	}
-	if err := validateGeneratedActDialogueUnits(merged, request.Runtime.Language); err != nil {
-		return node, decision, err
-	}
-	if err := (agent.ActOutput{
-		Node:          merged,
-		Decision:      decision,
-		CoveredPoints: out.CoveredPoints,
-		Summary:       out.Summary,
-	}).Validate(); err != nil {
-		return node, decision, err
-	}
-	return merged, decision, nil
+	return node, lastDecision, fmt.Errorf("GenerateAct 修正后仍不符合运行时合约: %w", lastErr)
 }
 
 func validateGeneratedActLanguage(node app.TeachingWorkflowNode, plan app.LanguagePlan) error {

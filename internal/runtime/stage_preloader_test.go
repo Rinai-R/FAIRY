@@ -922,6 +922,46 @@ func TestGenerateWorkflowNodeActRejectsDisplaySpeechLanguageMix(t *testing.T) {
 	}
 }
 
+func TestGenerateWorkflowNodeActRetriesRuntimeLanguageContract(t *testing.T) {
+	ag := &stageRepairingLanguageAgent{}
+	rt := NewRuntime(Dependencies{
+		Agents: map[agent.Provider]agent.Engine{
+			agent.ProviderMock: ag,
+		},
+		DefaultAgent: agent.ProviderMock,
+		Logger:       slog.Default(),
+	})
+
+	node, _, err := rt.generateWorkflowNodeAct(context.Background(), app.SceneGenerateRequest{
+		Characters: []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+		Runtime: app.RuntimeConfig{
+			AgentProvider: string(agent.ProviderMock),
+			Language: app.LanguagePlan{
+				DisplayLanguage: "zh-CN",
+				SpeechLanguage:  "ja",
+				Mode:            "translate_for_voice",
+			},
+		},
+	}, app.Session{ID: "lesson:test"}, app.TeachingWorkflow{}, app.TeachingWorkflowNode{
+		ID:      "lesson-1",
+		Kind:    "lesson",
+		Title:   "第一幕",
+		Speaker: "亚托莉",
+	}, app.SceneChoice{})
+	if err != nil {
+		t.Fatalf("generateWorkflowNodeAct() error = %v", err)
+	}
+	if ag.calls != 2 {
+		t.Fatalf("GenerateAct calls = %d, want 2", ag.calls)
+	}
+	if !strings.Contains(ag.correction, "屏幕显示语言") {
+		t.Fatalf("correction = %q, want display language feedback", ag.correction)
+	}
+	if got := node.Lines[0].Text; strings.Contains(got, "こんにちは") {
+		t.Fatalf("node.Lines[0].Text = %q, want repaired Chinese display text", got)
+	}
+}
+
 type stageRecordingVoiceEngine struct {
 	mu       sync.Mutex
 	lastText string
@@ -1029,6 +1069,39 @@ func (stageLanguageAgent) GenerateAct(context.Context, agent.ActInput) (agent.Ac
 }
 
 func (stageLanguageAgent) Discuss(context.Context, agent.DiscussInput) (agent.Output, error) {
+	return agent.Output{}, fmt.Errorf("not implemented")
+}
+
+type stageRepairingLanguageAgent struct {
+	calls      int
+	correction string
+}
+
+func (e *stageRepairingLanguageAgent) GenerateAct(_ context.Context, input agent.ActInput) (agent.ActOutput, error) {
+	e.calls++
+	if e.calls == 1 {
+		return stageLanguageAgent{}.GenerateAct(context.Background(), input)
+	}
+	e.correction = input.Correction
+	return agent.ActOutput{
+		Decision: agent.ActDecisionContinue,
+		Node: app.TeachingWorkflowNode{
+			ID:      "lesson-1",
+			Kind:    "lesson",
+			Title:   "第一幕",
+			Summary: "GMP",
+			Speaker: "亚托莉",
+			Lines: []app.DialogueLine{
+				{Speaker: "亚托莉", Text: "今天先看 GMP 的分工。", SpeechText: "今日はまず GMP の役割を見ます。", Expression: "soft_smile"},
+				{Speaker: "亚托莉", Text: "M 负责真正执行代码。", SpeechText: "M は実際にコードを実行します。", Expression: "thinking"},
+				{Speaker: "亚托莉", Text: "P 持有可运行任务队列。", SpeechText: "P は実行可能なタスク列を持っています。", Expression: "curious"},
+				{Speaker: "亚托莉", Text: "G 就是等待运行的任务。", SpeechText: "G は実行を待っているタスクです。", Expression: "calm"},
+			},
+		},
+	}, nil
+}
+
+func (e *stageRepairingLanguageAgent) Discuss(context.Context, agent.DiscussInput) (agent.Output, error) {
 	return agent.Output{}, fmt.Errorf("not implemented")
 }
 

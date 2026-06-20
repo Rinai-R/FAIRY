@@ -1,4 +1,5 @@
 import React from "react";
+import { characterVisualStyle, resolveCharacterPortrait } from "./characterVisualLayout";
 import { expressionLabel, motionLabel } from "./displayLabels";
 
 export function DirectorView({
@@ -28,7 +29,7 @@ export function DirectorView({
   const activeExpression = normalizeMood(activeSegment?.expression || currentBeat?.expression || runtimeState.expression || mood);
   const activeExpressionLabel = expressionLabel(activeExpression, activeCharacter);
   const activeMotionLabel = motionLabel(runtimeState.motion || currentBeat?.kind);
-  const portrait = activeCharacter?.assets?.moods?.[activeExpression]?.portrait_url || activeCharacter?.assets?.moods?.[mood]?.portrait_url || activeCharacter?.assets?.portrait_url || activeCharacter?.avatar_url || "";
+  const portrait = resolveCharacterPortrait(activeCharacter, activeExpression, mood);
   const backgroundFromKey = currentBeat?.background_key ? activeCharacter?.assets?.backgrounds?.[currentBeat.background_key] : "";
   const backgroundURL = currentBeat?.background_url || backgroundFromKey || activeCharacter?.assets?.background_url || scene.variables?.background_url || lastCG?.url || "";
   const choices = currentBeat?.choices?.length ? currentBeat.choices : [];
@@ -73,8 +74,12 @@ export function DirectorView({
             <span className="director-preview__hint">{hasPlayableBeat ? "使用顶部入口进入正式演出" : "等待生成剧情"}</span>
           </div>
           <div className="director-character-layer">
-            {portrait ? (
-              <img src={portrait} alt={activeCharacter?.display_name || activeCharacterID || "角色"} />
+            {portrait.url ? (
+              <img
+                src={portrait.url}
+                alt={activeCharacter?.display_name || activeCharacterID || "角色"}
+                style={characterVisualStyle(portrait.layout, "director")}
+              />
             ) : (
               <div className="director-character-fallback">
                 <strong>{(activeCharacter?.display_name || activeCharacterID || "角色").slice(0, 2)}</strong>

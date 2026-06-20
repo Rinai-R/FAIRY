@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { deriveStagePlaybackState, NEXT_ACTION } from "./stagePlayback";
 import { buildBacklogItems, workflowLineAudioURL, workflowLineSpeechText } from "./stageBacklog";
+import { characterVisualStyle, resolveCharacterPortrait } from "./characterVisualLayout";
 
 export function GalgameStageView({
   activeCharacter, activeCharacterID, busy, input, isTyping, lastCG,
@@ -38,10 +39,10 @@ export function GalgameStageView({
     return seg?.expression || currentNode?.expression || mood || "soft_smile";
   }, [visibleAssistant, currentNode, mood]);
 
-  const portrait = activeCharacter?.assets?.moods?.[activeExpression]?.portrait_url
-    || activeCharacter?.assets?.moods?.[mood]?.portrait_url
-    || activeCharacter?.assets?.portrait_url
-    || activeCharacter?.avatar_url || "";
+  const portrait = useMemo(
+    () => resolveCharacterPortrait(activeCharacter, activeExpression, mood),
+    [activeCharacter, activeExpression, mood],
+  );
 
   const backgroundFromKey = currentNode?.background_key ? activeCharacter?.assets?.backgrounds?.[currentNode.background_key] : "";
   const backgroundURL = currentNode?.background_url || backgroundFromKey
@@ -231,8 +232,14 @@ export function GalgameStageView({
 
       {/* Character sprite */}
       <div className="vn-character-layer">
-        {portrait ? (
-          <img className="vn-character-sprite" key={portrait} src={portrait} alt={speaker} />
+        {portrait.url ? (
+          <img
+            className="vn-character-sprite"
+            key={portrait.url}
+            src={portrait.url}
+            alt={speaker}
+            style={characterVisualStyle(portrait.layout, "stage")}
+          />
         ) : (
           <div className="vn-character-fallback">
             <strong>{speaker.slice(0, 2)}</strong>

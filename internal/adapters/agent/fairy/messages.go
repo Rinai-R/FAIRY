@@ -139,6 +139,8 @@ func buildGenerateActMessages(input agent.ActInput, plan actPlan) ([]llm.Message
 				"语言计划：",
 				languageBrief(input.Request.Runtime.Language),
 				"",
+				correctionBrief(input.Correction),
+				"",
 				"台词生成合约：",
 				"1. 只生成当前 planned_node/current_act_plan 对应的一幕，不要生成其他幕。",
 				"2. node.summary 必须概括当前幕 theme；node.lines[].text 必须围绕 current_act_plan.must_cover 展开。",
@@ -194,6 +196,8 @@ func buildRewriteActMessages(input agent.ActInput, plan actPlan, draft agent.Act
 				"",
 				"前端注入 Prompt：",
 				promptBrief(input.Request.Prompt, character.Prompt, character.StyleRules),
+				"",
+				correctionBrief(input.Correction),
 				"",
 				"改写合约：",
 				"1. 必须保留 decision 的含义，不要把 continue/summarize/free_discussion 改错。",
@@ -573,6 +577,19 @@ func promptBrief(primary app.PromptConfig, characterPrompt app.PromptConfig, cha
 func languageBrief(plan app.LanguagePlan) string {
 	language := plan.Normalize()
 	return "- display_language: " + language.DisplayLanguage + "\n- speech_language: " + language.SpeechLanguage + "\n- mode: " + language.Mode
+}
+
+func correctionBrief(correction string) string {
+	correction = strings.TrimSpace(correction)
+	if correction == "" {
+		return "修正反馈：\n- 无"
+	}
+	return strings.Join([]string{
+		"修正反馈：",
+		"- 上一次当前幕输出没有通过运行时合约。",
+		"- 必须只重新生成当前 planned_node，不要新增其他幕，不要改写已确认的规划书。",
+		"- 需要修正的问题：" + correction,
+	}, "\n")
 }
 
 func truncateForRepair(text string, limit int) string {
