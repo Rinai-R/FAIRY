@@ -9,13 +9,17 @@ import (
 	"github.com/Rinai-R/FAIRY/internal/app"
 )
 
+func textMaterial(text string) app.MaterialSource {
+	return app.MaterialSource{Mode: app.MaterialSourceText, Text: text}
+}
+
 func TestBuildPromptRequiresPlayerDrivenTeachingScene(t *testing.T) {
 	t.Parallel()
 
 	req := app.SceneGenerateRequest{
-		Topic:        "注意力机制",
-		DocumentText: "注意力机制用于让模型关注输入中的重要信息。",
-		LearningGoal: "能解释 token 之间如何互相参考。",
+		Topic:          "注意力机制",
+		MaterialSource: textMaterial("注意力机制用于让模型关注输入中的重要信息。"),
+		LearningGoal:   "能解释 token 之间如何互相参考。",
 		Characters: []app.Character{
 			{ID: "tutor", DisplayName: "讲解者", Persona: "温和清晰"},
 		},
@@ -49,8 +53,8 @@ func TestBuildPromptNormalizesLanguageAliases(t *testing.T) {
 	t.Parallel()
 
 	req := app.SceneGenerateRequest{
-		Topic:        "GMP 调度",
-		DocumentText: "G、M、P 共同完成 goroutine 调度。",
+		Topic:          "GMP 调度",
+		MaterialSource: textMaterial("G、M、P 共同完成 goroutine 调度。"),
 		Runtime: app.RuntimeConfig{
 			Language: app.LanguagePlan{
 				DisplayLanguage: "cn",
@@ -73,9 +77,9 @@ func TestNormalizeResponseFillsRequiredSceneRuntimeFields(t *testing.T) {
 	t.Parallel()
 
 	req := app.SceneGenerateRequest{
-		Topic:        "RAG",
-		DocumentText: "RAG 通过检索外部资料增强回答。",
-		LearningGoal: "理解检索增强生成的基本流程。",
+		Topic:          "RAG",
+		MaterialSource: textMaterial("RAG 通过检索外部资料增强回答。"),
+		LearningGoal:   "理解检索增强生成的基本流程。",
 		Characters: []app.Character{
 			{
 				ID:          "tutor",
@@ -135,9 +139,9 @@ func TestNormalizeResponseRebuildsThinTeachingWorkflow(t *testing.T) {
 	t.Parallel()
 
 	req := app.SceneGenerateRequest{
-		Topic:        "系统分析方法",
-		DocumentText: "系统分析需要先确定问题边界，再分析角色、流程、约束和反馈。",
-		LearningGoal: "能按材料主线解释系统分析步骤。",
+		Topic:          "系统分析方法",
+		MaterialSource: textMaterial("系统分析需要先确定问题边界，再分析角色、流程、约束和反馈。"),
+		LearningGoal:   "能按材料主线解释系统分析步骤。",
 		Characters: []app.Character{
 			{ID: "tutor", DisplayName: "亚托莉"},
 		},
@@ -250,9 +254,9 @@ func TestNormalizeResponseRejectsPrematureFreeDiscussion(t *testing.T) {
 
 	longLine := "这一幕先把材料里的问题慢慢展开，不急着让玩家自由提问，而是通过角色对白解释直觉、术语和具体关系，让主线能够继续往下走。"
 	req := app.SceneGenerateRequest{
-		Topic:        "注意力机制",
-		DocumentText: "注意力机制让模型关注输入中的重要信息。",
-		Characters:   []app.Character{{ID: "tutor", DisplayName: "亚托莉"}},
+		Topic:          "注意力机制",
+		MaterialSource: textMaterial("注意力机制让模型关注输入中的重要信息。"),
+		Characters:     []app.Character{{ID: "tutor", DisplayName: "亚托莉"}},
 	}
 
 	out := normalizeResponse(req, app.SceneGenerateResponse{
@@ -283,7 +287,7 @@ func TestGenerateRejectsMissingDocumentAndCharacters(t *testing.T) {
 		t.Fatal("Generate() error = nil, want missing document error")
 	}
 	if _, err := engine.Generate(context.Background(), scene.Input{Request: app.SceneGenerateRequest{
-		DocumentText: "材料",
+		MaterialSource: textMaterial("材料"),
 	}}); err == nil {
 		t.Fatal("Generate() error = nil, want missing characters error")
 	}

@@ -86,12 +86,12 @@ func registerAPIRoutes(h *hertzserver.Hertz, s *Server, prefix string) {
 
 	sessions := api.Group("/sessions")
 	sessions.GET("", s.sessions)
+	sessions.GET("/:id/events", s.sessionEvents)
 	sessions.GET("/:id", s.session)
 	sessions.POST("/delete", s.deleteSession)
 	api.POST("/session/delete", s.deleteSession)
 
 	documents := api.Group("/documents")
-	documents.POST("/fetch", s.fetchDocument)
 	documents.POST("/upload", s.uploadDocument)
 
 	scenes := api.Group("/scenes")
@@ -166,6 +166,15 @@ func (s *Server) session(_ context.Context, c *hertzapp.RequestContext) {
 	writeOK(c, record)
 }
 
+func (s *Server) sessionEvents(_ context.Context, c *hertzapp.RequestContext) {
+	events, err := s.runtime.SessionEvents(c.Param("id"))
+	if err != nil {
+		writeError(c, consts.StatusNotFound, errCodeSessionNotFound, err)
+		return
+	}
+	writeOK(c, app.RuntimeEventListResponse{Events: events})
+}
+
 func (s *Server) deleteSession(_ context.Context, c *hertzapp.RequestContext) {
 	var body struct {
 		ID string `json:"id"`
@@ -232,20 +241,6 @@ func (s *Server) advanceWorkflow(ctx context.Context, c *hertzapp.RequestContext
 	resp, err := s.runtime.AdvanceWorkflow(ctx, body)
 	if err != nil {
 		writeError(c, consts.StatusBadRequest, errCodeWorkflow, err)
-		return
-	}
-	writeOK(c, resp)
-}
-
-func (s *Server) fetchDocument(ctx context.Context, c *hertzapp.RequestContext) {
-	var body app.DocumentFetchRequest
-	if err := c.BindJSON(&body); err != nil {
-		writeError(c, consts.StatusBadRequest, errCodeInvalidRequest, err)
-		return
-	}
-	resp, err := s.runtime.FetchDocument(ctx, body)
-	if err != nil {
-		writeError(c, consts.StatusBadRequest, errCodeDocument, err)
 		return
 	}
 	writeOK(c, resp)

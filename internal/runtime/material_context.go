@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -13,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 
 	"github.com/Rinai-R/FAIRY/internal/app"
@@ -22,15 +20,12 @@ import (
 const (
 	maxMaterialContextTextBytes = 256 << 10
 	maxMaterialBriefBytes       = 96 << 10
-	maxMaterialDirectoryFiles   = 32
 	maxMaterialSingleFileBytes  = 256 << 10
-	maxMaterialTotalBytes       = 512 << 10
 )
 
 var (
-	localPathCandidatePattern = regexp.MustCompile(`(?:~[/\\]|/)[^，。,;\s]+`)
-	htmlTagPattern            = regexp.MustCompile(`(?s)<[^>]+>`)
-	htmlWhitespacePattern     = regexp.MustCompile(`[ \t\r\n]+`)
+	htmlTagPattern        = regexp.MustCompile(`(?s)<[^>]+>`)
+	htmlWhitespacePattern = regexp.MustCompile(`[ \t\r\n]+`)
 )
 
 type materialTextPart struct {
@@ -49,9 +44,6 @@ func (r *Runtime) prepareMaterialContext(ctx context.Context, req app.SceneGener
 	}
 	req.MaterialSource = source
 	if strings.TrimSpace(req.MaterialContext.Brief) != "" {
-		if strings.TrimSpace(req.DocumentText) == "" {
-			req.DocumentText = firstNonEmpty(req.MaterialContext.Text, req.MaterialContext.Brief)
-		}
 		return req, nil
 	}
 	material, err := r.buildMaterialContext(ctx, source)
@@ -59,59 +51,12 @@ func (r *Runtime) prepareMaterialContext(ctx context.Context, req app.SceneGener
 		return app.SceneGenerateRequest{}, err
 	}
 	req.MaterialContext = material
-	req.DocumentText = material.Text
-	req.Variables = cloneVariables(req.Variables)
-	req.Variables["material_source_mode"] = string(source.Mode)
-	req.Variables["material_source_summary"] = material.Report.Summary
 	return req, nil
 }
 
 func normalizeMaterialSource(req app.SceneGenerateRequest) (app.MaterialSource, error) {
 	if req.MaterialSource.Mode != "" {
 		return validateMaterialSource(req.MaterialSource)
-	}
-	mode := strings.TrimSpace(req.Variables["source_mode"])
-	switch mode {
-	case "directory", "local_directory":
-		return validateMaterialSource(app.MaterialSource{
-			Mode: app.MaterialSourceLocalDirectory,
-			Path: firstNonEmpty(
-				req.Variables["local_directory_path"],
-				extractLocalPath(req.DocumentText),
-				extractLocalPath(req.Variables["local_directory_instruction"]),
-			),
-			DisplayName: "本地目录",
-		})
-	case "url":
-		return validateMaterialSource(app.MaterialSource{
-			Mode: app.MaterialSourceURL,
-			URL:  firstNonEmpty(req.Variables["document_url"], req.Variables["source_url"]),
-		})
-	case "uploaded_file":
-		return validateMaterialSource(app.MaterialSource{
-			Mode:      app.MaterialSourceUploadedFile,
-			AssetID:   req.Variables["document_asset_id"],
-			AssetName: req.Variables["document_asset_name"],
-			AssetType: req.Variables["document_asset_type"],
-			AssetPath: firstNonEmpty(req.Variables["document_asset_path"], req.Variables["material_file_path"]),
-		})
-	case "text":
-		return validateMaterialSource(app.MaterialSource{Mode: app.MaterialSourceText, Text: req.DocumentText})
-	}
-	if strings.TrimSpace(req.DocumentText) != "" {
-		return validateMaterialSource(app.MaterialSource{Mode: app.MaterialSourceText, Text: req.DocumentText})
-	}
-	if url := firstNonEmpty(req.Variables["document_url"], req.Variables["source_url"]); url != "" {
-		return validateMaterialSource(app.MaterialSource{Mode: app.MaterialSourceURL, URL: url})
-	}
-	if path := firstNonEmpty(req.Variables["document_asset_path"], req.Variables["material_file_path"]); path != "" {
-		return validateMaterialSource(app.MaterialSource{
-			Mode:      app.MaterialSourceUploadedFile,
-			AssetID:   req.Variables["document_asset_id"],
-			AssetName: req.Variables["document_asset_name"],
-			AssetType: req.Variables["document_asset_type"],
-			AssetPath: path,
-		})
 	}
 	return app.MaterialSource{}, nil
 }
@@ -124,19 +69,9 @@ func validateMaterialSource(source app.MaterialSource) (app.MaterialSource, erro
 			return app.MaterialSource{}, errors.New("material_source.text 不能为空")
 		}
 	case app.MaterialSourceUploadedFile:
-		source.AssetPath = strings.TrimSpace(firstNonEmpty(source.AssetPath, source.Path))
+		source.AssetPath = strings.TrimSpace(source.AssetPath)
 		if source.AssetPath == "" {
 			return app.MaterialSource{}, errors.New("material_source.asset_path 不能为空")
-		}
-	case app.MaterialSourceURL:
-		source.URL = strings.TrimSpace(source.URL)
-		if source.URL == "" {
-			return app.MaterialSource{}, errors.New("material_source.url 不能为空")
-		}
-	case app.MaterialSourceLocalDirectory:
-		source.Path = strings.TrimSpace(source.Path)
-		if source.Path == "" {
-			return app.MaterialSource{}, errors.New("material_source.path 不能为空")
 		}
 	default:
 		return app.MaterialSource{}, fmt.Errorf("material_source.mode 不支持: %q", source.Mode)
@@ -144,7 +79,7 @@ func validateMaterialSource(source app.MaterialSource) (app.MaterialSource, erro
 	return source, nil
 }
 
-func (r *Runtime) buildMaterialContext(ctx context.Context, source app.MaterialSource) (app.MaterialContext, error) {
+func (r *Runtime) buildMaterialContext(_ context.Context, source app.MaterialSource) (app.MaterialContext, error) {
 	switch source.Mode {
 	case app.MaterialSourceText:
 		item := app.MaterialItem{
@@ -154,16 +89,12 @@ func (r *Runtime) buildMaterialContext(ctx context.Context, source app.MaterialS
 			SizeBytes:  int64(len(source.Text)),
 		}
 		return buildMaterialContextFromParts(source, []materialTextPart{{
-			title: firstNonEmpty(source.DisplayName, "粘贴正文"),
+			title: "粘贴正文",
 			item:  item,
 			text:  source.Text,
 		}}, nil)
 	case app.MaterialSourceUploadedFile:
 		return r.materialContextFromUploadedFile(source)
-	case app.MaterialSourceURL:
-		return r.materialContextFromURL(ctx, source)
-	case app.MaterialSourceLocalDirectory:
-		return r.materialContextFromLocalPath(source)
 	default:
 		return app.MaterialContext{}, fmt.Errorf("material_source.mode 不支持: %q", source.Mode)
 	}
@@ -186,98 +117,6 @@ func (r *Runtime) materialContextFromUploadedFile(source app.MaterialSource) (ap
 		item:  item,
 		text:  text,
 	}}, nil)
-}
-
-func (r *Runtime) materialContextFromURL(ctx context.Context, source app.MaterialSource) (app.MaterialContext, error) {
-	resp, err := r.FetchDocument(ctx, app.DocumentFetchRequest{URL: source.URL})
-	if err != nil {
-		return app.MaterialContext{}, fmt.Errorf("material.url: %w", err)
-	}
-	data, err := base64.StdEncoding.DecodeString(resp.DataBase64)
-	if err != nil {
-		return app.MaterialContext{}, fmt.Errorf("material.url: document data 不是有效 base64: %w", err)
-	}
-	text, item, err := extractMaterialBytes(resp.Filename, resp.ContentType, data, "url")
-	if err != nil {
-		return app.MaterialContext{}, err
-	}
-	item.URL = resp.URL
-	item.Filename = resp.Filename
-	item.ContentType = resp.ContentType
-	item.SizeBytes = resp.SizeBytes
-	return buildMaterialContextFromParts(source, []materialTextPart{{
-		title: firstNonEmpty(resp.Filename, resp.URL),
-		item:  item,
-		text:  text,
-	}}, nil)
-}
-
-func (r *Runtime) materialContextFromLocalPath(source app.MaterialSource) (app.MaterialContext, error) {
-	root, err := resolveLocalMaterialPath(source.Path)
-	if err != nil {
-		return app.MaterialContext{}, fmt.Errorf("material.local_directory: 解析路径失败: %w", err)
-	}
-	info, err := os.Stat(root)
-	if err != nil {
-		return app.MaterialContext{}, fmt.Errorf("material.local_directory: 读取路径失败: %w", err)
-	}
-	if !info.IsDir() {
-		text, item, err := readMaterialFile(root, "", "local_file")
-		if err != nil {
-			return app.MaterialContext{}, err
-		}
-		return buildMaterialContextFromParts(source, []materialTextPart{{
-			title: filepath.Base(root),
-			item:  item,
-			text:  text,
-		}}, nil)
-	}
-
-	var parts []materialTextPart
-	var skipped []app.MaterialItem
-	var total int64
-	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			skipped = append(skipped, app.MaterialItem{SourceType: "local_file", Path: path, Status: "skipped", Message: walkErr.Error()})
-			return nil
-		}
-		if entry.IsDir() {
-			if path != root && shouldSkipMaterialDirectory(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if len(parts) >= maxMaterialDirectoryFiles {
-			skipped = append(skipped, app.MaterialItem{SourceType: "local_file", Path: path, Status: "skipped", Message: "超过目录读取文件数量上限"})
-			return nil
-		}
-		if !isAllowedMaterialPath(path, "") {
-			skipped = append(skipped, app.MaterialItem{SourceType: "local_file", Path: path, Status: "skipped", Message: "文件类型不在材料白名单"})
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			skipped = append(skipped, app.MaterialItem{SourceType: "local_file", Path: path, Status: "skipped", Message: err.Error()})
-			return nil
-		}
-		if total >= maxMaterialTotalBytes {
-			skipped = append(skipped, app.MaterialItem{SourceType: "local_file", Path: path, Status: "skipped", Message: "超过材料总字节上限", SizeBytes: info.Size()})
-			return nil
-		}
-		text, item, err := readMaterialFile(path, "", "local_file")
-		if err != nil {
-			skipped = append(skipped, app.MaterialItem{SourceType: "local_file", Path: path, Status: "skipped", Message: err.Error(), SizeBytes: info.Size()})
-			return nil
-		}
-		total += int64(item.TextBytes)
-		parts = append(parts, materialTextPart{title: relativeMaterialTitle(root, path), item: item, text: text})
-		return nil
-	})
-	if err != nil {
-		return app.MaterialContext{}, fmt.Errorf("material.local_directory: 枚举目录失败: %w", err)
-	}
-	sort.Slice(parts, func(i, j int) bool { return parts[i].title < parts[j].title })
-	return buildMaterialContextFromParts(source, parts, skipped)
 }
 
 func buildMaterialContextFromParts(source app.MaterialSource, parts []materialTextPart, skipped []app.MaterialItem) (app.MaterialContext, error) {
@@ -311,7 +150,7 @@ func buildMaterialContextFromParts(source app.MaterialSource, parts []materialTe
 		}
 	}
 	items = append(items, skipped...)
-	fullText := truncateDocumentText(textBuilder.String())
+	fullText := truncateMaterialText(textBuilder.String())
 	brief := truncateString(fullText, maxMaterialBriefBytes)
 	if strings.TrimSpace(brief) == "" {
 		return app.MaterialContext{}, fmt.Errorf("material.%s: 材料文本为空", source.Mode)
@@ -499,7 +338,7 @@ func extractDOCXTextFromFiles(files []*zip.File) (string, error) {
 			return "", fmt.Errorf("打开 word/document.xml 失败: %w", err)
 		}
 		defer rc.Close()
-		text, err := extractWordDocumentText(rc)
+		text, err := extractWordText(rc)
 		if err != nil {
 			return "", err
 		}
@@ -511,7 +350,7 @@ func extractDOCXTextFromFiles(files []*zip.File) (string, error) {
 	return "", errors.New("docx 缺少 word/document.xml")
 }
 
-func extractWordDocumentText(r io.Reader) (string, error) {
+func extractWordText(r io.Reader) (string, error) {
 	decoder := xml.NewDecoder(r)
 	var builder strings.Builder
 	inText := false
@@ -599,51 +438,4 @@ func truncateString(value string, maxBytes int) string {
 		return value
 	}
 	return value[:maxBytes]
-}
-
-func extractLocalPath(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	if path, err := resolveLocalMaterialPath(value); err == nil {
-		if _, err := os.Stat(path); err == nil {
-			return value
-		}
-	}
-	match := localPathCandidatePattern.FindString(value)
-	return strings.TrimRight(match, "，。.,;；")
-}
-
-func resolveLocalMaterialPath(path string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "~" || strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("展开 ~ 失败: %w", err)
-		}
-		if path == "~" {
-			path = home
-		} else {
-			path = filepath.Join(home, path[2:])
-		}
-	}
-	return filepath.Abs(filepath.Clean(path))
-}
-
-func relativeMaterialTitle(root string, path string) string {
-	rel, err := filepath.Rel(root, path)
-	if err != nil || rel == "." {
-		return filepath.Base(path)
-	}
-	return rel
-}
-
-func shouldSkipMaterialDirectory(name string) bool {
-	switch strings.ToLower(name) {
-	case ".git", "node_modules", "vendor", "dist", "build", ".next", ".venv", "venv", "__pycache__":
-		return true
-	default:
-		return false
-	}
 }

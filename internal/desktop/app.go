@@ -74,10 +74,6 @@ func (a *App) AdvanceWorkflow(request app.WorkflowAdvanceRequest) (app.WorkflowA
 	return a.runtime.AdvanceWorkflow(a.context(), request)
 }
 
-func (a *App) FetchDocument(request app.DocumentFetchRequest) (app.DocumentFetchResponse, error) {
-	return a.runtime.FetchDocument(a.context(), request)
-}
-
 func (a *App) StoreDocumentAsset(request app.DocumentUploadRequest) (app.DocumentAsset, error) {
 	return a.runtime.StoreDocumentAsset(a.context(), request)
 }
@@ -92,6 +88,14 @@ func (a *App) Sessions() ([]app.SessionRecord, error) {
 
 func (a *App) Session(id string) (app.SessionRecord, error) {
 	return a.runtime.Session(id)
+}
+
+func (a *App) SessionEvents(id string) (app.RuntimeEventListResponse, error) {
+	events, err := a.runtime.SessionEvents(id)
+	if err != nil {
+		return app.RuntimeEventListResponse{}, err
+	}
+	return app.RuntimeEventListResponse{Events: events}, nil
 }
 
 func (a *App) DeleteSession(id string) (map[string]bool, error) {

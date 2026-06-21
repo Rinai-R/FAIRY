@@ -139,7 +139,70 @@ type SessionRecord struct {
 	Relation    Relationship     `json:"relation"`
 	Messages    []Message        `json:"messages,omitempty"`
 	Generation  SceneGeneration  `json:"generation,omitempty"`
+	Events      []RuntimeEvent   `json:"events,omitempty"`
 	UpdatedAt   time.Time        `json:"updated_at"`
+}
+
+const (
+	RuntimeEventLevelInfo  = "info"
+	RuntimeEventLevelWarn  = "warn"
+	RuntimeEventLevelError = "error"
+
+	RuntimeEventStageGeneration = "generation"
+	RuntimeEventStageMaterial   = "material"
+	RuntimeEventStageWorkflow   = "workflow"
+	RuntimeEventStageVoice      = "voice"
+	RuntimeEventStageAgent      = "agent"
+	RuntimeEventStageImage      = "image"
+	RuntimeEventStagePersist    = "persist"
+
+	RuntimeEventTypeGenerationCreated      = "generation.created"
+	RuntimeEventTypeGenerationComplete     = "generation.completed"
+	RuntimeEventTypeGenerationFailed       = "generation.failed"
+	RuntimeEventTypeMaterialPrepared       = "material.prepared"
+	RuntimeEventTypeWorkflowNodeComplete   = "workflow.node.completed"
+	RuntimeEventTypeWorkflowNodeFailed     = "workflow.node.failed"
+	RuntimeEventTypeWorkflowAdvanceFailed  = "workflow.advance.failed"
+	RuntimeEventTypeVoiceSynthesizeDone    = "voice.synthesize.completed"
+	RuntimeEventTypeVoiceSynthesizeFailed  = "voice.synthesize.failed"
+	RuntimeEventTypeAgentGenerateActDone   = "agent.generate_act.completed"
+	RuntimeEventTypeAgentGenerateActFailed = "agent.generate_act.failed"
+	RuntimeEventTypeAgentGenerateActRetry  = "agent.generate_act.retry"
+	RuntimeEventTypeAgentActPlanDone       = "agent.actplan.completed"
+	RuntimeEventTypeAgentActPlanCacheHit   = "agent.actplan.cache_hit"
+	RuntimeEventTypeAgentActPlanFailed     = "agent.actplan.failed"
+	RuntimeEventTypeAgentActPlanRetry      = "agent.actplan.retry"
+	RuntimeEventTypeAgentDraftDone         = "agent.generate_act.draft.completed"
+	RuntimeEventTypeAgentDraftFailed       = "agent.generate_act.draft.failed"
+	RuntimeEventTypeAgentDraftRetry        = "agent.generate_act.draft.retry"
+	RuntimeEventTypeAgentRewriteDone       = "agent.rewrite_act.completed"
+	RuntimeEventTypeAgentRewriteFailed     = "agent.rewrite_act.failed"
+	RuntimeEventTypeAgentRewriteRetry      = "agent.rewrite_act.retry"
+	RuntimeEventTypeImageGenerateDone      = "image.generate.completed"
+	RuntimeEventTypeImageGenerateFailed    = "image.generate.failed"
+	RuntimeEventTypePersistWorkflowSaved   = "persist.workflow.saved"
+	RuntimeEventTypePersistWorkflowFailed  = "persist.workflow.failed"
+	RuntimeEventTypePersistTurnSaved       = "persist.turn.saved"
+	RuntimeEventTypePersistTurnFailed      = "persist.turn.failed"
+)
+
+type RuntimeEvent struct {
+	ID         string    `json:"id"`
+	SessionID  string    `json:"session_id"`
+	Level      string    `json:"level"`
+	Type       string    `json:"type"`
+	Stage      string    `json:"stage"`
+	Message    string    `json:"message"`
+	Detail     string    `json:"detail,omitempty"`
+	NodeID     string    `json:"node_id,omitempty"`
+	Provider   string    `json:"provider,omitempty"`
+	RetryCount int       `json:"retry_count,omitempty"`
+	DurationMS int64     `json:"duration_ms,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type RuntimeEventListResponse struct {
+	Events []RuntimeEvent `json:"events"`
 }
 
 type SceneGeneration struct {
@@ -153,7 +216,6 @@ type SceneGeneration struct {
 
 type TeachingSnapshot struct {
 	Topic           string            `json:"topic,omitempty"`
-	DocumentText    string            `json:"document_text,omitempty"`
 	LearningGoal    string            `json:"learning_goal,omitempty"`
 	Prompt          PromptConfig      `json:"prompt,omitempty"`
 	Runtime         RuntimeConfig     `json:"runtime,omitempty"`
@@ -360,7 +422,6 @@ func IsEnglishLanguage(language string) bool {
 
 type SceneGenerateRequest struct {
 	Topic           string            `json:"topic,omitempty"`
-	DocumentText    string            `json:"document_text,omitempty"`
 	LearningGoal    string            `json:"learning_goal,omitempty"`
 	InteractionMode string            `json:"interaction_mode,omitempty"`
 	Prompt          PromptConfig      `json:"prompt,omitempty"`
@@ -374,28 +435,36 @@ type SceneGenerateRequest struct {
 type MaterialSourceMode string
 
 const (
-	MaterialSourceText           MaterialSourceMode = "text"
-	MaterialSourceUploadedFile   MaterialSourceMode = "uploaded_file"
-	MaterialSourceURL            MaterialSourceMode = "url"
-	MaterialSourceLocalDirectory MaterialSourceMode = "local_directory"
+	MaterialSourceText         MaterialSourceMode = "text"
+	MaterialSourceUploadedFile MaterialSourceMode = "uploaded_file"
 )
 
 type MaterialSource struct {
-	Mode        MaterialSourceMode `json:"mode,omitempty"`
-	Text        string             `json:"text,omitempty"`
-	URL         string             `json:"url,omitempty"`
-	Path        string             `json:"path,omitempty"`
-	AssetID     string             `json:"asset_id,omitempty"`
-	AssetName   string             `json:"asset_name,omitempty"`
-	AssetType   string             `json:"asset_type,omitempty"`
-	AssetPath   string             `json:"asset_path,omitempty"`
-	DisplayName string             `json:"display_name,omitempty"`
+	Mode      MaterialSourceMode `json:"mode,omitempty"`
+	Text      string             `json:"text,omitempty"`
+	AssetID   string             `json:"asset_id,omitempty"`
+	AssetName string             `json:"asset_name,omitempty"`
+	AssetType string             `json:"asset_type,omitempty"`
+	AssetPath string             `json:"asset_path,omitempty"`
 }
 
 type MaterialContext struct {
 	Brief  string               `json:"brief,omitempty"`
 	Text   string               `json:"text,omitempty"`
 	Report MaterialSourceReport `json:"report,omitempty"`
+}
+
+func SceneGenerateMaterialText(req SceneGenerateRequest) string {
+	if text := strings.TrimSpace(req.MaterialContext.Text); text != "" {
+		return text
+	}
+	if text := strings.TrimSpace(req.MaterialContext.Brief); text != "" {
+		return text
+	}
+	if req.MaterialSource.Mode == MaterialSourceText {
+		return strings.TrimSpace(req.MaterialSource.Text)
+	}
+	return ""
 }
 
 type MaterialSourceReport struct {
@@ -410,7 +479,6 @@ type MaterialSourceReport struct {
 type MaterialItem struct {
 	SourceType  string `json:"source_type,omitempty"`
 	Path        string `json:"path,omitempty"`
-	URL         string `json:"url,omitempty"`
 	Filename    string `json:"filename,omitempty"`
 	ContentType string `json:"content_type,omitempty"`
 	Status      string `json:"status,omitempty"`
@@ -484,25 +552,29 @@ type WorkflowHistoryItem struct {
 }
 
 type TeachingWorkflowNode struct {
-	ID             string         `json:"id"`
-	Kind           string         `json:"kind"`
-	Title          string         `json:"title"`
-	Decision       string         `json:"decision,omitempty"`
-	Summary        string         `json:"summary,omitempty"`
-	Speaker        string         `json:"speaker,omitempty"`
-	Line           string         `json:"line,omitempty"`
-	Lines          []DialogueLine `json:"lines,omitempty"`
-	SpeechText     string         `json:"speech_text,omitempty"`
-	Challenge      string         `json:"challenge,omitempty"`
-	BackgroundKey  string         `json:"background_key,omitempty"`
-	BackgroundURL  string         `json:"background_url,omitempty"`
-	Choices        []SceneChoice  `json:"choices,omitempty"`
-	NextNodeID     string         `json:"next_node_id,omitempty"`
-	FreeDiscussion bool           `json:"free_discussion,omitempty"`
-	Status         string         `json:"status,omitempty"`
-	VoiceStatus    string         `json:"voice_status,omitempty"`
-	ReadyAt        time.Time      `json:"ready_at,omitempty"`
-	PrepareError   string         `json:"prepare_error,omitempty"`
+	ID                      string         `json:"id"`
+	Kind                    string         `json:"kind"`
+	Title                   string         `json:"title"`
+	Decision                string         `json:"decision,omitempty"`
+	Summary                 string         `json:"summary,omitempty"`
+	TeachingGoal            string         `json:"teaching_goal,omitempty"`
+	MustCover               []string       `json:"must_cover,omitempty"`
+	MisconceptionToAddress  string         `json:"misconception_to_address,omitempty"`
+	ExampleOrCounterexample string         `json:"example_or_counterexample,omitempty"`
+	Speaker                 string         `json:"speaker,omitempty"`
+	Line                    string         `json:"line,omitempty"`
+	Lines                   []DialogueLine `json:"lines,omitempty"`
+	SpeechText              string         `json:"speech_text,omitempty"`
+	Challenge               string         `json:"challenge,omitempty"`
+	BackgroundKey           string         `json:"background_key,omitempty"`
+	BackgroundURL           string         `json:"background_url,omitempty"`
+	Choices                 []SceneChoice  `json:"choices,omitempty"`
+	NextNodeID              string         `json:"next_node_id,omitempty"`
+	FreeDiscussion          bool           `json:"free_discussion,omitempty"`
+	Status                  string         `json:"status,omitempty"`
+	VoiceStatus             string         `json:"voice_status,omitempty"`
+	ReadyAt                 time.Time      `json:"ready_at,omitempty"`
+	PrepareError            string         `json:"prepare_error,omitempty"`
 }
 
 type WorkflowAdvanceRequest struct {
@@ -566,18 +638,6 @@ type PluginCatalog struct {
 	Version   string           `json:"version"`
 	Manifests []PluginManifest `json:"manifests"`
 	Errors    []string         `json:"errors,omitempty"`
-}
-
-type DocumentFetchRequest struct {
-	URL string `json:"url"`
-}
-
-type DocumentFetchResponse struct {
-	URL         string `json:"url"`
-	Filename    string `json:"filename"`
-	ContentType string `json:"content_type"`
-	DataBase64  string `json:"data_base64"`
-	SizeBytes   int64  `json:"size_bytes"`
 }
 
 type DocumentUploadRequest struct {

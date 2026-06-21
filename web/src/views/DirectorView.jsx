@@ -1,4 +1,5 @@
 import React from "react";
+import { chapterSnapshotNodes, chapterSnapshotPosition, visitedChapterCount } from "../historySnapshots";
 import { characterVisualStyle, resolveCharacterPortrait } from "./characterVisualLayout";
 import { expressionLabel, motionLabel } from "./displayLabels";
 
@@ -18,10 +19,13 @@ export function DirectorView({
   setActiveView
 }) {
   const allNodes = Array.isArray(lessonWorkflow?.nodes) ? lessonWorkflow.nodes : [];
-  const beats = allNodes.filter((n) => n.kind === "lesson" || n.kind === "opening");
+  const chapters = chapterSnapshotNodes(allNodes);
   const history = Array.isArray(lessonWorkflow?.history) ? lessonWorkflow.history : [];
   const currentBeat = allNodes.find((beat) => beat.id === lessonWorkflow?.current_node_id) || allNodes[0];
-  const visitedBeatIDs = new Set(history.map((item) => item.node_id));
+  const currentChapterPosition = chapterSnapshotPosition(allNodes, currentBeat);
+  const isFreeDiscussionBeat = Boolean(currentBeat?.free_discussion || currentBeat?.freeDiscussion || currentBeat?.kind === "free_discussion");
+  const visitedBeatIDs = new Set(history.map((item) => item?.node_id || item?.id).filter(Boolean));
+  const visitedChapters = visitedChapterCount(allNodes, history);
   const latestAssistant = findLatestMessage(messages, "assistant");
   const latestBeatAssistant = findLatestBeatMessage(messages, currentBeat?.id);
   const visibleAssistant = latestBeatAssistant || latestAssistant;
@@ -33,21 +37,25 @@ export function DirectorView({
   const backgroundFromKey = currentBeat?.background_key ? activeCharacter?.assets?.backgrounds?.[currentBeat.background_key] : "";
   const backgroundURL = currentBeat?.background_url || backgroundFromKey || activeCharacter?.assets?.background_url || scene.variables?.background_url || lastCG?.url || "";
   const choices = currentBeat?.choices?.length ? currentBeat.choices : [];
-  const beatIndex = Math.max(0, beats.findIndex((beat) => beat.id === currentBeat?.id));
-  const progress = progressPercent(Math.max(history.length, beatIndex + 1), beats.length);
-  const hasPlayableBeat = Boolean(currentBeat && currentBeat.kind !== "draft" && (beats.length > 0 || choices.length > 0 || currentBeat.free_discussion));
+  const progress = chapters.length
+    ? progressPercent(isFreeDiscussionBeat ? chapters.length : Math.max(visitedChapters, currentChapterPosition?.number || 0), chapters.length)
+    : 0;
+  const hasPlayableBeat = Boolean(currentBeat && currentBeat.kind !== "draft" && (currentChapterPosition || choices.length > 0 || isFreeDiscussionBeat));
   const previewStyle = galSceneBackgroundStyle(backgroundURL, "rgba(20, 19, 22, 0.02)", "rgba(20, 19, 22, 0.28)");
   const beatLines = currentBeat?.lines?.length ? currentBeat.lines : (currentBeat?.line ? [{ speaker: currentBeat.speaker, text: currentBeat.line }] : []);
   const previewLines = hasPlayableBeat ? makePreviewLines(beatLines, visibleAssistant, 2) : [];
   const materialName = documentAsset?.filename || documentTitle || "未导入材料";
   const directorTitle = hasPlayableBeat ? (scene.title || lessonWorkflow?.title || "演出预览") : "演出预览";
   const coverTitle = hasPlayableBeat
-    ? (currentBeat?.title || "当前章节")
+    ? (currentBeat?.title || (isFreeDiscussionBeat ? "自由讨论" : "当前章节"))
     : "还没有可播放的剧情";
   const coverLine = hasPlayableBeat
-    ? previewLines.map((line) => line.text).join(" ")
+    ? (isFreeDiscussionBeat ? "主线章节已经讲完，可以进入演出继续追问这一段内容。" : previewLines.map((line) => line.text).join(" "))
     : "先回到主页生成教学剧情。生成完成后，这里会变成正式的演出入口。";
-  const chapterText = beats.length ? `${beatIndex + 1}/${beats.length}` : "0/0";
+  const chapterText = currentChapterPosition
+    ? `${currentChapterPosition.number}/${currentChapterPosition.total}`
+    : isFreeDiscussionBeat ? "自由讨论" : (chapters.length ? `—/${chapters.length}` : "0/0");
+  const chapterBadge = isFreeDiscussionBeat ? "FREE TALK" : `CHAPTER ${chapterText}`;
   const enterLabel = hasPlayableBeat ? "进入演出" : "去生成";
 
   return (
@@ -68,7 +76,7 @@ export function DirectorView({
         <section className={`director-preview ${backgroundURL ? "has-background" : ""}`} style={previewStyle}>
           <div className="director-preview__top">
             <div>
-              <span className="director-preview__badge">{hasPlayableBeat ? `CHAPTER ${chapterText}` : "DRAFT"}</span>
+              <span className="director-preview__badge">{hasPlayableBeat ? chapterBadge : "DRAFT"}</span>
               <h2>{coverTitle}</h2>
             </div>
             <span className="director-preview__hint">{hasPlayableBeat ? "使用顶部入口进入正式演出" : "等待生成剧情"}</span>
@@ -116,7 +124,7 @@ export function DirectorView({
               <span>{activeExpressionLabel}</span>
               <span>{backgroundURL ? "背景已绑定" : "等待背景"}</span>
             </div>
-            <p>{hasPlayableBeat ? "章节已经具备台词，可以进入全屏演出。" : "还没有生成可播放章节，请先从主页生成剧情。"}</p>
+            <p>{hasPlayableBeat ? (isFreeDiscussionBeat ? "主线已完成，可以进入全屏演出继续自由提问。" : "章节已经具备台词，可以进入全屏演出。") : "还没有生成可播放章节，请先从主页生成剧情。"}</p>
           </section>
           <section className="director-status-card">
             <div className="director-card-head">
@@ -149,7 +157,7 @@ export function DirectorView({
       </div>
 
       <div className="director-filmstrip" aria-label="章节胶片">
-        {beats.length ? beats.map((beat, index) => {
+        {chapters.length ? chapters.map((beat, index) => {
           const visited = visitedBeatIDs.has(beat.id);
           const isCurrent = beat.id === currentBeat?.id;
           const status = isCurrent ? "当前预览" : visited ? "已生成 · 可回看" : "未开始";

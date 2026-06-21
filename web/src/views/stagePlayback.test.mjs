@@ -42,6 +42,29 @@ assert.equal(
   "最后一条 line 且下一幕 ready 时应允许跨幕推进",
 );
 
+{
+  const state = playback({ hasChoices: true, lineCount: 1, lineIndex: 0, stageWaiting: false });
+  assert.equal(state.nextAction, NEXT_ACTION.CHOICE_PENDING);
+  assert.equal(state.isChoicePending, true);
+  assert.equal(state.shouldShowAdvance, false);
+  assert.equal(state.advanceDisabled, true);
+  assert.equal(state.advanceLabel, "请选择");
+}
+
+{
+  const state = playback({ hasChoices: true, lineCount: 1, lineIndex: 0, stageWaiting: true });
+  assert.equal(state.nextAction, NEXT_ACTION.WAIT_NEXT_NODE);
+  assert.equal(state.shouldShowAdvance, true);
+  assert.equal(state.advanceDisabled, true);
+  assert.equal(state.advanceLabel, "准备中");
+}
+
+assert.equal(
+  playback({ hasChoices: true, lineCount: 3, lineIndex: 0, stageWaiting: true }).nextAction,
+  NEXT_ACTION.NEXT_LINE,
+  "有选项但当前幕未读完时，仍应本地推进 line",
+);
+
 assert.equal(
   playback({ busy: true, lineCount: 3, lineIndex: 0, stageWaiting: false }).nextAction,
   NEXT_ACTION.NONE,

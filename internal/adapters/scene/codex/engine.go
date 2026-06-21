@@ -38,8 +38,8 @@ func NewEngine(options Options) Engine {
 
 func (e Engine) Generate(ctx context.Context, input scene.Input) (app.SceneGenerateResponse, error) {
 	req := input.Request
-	if strings.TrimSpace(req.DocumentText) == "" && documentSource(req.Variables) == "" {
-		return app.SceneGenerateResponse{}, fmt.Errorf("document_text、document_url 或 document_asset 不能为空")
+	if app.SceneGenerateMaterialText(req) == "" {
+		return app.SceneGenerateResponse{}, fmt.Errorf("material_context 不能为空")
 	}
 	if len(req.Characters) == 0 {
 		return app.SceneGenerateResponse{}, fmt.Errorf("characters 至少需要 1 个角色")
@@ -96,7 +96,7 @@ func buildPrompt(req app.SceneGenerateRequest, body string) string {
 
 任务：
 - 基于用户提供的文档材料生成一个教学 Galgame 篇章。最重要的是：每幕必须包含多轮角色对话（lines），而不是一句独白。角色之间要像真实对话一样有来有回——讲解者解释一段、追问者追问或质疑、讲解者回应，这样交替进行。
-- 文档材料已经由 FAIRY runtime 读取并整理到 request.material_context 和 document_text；你只能基于这些已提供内容生成，不要自行读取 URL、本地路径或外部文件。
+- 文档材料只来自粘贴文本或单个上传文件，并已经由 FAIRY runtime 整理到 request.material_context；你只能基于这些已提供内容生成，不要要求读取 URL、本地路径或外部文件。
 - 不要替玩家发言，玩家只在每幕末尾的自由讨论环节参与。
 - 场景必须围绕文档内容和学习目标，不要编造材料外事实。
 - 如果 material_context 显示材料被截断或跳过，opening_message 可以自然提醒玩家补充更明确的材料。
@@ -142,7 +142,8 @@ lines 字段：
 
 func normalizeResponse(req app.SceneGenerateRequest, out app.SceneGenerateResponse) app.SceneGenerateResponse {
 	now := time.Now().UTC()
-	topic := firstNonEmpty(strings.TrimSpace(req.Topic), out.Scene.Variables["topic"], inferTopic(req.DocumentText))
+	materialText := app.SceneGenerateMaterialText(req)
+	topic := firstNonEmpty(strings.TrimSpace(req.Topic), out.Scene.Variables["topic"], inferTopic(materialText))
 	goal := firstNonEmpty(strings.TrimSpace(req.LearningGoal), out.Scene.Variables["learning_goal"], "理解核心概念，并能用自己的话复述。")
 	activeCharacter := firstCharacter(req.Characters)
 
@@ -165,7 +166,7 @@ func normalizeResponse(req app.SceneGenerateRequest, out app.SceneGenerateRespon
 		"mode":             "teaching",
 		"topic":            topic,
 		"learning_goal":    goal,
-		"document_summary": truncateRunes(req.DocumentText, 600),
+		"document_summary": truncateRunes(materialText, 600),
 	}, out.Scene.Variables)
 
 	if out.Session.ID == "" {
@@ -193,7 +194,7 @@ func normalizeResponse(req app.SceneGenerateRequest, out app.SceneGenerateRespon
 		out.OpeningMessage = "我已经读完这份材料了。我们从「" + topic + "」开始，顺着材料本身的思路往下走——它问了什么、怎么回答的、最后落到哪里。中间你可以随时说哪里不对或没听懂，等主线走完再随便追问。"
 	}
 	out.Interaction = normalizeInteraction(req.InteractionMode, out.Interaction, topic)
-	out.Workflow = normalizeWorkflow(out.Workflow, out.Scene.ID, topic, goal, req.DocumentText, activeCharacter, out.Interaction)
+	out.Workflow = normalizeWorkflow(out.Workflow, out.Scene.ID, topic, goal, materialText, activeCharacter, out.Interaction)
 	if out.Image.Prompt == "" {
 		out.Image = app.ImageRequest{
 			Enabled:           true,
@@ -475,15 +476,6 @@ func firstCharacter(characters []app.Character) app.Character {
 		}
 	}
 	return app.Character{ID: "tutor", DisplayName: "讲解者"}
-}
-
-func documentSource(variables map[string]string) string {
-	for _, key := range []string{"document_url", "source_url", "document_asset_path", "material_file_path"} {
-		if value := strings.TrimSpace(variables[key]); value != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func participantIDs(characters []app.Character) []string {

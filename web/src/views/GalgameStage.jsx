@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { deriveStagePlaybackState, NEXT_ACTION } from "./stagePlayback";
 import { buildBacklogItems, workflowLineAudioURL, workflowLineSpeechText } from "./stageBacklog";
 import { characterVisualStyle, resolveCharacterPortrait } from "./characterVisualLayout";
+import { choiceDisplayHint, choiceDisplayLabel } from "./stageChoices";
+import { chapterSnapshotPosition } from "../historySnapshots";
 
 export function GalgameStageView({
   activeCharacter, activeCharacterID, busy, input, isTyping, lastCG,
@@ -71,7 +73,10 @@ export function GalgameStageView({
   const [typedText, setTypedText] = useState(currentDialogueText);
   const [typewriterDone, setTypewriterDone] = useState(true);
 
-  const currentNodeIdx = workflowNodes.findIndex((n) => n.id === currentNode?.id);
+  const currentChapterPosition = chapterSnapshotPosition(workflowNodes, currentNode);
+  const chapterKicker = isFreeDiscussionNode
+    ? "FREE TALK"
+    : currentChapterPosition ? `CHAPTER ${String(currentChapterPosition.number).padStart(2, "0")}` : "SCENE";
   const typingActive = !!((visibleAssistant?.meta !== "script" && visibleAssistant?.typing) || isTyping || !typewriterDone);
   const stageWaiting = Boolean(runtimeState?.stageWaiting);
   const isLastDialogueLine = dialogueLines.length > 0 && safeLineIndex >= dialogueLines.length - 1;
@@ -83,12 +88,13 @@ export function GalgameStageView({
     && !pendingChoiceID;
   const playbackState = useMemo(() => deriveStagePlaybackState({
     busy,
+    hasChoices: stageChoices.length > 0 && !isFreeDiscussionNode,
     hasNextNode: Boolean(currentNode?.next_node_id),
     lineCount: dialogueLines.length,
     lineIndex: safeLineIndex,
     stageWaiting,
     typewriterDone,
-  }), [busy, currentNode?.next_node_id, dialogueLines.length, safeLineIndex, stageWaiting, typewriterDone]);
+  }), [busy, currentNode?.next_node_id, dialogueLines.length, isFreeDiscussionNode, safeLineIndex, stageChoices.length, stageWaiting, typewriterDone]);
   const visibleDialogueLines = useMemo(() => {
     if (!currentDialogueLine) return [];
     return [{ ...currentDialogueLine, text: typedText }];
@@ -161,10 +167,12 @@ export function GalgameStageView({
     }
   }, [advanceLessonWorkflow, currentDialogueText, currentNode?.next_node_id, playLineAudio, playbackState.nextAction, safeLineIndex]);
 
-  const handleChoice = useCallback((choice) => {
+  const handleChoice = useCallback((choice, index = 0) => {
     if (!shouldShowStageChoices || busy || pendingChoiceID) return;
-    setPendingChoiceID(choice?.id || choice?.label || "choice");
-    Promise.resolve(sendChoice(choice)).catch(() => {
+    setPendingChoiceID(choice?.id || choiceDisplayLabel(choice, index));
+    Promise.resolve(sendChoice(choice, index)).then((advanced) => {
+      if (!advanced) setPendingChoiceID("");
+    }).catch(() => {
       setPendingChoiceID("");
     });
   }, [busy, pendingChoiceID, sendChoice, shouldShowStageChoices]);
@@ -218,7 +226,7 @@ export function GalgameStageView({
       const num = parseInt(e.key, 10);
       if (num >= 1 && num <= 9 && shouldShowStageChoices && stageChoices.length >= num) {
         e.preventDefault();
-        handleChoice(stageChoices[num - 1]);
+        handleChoice(stageChoices[num - 1], num - 1);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -253,7 +261,7 @@ export function GalgameStageView({
       </button>
 
       <div className="vn-chapter-label" aria-label="当前章节">
-        <small>{currentNodeIdx >= 0 ? `CHAPTER ${String(currentNodeIdx + 1).padStart(2, "0")}` : "CHAPTER"}</small>
+        <small>{chapterKicker}</small>
         <b>{currentNode?.title || scene?.title || "剧情演出"}</b>
       </div>
 
@@ -261,11 +269,11 @@ export function GalgameStageView({
       {shouldShowStageChoices && (
         <div className="vn-choice-layer" key={`choices-${currentNode?.id}`}>
           {stageChoices.map((choice, idx) => (
-            <button key={choice.id || choice.label} onClick={() => handleChoice(choice)} disabled={busy || Boolean(pendingChoiceID)}>
+            <button key={choice.id || choice.label || idx} onClick={() => handleChoice(choice, idx)} disabled={busy || Boolean(pendingChoiceID)}>
               <kbd>{String.fromCharCode(65 + idx)}</kbd>
               <span>
-                <strong>{choice.label}</strong>
-                {choice.hint ? <em>{choice.hint}</em> : null}
+                <strong>{choiceDisplayLabel(choice, idx)}</strong>
+                {choiceDisplayHint(choice) ? <em>{choiceDisplayHint(choice)}</em> : null}
               </span>
             </button>
           ))}
@@ -284,7 +292,7 @@ export function GalgameStageView({
         <div className="vn-dialogue-text" ref={dialogueRef}>
           {stageWaiting ? <p className="vn-stage-waiting">{runtimeState.audio || "下一幕准备中..."}</p> : null}
           {visibleDialogueLines.length ? visibleDialogueLines.map((line, i) => (
-            <p key={`${currentNode?.id}-ln-${i}`} className={i === visibleDialogueLines.length - 1 && typingActive ? "is-typing" : ""}>
+            <p key={`${currentNode?.id}-ln-${safeLineIndex}-${i}`} className={i === visibleDialogueLines.length - 1 && typingActive ? "is-typing" : ""}>
               {line.speaker !== currentSpeaker ? <b>{line.speaker}：</b> : null}
               {line.text}
               {i === visibleDialogueLines.length - 1 && typingActive ? <i className="vn-cursor" /> : null}

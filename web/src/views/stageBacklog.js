@@ -1,7 +1,7 @@
 export function buildBacklogItems(workflowHistory, workflowNodes, currentNodeID, currentLineIndex, assistantSpeaker, assistantSpeakerAliases = []) {
   const nodeByID = new Map((Array.isArray(workflowNodes) ? workflowNodes : []).map((node) => [node.id, node]));
   const speakerAliases = buildBacklogSpeakerAliases(assistantSpeaker, assistantSpeakerAliases);
-  return replayAwareHistory(workflowHistory).flatMap((historyItem) => {
+  return visibleHistoryEntries(workflowHistory).flatMap((historyItem) => {
     if (historyItem?.action === "audio") return [];
     const nodeID = historyItem?.node_id || historyItem?.nodeID || "";
     const node = nodeByID.get(nodeID);
@@ -59,15 +59,8 @@ function visibleWorkflowNodeLines(node, nodeID, currentNodeID, currentLineIndex)
   return lines.slice(0, visibleCount);
 }
 
-function replayAwareHistory(workflowHistory) {
-  return (Array.isArray(workflowHistory) ? workflowHistory : []).reduce((timeline, item) => {
-    if (item?.action === "audio") return timeline;
-    const nodeID = item?.node_id || item?.nodeID || "";
-    if (item?.action !== "replay") return [...timeline, item];
-    const existingIndex = timeline.findIndex((entry) => (entry?.node_id || entry?.nodeID || "") === nodeID);
-    if (existingIndex < 0) return nodeID ? [...timeline, item] : timeline;
-    return timeline.slice(0, existingIndex + 1);
-  }, []);
+function visibleHistoryEntries(workflowHistory) {
+  return (Array.isArray(workflowHistory) ? workflowHistory : []).filter((item) => item?.action !== "audio");
 }
 
 function workflowNodeBacklogLines(node) {

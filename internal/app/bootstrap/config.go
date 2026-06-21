@@ -27,17 +27,18 @@ type Config struct {
 	ImageProvider image.Provider
 	SceneProvider scene.Provider
 
-	CodexBin           string
-	CodexModel         string
-	CodexWorkDir       string
-	CodexTimeout       int
-	FairyAgentEndpoint string
-	FairyAgentAPIKey   string
-	FairyAgentModel    string
-	FairyAgentTimeout  int
-	SessionPath        string
-	AppSessionPath     string
-	UserConfigPath     string
+	CodexBin            string
+	CodexModel          string
+	CodexWorkDir        string
+	CodexTimeout        int
+	FairyAgentEndpoint  string
+	FairyAgentAPIKey    string
+	FairyAgentModel     string
+	FairyAgentExtraBody string
+	FairyAgentTimeout   int
+	SessionPath         string
+	AppSessionPath      string
+	UserConfigPath      string
 
 	AudioDir     string
 	ImageDir     string
@@ -121,9 +122,10 @@ func buildFairyAgent(config Config) agent.Engine {
 	return agentfairy.NewEngine(agentfairy.Options{
 		Model: llmopenaicompatible.NewAdapter(llmopenaicompatible.Options{
 			Profile: llm.Profile{
-				Endpoint: config.FairyAgentEndpoint,
-				APIKey:   config.FairyAgentAPIKey,
-				Model:    config.FairyAgentModel,
+				Endpoint:  config.FairyAgentEndpoint,
+				APIKey:    config.FairyAgentAPIKey,
+				Model:     config.FairyAgentModel,
+				ExtraBody: config.FairyAgentExtraBody,
 			},
 			TimeoutSec: config.FairyAgentTimeout,
 		}),

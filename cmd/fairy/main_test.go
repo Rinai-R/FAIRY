@@ -86,6 +86,38 @@ func TestConfigFromLookupAppliesValidOverrides(t *testing.T) {
 	}
 }
 
+func TestConfigFromLookupAppliesFairyAgentOverrides(t *testing.T) {
+	config, err := configFromLookup(mapLookup(map[string]string{
+		"FAIRY_AGENT_ENGINE":          "fairy-agent",
+		"FAIRY_AGENT_ENDPOINT":        "https://ark.cn-beijing.volces.com/api/v3",
+		"FAIRY_AGENT_API_KEY":         "secret with spaces inside",
+		"FAIRY_AGENT_MODEL":           "deepseek-v3",
+		"FAIRY_AGENT_EXTRA_BODY":      `{"thinking":{"type":"disabled"},"enable_thinking":false}`,
+		"FAIRY_AGENT_TIMEOUT_SECONDS": "45",
+	}))
+	if err != nil {
+		t.Fatalf("configFromLookup() error = %v", err)
+	}
+	if config.AgentProvider != agent.ProviderFairy {
+		t.Fatalf("AgentProvider = %q, want %q", config.AgentProvider, agent.ProviderFairy)
+	}
+	if config.FairyAgentEndpoint != "https://ark.cn-beijing.volces.com/api/v3" {
+		t.Fatalf("FairyAgentEndpoint = %q", config.FairyAgentEndpoint)
+	}
+	if config.FairyAgentAPIKey != "secret with spaces inside" {
+		t.Fatalf("FairyAgentAPIKey was not preserved")
+	}
+	if config.FairyAgentModel != "deepseek-v3" {
+		t.Fatalf("FairyAgentModel = %q", config.FairyAgentModel)
+	}
+	if config.FairyAgentExtraBody != `{"thinking":{"type":"disabled"},"enable_thinking":false}` {
+		t.Fatalf("FairyAgentExtraBody = %q", config.FairyAgentExtraBody)
+	}
+	if config.FairyAgentTimeout != 45 {
+		t.Fatalf("FairyAgentTimeout = %d, want 45", config.FairyAgentTimeout)
+	}
+}
+
 func TestConfigFromLookupRejectsCustomVoiceProviderID(t *testing.T) {
 	_, err := configFromLookup(mapLookup(map[string]string{
 		"FAIRY_VOICE_ENGINE": "my-voice.plugin_1",
@@ -129,6 +161,7 @@ func TestConfigFromLookupRejectsUnsupportedVoiceProvider(t *testing.T) {
 func TestConfigFromLookupRejectsInvalidPositiveInt(t *testing.T) {
 	tests := map[string]string{
 		"FAIRY_CODEX_TIMEOUT_SECONDS":      "abc",
+		"FAIRY_AGENT_TIMEOUT_SECONDS":      "-1",
 		"FAIRY_VOLCENGINE_TTS_SAMPLE_RATE": "0",
 	}
 	for key, value := range tests {

@@ -88,6 +88,12 @@ export async function getSession(id) {
   return request(`${apiPrefix}/sessions/${encodeURIComponent(id)}`);
 }
 
+export async function getSessionEvents(id) {
+  const app = wailsApp();
+  if (app?.SessionEvents) return app.SessionEvents(id);
+  return request(`${apiPrefix}/sessions/${encodeURIComponent(id)}/events`);
+}
+
 export async function deleteSession(id) {
   const app = wailsApp();
   if (app?.DeleteSession) return app.DeleteSession(id);

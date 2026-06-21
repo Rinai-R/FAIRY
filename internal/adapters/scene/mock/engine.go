@@ -15,9 +15,10 @@ type Engine struct{}
 
 func (Engine) Generate(_ context.Context, input scene.Input) (app.SceneGenerateResponse, error) {
 	req := input.Request
+	materialText := app.SceneGenerateMaterialText(req)
 	topic := strings.TrimSpace(req.Topic)
 	if topic == "" {
-		topic = inferTopic(req.DocumentText)
+		topic = inferTopic(materialText)
 	}
 	goal := strings.TrimSpace(req.LearningGoal)
 	if goal == "" {
@@ -33,9 +34,9 @@ func (Engine) Generate(_ context.Context, input scene.Input) (app.SceneGenerateR
 
 	now := time.Now().UTC()
 	sceneID := "lesson-" + slug(topic)
-	outline := outlineFor(req.DocumentText, goal)
+	outline := outlineFor(materialText, goal)
 	interaction := interactionFor(req.InteractionMode, topic)
-	workflow := workflowFor(sceneID, topic, goal, req.DocumentText, activeCharacter, interaction, req.Runtime.Language)
+	workflow := workflowFor(sceneID, topic, goal, materialText, activeCharacter, interaction, req.Runtime.Language)
 	return app.SceneGenerateResponse{
 		Scene: app.Scene{
 			ID:           sceneID,
@@ -76,7 +77,7 @@ func (Engine) Generate(_ context.Context, input scene.Input) (app.SceneGenerateR
 				"expression":     "soft_smile",
 			},
 		},
-		Prompt: promptFor(topic, goal, outline, req.DocumentText, req.Prompt),
+		Prompt: promptFor(topic, goal, outline, materialText, req.Prompt),
 	}, nil
 }
 
@@ -155,7 +156,6 @@ func workflowFor(sceneID string, topic string, goal string, document string, cha
 		Nodes:         nodes,
 	}
 }
-
 
 func firstBackgroundURL(character app.Character) string {
 	return firstBackgroundURLByKey(character, "opening", character.Assets.BackgroundURL)

@@ -30,6 +30,48 @@ type Engine interface {
 	Discuss(ctx context.Context, input DiscussInput) (Output, error)
 }
 
+type ActTraceHook func(ActTraceEvent)
+
+type ActTraceEvent struct {
+	Type       string
+	Level      string
+	Step       string
+	Message    string
+	Detail     string
+	RetryCount int
+	DurationMS int64
+}
+
+const (
+	ActTraceStepActPlan          = "actplan"
+	ActTraceStepGenerateActDraft = "generate_act_draft"
+	ActTraceStepRewriteAct       = "rewrite_act"
+)
+
+type contractError struct {
+	err error
+}
+
+func NewContractError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return contractError{err: err}
+}
+
+func IsContractError(err error) bool {
+	var target contractError
+	return errors.As(err, &target)
+}
+
+func (e contractError) Error() string {
+	return e.err.Error()
+}
+
+func (e contractError) Unwrap() error {
+	return e.err
+}
+
 type ActInput struct {
 	Request       app.SceneGenerateRequest `json:"request"`
 	Session       app.Session              `json:"session,omitempty"`
@@ -42,6 +84,7 @@ type ActInput struct {
 	CoveredPoints []string                 `json:"covered_points,omitempty"`
 	ActIndex      int                      `json:"act_index"`
 	Correction    string                   `json:"correction,omitempty"`
+	Trace         ActTraceHook             `json:"-"`
 }
 
 func (input ActInput) Validate() error {

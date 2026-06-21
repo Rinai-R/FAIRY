@@ -9,6 +9,10 @@ import (
 	"github.com/Rinai-R/FAIRY/internal/app"
 )
 
+func textMaterial(text string) app.MaterialSource {
+	return app.MaterialSource{Mode: app.MaterialSourceText, Text: text}
+}
+
 func TestMockAgentDiscussCanPreviewDifferentSpeechLanguage(t *testing.T) {
 	t.Parallel()
 
@@ -93,8 +97,8 @@ func TestMockAgentGenerateActIgnoresGenericPlannedTitle(t *testing.T) {
 
 	out, err := MockEngine{}.GenerateAct(context.Background(), agent.ActInput{
 		Request: app.SceneGenerateRequest{
-			DocumentText: "Go 调度器的核心是 GMP 模型。G 表示 goroutine，M 表示系统线程，P 表示执行上下文。\n全局队列和本地队列共同决定 goroutine 的调度顺序。",
-			Characters:   []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+			MaterialSource: textMaterial("Go 调度器的核心是 GMP 模型。G 表示 goroutine，M 表示系统线程，P 表示执行上下文。\n全局队列和本地队列共同决定 goroutine 的调度顺序。"),
+			Characters:     []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
 		},
 		PlannedNode: app.TeachingWorkflowNode{
 			ID:    "lesson-1",

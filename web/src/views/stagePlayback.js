@@ -3,12 +3,14 @@ export const NEXT_ACTION = Object.freeze({
   NEXT_LINE: "next-line",
   ADVANCE_NODE: "advance-node",
   WAIT_NEXT_NODE: "wait-next-node",
+  CHOICE_PENDING: "choice-pending",
   NONE: "none",
 });
 
 export function deriveStagePlaybackState(options = {}) {
   const {
     busy = false,
+    hasChoices = false,
     hasNextNode = false,
     lineCount = 0,
     lineIndex = 0,
@@ -21,36 +23,42 @@ export function deriveStagePlaybackState(options = {}) {
   const hasDialogueLine = normalizedLineCount > 0;
   const canCompleteTypewriter = hasDialogueLine && !typewriterDone;
   const hasNextLocalLine = hasDialogueLine && normalizedLineIndex < normalizedLineCount - 1;
-  const isWaitingForNextNode = Boolean(stageWaiting && hasNextNode && !canCompleteTypewriter && !hasNextLocalLine);
+  const atNodeBoundary = !canCompleteTypewriter && !hasNextLocalLine;
+  const isWaitingForNextNode = Boolean(stageWaiting && (hasNextNode || hasChoices) && atNodeBoundary);
+  const isChoicePending = Boolean(hasChoices && !stageWaiting && atNodeBoundary);
 
   const nextAction = resolveNextAction({
     busy,
     canCompleteTypewriter,
+    hasChoices,
     hasNextLocalLine,
     hasNextNode,
     stageWaiting,
   });
 
   return {
-    advanceDisabled: busy || nextAction === NEXT_ACTION.WAIT_NEXT_NODE || nextAction === NEXT_ACTION.NONE,
-    advanceLabel: isWaitingForNextNode ? "准备中" : "下一句",
+    advanceDisabled: busy || nextAction === NEXT_ACTION.WAIT_NEXT_NODE || nextAction === NEXT_ACTION.CHOICE_PENDING || nextAction === NEXT_ACTION.NONE,
+    advanceLabel: isWaitingForNextNode ? "准备中" : isChoicePending ? "请选择" : "下一句",
     canCompleteTypewriter,
-    canRequestNextNode: Boolean(hasNextNode && !stageWaiting && !busy && !canCompleteTypewriter && !hasNextLocalLine),
+    canRequestNextNode: Boolean(hasNextNode && !hasChoices && !stageWaiting && !busy && atNodeBoundary),
+    hasChoices: Boolean(hasChoices),
     hasDialogueLine,
     hasNextLocalLine,
+    isChoicePending,
     isWaitingForNextNode,
     lineCount: normalizedLineCount,
     lineIndex: normalizedLineIndex,
     nextAction,
-    shouldShowAdvance: canCompleteTypewriter || hasNextLocalLine || Boolean(hasNextNode),
+    shouldShowAdvance: canCompleteTypewriter || hasNextLocalLine || isWaitingForNextNode || Boolean(hasNextNode && !hasChoices),
   };
 }
 
-function resolveNextAction({ busy, canCompleteTypewriter, hasNextLocalLine, hasNextNode, stageWaiting }) {
+function resolveNextAction({ busy, canCompleteTypewriter, hasChoices, hasNextLocalLine, hasNextNode, stageWaiting }) {
   if (busy) return NEXT_ACTION.NONE;
   if (canCompleteTypewriter) return NEXT_ACTION.COMPLETE_TYPEWRITER;
   if (hasNextLocalLine) return NEXT_ACTION.NEXT_LINE;
-  if (stageWaiting && hasNextNode) return NEXT_ACTION.WAIT_NEXT_NODE;
+  if (stageWaiting && (hasNextNode || hasChoices)) return NEXT_ACTION.WAIT_NEXT_NODE;
+  if (hasChoices) return NEXT_ACTION.CHOICE_PENDING;
   if (hasNextNode) return NEXT_ACTION.ADVANCE_NODE;
   return NEXT_ACTION.NONE;
 }

@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -27,6 +27,54 @@ import (
 )
 
 const testVoiceProvider voice.Provider = "test-voice"
+
+func textMaterial(text string) app.MaterialSource {
+	return app.MaterialSource{Mode: app.MaterialSourceText, Text: text}
+}
+
+func TestSceneGenerateRequestJSONUsesMaterialSourceOnly(t *testing.T) {
+	legacyText := "旧请求文本不应出现在 JSON 合同里"
+	raw, err := json.Marshal(app.SceneGenerateRequest{
+		Topic:          "Go 调度器",
+		MaterialSource: textMaterial("粘贴正文通过 material_source.text 进入生成链路"),
+		Characters:     []app.Character{{ID: "tutor"}},
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	text := string(raw)
+	if strings.Contains(text, "document_text") || strings.Contains(text, legacyText) {
+		t.Fatalf("SceneGenerateRequest JSON exposed document_text field: %s", text)
+	}
+	if !strings.Contains(text, `"material_source"`) || !strings.Contains(text, `"text"`) {
+		t.Fatalf("SceneGenerateRequest JSON missing material_source text contract: %s", text)
+	}
+}
+
+func TestMaterialSourceJSONHasNoURLDirectoryFields(t *testing.T) {
+	materialType := reflect.TypeOf(app.MaterialSource{})
+	for _, fieldName := range []string{"URL", "Path", "DisplayName", "LocalDirectory", "DocumentURL", "SourceURL"} {
+		if _, ok := materialType.FieldByName(fieldName); ok {
+			t.Fatalf("MaterialSource must not expose legacy field %s", fieldName)
+		}
+	}
+	raw, err := json.Marshal(app.MaterialSource{
+		Mode:      app.MaterialSourceUploadedFile,
+		AssetID:   "asset-1",
+		AssetName: "lesson.md",
+		AssetType: "text/markdown",
+		AssetPath: "materials/lesson.md",
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	text := string(raw)
+	for _, token := range []string{"url", "path_url", "document_url", "source_url", "local_directory", "display_name"} {
+		if strings.Contains(text, token) {
+			t.Fatalf("MaterialSource JSON exposed legacy token %q: %s", token, text)
+		}
+	}
+}
 
 func TestGenerateScenePersistsTeachingSessionAndTurns(t *testing.T) {
 	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
@@ -68,10 +116,10 @@ func TestGenerateScenePersistsTeachingSessionAndTurns(t *testing.T) {
 		},
 	}
 	sceneResp, err := rt.GenerateScene(context.Background(), app.SceneGenerateRequest{
-		Topic:        "注意力机制",
-		DocumentText: "# 注意力机制\n注意力机制用于让模型关注输入中的重要信息。",
-		LearningGoal: "能够解释注意力机制解决什么问题。",
-		Characters:   characters,
+		Topic:          "注意力机制",
+		MaterialSource: textMaterial("# 注意力机制\n注意力机制用于让模型关注输入中的重要信息。"),
+		LearningGoal:   "能够解释注意力机制解决什么问题。",
+		Characters:     characters,
 		Runtime: app.RuntimeConfig{
 			SceneProvider: string(scene.ProviderMock),
 		},
@@ -184,6 +232,65 @@ func TestGenerateScenePersistsTeachingSessionAndTurns(t *testing.T) {
 	if record.Messages[2].DisplayText == "" || record.Messages[2].SpeechText == "" {
 		t.Fatalf("assistant display/speech text missing: %#v", record.Messages[2])
 	}
+	imageEvent := runtimeEventByType(record.Events, app.RuntimeEventTypeImageGenerateDone)
+	if imageEvent.ID == "" || imageEvent.Stage != app.RuntimeEventStageImage || imageEvent.Provider != string(image.ProviderMock) || imageEvent.DurationMS <= 0 {
+		t.Fatalf("image.generate.completed event = %+v", imageEvent)
+	}
+	persistEvent := runtimeEventByType(record.Events, app.RuntimeEventTypePersistTurnSaved)
+	if persistEvent.ID == "" || persistEvent.Stage != app.RuntimeEventStagePersist || persistEvent.DurationMS <= 0 {
+		t.Fatalf("persist.turn.saved event = %+v", persistEvent)
+	}
+}
+
+func TestGenerateSceneUsesAgentWithoutSceneProvider(t *testing.T) {
+	agentEngine := &recordingAgentEngine{}
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Agents: map[agent.Provider]agent.Engine{
+			agent.ProviderMock: agentEngine,
+		},
+		Voices: map[voice.Provider]voice.Engine{
+			testVoiceProvider: &recordingVoiceEngine{},
+		},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: testVoiceProvider,
+		Logger:       slog.Default(),
+	})
+
+	resp, err := rt.GenerateScene(context.Background(), app.SceneGenerateRequest{
+		Topic:          "Go 调度器",
+		MaterialSource: textMaterial("G、M、P 是 Go runtime 调度器的三个核心角色。"),
+		LearningGoal:   "理解 GMP 三个角色的分工。",
+		Characters:     []app.Character{{ID: "atri", DisplayName: "亚托莉", VoiceID: "mock"}},
+		Runtime: app.RuntimeConfig{
+			AgentProvider: string(agent.ProviderMock),
+			VoiceProvider: string(testVoiceProvider),
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateScene() error = %v", err)
+	}
+	if !agentEngine.called {
+		t.Fatal("agent GenerateAct was not called")
+	}
+	if resp.Scene.ID == "" || resp.Session.ID == "" {
+		t.Fatalf("scene/session id missing: scene=%q session=%q", resp.Scene.ID, resp.Session.ID)
+	}
+	if len(resp.Workflow.Nodes) != 1 {
+		t.Fatalf("initial workflow nodes = %d, want only opening", len(resp.Workflow.Nodes))
+	}
+	opening := resp.Workflow.Nodes[0]
+	if opening.ID != "opening" || opening.Kind != "opening" {
+		t.Fatalf("opening node = %s/%s, want opening/opening", opening.ID, opening.Kind)
+	}
+	if opening.NextNodeID != "lesson-1" {
+		t.Fatalf("opening next node = %q, want lesson-1", opening.NextNodeID)
+	}
+	if len(opening.Lines) == 0 || opening.Lines[0].Audio.URL == "" {
+		t.Fatalf("opening missing prepared audio: %+v", opening)
+	}
+	if resp.OpeningMessage == "" {
+		t.Fatal("opening message is empty")
+	}
 }
 
 func TestCapabilitiesExposeOnlyVolcengineVoiceProvider(t *testing.T) {
@@ -240,28 +347,28 @@ func TestGenerateSceneRejectsInvalidTeachingBoundary(t *testing.T) {
 			request: app.SceneGenerateRequest{
 				Characters: []app.Character{{ID: "tutor"}},
 			},
-			want: "document_text、material_source、document_url 或 document_asset 不能为空",
+			want: "material_source 不能为空",
 		},
 		{
 			name: "missing character",
 			request: app.SceneGenerateRequest{
-				DocumentText: "课程材料",
+				MaterialSource: textMaterial("课程材料"),
 			},
 			want: "只支持 1 个角色",
 		},
 		{
 			name: "multiple characters",
 			request: app.SceneGenerateRequest{
-				DocumentText: "课程材料",
-				Characters:   []app.Character{{ID: "tutor"}, {ID: "skeptic"}},
+				MaterialSource: textMaterial("课程材料"),
+				Characters:     []app.Character{{ID: "tutor"}, {ID: "skeptic"}},
 			},
 			want: "只支持 1 个角色",
 		},
 		{
 			name: "empty character id",
 			request: app.SceneGenerateRequest{
-				DocumentText: "课程材料",
-				Characters:   []app.Character{{DisplayName: "Tutor"}},
+				MaterialSource: textMaterial("课程材料"),
+				Characters:     []app.Character{{DisplayName: "Tutor"}},
 			},
 			want: "characters[0].id 不能为空",
 		},
@@ -298,10 +405,10 @@ func TestGenerateSceneMergesPlannedWorkflowNodeScaffold(t *testing.T) {
 	})
 
 	resp, err := rt.GenerateScene(context.Background(), app.SceneGenerateRequest{
-		Topic:        "Go 调度器",
-		DocumentText: "Go 调度器会管理 goroutine、M 和 P。",
-		LearningGoal: "理解 GMP",
-		Characters:   []app.Character{{ID: "atri", DisplayName: "亚托莉", VoiceID: "mock"}},
+		Topic:          "Go 调度器",
+		MaterialSource: textMaterial("Go 调度器会管理 goroutine、M 和 P。"),
+		LearningGoal:   "理解 GMP",
+		Characters:     []app.Character{{ID: "atri", DisplayName: "亚托莉", VoiceID: "mock"}},
 		Runtime: app.RuntimeConfig{
 			SceneProvider: string(scene.ProviderMock),
 			AgentProvider: string(agent.ProviderFairy),
@@ -319,42 +426,37 @@ func TestGenerateSceneMergesPlannedWorkflowNodeScaffold(t *testing.T) {
 	if len(node.Lines) != 4 {
 		t.Fatalf("lines = %d, want 4", len(node.Lines))
 	}
+	waitForWorkflowSettled(t, rt, resp.Session.ID)
 }
 
 func TestAdvanceWorkflowPersistsCurrentNode(t *testing.T) {
 	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
 	rt := runtime.NewRuntime(runtime.Dependencies{
-		Agents: map[agent.Provider]agent.Engine{
-			agent.ProviderMock: agentmock.MockEngine{},
-		},
-		Scenes: map[scene.Provider]scene.Engine{
-			scene.ProviderMock: scenemock.Engine{},
-		},
-		Voices: map[voice.Provider]voice.Engine{
-			testVoiceProvider: &recordingVoiceEngine{},
-		},
-		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: testVoiceProvider,
-		DefaultScene: scene.ProviderMock,
-		Sessions:     store,
-		Logger:       slog.Default(),
+		Sessions: store,
+		Logger:   slog.Default(),
 	})
-
-	resp, err := rt.GenerateScene(context.Background(), app.SceneGenerateRequest{
-		Topic:        "剧情推进",
-		DocumentText: "剧情需要把固定讲解段落和最后的自由讨论串起来。",
-		Characters:   []app.Character{{ID: "tutor", DisplayName: "Tutor"}},
-	})
-	if err != nil {
-		t.Fatalf("GenerateScene() error = %v", err)
+	if _, err := store.BeginScene(app.SceneGenerateRequest{
+		Topic:      "剧情推进",
+		Characters: []app.Character{{ID: "tutor", DisplayName: "Tutor"}},
+	}, app.SceneGenerateResponse{
+		Scene:   app.Scene{ID: "lesson", Title: "课程"},
+		Session: app.Session{ID: "lesson:default", UserID: "default"},
+		Workflow: app.TeachingWorkflow{
+			ID:            "wf",
+			CurrentNodeID: "opening",
+			Nodes: []app.TeachingWorkflowNode{
+				readyWorkflowNode("opening", "opening", "lesson-1"),
+				readyWorkflowNode("lesson-1", "lesson", ""),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("BeginScene() error = %v", err)
 	}
-	nextNodeID := waitForWorkflowNextNodeID(t, rt, resp.Session.ID, "opening")
-	waitForWorkflowNodeReady(t, rt, resp.Session.ID, nextNodeID)
 
 	advanced, err := rt.AdvanceWorkflow(context.Background(), app.WorkflowAdvanceRequest{
-		SessionID:     resp.Session.ID,
+		SessionID:     "lesson:default",
 		CurrentNodeID: "opening",
-		NextNodeID:    nextNodeID,
+		NextNodeID:    "lesson-1",
 	})
 	if err != nil {
 		t.Fatalf("AdvanceWorkflow() error = %v", err)
@@ -362,19 +464,19 @@ func TestAdvanceWorkflowPersistsCurrentNode(t *testing.T) {
 	if !advanced.Ready || advanced.Waiting {
 		t.Fatalf("advance ready flags = ready:%v waiting:%v", advanced.Ready, advanced.Waiting)
 	}
-	if advanced.Workflow.CurrentNodeID != nextNodeID {
-		t.Fatalf("current node = %q, want %s", advanced.Workflow.CurrentNodeID, nextNodeID)
+	if advanced.Workflow.CurrentNodeID != "lesson-1" {
+		t.Fatalf("current node = %q, want lesson-1", advanced.Workflow.CurrentNodeID)
 	}
-	if advanced.Node.ID != nextNodeID {
-		t.Fatalf("response node = %q, want %s", advanced.Node.ID, nextNodeID)
+	if advanced.Node.ID != "lesson-1" {
+		t.Fatalf("response node = %q, want lesson-1", advanced.Node.ID)
 	}
 
-	record, err := rt.Session(resp.Session.ID)
+	record, err := rt.Session("lesson:default")
 	if err != nil {
 		t.Fatalf("Session() error = %v", err)
 	}
-	if record.Workflow.CurrentNodeID != nextNodeID {
-		t.Fatalf("persisted current node = %q, want %s", record.Workflow.CurrentNodeID, nextNodeID)
+	if record.Workflow.CurrentNodeID != "lesson-1" {
+		t.Fatalf("persisted current node = %q, want lesson-1", record.Workflow.CurrentNodeID)
 	}
 	if record.Scene.Phase != "lesson" {
 		t.Fatalf("scene phase = %q, want lesson", record.Scene.Phase)
@@ -477,11 +579,111 @@ func TestAdvanceWorkflowReplayAppendsHistory(t *testing.T) {
 	}
 }
 
-func TestAdvanceWorkflowChoiceWaitsForMissingBranch(t *testing.T) {
+func TestAdvanceWorkflowRejectsChoiceNodeWithoutChoiceID(t *testing.T) {
 	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
 	rt := runtime.NewRuntime(runtime.Dependencies{
 		Sessions: store,
 		Logger:   slog.Default(),
+	})
+	opening := readyWorkflowNode("opening", "opening", "lesson-1")
+	opening.Choices = []app.SceneChoice{{
+		ID:           "example",
+		Label:        "先看例子",
+		Text:         "分支正文不应该绕过选项直接出现。",
+		TargetNodeID: "opening-choice-example",
+	}}
+	if _, err := store.BeginScene(app.SceneGenerateRequest{
+		Topic:      "选择边界",
+		Characters: []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+	}, app.SceneGenerateResponse{
+		Scene:   app.Scene{ID: "lesson", Title: "课程"},
+		Session: app.Session{ID: "lesson:choice-boundary", UserID: "default"},
+		Workflow: app.TeachingWorkflow{
+			ID:            "wf",
+			CurrentNodeID: "opening",
+			Nodes: []app.TeachingWorkflowNode{
+				opening,
+				readyWorkflowNode("lesson-1", "lesson", ""),
+				readyWorkflowNode("opening-choice-example", "choice", "lesson-1"),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("BeginScene() error = %v", err)
+	}
+
+	_, err := rt.AdvanceWorkflow(context.Background(), app.WorkflowAdvanceRequest{
+		SessionID:     "lesson:choice-boundary",
+		CurrentNodeID: "opening",
+		NextNodeID:    "lesson-1",
+	})
+	if err == nil {
+		t.Fatal("AdvanceWorkflow() error = nil, want choice boundary error")
+	}
+	if !strings.Contains(err.Error(), "必须选择后才能推进") {
+		t.Fatalf("AdvanceWorkflow() error = %v, want choice boundary message", err)
+	}
+	record, err := rt.Session("lesson:choice-boundary")
+	if err != nil {
+		t.Fatalf("Session() error = %v", err)
+	}
+	if record.Workflow.CurrentNodeID != "opening" {
+		t.Fatalf("current node = %q, want opening", record.Workflow.CurrentNodeID)
+	}
+	got := make([]string, 0, len(record.Workflow.History))
+	for _, item := range record.Workflow.History {
+		got = append(got, item.NodeID+":"+item.Action)
+	}
+	want := []string{"opening:enter"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("history = %#v, want %#v", got, want)
+	}
+}
+
+func TestFileSessionStoreRejectsChoiceNodeWithoutChoiceID(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	opening := readyWorkflowNode("opening", "opening", "lesson-1")
+	opening.Choices = []app.SceneChoice{{ID: "example", Label: "先看例子", TargetNodeID: "opening-choice-example"}}
+	if _, err := store.BeginScene(app.SceneGenerateRequest{
+		Topic:      "选择边界",
+		Characters: []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+	}, app.SceneGenerateResponse{
+		Scene:   app.Scene{ID: "lesson", Title: "课程"},
+		Session: app.Session{ID: "lesson:store-choice-boundary", UserID: "default"},
+		Workflow: app.TeachingWorkflow{
+			ID:            "wf",
+			CurrentNodeID: "opening",
+			Nodes: []app.TeachingWorkflowNode{
+				opening,
+				readyWorkflowNode("lesson-1", "lesson", ""),
+				readyWorkflowNode("opening-choice-example", "choice", "lesson-1"),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("BeginScene() error = %v", err)
+	}
+
+	_, err := store.AdvanceWorkflow(app.WorkflowAdvanceRequest{
+		SessionID:     "lesson:store-choice-boundary",
+		CurrentNodeID: "opening",
+		NextNodeID:    "lesson-1",
+	})
+	if err == nil {
+		t.Fatal("AdvanceWorkflow() error = nil, want choice boundary error")
+	}
+	if !strings.Contains(err.Error(), "必须选择后才能推进") {
+		t.Fatalf("AdvanceWorkflow() error = %v, want choice boundary message", err)
+	}
+}
+
+func TestAdvanceWorkflowChoiceWaitsForMissingBranch(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentmock.MockEngine{}},
+		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: &recordingVoiceEngine{}},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: testVoiceProvider,
+		Sessions:     store,
+		Logger:       slog.Default(),
 	})
 	opening := readyWorkflowNode("opening", "opening", "lesson-1")
 	opening.Choices = []app.SceneChoice{{
@@ -523,6 +725,7 @@ func TestAdvanceWorkflowChoiceWaitsForMissingBranch(t *testing.T) {
 	if advanced.Node.ID != "opening" || advanced.Workflow.CurrentNodeID != "opening" {
 		t.Fatalf("advanced current = node:%q workflow:%q, want opening", advanced.Node.ID, advanced.Workflow.CurrentNodeID)
 	}
+	waitForWorkflowSettled(t, rt, "lesson:default")
 }
 
 func TestAdvanceWorkflowChoiceUsesReadyBranch(t *testing.T) {
@@ -574,6 +777,100 @@ func TestAdvanceWorkflowChoiceUsesReadyBranch(t *testing.T) {
 	}
 	if advanced.Workflow.CurrentNodeID != "opening-choice-example" {
 		t.Fatalf("current node = %q, want branch", advanced.Workflow.CurrentNodeID)
+	}
+}
+
+func TestAdvanceWorkflowChoiceBranchContinuesToNextNode(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Sessions: store,
+		Logger:   slog.Default(),
+	})
+	opening := readyWorkflowNode("opening", "opening", "lesson-1")
+	opening.Choices = []app.SceneChoice{{
+		ID:           "example",
+		Label:        "先看例子",
+		Text:         "先用例子继续。",
+		TargetNodeID: "opening-choice-example",
+	}}
+	branch := readyWorkflowNode("opening-choice-example", "choice", "lesson-1")
+	branch.Title = "先看例子"
+	resp := app.SceneGenerateResponse{
+		Scene:   app.Scene{ID: "lesson", Title: "课程"},
+		Session: app.Session{ID: "lesson:branch-next", UserID: "default"},
+		Workflow: app.TeachingWorkflow{
+			ID:            "wf",
+			CurrentNodeID: "opening",
+			Nodes: []app.TeachingWorkflowNode{
+				opening,
+				branch,
+				readyWorkflowNode("lesson-1", "lesson", ""),
+			},
+		},
+	}
+	if _, err := store.BeginScene(app.SceneGenerateRequest{
+		Characters: []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+	}, resp); err != nil {
+		t.Fatalf("BeginScene() error = %v", err)
+	}
+
+	if _, err := rt.AdvanceWorkflow(context.Background(), app.WorkflowAdvanceRequest{
+		SessionID:     "lesson:branch-next",
+		CurrentNodeID: "opening",
+		NextNodeID:    "opening-choice-example",
+		ChoiceID:      "example",
+	}); err != nil {
+		t.Fatalf("AdvanceWorkflow(choice) error = %v", err)
+	}
+	advanced, err := rt.AdvanceWorkflow(context.Background(), app.WorkflowAdvanceRequest{
+		SessionID:     "lesson:branch-next",
+		CurrentNodeID: "opening-choice-example",
+		NextNodeID:    "lesson-1",
+	})
+	if err != nil {
+		t.Fatalf("AdvanceWorkflow(branch next) error = %v", err)
+	}
+	if advanced.Workflow.CurrentNodeID != "lesson-1" {
+		t.Fatalf("current node = %q, want lesson-1", advanced.Workflow.CurrentNodeID)
+	}
+}
+
+func TestAdvanceWorkflowCanEnterFreeDiscussionNode(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Sessions: store,
+		Logger:   slog.Default(),
+	})
+	free := readyWorkflowNode("free-discussion", "free_discussion", "")
+	free.FreeDiscussion = true
+	if _, err := store.BeginScene(app.SceneGenerateRequest{
+		Topic:      "自由讨论",
+		Characters: []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+	}, app.SceneGenerateResponse{
+		Scene:   app.Scene{ID: "lesson", Title: "课程"},
+		Session: app.Session{ID: "lesson:free-discussion", UserID: "default"},
+		Workflow: app.TeachingWorkflow{
+			ID:            "wf",
+			CurrentNodeID: "summary",
+			Nodes: []app.TeachingWorkflowNode{
+				readyWorkflowNode("summary", "summary", "free-discussion"),
+				free,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("BeginScene() error = %v", err)
+	}
+
+	advanced, err := rt.AdvanceWorkflow(context.Background(), app.WorkflowAdvanceRequest{
+		SessionID:     "lesson:free-discussion",
+		CurrentNodeID: "summary",
+		NextNodeID:    "free-discussion",
+	})
+	if err != nil {
+		t.Fatalf("AdvanceWorkflow(free discussion) error = %v", err)
+	}
+	if advanced.Node.ID != "free-discussion" || !advanced.Node.FreeDiscussion || advanced.Node.Kind != "free_discussion" {
+		t.Fatalf("advanced node = %+v, want free discussion", advanced.Node)
 	}
 }
 
@@ -647,7 +944,7 @@ func TestAdvanceWorkflowWaitsForPendingNode(t *testing.T) {
 	waitForWorkflowSettled(t, rt, "lesson:default")
 }
 
-func TestGenerateSceneRejectsUnfetchedURLSource(t *testing.T) {
+func TestGenerateSceneRejectsUnsupportedMaterialMode(t *testing.T) {
 	rt := runtime.NewRuntime(runtime.Dependencies{
 		Agents: map[agent.Provider]agent.Engine{
 			agent.ProviderMock: agentmock.MockEngine{},
@@ -664,16 +961,27 @@ func TestGenerateSceneRejectsUnfetchedURLSource(t *testing.T) {
 		Logger:       slog.Default(),
 	})
 
-	_, err := rt.GenerateScene(context.Background(), app.SceneGenerateRequest{
-		Topic:      "网络材料",
-		Characters: []app.Character{{ID: "tutor"}},
-		Variables:  map[string]string{"source_mode": "url", "document_url": "https://example.invalid/lesson"},
-	})
-	if err == nil {
-		t.Fatal("GenerateScene() error = nil, want fetch error")
-	}
-	if !strings.Contains(err.Error(), "material.url") {
-		t.Fatalf("GenerateScene() error = %v, want material.url", err)
+	for _, mode := range []app.MaterialSourceMode{
+		app.MaterialSourceMode("url"),
+		app.MaterialSourceMode("local_directory"),
+		app.MaterialSourceMode("unsupported"),
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			_, err := rt.GenerateScene(context.Background(), app.SceneGenerateRequest{
+				Topic:      "旧材料模式",
+				Characters: []app.Character{{ID: "tutor"}},
+				MaterialSource: app.MaterialSource{
+					Mode: mode,
+				},
+			})
+			if err == nil {
+				t.Fatal("GenerateScene() error = nil, want unsupported material mode error")
+			}
+			want := fmt.Sprintf(`material_source.mode 不支持: "%s"`, mode)
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("GenerateScene() error = %v, want %s", err, want)
+			}
+		})
 	}
 }
 
@@ -706,9 +1014,11 @@ func TestGenerateSceneInjectsUploadedTextAsset(t *testing.T) {
 		Topic:        "梯度下降",
 		LearningGoal: "理解梯度下降的更新方向。",
 		Characters:   []app.Character{{ID: "tutor", DisplayName: "Tutor"}},
-		Variables: map[string]string{
-			"document_asset_path": asset.Path,
-			"document_asset_type": asset.ContentType,
+		MaterialSource: app.MaterialSource{
+			Mode:      app.MaterialSourceUploadedFile,
+			AssetName: asset.Filename,
+			AssetType: asset.ContentType,
+			AssetPath: asset.Path,
 		},
 	})
 	if err != nil {
@@ -718,8 +1028,8 @@ func TestGenerateSceneInjectsUploadedTextAsset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Session() error = %v", err)
 	}
-	if !strings.Contains(record.Teaching.DocumentText, "沿负梯度方向更新参数") {
-		t.Fatalf("teaching document text was not injected: %q", record.Teaching.DocumentText)
+	if !strings.Contains(record.Teaching.MaterialContext.Text, "沿负梯度方向更新参数") {
+		t.Fatalf("teaching material context text was not injected: %q", record.Teaching.MaterialContext.Text)
 	}
 	if record.Teaching.MaterialSource.Mode != app.MaterialSourceUploadedFile {
 		t.Fatalf("material source mode = %q, want uploaded_file", record.Teaching.MaterialSource.Mode)
@@ -731,6 +1041,36 @@ func TestGenerateSceneInjectsUploadedTextAsset(t *testing.T) {
 		t.Fatal("material report items empty")
 	}
 	waitForWorkflowSettled(t, rt, resp.Session.ID)
+}
+
+func TestGenerateSceneRequiresStructuredMaterialSource(t *testing.T) {
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Agents: map[agent.Provider]agent.Engine{
+			agent.ProviderMock: agentmock.MockEngine{},
+		},
+		Scenes: map[scene.Provider]scene.Engine{
+			scene.ProviderMock: scenemock.Engine{},
+		},
+		Voices: map[voice.Provider]voice.Engine{
+			testVoiceProvider: &recordingVoiceEngine{},
+		},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: testVoiceProvider,
+		DefaultScene: scene.ProviderMock,
+		Logger:       slog.Default(),
+	})
+
+	_, err := rt.GenerateScene(context.Background(), app.SceneGenerateRequest{
+		Topic:      "旧变量路径",
+		Characters: []app.Character{{ID: "tutor", DisplayName: "Tutor"}},
+		Variables:  map[string]string{"imported_material": "materials/lesson.md"},
+	})
+	if err == nil {
+		t.Fatal("GenerateScene() error = nil, want explicit material_source error")
+	}
+	if !strings.Contains(err.Error(), "material_source 不能为空") {
+		t.Fatalf("GenerateScene() error = %v, want explicit material source message", err)
+	}
 }
 
 func TestGenerateSceneExtractsUploadedPDFTextLayer(t *testing.T) {
@@ -782,18 +1122,8 @@ func TestGenerateSceneExtractsUploadedPDFTextLayer(t *testing.T) {
 	waitForWorkflowSettled(t, rt, resp.Session.ID)
 }
 
-func TestGenerateSceneReadsLocalDirectoryMaterialSource(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Go 调度器\nG、M、P 共同完成调度。"), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-	if err := os.Mkdir(filepath.Join(dir, "node_modules"), 0o755); err != nil {
-		t.Fatalf("Mkdir() error = %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "node_modules", "noise.md"), []byte("不应该读取"), 0o600); err != nil {
-		t.Fatalf("WriteFile(noise) error = %v", err)
-	}
-
+func TestGenerateSceneExtractsUploadedDOCX(t *testing.T) {
+	materialDir := t.TempDir()
 	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
 	rt := runtime.NewRuntime(runtime.Dependencies{
 		Agents: map[agent.Provider]agent.Engine{
@@ -808,120 +1138,24 @@ func TestGenerateSceneReadsLocalDirectoryMaterialSource(t *testing.T) {
 		DefaultAgent: agent.ProviderMock,
 		DefaultVoice: testVoiceProvider,
 		DefaultScene: scene.ProviderMock,
+		MaterialDir:  materialDir,
 		Sessions:     store,
 		Logger:       slog.Default(),
 	})
-
-	resp, err := rt.GenerateScene(context.Background(), app.SceneGenerateRequest{
-		Topic:        "Go 调度器",
-		LearningGoal: "理解 GMP。",
-		Characters:   []app.Character{{ID: "tutor", DisplayName: "Tutor"}},
-		MaterialSource: app.MaterialSource{
-			Mode: app.MaterialSourceLocalDirectory,
-			Path: dir,
-		},
-	})
+	asset, err := rt.StoreDocumentAssetBytes(context.Background(), "lesson.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", simpleDOCXWithParagraphs("第一段：协程负责表达并发。", "第二段：通道负责同步。"))
 	if err != nil {
-		t.Fatalf("GenerateScene() error = %v", err)
+		t.Fatalf("StoreDocumentAssetBytes() error = %v", err)
 	}
-	record, err := rt.Session(resp.Session.ID)
-	if err != nil {
-		t.Fatalf("Session() error = %v", err)
-	}
-	if !strings.Contains(record.Teaching.MaterialContext.Brief, "G、M、P") {
-		t.Fatalf("material brief = %q, want directory content", record.Teaching.MaterialContext.Brief)
-	}
-	if strings.Contains(record.Teaching.MaterialContext.Brief, "不应该读取") {
-		t.Fatalf("material brief read skipped directory: %q", record.Teaching.MaterialContext.Brief)
-	}
-	if record.Teaching.MaterialSource.Mode != app.MaterialSourceLocalDirectory {
-		t.Fatalf("material source mode = %q, want local_directory", record.Teaching.MaterialSource.Mode)
-	}
-	waitForWorkflowSettled(t, rt, resp.Session.ID)
-}
-
-func TestGenerateSceneReadsLocalDirectoryMaterialSourceWithHomePath(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	dir := filepath.Join(home, "fairy-materials")
-	if err := os.Mkdir(dir, 0o755); err != nil {
-		t.Fatalf("Mkdir() error = %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("# Actor 模型\n消息通过 mailbox 串行处理。"), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
-	rt := runtime.NewRuntime(runtime.Dependencies{
-		Agents: map[agent.Provider]agent.Engine{
-			agent.ProviderMock: agentmock.MockEngine{},
-		},
-		Scenes: map[scene.Provider]scene.Engine{
-			scene.ProviderMock: scenemock.Engine{},
-		},
-		Voices: map[voice.Provider]voice.Engine{
-			testVoiceProvider: &recordingVoiceEngine{},
-		},
-		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: testVoiceProvider,
-		DefaultScene: scene.ProviderMock,
-		Sessions:     store,
-		Logger:       slog.Default(),
-	})
-
-	resp, err := rt.GenerateScene(context.Background(), app.SceneGenerateRequest{
-		Topic:        "Actor 模型",
-		LearningGoal: "理解消息处理。",
-		Characters:   []app.Character{{ID: "tutor", DisplayName: "Tutor"}},
-		MaterialSource: app.MaterialSource{
-			Mode: app.MaterialSourceLocalDirectory,
-			Path: "~/fairy-materials",
-		},
-	})
-	if err != nil {
-		t.Fatalf("GenerateScene() error = %v", err)
-	}
-	record, err := rt.Session(resp.Session.ID)
-	if err != nil {
-		t.Fatalf("Session() error = %v", err)
-	}
-	if !strings.Contains(record.Teaching.MaterialContext.Brief, "mailbox") {
-		t.Fatalf("material brief = %q, want directory content", record.Teaching.MaterialContext.Brief)
-	}
-	waitForWorkflowSettled(t, rt, resp.Session.ID)
-}
-
-func TestGenerateSceneReadsLocalDirectoryDOCXMaterialSource(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "lesson.docx"), simpleDOCXWithParagraphs("第一段：协程负责表达并发。", "第二段：通道负责同步。"), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
-	rt := runtime.NewRuntime(runtime.Dependencies{
-		Agents: map[agent.Provider]agent.Engine{
-			agent.ProviderMock: agentmock.MockEngine{},
-		},
-		Scenes: map[scene.Provider]scene.Engine{
-			scene.ProviderMock: scenemock.Engine{},
-		},
-		Voices: map[voice.Provider]voice.Engine{
-			testVoiceProvider: &recordingVoiceEngine{},
-		},
-		DefaultAgent: agent.ProviderMock,
-		DefaultVoice: testVoiceProvider,
-		DefaultScene: scene.ProviderMock,
-		Sessions:     store,
-		Logger:       slog.Default(),
-	})
 
 	resp, err := rt.GenerateScene(context.Background(), app.SceneGenerateRequest{
 		Topic:        "Go 并发",
 		LearningGoal: "理解协程和通道。",
 		Characters:   []app.Character{{ID: "tutor", DisplayName: "Tutor"}},
 		MaterialSource: app.MaterialSource{
-			Mode: app.MaterialSourceLocalDirectory,
-			Path: dir,
+			Mode:      app.MaterialSourceUploadedFile,
+			AssetName: asset.Filename,
+			AssetType: asset.ContentType,
+			AssetPath: asset.Path,
 		},
 	})
 	if err != nil {
@@ -935,6 +1169,47 @@ func TestGenerateSceneReadsLocalDirectoryDOCXMaterialSource(t *testing.T) {
 		t.Fatalf("material brief = %q, want docx content", record.Teaching.MaterialContext.Brief)
 	}
 	waitForWorkflowSettled(t, rt, resp.Session.ID)
+}
+
+func TestGenerateSceneRejectsUnsupportedUploadedFileType(t *testing.T) {
+	materialDir := t.TempDir()
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Agents: map[agent.Provider]agent.Engine{
+			agent.ProviderMock: agentmock.MockEngine{},
+		},
+		Scenes: map[scene.Provider]scene.Engine{
+			scene.ProviderMock: scenemock.Engine{},
+		},
+		Voices: map[voice.Provider]voice.Engine{
+			testVoiceProvider: &recordingVoiceEngine{},
+		},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: testVoiceProvider,
+		DefaultScene: scene.ProviderMock,
+		MaterialDir:  materialDir,
+		Logger:       slog.Default(),
+	})
+	asset, err := rt.StoreDocumentAssetBytes(context.Background(), "archive.bin", "application/octet-stream", []byte{0x00, 0x01, 0x02})
+	if err != nil {
+		t.Fatalf("StoreDocumentAssetBytes() error = %v", err)
+	}
+
+	_, err = rt.GenerateScene(context.Background(), app.SceneGenerateRequest{
+		Topic:      "非法材料",
+		Characters: []app.Character{{ID: "tutor", DisplayName: "Tutor"}},
+		MaterialSource: app.MaterialSource{
+			Mode:      app.MaterialSourceUploadedFile,
+			AssetName: asset.Filename,
+			AssetType: asset.ContentType,
+			AssetPath: asset.Path,
+		},
+	})
+	if err == nil {
+		t.Fatal("GenerateScene() error = nil, want unsupported file type error")
+	}
+	if !strings.Contains(err.Error(), "文件类型不在材料白名单") {
+		t.Fatalf("GenerateScene() error = %v, want whitelist error", err)
+	}
 }
 
 func simpleDOCXWithParagraphs(paragraphs ...string) []byte {
@@ -1274,41 +1549,35 @@ func TestSynthesizeVoicePersistsWorkflowNodeAudio(t *testing.T) {
 	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
 	voiceEngine := &recordingVoiceEngine{}
 	rt := runtime.NewRuntime(runtime.Dependencies{
-		Agents: map[agent.Provider]agent.Engine{
-			agent.ProviderMock: agentmock.MockEngine{},
-		},
-		Scenes: map[scene.Provider]scene.Engine{
-			scene.ProviderMock: scenemock.Engine{},
-		},
 		Voices: map[voice.Provider]voice.Engine{
 			testVoiceProvider: voiceEngine,
 		},
-		DefaultAgent: agent.ProviderMock,
-		DefaultScene: scene.ProviderMock,
 		DefaultVoice: testVoiceProvider,
 		Sessions:     store,
 		Logger:       slog.Default(),
 	})
-	sceneResp, err := rt.GenerateScene(context.Background(), app.SceneGenerateRequest{
-		Topic:        "语音缓存",
-		DocumentText: "语音缓存需要绑定到剧情段落，恢复历史后直接复用。",
-		Characters:   []app.Character{{ID: "tutor", DisplayName: "Tutor", VoiceID: "mock"}},
-	})
-	if err != nil {
-		t.Fatalf("GenerateScene() error = %v", err)
-	}
-	nodeID := waitForWorkflowNextNodeID(t, rt, sceneResp.Session.ID, "opening")
-	if _, err := rt.AdvanceWorkflow(context.Background(), app.WorkflowAdvanceRequest{
-		SessionID:     sceneResp.Session.ID,
-		CurrentNodeID: "opening",
-		NextNodeID:    nodeID,
+	const sessionID = "voice-history:default"
+	const nodeID = "lesson-1"
+	if _, err := store.BeginScene(app.SceneGenerateRequest{
+		Topic:      "语音缓存",
+		Characters: []app.Character{{ID: "tutor", DisplayName: "Tutor", VoiceID: "mock"}},
+	}, app.SceneGenerateResponse{
+		Scene:   app.Scene{ID: "voice-history", Title: "语音缓存"},
+		Session: app.Session{ID: sessionID, UserID: "default"},
+		Workflow: app.TeachingWorkflow{
+			ID:            "wf",
+			CurrentNodeID: nodeID,
+			Nodes: []app.TeachingWorkflowNode{
+				readyWorkflowNode(nodeID, "lesson", ""),
+			},
+		},
 	}); err != nil {
-		t.Fatalf("AdvanceWorkflow() error = %v", err)
+		t.Fatalf("BeginScene() error = %v", err)
 	}
 	audio, err := rt.SynthesizeVoice(context.Background(), app.VoiceSynthesisRequest{
 		Provider:       string(testVoiceProvider),
 		Text:           "同じ台詞です。",
-		SessionID:      sceneResp.Session.ID,
+		SessionID:      sessionID,
 		WorkflowNodeID: nodeID,
 		Plan:           app.VoicePlan{VoiceID: "mock", Style: "calm", Speed: 1, Pitch: 1},
 		Character:      app.Character{ID: "tutor", VoiceID: "mock"},
@@ -1317,7 +1586,7 @@ func TestSynthesizeVoicePersistsWorkflowNodeAudio(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SynthesizeVoice() error = %v", err)
 	}
-	record, err := rt.Session(sceneResp.Session.ID)
+	record, err := rt.Session(sessionID)
 	if err != nil {
 		t.Fatalf("Session() error = %v", err)
 	}
@@ -1328,6 +1597,10 @@ func TestSynthesizeVoicePersistsWorkflowNodeAudio(t *testing.T) {
 			}
 			if item.AudioFormat != audio.Format {
 				t.Fatalf("history audio_format = %q, want %q", item.AudioFormat, audio.Format)
+			}
+			event := runtimeEventByType(record.Events, app.RuntimeEventTypeVoiceSynthesizeDone)
+			if event.ID == "" || event.Provider != string(testVoiceProvider) || event.NodeID != nodeID || event.Stage != app.RuntimeEventStageVoice || event.DurationMS <= 0 {
+				t.Fatalf("voice.synthesize.completed event missing duration/provider/node: %+v", record.Events)
 			}
 			return
 		}
@@ -1383,11 +1656,11 @@ func TestUpdateWorkflowNodePersistsReadyAudio(t *testing.T) {
 func TestFileSessionStoreGenerationLifecycle(t *testing.T) {
 	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
 	request := app.SceneGenerateRequest{
-		Topic:        "调度器",
-		DocumentText: "GMP 调度模型",
-		LearningGoal: "理解 GMP",
-		Characters:   []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
-		Runtime:      app.RuntimeConfig{SceneProvider: "mock"},
+		Topic:          "调度器",
+		MaterialSource: textMaterial("GMP 调度模型"),
+		LearningGoal:   "理解 GMP",
+		Characters:     []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+		Runtime:        app.RuntimeConfig{SceneProvider: "mock"},
 	}
 	record := app.SessionRecord{
 		Session: app.Session{
@@ -1486,19 +1759,150 @@ func TestFileSessionStoreGenerationFailureAndDelete(t *testing.T) {
 	}
 }
 
+func TestFileSessionStoreRuntimeEvents(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	request := app.SceneGenerateRequest{
+		Topic:      "调度器",
+		Characters: []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+	}
+	if _, err := store.BeginScene(request, app.SceneGenerateResponse{
+		Scene:   app.Scene{ID: "lesson", Title: "课程"},
+		Session: app.Session{ID: "lesson:events", UserID: "default", ActiveCharacterID: "atri"},
+	}); err != nil {
+		t.Fatalf("BeginScene() error = %v", err)
+	}
+	later := time.Date(2026, 6, 20, 10, 0, 0, 0, time.UTC)
+	earlier := later.Add(-time.Minute)
+	if _, err := store.AppendEvent("lesson:events", app.RuntimeEvent{
+		Level:      app.RuntimeEventLevelWarn,
+		Type:       "workflow.waiting",
+		Stage:      app.RuntimeEventStageWorkflow,
+		Message:    "下一幕还在生成",
+		NodeID:     "lesson-1",
+		DurationMS: 1250,
+		CreatedAt:  later,
+	}); err != nil {
+		t.Fatalf("AppendEvent(later) error = %v", err)
+	}
+	if _, err := store.AppendEvent("lesson:events", app.RuntimeEvent{
+		Level:     app.RuntimeEventLevelError,
+		Type:      app.RuntimeEventTypeWorkflowNodeFailed,
+		Stage:     app.RuntimeEventStageWorkflow,
+		Message:   "节点生成失败",
+		NodeID:    "lesson-0",
+		CreatedAt: earlier,
+	}); err != nil {
+		t.Fatalf("AppendEvent(earlier) error = %v", err)
+	}
+	events, err := store.SessionEvents("lesson:events")
+	if err != nil {
+		t.Fatalf("SessionEvents() error = %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want 2", len(events))
+	}
+	if events[0].Type != app.RuntimeEventTypeWorkflowNodeFailed || events[1].Type != "workflow.waiting" {
+		t.Fatalf("events order = %#v", events)
+	}
+	if events[0].ID == "" || events[0].SessionID != "lesson:events" {
+		t.Fatalf("normalized event = %+v", events[0])
+	}
+	if events[1].DurationMS != 1250 {
+		t.Fatalf("duration_ms = %d, want 1250", events[1].DurationMS)
+	}
+	events[0].Message = "mutated"
+	again, err := store.SessionEvents("lesson:events")
+	if err != nil {
+		t.Fatalf("SessionEvents(second) error = %v", err)
+	}
+	if again[0].Message == "mutated" {
+		t.Fatal("SessionEvents returned mutable backing slice")
+	}
+
+	for index := 0; index < 205; index++ {
+		if _, err := store.AppendEvent("lesson:events", app.RuntimeEvent{
+			Level:     app.RuntimeEventLevelInfo,
+			Type:      app.RuntimeEventTypeGenerationCreated,
+			Stage:     app.RuntimeEventStageGeneration,
+			Message:   fmt.Sprintf("事件 %03d", index),
+			CreatedAt: later.Add(time.Duration(index+1) * time.Second),
+		}); err != nil {
+			t.Fatalf("AppendEvent(%d) error = %v", index, err)
+		}
+	}
+	capped, err := store.SessionEvents("lesson:events")
+	if err != nil {
+		t.Fatalf("SessionEvents(capped) error = %v", err)
+	}
+	if len(capped) != 200 {
+		t.Fatalf("capped events = %d, want 200", len(capped))
+	}
+	if capped[0].Message != "事件 005" {
+		t.Fatalf("first capped event = %q, want 事件 005", capped[0].Message)
+	}
+}
+
+func TestFileSessionStoreCompleteGenerationPreservesRuntimeEvents(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	request := app.SceneGenerateRequest{
+		Topic:      "调度器",
+		Characters: []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+	}
+	_, err := store.CreateGeneration(app.SessionRecord{
+		Session: app.Session{ID: "generation:events", UserID: "default", ActiveCharacterID: "atri"},
+		Scene:   app.Scene{ID: "generation:events", Title: "调度器"},
+		Generation: app.SceneGeneration{
+			Status:      app.SceneGenerationStatusGenerating,
+			Fingerprint: "fp-events",
+			Request:     request,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateGeneration() error = %v", err)
+	}
+	if _, err := store.AppendEvent("generation:events", app.RuntimeEvent{
+		Level:   app.RuntimeEventLevelInfo,
+		Type:    app.RuntimeEventTypeGenerationCreated,
+		Stage:   app.RuntimeEventStageGeneration,
+		Message: "生成任务已创建",
+	}); err != nil {
+		t.Fatalf("AppendEvent() error = %v", err)
+	}
+	completed, err := store.CompleteGeneration("generation:events", app.SceneGenerateResponse{
+		Scene:   app.Scene{ID: "lesson", Title: "课程"},
+		Session: app.Session{UserID: "default", ActiveCharacterID: "atri"},
+		Workflow: app.TeachingWorkflow{
+			ID:            "wf",
+			CurrentNodeID: "opening",
+			Nodes: []app.TeachingWorkflowNode{{
+				ID:      "opening",
+				Kind:    "opening",
+				Title:   "开场",
+				Speaker: "亚托莉",
+				Line:    "你好",
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CompleteGeneration() error = %v", err)
+	}
+	if len(completed.Events) != 1 || completed.Events[0].Type != app.RuntimeEventTypeGenerationCreated {
+		t.Fatalf("completed events = %+v", completed.Events)
+	}
+}
+
 func TestStartSceneGenerationCreatesPendingAndDeduplicates(t *testing.T) {
 	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
 	started := make(chan struct{})
 	release := make(chan struct{})
+	agentEngine := &blockingGenerationAgent{started: started, release: release}
 	rt := runtime.NewRuntime(runtime.Dependencies{
-		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentmock.MockEngine{}},
+		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentEngine},
 		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: &recordingVoiceEngine{}},
 		Images:       map[image.Provider]image.Engine{image.ProviderMock: imagemock.Engine{}},
-		Scenes:       map[scene.Provider]scene.Engine{scene.ProviderMock: blockingSceneEngine{started: started, release: release}},
 		DefaultAgent: agent.ProviderMock,
 		DefaultVoice: testVoiceProvider,
 		DefaultImage: image.ProviderMock,
-		DefaultScene: scene.ProviderMock,
 		Sessions:     store,
 		Logger:       slog.Default(),
 	})
@@ -1519,9 +1923,57 @@ func TestStartSceneGenerationCreatesPendingAndDeduplicates(t *testing.T) {
 		t.Fatalf("duplicate = %v session=%q, want same %q", second.Duplicate, second.Record.Session.ID, first.Record.Session.ID)
 	}
 	close(release)
-	record := waitForGenerationStatus(t, store, first.Record.Session.ID, app.SceneGenerationStatusPreparing)
+	record := waitForGenerationStatusIn(t, store, first.Record.Session.ID, app.SceneGenerationStatusPreparing, app.SceneGenerationStatusReady)
 	if record.Scene.ID == "" || len(record.Workflow.Nodes) == 0 {
 		t.Fatalf("preparing record missing scene/workflow: %+v", record)
+	}
+	if event := runtimeEventByType(record.Events, app.RuntimeEventTypeGenerationCreated); event.ID == "" {
+		t.Fatalf("generation.created event missing: %+v", record.Events)
+	}
+	if event := runtimeEventByType(record.Events, app.RuntimeEventTypeMaterialPrepared); event.ID == "" || event.DurationMS <= 0 {
+		t.Fatalf("material.prepared event missing duration: %+v", record.Events)
+	}
+	if event := runtimeEventByType(record.Events, app.RuntimeEventTypeGenerationComplete); event.ID == "" {
+		t.Fatalf("generation.completed event missing: %+v", record.Events)
+	} else if event.DurationMS <= 0 {
+		t.Fatalf("generation.completed duration_ms = %d, want > 0", event.DurationMS)
+	}
+}
+
+func TestStartSceneGenerationPersistsOpeningAgentSubstepEventsOnGenerationSession(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: &tracingGenerationAgent{}},
+		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: &recordingVoiceEngine{}},
+		Images:       map[image.Provider]image.Engine{image.ProviderMock: imagemock.Engine{}},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: testVoiceProvider,
+		DefaultImage: image.ProviderMock,
+		Sessions:     store,
+		Logger:       slog.Default(),
+	})
+
+	first, err := rt.StartSceneGeneration(context.Background(), asyncSceneRequest())
+	if err != nil {
+		t.Fatalf("StartSceneGeneration() error = %v", err)
+	}
+
+	record := waitForGenerationStatusIn(t, store, first.Record.Session.ID, app.SceneGenerationStatusPreparing, app.SceneGenerationStatusReady)
+	event := runtimeEventByType(record.Events, app.RuntimeEventTypeAgentActPlanDone)
+	if event.ID == "" {
+		t.Fatalf("agent.actplan.completed event missing: %+v", record.Events)
+	}
+	if event.SessionID != first.Record.Session.ID {
+		t.Fatalf("agent actplan event session_id = %q, want generation session %q", event.SessionID, first.Record.Session.ID)
+	}
+	if event.NodeID != "opening" {
+		t.Fatalf("agent actplan event node_id = %q, want opening", event.NodeID)
+	}
+	if event.Provider != string(agent.ProviderMock) {
+		t.Fatalf("agent actplan event provider = %q, want %q", event.Provider, agent.ProviderMock)
+	}
+	if event.DurationMS <= 0 {
+		t.Fatalf("agent actplan event duration_ms = %d, want > 0", event.DurationMS)
 	}
 }
 
@@ -1572,22 +2024,20 @@ func TestStartSceneGenerationKeepsPreparingUntilWorkflowCompleteAndDeduplicates(
 	if workflowNodeByID(ready.Workflow.Nodes, "free-discussion").Kind != "free_discussion" {
 		t.Fatalf("free discussion terminal node missing: %+v", ready.Workflow.Nodes)
 	}
-	if calls := agentEngine.callCount(); calls != 2 {
-		t.Fatalf("agent calls = %d, want opening + lesson", calls)
+	if calls := agentEngine.callCount(); calls < 3 {
+		t.Fatalf("agent calls = %d, want at least opening + lesson + summary", calls)
 	}
 }
 
 func TestStartSceneGenerationStoresFailure(t *testing.T) {
 	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
 	rt := runtime.NewRuntime(runtime.Dependencies{
-		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentmock.MockEngine{}},
+		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: failingGenerationAgent{err: errors.New("agent provider down")}},
 		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: &recordingVoiceEngine{}},
 		Images:       map[image.Provider]image.Engine{image.ProviderMock: imagemock.Engine{}},
-		Scenes:       map[scene.Provider]scene.Engine{scene.ProviderMock: failingSceneEngine{err: errors.New("scene provider down")}},
 		DefaultAgent: agent.ProviderMock,
 		DefaultVoice: testVoiceProvider,
 		DefaultImage: image.ProviderMock,
-		DefaultScene: scene.ProviderMock,
 		Sessions:     store,
 		Logger:       slog.Default(),
 	})
@@ -1596,8 +2046,18 @@ func TestStartSceneGenerationStoresFailure(t *testing.T) {
 		t.Fatalf("StartSceneGeneration() error = %v", err)
 	}
 	record := waitForGenerationStatus(t, store, resp.Record.Session.ID, app.SceneGenerationStatusFailed)
-	if !strings.Contains(record.Generation.Error, "scene provider down") {
+	if !strings.Contains(record.Generation.Error, "agent provider down") {
 		t.Fatalf("generation error = %q", record.Generation.Error)
+	}
+	event := runtimeEventByType(record.Events, app.RuntimeEventTypeGenerationFailed)
+	if event.ID == "" {
+		t.Fatalf("generation.failed event missing: %+v", record.Events)
+	}
+	if event.Level != app.RuntimeEventLevelError || event.Stage != app.RuntimeEventStageGeneration || !strings.Contains(event.Message, "agent provider down") {
+		t.Fatalf("generation.failed event = %+v", event)
+	}
+	if event.DurationMS <= 0 {
+		t.Fatalf("generation.failed duration_ms = %d, want > 0", event.DurationMS)
 	}
 }
 
@@ -1638,7 +2098,7 @@ func TestRuntimeResumesWorkflowFollowupsOnStartup(t *testing.T) {
 	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
 	request := asyncSceneRequest()
 	request.Topic = "节点恢复"
-	request.DocumentText = "第一幕完成后，第二幕必须在重启后继续生成。"
+	request.MaterialSource = textMaterial("第一幕完成后，第二幕必须在重启后继续生成。")
 	request.LearningGoal = "理解节点级恢复。"
 	_, err := store.BeginScene(request, app.SceneGenerateResponse{
 		Scene:   app.Scene{ID: "lesson", Title: "节点恢复"},
@@ -1678,7 +2138,7 @@ func TestRuntimeResumesMissingChoiceBranchOnStartup(t *testing.T) {
 	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
 	request := asyncSceneRequest()
 	request.Topic = "分支恢复"
-	request.DocumentText = "选项分支必须在重启后补齐。"
+	request.MaterialSource = textMaterial("选项分支必须在重启后补齐。")
 	request.LearningGoal = "理解分支预加载。"
 	opening := readyWorkflowNode("opening", "opening", "lesson-1")
 	opening.Choices = []app.SceneChoice{{
@@ -1780,6 +2240,58 @@ func TestSynthesizeVoiceRequiresText(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("SynthesizeVoice() error = nil, want text error")
+	}
+}
+
+func TestSynthesizeVoiceRecordsRuntimeEventOnProviderFailure(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	if _, err := store.BeginScene(app.SceneGenerateRequest{
+		Topic:      "语音失败",
+		Characters: []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+	}, app.SceneGenerateResponse{
+		Scene:   app.Scene{ID: "lesson", Title: "课程"},
+		Session: app.Session{ID: "lesson:voice-failure", UserID: "default", ActiveCharacterID: "atri"},
+		Workflow: app.TeachingWorkflow{
+			ID:            "wf",
+			CurrentNodeID: "opening",
+			Nodes:         []app.TeachingWorkflowNode{readyWorkflowNode("opening", "opening", "")},
+		},
+	}); err != nil {
+		t.Fatalf("BeginScene() error = %v", err)
+	}
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: failingVoiceEngine{err: errors.New("voice provider down")}},
+		DefaultVoice: testVoiceProvider,
+		Sessions:     store,
+		Logger:       slog.Default(),
+	})
+	_, err := rt.SynthesizeVoice(context.Background(), app.VoiceSynthesisRequest{
+		Provider:       string(testVoiceProvider),
+		Text:           "こんにちは",
+		SessionID:      "lesson:voice-failure",
+		WorkflowNodeID: "opening",
+		Character:      app.Character{ID: "atri", DisplayName: "亚托莉"},
+		Plan:           app.VoicePlan{VoiceID: "atri"},
+	})
+	if err == nil {
+		t.Fatal("SynthesizeVoice() error = nil, want provider error")
+	}
+	record, err := store.Get("lesson:voice-failure")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	event := runtimeEventByType(record.Events, app.RuntimeEventTypeVoiceSynthesizeFailed)
+	if event.ID == "" {
+		t.Fatalf("voice.synthesize.failed event missing: %+v", record.Events)
+	}
+	if event.Provider != string(testVoiceProvider) || event.NodeID != "opening" || event.Stage != app.RuntimeEventStageVoice || !strings.Contains(event.Message, "voice provider down") {
+		t.Fatalf("voice.synthesize.failed event = %+v", event)
+	}
+	if event.RetryCount != 0 {
+		t.Fatalf("retry count = %d, want 0", event.RetryCount)
+	}
+	if event.DurationMS <= 0 {
+		t.Fatalf("voice.synthesize.failed duration_ms = %d, want > 0", event.DurationMS)
 	}
 }
 
@@ -1888,6 +2400,65 @@ func TestTurnKeepsSpeechWhenSceneImageFails(t *testing.T) {
 	if record.Messages[1].SceneImageError == "" {
 		t.Fatal("persisted scene image error is empty")
 	}
+	imageEvent := runtimeEventByType(record.Events, app.RuntimeEventTypeImageGenerateFailed)
+	if imageEvent.ID == "" || imageEvent.Stage != app.RuntimeEventStageImage || imageEvent.Provider != string(image.ProviderMock) || !strings.Contains(imageEvent.Detail, "image provider unavailable") {
+		t.Fatalf("image.generate.failed event = %+v", imageEvent)
+	}
+	if imageEvent.DurationMS <= 0 {
+		t.Fatalf("image.generate.failed duration_ms = %d, want > 0", imageEvent.DurationMS)
+	}
+	persistEvent := runtimeEventByType(record.Events, app.RuntimeEventTypePersistTurnSaved)
+	if persistEvent.ID == "" || persistEvent.Stage != app.RuntimeEventStagePersist || persistEvent.DurationMS <= 0 {
+		t.Fatalf("persist.turn.saved event = %+v", persistEvent)
+	}
+}
+
+func TestTurnSkipsImageRuntimeEventWhenImageDisabled(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Agents: map[agent.Provider]agent.Engine{
+			agent.ProviderMock: agentmock.MockEngine{},
+		},
+		Voices: map[voice.Provider]voice.Engine{
+			testVoiceProvider: &recordingVoiceEngine{},
+		},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: testVoiceProvider,
+		Sessions:     store,
+		Logger:       slog.Default(),
+	})
+
+	req := app.TurnRequest{
+		Session: app.Session{
+			ID:                "lesson:no-image",
+			UserID:            "default",
+			ActiveCharacterID: "tutor",
+		},
+		Characters: []app.Character{{ID: "tutor", DisplayName: "Tutor", VoiceID: "mock"}},
+		Scene:      app.Scene{ID: "lesson", Title: "测试课程"},
+		Runtime: app.RuntimeConfig{
+			AgentProvider: string(agent.ProviderMock),
+			VoiceProvider: string(testVoiceProvider),
+		},
+		User: app.UserInput{UserID: "default", Text: "继续。"},
+	}
+	if _, err := rt.Turn(context.Background(), req); err != nil {
+		t.Fatalf("Turn() error = %v", err)
+	}
+	record, err := rt.Session("lesson:no-image")
+	if err != nil {
+		t.Fatalf("Session() error = %v", err)
+	}
+	if event := runtimeEventByType(record.Events, app.RuntimeEventTypeImageGenerateDone); event.ID != "" {
+		t.Fatalf("unexpected image.generate.completed event = %+v", event)
+	}
+	if event := runtimeEventByType(record.Events, app.RuntimeEventTypeImageGenerateFailed); event.ID != "" {
+		t.Fatalf("unexpected image.generate.failed event = %+v", event)
+	}
+	persistEvent := runtimeEventByType(record.Events, app.RuntimeEventTypePersistTurnSaved)
+	if persistEvent.ID == "" || persistEvent.Stage != app.RuntimeEventStagePersist || persistEvent.DurationMS <= 0 {
+		t.Fatalf("persist.turn.saved event = %+v", persistEvent)
+	}
 }
 
 func TestTurnUsesRuntimeProvidersFromActiveCharacterResource(t *testing.T) {
@@ -1957,6 +2528,73 @@ func TestTurnUsesRuntimeProvidersFromActiveCharacterResource(t *testing.T) {
 	}
 }
 
+func TestTurnUsesDiscussWithWorkflowContext(t *testing.T) {
+	store := runtime.NewFileSessionStore(t.TempDir() + "/sessions.json")
+	agentEngine := &discussionRecordingAgent{}
+	rt := runtime.NewRuntime(runtime.Dependencies{
+		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentEngine},
+		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: &recordingVoiceEngine{}},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: testVoiceProvider,
+		Sessions:     store,
+		Logger:       slog.Default(),
+	})
+	sceneResp := app.SceneGenerateResponse{
+		Scene:    app.Scene{ID: "lesson", Title: "Go 调度器"},
+		Session:  app.Session{ID: "lesson:default", UserID: "default", ActiveCharacterID: "atri", ParticipantIDs: []string{"atri"}},
+		Relation: app.Relationship{UserID: "default"},
+		Workflow: app.TeachingWorkflow{
+			CurrentNodeID: "free-discussion",
+			Nodes: []app.TeachingWorkflowNode{
+				{ID: "summary", Kind: "summary", Title: "总结回收", Summary: "已经讲完 GMP 主线", NextNodeID: "free-discussion", Status: app.WorkflowNodeStatusReady, VoiceStatus: app.WorkflowNodeStatusReady},
+				{ID: "free-discussion", Kind: "free_discussion", Title: "自由讨论", Summary: "围绕材料继续问答", FreeDiscussion: true, Status: app.WorkflowNodeStatusReady, VoiceStatus: app.WorkflowNodeStatusReady},
+			},
+			History: []app.WorkflowHistoryItem{{NodeID: "summary", NodeTitle: "总结回收"}},
+		},
+	}
+	if _, err := store.BeginScene(app.SceneGenerateRequest{
+		Topic:          "Go 调度器",
+		MaterialSource: textMaterial("GMP 调度材料"),
+		LearningGoal:   "理解 GMP 分工",
+		Characters:     []app.Character{{ID: "atri", DisplayName: "亚托莉", VoiceID: "mock"}},
+		MaterialContext: app.MaterialContext{
+			Brief:  "GMP 包含 G、M、P 三个角色。",
+			Report: app.MaterialSourceReport{Summary: "材料摘要：GMP 调度"},
+		},
+	}, sceneResp); err != nil {
+		t.Fatalf("BeginScene() error = %v", err)
+	}
+
+	if _, err := rt.Turn(context.Background(), app.TurnRequest{
+		Session:   sceneResp.Session,
+		Character: app.Character{ID: "atri", DisplayName: "亚托莉", VoiceID: "mock"},
+		Scene:     sceneResp.Scene,
+		User:      app.UserInput{UserID: "default", Text: "P 为什么重要？"},
+		Runtime: app.RuntimeConfig{
+			AgentProvider: string(agent.ProviderMock),
+			VoiceProvider: string(testVoiceProvider),
+		},
+	}); err != nil {
+		t.Fatalf("Turn() error = %v", err)
+	}
+	if agentEngine.generateCalls != 0 {
+		t.Fatalf("GenerateAct calls = %d, want 0", agentEngine.generateCalls)
+	}
+	if agentEngine.discussCalls != 1 {
+		t.Fatalf("Discuss calls = %d, want 1", agentEngine.discussCalls)
+	}
+	input := agentEngine.lastDiscuss
+	if input.CurrentNode.ID != "free-discussion" || input.Workflow.CurrentNodeID != "free-discussion" {
+		t.Fatalf("Discuss workflow context = node:%q current:%q", input.CurrentNode.ID, input.Workflow.CurrentNodeID)
+	}
+	if !strings.Contains(input.MaterialSummary, "GMP") {
+		t.Fatalf("MaterialSummary = %q, want GMP summary", input.MaterialSummary)
+	}
+	if !strings.Contains(input.SessionSummary, "Go 调度器") || !strings.Contains(input.SessionSummary, "自由讨论") {
+		t.Fatalf("SessionSummary = %q, want topic and current node", input.SessionSummary)
+	}
+}
+
 type failingImageEngine struct{}
 
 func (failingImageEngine) Generate(context.Context, image.Input) (app.ImageResult, error) {
@@ -2008,6 +2646,7 @@ func (scaffoldlessAgent) GenerateAct(context.Context, agent.ActInput) (agent.Act
 				{Speaker: "亚托莉", Text: "第三句", SpeechText: "三つ目", Expression: "curious"},
 				{Speaker: "亚托莉", Text: "第四句", SpeechText: "四つ目", Expression: "calm"},
 			},
+			Choices: testSceneChoices(),
 		},
 	}, nil
 }
@@ -2063,21 +2702,23 @@ func (e *recordingAgentEngine) GenerateAct(_ context.Context, input agent.ActInp
 	if len(input.Request.Characters) > 0 {
 		character = input.Request.Characters[0]
 	}
+	node := app.TeachingWorkflowNode{
+		ID:      "opening",
+		Kind:    "opening",
+		Title:   "开场",
+		Summary: "角色资源",
+		Speaker: character.DisplayName,
+		Lines: []app.DialogueLine{
+			{Speaker: character.DisplayName, Text: "我们按角色资源来解释。", SpeechText: "角色資源に従って説明します。", Expression: "soft_smile"},
+			{Speaker: character.DisplayName, Text: "第二句。", SpeechText: "二つ目。", Expression: "soft_smile"},
+			{Speaker: character.DisplayName, Text: "第三句。", SpeechText: "三つ目。", Expression: "soft_smile"},
+			{Speaker: character.DisplayName, Text: "第四句。", SpeechText: "四つ目。", Expression: "calm"},
+		},
+		Choices: testSceneChoices(),
+	}
 	return agent.ActOutput{
 		Decision: agent.ActDecisionContinue,
-		Node: app.TeachingWorkflowNode{
-			ID:      "opening",
-			Kind:    "opening",
-			Title:   "开场",
-			Summary: "角色资源",
-			Speaker: character.DisplayName,
-			Lines: []app.DialogueLine{
-				{Speaker: character.DisplayName, Text: "我们按角色资源来解释。", SpeechText: "角色資源に従って説明します。", Expression: "soft_smile"},
-				{Speaker: character.DisplayName, Text: "第二句。", SpeechText: "二つ目。", Expression: "soft_smile"},
-				{Speaker: character.DisplayName, Text: "第三句。", SpeechText: "三つ目。", Expression: "soft_smile"},
-				{Speaker: character.DisplayName, Text: "第四句。", SpeechText: "四つ目。", Expression: "calm"},
-			},
-		},
+		Node:     node,
 	}, nil
 }
 
@@ -2086,6 +2727,30 @@ func (e *recordingAgentEngine) Discuss(_ context.Context, input agent.DiscussInp
 	return agent.Output{
 		DisplayText: "我们按角色资源来解释。",
 		SpeechText:  "角色资源に従って説明します。",
+		Emotion:     "calm",
+		Expression:  "soft_smile",
+		Motion:      "idle",
+		Voice:       app.VoicePlan{VoiceID: input.Turn.Character.VoiceID, Style: "clear", Speed: 1, Pitch: 1},
+	}, nil
+}
+
+type discussionRecordingAgent struct {
+	generateCalls int
+	discussCalls  int
+	lastDiscuss   agent.DiscussInput
+}
+
+func (e *discussionRecordingAgent) GenerateAct(context.Context, agent.ActInput) (agent.ActOutput, error) {
+	e.generateCalls++
+	return agent.ActOutput{}, errors.New("GenerateAct should not be called during free discussion")
+}
+
+func (e *discussionRecordingAgent) Discuss(_ context.Context, input agent.DiscussInput) (agent.Output, error) {
+	e.discussCalls++
+	e.lastDiscuss = input
+	return agent.Output{
+		DisplayText: "P 保存本地可运行队列，所以会影响调度效率。",
+		SpeechText:  "P は実行可能なキューを持つので、調度効率に関わります。",
 		Emotion:     "calm",
 		Expression:  "soft_smile",
 		Motion:      "idle",
@@ -2115,7 +2780,13 @@ func (e *controlledGenerationAgent) GenerateAct(ctx context.Context, input agent
 			return agent.ActOutput{}, ctx.Err()
 		case <-e.secondRelease:
 		}
+		return generatedTestAct(input.PlannedNode, speaker, agent.ActDecisionSummarize), nil
+	}
+	if input.PlannedNode.Kind == "summary" {
 		return generatedTestAct(input.PlannedNode, speaker, agent.ActDecisionFreeDiscussion), nil
+	}
+	if input.PlannedNode.Kind == "lesson" || input.PlannedNode.Kind == "choice" {
+		return generatedTestAct(input.PlannedNode, speaker, agent.ActDecisionSummarize), nil
 	}
 	return generatedTestAct(input.PlannedNode, speaker, agent.ActDecisionContinue), nil
 }
@@ -2134,22 +2805,126 @@ func (e *controlledGenerationAgent) callCount() int {
 	return int(e.calls.Load())
 }
 
+type blockingGenerationAgent struct {
+	calls   atomic.Int32
+	started chan<- struct{}
+	release <-chan struct{}
+}
+
+func (e *blockingGenerationAgent) GenerateAct(ctx context.Context, input agent.ActInput) (agent.ActOutput, error) {
+	call := e.calls.Add(1)
+	if call == 1 {
+		if e.started != nil {
+			select {
+			case e.started <- struct{}{}:
+			default:
+			}
+		}
+		if e.release != nil {
+			select {
+			case <-e.release:
+			case <-ctx.Done():
+				return agent.ActOutput{}, ctx.Err()
+			}
+		}
+	}
+	speaker := "亚托莉"
+	if len(input.Request.Characters) > 0 {
+		speaker = input.Request.Characters[0].DisplayName
+	}
+	return generatedTestAct(input.PlannedNode, speaker, agent.ActDecisionContinue), nil
+}
+
+func (e *blockingGenerationAgent) Discuss(context.Context, agent.DiscussInput) (agent.Output, error) {
+	return agent.Output{
+		DisplayText: "继续自由讨论。",
+		SpeechText:  "自由に話しましょう。",
+		Emotion:     "calm",
+		Expression:  "soft_smile",
+		Motion:      "idle",
+	}, nil
+}
+
+type tracingGenerationAgent struct{}
+
+func (e *tracingGenerationAgent) GenerateAct(_ context.Context, input agent.ActInput) (agent.ActOutput, error) {
+	if input.Trace != nil {
+		input.Trace(agent.ActTraceEvent{
+			Type:       app.RuntimeEventTypeAgentActPlanDone,
+			Level:      app.RuntimeEventLevelInfo,
+			Step:       agent.ActTraceStepActPlan,
+			Message:    "ActPlan 已生成。",
+			DurationMS: 5,
+		})
+	}
+	speaker := "亚托莉"
+	if len(input.Request.Characters) > 0 {
+		speaker = input.Request.Characters[0].DisplayName
+	}
+	decision := agent.ActDecisionContinue
+	if input.PlannedNode.Kind == "summary" {
+		decision = agent.ActDecisionFreeDiscussion
+	} else if input.PlannedNode.Kind == "lesson" || input.PlannedNode.Kind == "choice" {
+		decision = agent.ActDecisionSummarize
+	}
+	return generatedTestAct(input.PlannedNode, speaker, decision), nil
+}
+
+func (e *tracingGenerationAgent) Discuss(context.Context, agent.DiscussInput) (agent.Output, error) {
+	return agent.Output{
+		DisplayText: "继续自由讨论。",
+		SpeechText:  "自由に話しましょう。",
+		Emotion:     "calm",
+		Expression:  "soft_smile",
+		Motion:      "idle",
+	}, nil
+}
+
+type failingGenerationAgent struct {
+	err error
+}
+
+func (e failingGenerationAgent) GenerateAct(context.Context, agent.ActInput) (agent.ActOutput, error) {
+	if e.err != nil {
+		return agent.ActOutput{}, e.err
+	}
+	return agent.ActOutput{}, errors.New("agent provider failed")
+}
+
+func (e failingGenerationAgent) Discuss(context.Context, agent.DiscussInput) (agent.Output, error) {
+	if e.err != nil {
+		return agent.Output{}, e.err
+	}
+	return agent.Output{}, errors.New("agent provider failed")
+}
+
 func generatedTestAct(planned app.TeachingWorkflowNode, speaker string, decision agent.ActDecision) agent.ActOutput {
+	node := app.TeachingWorkflowNode{
+		ID:      planned.ID,
+		Kind:    planned.Kind,
+		Title:   planned.Title,
+		Summary: firstNonEmptyTest(planned.Summary, planned.Title, "测试章节"),
+		Speaker: speaker,
+		Lines: []app.DialogueLine{
+			{Speaker: speaker, Text: "第一句。", SpeechText: "一つ目。", Expression: "soft_smile"},
+			{Speaker: speaker, Text: "第二句。", SpeechText: "二つ目。", Expression: "thinking"},
+			{Speaker: speaker, Text: "第三句。", SpeechText: "三つ目。", Expression: "curious"},
+			{Speaker: speaker, Text: "第四句。", SpeechText: "四つ目。", Expression: "calm"},
+		},
+	}
+	if node.Kind == "opening" || node.Kind == "lesson" {
+		node.Choices = testSceneChoices()
+	}
 	return agent.ActOutput{
 		Decision: decision,
-		Node: app.TeachingWorkflowNode{
-			ID:      planned.ID,
-			Kind:    planned.Kind,
-			Title:   planned.Title,
-			Summary: firstNonEmptyTest(planned.Summary, planned.Title, "测试章节"),
-			Speaker: speaker,
-			Lines: []app.DialogueLine{
-				{Speaker: speaker, Text: "第一句。", SpeechText: "一つ目。", Expression: "soft_smile"},
-				{Speaker: speaker, Text: "第二句。", SpeechText: "二つ目。", Expression: "thinking"},
-				{Speaker: speaker, Text: "第三句。", SpeechText: "三つ目。", Expression: "curious"},
-				{Speaker: speaker, Text: "第四句。", SpeechText: "四つ目。", Expression: "calm"},
-			},
-		},
+		Node:     node,
+	}
+}
+
+func testSceneChoices() []app.SceneChoice {
+	return []app.SceneChoice{
+		{ID: "example", Label: "先看例子", Text: "先用例子讲清楚。"},
+		{ID: "term", Label: "先拆术语", Text: "先解释术语。"},
 	}
 }
 
@@ -2188,6 +2963,17 @@ func (e *recordingVoiceEngine) Synthesize(_ context.Context, input voice.Input) 
 	return app.AudioResult{URL: "/audio/test.mp3", Format: "mp3", Placeholder: false}, nil
 }
 
+type failingVoiceEngine struct {
+	err error
+}
+
+func (e failingVoiceEngine) Synthesize(context.Context, voice.Input) (app.AudioResult, error) {
+	if e.err != nil {
+		return app.AudioResult{}, e.err
+	}
+	return app.AudioResult{}, errors.New("voice provider failed")
+}
+
 type cloneVoiceEngine struct {
 	provider string
 }
@@ -2206,45 +2992,12 @@ func (e *cloneVoiceEngine) CloneStatus(_ context.Context, request app.VoiceClone
 	return app.VoiceCloneResult{SpeakerID: request.SpeakerID, ResourceID: request.ResourceID, Status: "success"}, nil
 }
 
-type blockingSceneEngine struct {
-	started chan<- struct{}
-	release <-chan struct{}
-}
-
-func (e blockingSceneEngine) Generate(ctx context.Context, input scene.Input) (app.SceneGenerateResponse, error) {
-	if e.started != nil {
-		select {
-		case e.started <- struct{}{}:
-		default:
-		}
-	}
-	if e.release != nil {
-		select {
-		case <-e.release:
-		case <-ctx.Done():
-			return app.SceneGenerateResponse{}, ctx.Err()
-		}
-	}
-	return scenemock.Engine{}.Generate(ctx, input)
-}
-
-type failingSceneEngine struct {
-	err error
-}
-
-func (e failingSceneEngine) Generate(context.Context, scene.Input) (app.SceneGenerateResponse, error) {
-	if e.err != nil {
-		return app.SceneGenerateResponse{}, e.err
-	}
-	return app.SceneGenerateResponse{}, errors.New("scene provider failed")
-}
-
 func asyncSceneRequest() app.SceneGenerateRequest {
 	return app.SceneGenerateRequest{
-		Topic:        "异步生成",
-		DocumentText: "异步生成需要先创建生成中的记录，然后后台完成情景和语音准备。",
-		LearningGoal: "理解非阻塞生成流程。",
-		Characters:   []app.Character{{ID: "atri", DisplayName: "亚托莉", VoiceID: "mock"}},
+		Topic:          "异步生成",
+		MaterialSource: textMaterial("异步生成需要先创建生成中的记录，然后后台完成情景和语音准备。"),
+		LearningGoal:   "理解非阻塞生成流程。",
+		Characters:     []app.Character{{ID: "atri", DisplayName: "亚托莉", VoiceID: "mock"}},
 		Runtime: app.RuntimeConfig{
 			SceneProvider: string(scene.ProviderMock),
 			AgentProvider: string(agent.ProviderMock),
@@ -2265,20 +3018,37 @@ func waitForSignal(t *testing.T, ch <-chan struct{}, label string) {
 
 func waitForGenerationStatus(t *testing.T, store *runtime.FileSessionStore, sessionID string, status string) app.SessionRecord {
 	t.Helper()
+	return waitForGenerationStatusIn(t, store, sessionID, status)
+}
+
+func waitForGenerationStatusIn(t *testing.T, store *runtime.FileSessionStore, sessionID string, statuses ...string) app.SessionRecord {
+	t.Helper()
+	allowed := map[string]bool{}
+	for _, status := range statuses {
+		allowed[status] = true
+	}
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		record, err := store.Get(sessionID)
 		if err != nil {
 			t.Fatalf("Get() while waiting generation status error = %v", err)
 		}
-		if record.Generation.Status == status {
+		if allowed[record.Generation.Status] {
 			return record
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("generation status = %q, want %q", record.Generation.Status, status)
+			t.Fatalf("generation status = %q, want one of %v; workflow nodes: %s", record.Generation.Status, statuses, workflowNodeDebugSummary(record.Workflow.Nodes))
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+func workflowNodeDebugSummary(nodes []app.TeachingWorkflowNode) string {
+	parts := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		parts = append(parts, fmt.Sprintf("%s/%s status=%s voice=%s decision=%s next=%s choices=%d error=%s", node.ID, node.Kind, node.Status, node.VoiceStatus, node.Decision, node.NextNodeID, len(node.Choices), node.PrepareError))
+	}
+	return strings.Join(parts, " | ")
 }
 
 func waitForStoredWorkflowNodeReady(t *testing.T, store *runtime.FileSessionStore, sessionID string, nodeID string) app.SessionRecord {
@@ -2340,6 +3110,15 @@ func workflowNodeByID(nodes []app.TeachingWorkflowNode, id string) app.TeachingW
 		}
 	}
 	return app.TeachingWorkflowNode{}
+}
+
+func runtimeEventByType(events []app.RuntimeEvent, eventType string) app.RuntimeEvent {
+	for _, event := range events {
+		if event.Type == eventType {
+			return event
+		}
+	}
+	return app.RuntimeEvent{}
 }
 
 func readyWorkflowNode(id string, kind string, nextID string) app.TeachingWorkflowNode {

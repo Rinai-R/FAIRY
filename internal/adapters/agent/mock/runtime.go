@@ -46,12 +46,13 @@ func (MockEngine) GenerateAct(_ context.Context, input agent.ActInput) (agent.Ac
 		Kind:       kind,
 		Title:      title,
 		Summary:    point,
+		MustCover:  []string{point},
 		Speaker:    speaker,
 		NextNodeID: fmt.Sprintf("lesson-%d", input.ActIndex+1),
 		Lines: []app.DialogueLine{
 			{Speaker: speaker, Text: "我们先把这一幕的直觉抓住。", SpeechText: mockSpeech("まず、この場面の直感をつかみましょう。", input.Request.Runtime.Language), Expression: "soft_smile"},
 			{Speaker: speaker, Text: "不要急着背定义，先看它解决了材料里的哪个问题。", SpeechText: mockSpeech("定義を急いで覚える前に、それが資料のどんな問題を解くのか見てみましょう。", input.Request.Runtime.Language), Expression: "thinking"},
-			{Speaker: speaker, Text: "这一幕的主题会围绕材料要点展开。", SpeechText: mockSpeech("この場面のテーマは資料の要点に沿って進めます。", input.Request.Runtime.Language), Expression: "curious"},
+			{Speaker: speaker, Text: fmt.Sprintf("这一幕会讲清「%s」，并把它落到材料里的具体问题。", point), SpeechText: mockSpeech("この場面のテーマは資料の要点に沿って進めます。", input.Request.Runtime.Language), Expression: "curious"},
 			{Speaker: speaker, Text: "接下来你可以选择从例子或术语继续。", SpeechText: mockSpeech("次は例から進むか用語から進むかを選べます。", input.Request.Runtime.Language), Expression: "calm"},
 		},
 		Choices: []app.SceneChoice{
@@ -70,7 +71,7 @@ func (MockEngine) GenerateAct(_ context.Context, input agent.ActInput) (agent.Ac
 	return agent.ActOutput{
 		Node:          node,
 		Decision:      decision,
-		CoveredPoints: append(input.CoveredPoints, point),
+		CoveredPoints: []string{point},
 		Summary:       point,
 	}, nil
 }
@@ -127,7 +128,7 @@ func mockTeachingPoint(input agent.ActInput) string {
 	if text := strings.TrimSpace(input.PlannedNode.Title); text != "" && !genericPlannedPoint(text) {
 		return text
 	}
-	if text := documentTeachingPoint(input.Request.DocumentText, input.ActIndex); text != "" {
+	if text := documentTeachingPoint(app.SceneGenerateMaterialText(input.Request), input.ActIndex); text != "" {
 		return text
 	}
 	if text := strings.TrimSpace(input.Request.LearningGoal); text != "" {

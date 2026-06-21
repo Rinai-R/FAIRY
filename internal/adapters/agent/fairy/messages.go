@@ -22,16 +22,18 @@ type actPlan struct {
 }
 
 type actPlanItem struct {
-	Index        int      `json:"index"`
-	ID           string   `json:"id,omitempty"`
-	Kind         string   `json:"kind"`
-	Title        string   `json:"title"`
-	Theme        string   `json:"theme"`
-	TeachingGoal string   `json:"teaching_goal"`
-	MustCover    []string `json:"must_cover"`
-	DramaticRole string   `json:"dramatic_role,omitempty"`
-	ChoiceGoal   string   `json:"choice_goal,omitempty"`
-	Decision     string   `json:"decision,omitempty"`
+	Index                   int      `json:"index"`
+	ID                      string   `json:"id,omitempty"`
+	Kind                    string   `json:"kind"`
+	Title                   string   `json:"title"`
+	Theme                   string   `json:"theme"`
+	TeachingGoal            string   `json:"teaching_goal"`
+	MustCover               []string `json:"must_cover"`
+	MisconceptionToAddress  string   `json:"misconception_to_address"`
+	ExampleOrCounterexample string   `json:"example_or_counterexample"`
+	DramaticRole            string   `json:"dramatic_role,omitempty"`
+	ChoiceGoal              string   `json:"choice_goal,omitempty"`
+	Decision                string   `json:"decision,omitempty"`
 }
 
 func (e *Engine) completeJSON(ctx context.Context, profile app.AgentProfile, messages []llm.Message) (string, error) {
@@ -89,7 +91,7 @@ func buildActPlanMessages(input agent.ActInput) ([]llm.Message, error) {
 				"语言计划：",
 				languageBrief(input.Request.Runtime.Language),
 				"",
-				"材料摘要（runtime 已经通过受控材料工具读取，禁止要求模型自行读取 URL 或本地路径）：",
+				"材料摘要（runtime 已经从粘贴文本或单上传文件整理完成，禁止要求模型自行读取 URL、本地路径或外部文件）：",
 				truncateForPrompt(material.Brief, 12000),
 				"",
 				"材料读取报告：",
@@ -100,10 +102,11 @@ func buildActPlanMessages(input agent.ActInput) ([]llm.Message, error) {
 				"2. expanded_notes 要把关键概念扩展成更细的讲解要点，供后续每幕写台词使用。",
 				"3. act_count 由材料复杂度决定，长材料不能压成 1-2 幕；可以增加 acts/章节数量，不设硬性上限；每幕只承载一个中等颗粒度主题。",
 				"4. acts 必须覆盖 opening、若干 lesson、summary；free discussion 不属于主线幕，不要放进 acts。",
-				"5. 每个 act 要有 theme、teaching_goal、must_cover、dramatic_role、choice_goal。",
+				"5. 每个 act 要有 theme、teaching_goal、must_cover、misconception_to_address、example_or_counterexample、dramatic_role、choice_goal。",
 				"6. decision 表示当前幕结束后的主线走向：中间幕 continue，最后主线总结幕 free_discussion。",
-				"7. 输出 JSON 结构：{\"material_summary\":\"...\",\"expanded_notes\":[\"...\"],\"act_count\":6,\"acts\":[{\"index\":1,\"id\":\"opening\",\"kind\":\"opening\",\"title\":\"...\",\"theme\":\"...\",\"teaching_goal\":\"...\",\"must_cover\":[\"...\"],\"dramatic_role\":\"...\",\"choice_goal\":\"...\",\"decision\":\"continue\"}]}；act_count 示例不是上限。",
-				"8. 只返回 JSON object，不要 Markdown，不要解释。",
+				"7. misconception_to_address 要指出当前幕最容易混淆或误解的点；example_or_counterexample 要给当前幕可直接使用的例子或反例。",
+				"8. 输出 JSON 结构：{\"material_summary\":\"...\",\"expanded_notes\":[\"...\"],\"act_count\":6,\"acts\":[{\"index\":1,\"id\":\"opening\",\"kind\":\"opening\",\"title\":\"...\",\"theme\":\"...\",\"teaching_goal\":\"...\",\"must_cover\":[\"...\"],\"misconception_to_address\":\"...\",\"example_or_counterexample\":\"...\",\"dramatic_role\":\"...\",\"choice_goal\":\"...\",\"decision\":\"continue\"}]}；act_count 示例不是上限。",
+				"9. 只返回 JSON object，不要 Markdown，不要解释。",
 				"",
 				"输入：",
 				string(payload),
@@ -161,7 +164,7 @@ func buildGenerateActMessages(input agent.ActInput, plan actPlan) ([]llm.Message
 				"语言计划：",
 				languageBrief(input.Request.Runtime.Language),
 				"",
-				"材料摘要（只围绕这些已读取内容生成，不要要求读取 URL 或本地路径）：",
+				"材料摘要（只围绕这些已整理内容生成，不要要求读取 URL、本地路径或外部文件）：",
 				truncateForPrompt(material.Brief, 12000),
 				"",
 				"可用角色差分 expression contract：",
@@ -172,16 +175,18 @@ func buildGenerateActMessages(input agent.ActInput, plan actPlan) ([]llm.Message
 				"台词生成合约：",
 				"1. 只生成当前 planned_node/current_act_plan 对应的一幕，不要生成其他幕。",
 				"2. node.summary 必须概括当前幕 theme；node.lines[].text 必须围绕 current_act_plan.must_cover 展开。",
-				"3. 台词要先把知识讲细，再用角色口吻润色；不能只说标题或空泛鼓励。",
-				"4. node.lines 是视觉小说文本框逐次展示的单位；lines[].text 必须是一屏文本框能直接显示的一句话或短句组，不是一整幕段落。",
-				"5. opening/lesson 的 node.lines 至少 4 条；summary 也应拆成多条短台词。每条 line 只推进一个小知识步，长解释必须拆成更多 lines；材料很长时应增加后续 acts/章节，而不是拉长 line。",
-				"6. 中文或日文单条 lines[].text 不超过 52 个可见字符；英文单条 lines[].text 不超过 120 个可见字符。这个限制只针对单条 line，不限制当前幕或整篇章节数量。",
-				"7. lines[].text 是屏幕字幕；lines[].speech_text 是同一条字幕对应的语音稿。显示语言和语音语言不同的时候，必须分别生成，不能混写，也不能把多条字幕合并成一条 speech_text。",
-				"8. opening/lesson 必须给 1-3 个 choices；选项服务于 current_act_plan.choice_goal。",
-				"9. expression 必须优先从 expression contract 的 key 中选择；只有 contract 标记为默认表情时，才可使用默认 key。",
-				"10. decision 必须跟当前幕规划一致；中间幕 continue，总结幕 free_discussion。",
-				"11. 输出 JSON 必须符合 ActOutput：{\"decision\":\"continue|summarize|free_discussion\",\"node\":{\"summary\":\"...\",\"speaker\":\"...\",\"lines\":[{\"speaker\":\"...\",\"text\":\"...\",\"speech_text\":\"...\",\"expression\":\"...\"}],\"choices\":[{\"id\":\"...\",\"label\":\"...\",\"text\":\"...\",\"hint\":\"...\"}]}}。",
-				"12. 只返回 JSON object，不要 Markdown，不要解释。",
+				"3. 台词必须处理 current_act_plan.misconception_to_address，并自然使用 current_act_plan.example_or_counterexample 里的例子或反例。",
+				"4. 台词要先把知识讲细，再用角色口吻润色；不能只说标题或空泛鼓励。",
+				"5. node.lines 是视觉小说文本框逐次展示的单位；lines[].text 必须是一屏文本框能直接显示的一句话或短句组，不是一整幕段落。",
+				"6. opening/lesson 的 node.lines 至少 4 条；summary 也应拆成多条短台词。每条 line 只推进一个小知识步，长解释必须拆成更多 lines；材料很长时应增加后续 acts/章节，而不是拉长 line。",
+				"7. 中文或日文单条 lines[].text 不超过 52 个可见字符；英文单条 lines[].text 不超过 120 个可见字符。这个限制只针对单条 line，不限制当前幕或整篇章节数量。",
+				"8. lines[].text 是屏幕字幕；lines[].speech_text 是同一条字幕对应的语音稿。显示语言和语音语言不同的时候，必须分别生成，不能混写，也不能把多条字幕合并成一条 speech_text。",
+				"9. opening/lesson 必须给 1-3 个 choices；选项服务于 current_act_plan.choice_goal。",
+				"10. expression 必须优先从 expression contract 的 key 中选择；只有 contract 标记为默认表情时，才可使用默认 key。",
+				"11. decision 必须跟当前幕规划一致；中间幕 continue，总结幕 free_discussion。",
+				"12. covered_points 必须列出这一幕实际讲到的 current_act_plan.must_cover 关键点，不能填写未在台词中展开的点。",
+				"13. 输出 JSON 必须符合 ActOutput：{\"decision\":\"continue|summarize|free_discussion\",\"covered_points\":[\"...\"],\"node\":{\"summary\":\"...\",\"speaker\":\"...\",\"lines\":[{\"speaker\":\"...\",\"text\":\"...\",\"speech_text\":\"...\",\"expression\":\"...\"}],\"choices\":[{\"id\":\"...\",\"label\":\"...\",\"text\":\"...\",\"hint\":\"...\"}]}}。",
+				"14. 只返回 JSON object，不要 Markdown，不要解释。",
 				"",
 				"输入：",
 				string(payload),
@@ -237,12 +242,13 @@ func buildRewriteActMessages(input agent.ActInput, plan actPlan, draft agent.Act
 				"改写合约：",
 				"1. 必须保留 decision 的含义，不要把 continue/summarize/free_discussion 改错。",
 				"2. 必须保留 node.summary 的知识主题，可以让表达更自然。",
-				"3. 若原稿存在超长 line，必须优先拆短并保留知识点；不要把整幕解释塞进一条 lines[].text。",
-				"4. 中文或日文单条 lines[].text 不超过 52 个可见字符；英文单条 lines[].text 不超过 120 个可见字符。限制只针对单条 line，不限制章节数量。",
-				"5. 改写 lines[].text 时，要更像角色自然说话，但不能牺牲知识精度。",
-				"6. 改写 lines[].speech_text 时，要符合 speech_language 和角色口吻，并与同序号 text 一一对应。",
-				"7. expression 可以根据语气微调，但必须是角色可用的表情语义。",
-				"8. 只返回完整 ActOutput JSON object，不要 Markdown，不要解释。",
+				"3. 改写后的 covered_points 必须至少包含草稿 covered_points 的所有项；必须保留 covered_points 对应的知识点，并继续处理当前规划中的误区和例子；不要为了角色口吻删掉教学内容。",
+				"4. 若原稿存在超长 line，必须优先拆短并保留知识点；不要把整幕解释塞进一条 lines[].text。",
+				"5. 中文或日文单条 lines[].text 不超过 52 个可见字符；英文单条 lines[].text 不超过 120 个可见字符。限制只针对单条 line，不限制章节数量。",
+				"6. 改写 lines[].text 时，要更像角色自然说话，但不能牺牲知识精度。",
+				"7. 改写 lines[].speech_text 时，要符合 speech_language 和角色口吻，并与同序号 text 一一对应。",
+				"8. expression 可以根据语气微调，但必须是角色可用的表情语义。",
+				"9. 只返回完整 ActOutput JSON object，不要 Markdown，不要解释。",
 				"",
 				"原始输入：",
 				string(payload),
@@ -339,6 +345,12 @@ func validateActPlan(output actPlan) error {
 		if len(act.MustCover) == 0 {
 			return fmt.Errorf("act_plan.acts[%d].must_cover 不能为空", index)
 		}
+		if strings.TrimSpace(act.MisconceptionToAddress) == "" {
+			return fmt.Errorf("act_plan.acts[%d].misconception_to_address 不能为空", index)
+		}
+		if strings.TrimSpace(act.ExampleOrCounterexample) == "" {
+			return fmt.Errorf("act_plan.acts[%d].example_or_counterexample 不能为空", index)
+		}
 		if act.Kind == "summary" {
 			hasSummary = true
 		}
@@ -430,11 +442,28 @@ func validateFairyActOutput(input agent.ActInput, output agent.ActOutput) error 
 		if err := validateTeachingLines(kind, output.Node.Lines, input.Request.Runtime.Language); err != nil {
 			return err
 		}
+		if err := validateTeachingCoveredPoints(output.CoveredPoints); err != nil {
+			return err
+		}
 	}
 	if kind == "opening" || kind == "lesson" {
 		if err := validateTeachingChoices(output.Node.Choices); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateTeachingCoveredPoints(points []string) error {
+	covered := []string{}
+	for index, point := range points {
+		if strings.TrimSpace(point) == "" {
+			return fmt.Errorf("covered_points[%d] 不能为空", index)
+		}
+		covered = append(covered, strings.TrimSpace(point))
+	}
+	if len(covered) == 0 {
+		return errors.New("teaching act 必须提供 covered_points")
 	}
 	return nil
 }
@@ -568,13 +597,13 @@ func materialContextForInput(input agent.ActInput) app.MaterialContext {
 	if strings.TrimSpace(input.Request.MaterialContext.Brief) != "" {
 		return input.Request.MaterialContext
 	}
-	if text := strings.TrimSpace(input.Request.DocumentText); text != "" {
+	if text := app.SceneGenerateMaterialText(input.Request); text != "" {
 		return app.MaterialContext{
 			Brief: text,
 			Text:  text,
 			Report: app.MaterialSourceReport{
 				Mode:    app.MaterialSourceText,
-				Summary: "来自旧 document_text 字段的兼容材料",
+				Summary: "来自 material_source.text 的粘贴正文",
 				Items: []app.MaterialItem{{
 					SourceType: "text",
 					Status:     "read",

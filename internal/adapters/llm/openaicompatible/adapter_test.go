@@ -114,6 +114,40 @@ func TestCompleteJSONDoesNotOverrideConfiguredResponseFormat(t *testing.T) {
 	}
 }
 
+func TestCompleteJSONNormalizesFullChatCompletionsURL(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{
+					"content": `{"ok":true}`,
+				},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	_, err := NewAdapter(Options{
+		Profile: llm.Profile{
+			Endpoint: server.URL + "/v1/chat/completions",
+			APIKey:   "secret-key",
+			Model:    "deepseek-chat",
+		},
+	}).CompleteJSON(context.Background(), llm.Request{
+		Messages: []llm.Message{{Role: "user", Content: "user"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteJSON() error = %v", err)
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("path = %q", gotPath)
+	}
+}
+
 func TestCompleteJSONAcceptsContentPartArray(t *testing.T) {
 	t.Parallel()
 
@@ -235,6 +269,35 @@ func TestValidateFailsExplicitlyWhenMissingFields(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %q, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsInvalidExtraBody(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		extraBody string
+	}{
+		{name: "array", extraBody: `["thinking"]`},
+		{name: "string", extraBody: `"thinking"`},
+		{name: "invalid", extraBody: `{`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := NewAdapter(Options{}).Validate(llm.Profile{
+				Endpoint:  "http://127.0.0.1:1",
+				APIKey:    "secret",
+				Model:     "gpt",
+				ExtraBody: tt.extraBody,
+			})
+			if err == nil {
+				t.Fatal("Validate() error = nil")
+			}
+			if !strings.Contains(err.Error(), "extra_body") {
+				t.Fatalf("error = %q, want extra_body context", err)
 			}
 		})
 	}

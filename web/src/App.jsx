@@ -8,6 +8,7 @@ import {
   exportWebGAL,
   getCapabilities,
   getSession,
+  getSessionEvents,
   getPlugins,
   getProviderHealth,
   getSessions,
@@ -24,9 +25,47 @@ import {
 import { DirectorView } from "./views/DirectorView";
 import { GalgameStageView } from "./views/GalgameStage";
 import { createCharacterPackage, mergeCharacterPackage } from "./characterPackage";
+import {
+  coreMaterialSourceFromState,
+  documentSourceLabel,
+  documentSourceReady,
+  documentSourceStateFromRecord,
+  documentSourceStatusMessage,
+  inferDocumentSourceMode,
+  normalizeDocumentSourceMode
+} from "./documentSource";
 import { characterVisualStyle, resolveCharacterPortrait } from "./views/characterVisualLayout";
+import { confirmedChoicePlayerText } from "./views/stageChoices";
 import { emotionLabel, expressionLabel, motionLabel } from "./views/displayLabels";
-import { stageWorkflowWaiting, workflowNodeReady } from "./views/workflowReadiness";
+import { stageWorkflowWaiting } from "./views/workflowReadiness";
+import {
+  historyStatusClass,
+  historyStatusColor,
+  historyStatusDescription,
+  historyStatusLabel,
+  recordPrimaryHistoryTime,
+  recordFailureMessage,
+  recordGenerationStatus,
+  recordHasActiveGeneration,
+  recordPlayable,
+  recordReadinessTimes,
+  hasPlayableWorkflow
+} from "./historyStatus";
+import {
+  aggregateRuntimeEventsFromRecords,
+  buildLogTimeline,
+  createFrontendLog,
+  filterLogTimeline,
+  normalizeRuntimeEvents,
+  recordRuntimeTimeline,
+  runtimeEventDiagnosticText,
+  runtimeEventMeta,
+  runtimeLogCopyText,
+  runtimeIssueLogs
+} from "./runtimeEvents";
+import { chapterSnapshotCount, chapterSnapshotItems, hiddenChapterCount, visitedChapterCount } from "./historySnapshots";
+import { defaultCharacters } from "./defaultCharacters";
+import { hashForView, viewFromLocationHash } from "./navigation";
 
 const CONFIG_STORAGE_KEY = "fairy.user-config.v1";
 const MAX_DOCUMENT_ASSET_BYTES = 64 * 1024 * 1024;
@@ -38,50 +77,6 @@ const DEFAULT_LANGUAGE_PLAN = Object.freeze({
   mode: "translate_for_voice"
 });
 const DEFAULT_VOICE_TEST_TEXT = "わかりました。これから一緒に勉強しましょう。";
-const DOCUMENT_SOURCE_MODES = Object.freeze(["upload", "text", "url", "directory"]);
-
-const defaultCharacters = [
-  {
-    id: "tutor",
-    display_name: "亚托莉",
-    voice_id: "zh_female_vv_uranus_bigtts",
-    persona: "轻快、好奇、温柔，像视觉小说里的同伴老师。会把文档知识放进玩家可自由提问和互动的 Galgame 教学场景。",
-    style_rules: ["只围绕当前文档教学。", "不要替玩家说话。", "每轮只推进一小段材料线索。", "回复适合语音播放。"],
-    assets: {
-      portrait_url: "",
-      background_url: "",
-      backgrounds: {},
-      reference_image_url: "",
-      style_prompt: "clean anime visual novel tutor, white interface, dark red accent",
-      cg_prompt: "teaching in a quiet classroom-like visual novel scene",
-      moods: {
-        calm: { portrait_url: "", cg_prompt: "calm expression" },
-        curious: { portrait_url: "", cg_prompt: "curious smile" },
-        serious: { portrait_url: "", cg_prompt: "serious teaching expression" }
-      }
-    }
-  },
-  {
-    id: "skeptic",
-    display_name: "追问者",
-    voice_id: "zh_female_vv_uranus_bigtts",
-    persona: "像同桌一样追问、质疑和举反例，帮助玩家发现自己没理解的地方。",
-    style_rules: ["用问题推动思考。", "不要替玩家说话。", "质疑必须围绕文档内容。"],
-    assets: {
-      portrait_url: "",
-      background_url: "",
-      backgrounds: {},
-      reference_image_url: "",
-      style_prompt: "anime visual novel classmate, analytical expression",
-      cg_prompt: "asking a sharp question in a study scene",
-      moods: {
-        calm: { portrait_url: "", cg_prompt: "neutral thinking face" },
-        curious: { portrait_url: "", cg_prompt: "leaning forward with curiosity" },
-        serious: { portrait_url: "", cg_prompt: "focused skeptical expression" }
-      }
-    }
-  }
-];
 
 const defaultPrompt = {
   system: "你是 FAIRY 的文档 Galgame 教学 Agent，负责在玩家驱动的互动场景中解释材料。",
@@ -153,8 +148,7 @@ export function App() {
   const autoplayBlockRef = useRef({ url: "", time: 0 });
   const voiceTestCacheRef = useRef({ key: "", url: "" });
   const [activeView, setActiveView] = useState(() => {
-    const hash = typeof window !== "undefined" ? window.location.hash.replace("#", "") : "";
-    return ["dashboard", "history", "director", "config", "logs", "stage"].includes(hash) ? hash : "dashboard";
+    return typeof window !== "undefined" ? viewFromLocationHash(window.location.hash) : "dashboard";
   });
   const [configTab, setConfigTab] = useState("characters");
   const [capabilities, setCapabilities] = useState(null);
@@ -165,9 +159,8 @@ export function App() {
   const [generationRequirement, setGenerationRequirement] = useState(savedConfigRef.current?.generationRequirement || "");
   const [documentSourceMode, setDocumentSourceMode] = useState(() => normalizeDocumentSourceMode(savedConfigRef.current?.documentSourceMode || inferDocumentSourceMode(savedConfigRef.current)));
   const [documentText, setDocumentText] = useState("");
-  const [documentURL, setDocumentURL] = useState(savedConfigRef.current?.documentURL || "");
   const [documentAsset, setDocumentAsset] = useState(savedConfigRef.current?.documentAsset || null);
-  const [documentImport, setDocumentImport] = useState({ status: "idle", message: "支持粘贴正文、上传任意教学材料文件，或导入网络文档链接。", pages: 0 });
+  const [documentImport, setDocumentImport] = useState({ status: "idle", message: "支持粘贴正文或上传单文件。", pages: 0 });
   const [scene, setScene] = useState(defaultScene());
   const [activeSession, setActiveSession] = useState(null);
   const [lessonWorkflow, setLessonWorkflow] = useState(defaultWorkflow());
@@ -208,7 +201,8 @@ export function App() {
   const [messages, setMessages] = useState([
     { role: "assistant", text: "先把材料放进主页，我会把它整理成一段可以推进的教学剧情。前面会覆盖材料主线，最后再进入自由讨论。", meta: "ready" }
   ]);
-  const [logs, setLogs] = useState([{ level: "info", message: "FAIRY 已启动。", time: new Date().toLocaleTimeString() }]);
+  const [logs, setLogs] = useState([createFrontendLog("info", "FAIRY 已启动。")]);
+  const [runtimeEvents, setRuntimeEvents] = useState([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [generationBusy, setGenerationBusy] = useState(false);
@@ -261,9 +255,31 @@ export function App() {
     [activeSession, lessonWorkflow, scene]
   );
   const hasGeneratingSessions = useMemo(
-    () => sessions.some((record) => recordGenerationStatus(record) === "generating"),
+    () => sessions.some((record) => recordHasActiveGeneration(record)),
     [sessions]
   );
+  const observedRuntimeEvents = useMemo(
+    () => aggregateRuntimeEventsFromRecords(sessions, runtimeEvents),
+    [runtimeEvents, sessions]
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const syncViewFromHash = () => {
+      const nextView = viewFromLocationHash(window.location.hash);
+      setActiveView((current) => (current === nextView ? current : nextView));
+    };
+    window.addEventListener("hashchange", syncViewFromHash);
+    return () => window.removeEventListener("hashchange", syncViewFromHash);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const nextHash = hashForView(activeView);
+    if (window.location.hash !== nextHash) {
+      window.history.replaceState(null, "", nextHash);
+    }
+  }, [activeView]);
 
   useEffect(() => {
     if (remoteHydrateStartedRef.current) return;
@@ -302,6 +318,12 @@ export function App() {
   }, [activeSession?.id, activeView]);
 
   useEffect(() => {
+    if (!activeSession?.id) return undefined;
+    syncSessionEvents(activeSession.id, { quiet: true });
+    return undefined;
+  }, [activeSession?.id]);
+
+  useEffect(() => {
     if (!hasGeneratingSessions) return undefined;
     const timer = window.setInterval(() => {
       refreshSessions({ quiet: true });
@@ -320,7 +342,6 @@ export function App() {
     documentAsset,
     documentSourceMode,
     documentTitle,
-    documentURL,
     imageProvider,
     languagePlan,
     learningGoal,
@@ -381,7 +402,6 @@ export function App() {
     if (typeof config.learningGoal === "string") setLearningGoal(config.learningGoal);
     if (typeof config.generationRequirement === "string") setGenerationRequirement(config.generationRequirement);
     setDocumentSourceMode(normalizeDocumentSourceMode(config.documentSourceMode || inferDocumentSourceMode(config)));
-    if (typeof config.documentURL === "string") setDocumentURL(config.documentURL);
     if (Object.prototype.hasOwnProperty.call(config, "documentAsset")) setDocumentAsset(config.documentAsset || null);
     // interactionMode removed
     if (config.languagePlan) setLanguagePlan(normalizeLanguagePlan(config.languagePlan));
@@ -405,7 +425,6 @@ export function App() {
       documentAsset,
       documentSourceMode: normalizeDocumentSourceMode(documentSourceMode),
       documentTitle,
-      documentURL,
       languagePlan: normalizeLanguagePlan(overrides.languagePlan || languagePlan),
       learningGoal,
       generationRequirement,
@@ -462,7 +481,7 @@ export function App() {
   }
 
   function appendLog(level, message) {
-    setLogs((items) => [{ level, message, time: new Date().toLocaleTimeString() }, ...items].slice(0, 180));
+    setLogs((items) => [createFrontendLog(level, message), ...items].slice(0, 180));
   }
 
   function appendAssistantMessage({ text, speechText = "", segments = [], meta, nodeID = "", audioURL = "", animate = true, replaceLast = false }) {
@@ -742,22 +761,6 @@ export function App() {
     }
   }
 
-  async function importDocumentURL() {
-    const url = documentURL.trim();
-    if (!url) {
-      setDocumentImport({ status: "error", message: "请先填写网络文档 URL。", pages: 0 });
-      return;
-    }
-    if (documentTitle === "新的文档") setDocumentTitle("网络文档");
-    setDocumentSourceMode("url");
-    setDocumentImport({
-      status: "ready",
-      message: "已导入网络文档链接。",
-      pages: 0
-    });
-    appendLog("info", `已导入网络文档链接：${url}`);
-  }
-
   function buildVoiceProfile() {
     const speechLanguage = languageCodeForVoiceProvider(effectiveLanguagePlan().speech_language);
     return normalizeVolcengineVoiceProfile(activeCharacter?.runtime?.voice, volcengineProfile, speechLanguage);
@@ -957,80 +960,36 @@ export function App() {
   }
 
   function buildSceneVariables() {
-    const sourceMode = normalizeDocumentSourceMode(documentSourceMode);
     const variables = {
       source: runtimeMode(),
       active_character_id: activeCharacter?.id || "",
       topic: documentTitle,
       document_title: documentTitle,
       learning_goal: learningGoal,
-      generation_requirement: generationRequirement,
-      source_mode: sourceMode
+      generation_requirement: generationRequirement
     };
     if (activeCharacter?.assets?.background_url) {
       variables.background_url = activeCharacter.assets.background_url;
-    }
-    if (sourceMode === "url" && documentURL.trim()) {
-      variables.document_url = documentURL.trim();
-      variables.source_url = documentURL.trim();
-    }
-    if (sourceMode === "upload" && documentAsset?.path) {
-      variables.document_asset_id = documentAsset.id || "";
-      variables.document_asset_name = documentAsset.filename || "";
-      variables.document_asset_type = documentAsset.content_type || "";
-      variables.document_asset_path = documentAsset.path;
-      variables.material_file_path = documentAsset.path;
-      variables.source_mode = "uploaded_file";
-    }
-    if (sourceMode === "directory") {
-      variables.source_mode = "directory";
-      variables.local_directory_path = documentText.trim();
     }
     return variables;
   }
 
   function buildMaterialSource() {
-    const sourceMode = normalizeDocumentSourceMode(documentSourceMode);
-    switch (sourceMode) {
-      case "text":
-        return { mode: "text", text: documentText };
-      case "url":
-        return { mode: "url", url: documentURL.trim() };
-      case "upload":
-        return documentAsset?.path ? {
-          mode: "uploaded_file",
-          asset_id: documentAsset.id || "",
-          asset_name: documentAsset.filename || "",
-          asset_type: documentAsset.content_type || "",
-          asset_path: documentAsset.path
-        } : { mode: "uploaded_file" };
-      case "directory":
-        return { mode: "local_directory", path: documentText.trim(), display_name: "本地目录" };
-      default:
-        return {};
-    }
-  }
-
-  function documentTextForGeneration() {
-    const sourceMode = normalizeDocumentSourceMode(documentSourceMode);
-    switch (sourceMode) {
-      case "text":
-        return documentText;
-      case "upload":
-      case "url":
-      case "directory":
-      default:
-        return "";
-    }
+    return coreMaterialSourceFromState(documentSourceMode, { documentAsset, documentText });
   }
 
   async function generateLesson() {
     if (generationBusy) return;
+    if (!documentSourceReady(documentSourceMode, { documentAsset, documentText })) {
+      const message = documentSourceStatusMessage(documentSourceMode, { documentAsset, documentText }, documentImport);
+      appendLog("error", `互动剧情生成失败：${message}`);
+      setMessages((items) => [...items, { id: messageID("error"), role: "assistant", text: `互动剧情生成失败：${message}`, meta: "error" }]);
+      return;
+    }
     setGenerationBusy(true);
     try {
       const payload = await startSceneGeneration({
         topic: documentTitle,
-        document_text: documentTextForGeneration(),
         learning_goal: learningGoal,
         generation_requirement: generationRequirement,
         characters: activeCharacters,
@@ -1045,6 +1004,8 @@ export function App() {
       const record = payload?.record;
       if (record?.session?.id) {
         upsertSessionRecord(record);
+        setRuntimeEvents(normalizeRuntimeEvents(record.events));
+        syncSessionEvents(record.session.id, { quiet: true });
       }
       setRuntimeState((current) => ({
         ...current,
@@ -1102,13 +1063,14 @@ export function App() {
     await sendTurnText(text, streaming);
   }
 
-  async function sendChoice(choice) {
-    const text = choice?.text || choice?.label || "";
-    if (text) {
-      setMessages((items) => [...items, { id: messageID("choice"), role: "user", text, meta: "choice" }]);
-    }
-    const advanced = await advanceLessonWorkflow(choice?.target_node_id || currentWorkflowNode()?.next_node_id || "free-discussion", choice?.id || "");
-    if (!advanced) return;
+  async function sendChoice(choice, index = 0) {
+    const confirmedChoiceText = confirmedChoicePlayerText(choice, index, true);
+    return Boolean(await advanceLessonWorkflow(
+      choice?.target_node_id || currentWorkflowNode()?.next_node_id || "free-discussion",
+      choice?.id || "",
+      false,
+      { confirmedChoiceText },
+    ));
   }
 
   async function sendTurnText(text, streaming) {
@@ -1268,7 +1230,7 @@ export function App() {
     return true;
   }
 
-  async function advanceLessonWorkflow(nextNodeID, choiceID = "", replay = false) {
+  async function advanceLessonWorkflow(nextNodeID, choiceID = "", replay = false, options = {}) {
     if (!nextNodeID || busy) return false;
     const currentNode = currentWorkflowNode();
     const sessionID = activeSession?.id || "";
@@ -1299,8 +1261,16 @@ export function App() {
         refreshSessions();
         return false;
       }
-      if (payload.node?.line || payload.node?.lines?.length) {
+      const confirmedChoiceText = !replay ? String(options.confirmedChoiceText || "").trim() : "";
+      if (confirmedChoiceText) {
+        setMessages((items) => [...items, { id: messageID("choice"), role: "user", text: confirmedChoiceText, meta: "choice" }]);
+      }
+      const hasScriptedNodeText = Boolean(payload.node?.line || payload.node?.lines?.length);
+      const freeDiscussionNode = isWorkflowFreeDiscussionNode(payload.node);
+      if (hasScriptedNodeText || freeDiscussionNode) {
         appendWorkflowNodeMessage(payload.node);
+      }
+      if (hasScriptedNodeText) {
         const playedPrepared = await playPreparedWorkflowNodeAudio(payload.node);
         if (!playedPrepared) await playWorkflowNodeVoice(payload.node);
       }
@@ -1431,6 +1401,7 @@ export function App() {
       }
     } catch (error) {
       appendLog("warn", `剧情语音生成失败：${errorMessage(error, "未知错误")}`);
+      if (activeSession?.id) syncSessionEvents(activeSession.id, { quiet: true });
     }
   }
 
@@ -1453,12 +1424,34 @@ export function App() {
   async function refreshSessions(options = {}) {
     try {
       const payload = await getSessions();
-      setSessions(payload.sessions || []);
+      const nextSessions = payload.sessions || [];
+      setSessions(nextSessions);
+      if (activeSession?.id) {
+        const activeRecord = nextSessions.find((record) => record?.session?.id === activeSession.id);
+        if (activeRecord?.events) setRuntimeEvents(normalizeRuntimeEvents(activeRecord.events));
+        syncSessionEvents(activeSession.id, { quiet: true });
+      }
       if (!options.quiet) {
-        appendLog("info", `会话历史已刷新：${payload.sessions?.length || 0} 条。`);
+        appendLog("info", `会话历史已刷新：${nextSessions.length} 条。`);
       }
     } catch (error) {
       appendLog("error", `会话历史刷新失败：${errorMessage(error, "未知错误")}`);
+    }
+  }
+
+  async function syncSessionEvents(sessionID, options = {}) {
+    if (!sessionID) {
+      setRuntimeEvents([]);
+      return [];
+    }
+    try {
+      const payload = await getSessionEvents(sessionID);
+      const events = normalizeRuntimeEvents(payload);
+      setRuntimeEvents(events);
+      return events;
+    } catch (error) {
+      if (!options.quiet) appendLog("warn", `后端事件同步失败：${errorMessage(error, "未知错误")}`);
+      return [];
     }
   }
 
@@ -1468,6 +1461,7 @@ export function App() {
       const record = await getSession(sessionID);
       if (!record?.session || !record?.workflow) return;
       upsertSessionRecord(record);
+      setRuntimeEvents(normalizeRuntimeEvents(record.events));
       setActiveSession(record.session);
       setScene(record.scene || scene);
       setRelation(record.relation || defaultRelation);
@@ -1478,6 +1472,7 @@ export function App() {
         stageWaiting: waiting,
         audio: waiting ? "下一幕准备中..." : current.audio
       }));
+      await syncSessionEvents(sessionID, { quiet: true });
     } catch (error) {
       appendLog("warn", `会话轮询失败：${errorMessage(error, "未知错误")}`);
     }
@@ -1490,6 +1485,7 @@ export function App() {
       return;
     }
     setWebgalExport(null);
+    setRuntimeEvents(normalizeRuntimeEvents(record.events));
     setActiveSession(record.session);
     setScene(record.scene);
     setLessonWorkflow(normalizeTeachingWorkflow(record.workflow, record.scene));
@@ -1502,11 +1498,19 @@ export function App() {
     if (restoredSource) {
       setDocumentSourceMode(restoredSource.mode);
       setDocumentText(restoredSource.documentText || "");
-      setDocumentURL(restoredSource.documentURL || "");
       setDocumentAsset(restoredSource.documentAsset || null);
       setDocumentImport({
         status: restoredSource.documentAsset?.path ? "ready" : "idle",
         message: restoredSource.message || documentSourceStatusMessage(restoredSource.mode, restoredSource, documentImport),
+        pages: 0
+      });
+    } else {
+      setDocumentSourceMode("upload");
+      setDocumentText("");
+      setDocumentAsset(null);
+      setDocumentImport({
+        status: "idle",
+        message: "这条历史记录没有可复用材料源；如需重新生成，请上传单文件或粘贴正文。",
         pages: 0
       });
     }
@@ -1541,6 +1545,7 @@ export function App() {
       cg: latest?.scene_image_error || latest?.scene_image_url || "等待新一轮生成"
     }));
     appendLog("info", `已恢复会话：${record.scene.title || record.session.id}`);
+    syncSessionEvents(record.session.id, { quiet: true });
     setActiveView(hasPlayableWorkflow(record.workflow, record.scene, record.session) ? "stage" : "director");
   }
 
@@ -1565,7 +1570,7 @@ export function App() {
   }
 
   const renderedView = activeView === "stage" && !canEnterStage ? "director" : activeView;
-  const shellView = shellViewMeta(renderedView, { busy, logs: logs.length, sessions: sessions.length });
+  const shellView = shellViewMeta(renderedView, { busy, logs: logs.length + observedRuntimeEvents.length, sessions: sessions.length });
   const isDesktopRuntime = runtimeMode() === "desktop";
 
   return (
@@ -1634,7 +1639,7 @@ export function App() {
                   <p>{shellView.note}</p>
                 </div>
               </nav>
-              <section className="workspace">
+              <section className={`workspace workspace--${renderedView}`} data-view={renderedView}>
         {renderedView === "dashboard" && (
           <HomeView
             activeCharacterID={activeCharacterID}
@@ -1647,12 +1652,10 @@ export function App() {
             documentStats={documentStats}
             documentText={documentText}
             documentTitle={documentTitle}
-            documentURL={documentURL}
             effectiveProviders={effectiveProviders}
             generationBusy={generationBusy}
             generateLesson={generateLesson}
             importDocumentFile={importDocumentFile}
-            importDocumentURL={importDocumentURL}
             lastAudioURL={lastAudioURL}
             lastCG={lastCG}
             learningGoal={learningGoal}
@@ -1669,7 +1672,6 @@ export function App() {
             setDocumentSourceMode={setDocumentSourceMode}
             setDocumentText={setDocumentText}
             setDocumentTitle={setDocumentTitle}
-            setDocumentURL={setDocumentURL}
             setLearningGoal={setLearningGoal}
             setGenerationRequirement={setGenerationRequirement}
             setActiveView={routeView}
@@ -1766,7 +1768,7 @@ export function App() {
             saveRoleConfig={saveRoleConfig}
           />
         )}
-        {renderedView === "logs" && <LogsView logs={logs} setActiveView={routeView} setLogs={setLogs} documentTitle={documentTitle} activeCharacter={activeCharacter} lessonWorkflow={lessonWorkflow} effectiveProviders={effectiveProviders} />}
+        {renderedView === "logs" && <LogsView logs={logs} runtimeEvents={observedRuntimeEvents} setActiveView={routeView} setLogs={setLogs} documentTitle={documentTitle} activeCharacter={activeCharacter} lessonWorkflow={lessonWorkflow} effectiveProviders={effectiveProviders} />}
               </section>
             </div>
           </section>
@@ -1825,13 +1827,11 @@ function HomeView({
   documentStats,
   documentText,
   documentTitle,
-  documentURL,
   effectiveProviders,
   generationBusy,
   generationRequirement,
   generateLesson,
   importDocumentFile,
-  importDocumentURL,
   lastAudioURL,
   lastCG,
   learningGoal,
@@ -1847,7 +1847,6 @@ function HomeView({
   setDocumentSourceMode,
   setDocumentText,
   setDocumentTitle,
-  setDocumentURL,
   setGenerationRequirement,
   setLearningGoal,
   setActiveView,
@@ -1860,9 +1859,9 @@ function HomeView({
   const audioCacheCount = sessions.reduce((total, record) => total + countHistoryAudio(record), 0);
   const healthyProviders = providerHealth.filter((item) => item.status === "ok" || item.status === "ready").length;
   const castPortrait = resolveCharacterPortrait(activeCharacter, runtimeState?.expression, runtimeState?.emotion);
-  const sourceReady = documentSourceReady(sourceMethod, { documentAsset, documentText, documentURL });
-  const docLabel = documentSourceLabel(sourceMethod, { documentAsset, documentText, documentURL });
-  const sourceMessage = documentSourceStatusMessage(sourceMethod, { documentAsset, documentText, documentURL }, documentImport);
+  const sourceReady = documentSourceReady(sourceMethod, { documentAsset, documentText });
+  const docLabel = documentSourceLabel(sourceMethod, { documentAsset, documentText });
+  const sourceMessage = documentSourceStatusMessage(sourceMethod, { documentAsset, documentText }, documentImport);
   const sourceStatus = sourceMethod === "upload" ? documentImport.status : sourceReady ? "ready" : "idle";
   useEffect(() => {
     homePageRef.current?.scrollTo({ top: 0 });
@@ -1878,21 +1877,20 @@ function HomeView({
 
           <article className="intake-panel">
             <div className="intake-head">
-              <div className="segmented-tabs">
+              <div className={`segmented-tabs segmented-tabs--${homeStep}`}>
                 <button className={homeStep === "source" ? "is-active" : ""} type="button" onClick={() => setHomeStep("source")}>文档源</button>
                 <button className={homeStep === "target" ? "is-active" : ""} type="button" onClick={() => setHomeStep("target")}>生成目标</button>
               </div>
-              <span className="doc-support">{homeStep === "source" ? "支持 PDF · Markdown · HTML · URL · 本地目录" : `当前文档：${docLabel} · ${documentStats.chars} 字符`}</span>
+              <span className="doc-support">{homeStep === "source" ? "支持单文件 PDF · DOCX · Markdown · HTML · 文本/代码" : `当前文档：${docLabel} · ${documentStats.chars} 字符`}</span>
             </div>
 
             <div className="intake-body">
-              {homeStep === "source" ? (
-                <>
+              <div key={homeStep} className={`intake-step-pane intake-step-pane--${homeStep}`}>
+                {homeStep === "source" ? (
+                  <>
                   <div className="source-methods">
-                    <button className={`source-method ${sourceMethod === "upload" ? "is-active" : ""}`} type="button" onClick={() => setDocumentSourceMode("upload")}><b>上传文件</b><span>PDF、PPT、DOCX、图片笔记</span></button>
+                    <button className={`source-method ${sourceMethod === "upload" ? "is-active" : ""}`} type="button" onClick={() => setDocumentSourceMode("upload")}><b>上传文件</b><span>PDF、DOCX、Markdown、HTML</span></button>
                     <button className={`source-method ${sourceMethod === "text" ? "is-active" : ""}`} type="button" onClick={() => setDocumentSourceMode("text")}><b>粘贴正文</b><span>文章、课件、脚本</span></button>
-                    <button className={`source-method ${sourceMethod === "url" ? "is-active" : ""}`} type="button" onClick={() => setDocumentSourceMode("url")}><b>导入链接</b><span>网页正文与结构</span></button>
-                    <button className={`source-method ${sourceMethod === "directory" ? "is-active" : ""}`} type="button" onClick={() => setDocumentSourceMode("directory")}><b>本地目录</b><span>代码仓库、知识库</span></button>
                   </div>
 
                   {sourceMethod === "upload" && (
@@ -1917,30 +1915,15 @@ function HomeView({
                     </div>
                   )}
 
-                  {sourceMethod === "url" && (
-                    <div className="source-editor">
-                      <div className="document-url-row">
-                        <TextField label="网络文档 URL" value={documentURL} onChange={setDocumentURL} placeholder="https://example.com/doc 或飞书文档链接" />
-                        <button className="ghost-button" type="button" onClick={importDocumentURL} disabled={busy || !documentURL.trim()}>导入</button>
-                      </div>
-                      <p className="source-hint">链接内容会作为材料入口交给 Agent；复杂网页、飞书文档或图片型资料后续由 Agent 工具链理解。</p>
-                    </div>
-                  )}
-
-                  {sourceMethod === "directory" && (
-                    <div className="source-editor">
-                      <TextAreaField label="本地目录路径" value={documentText} onChange={setDocumentText} rows={4} placeholder="/Users/rinai/project/demo" />
-                      <p className="source-hint">FAIRY 会读取该目录内的 Markdown、文本、HTML、PDF 和常见代码文件，并跳过构建产物与依赖目录。</p>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div className="target-form">
-                  <TextField label="文档标题" value={documentTitle} onChange={setDocumentTitle} />
-                  <TextAreaField label="学习目标" value={learningGoal} onChange={setLearningGoal} rows={4} placeholder="这段 Galgame 要讲清什么？例如：让玩家理解文档核心结构、关键概念和使用边界。" />
-                  <TextAreaField label="生成要求" value={generationRequirement} onChange={setGenerationRequirement} rows={6} placeholder="写给剧情 Agent 的补充要求，例如：面向刚接触项目的玩家；先讲清主流程，再解释关键术语；控制在 5-7 个剧情节点；只让主讲角色发言。" />
-                </div>
-              )}
+                  </>
+                ) : (
+                  <div className="target-form">
+                    <TextField label="文档标题" value={documentTitle} onChange={setDocumentTitle} />
+                    <TextAreaField label="学习目标" value={learningGoal} onChange={setLearningGoal} rows={4} placeholder="这段 Galgame 要讲清什么？例如：让玩家理解文档核心结构、关键概念和使用边界。" />
+                    <TextAreaField label="生成要求" value={generationRequirement} onChange={setGenerationRequirement} rows={6} placeholder="写给剧情 Agent 的补充要求，例如：面向刚接触项目的玩家；先讲清主流程，再解释关键术语；控制在 5-7 个剧情节点；只让主讲角色发言。" />
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className={`generate-status generate-status--${sourceStatus}`}>
@@ -2027,13 +2010,12 @@ function HistoryView(props) {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [deletingIDs, setDeletingIDs] = useState(new Set());
+  const [copiedEventID, setCopiedEventID] = useState("");
+  const copyTimerRef = useRef(null);
   const sortedSessions = [...sessions].sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0));
   const visibleSessions = sortedSessions.filter((record) => {
     const status = recordGenerationStatus(record);
-    if (statusFilter === "generated" && status !== "ready") return false;
-    if (statusFilter === "draft" && status !== "draft") return false;
-    if (statusFilter === "generating" && status !== "generating") return false;
-    if (statusFilter === "failed" && status !== "failed") return false;
+    if (statusFilter !== "all" && status !== statusFilter) return false;
     if (!query.trim()) return true;
     const q = query.trim().toLowerCase();
     return [sessionTitle(record), sessionGoal(record), sessionSource(record)].some((text) => (text || "").toLowerCase().includes(q));
@@ -2072,14 +2054,36 @@ function HistoryView(props) {
       setDeletingIDs((prev) => { const next = new Set(prev); next.delete(sessionID); return next; });
     }
   }
-  const pills = [{ id: "all", label: "全部" }, { id: "generated", label: "已生成" }, { id: "generating", label: "生成中" }, { id: "failed", label: "失败" }, { id: "draft", label: "草稿" }];
+  const pills = [{ id: "all", label: "全部" }, { id: "playable", label: "可演出" }, { id: "completed", label: "已完成" }, { id: "generating", label: "生成中" }, { id: "failed", label: "失败" }, { id: "draft", label: "草稿" }];
   const sel = selectedRecord;
   const selStatus = sel ? recordGenerationStatus(sel) : "draft";
   const selPlayable = sel ? recordPlayable(sel) : false;
   const selFailureMessage = selStatus === "failed" ? recordFailureMessage(sel) : "";
+  const selRuntimeTimeline = sel ? recordRuntimeTimeline(sel, 10) : [];
   const selCharacter = sel ? sessionCharacter(sel) : null;
   const selPortrait = selCharacter?.assets?.portrait_url || selCharacter?.avatar_url || "";
   const selNodes = sel?.workflow?.nodes || [];
+  const selChapterSnapshots = chapterSnapshotItems(selNodes);
+  const selChapterCount = chapterSnapshotCount(selNodes);
+  const selTimes = sel ? recordReadinessTimes(sel) : { playable_at: "", completed_at: "", saved_at: "" };
+
+  useEffect(() => () => {
+    if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
+  }, []);
+
+  async function copyHistoryEvent(log) {
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("当前环境不支持剪贴板写入");
+      }
+      await navigator.clipboard.writeText(runtimeLogCopyText(log));
+      setCopiedEventID(log.id);
+      if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = window.setTimeout(() => setCopiedEventID(""), 1400);
+    } catch (error) {
+      appendLog?.("error", `复制历史事件失败：${errorMessage(error)}`);
+    }
+  }
 
   if (!sortedSessions.length) {
     return (
@@ -2121,10 +2125,11 @@ function HistoryView(props) {
 
           <article className="h-table">
             <div className="cap"><b>历史记录</b><span>共 {sortedSessions.length} 条记录 · 点击记录在右侧查看详情</span></div>
-            <div className="row head"><span>编号</span><span>标题</span><span>文档源</span><span>保存时间</span><span>状态</span></div>
+            <div className="row head"><span>编号</span><span>标题</span><span>文档源</span><span>时间线</span><span>状态</span></div>
             <div className="rows">
               {visibleSessions.length ? visibleSessions.map((record, index) => {
                 const status = recordGenerationStatus(record);
+                const primaryTime = recordPrimaryHistoryTime(record);
                 const on = sel?.session.id === record.session.id;
                 const deleting = deletingIDs.has(record.session.id);
                 return (
@@ -2132,7 +2137,7 @@ function HistoryView(props) {
                     <span className="no">{String(index + 1).padStart(2, "0")}</span>
                     <div className="ttl"><b>{sessionTitle(record)}</b><span>{sessionGoal(record)}</span></div>
                     <span className="src">{sessionSource(record)}</span>
-                    <span className="time">{formatHistoryTime(record.updated_at)}</span>
+                    <span className="time h-time"><small>{primaryTime.label}</small><b>{formatHistoryTime(primaryTime.value)}</b></span>
                     <span className={`h-chip ${historyStatusClass(status)} ${deleting ? "is-deleting" : ""}`}>{deleting ? "删除中" : historyStatusLabel(status)}</span>
                   </div>
                 );
@@ -2153,9 +2158,11 @@ function HistoryView(props) {
                 <p className="h-desc">{selFailureMessage ? cleanHistoryText(selFailureMessage) : historyStatusDescription(selStatus)}</p>
                 <div className="h-kv-list">
                   <div className="kv"><span>文档源</span><b>{sessionSource(sel)}</b></div>
-                  <div className="kv"><span>章节</span><b>{selNodes.length} 个章节</b></div>
+                  <div className="kv"><span>章节</span><b>{selChapterCount} 个章节</b></div>
                   <div className="kv"><span>状态</span><b style={{ color: historyStatusColor(selStatus) }}>{historyStatusLabel(selStatus)}</b></div>
-                  <div className="kv"><span>保存时间</span><b>{formatHistoryTime(sel.updated_at)}</b></div>
+                  <div className="kv"><span>保存时间</span><b>{formatHistoryTime(selTimes.saved_at)}</b></div>
+                  <div className="kv"><span>可演出时间</span><b>{formatHistoryTimeOr(selTimes.playable_at, "尚未可演出")}</b></div>
+                  <div className="kv"><span>完成时间</span><b>{formatHistoryTimeOr(selTimes.completed_at, "尚未完成")}</b></div>
                 </div>
                 <div className="insp-actions">
                   <button className="h-btn primary sm" type="button" onClick={() => restoreSession(sel)} disabled={!selPlayable || busy}>进入演出</button>
@@ -2185,12 +2192,34 @@ function HistoryView(props) {
                 </div>
               </div>
 
-              {selNodes.length ? (
+              {selRuntimeTimeline.length ? (
+                <div className="h-panel h-observe-panel">
+                  <div className="h-panel-heading">
+                    <h4>运行时间线</h4>
+                    <span>{selRuntimeTimeline.length} 条事件</span>
+                  </div>
+                  <div className="h-event-list">
+                    {selRuntimeTimeline.map((log) => (
+                      <div className={`h-event h-event--${log.level}`} key={log.id}>
+                        <div className="h-event__head">
+                          <span className={`log-table__level log-level--${log.level}`}>{(log.level || "info").toUpperCase()}</span>
+                          <b>{log.time}</b>
+                          <button className="h-event__copy" type="button" onClick={() => copyHistoryEvent(log)}>{copiedEventID === log.id ? "已复制" : "复制"}</button>
+                        </div>
+                        <p>{cleanHistoryText(log.message)}</p>
+                        {runtimeEventMeta(log) ? <small>{runtimeEventMeta(log)}</small> : null}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {selChapterSnapshots.length ? (
                 <div className="h-panel">
                   <h4>章节快照</h4>
-                  {selNodes.slice(0, 6).map((node, index) => (
-                    <div className="snap" key={node.id || index}>
-                      <span className="i">{index + 1}</span>
+                  {selChapterSnapshots.map(({ key, number, node }) => (
+                    <div className="snap" key={key}>
+                      <span className="i">{number}</span>
                       <div>
                         <b>{cleanHistoryText(node.title || formatProgressLabel(node.kind))}</b>
                         <p>{cleanHistoryText(node.summary || formatProgressLabel(node.kind))}</p>
@@ -2214,14 +2243,17 @@ function SavePreview({ record, restoreSession }) {
   const playable = recordPlayable(record);
   const title = sessionTitle(record);
   const goal = sessionGoal(record);
-  const nodeCount = record.workflow?.nodes?.length || 0;
-  const visitedCount = record.workflow?.history?.length || 0;
+  const workflowNodes = record.workflow?.nodes || [];
+  const nodeCount = chapterSnapshotCount(workflowNodes);
+  const visitedCount = visitedChapterCount(workflowNodes, record.workflow?.history || []);
   const audioCount = countHistoryAudio(record);
   const lastMessage = [...(record.messages || [])].reverse().find((message) => message?.text);
   const character = sessionCharacter(record);
   const backgroundURL = character?.assets?.background_url || record.scene?.variables?.background_url || "";
   const portraitURL = character?.assets?.portrait_url || character?.avatar_url || "";
   const speaker = lastMessage?.role === "user" ? "你" : character?.display_name || lastMessage?.character_id || "角色";
+  const snapshotItems = chapterSnapshotItems(workflowNodes, { limit: 6 });
+  const remainingSnapshots = hiddenChapterCount(workflowNodes, { limit: 6 });
   return (
     <aside className="save-preview-panel">
       <span className="eyebrow">记录预览</span>
@@ -2247,14 +2279,14 @@ function SavePreview({ record, restoreSession }) {
         <strong>{speaker}</strong>
         <span>{cleanHistoryText(lastMessage?.text || "还没有可预览的对白。")}</span>
       </div>
-      {(record.workflow?.nodes || []).length ? (
+      {snapshotItems.length ? (
         <div className="snapshot-list">
           <span className="eyebrow">章节快照</span>
-          {(record.workflow.nodes).slice(0, 6).map((node, index) => {
+          {snapshotItems.map(({ key, number, node }) => {
             const visited = (record.workflow?.history || []).some((item) => (item.node_id || item.id) === node.id);
             return (
-              <div className={`snapshot-item ${visited ? "is-visited" : ""}`} key={node.id || index}>
-                <span className="snapshot-num">{index + 1}</span>
+              <div className={`snapshot-item ${visited ? "is-visited" : ""}`} key={key}>
+                <span className="snapshot-num">{number}</span>
                 <div>
                   <b>{cleanHistoryText(node.title || formatProgressLabel(node.kind))}</b>
                   <small>{cleanHistoryText(node.summary || formatProgressLabel(node.kind))}</small>
@@ -2262,6 +2294,9 @@ function SavePreview({ record, restoreSession }) {
               </div>
             );
           })}
+          {remainingSnapshots > 0 ? (
+            <div className="snapshot-more">还有 {remainingSnapshots} 个章节保留在历史详情中</div>
+          ) : null}
         </div>
       ) : null}
       <button className="primary-button" type="button" onClick={() => restoreSession(record)} disabled={!playable}>读取记录</button>
@@ -2285,190 +2320,7 @@ function sessionSource(record) {
   const restoredSource = documentSourceStateFromRecord(record);
   if (!restoredSource) return "—";
   if (restoredSource.mode === "upload") return cleanHistoryText(restoredSource.documentAsset?.filename || restoredSource.documentAsset?.path || "上传文件");
-  if (restoredSource.mode === "url") return cleanHistoryText(restoredSource.documentURL || "网络文档");
-  if (restoredSource.mode === "directory") return cleanHistoryText(restoredSource.documentText || "本地目录");
   return "粘贴正文";
-}
-
-function documentSourceStateFromRecord(record) {
-  const source = record?.teaching?.material_source || record?.generation?.request?.material_source || {};
-  const vars = {
-    ...(record?.generation?.request?.variables || {}),
-    ...(record?.teaching?.variables || {}),
-    ...(record?.scene?.variables || {})
-  };
-  const mode = String(source.mode || vars.source_mode || "").trim();
-  if (mode === "text") {
-    return {
-      mode: "text",
-      documentText: source.text || record?.generation?.request?.document_text || record?.teaching?.document_text || "",
-      documentURL: "",
-      documentAsset: null,
-      message: "粘贴正文已就绪。"
-    };
-  }
-  if (mode === "url") {
-    return {
-      mode: "url",
-      documentText: "",
-      documentURL: source.url || vars.document_url || vars.source_url || "",
-      documentAsset: null,
-      message: "网络文档链接已就绪。"
-    };
-  }
-  if (mode === "uploaded_file" || mode === "upload") {
-    const assetPath = source.asset_path || vars.document_asset_path || vars.material_file_path || "";
-    return {
-      mode: "upload",
-      documentText: "",
-      documentURL: "",
-      documentAsset: assetPath ? {
-        id: source.asset_id || vars.document_asset_id || "",
-        filename: source.asset_name || vars.document_asset_name || assetPath.split("/").at(-1) || "上传文件",
-        content_type: source.asset_type || vars.document_asset_type || "",
-        path: assetPath
-      } : null,
-      message: assetPath ? "上传文件已就绪。" : "选择一个本地材料文件。"
-    };
-  }
-  if (mode === "local_directory" || mode === "directory") {
-    return {
-      mode: "directory",
-      documentText: source.path || vars.local_directory_path || "",
-      documentURL: "",
-      documentAsset: null,
-      message: "本地目录路径已就绪。"
-    };
-  }
-  if (vars.local_directory_path) {
-    return { mode: "directory", documentText: vars.local_directory_path, documentURL: "", documentAsset: null, message: "本地目录路径已就绪。" };
-  }
-  if (vars.document_url || vars.source_url) {
-    return { mode: "url", documentText: "", documentURL: vars.document_url || vars.source_url, documentAsset: null, message: "网络文档链接已就绪。" };
-  }
-  if (vars.document_asset_path || vars.material_file_path) {
-    const assetPath = vars.document_asset_path || vars.material_file_path;
-    return {
-      mode: "upload",
-      documentText: "",
-      documentURL: "",
-      documentAsset: {
-        id: vars.document_asset_id || "",
-        filename: vars.document_asset_name || assetPath.split("/").at(-1) || "上传文件",
-        content_type: vars.document_asset_type || "",
-        path: assetPath
-      },
-      message: "上传文件已就绪。"
-    };
-  }
-  if (record?.teaching?.document_text || record?.generation?.request?.document_text) {
-    return {
-      mode: "text",
-      documentText: record?.generation?.request?.document_text || record?.teaching?.document_text || "",
-      documentURL: "",
-      documentAsset: null,
-      message: "粘贴正文已就绪。"
-    };
-  }
-  return null;
-}
-
-function recordGenerationStatus(record) {
-  const status = String(record?.generation?.status || "").trim();
-  if (status === "generating") return "generating";
-  if (status === "preparing") return "generating";
-  if (status === "failed") return "failed";
-  if (status === "ready") {
-    if (workflowArchiveFailed(record?.workflow)) return "failed";
-    return workflowArchiveComplete(record?.workflow) ? "ready" : "generating";
-  }
-  return hasPlayableWorkflow(record?.workflow, record?.scene, record?.session) ? "ready" : "draft";
-}
-
-function recordPlayable(record) {
-  return hasPlayableWorkflow(record?.workflow, record?.scene, record?.session);
-}
-
-function workflowArchiveFailed(workflow) {
-  return Boolean(workflowArchiveFailureMessage(workflow));
-}
-
-function recordFailureMessage(record) {
-  return String(record?.generation?.error || workflowArchiveFailureMessage(record?.workflow) || "").trim();
-}
-
-function workflowArchiveFailureMessage(workflow) {
-  const nodes = Array.isArray(workflow?.nodes) ? workflow.nodes : [];
-  for (const node of nodes) {
-    const nodeLabel = cleanHistoryText(node?.title || node?.summary || node?.id || "剧情节点");
-    if (node?.prepare_error) return node.prepare_error;
-    if (node?.voice_status === "error") return `${nodeLabel} 语音生成失败`;
-    if (node?.status === "error") return `${nodeLabel} 生成失败`;
-    for (const [index, line] of (Array.isArray(node?.lines) ? node.lines : []).entries()) {
-      if (line?.audio_error) return `${nodeLabel} 第 ${index + 1} 句语音生成失败：${line.audio_error}`;
-      if (line?.audio_status === "error") return `${nodeLabel} 第 ${index + 1} 句语音生成失败`;
-    }
-  }
-  return "";
-}
-
-function workflowArchiveComplete(workflow) {
-  const nodes = Array.isArray(workflow?.nodes) ? workflow.nodes : [];
-  if (!nodes.length || workflow?.preparing || workflow?.pending_node_id) return false;
-  const byID = new Map(nodes.filter((node) => node?.id).map((node) => [node.id, node]));
-  for (const node of nodes) {
-    if (!workflowNodeReady(node)) return false;
-  }
-  for (const node of nodes) {
-    if (!node?.id || node.free_discussion || node.kind === "free_discussion") continue;
-    if (node.next_node_id && !workflowNodeReady(byID.get(node.next_node_id))) return false;
-    if (!node.next_node_id && ["continue", "summarize", "free_discussion"].includes(String(node.decision || "").trim())) return false;
-    for (const choice of Array.isArray(node.choices) ? node.choices : []) {
-      const targetID = String(choice?.target_node_id || "").trim();
-      if (!targetID || !workflowNodeReady(byID.get(targetID))) return false;
-    }
-  }
-  return true;
-}
-
-function historyStatusLabel(status) {
-  switch (status) {
-    case "generating": return "生成中";
-    case "failed": return "失败";
-    case "ready": return "已生成";
-    default: return "草稿";
-  }
-}
-
-function historyStatusClass(status) {
-  switch (status) {
-    case "generating": return "generating";
-    case "failed": return "failed";
-    case "ready": return "ok";
-    default: return "draft";
-  }
-}
-
-function historyStatusColor(status) {
-  switch (status) {
-    case "generating": return "var(--accent)";
-    case "failed": return "var(--bad)";
-    case "ready": return "var(--ok)";
-    default: return "var(--warn)";
-  }
-}
-
-function historyStatusDescription(status) {
-  switch (status) {
-    case "generating":
-      return "剧情仍在后台补完章节；已有可播放内容时可以先进入演出，后续章节会继续准备。";
-    case "failed":
-      return "这条生成任务失败了，记录中保留了错误信息，修正配置后可以重新发起。";
-    case "ready":
-      return "已生成完整章节脚本，可直接进入剧情演出；不再需要的记录可以删除。";
-    default:
-      return "草稿尚未生成完整章节，可继续补全或删除。";
-  }
 }
 
 function sessionCharacter(record) {
@@ -2509,13 +2361,21 @@ function workflowNodeDisplayText(node, withSpeaker = false) {
       .filter(Boolean)
       .join(withSpeaker ? "\n" : " ");
   }
+  if (isWorkflowFreeDiscussionNode(node)) {
+    return "主线已经讲完了。你可以继续追问这一段内容，或让我换一种方式解释。";
+  }
   return String(node?.line || "").trim();
 }
 
 function workflowNodeSpeechText(node) {
   const lines = Array.isArray(node?.lines) ? node.lines : [];
   if (lines.length) return lines.map(workflowLineSpeechText).filter(Boolean).join(" ");
+  if (isWorkflowFreeDiscussionNode(node)) return "";
   return String(node?.speech_text || node?.line || "").trim();
+}
+
+function isWorkflowFreeDiscussionNode(node) {
+  return Boolean(node?.free_discussion || node?.freeDiscussion || node?.kind === "free_discussion");
 }
 
 function workflowNodeAudioURLs(node) {
@@ -2936,54 +2796,72 @@ function CharacterConfigModal({
   return createPortal(<div className="modal-backdrop" role="presentation" onMouseDown={onClose}>{editor}</div>, document.body);
 }
 
-function LogsView({ logs, setActiveView, setLogs, documentTitle, activeCharacter, lessonWorkflow, effectiveProviders }) {
+function LogsView({ logs, runtimeEvents, setActiveView, setLogs, documentTitle, activeCharacter, lessonWorkflow, effectiveProviders }) {
   const [levelFilter, setLevelFilter] = useState("all");
+  const [copiedLogID, setCopiedLogID] = useState("");
+  const copyTimerRef = useRef(null);
   const [query, setQuery] = useState("");
-  const errorCount = logs.filter((log) => log.level === "error").length;
-  const warnCount = logs.filter((log) => log.level === "warn" || log.level === "warning").length;
-  const recentLogs = [...logs].reverse();
-  const visibleLogs = recentLogs.filter((log) => {
-    if (levelFilter !== "all") {
-      const level = log.level === "warning" ? "warn" : log.level;
-      if (level !== levelFilter) return false;
-    }
-    if (!query.trim()) return true;
-    return (log.message || "").toLowerCase().includes(query.trim().toLowerCase());
-  });
-  const issues = recentLogs.filter((log) => log.level === "error" || log.level === "warn" || log.level === "warning").slice(0, 5);
-  const nodeCount = lessonWorkflow?.nodes?.length || 0;
-  const visitedCount = lessonWorkflow?.history?.length || 0;
+  const timeline = useMemo(() => buildLogTimeline(logs, runtimeEvents), [logs, runtimeEvents]);
+  const visibleLogs = useMemo(() => filterLogTimeline(timeline, { level: levelFilter, query }), [levelFilter, query, timeline]);
+  const issues = useMemo(() => runtimeIssueLogs(timeline), [timeline]);
+  const errorCount = timeline.filter((log) => log.level === "error").length;
+  const warnCount = timeline.filter((log) => log.level === "warn").length;
+  const latestIssue = issues[0];
+  const nodeCount = chapterSnapshotCount(lessonWorkflow?.nodes || []);
+  const visitedCount = visitedChapterCount(lessonWorkflow?.nodes || [], lessonWorkflow?.history || []);
   const levelPills = [{ id: "all", label: "全部" }, { id: "info", label: "INFO" }, { id: "warn", label: "WARN" }, { id: "error", label: "ERROR" }];
+  useEffect(() => () => {
+    if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
+  }, []);
+  async function copyLog(log) {
+    try {
+      const text = runtimeLogCopyText(log);
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("当前环境不支持剪贴板写入");
+      }
+      await navigator.clipboard.writeText(text);
+      setCopiedLogID(log.id);
+      if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = window.setTimeout(() => setCopiedLogID(""), 1400);
+    } catch (error) {
+      setLogs((items) => [createFrontendLog("error", `复制日志失败：${errorMessage(error)}`), ...items]);
+    }
+  }
   return (
     <section className="page logs-page">
-      <PageHeader eyebrow="制作日志" title="制作日志" description="按时间查看文档解析、Agent 调用、角色生成和素材处理记录。" action={<div className="header-actions"><button className="ghost-button" type="button" onClick={() => setActiveView("stage")}>进入剧情</button><button className="ghost-button danger-button" type="button" onClick={() => setLogs([])}>清空记录</button></div>} />
+      <PageHeader eyebrow="制作日志" title="制作日志" description="按时间查看文档解析、Agent 调用、角色生成和素材处理记录。" action={<div className="header-actions"><button className="ghost-button" type="button" onClick={() => setActiveView("stage")}>进入剧情</button><button className="ghost-button danger-button" type="button" onClick={() => setLogs([])}>清空本地记录</button></div>} />
       <div className="log-console-shell">
         <div className="log-console-main">
-          <div className="history-toolbar">
-            <div className="history-pills">
+          <div className="log-toolbar">
+            <div className="log-filter-group" aria-label="日志级别">
               {levelPills.map((pill) => (
                 <button key={pill.id} type="button" className={levelFilter === pill.id ? "is-active" : ""} onClick={() => setLevelFilter(pill.id)}>{pill.label}</button>
               ))}
             </div>
             <label className="history-search">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></svg>
-              <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索消息、级别或 run id" />
+              <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索消息、节点或 provider" />
             </label>
           </div>
-          <div className="log-table" aria-label="制作日志时间线">
+          <div className="log-table" aria-label="制作日志列表">
             <div className="log-table__row log-table__row--head">
-              <span>时间</span><span>级别</span><span>消息</span>
+              <span>时间</span><span>级别</span><span>消息</span><span>操作</span>
             </div>
             {visibleLogs.length > 0 ? visibleLogs.map((log, index) => (
-              <div className={`log-table__row log-line--${log.level}`} key={`${log.time}-${index}`}>
+              <div className={`log-table__row log-line--${log.level} log-row--${log.source}`} key={`${log.id}-${index}`}>
                 <span className="log-table__time">{log.time}</span>
                 <span className={`log-table__level log-level--${log.level}`}>{(log.level || "info").toUpperCase()}</span>
-                <span className="log-table__msg">{log.message}</span>
+                <span className="log-table__msg">
+                  <span>{log.message}</span>
+                  {runtimeEventDiagnosticText(log) ? <small className="log-diagnostic">{runtimeEventDiagnosticText(log)}</small> : null}
+                  {runtimeEventMeta(log) ? <small>{runtimeEventMeta(log)}</small> : null}
+                </span>
+                <button className="log-copy-btn" type="button" onClick={() => copyLog(log)}>{copiedLogID === log.id ? "已复制" : "复制"}</button>
               </div>
             )) : (
               <div className="log-empty">
                 <strong>没有匹配的记录</strong>
-                <span>保存配置、生成剧情或播放语音后，会在这里出现活动时间线。</span>
+                <span>保存配置、生成剧情或播放语音后，会在这里出现活动记录。</span>
               </div>
             )}
           </div>
@@ -2996,18 +2874,36 @@ function LogsView({ logs, setActiveView, setLogs, documentTitle, activeCharacter
             <div className="observation-row"><b>章节</b><span>{nodeCount ? `${visitedCount}/${nodeCount}` : "—"}</span></div>
             <div className="observation-row"><b>Agent</b><span>{activeCharacter?.runtime?.agent_provider || effectiveProviders?.agent || "—"}</span></div>
           </div>
-          <div className="log-stats">
-            <div className="log-stat"><strong>{logs.length}</strong><span>条日志</span></div>
-            <div className={`log-stat ${errorCount > 0 ? "is-alert" : ""}`}><strong>{errorCount}</strong><span>个错误</span></div>
+          <div className="log-side__panel log-health">
+            <span className="eyebrow">事件概览</span>
+            <div className="log-health__score">
+              <strong className={errorCount > 0 ? "is-alert" : ""}>{errorCount > 0 ? "需处理" : warnCount > 0 ? "有警告" : "平稳"}</strong>
+              <span>{timeline.length} 条事件 · {visibleLogs.length} 条匹配</span>
+            </div>
+            <div className="log-health__grid">
+              <div><b>{errorCount}</b><span>错误</span></div>
+              <div><b>{warnCount}</b><span>警告</span></div>
+              <div><b>{visibleLogs.length}</b><span>匹配</span></div>
+            </div>
           </div>
-          <div className="log-side__panel">
-            <span className="eyebrow">最近问题</span>
-            {issues.length ? issues.map((log, index) => (
-              <div className="log-issue" key={`${log.time}-${index}`}>
-                <span className={`log-table__level log-level--${log.level}`}>{(log.level || "info").toUpperCase()}</span>
-                <p>{log.message}</p>
+          <div className="log-side__panel log-issue-panel">
+            <span className="eyebrow">待处理</span>
+            {latestIssue ? (
+              <div className={`log-featured-issue log-line--${latestIssue.level}`}>
+                <span className={`log-table__level log-level--${latestIssue.level}`}>{(latestIssue.level || "info").toUpperCase()}</span>
+                <p>{latestIssue.message}</p>
+                {runtimeEventDiagnosticText(latestIssue) ? <small className="log-diagnostic">{runtimeEventDiagnosticText(latestIssue)}</small> : null}
+                {runtimeEventMeta(latestIssue) ? <small>{runtimeEventMeta(latestIssue)}</small> : null}
+                <button className="log-issue-copy" type="button" onClick={() => copyLog(latestIssue)}>{copiedLogID === latestIssue.id ? "已复制" : "复制详情"}</button>
               </div>
-            )) : <p className="log-issue-empty">暂无警告或错误。{warnCount === 0 ? "运行平稳。" : ""}</p>}
+            ) : <p className="log-issue-empty">暂无警告或错误。</p>}
+            {issues.slice(1).map((log, index) => (
+              <div className="log-issue" key={`${log.id}-${index}`}>
+                <span className={`log-table__level log-level--${log.level}`}>{(log.level || "info").toUpperCase()}</span>
+                <p>{log.message}{runtimeEventDiagnosticText(log) ? <small className="log-diagnostic">{runtimeEventDiagnosticText(log)}</small> : null}</p>
+                <button className="log-issue-copy" type="button" onClick={() => copyLog(log)}>{copiedLogID === log.id ? "已复制" : "复制"}</button>
+              </div>
+            ))}
           </div>
         </aside>
       </div>
@@ -3030,7 +2926,7 @@ function PageHeader({ action, description, eyebrow, title }) {
 
 function NavButton({ active, icon, label, onClick }) {
   return (
-    <button className={`nav-button ${active ? "is-active" : ""}`} type="button" onClick={onClick}>
+    <button className={`nav-button ${active ? "is-active" : ""}`} type="button" onClick={onClick} aria-label={label} title={label}>
       {icon}
       <span>{label}</span>
     </button>
@@ -3312,6 +3208,11 @@ function formatHistoryTime(value) {
   });
 }
 
+function formatHistoryTimeOr(value, fallback) {
+  const formatted = formatHistoryTime(value);
+  return formatted === "-" ? fallback : formatted;
+}
+
 function countHistoryAudio(record) {
   const workflowAudio = (record?.workflow?.history || []).filter((item) => item?.audio_url).length;
   const messageAudio = (record?.messages || []).filter((item) => item?.audio_url).length;
@@ -3351,18 +3252,6 @@ function normalizeTeachingWorkflow(workflow, scene) {
     };
   }
   const fallback = defaultWorkflow(); return { ...fallback, id: `${scene?.id || "lesson"}-workflow`, title: fallback.title || scene?.title || "教学剧情", goal: fallback.goal || scene?.variables?.learning_goal || "理解材料核心概念。", preparing: Boolean(workflow?.preparing), pending_node_id: workflow?.pending_node_id || "", current_node_id: fallback.current_node_id, nodes: fallback.nodes, history: Array.isArray(workflow?.history) ? workflow.history : [] };
-}
-
-function hasPlayableWorkflow(workflow, scene, session) {
-  if (!session?.id || scene?.id === "lesson-draft") return false;
-  const nodes = Array.isArray(workflow?.nodes) ? workflow.nodes : [];
-  return nodes.some((node) => {
-    if (!node?.id || node.kind === "draft") return false;
-    if (Array.isArray(node.lines) && node.lines.some((line) => String(line?.text || "").trim())) return true;
-    if (String(node.line || "").trim()) return true;
-    if (Array.isArray(node.choices) && node.choices.length > 0) return true;
-    return Boolean(node.free_discussion || node.kind === "free_discussion");
-  });
 }
 
 function loadSavedConfig() {
@@ -3551,62 +3440,6 @@ function mergeSessionCharacters(currentCharacters, sessionCharacters) {
   });
   const mergedIDs = new Set(merged.map((character) => character.id));
   return [...merged, ...current.filter((character) => !mergedIDs.has(character.id))];
-}
-
-function normalizeDocumentSourceMode(value) {
-  return DOCUMENT_SOURCE_MODES.includes(value) ? value : "upload";
-}
-
-function inferDocumentSourceMode(config) {
-  if (!config) return "upload";
-  if (DOCUMENT_SOURCE_MODES.includes(config.documentSourceMode)) return config.documentSourceMode;
-  if (typeof config.documentURL === "string" && config.documentURL.trim()) return "url";
-  if (config.documentAsset?.path) return "upload";
-  return "upload";
-}
-
-function documentSourceReady(mode, source) {
-  switch (normalizeDocumentSourceMode(mode)) {
-    case "upload":
-      return Boolean(source.documentAsset?.path);
-    case "text":
-    case "directory":
-      return Boolean(source.documentText?.trim());
-    case "url":
-      return Boolean(source.documentURL?.trim());
-    default:
-      return false;
-  }
-}
-
-function documentSourceLabel(mode, source) {
-  switch (normalizeDocumentSourceMode(mode)) {
-    case "upload":
-      return source.documentAsset?.filename || "尚未选择上传文件";
-    case "text":
-      return source.documentText?.trim() ? "粘贴正文" : "尚未粘贴正文";
-    case "directory":
-      return source.documentText?.trim() ? "本地目录" : "尚未填写本地目录路径";
-    case "url":
-      return source.documentURL?.trim() ? "网络文档" : "尚未填写网络文档";
-    default:
-      return "尚未选择文档源";
-  }
-}
-
-function documentSourceStatusMessage(mode, source, documentImport) {
-  switch (normalizeDocumentSourceMode(mode)) {
-    case "upload":
-      return documentImport?.message || "选择一个本地材料文件。";
-    case "text":
-      return source.documentText?.trim() ? "粘贴正文已就绪。" : "请粘贴文章、课件、脚本或笔记正文。";
-    case "directory":
-      return source.documentText?.trim() ? "本地目录路径已就绪。" : "请填写本地目录路径。";
-    case "url":
-      return source.documentURL?.trim() ? "网络文档链接已就绪。" : "请填写网络文档 URL。";
-    default:
-      return "请选择文档源。";
-  }
 }
 
 function normalizeSavedCharacter(character) {

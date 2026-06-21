@@ -14,6 +14,8 @@ import (
 	"github.com/Rinai-R/FAIRY/internal/app"
 )
 
+const maxGeneratedChoiceLabelRunes = 16
+
 type preparedDialogueLine struct {
 	index int
 	line  app.DialogueLine
@@ -31,6 +33,7 @@ type workflowStageResult struct {
 	plannedNodeID string
 	prepared      app.TeachingWorkflowNode
 	decision      agent.ActDecision
+	durationMS    int64
 	err           error
 }
 
@@ -117,15 +120,18 @@ func (r *Runtime) generateWorkflowNodeAct(
 		}
 		return node, normalizeActDecision(node, agent.ActDecisionContinue), nil
 	}
+	started := time.Now()
+	provider := firstNonEmpty(strings.TrimSpace(request.Runtime.AgentProvider), string(r.defaultAgent))
 	engine, err := r.agent(request.Runtime.AgentProvider)
 	if err != nil {
+		r.appendWorkflowAgentEvent(session.ID, app.RuntimeEventLevelError, app.RuntimeEventTypeAgentGenerateActFailed, node.ID, provider, err.Error(), err.Error(), started)
 		return node, "", err
 	}
 	index := workflowNodeActIndex(workflow.Nodes, node.ID)
 	if index < 1 {
 		index = countTeachingActs(workflow.Nodes) + 1
 	}
-	previous := previousTeachingNode(workflow.Nodes, node.ID)
+	previous := previousNodeForPlannedAct(workflow.Nodes, node, choice)
 	input := agent.ActInput{
 		Request:       request,
 		Session:       session,
@@ -137,12 +143,20 @@ func (r *Runtime) generateWorkflowNodeAct(
 		CoveredPoints: coveredTeachingPoints(workflow.Nodes, node.ID),
 		ActIndex:      index,
 		Choice:        choice,
+		Trace:         r.agentTraceHook(session.ID, node.ID, provider),
 	}
 	var lastErr error
 	var lastDecision agent.ActDecision
 	for attempt := 1; attempt <= maxGeneratedActRuntimeRepairAttempts; attempt++ {
 		out, err := engine.GenerateAct(ctx, input)
 		if err != nil {
+			if attempt < maxGeneratedActRuntimeRepairAttempts && agent.IsContractError(err) {
+				lastErr = err
+				r.appendWorkflowAgentRetryEvent(session.ID, node.ID, provider, attempt, err.Error(), err.Error(), started)
+				input.Correction = err.Error()
+				continue
+			}
+			r.appendWorkflowAgentEvent(session.ID, app.RuntimeEventLevelError, app.RuntimeEventTypeAgentGenerateActFailed, node.ID, provider, err.Error(), err.Error(), started)
 			return node, "", err
 		}
 		decision := normalizeActDecision(node, out.Decision)
@@ -156,6 +170,8 @@ func (r *Runtime) generateWorkflowNodeAct(
 			lastErr = err
 		} else if err := validateGeneratedActDialogueUnits(merged, request.Runtime.Language); err != nil {
 			lastErr = err
+		} else if err := validateGeneratedActTeachingStructure(merged, decision, workflow); err != nil {
+			lastErr = err
 		} else if err := (agent.ActOutput{
 			Node:          merged,
 			Decision:      decision,
@@ -164,13 +180,202 @@ func (r *Runtime) generateWorkflowNodeAct(
 		}).Validate(); err != nil {
 			lastErr = err
 		} else {
+			r.appendWorkflowAgentEvent(session.ID, app.RuntimeEventLevelInfo, app.RuntimeEventTypeAgentGenerateActDone, merged.ID, provider, "Agent 剧情节点已生成。", "", started)
 			return merged, decision, nil
 		}
 		if attempt < maxGeneratedActRuntimeRepairAttempts {
+			r.appendWorkflowAgentRetryEvent(session.ID, node.ID, provider, attempt, lastErr.Error(), lastErr.Error(), started)
 			input.Correction = lastErr.Error()
 		}
 	}
-	return node, lastDecision, fmt.Errorf("GenerateAct 修正后仍不符合运行时合约: %w", lastErr)
+	finalErr := fmt.Errorf("GenerateAct 修正后仍不符合运行时合约: %w", lastErr)
+	r.appendWorkflowAgentEvent(session.ID, app.RuntimeEventLevelError, app.RuntimeEventTypeAgentGenerateActFailed, node.ID, provider, finalErr.Error(), finalErr.Error(), started)
+	return node, lastDecision, finalErr
+}
+
+func (r *Runtime) appendWorkflowAgentRetryEvent(sessionID string, nodeID string, provider string, retryCount int, message string, detail string, started time.Time) {
+	if retryCount < 1 {
+		retryCount = 1
+	}
+	r.appendRuntimeEvent(sessionID, app.RuntimeEvent{
+		Level:      app.RuntimeEventLevelWarn,
+		Type:       app.RuntimeEventTypeAgentGenerateActRetry,
+		Stage:      app.RuntimeEventStageAgent,
+		NodeID:     nodeID,
+		Provider:   provider,
+		RetryCount: retryCount,
+		Message:    "Agent 输出不符合合约，正在修正重试。",
+		Detail:     firstNonEmpty(detail, message),
+		DurationMS: elapsedMilliseconds(started),
+	})
+}
+
+func (r *Runtime) appendWorkflowAgentEvent(sessionID string, level string, eventType string, nodeID string, provider string, message string, detail string, started time.Time) {
+	r.appendRuntimeEvent(sessionID, app.RuntimeEvent{
+		Level:      level,
+		Type:       eventType,
+		Stage:      app.RuntimeEventStageAgent,
+		NodeID:     nodeID,
+		Provider:   provider,
+		Message:    message,
+		Detail:     detail,
+		DurationMS: elapsedMilliseconds(started),
+	})
+}
+
+func (r *Runtime) agentTraceHook(sessionID string, nodeID string, provider string) agent.ActTraceHook {
+	return func(event agent.ActTraceEvent) {
+		eventType := strings.TrimSpace(event.Type)
+		if eventType == "" {
+			return
+		}
+		level := strings.TrimSpace(event.Level)
+		if level == "" {
+			level = app.RuntimeEventLevelInfo
+		}
+		message := strings.TrimSpace(event.Message)
+		if message == "" {
+			message = agentTraceDefaultMessage(event)
+		}
+		r.appendRuntimeEvent(sessionID, app.RuntimeEvent{
+			Level:      level,
+			Type:       eventType,
+			Stage:      app.RuntimeEventStageAgent,
+			NodeID:     nodeID,
+			Provider:   provider,
+			Message:    message,
+			Detail:     strings.TrimSpace(event.Detail),
+			RetryCount: event.RetryCount,
+			DurationMS: event.DurationMS,
+		})
+	}
+}
+
+func agentTraceDefaultMessage(event agent.ActTraceEvent) string {
+	switch event.Type {
+	case app.RuntimeEventTypeAgentActPlanCacheHit:
+		return "ActPlan 缓存命中。"
+	case app.RuntimeEventTypeAgentActPlanDone:
+		return "ActPlan 已生成。"
+	case app.RuntimeEventTypeAgentActPlanRetry:
+		return "ActPlan 输出不符合合约，正在修正重试。"
+	case app.RuntimeEventTypeAgentActPlanFailed:
+		return "ActPlan 失败。"
+	case app.RuntimeEventTypeAgentDraftDone:
+		return "GenerateAct 草稿已生成。"
+	case app.RuntimeEventTypeAgentDraftRetry:
+		return "GenerateAct 草稿不符合合约，正在修正重试。"
+	case app.RuntimeEventTypeAgentDraftFailed:
+		return "GenerateAct 草稿失败。"
+	case app.RuntimeEventTypeAgentRewriteDone:
+		return "RewriteAct 已完成角色口吻改写。"
+	case app.RuntimeEventTypeAgentRewriteRetry:
+		return "RewriteAct 输出不符合合约，正在修正重试。"
+	case app.RuntimeEventTypeAgentRewriteFailed:
+		return "RewriteAct 失败。"
+	default:
+		if strings.TrimSpace(event.Step) != "" {
+			return "Agent 子步骤事件：" + strings.TrimSpace(event.Step)
+		}
+		return "Agent 子步骤事件。"
+	}
+}
+
+func compactTeachingPlanPoints(points []string) []string {
+	out := make([]string, 0, len(points))
+	seen := map[string]bool{}
+	for _, point := range points {
+		trimmed := strings.TrimSpace(point)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		out = append(out, trimmed)
+		seen[trimmed] = true
+	}
+	return out
+}
+
+func validateGeneratedActTeachingStructure(node app.TeachingWorkflowNode, decision agent.ActDecision, workflow app.TeachingWorkflow) error {
+	if !isGeneratedTeachingActKind(node.Kind) {
+		return nil
+	}
+	if strings.TrimSpace(node.Summary) == "" {
+		return fmt.Errorf("node %q summary 不能为空，必须说明当前知识点目标", node.ID)
+	}
+	if generatedActRequiresChoices(node) {
+		if err := validateGeneratedActChoices(node); err != nil {
+			return err
+		}
+	}
+	if decision == agent.ActDecisionFreeDiscussion && !freeDiscussionDecisionAllowed(node, workflow) {
+		return fmt.Errorf("node %q 不能在 summary 前进入自由讨论", node.ID)
+	}
+	return nil
+}
+
+func isGeneratedTeachingActKind(kind string) bool {
+	switch strings.TrimSpace(kind) {
+	case "opening", "lesson", "summary", "choice":
+		return true
+	default:
+		return false
+	}
+}
+
+func generatedActRequiresChoices(node app.TeachingWorkflowNode) bool {
+	return node.Kind == "opening" || node.Kind == "lesson"
+}
+
+func validateGeneratedActChoices(node app.TeachingWorkflowNode) error {
+	if len(node.Choices) == 0 {
+		return fmt.Errorf("node %q choices 必须提供 1-3 个选项", node.ID)
+	}
+	if len(node.Choices) > 3 {
+		return fmt.Errorf("node %q choices 最多 3 个，当前 %d 个", node.ID, len(node.Choices))
+	}
+	for index, choice := range node.Choices {
+		if strings.TrimSpace(choice.ID) == "" {
+			return fmt.Errorf("node %q choices[%d].id 不能为空", node.ID, index)
+		}
+		if strings.TrimSpace(choice.Label) == "" {
+			return fmt.Errorf("node %q choices[%d].label 不能为空", node.ID, index)
+		}
+		if strings.TrimSpace(choice.Text) == "" {
+			return fmt.Errorf("node %q choices[%d].text 不能为空", node.ID, index)
+		}
+		if labelLen := len([]rune(strings.TrimSpace(choice.Label))); labelLen > maxGeneratedChoiceLabelRunes {
+			return fmt.Errorf("node %q choices[%d].label 必须是短按钮文案，当前 %d/%d 字", node.ID, index, labelLen, maxGeneratedChoiceLabelRunes)
+		}
+		if normalizeChoiceContractText(choice.Label) == normalizeChoiceContractText(choice.Text) {
+			return fmt.Errorf("node %q choices[%d].label 不能与 text 相同；label 是按钮文案，text 是分支意图", node.ID, index)
+		}
+	}
+	return nil
+}
+
+func normalizeChoiceContractText(value string) string {
+	var builder strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(value)) {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			builder.WriteRune(r)
+		}
+	}
+	return builder.String()
+}
+
+func freeDiscussionDecisionAllowed(node app.TeachingWorkflowNode, workflow app.TeachingWorkflow) bool {
+	if node.FreeDiscussion || node.Kind == "free_discussion" || node.Kind == "summary" {
+		return true
+	}
+	if len(workflow.Nodes) == 0 {
+		return false
+	}
+	for _, existing := range workflow.Nodes {
+		if existing.Kind == "summary" && workflowNodeIsReady(existing) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateGeneratedActExpressions(node app.TeachingWorkflowNode, character app.Character) error {
@@ -627,7 +832,11 @@ func (r *Runtime) prepareWorkflowFollowup(
 	if shouldPreloadWorkflowDescendants(latest) {
 		prepared := findWorkflowNode(latest.Workflow.Nodes, planned.ID)
 		if shouldQueueWorkflowFollowups(prepared) {
-			r.preloadRemainingWorkflowNodes(task.request, task.sessionID, prepared.ID)
+			r.continueWorkflowFromNode(ctx, task.request, task.sessionID, prepared.ID)
+			latest, err = r.sessions.Get(task.sessionID)
+			if err != nil {
+				return record, fmt.Errorf("刷新剧情后续递归结果失败: %w", err)
+			}
 		}
 	}
 	return latest, nil
@@ -645,7 +854,9 @@ func (r *Runtime) runWorkflowStageWorker(
 	planned app.TeachingWorkflowNode,
 	choice app.SceneChoice,
 ) workflowStageResult {
+	started := time.Now()
 	prepared, nextDecision, err := r.prepareWorkflowNodeActAndVoiceWithChoice(ctx, task.request, session, workflow, planned, choice)
+	durationMS := elapsedMilliseconds(started)
 	if err != nil {
 		prepared = workflowStageErrorNode(prepared, err)
 	}
@@ -656,6 +867,7 @@ func (r *Runtime) runWorkflowStageWorker(
 		plannedNodeID: planned.ID,
 		prepared:      prepared,
 		decision:      nextDecision,
+		durationMS:    durationMS,
 		err:           err,
 	}
 }
@@ -671,14 +883,34 @@ func (r *Runtime) applyWorkflowStageResult(result workflowStageResult) {
 	}
 	record.Workflow.PendingNodeID = ""
 	record.Workflow.Preparing = false
+	persistStarted := time.Now()
 	if _, saveErr := r.sessions.SaveWorkflow(result.sessionID, record.Workflow); saveErr != nil {
+		r.appendPersistEvent(result.sessionID, app.RuntimeEventLevelError, app.RuntimeEventTypePersistWorkflowFailed, result.plannedNodeID, "保存 workflow 失败。", saveErr.Error(), persistStarted)
 		r.logger.Warn("写入剧情续写结果失败", "error", saveErr, "session_id", result.sessionID, "node_id", result.plannedNodeID)
 		return
 	}
+	r.appendPersistEvent(result.sessionID, app.RuntimeEventLevelInfo, app.RuntimeEventTypePersistWorkflowSaved, result.plannedNodeID, "Workflow 已保存。", "", persistStarted)
 	if result.err != nil {
 		r.logger.Warn("剧情续写失败", "error", result.err, "session_id", result.sessionID, "node_id", result.plannedNodeID)
+		r.appendRuntimeEvent(result.sessionID, app.RuntimeEvent{
+			Level:      app.RuntimeEventLevelError,
+			Type:       app.RuntimeEventTypeWorkflowNodeFailed,
+			Stage:      app.RuntimeEventStageWorkflow,
+			NodeID:     result.plannedNodeID,
+			Message:    result.err.Error(),
+			Detail:     result.prepared.PrepareError,
+			DurationMS: result.durationMS,
+		})
 		return
 	}
+	r.appendRuntimeEvent(result.sessionID, app.RuntimeEvent{
+		Level:      app.RuntimeEventLevelInfo,
+		Type:       app.RuntimeEventTypeWorkflowNodeComplete,
+		Stage:      app.RuntimeEventStageWorkflow,
+		NodeID:     result.plannedNodeID,
+		Message:    "剧情节点已准备。",
+		DurationMS: result.durationMS,
+	})
 }
 
 func workflowStageErrorNode(node app.TeachingWorkflowNode, err error) app.TeachingWorkflowNode {
@@ -861,6 +1093,59 @@ func previousTeachingNode(nodes []app.TeachingWorkflowNode, nodeID string) app.T
 	return app.TeachingWorkflowNode{}
 }
 
+func previousNodeForPlannedAct(nodes []app.TeachingWorkflowNode, planned app.TeachingWorkflowNode, choice app.SceneChoice) app.TeachingWorkflowNode {
+	if choice.ID != "" || choice.TargetNodeID != "" {
+		if source := choiceSourceNode(nodes, planned.ID, choice); source.ID != "" {
+			return source
+		}
+	}
+	if planned.ID != "" {
+		if source := mainlineSourceNode(nodes, planned.ID); source.ID != "" {
+			return source
+		}
+	}
+	if previous := previousTeachingNode(nodes, planned.ID); previous.ID != "" {
+		return previous
+	}
+	return lastTeachingNode(nodes)
+}
+
+func choiceSourceNode(nodes []app.TeachingWorkflowNode, plannedNodeID string, choice app.SceneChoice) app.TeachingWorkflowNode {
+	for _, node := range nodes {
+		for _, candidate := range node.Choices {
+			if choice.ID != "" && candidate.ID == choice.ID {
+				return node
+			}
+			if plannedNodeID != "" && candidate.TargetNodeID == plannedNodeID {
+				return node
+			}
+			if choice.TargetNodeID != "" && candidate.TargetNodeID == choice.TargetNodeID {
+				return node
+			}
+		}
+	}
+	return app.TeachingWorkflowNode{}
+}
+
+func mainlineSourceNode(nodes []app.TeachingWorkflowNode, plannedNodeID string) app.TeachingWorkflowNode {
+	for _, node := range nodes {
+		if node.NextNodeID == plannedNodeID {
+			return node
+		}
+	}
+	return app.TeachingWorkflowNode{}
+}
+
+func lastTeachingNode(nodes []app.TeachingWorkflowNode) app.TeachingWorkflowNode {
+	for index := len(nodes) - 1; index >= 0; index-- {
+		node := nodes[index]
+		if node.Kind == "opening" || node.Kind == "lesson" || node.Kind == "summary" || node.Kind == "choice" {
+			return node
+		}
+	}
+	return app.TeachingWorkflowNode{}
+}
+
 func coveredTeachingPoints(nodes []app.TeachingWorkflowNode, nodeID string) []string {
 	points := make([]string, 0, len(nodes))
 	for _, node := range nodes {
@@ -886,6 +1171,12 @@ func mergeGeneratedActNode(planned app.TeachingWorkflowNode, generated app.Teach
 	}
 	planned.Title = firstNonEmpty(strings.TrimSpace(generated.Title), strings.TrimSpace(planned.Title))
 	planned.Summary = firstNonEmpty(strings.TrimSpace(generated.Summary), strings.TrimSpace(planned.Summary))
+	planned.TeachingGoal = firstNonEmpty(strings.TrimSpace(generated.TeachingGoal), strings.TrimSpace(planned.TeachingGoal))
+	if len(generated.MustCover) > 0 {
+		planned.MustCover = compactTeachingPlanPoints(generated.MustCover)
+	}
+	planned.MisconceptionToAddress = firstNonEmpty(strings.TrimSpace(generated.MisconceptionToAddress), strings.TrimSpace(planned.MisconceptionToAddress))
+	planned.ExampleOrCounterexample = firstNonEmpty(strings.TrimSpace(generated.ExampleOrCounterexample), strings.TrimSpace(planned.ExampleOrCounterexample))
 	planned.Speaker = firstNonEmpty(strings.TrimSpace(generated.Speaker), strings.TrimSpace(planned.Speaker))
 	planned.Decision = firstNonEmpty(strings.TrimSpace(generated.Decision), strings.TrimSpace(planned.Decision))
 	if len(generated.Lines) > 0 {

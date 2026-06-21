@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,31 +41,63 @@ func (e *Engine) GenerateAct(ctx context.Context, input agent.ActInput) (agent.A
 	if err != nil {
 		return agent.ActOutput{}, err
 	}
+	currentPlan := selectCurrentActPlan(input, plan)
 	messages, err := buildGenerateActMessages(input, plan)
 	if err != nil {
 		return agent.ActOutput{}, err
 	}
-	draft, err := e.generateActFromMessages(ctx, input, messages)
+	draft, err := e.generateActFromMessages(ctx, input, agent.ActTraceStepGenerateActDraft, messages)
 	if err != nil {
 		return agent.ActOutput{}, err
 	}
+	draft = attachActPlanToOutput(draft, currentPlan)
 	rewriteMessages, err := buildRewriteActMessages(input, plan, draft)
 	if err != nil {
 		return agent.ActOutput{}, err
 	}
-	return e.generateActFromMessages(ctx, input, rewriteMessages)
+	out, err := e.generateActFromMessages(ctx, input, agent.ActTraceStepRewriteAct, rewriteMessages, func(out agent.ActOutput) error {
+		return validateRewriteActPreservesDraft(draft, out)
+	})
+	if err != nil {
+		return agent.ActOutput{}, err
+	}
+	return attachActPlanToOutput(out, currentPlan), nil
 }
 
 func (e *Engine) planActs(ctx context.Context, input agent.ActInput) (actPlan, error) {
+	started := time.Now()
 	cacheKey, err := actPlanCacheKey(input)
 	if err != nil {
+		emitActTrace(input, agent.ActTraceEvent{
+			Type:       app.RuntimeEventTypeAgentActPlanFailed,
+			Level:      app.RuntimeEventLevelError,
+			Step:       agent.ActTraceStepActPlan,
+			Message:    "ActPlan 准备失败。",
+			Detail:     err.Error(),
+			DurationMS: fairyTraceDurationMS(started),
+		})
 		return actPlan{}, err
 	}
 	if plan, ok := e.cachedActPlan(cacheKey); ok {
+		emitActTrace(input, agent.ActTraceEvent{
+			Type:       app.RuntimeEventTypeAgentActPlanCacheHit,
+			Level:      app.RuntimeEventLevelInfo,
+			Step:       agent.ActTraceStepActPlan,
+			Message:    "ActPlan 缓存命中。",
+			DurationMS: fairyTraceDurationMS(started),
+		})
 		return plan, nil
 	}
 	messages, err := buildActPlanMessages(input)
 	if err != nil {
+		emitActTrace(input, agent.ActTraceEvent{
+			Type:       app.RuntimeEventTypeAgentActPlanFailed,
+			Level:      app.RuntimeEventLevelError,
+			Step:       agent.ActTraceStepActPlan,
+			Message:    "ActPlan prompt 构造失败。",
+			Detail:     err.Error(),
+			DurationMS: fairyTraceDurationMS(started),
+		})
 		return actPlan{}, err
 	}
 	var lastErr error
@@ -72,6 +105,14 @@ func (e *Engine) planActs(ctx context.Context, input agent.ActInput) (actPlan, e
 	for attempt := 1; attempt <= maxJSONRepairAttempts; attempt++ {
 		content, err := e.completeJSON(ctx, input.Request.Runtime.Agent, attemptMessages)
 		if err != nil {
+			emitActTrace(input, agent.ActTraceEvent{
+				Type:       app.RuntimeEventTypeAgentActPlanFailed,
+				Level:      app.RuntimeEventLevelError,
+				Step:       agent.ActTraceStepActPlan,
+				Message:    "ActPlan 调用失败。",
+				Detail:     err.Error(),
+				DurationMS: fairyTraceDurationMS(started),
+			})
 			return actPlan{}, err
 		}
 		out, err := parseActPlan(content)
@@ -80,14 +121,39 @@ func (e *Engine) planActs(ctx context.Context, input agent.ActInput) (actPlan, e
 		}
 		if err == nil {
 			e.storeActPlan(cacheKey, out)
+			emitActTrace(input, agent.ActTraceEvent{
+				Type:       app.RuntimeEventTypeAgentActPlanDone,
+				Level:      app.RuntimeEventLevelInfo,
+				Step:       agent.ActTraceStepActPlan,
+				Message:    "ActPlan 已生成。",
+				DurationMS: fairyTraceDurationMS(started),
+			})
 			return out, nil
 		}
 		lastErr = err
 		if attempt < maxJSONRepairAttempts {
+			emitActTrace(input, agent.ActTraceEvent{
+				Type:       app.RuntimeEventTypeAgentActPlanRetry,
+				Level:      app.RuntimeEventLevelWarn,
+				Step:       agent.ActTraceStepActPlan,
+				Message:    "ActPlan 输出不符合合约，正在修正重试。",
+				Detail:     err.Error(),
+				RetryCount: attempt,
+				DurationMS: fairyTraceDurationMS(started),
+			})
 			attemptMessages = buildRepairMessages(messages, content, err)
 		}
 	}
-	return actPlan{}, fmt.Errorf("FAIRY ActPlan 输出连续不符合合约: %w", lastErr)
+	finalErr := fmt.Errorf("FAIRY ActPlan 输出连续不符合合约: %w", lastErr)
+	emitActTrace(input, agent.ActTraceEvent{
+		Type:       app.RuntimeEventTypeAgentActPlanFailed,
+		Level:      app.RuntimeEventLevelError,
+		Step:       agent.ActTraceStepActPlan,
+		Message:    "ActPlan 输出连续不符合合约。",
+		Detail:     finalErr.Error(),
+		DurationMS: fairyTraceDurationMS(started),
+	})
+	return actPlan{}, finalErr
 }
 
 func (e *Engine) cachedActPlan(key string) (actPlan, bool) {
@@ -104,6 +170,73 @@ func (e *Engine) storeActPlan(key string, plan actPlan) {
 		e.planCache = map[string]actPlan{}
 	}
 	e.planCache[key] = plan
+}
+
+func attachActPlanToOutput(output agent.ActOutput, plan actPlanItem) agent.ActOutput {
+	if strings.TrimSpace(plan.TeachingGoal) != "" && strings.TrimSpace(output.Node.TeachingGoal) == "" {
+		output.Node.TeachingGoal = strings.TrimSpace(plan.TeachingGoal)
+	}
+	if len(output.Node.MustCover) == 0 {
+		output.Node.MustCover = compactStrings(plan.MustCover)
+	}
+	if strings.TrimSpace(plan.MisconceptionToAddress) != "" && strings.TrimSpace(output.Node.MisconceptionToAddress) == "" {
+		output.Node.MisconceptionToAddress = strings.TrimSpace(plan.MisconceptionToAddress)
+	}
+	if strings.TrimSpace(plan.ExampleOrCounterexample) != "" && strings.TrimSpace(output.Node.ExampleOrCounterexample) == "" {
+		output.Node.ExampleOrCounterexample = strings.TrimSpace(plan.ExampleOrCounterexample)
+	}
+	return output
+}
+
+func compactStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		out = append(out, trimmed)
+		seen[trimmed] = true
+	}
+	return out
+}
+
+func validateRewriteActPreservesDraft(draft agent.ActOutput, rewritten agent.ActOutput) error {
+	if draft.Decision != "" {
+		if rewritten.Decision == "" {
+			return fmt.Errorf("rewrite decision 不能为空，必须保留草稿 decision: %s", draft.Decision)
+		}
+		if rewritten.Decision != draft.Decision {
+			return fmt.Errorf("rewrite decision 必须保留草稿值: %s != %s", rewritten.Decision, draft.Decision)
+		}
+	}
+	if missing := missingRewriteCoveredPoints(draft.CoveredPoints, rewritten.CoveredPoints); len(missing) > 0 {
+		return fmt.Errorf("rewrite covered_points 必须保留草稿 covered_points: %s", strings.Join(missing, "、"))
+	}
+	return nil
+}
+
+func missingRewriteCoveredPoints(draftPoints []string, rewrittenPoints []string) []string {
+	required := compactStrings(draftPoints)
+	if len(required) == 0 {
+		return nil
+	}
+	present := map[string]bool{}
+	for _, point := range compactStrings(rewrittenPoints) {
+		present[normalizeRewriteCoveredPoint(point)] = true
+	}
+	missing := []string{}
+	for _, point := range required {
+		if !present[normalizeRewriteCoveredPoint(point)] {
+			missing = append(missing, point)
+		}
+	}
+	return missing
+}
+
+func normalizeRewriteCoveredPoint(point string) string {
+	return strings.ToLower(strings.TrimSpace(point))
 }
 
 func actPlanCacheKey(input agent.ActInput) (string, error) {
@@ -139,12 +272,21 @@ func actPlanCacheKey(input agent.ActInput) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func (e *Engine) generateActFromMessages(ctx context.Context, input agent.ActInput, messages []llm.Message) (agent.ActOutput, error) {
+func (e *Engine) generateActFromMessages(ctx context.Context, input agent.ActInput, step string, messages []llm.Message, extraValidate ...func(agent.ActOutput) error) (agent.ActOutput, error) {
+	started := time.Now()
 	var lastErr error
 	attemptMessages := messages
 	for attempt := 1; attempt <= maxJSONRepairAttempts; attempt++ {
 		content, err := e.completeJSON(ctx, input.Request.Runtime.Agent, attemptMessages)
 		if err != nil {
+			emitActTrace(input, agent.ActTraceEvent{
+				Type:       fairyTraceFailedType(step),
+				Level:      app.RuntimeEventLevelError,
+				Step:       step,
+				Message:    fairyTraceFailedMessage(step),
+				Detail:     err.Error(),
+				DurationMS: fairyTraceDurationMS(started),
+			})
 			return agent.ActOutput{}, err
 		}
 		out, err := parseActOutput(content)
@@ -152,14 +294,122 @@ func (e *Engine) generateActFromMessages(ctx context.Context, input agent.ActInp
 			err = validateFairyActOutput(input, out)
 		}
 		if err == nil {
+			for _, validate := range extraValidate {
+				if validate == nil {
+					continue
+				}
+				if validateErr := validate(out); validateErr != nil {
+					err = validateErr
+					break
+				}
+			}
+		}
+		if err == nil {
+			emitActTrace(input, agent.ActTraceEvent{
+				Type:       fairyTraceCompletedType(step),
+				Level:      app.RuntimeEventLevelInfo,
+				Step:       step,
+				Message:    fairyTraceCompletedMessage(step),
+				DurationMS: fairyTraceDurationMS(started),
+			})
 			return out, nil
 		}
 		lastErr = err
 		if attempt < maxJSONRepairAttempts {
+			emitActTrace(input, agent.ActTraceEvent{
+				Type:       fairyTraceRetryType(step),
+				Level:      app.RuntimeEventLevelWarn,
+				Step:       step,
+				Message:    fairyTraceRetryMessage(step),
+				Detail:     err.Error(),
+				RetryCount: attempt,
+				DurationMS: fairyTraceDurationMS(started),
+			})
 			attemptMessages = buildRepairMessages(messages, content, err)
 		}
 	}
-	return agent.ActOutput{}, fmt.Errorf("FAIRY GenerateAct 输出连续不符合合约: %w", lastErr)
+	finalErr := agent.NewContractError(fmt.Errorf("FAIRY GenerateAct 输出连续不符合合约: %w", lastErr))
+	emitActTrace(input, agent.ActTraceEvent{
+		Type:       fairyTraceFailedType(step),
+		Level:      app.RuntimeEventLevelError,
+		Step:       step,
+		Message:    fairyTraceFailedMessage(step),
+		Detail:     finalErr.Error(),
+		DurationMS: fairyTraceDurationMS(started),
+	})
+	return agent.ActOutput{}, finalErr
+}
+
+func emitActTrace(input agent.ActInput, event agent.ActTraceEvent) {
+	if input.Trace == nil {
+		return
+	}
+	if event.DurationMS < 0 {
+		event.DurationMS = 0
+	}
+	input.Trace(event)
+}
+
+func fairyTraceDurationMS(started time.Time) int64 {
+	duration := time.Since(started).Milliseconds()
+	if duration < 1 {
+		return 1
+	}
+	return duration
+}
+
+func fairyTraceCompletedType(step string) string {
+	switch step {
+	case agent.ActTraceStepRewriteAct:
+		return app.RuntimeEventTypeAgentRewriteDone
+	default:
+		return app.RuntimeEventTypeAgentDraftDone
+	}
+}
+
+func fairyTraceRetryType(step string) string {
+	switch step {
+	case agent.ActTraceStepRewriteAct:
+		return app.RuntimeEventTypeAgentRewriteRetry
+	default:
+		return app.RuntimeEventTypeAgentDraftRetry
+	}
+}
+
+func fairyTraceFailedType(step string) string {
+	switch step {
+	case agent.ActTraceStepRewriteAct:
+		return app.RuntimeEventTypeAgentRewriteFailed
+	default:
+		return app.RuntimeEventTypeAgentDraftFailed
+	}
+}
+
+func fairyTraceCompletedMessage(step string) string {
+	switch step {
+	case agent.ActTraceStepRewriteAct:
+		return "RewriteAct 已完成角色口吻改写。"
+	default:
+		return "GenerateAct 草稿已生成。"
+	}
+}
+
+func fairyTraceRetryMessage(step string) string {
+	switch step {
+	case agent.ActTraceStepRewriteAct:
+		return "RewriteAct 输出不符合合约，正在修正重试。"
+	default:
+		return "GenerateAct 草稿不符合合约，正在修正重试。"
+	}
+}
+
+func fairyTraceFailedMessage(step string) string {
+	switch step {
+	case agent.ActTraceStepRewriteAct:
+		return "RewriteAct 失败。"
+	default:
+		return "GenerateAct 草稿失败。"
+	}
 }
 
 func (e *Engine) Discuss(ctx context.Context, input agent.DiscussInput) (agent.Output, error) {

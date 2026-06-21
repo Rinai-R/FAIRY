@@ -118,6 +118,7 @@ func configFromLookup(lookup func(string) (string, bool)) (bootstrap.Config, err
 	config.FairyAgentEndpoint = optionalString(lookup, "FAIRY_AGENT_ENDPOINT", config.FairyAgentEndpoint)
 	config.FairyAgentAPIKey = optionalSecret(lookup, "FAIRY_AGENT_API_KEY", config.FairyAgentAPIKey)
 	config.FairyAgentModel = optionalString(lookup, "FAIRY_AGENT_MODEL", config.FairyAgentModel)
+	config.FairyAgentExtraBody = optionalString(lookup, "FAIRY_AGENT_EXTRA_BODY", config.FairyAgentExtraBody)
 	config.FairyAgentTimeout = fairyAgentTimeout
 	config.SessionPath = optionalString(lookup, "FAIRY_CODEX_SESSION_PATH", config.SessionPath)
 	config.AppSessionPath = optionalString(lookup, "FAIRY_SESSION_PATH", config.AppSessionPath)

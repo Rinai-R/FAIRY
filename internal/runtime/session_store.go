@@ -14,6 +14,8 @@ import (
 	"github.com/Rinai-R/FAIRY/internal/app"
 )
 
+const maxSessionRuntimeEvents = 200
+
 type SessionStore interface {
 	BeginScene(req app.SceneGenerateRequest, resp app.SceneGenerateResponse) (app.SessionRecord, error)
 	CreateGeneration(record app.SessionRecord) (app.SessionRecord, error)
@@ -26,6 +28,8 @@ type SessionStore interface {
 	AttachWorkflowAudio(sessionID string, nodeID string, audio app.AudioResult) (app.SessionRecord, error)
 	UpdateWorkflowNode(sessionID string, node app.TeachingWorkflowNode) (app.SessionRecord, error)
 	SaveWorkflow(sessionID string, workflow app.TeachingWorkflow) (app.SessionRecord, error)
+	AppendEvent(sessionID string, event app.RuntimeEvent) (app.SessionRecord, error)
+	SessionEvents(sessionID string) ([]app.RuntimeEvent, error)
 	List() ([]app.SessionRecord, error)
 	Get(id string) (app.SessionRecord, error)
 	Delete(id string) error
@@ -115,6 +119,7 @@ func (s *FileSessionStore) CompleteGeneration(sessionID string, resp app.SceneGe
 	record.Generation = existing.Generation
 	record.Generation.Error = ""
 	record.Generation.CompletedAt = record.UpdatedAt
+	record.Events = cloneRuntimeEvents(existing.Events)
 	applyWorkflowGenerationStatus(&record)
 	state[sessionID] = record
 	return record, s.save(state)
@@ -231,9 +236,9 @@ func (s *FileSessionStore) AdvanceWorkflow(req app.WorkflowAdvanceRequest) (app.
 		}
 		selectedChoice = choice
 	}
-	replay := req.Replay
-	if !replay && current.NextNodeID != "" && req.NextNodeID != current.NextNodeID && workflowVisited(record.Workflow, req.NextNodeID) {
-		replay = true
+	replay := workflowAdvanceReplay(record.Workflow, current, req)
+	if err := validateWorkflowAdvanceChoiceBoundary(current, req.ChoiceID, replay); err != nil {
+		return app.SessionRecord{}, err
 	}
 	if replay && !workflowVisited(record.Workflow, req.NextNodeID) {
 		return app.SessionRecord{}, fmt.Errorf("只能回溯到已访问节点: %s", req.NextNodeID)
@@ -380,6 +385,55 @@ func (s *FileSessionStore) SaveWorkflow(sessionID string, workflow app.TeachingW
 	return record, s.save(state)
 }
 
+func (s *FileSessionStore) AppendEvent(sessionID string, event app.RuntimeEvent) (app.SessionRecord, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return app.SessionRecord{}, errors.New("session_id 不能为空")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.load()
+	if err != nil {
+		return app.SessionRecord{}, err
+	}
+	record, ok := state[sessionID]
+	if !ok {
+		return app.SessionRecord{}, fmt.Errorf("session 不存在: %s", sessionID)
+	}
+	normalized, err := normalizeRuntimeEvent(sessionID, event, len(record.Events), time.Now().UTC())
+	if err != nil {
+		return app.SessionRecord{}, err
+	}
+	record.Events = append(record.Events, normalized)
+	normalizeRuntimeEvents(&record)
+	record.UpdatedAt = normalized.CreatedAt
+	state[sessionID] = record
+	return record, s.save(state)
+}
+
+func (s *FileSessionStore) SessionEvents(sessionID string) ([]app.RuntimeEvent, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, errors.New("session_id 不能为空")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.load()
+	if err != nil {
+		return nil, err
+	}
+	record, ok := state[sessionID]
+	if !ok {
+		return nil, fmt.Errorf("session 不存在: %s", sessionID)
+	}
+	normalizeRuntimeEvents(&record)
+	return cloneRuntimeEvents(record.Events), nil
+}
+
 func generationStillInProgress(status string) bool {
 	return status == app.SceneGenerationStatusGenerating || status == app.SceneGenerationStatusPreparing
 }
@@ -457,6 +511,23 @@ func workflowVisited(workflow app.TeachingWorkflow, nodeID string) bool {
 		}
 	}
 	return false
+}
+
+func workflowAdvanceReplay(workflow app.TeachingWorkflow, current app.TeachingWorkflowNode, req app.WorkflowAdvanceRequest) bool {
+	if req.Replay {
+		return true
+	}
+	return current.NextNodeID != "" && req.NextNodeID != current.NextNodeID && workflowVisited(workflow, req.NextNodeID)
+}
+
+func validateWorkflowAdvanceChoiceBoundary(current app.TeachingWorkflowNode, choiceID string, replay bool) error {
+	if replay || len(current.Choices) == 0 {
+		return nil
+	}
+	if strings.TrimSpace(choiceID) == "" {
+		return fmt.Errorf("当前节点包含选项，必须选择后才能推进: %s", current.ID)
+	}
+	return nil
 }
 
 func truncateWorkflowHistory(workflow *app.TeachingWorkflow, nodeID string) {
@@ -563,7 +634,6 @@ func (s *FileSessionStore) AppendTurn(req app.TurnRequest, resp app.TurnResponse
 func teachingSnapshot(req app.SceneGenerateRequest, prompt app.PromptConfig) app.TeachingSnapshot {
 	return app.TeachingSnapshot{
 		Topic:           req.Topic,
-		DocumentText:    req.DocumentText,
 		LearningGoal:    req.LearningGoal,
 		Prompt:          firstPrompt(prompt, req.Prompt),
 		Runtime:         req.Runtime,
@@ -722,9 +792,70 @@ func (s *FileSessionStore) load() (map[string]app.SessionRecord, error) {
 	}
 	for id, record := range state {
 		normalizeWorkflowReadyState(&record)
+		normalizeRuntimeEvents(&record)
 		state[id] = record
 	}
 	return state, nil
+}
+
+func normalizeRuntimeEvent(sessionID string, event app.RuntimeEvent, existingCount int, now time.Time) (app.RuntimeEvent, error) {
+	if event.SessionID == "" {
+		event.SessionID = sessionID
+	}
+	if event.SessionID != sessionID {
+		return app.RuntimeEvent{}, fmt.Errorf("runtime event session_id 不匹配: %s != %s", event.SessionID, sessionID)
+	}
+	if strings.TrimSpace(event.Type) == "" {
+		return app.RuntimeEvent{}, errors.New("runtime event type 不能为空")
+	}
+	if strings.TrimSpace(event.Level) == "" {
+		return app.RuntimeEvent{}, errors.New("runtime event level 不能为空")
+	}
+	if strings.TrimSpace(event.Stage) == "" {
+		return app.RuntimeEvent{}, errors.New("runtime event stage 不能为空")
+	}
+	if strings.TrimSpace(event.Message) == "" {
+		return app.RuntimeEvent{}, errors.New("runtime event message 不能为空")
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = now
+	}
+	if strings.TrimSpace(event.ID) == "" {
+		event.ID = runtimeEventID(event.Type, event.CreatedAt, existingCount+1)
+	}
+	if event.DurationMS < 0 {
+		event.DurationMS = 0
+	}
+	return event, nil
+}
+
+func normalizeRuntimeEvents(record *app.SessionRecord) {
+	if record == nil || len(record.Events) == 0 {
+		return
+	}
+	sort.SliceStable(record.Events, func(i, j int) bool {
+		return record.Events[i].CreatedAt.Before(record.Events[j].CreatedAt)
+	})
+	if len(record.Events) > maxSessionRuntimeEvents {
+		record.Events = append([]app.RuntimeEvent(nil), record.Events[len(record.Events)-maxSessionRuntimeEvents:]...)
+	}
+}
+
+func runtimeEventID(eventType string, createdAt time.Time, sequence int) string {
+	cleanType := strings.NewReplacer(".", "-", "_", "-").Replace(strings.TrimSpace(eventType))
+	if cleanType == "" {
+		cleanType = "event"
+	}
+	return fmt.Sprintf("%s-%d-%03d", cleanType, createdAt.UnixNano(), sequence)
+}
+
+func cloneRuntimeEvents(events []app.RuntimeEvent) []app.RuntimeEvent {
+	if len(events) == 0 {
+		return nil
+	}
+	out := make([]app.RuntimeEvent, len(events))
+	copy(out, events)
+	return out
 }
 
 func normalizeWorkflowReadyState(record *app.SessionRecord) {
