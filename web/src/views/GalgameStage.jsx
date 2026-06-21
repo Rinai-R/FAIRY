@@ -18,6 +18,7 @@ export function GalgameStageView({
   const backlogListRef = useRef(null);
   const closeTimerRef = useRef(null);
   const dialogueRef = useRef(null);
+  const pendingBacklogJumpRef = useRef(null);
 
   const workflowNodes = Array.isArray(lessonWorkflow?.nodes) ? lessonWorkflow.nodes : [];
   const currentNode = workflowNodes.find((node) => node.id === lessonWorkflow?.current_node_id) || workflowNodes[0];
@@ -101,7 +102,12 @@ export function GalgameStageView({
   }, [currentDialogueLine, typedText]);
 
   useEffect(() => {
-    setLineIndex(0);
+    if (pendingBacklogJumpRef.current?.nodeID === currentNode?.id) {
+      setLineIndex(pendingBacklogJumpRef.current.lineIndex);
+      pendingBacklogJumpRef.current = null;
+    } else {
+      setLineIndex(0);
+    }
     setPendingChoiceID("");
   }, [currentNode?.id]);
 
@@ -199,6 +205,32 @@ export function GalgameStageView({
     setClosing(true);
     closeTimerRef.current = window.setTimeout(() => { setHistoryOpen(false); setClosing(false); }, 220);
   }, [historyOpen, closing]);
+
+  const jumpToBacklogItem = useCallback((item) => {
+    if (!item || item.kind !== "script" || !item.nodeID) return;
+    const targetLineIndex = Math.max(0, Number(item.lineIndex) || 0);
+    setPendingChoiceID("");
+    if (item.nodeID === currentNode?.id) {
+      setLineIndex(targetLineIndex);
+      if (item.audioURL) playAudio(item.audioURL);
+      closeBacklog();
+      return;
+    }
+    pendingBacklogJumpRef.current = { nodeID: item.nodeID, lineIndex: targetLineIndex };
+    Promise.resolve(advanceLessonWorkflow(item.nodeID, "", true)).then((advanced) => {
+      if (!advanced) pendingBacklogJumpRef.current = null;
+    }).catch(() => {
+      pendingBacklogJumpRef.current = null;
+    });
+    closeBacklog();
+  }, [advanceLessonWorkflow, closeBacklog, currentNode?.id, playAudio]);
+
+  const handleBacklogItemKeyDown = useCallback((event, item) => {
+    if (event.target !== event.currentTarget) return;
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    jumpToBacklogItem(item);
+  }, [jumpToBacklogItem]);
 
   // Keyboard
   useEffect(() => {
@@ -355,15 +387,23 @@ export function GalgameStageView({
             <div className="vn-backlog-body">
               <div className="vn-backlog-list" ref={backlogListRef}>
                 {buildBacklogItems(workflowHistory, workflowNodes, currentNode?.id, safeLineIndex, speaker, speakerAliases).map((item, i) => (
-                  <article key={`bl-${i}`} className={`vn-backlog-item ${item.active ? "is-active" : ""} ${item.kind === "user" ? "is-player" : ""}`}>
+                  <article
+                    key={`bl-${i}`}
+                    className={`vn-backlog-item ${item.active ? "is-active" : ""} ${item.kind === "user" ? "is-player" : ""} ${item.kind === "script" && item.nodeID ? "is-jumpable" : ""}`}
+                    role={item.kind === "script" && item.nodeID ? "button" : undefined}
+                    tabIndex={item.kind === "script" && item.nodeID ? 0 : undefined}
+                    aria-label={item.kind === "script" && item.nodeID ? `跳转到第 ${i + 1} 句` : undefined}
+                    onClick={() => jumpToBacklogItem(item)}
+                    onKeyDown={(event) => handleBacklogItemKeyDown(event, item)}
+                  >
                     <span className="vn-backlog-number">{String(i + 1).padStart(2, "0")}</span>
                     <div>
                       <strong>{item.speaker}</strong>
                       <p>{item.text}</p>
                       {item.kind === "script" && item.nodeID ? (
                         <div className="vn-backlog-actions">
-                          <button type="button" onClick={() => { advanceLessonWorkflow(item.nodeID, "", true); closeBacklog(); }}>跳转</button>
-                          <button type="button" onClick={() => item.audioURL ? playAudio(item.audioURL) : playWorkflowNodeVoice?.(item.node)}>复读</button>
+                          <button type="button" onClick={(event) => { event.stopPropagation(); jumpToBacklogItem(item); }}>跳转</button>
+                          <button type="button" onClick={(event) => { event.stopPropagation(); item.audioURL ? playAudio(item.audioURL) : playWorkflowNodeVoice?.(item.node); }}>复读</button>
                         </div>
                       ) : null}
                     </div>

@@ -142,12 +142,12 @@ func extractCompletionContent(resp *openai.ChatCompletion) (string, error) {
 		return "", fmt.Errorf("llm chat completions 响应为拒绝内容: %s", providerSnippet(refusal))
 	}
 	if messageHasReasoningContent(message) {
-		return "", errors.New("llm chat completions 响应只有 reasoning_content，缺少 choices[0].message.content")
+		return "", llm.NewEmptyContentError(errors.New("llm chat completions 响应只有 reasoning_content，缺少 choices[0].message.content"))
 	}
 	if rawContent != "" {
-		return "", errors.New("llm chat completions 响应 choices[0].message.content 为空")
+		return "", llm.NewEmptyContentError(errors.New("llm chat completions 响应 choices[0].message.content 为空"))
 	}
-	return "", errors.New("llm chat completions 响应缺少 choices[0].message.content")
+	return "", llm.NewEmptyContentError(errors.New("llm chat completions 响应缺少 choices[0].message.content"))
 }
 
 func extractMessageContentRaw(raw string) (string, error) {

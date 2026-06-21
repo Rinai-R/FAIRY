@@ -14,8 +14,6 @@ import (
 	"github.com/Rinai-R/FAIRY/internal/app"
 )
 
-const maxGeneratedChoiceLabelRunes = 16
-
 type preparedDialogueLine struct {
 	index int
 	line  app.DialogueLine
@@ -328,10 +326,7 @@ func generatedActRequiresChoices(node app.TeachingWorkflowNode) bool {
 
 func validateGeneratedActChoices(node app.TeachingWorkflowNode) error {
 	if len(node.Choices) == 0 {
-		return fmt.Errorf("node %q choices 必须提供 1-3 个选项", node.ID)
-	}
-	if len(node.Choices) > 3 {
-		return fmt.Errorf("node %q choices 最多 3 个，当前 %d 个", node.ID, len(node.Choices))
+		return fmt.Errorf("node %q choices 必须提供选项", node.ID)
 	}
 	for index, choice := range node.Choices {
 		if strings.TrimSpace(choice.ID) == "" {
@@ -343,24 +338,8 @@ func validateGeneratedActChoices(node app.TeachingWorkflowNode) error {
 		if strings.TrimSpace(choice.Text) == "" {
 			return fmt.Errorf("node %q choices[%d].text 不能为空", node.ID, index)
 		}
-		if labelLen := len([]rune(strings.TrimSpace(choice.Label))); labelLen > maxGeneratedChoiceLabelRunes {
-			return fmt.Errorf("node %q choices[%d].label 必须是短按钮文案，当前 %d/%d 字", node.ID, index, labelLen, maxGeneratedChoiceLabelRunes)
-		}
-		if normalizeChoiceContractText(choice.Label) == normalizeChoiceContractText(choice.Text) {
-			return fmt.Errorf("node %q choices[%d].label 不能与 text 相同；label 是按钮文案，text 是分支意图", node.ID, index)
-		}
 	}
 	return nil
-}
-
-func normalizeChoiceContractText(value string) string {
-	var builder strings.Builder
-	for _, r := range strings.ToLower(strings.TrimSpace(value)) {
-		if unicode.IsLetter(r) || unicode.IsNumber(r) {
-			builder.WriteRune(r)
-		}
-	}
-	return builder.String()
 }
 
 func freeDiscussionDecisionAllowed(node app.TeachingWorkflowNode, workflow app.TeachingWorkflow) bool {
@@ -744,6 +723,10 @@ func (r *Runtime) runWorkflowStageWaiter(ctx context.Context, jobKey string, tas
 	}
 	record, err := r.sessions.Get(task.sessionID)
 	if err != nil {
+		if errors.Is(err, ErrSessionNotFound) {
+			r.logger.Debug("剧情续写会话已删除，取消后台预加载", "session_id", task.sessionID)
+			return
+		}
 		r.logger.Warn("读取剧情续写会话失败", "error", err, "session_id", task.sessionID)
 		return
 	}
@@ -762,6 +745,10 @@ func (r *Runtime) runWorkflowStageWaiter(ctx context.Context, jobKey string, tas
 	if currentChanged {
 		saved, err := r.sessions.SaveWorkflow(task.sessionID, record.Workflow)
 		if err != nil {
+			if errors.Is(err, ErrSessionNotFound) {
+				r.logger.Debug("剧情续写会话已删除，取消保存后续规划", "session_id", task.sessionID, "node_id", current.ID)
+				return
+			}
 			r.logger.Warn("写入剧情后续规划失败", "error", err, "session_id", task.sessionID, "node_id", current.ID)
 			return
 		}
@@ -775,6 +762,10 @@ func (r *Runtime) runWorkflowStageWaiter(ctx context.Context, jobKey string, tas
 		var err error
 		record, err = r.prepareWorkflowFollowup(ctx, task, record, target.node, target.choice)
 		if err != nil {
+			if errors.Is(err, ErrSessionNotFound) {
+				r.logger.Debug("剧情续写会话已删除，取消后续预加载", "session_id", task.sessionID, "node_id", target.node.ID, "choice_id", target.choice.ID)
+				return
+			}
 			r.logger.Warn("准备剧情后续失败", "error", err, "session_id", task.sessionID, "node_id", target.node.ID, "choice_id", target.choice.ID)
 			return
 		}
@@ -784,6 +775,10 @@ func (r *Runtime) runWorkflowStageWaiter(ctx context.Context, jobKey string, tas
 		record.Workflow.Preparing = false
 		record.Workflow.PendingNodeID = ""
 		if _, err := r.sessions.SaveWorkflow(task.sessionID, record.Workflow); err != nil {
+			if errors.Is(err, ErrSessionNotFound) {
+				r.logger.Debug("剧情续写会话已删除，取消清理准备状态", "session_id", task.sessionID, "node_id", current.ID)
+				return
+			}
 			r.logger.Warn("清理剧情准备状态失败", "error", err, "session_id", task.sessionID, "node_id", current.ID)
 			return
 		}
@@ -875,6 +870,10 @@ func (r *Runtime) runWorkflowStageWorker(
 func (r *Runtime) applyWorkflowStageResult(result workflowStageResult) {
 	record, err := r.sessions.Get(result.sessionID)
 	if err != nil {
+		if errors.Is(err, ErrSessionNotFound) {
+			r.logger.Debug("剧情续写会话已删除，忽略后台结果", "session_id", result.sessionID, "node_id", result.plannedNodeID)
+			return
+		}
 		r.logger.Warn("刷新剧情续写会话失败", "error", err, "session_id", result.sessionID, "node_id", result.plannedNodeID)
 		return
 	}
@@ -885,6 +884,10 @@ func (r *Runtime) applyWorkflowStageResult(result workflowStageResult) {
 	record.Workflow.Preparing = false
 	persistStarted := time.Now()
 	if _, saveErr := r.sessions.SaveWorkflow(result.sessionID, record.Workflow); saveErr != nil {
+		if errors.Is(saveErr, ErrSessionNotFound) {
+			r.logger.Debug("剧情续写会话已删除，忽略后台保存", "session_id", result.sessionID, "node_id", result.plannedNodeID)
+			return
+		}
 		r.appendPersistEvent(result.sessionID, app.RuntimeEventLevelError, app.RuntimeEventTypePersistWorkflowFailed, result.plannedNodeID, "保存 workflow 失败。", saveErr.Error(), persistStarted)
 		r.logger.Warn("写入剧情续写结果失败", "error", saveErr, "session_id", result.sessionID, "node_id", result.plannedNodeID)
 		return
@@ -1257,13 +1260,16 @@ func workflowChoiceByID(node app.TeachingWorkflowNode, choiceID string) (app.Sce
 }
 
 func normalizeActDecision(node app.TeachingWorkflowNode, decision agent.ActDecision) agent.ActDecision {
-	if decision != "" {
-		return decision
-	}
 	if node.FreeDiscussion || node.Kind == "free_discussion" {
 		return agent.ActDecisionFreeDiscussion
 	}
 	if node.Kind == "summary" {
+		if decision == agent.ActDecisionFreeDiscussion {
+			return agent.ActDecisionFreeDiscussion
+		}
+		return agent.ActDecisionSummarize
+	}
+	if decision == agent.ActDecisionSummarize {
 		return agent.ActDecisionSummarize
 	}
 	return agent.ActDecisionContinue

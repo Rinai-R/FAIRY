@@ -5,6 +5,8 @@ import { characterVisualStyle, resolveCharacterPortrait } from "./views/characte
 const tutor = defaultCharacters.find((character) => character.id === "tutor");
 assert.ok(tutor, "默认角色应包含主讲角色");
 assert.equal(tutor.display_name, "亚托莉");
+assert.ok(!tutor.persona.includes("老师"), "默认亚托莉 persona 不应把角色推向老师口吻");
+assert.ok(tutor.style_rules.some((rule) => rule.includes("避免老师讲课口吻")), "默认亚托莉应明确避免老师口吻");
 assert.equal(tutor.assets.portrait_url, ATRI_DEFAULT_PORTRAIT_URL);
 assert.equal(tutor.assets.reference_image_url, ATRI_DEFAULT_PORTRAIT_URL);
 

@@ -23,6 +23,7 @@ type stubLLM struct {
 	contents    []string
 	calls       int
 	err         error
+	errs        []error
 }
 
 func (s *stubLLM) Validate(profile llm.Profile) error {
@@ -44,6 +45,15 @@ func (s *stubLLM) CompleteJSON(_ context.Context, request llm.Request) (string, 
 	s.calls++
 	if s.err != nil {
 		return "", s.err
+	}
+	if len(s.errs) > 0 {
+		index := s.calls - 1
+		if index >= len(s.errs) {
+			index = len(s.errs) - 1
+		}
+		if s.errs[index] != nil {
+			return "", s.errs[index]
+		}
 	}
 	if len(s.contents) > 0 {
 		index := s.calls - 1
@@ -128,7 +138,9 @@ func TestGenerateActUsesUnderlyingLLMAdapter(t *testing.T) {
 		"可用角色差分 expression contract",
 		"current_act_plan.misconception_to_address",
 		"current_act_plan.example_or_counterexample",
-		"covered_points 必须列出",
+		"角色口吻优先",
+		"禁止使用讲课套话",
+		"covered_points 是可选",
 	} {
 		if !strings.Contains(model.requests[1].Messages[1].Content, want) {
 			t.Fatalf("generate prompt missing %q:\n%s", want, model.requests[1].Messages[1].Content)
@@ -143,8 +155,9 @@ func TestGenerateActUsesUnderlyingLLMAdapter(t *testing.T) {
 		"英文单条 lines[].text 不超过 120 个可见字符",
 		"不限制章节数量",
 		"与同序号 text 一一对应",
-		"必须保留 covered_points",
-		"改写后的 covered_points 必须至少包含草稿 covered_points",
+		"角色口吻优先",
+		"避免老师口吻",
+		"covered_points 是可选内部追踪字段",
 	} {
 		if !strings.Contains(model.lastRequest.Messages[1].Content, want) {
 			t.Fatalf("rewrite prompt missing %q:\n%s", want, model.lastRequest.Messages[1].Content)
@@ -227,39 +240,76 @@ func TestActPlanTraceReportsRepairRetry(t *testing.T) {
 	requireTraceEvent(t, traces, app.RuntimeEventTypeAgentActPlanDone)
 }
 
-func TestValidateActPlanRequiresMisconception(t *testing.T) {
+func TestGenerateActRetriesEmptyLLMContent(t *testing.T) {
+	t.Parallel()
+
+	model := &stubLLM{
+		errs: []error{
+			nil,
+			llm.NewEmptyContentError(errors.New("llm chat completions 响应只有 reasoning_content，缺少 choices[0].message.content")),
+			nil,
+			nil,
+		},
+		contents: []string{
+			validPlanJSON(),
+			"",
+			`{"decision":"continue","covered_points":["GMP"],"node":{"id":"opening","kind":"opening","title":"开场","summary":"建立 GMP 直觉","lines":[{"speaker":"亚托莉","text":"第一句","speech_text":"一つ目。","expression":"soft_smile"},{"speaker":"亚托莉","text":"第二句","speech_text":"二つ目。","expression":"thinking"},{"speaker":"亚托莉","text":"第三句","speech_text":"三つ目。","expression":"curious"},{"speaker":"亚托莉","text":"第四句","speech_text":"四つ目。","expression":"calm"}],"choices":[{"id":"example","label":"看例子","text":"用例子继续。"}]}}`,
+			`{"decision":"continue","covered_points":["GMP"],"node":{"id":"opening","kind":"opening","title":"开场","summary":"建立 GMP 直觉","lines":[{"speaker":"亚托莉","text":"第一句","speech_text":"一つ目。","expression":"soft_smile"},{"speaker":"亚托莉","text":"第二句","speech_text":"二つ目。","expression":"thinking"},{"speaker":"亚托莉","text":"第三句","speech_text":"三つ目。","expression":"curious"},{"speaker":"亚托莉","text":"第四句","speech_text":"四つ目。","expression":"calm"}],"choices":[{"id":"example","label":"看例子","text":"用例子继续。"}]}}`,
+		},
+	}
+	var traces []agent.ActTraceEvent
+	_, err := NewEngine(Options{Model: model}).GenerateAct(context.Background(), agent.ActInput{
+		Request: app.SceneGenerateRequest{
+			MaterialSource: textMaterial("GMP 模型解释 goroutine、线程和处理器上下文如何协作。"),
+			Characters:     []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+		},
+		PlannedNode: app.TeachingWorkflowNode{ID: "opening", Kind: "opening", Title: "开场"},
+		ActIndex:    1,
+		Trace: func(event agent.ActTraceEvent) {
+			traces = append(traces, event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateAct() error = %v", err)
+	}
+	if model.calls != 4 {
+		t.Fatalf("llm calls = %d, want 4", model.calls)
+	}
+	retry := requireTraceEvent(t, traces, app.RuntimeEventTypeAgentDraftRetry)
+	if retry.Level != app.RuntimeEventLevelWarn || retry.RetryCount != 1 || !strings.Contains(retry.Detail, "reasoning_content") {
+		t.Fatalf("draft retry trace = %+v", retry)
+	}
+	lastMessage := model.requests[2].Messages[len(model.requests[2].Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Content, "只返回修正后的 JSON object") {
+		t.Fatalf("repair message = %+v", lastMessage)
+	}
+}
+
+func TestValidateActPlanAllowsMissingOptionalMisconception(t *testing.T) {
 	t.Parallel()
 
 	plan, err := parseActPlan(strings.Replace(validPlanJSON(), `"misconception_to_address":"G、M、P 不是三个并列线程，而是不同层次的调度角色。",`, "", 1))
 	if err != nil {
 		t.Fatalf("parseActPlan() error = %v", err)
 	}
-	err = validateActPlan(plan)
-	if err == nil {
-		t.Fatal("validateActPlan() error = nil")
-	}
-	if !strings.Contains(err.Error(), "misconception_to_address") {
-		t.Fatalf("validateActPlan() error = %v, want misconception field", err)
+	if err := validateActPlan(plan); err != nil {
+		t.Fatalf("validateActPlan() error = %v", err)
 	}
 }
 
-func TestValidateActPlanRequiresExampleOrCounterexample(t *testing.T) {
+func TestValidateActPlanAllowsMissingOptionalExampleOrCounterexample(t *testing.T) {
 	t.Parallel()
 
 	plan, err := parseActPlan(strings.Replace(validPlanJSON(), `"example_or_counterexample":"把 G 想成任务卡、M 想成执行者、P 想成工作台。",`, "", 1))
 	if err != nil {
 		t.Fatalf("parseActPlan() error = %v", err)
 	}
-	err = validateActPlan(plan)
-	if err == nil {
-		t.Fatal("validateActPlan() error = nil")
-	}
-	if !strings.Contains(err.Error(), "example_or_counterexample") {
-		t.Fatalf("validateActPlan() error = %v, want example field", err)
+	if err := validateActPlan(plan); err != nil {
+		t.Fatalf("validateActPlan() error = %v", err)
 	}
 }
 
-func TestValidateFairyActOutputRequiresCoveredPointsForTeachingAct(t *testing.T) {
+func TestValidateFairyActOutputAllowsMissingCoveredPointsForTeachingAct(t *testing.T) {
 	t.Parallel()
 
 	output := agent.ActOutput{
@@ -279,17 +329,47 @@ func TestValidateFairyActOutputRequiresCoveredPointsForTeachingAct(t *testing.T)
 		},
 	}
 	err := validateFairyActOutput(agent.ActInput{}, output)
-	if err == nil {
-		t.Fatal("validateFairyActOutput() error = nil, want covered_points contract error")
-	}
-	if !strings.Contains(err.Error(), "covered_points") {
-		t.Fatalf("validateFairyActOutput() error = %v, want covered_points detail", err)
+	if err != nil {
+		t.Fatalf("validateFairyActOutput() error = %v", err)
 	}
 
 	output.CoveredPoints = []string{""}
 	err = validateFairyActOutput(agent.ActInput{}, output)
-	if err == nil || !strings.Contains(err.Error(), "covered_points[0]") {
-		t.Fatalf("validateFairyActOutput() error = %v, want blank covered point detail", err)
+	if err != nil {
+		t.Fatalf("validateFairyActOutput() with blank covered_points error = %v", err)
+	}
+}
+
+func TestGenerateActAllowsMissingCoveredPointsFromModel(t *testing.T) {
+	t.Parallel()
+
+	model := &stubLLM{
+		contents: []string{
+			validPlanJSON(),
+			`{"decision":"continue","node":{"kind":"lesson","title":"第一幕","summary":"GMP 调度","speaker":"亚托莉","lines":[{"speaker":"亚托莉","text":"G 是等待运行的小任务。","speech_text":"G は待つ小さなタスクです。","expression":"soft_smile"},{"speaker":"亚托莉","text":"M 是真正执行代码的线程。","speech_text":"M は実行するスレッドです。","expression":"thinking"},{"speaker":"亚托莉","text":"P 管理本地运行队列。","speech_text":"P はキューを管理します。","expression":"curious"},{"speaker":"亚托莉","text":"三者配合，调度才能动起来。","speech_text":"三つで進みます。","expression":"calm"}],"choices":[{"id":"queue","label":"看队列","text":"继续讲运行队列。"}]}}`,
+			`{"decision":"continue","node":{"kind":"lesson","title":"第一幕","summary":"GMP 调度","speaker":"亚托莉","lines":[{"speaker":"亚托莉","text":"G 就像等着被安排的小任务。","speech_text":"G は待つ小さなタスクです。","expression":"soft_smile"},{"speaker":"亚托莉","text":"M 才是真正执行代码的线程。","speech_text":"M は実行するスレッドです。","expression":"thinking"},{"speaker":"亚托莉","text":"P 会管理本地运行队列。","speech_text":"P はキューを管理します。","expression":"curious"},{"speaker":"亚托莉","text":"它们配合起来，程序才会继续向前跑。","speech_text":"三つでプログラムが進みます。","expression":"calm"}],"choices":[{"id":"queue","label":"看队列","text":"继续讲运行队列。"}]}}`,
+		},
+	}
+	out, err := NewEngine(Options{Model: model}).GenerateAct(context.Background(), agent.ActInput{
+		Request: app.SceneGenerateRequest{
+			MaterialSource: textMaterial("GMP 模型解释 goroutine、线程和处理器上下文如何协作。"),
+			Characters:     []app.Character{{ID: "atri", DisplayName: "亚托莉"}},
+		},
+		PlannedNode: app.TeachingWorkflowNode{
+			ID:    "lesson-1",
+			Kind:  "lesson",
+			Title: "第一幕",
+		},
+		ActIndex: 2,
+	})
+	if err != nil {
+		t.Fatalf("GenerateAct() error = %v", err)
+	}
+	if len(out.CoveredPoints) != 0 {
+		t.Fatalf("covered_points = %#v, want optional field omitted", out.CoveredPoints)
+	}
+	if model.calls != 3 {
+		t.Fatalf("llm calls = %d, want 3", model.calls)
 	}
 }
 
@@ -409,18 +489,16 @@ func TestGenerateActRetriesWhenOutputViolatesContract(t *testing.T) {
 	}
 }
 
-func TestRewriteActRetriesWhenCoveredPointsDropped(t *testing.T) {
+func TestRewriteActAllowsCoveredPointsDropped(t *testing.T) {
 	t.Parallel()
 
 	model := &stubLLM{
 		contents: []string{
 			validPlanJSON(),
 			`{"decision":"continue","covered_points":["G 等待执行","M 负责执行"],"node":{"kind":"lesson","title":"第一幕","summary":"GMP 调度","speaker":"亚托莉","lines":[{"speaker":"亚托莉","text":"G 是等待运行的 goroutine。","speech_text":"G は待つタスクです。","expression":"soft_smile"},{"speaker":"亚托莉","text":"M 负责真正执行代码。","speech_text":"M は実行します。","expression":"thinking"},{"speaker":"亚托莉","text":"P 管理本地运行队列。","speech_text":"P はキューを管理します。","expression":"curious"},{"speaker":"亚托莉","text":"三者配合推进调度。","speech_text":"三つで進みます。","expression":"calm"}],"choices":[{"id":"queue","label":"看队列","text":"继续讲运行队列。"}]}}`,
-			`{"decision":"continue","covered_points":["角色口吻"],"node":{"kind":"lesson","title":"第一幕","summary":"GMP 调度","speaker":"亚托莉","lines":[{"speaker":"亚托莉","text":"G 是等待运行的 goroutine。","speech_text":"G は待つタスクです。","expression":"soft_smile"},{"speaker":"亚托莉","text":"M 负责真正执行代码。","speech_text":"M は実行します。","expression":"thinking"},{"speaker":"亚托莉","text":"P 管理本地运行队列。","speech_text":"P はキューを管理します。","expression":"curious"},{"speaker":"亚托莉","text":"三者配合推进调度。","speech_text":"三つで進みます。","expression":"calm"}],"choices":[{"id":"queue","label":"看队列","text":"继续讲运行队列。"}]}}`,
-			`{"decision":"continue","covered_points":["G 等待执行","M 负责执行"],"node":{"kind":"lesson","title":"第一幕","summary":"GMP 调度","speaker":"亚托莉","lines":[{"speaker":"亚托莉","text":"G 是等待运行的 goroutine，像排队的小任务。","speech_text":"G は待つ小さなタスクです。","expression":"soft_smile"},{"speaker":"亚托莉","text":"M 负责真正执行代码，不是普通台词里的角色。","speech_text":"M は実際に実行します。","expression":"thinking"},{"speaker":"亚托莉","text":"P 管理本地运行队列，把任务交给 M。","speech_text":"P はキューを管理します。","expression":"curious"},{"speaker":"亚托莉","text":"所以 G、M、P 是一组调度分工。","speech_text":"三つは役割分担です。","expression":"calm"}],"choices":[{"id":"queue","label":"看队列","text":"继续讲运行队列。"}]}}`,
+			`{"decision":"continue","node":{"kind":"lesson","title":"第一幕","summary":"GMP 调度","speaker":"亚托莉","lines":[{"speaker":"亚托莉","text":"G 是等待运行的 goroutine。","speech_text":"G は待つタスクです。","expression":"soft_smile"},{"speaker":"亚托莉","text":"M 负责真正执行代码。","speech_text":"M は実行します。","expression":"thinking"},{"speaker":"亚托莉","text":"P 管理本地运行队列。","speech_text":"P はキューを管理します。","expression":"curious"},{"speaker":"亚托莉","text":"三者配合推进调度。","speech_text":"三つで進みます。","expression":"calm"}],"choices":[{"id":"queue","label":"看队列","text":"继续讲运行队列。"}]}}`,
 		},
 	}
-	var traces []agent.ActTraceEvent
 	out, err := NewEngine(Options{Model: model}).GenerateAct(context.Background(), agent.ActInput{
 		Request: app.SceneGenerateRequest{
 			MaterialSource: textMaterial("GMP 模型解释 goroutine、线程和处理器上下文如何协作。"),
@@ -432,27 +510,16 @@ func TestRewriteActRetriesWhenCoveredPointsDropped(t *testing.T) {
 			Title: "第一幕",
 		},
 		ActIndex: 2,
-		Trace: func(event agent.ActTraceEvent) {
-			traces = append(traces, event)
-		},
 	})
 	if err != nil {
 		t.Fatalf("GenerateAct() error = %v", err)
 	}
-	if model.calls != 4 {
-		t.Fatalf("llm calls = %d, want 4: plan + draft + bad rewrite + repaired rewrite", model.calls)
+	if model.calls != 3 {
+		t.Fatalf("llm calls = %d, want 3: plan + draft + rewrite", model.calls)
 	}
-	if !strings.Contains(model.requests[3].Messages[len(model.requests[3].Messages)-1].Content, "rewrite covered_points") {
-		t.Fatalf("rewrite repair prompt missing preservation reason: %#v", model.requests[3].Messages)
+	if len(out.CoveredPoints) != 0 {
+		t.Fatalf("covered_points = %#v, want optional field omitted", out.CoveredPoints)
 	}
-	if got := strings.Join(out.CoveredPoints, "|"); got != "G 等待执行|M 负责执行" {
-		t.Fatalf("covered_points = %q, want draft points preserved", got)
-	}
-	retry := requireTraceEvent(t, traces, app.RuntimeEventTypeAgentRewriteRetry)
-	if retry.Level != app.RuntimeEventLevelWarn || retry.RetryCount != 1 || !strings.Contains(retry.Detail, "rewrite covered_points") {
-		t.Fatalf("rewrite retry trace = %+v", retry)
-	}
-	requireTraceEvent(t, traces, app.RuntimeEventTypeAgentRewriteDone)
 }
 
 func TestValidateRewriteActPreservesDecision(t *testing.T) {

@@ -1,10 +1,13 @@
 export function buildBacklogItems(workflowHistory, workflowNodes, currentNodeID, currentLineIndex, assistantSpeaker, assistantSpeakerAliases = []) {
   const nodeByID = new Map((Array.isArray(workflowNodes) ? workflowNodes : []).map((node) => [node.id, node]));
   const speakerAliases = buildBacklogSpeakerAliases(assistantSpeaker, assistantSpeakerAliases);
-  return visibleHistoryEntries(workflowHistory).flatMap((historyItem) => {
+  const historyEntries = visibleHistoryEntries(workflowHistory);
+  const activeHistoryIndex = lastHistoryIndexForNode(historyEntries, currentNodeID);
+  return historyEntries.flatMap((historyItem, historyIndex) => {
     if (historyItem?.action === "audio") return [];
     const nodeID = historyItem?.node_id || historyItem?.nodeID || "";
     const node = nodeByID.get(nodeID);
+    const isActiveHistoryEntry = historyIndex === activeHistoryIndex;
     const items = [];
     if (historyItem?.choice_label) {
       items.push({ kind: "user", active: false, speaker: "你", text: `选择：${cleanBacklogText(historyItem.choice_label, "你")}` });
@@ -16,8 +19,9 @@ export function buildBacklogItems(workflowHistory, workflowNodes, currentNodeID,
       const text = cleanBacklogText(workflowNodeDisplayText(node), speaker, [rawSpeaker, ...speakerAliases]) || historyItem?.action || "进入剧情";
       return [...items, {
         kind: "script",
-        active: nodeID === currentNodeID,
+        active: isActiveHistoryEntry,
         nodeID,
+        lineIndex: 0,
         node,
         speaker,
         text,
@@ -29,12 +33,12 @@ export function buildBacklogItems(workflowHistory, workflowNodes, currentNodeID,
       const speaker = resolveBacklogSpeaker(rawSpeaker, assistantSpeaker, speakerAliases);
       const text = cleanBacklogText(line.text, speaker, [rawSpeaker, ...speakerAliases]);
       if (!text) return;
-      const isLastVisibleLine = index === lines.length - 1;
       items.push({
         kind: "script",
-        active: nodeID === currentNodeID && index === currentLineIndex,
-        nodeID: isLastVisibleLine ? nodeID : "",
-        node: isLastVisibleLine ? node : null,
+        active: isActiveHistoryEntry && index === currentLineIndex,
+        nodeID,
+        lineIndex: index,
+        node,
         speaker,
         text,
         audioURL: workflowLineAudioURL(line),
@@ -42,6 +46,16 @@ export function buildBacklogItems(workflowHistory, workflowNodes, currentNodeID,
     });
     return items;
   }).slice(-40);
+}
+
+function lastHistoryIndexForNode(historyEntries, nodeID) {
+  const targetNodeID = String(nodeID || "").trim();
+  if (!targetNodeID) return -1;
+  for (let index = historyEntries.length - 1; index >= 0; index -= 1) {
+    const entryNodeID = String(historyEntries[index]?.node_id || historyEntries[index]?.nodeID || "").trim();
+    if (entryNodeID === targetNodeID) return index;
+  }
+  return -1;
 }
 
 export function workflowLineSpeechText(line) {

@@ -23,7 +23,7 @@ func TestStructureEvalPassesGoSchedulerGoldenCandidate(t *testing.T) {
 	}
 }
 
-func TestStructureEvalReportsMissingLinesAndCoveredPoints(t *testing.T) {
+func TestStructureEvalReportsMissingLinesOnly(t *testing.T) {
 	outputs := goSchedulerGoldenOutputs()
 	outputs[1].CoveredPoints = nil
 	outputs[1].Node.Lines = []app.DialogueLine{
@@ -34,19 +34,21 @@ func TestStructureEvalReportsMissingLinesAndCoveredPoints(t *testing.T) {
 		t.Fatal("EvaluateAgentStructure() passed, want structural failure")
 	}
 	assertStructureIssue(t, result, "lesson-1", "lines", "台词数量不足")
-	assertStructureIssue(t, result, "lesson-1", "covered_points", "teaching act 必须提供 covered_points")
 }
 
-func TestStructureEvalReportsChoiceLabelContract(t *testing.T) {
+func TestStructureEvalAllowsFlexibleChoicePresentation(t *testing.T) {
 	outputs := goSchedulerGoldenOutputs()
 	outputs[0].Node.Choices[0].Label = "我想先完整阅读这一整段分支回复正文内容"
 	outputs[0].Node.Choices[0].Text = outputs[0].Node.Choices[0].Label
+	outputs[0].Node.Choices = append(outputs[0].Node.Choices,
+		app.SceneChoice{ID: "detail", Label: "更多细节", Text: "继续展开细节。"},
+		app.SceneChoice{ID: "quiz", Label: "问我一下", Text: "用问题确认理解。"},
+		app.SceneChoice{ID: "skip", Label: "先跳过", Text: "暂时跳过这个分支。"},
+	)
 	result := EvaluateAgentStructure(goSchedulerStructureSuite(), outputs)
-	if result.Passed {
-		t.Fatal("EvaluateAgentStructure() passed, want choice label failure")
+	if !result.Passed {
+		t.Fatalf("EvaluateAgentStructure() failed: %+v", result.Issues)
 	}
-	assertStructureIssue(t, result, "opening", "choices", "短按钮文案")
-	assertStructureIssue(t, result, "opening", "choices", "label 不能与 text 相同")
 }
 
 func TestStructureEvalReportsMissingActWithoutSkippingRest(t *testing.T) {
@@ -90,10 +92,9 @@ func TestFormatAgentStructureReportListsFailureDetails(t *testing.T) {
 	assertReportContains(t, report,
 		"状态：失败",
 		"幕：2/3 通过",
-		"问题：2",
+		"问题：1",
 		"[失败] lesson-1",
 		"- lines：台词数量不足: 1/4",
-		"- covered_points：teaching act 必须提供 covered_points",
 	)
 }
 

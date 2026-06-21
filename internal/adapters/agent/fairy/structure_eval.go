@@ -3,13 +3,10 @@ package fairy
 import (
 	"fmt"
 	"strings"
-	"unicode"
 
 	"github.com/Rinai-R/FAIRY/internal/adapters/agent"
 	"github.com/Rinai-R/FAIRY/internal/app"
 )
-
-const maxStructureEvalChoiceLabelRunes = 16
 
 type StructureEvalSuite struct {
 	Name string
@@ -121,9 +118,6 @@ func evaluateActStructure(expected StructureEvalActExpectation, output agent.Act
 	if len(node.Lines) < minLines {
 		result.addIssue("lines", fmt.Sprintf("台词数量不足: %d/%d", len(node.Lines), minLines))
 	}
-	if err := validateTeachingCoveredPoints(output.CoveredPoints); err != nil {
-		result.addIssue("covered_points", err.Error())
-	}
 	if shouldEvaluateChoices(expected, kind) {
 		evaluateChoiceQuality(node.Choices, result)
 	}
@@ -131,11 +125,8 @@ func evaluateActStructure(expected StructureEvalActExpectation, output agent.Act
 
 func evaluateChoiceQuality(choices []app.SceneChoice, result *StructureEvalActResult) {
 	if len(choices) == 0 {
-		result.addIssue("choices", "opening/lesson 必须提供 1-3 个选项")
+		result.addIssue("choices", "opening/lesson 必须提供选项")
 		return
-	}
-	if len(choices) > 3 {
-		result.addIssue("choices", fmt.Sprintf("opening/lesson choices 最多 3 个，当前 %d 个", len(choices)))
 	}
 	for index, choice := range choices {
 		label := strings.TrimSpace(choice.Label)
@@ -148,12 +139,6 @@ func evaluateChoiceQuality(choices []app.SceneChoice, result *StructureEvalActRe
 		}
 		if text == "" {
 			result.addIssue("choices", fmt.Sprintf("choices[%d].text 不能为空", index))
-		}
-		if len([]rune(label)) > maxStructureEvalChoiceLabelRunes {
-			result.addIssue("choices", fmt.Sprintf("choices[%d].label 必须是短按钮文案，当前 %d/%d 字", index, len([]rune(label)), maxStructureEvalChoiceLabelRunes))
-		}
-		if label != "" && text != "" && normalizeStructureEvalText(label) == normalizeStructureEvalText(text) {
-			result.addIssue("choices", fmt.Sprintf("choices[%d].label 不能与 text 相同；label 是按钮文案，text 是分支意图", index))
 		}
 	}
 }
@@ -189,14 +174,4 @@ func (result *StructureEvalActResult) addIssue(field string, message string) {
 		Field:   strings.TrimSpace(field),
 		Message: strings.TrimSpace(message),
 	})
-}
-
-func normalizeStructureEvalText(value string) string {
-	var builder strings.Builder
-	for _, r := range strings.ToLower(value) {
-		if unicode.IsLetter(r) || unicode.IsNumber(r) {
-			builder.WriteRune(r)
-		}
-	}
-	return builder.String()
 }

@@ -95,7 +95,7 @@ const agentRetryPayload = {
       type: "agent.generate_act.retry",
       stage: "agent",
       message: "Agent 输出不符合合约，正在修正重试。",
-      detail: "choices[0].label 必须是短按钮文案，当前 24/16 字",
+      detail: "choices[0].label 不能为空",
       node_id: "lesson-1",
       provider: "fairy-agent",
       retry_count: 1,
@@ -112,7 +112,7 @@ assert.deepEqual(
   "GenerateAct 修正重试应进入最近问题",
 );
 assert.deepEqual(
-  filterLogTimeline(agentRetryTimeline, { level: "warn", query: "短按钮" }).map((item) => item.id),
+  filterLogTimeline(agentRetryTimeline, { level: "warn", query: "不能为空" }).map((item) => item.id),
   ["runtime:event-agent-retry"],
   "搜索应覆盖 GenerateAct retry detail",
 );
@@ -129,12 +129,12 @@ assert.equal(
     "duration_ms: 820",
     "retry_count: 1",
     "message: Agent 输出不符合合约，正在修正重试。",
-    "detail: choices[0].label 必须是短按钮文案，当前 24/16 字",
+    "detail: choices[0].label 不能为空",
   ].join("\n"),
 );
 assert.equal(
   runtimeEventDiagnosticText(agentRetryTimeline[0]),
-  "choices[0].label 必须是短按钮文案，当前 24/16 字",
+  "choices[0].label 不能为空",
   "runtime detail 应直接作为诊断详情展示",
 );
 

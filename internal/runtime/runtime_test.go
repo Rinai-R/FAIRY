@@ -1754,8 +1754,8 @@ func TestFileSessionStoreGenerationFailureAndDelete(t *testing.T) {
 	if err := store.Delete("generation:fail"); err != nil {
 		t.Fatalf("Delete(existing) error = %v", err)
 	}
-	if err := store.Delete("generation:missing"); err == nil {
-		t.Fatal("Delete(missing) error = nil")
+	if err := store.Delete("generation:missing"); !errors.Is(err, runtime.ErrSessionNotFound) {
+		t.Fatalf("Delete(missing) error = %v, want ErrSessionNotFound", err)
 	}
 }
 

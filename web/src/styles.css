@@ -4819,8 +4819,8 @@ button:disabled {
 }
 
 .vn-backlog-panel {
-  width: min(1040px, 82vw);
-  height: min(720px, 76vh);
+  width: min(1120px, 86vw);
+  height: min(780px, 82vh);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   border-radius: 22px;
@@ -4868,15 +4868,30 @@ button:disabled {
 
 .vn-backlog-item {
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   display: grid;
   grid-template-columns: 40px minmax(0, 1fr);
+  align-items: start;
   gap: 14px;
   border: 1px solid var(--line);
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.66);
-  padding: 14px;
+  padding: 16px 18px;
   animation: fairy-list-in var(--motion-slow) var(--motion-spring) both;
+}
+
+.vn-backlog-item.is-jumpable {
+  cursor: pointer;
+}
+
+.vn-backlog-item.is-jumpable:hover,
+.vn-backlog-item.is-jumpable:focus-visible {
+  border-color: rgba(63, 155, 255, 0.42);
+  box-shadow: 0 18px 34px -28px rgba(63, 128, 207, 0.68);
+}
+
+.vn-backlog-item > div {
+  min-width: 0;
 }
 
 .vn-backlog-item::before {
@@ -4929,11 +4944,19 @@ button:disabled {
   color: var(--muted);
   font-weight: 900;
   font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+
+.vn-backlog-item strong {
+  display: block;
+  line-height: 1.45;
 }
 
 .vn-backlog-item p {
   margin: 6px 0 0;
   line-height: 1.75;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .vn-backlog-actions {

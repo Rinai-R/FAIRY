@@ -214,6 +214,9 @@ func TestCompleteJSONRejectsReasoningContentWithoutMessageContent(t *testing.T) 
 	if !strings.Contains(err.Error(), "reasoning_content") {
 		t.Fatalf("error = %q, want reasoning_content", err)
 	}
+	if !llm.IsEmptyContentError(err) {
+		t.Fatalf("error = %T %v, want llm empty content error", err, err)
+	}
 }
 
 func TestCompleteJSONReportsRefusal(t *testing.T) {

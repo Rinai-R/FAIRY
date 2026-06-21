@@ -480,6 +480,10 @@ func (r *Runtime) appendRuntimeEvent(sessionID string, event app.RuntimeEvent) {
 		return
 	}
 	if _, err := r.sessions.AppendEvent(sessionID, event); err != nil {
+		if errors.Is(err, ErrSessionNotFound) {
+			r.logger.Debug("跳过已删除 session 的运行事件", "session_id", sessionID, "event_type", event.Type)
+			return
+		}
 		r.logger.Warn("写入运行事件失败", "error", err, "session_id", sessionID, "event_type", event.Type)
 	}
 }

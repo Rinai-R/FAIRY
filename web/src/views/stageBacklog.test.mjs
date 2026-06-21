@@ -51,6 +51,18 @@ const nodes = [
     ],
     "backlog 应按剧情 line 的原始顺序显示，不应反转或插入 opening_message",
   );
+  assert.deepEqual(
+    items.map((item) => [item.nodeID, item.lineIndex]),
+    [
+      ["opening", 0],
+      ["opening", 1],
+      ["opening", 2],
+      ["opening", 3],
+      ["opening", 4],
+      ["opening", 5],
+    ],
+    "每一句回忆记录都应携带可跳转的 nodeID 与 lineIndex",
+  );
   assert.equal(items.at(-1).active, true);
 }
 
@@ -71,6 +83,11 @@ const nodes = [
       "G就像待办事项卡片，记录要完成的任务。",
     ],
     "当前幕未读到的 line 不应提前出现在回忆记录里",
+  );
+  assert.deepEqual(
+    items.map((item) => item.lineIndex),
+    [0, 1, 2],
+    "当前幕已读句子应保留原始 lineIndex",
   );
 }
 
@@ -119,6 +136,11 @@ const nodes = [
       "Go程序启动的第一件事，就是创建m0和g0这两个特殊成员。",
     ],
     "跳回中途后，回忆记录应按真实 history 顺序展示，不应裁剪旧路径",
+  );
+  assert.deepEqual(
+    items.map((item) => item.active),
+    [false, false, false, false, false, false, false, false, true],
+    "replay 到旧节点时，只有最新一次进入的目标句应高亮",
   );
 }
 

@@ -105,6 +105,23 @@ func (e *Engine) planActs(ctx context.Context, input agent.ActInput) (actPlan, e
 	for attempt := 1; attempt <= maxJSONRepairAttempts; attempt++ {
 		content, err := e.completeJSON(ctx, input.Request.Runtime.Agent, attemptMessages)
 		if err != nil {
+			if llm.IsEmptyContentError(err) {
+				lastErr = err
+				if attempt < maxJSONRepairAttempts {
+					emitActTrace(input, agent.ActTraceEvent{
+						Type:       app.RuntimeEventTypeAgentActPlanRetry,
+						Level:      app.RuntimeEventLevelWarn,
+						Step:       agent.ActTraceStepActPlan,
+						Message:    "ActPlan 输出缺少 JSON 正文，正在修正重试。",
+						Detail:     err.Error(),
+						RetryCount: attempt,
+						DurationMS: fairyTraceDurationMS(started),
+					})
+					attemptMessages = buildRepairMessages(messages, "", err)
+					continue
+				}
+				break
+			}
 			emitActTrace(input, agent.ActTraceEvent{
 				Type:       app.RuntimeEventTypeAgentActPlanFailed,
 				Level:      app.RuntimeEventLevelError,
@@ -211,32 +228,7 @@ func validateRewriteActPreservesDraft(draft agent.ActOutput, rewritten agent.Act
 			return fmt.Errorf("rewrite decision 必须保留草稿值: %s != %s", rewritten.Decision, draft.Decision)
 		}
 	}
-	if missing := missingRewriteCoveredPoints(draft.CoveredPoints, rewritten.CoveredPoints); len(missing) > 0 {
-		return fmt.Errorf("rewrite covered_points 必须保留草稿 covered_points: %s", strings.Join(missing, "、"))
-	}
 	return nil
-}
-
-func missingRewriteCoveredPoints(draftPoints []string, rewrittenPoints []string) []string {
-	required := compactStrings(draftPoints)
-	if len(required) == 0 {
-		return nil
-	}
-	present := map[string]bool{}
-	for _, point := range compactStrings(rewrittenPoints) {
-		present[normalizeRewriteCoveredPoint(point)] = true
-	}
-	missing := []string{}
-	for _, point := range required {
-		if !present[normalizeRewriteCoveredPoint(point)] {
-			missing = append(missing, point)
-		}
-	}
-	return missing
-}
-
-func normalizeRewriteCoveredPoint(point string) string {
-	return strings.ToLower(strings.TrimSpace(point))
 }
 
 func actPlanCacheKey(input agent.ActInput) (string, error) {
@@ -279,6 +271,23 @@ func (e *Engine) generateActFromMessages(ctx context.Context, input agent.ActInp
 	for attempt := 1; attempt <= maxJSONRepairAttempts; attempt++ {
 		content, err := e.completeJSON(ctx, input.Request.Runtime.Agent, attemptMessages)
 		if err != nil {
+			if llm.IsEmptyContentError(err) {
+				lastErr = err
+				if attempt < maxJSONRepairAttempts {
+					emitActTrace(input, agent.ActTraceEvent{
+						Type:       fairyTraceRetryType(step),
+						Level:      app.RuntimeEventLevelWarn,
+						Step:       step,
+						Message:    fairyTraceRetryMessage(step),
+						Detail:     err.Error(),
+						RetryCount: attempt,
+						DurationMS: fairyTraceDurationMS(started),
+					})
+					attemptMessages = buildRepairMessages(messages, "", err)
+					continue
+				}
+				break
+			}
 			emitActTrace(input, agent.ActTraceEvent{
 				Type:       fairyTraceFailedType(step),
 				Level:      app.RuntimeEventLevelError,

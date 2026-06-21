@@ -44,3 +44,27 @@ type Adapter interface {
 	Validate(profile Profile) error
 	CompleteJSON(ctx context.Context, request Request) (string, error)
 }
+
+type emptyContentError struct {
+	err error
+}
+
+func NewEmptyContentError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return emptyContentError{err: err}
+}
+
+func IsEmptyContentError(err error) bool {
+	var target emptyContentError
+	return errors.As(err, &target)
+}
+
+func (e emptyContentError) Error() string {
+	return e.err.Error()
+}
+
+func (e emptyContentError) Unwrap() error {
+	return e.err
+}

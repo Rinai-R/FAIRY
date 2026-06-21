@@ -16,6 +16,8 @@ import (
 
 const maxSessionRuntimeEvents = 200
 
+var ErrSessionNotFound = errors.New("session 不存在")
+
 type SessionStore interface {
 	BeginScene(req app.SceneGenerateRequest, resp app.SceneGenerateResponse) (app.SessionRecord, error)
 	CreateGeneration(record app.SessionRecord) (app.SessionRecord, error)
@@ -108,7 +110,7 @@ func (s *FileSessionStore) CompleteGeneration(sessionID string, resp app.SceneGe
 	}
 	existing, ok := state[sessionID]
 	if !ok {
-		return app.SessionRecord{}, fmt.Errorf("session 不存在: %s", sessionID)
+		return app.SessionRecord{}, fmt.Errorf("%w: %s", ErrSessionNotFound, sessionID)
 	}
 	if existing.Generation.Status != app.SceneGenerationStatusGenerating {
 		return app.SessionRecord{}, fmt.Errorf("generation.status 必须是 generating: %s", existing.Generation.Status)
@@ -142,7 +144,7 @@ func (s *FileSessionStore) FailGeneration(sessionID string, message string) (app
 	}
 	record, ok := state[sessionID]
 	if !ok {
-		return app.SessionRecord{}, fmt.Errorf("session 不存在: %s", sessionID)
+		return app.SessionRecord{}, fmt.Errorf("%w: %s", ErrSessionNotFound, sessionID)
 	}
 	now := time.Now().UTC()
 	record.Generation.Status = app.SceneGenerationStatusFailed
@@ -212,7 +214,7 @@ func (s *FileSessionStore) AdvanceWorkflow(req app.WorkflowAdvanceRequest) (app.
 	}
 	record, ok := state[req.SessionID]
 	if !ok {
-		return app.SessionRecord{}, fmt.Errorf("session 不存在: %s", req.SessionID)
+		return app.SessionRecord{}, fmt.Errorf("%w: %s", ErrSessionNotFound, req.SessionID)
 	}
 	if len(record.Workflow.Nodes) == 0 {
 		return app.SessionRecord{}, fmt.Errorf("session 没有教学工作流: %s", req.SessionID)
@@ -285,7 +287,7 @@ func (s *FileSessionStore) AttachWorkflowAudio(sessionID string, nodeID string, 
 	}
 	record, ok := state[sessionID]
 	if !ok {
-		return app.SessionRecord{}, fmt.Errorf("session 不存在: %s", sessionID)
+		return app.SessionRecord{}, fmt.Errorf("%w: %s", ErrSessionNotFound, sessionID)
 	}
 	found := false
 	for index := range record.Workflow.History {
@@ -329,7 +331,7 @@ func (s *FileSessionStore) UpdateWorkflowNode(sessionID string, node app.Teachin
 	}
 	record, ok := state[sessionID]
 	if !ok {
-		return app.SessionRecord{}, fmt.Errorf("session 不存在: %s", sessionID)
+		return app.SessionRecord{}, fmt.Errorf("%w: %s", ErrSessionNotFound, sessionID)
 	}
 	found := false
 	for index := range record.Workflow.Nodes {
@@ -368,7 +370,7 @@ func (s *FileSessionStore) SaveWorkflow(sessionID string, workflow app.TeachingW
 	}
 	record, ok := state[sessionID]
 	if !ok {
-		return app.SessionRecord{}, fmt.Errorf("session 不存在: %s", sessionID)
+		return app.SessionRecord{}, fmt.Errorf("%w: %s", ErrSessionNotFound, sessionID)
 	}
 	for index := range workflow.Nodes {
 		syncWorkflowNodeLegacyFields(&workflow.Nodes[index])
@@ -400,7 +402,7 @@ func (s *FileSessionStore) AppendEvent(sessionID string, event app.RuntimeEvent)
 	}
 	record, ok := state[sessionID]
 	if !ok {
-		return app.SessionRecord{}, fmt.Errorf("session 不存在: %s", sessionID)
+		return app.SessionRecord{}, fmt.Errorf("%w: %s", ErrSessionNotFound, sessionID)
 	}
 	normalized, err := normalizeRuntimeEvent(sessionID, event, len(record.Events), time.Now().UTC())
 	if err != nil {
@@ -428,7 +430,7 @@ func (s *FileSessionStore) SessionEvents(sessionID string) ([]app.RuntimeEvent, 
 	}
 	record, ok := state[sessionID]
 	if !ok {
-		return nil, fmt.Errorf("session 不存在: %s", sessionID)
+		return nil, fmt.Errorf("%w: %s", ErrSessionNotFound, sessionID)
 	}
 	normalizeRuntimeEvents(&record)
 	return cloneRuntimeEvents(record.Events), nil
@@ -753,7 +755,7 @@ func (s *FileSessionStore) Get(id string) (app.SessionRecord, error) {
 	}
 	record, ok := state[id]
 	if !ok {
-		return app.SessionRecord{}, errors.New("session 不存在")
+		return app.SessionRecord{}, ErrSessionNotFound
 	}
 	return record, nil
 }
@@ -766,7 +768,7 @@ func (s *FileSessionStore) Delete(id string) error {
 		return err
 	}
 	if _, ok := state[id]; !ok {
-		return errors.New("session 不存在")
+		return ErrSessionNotFound
 	}
 	delete(state, id)
 	return s.save(state)

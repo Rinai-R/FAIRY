@@ -1009,6 +1009,91 @@ func TestPreloadDoesNotExposeNodeBeforeVoiceReady(t *testing.T) {
 	}
 }
 
+func TestPreloadStopsQuietlyWhenSessionDeletedWhileWorkerRuns(t *testing.T) {
+	agentEngine := &stageBlockingAgent{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	close(agentEngine.release)
+	voiceEngine := &stageBlockingVoiceEngine{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	store := &stageSessionStore{
+		record: app.SessionRecord{
+			Session: app.Session{ID: "lesson:test", UserID: "default"},
+			Characters: []app.Character{{
+				ID:          "atri",
+				DisplayName: "亚托莉",
+				VoiceID:     "voice-atri",
+			}},
+			Teaching: app.TeachingSnapshot{
+				Runtime: app.RuntimeConfig{
+					AgentProvider: string(agent.ProviderMock),
+					VoiceProvider: string(testVoiceProvider),
+				},
+			},
+			Workflow: app.TeachingWorkflow{
+				CurrentNodeID: "opening",
+				Nodes: []app.TeachingWorkflowNode{{
+					ID:          "opening",
+					Kind:        "opening",
+					Title:       "开场",
+					Decision:    string(agent.ActDecisionContinue),
+					Status:      app.WorkflowNodeStatusReady,
+					VoiceStatus: app.WorkflowNodeStatusReady,
+				}},
+			},
+		},
+	}
+	rt := NewRuntime(Dependencies{
+		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: agentEngine},
+		Voices:       map[voice.Provider]voice.Engine{testVoiceProvider: voiceEngine},
+		DefaultAgent: agent.ProviderMock,
+		DefaultVoice: testVoiceProvider,
+		Sessions:     store,
+		Logger:       slog.Default(),
+	})
+
+	rt.preloadRemainingWorkflowNodes(app.SceneGenerateRequest{
+		Characters: store.record.Characters,
+		Runtime: app.RuntimeConfig{
+			AgentProvider: string(agent.ProviderMock),
+			VoiceProvider: string(testVoiceProvider),
+		},
+	}, "lesson:test", "opening")
+
+	select {
+	case <-voiceEngine.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("voice synthesis was not called")
+	}
+	waitForStageStore(t, store, func(record app.SessionRecord) bool {
+		return record.Workflow.Preparing && record.Workflow.PendingNodeID == "lesson-1"
+	}, "workflow should mark pending before worker is released")
+	eventsBeforeDelete := len(store.snapshot().Events)
+
+	if err := store.Delete("lesson:test"); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	close(voiceEngine.release)
+	waitForNoPreloadJobs(t, rt)
+
+	record := store.snapshot()
+	if len(record.Events) != eventsBeforeDelete {
+		t.Fatalf("events after deleted session = %d, want unchanged %d: %+v", len(record.Events), eventsBeforeDelete, record.Events)
+	}
+	if event := runtimeEventByTypeForStageTest(record.Events, app.RuntimeEventTypeWorkflowNodeComplete); event.Type != "" {
+		t.Fatalf("deleted session should not receive workflow completion event: %+v", event)
+	}
+	if event := runtimeEventByTypeForStageTest(record.Events, app.RuntimeEventTypePersistWorkflowSaved); event.Type != "" {
+		t.Fatalf("deleted session should not receive persist event: %+v", event)
+	}
+	if next := findWorkflowNode(record.Workflow.Nodes, "lesson-1"); next.ID != "" {
+		t.Fatalf("deleted session should not be mutated by worker result: %+v", next)
+	}
+}
+
 func TestGenerateWorkflowNodeActPersistsAgentSubstepTraceEvents(t *testing.T) {
 	store := &stageSessionStore{record: app.SessionRecord{Session: app.Session{ID: "lesson:test", UserID: "default"}}}
 	rt := NewRuntime(Dependencies{
@@ -1043,7 +1128,7 @@ func TestGenerateWorkflowNodeActPersistsAgentSubstepTraceEvents(t *testing.T) {
 		t.Fatalf("agent.actplan.cache_hit event = %+v", actPlan)
 	}
 	rewriteRetry := runtimeEventByTypeForStageTest(events, app.RuntimeEventTypeAgentRewriteRetry)
-	if rewriteRetry.Level != app.RuntimeEventLevelWarn || rewriteRetry.RetryCount != 1 || !strings.Contains(rewriteRetry.Detail, "covered_points") {
+	if rewriteRetry.Level != app.RuntimeEventLevelWarn || rewriteRetry.RetryCount != 1 || !strings.Contains(rewriteRetry.Detail, "角色口吻") {
 		t.Fatalf("agent.rewrite_act.retry event = %+v", rewriteRetry)
 	}
 	overall := runtimeEventByTypeForStageTest(events, app.RuntimeEventTypeAgentGenerateActDone)
@@ -1500,7 +1585,7 @@ func TestGenerateWorkflowNodeActRejectsMissingChoiceLabel(t *testing.T) {
 	}
 }
 
-func TestGenerateWorkflowNodeActRejectsLongChoiceLabel(t *testing.T) {
+func TestGenerateWorkflowNodeActAllowsLongChoiceLabel(t *testing.T) {
 	rt := NewRuntime(Dependencies{
 		Agents: map[agent.Provider]agent.Engine{agent.ProviderMock: stageStructureAgent{
 			choiceLabel: "亚托莉会继续用课堂比喻解释GMP调度器的完整运行过程",
@@ -1515,15 +1600,12 @@ func TestGenerateWorkflowNodeActRejectsLongChoiceLabel(t *testing.T) {
 		Title:   "第一幕",
 		Speaker: "亚托莉",
 	}, app.SceneChoice{})
-	if err == nil {
-		t.Fatal("generateWorkflowNodeAct() error = nil")
-	}
-	if !strings.Contains(err.Error(), "label 必须是短按钮文案") {
-		t.Fatalf("generateWorkflowNodeAct() error = %v, want short label gate", err)
+	if err != nil {
+		t.Fatalf("generateWorkflowNodeAct() error = %v", err)
 	}
 }
 
-func TestGenerateWorkflowNodeActRejectsChoiceLabelMatchingText(t *testing.T) {
+func TestGenerateWorkflowNodeActAllowsChoiceLabelMatchingText(t *testing.T) {
 	rt := NewRuntime(Dependencies{
 		Agents: map[agent.Provider]agent.Engine{agent.ProviderMock: stageStructureAgent{
 			choiceLabel: "先用例子讲清楚。",
@@ -1539,22 +1621,42 @@ func TestGenerateWorkflowNodeActRejectsChoiceLabelMatchingText(t *testing.T) {
 		Title:   "第一幕",
 		Speaker: "亚托莉",
 	}, app.SceneChoice{})
-	if err == nil {
-		t.Fatal("generateWorkflowNodeAct() error = nil")
-	}
-	if !strings.Contains(err.Error(), "label 不能与 text 相同") {
-		t.Fatalf("generateWorkflowNodeAct() error = %v, want label/text separation gate", err)
+	if err != nil {
+		t.Fatalf("generateWorkflowNodeAct() error = %v", err)
 	}
 }
 
-func TestGenerateWorkflowNodeActRejectsEarlyFreeDiscussion(t *testing.T) {
+func TestGenerateWorkflowNodeActAllowsMoreThanThreeChoices(t *testing.T) {
+	rt := NewRuntime(Dependencies{
+		Agents: map[agent.Provider]agent.Engine{agent.ProviderMock: stageStructureAgent{
+			extraChoices: 2,
+		}},
+		DefaultAgent: agent.ProviderMock,
+		Logger:       slog.Default(),
+	})
+
+	node, _, err := rt.generateWorkflowNodeAct(context.Background(), stageStructureRequest(), app.Session{ID: "lesson:test"}, app.TeachingWorkflow{}, app.TeachingWorkflowNode{
+		ID:      "lesson-1",
+		Kind:    "lesson",
+		Title:   "第一幕",
+		Speaker: "亚托莉",
+	}, app.SceneChoice{})
+	if err != nil {
+		t.Fatalf("generateWorkflowNodeAct() error = %v", err)
+	}
+	if len(node.Choices) != 4 {
+		t.Fatalf("choices = %d, want 4", len(node.Choices))
+	}
+}
+
+func TestGenerateWorkflowNodeActNormalizesEarlyFreeDiscussionToContinue(t *testing.T) {
 	rt := NewRuntime(Dependencies{
 		Agents:       map[agent.Provider]agent.Engine{agent.ProviderMock: stageStructureAgent{decision: agent.ActDecisionFreeDiscussion}},
 		DefaultAgent: agent.ProviderMock,
 		Logger:       slog.Default(),
 	})
 
-	_, _, err := rt.generateWorkflowNodeAct(context.Background(), stageStructureRequest(), app.Session{ID: "lesson:test"}, app.TeachingWorkflow{
+	node, decision, err := rt.generateWorkflowNodeAct(context.Background(), stageStructureRequest(), app.Session{ID: "lesson:test"}, app.TeachingWorkflow{
 		Nodes: []app.TeachingWorkflowNode{{
 			ID:      "opening",
 			Kind:    "opening",
@@ -1568,11 +1670,11 @@ func TestGenerateWorkflowNodeActRejectsEarlyFreeDiscussion(t *testing.T) {
 		Title:   "第一幕",
 		Speaker: "亚托莉",
 	}, app.SceneChoice{})
-	if err == nil {
-		t.Fatal("generateWorkflowNodeAct() error = nil")
+	if err != nil {
+		t.Fatalf("generateWorkflowNodeAct() error = %v", err)
 	}
-	if !strings.Contains(err.Error(), "不能在 summary 前进入自由讨论") {
-		t.Fatalf("generateWorkflowNodeAct() error = %v, want early free discussion gate", err)
+	if decision != agent.ActDecisionContinue || node.Decision != string(agent.ActDecisionContinue) {
+		t.Fatalf("decision = %q node.Decision = %q, want continue", decision, node.Decision)
 	}
 }
 
@@ -1725,6 +1827,7 @@ type stageStructureAgent struct {
 	emptyChoiceLabel bool
 	choiceLabel      string
 	choiceText       string
+	extraChoices     int
 	decision         agent.ActDecision
 }
 
@@ -1736,6 +1839,14 @@ func (e stageStructureAgent) GenerateAct(context.Context, agent.ActInput) (agent
 	choices := stageTestChoices()
 	if e.missingChoices {
 		choices = nil
+	}
+	for index := 0; index < e.extraChoices; index++ {
+		choiceID := fmt.Sprintf("extra-%d", index+1)
+		choices = append(choices, app.SceneChoice{
+			ID:    choiceID,
+			Label: fmt.Sprintf("追加选项 %d", index+1),
+			Text:  fmt.Sprintf("沿着追加选项 %d 继续。", index+1),
+		})
 	}
 	if len(choices) > 0 {
 		if e.emptyChoiceLabel {
@@ -1796,7 +1907,7 @@ func (stageTracingAgent) GenerateAct(ctx context.Context, input agent.ActInput) 
 			Type:       app.RuntimeEventTypeAgentRewriteRetry,
 			Level:      app.RuntimeEventLevelWarn,
 			Step:       agent.ActTraceStepRewriteAct,
-			Detail:     "rewrite covered_points 必须保留草稿 covered_points",
+			Detail:     "RewriteAct 角色口吻不够自然，正在修正重试。",
 			RetryCount: 1,
 			DurationMS: 13,
 		})
@@ -1986,6 +2097,23 @@ func waitForStageStore(t *testing.T, store *stageSessionStore, ready func(app.Se
 	}
 }
 
+func waitForNoPreloadJobs(t *testing.T, rt *Runtime) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		rt.preloadMu.Lock()
+		count := len(rt.preloadJobs)
+		rt.preloadMu.Unlock()
+		if count == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout waiting for preload jobs to finish; count=%d", count)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func runtimeEventByTypeForStageTest(events []app.RuntimeEvent, eventType string) app.RuntimeEvent {
 	for _, event := range events {
 		if event.Type == eventType {
@@ -1998,6 +2126,7 @@ func runtimeEventByTypeForStageTest(events []app.RuntimeEvent, eventType string)
 type stageSessionStore struct {
 	mu             sync.Mutex
 	record         app.SessionRecord
+	missing        bool
 	updateCalls    int
 	lastUpdatedID  string
 	savedWorkflows []app.TeachingWorkflow
@@ -2051,6 +2180,9 @@ func (s *stageSessionStore) UpdateWorkflowNode(_ string, node app.TeachingWorkfl
 func (s *stageSessionStore) SaveWorkflow(_ string, workflow app.TeachingWorkflow) (app.SessionRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.missing {
+		return app.SessionRecord{}, ErrSessionNotFound
+	}
 	if s.saveErr != nil {
 		return app.SessionRecord{}, s.saveErr
 	}
@@ -2062,6 +2194,9 @@ func (s *stageSessionStore) SaveWorkflow(_ string, workflow app.TeachingWorkflow
 func (s *stageSessionStore) AppendEvent(_ string, event app.RuntimeEvent) (app.SessionRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.missing {
+		return app.SessionRecord{}, ErrSessionNotFound
+	}
 	s.record.Events = append(s.record.Events, event)
 	return s.record, nil
 }
@@ -2069,9 +2204,18 @@ func (s *stageSessionStore) AppendEvent(_ string, event app.RuntimeEvent) (app.S
 func (s *stageSessionStore) SessionEvents(string) ([]app.RuntimeEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.missing {
+		return nil, ErrSessionNotFound
+	}
 	events := make([]app.RuntimeEvent, len(s.record.Events))
 	copy(events, s.record.Events)
 	return events, nil
+}
+
+func (s *stageSessionStore) snapshot() app.SessionRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.record
 }
 
 func (s *stageSessionStore) savedWorkflowSnapshots() []app.TeachingWorkflow {
@@ -2083,15 +2227,29 @@ func (s *stageSessionStore) savedWorkflowSnapshots() []app.TeachingWorkflow {
 }
 
 func (s *stageSessionStore) List() ([]app.SessionRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.missing {
+		return nil, nil
+	}
 	return []app.SessionRecord{s.record}, nil
 }
 
 func (s *stageSessionStore) Get(string) (app.SessionRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.missing {
+		return app.SessionRecord{}, ErrSessionNotFound
+	}
 	return s.record, nil
 }
 
 func (s *stageSessionStore) Delete(string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.missing {
+		return ErrSessionNotFound
+	}
+	s.missing = true
 	return nil
 }
