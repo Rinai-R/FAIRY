@@ -1,13 +1,12 @@
 import { defineConfig } from "vite";
-
-const apiProxy = process.env.FAIRY_API_PROXY || "http://127.0.0.1:8787";
+import react from "@vitejs/plugin-react";
 
 export default defineConfig({
+  plugins: [react()],
+  clearScreen: false,
   server: {
-    proxy: {
-      "/api": apiProxy,
-      "/audio": apiProxy,
-      "/images": apiProxy
-    }
+    host: "127.0.0.1",
+    port: 1420,
+    strictPort: true,
   }
 });

@@ -1,18 +1,21 @@
 {
-  "name": "fairy-web",
+  "name": "@fairy/web",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "dev": "vite --host 127.0.0.1",
-    "preview": "vite preview --host 127.0.0.1",
-    "visual:smoke": "node scripts/visual-smoke.mjs"
+    "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
+    "preview": "vite preview --host 127.0.0.1 --port 1420 --strictPort",
+    "test": "node --test src/*.test.mjs"
   },
   "dependencies": {
-    "@vitejs/plugin-react": "^5.1.1",
-    "react": "^19.2.3",
-    "react-dom": "^19.2.3",
-    "vite": "^7.2.7"
+    "@tauri-apps/api": "2.11.1",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "6.0.3",
+    "vite": "8.1.4"
   }
 }

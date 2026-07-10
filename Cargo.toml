@@ -1,0 +1,33 @@
+[workspace]
+members = [
+    "crates/fairy-domain",
+    "crates/fairy-harness",
+    "crates/fairy-model-openai",
+    "crates/fairy-storage",
+    "src-tauri",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+
+[workspace.dependencies]
+async-trait = "=0.1.89"
+eventsource-stream = "=0.2.3"
+futures-util = "=0.3.32"
+keyring = "=4.1.4"
+reqwest = { version = "=0.13.4", features = ["json", "stream"] }
+secrecy = "=0.10.3"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.150"
+sha2 = "=0.11.0"
+tauri = { version = "=2.11.5", features = ["macos-private-api", "tray-icon"] }
+tauri-build = { version = "=2.6.3", features = [] }
+tempfile = "=3.27.0"
+thiserror = "=2.0.18"
+tokio = { version = "=1.52.3", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "=0.7.18", features = ["rt"] }
+url = "=2.5.8"
+uuid = { version = "=1.23.4", features = ["serde", "v4"] }

@@ -1,0 +1,19 @@
+{
+  "name": "fairy",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": "24.14.0",
+    "pnpm": "11.7.0"
+  },
+  "scripts": {
+    "dev": "pnpm --dir web dev",
+    "build": "pnpm --dir web build",
+    "test": "pnpm --dir web test",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4"
+  }
+}

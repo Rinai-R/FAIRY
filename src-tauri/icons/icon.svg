@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">FAIRY 应用图标</title>
+  <desc id="description">带有一双眼睛的紫色四芒星精灵标记</desc>
+  <defs>
+    <linearGradient id="background" x1="88" y1="56" x2="424" y2="456" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#201B3F"/>
+      <stop offset="1" stop-color="#111326"/>
+    </linearGradient>
+    <linearGradient id="spark" x1="163" y1="117" x2="354" y2="399" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF8D8"/>
+      <stop offset="0.42" stop-color="#D7C5FF"/>
+      <stop offset="1" stop-color="#8C72FF"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="128" fill="url(#background)"/>
+  <circle cx="114" cy="128" r="9" fill="#F7D978" opacity=".9"/>
+  <circle cx="405" cy="159" r="7" fill="#B7A5FF" opacity=".8"/>
+  <circle cx="397" cy="366" r="11" fill="#F7D978" opacity=".75"/>
+  <path d="M256 74C273 157 315 199 398 216C315 233 273 275 256 438C239 275 197 233 114 216C197 199 239 157 256 74Z" fill="url(#spark)"/>
+  <ellipse cx="219" cy="221" rx="13" ry="18" fill="#25203F"/>
+  <ellipse cx="293" cy="221" rx="13" ry="18" fill="#25203F"/>
+  <circle cx="224" cy="215" r="4" fill="#FFFFFF"/>
+  <circle cx="298" cy="215" r="4" fill="#FFFFFF"/>
+  <path d="M232 257C246 270 266 270 280 257" fill="none" stroke="#5B477E" stroke-width="9" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,15 @@
+[package]
+name = "fairy-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+fairy-domain = { path = "../fairy-domain" }
+keyring.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
