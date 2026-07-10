@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{CharacterSnapshot, ErrorCode, FairyError, UserProfileSnapshot};
 
-pub const DIALOGUE_POLICY_VERSION: &str = "fairy-dialogue-policy-v1";
+pub const DIALOGUE_POLICY_VERSION: &str = "fairy-dialogue-policy-v3";
 
 pub const DIALOGUE_PRIORITIES: [DialoguePriority; 7] = [
     DialoguePriority::FactsSafetyPrivacyRelationshipBoundaries,
@@ -25,108 +25,6 @@ pub enum DialoguePriority {
     CharacterPerspective,
     LanguageStyle,
     ImplicitExpectation,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ConversationGoal {
-    NeedToBeHeard,
-    NeedReassurance,
-    NeedPracticalHelp,
-    NeedClarification,
-    CasualConversation,
-    ShareJoy,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct EvidenceReference {
-    pub quote: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct InteractionHypothesis {
-    pub explicit_request: String,
-    pub goal: ConversationGoal,
-    pub evidence: Vec<EvidenceReference>,
-    pub confidence: u8,
-    pub ambiguity: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RelationshipIntent {
-    Listen,
-    Reassure,
-    Help,
-    Clarify,
-    Celebrate,
-    Companion,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResponseAction {
-    AcknowledgeFeeling,
-    ReflectContent,
-    AskGentleQuestion,
-    OfferPracticalHelp,
-    GiveDirectAnswer,
-    ReassureWithoutClaimingFacts,
-    ShareLightReaction,
-    StayPresent,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct CharacterPerspective {
-    pub attention_focus: Vec<String>,
-    pub relationship_intent: RelationshipIntent,
-    pub candidate_actions: Vec<ResponseAction>,
-    pub character_intensity: u8,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResponseLength {
-    Brief,
-    Moderate,
-    Detailed,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FactCommitment {
-    EvidenceBound,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AmbiguityHandling {
-    LowCommitmentResponse,
-    ClarifyNaturally,
-    ProceedWithExplicitRequest,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct TurnPolicy {
-    pub policy_version: String,
-    pub primary_action: ResponseAction,
-    pub secondary_action: Option<ResponseAction>,
-    pub use_preferred_name: bool,
-    pub response_length: ResponseLength,
-    pub fact_commitment: FactCommitment,
-    pub ambiguity_handling: AmbiguityHandling,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct TurnPlan {
-    pub interaction_hypothesis: InteractionHypothesis,
-    pub character_perspective: CharacterPerspective,
-    pub turn_policy: TurnPolicy,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -159,7 +57,6 @@ impl ResponseText {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PromptLane {
-    Interpret,
     Respond,
     Compact,
 }
@@ -168,7 +65,6 @@ impl PromptLane {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Interpret => "interpret",
             Self::Respond => "respond",
             Self::Compact => "compact",
         }
@@ -192,9 +88,6 @@ pub enum PromptItem {
     UserMessage {
         content: String,
     },
-    TurnPlan {
-        plan: TurnPlan,
-    },
     AssistantMessage {
         content: String,
     },
@@ -216,17 +109,6 @@ pub enum ReasoningMode {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ModelOutputContract {
-    Text,
-    JsonSchema {
-        name: String,
-        strict: bool,
-        schema_json: String,
-    },
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ModelRequestShape {
     pub lane: PromptLane,
     pub model: String,
@@ -234,7 +116,6 @@ pub struct ModelRequestShape {
     pub tool_policy: ToolPolicy,
     pub parallel_tool_calls: bool,
     pub reasoning: ReasoningMode,
-    pub output: ModelOutputContract,
     pub prompt_cache_key: Option<String>,
 }
 

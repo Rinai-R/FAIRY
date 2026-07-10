@@ -6,11 +6,12 @@ use fairy_domain::{
 use fairy_harness::HarnessRuntime;
 use fairy_storage::UserProfileUpdate;
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, Runtime, State};
 
 use crate::{
     app_error::AppError,
     app_state::{AppState, ModelConnectionStatus},
+    ipc::{ConfigurationChange, emit_configuration_change},
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -57,25 +58,41 @@ pub fn get_user_profile(state: State<'_, AppState>) -> Result<Option<UserProfile
 }
 
 #[tauri::command]
-pub fn set_user_profile(
+pub fn set_user_profile<R: Runtime>(
+    app: AppHandle<R>,
     state: State<'_, AppState>,
     input: UserProfileInput,
     conversation_id: Option<ConversationId>,
 ) -> Result<UserProfileUpdateDto, AppError> {
+    let conversation_id = conversation_id.or(state.active_conversation_id()?);
     let runtime = runtime_for_conversation(&state, conversation_id)?;
     let update = state.user_profiles.update(input).map_err(AppError::from)?;
     synchronize_profile(runtime, conversation_id, &update)?;
+    emit_configuration_change(
+        &app,
+        ConfigurationChange::UserProfile {
+            revision: update.snapshot.as_ref().map(UserProfileSnapshot::revision),
+        },
+    )?;
     Ok(UserProfileUpdateDto::from(update))
 }
 
 #[tauri::command]
-pub fn clear_user_profile(
+pub fn clear_user_profile<R: Runtime>(
+    app: AppHandle<R>,
     state: State<'_, AppState>,
     conversation_id: Option<ConversationId>,
 ) -> Result<UserProfileUpdateDto, AppError> {
+    let conversation_id = conversation_id.or(state.active_conversation_id()?);
     let runtime = runtime_for_conversation(&state, conversation_id)?;
     let update = state.user_profiles.clear().map_err(AppError::from)?;
     synchronize_profile(runtime, conversation_id, &update)?;
+    emit_configuration_change(
+        &app,
+        ConfigurationChange::UserProfile {
+            revision: update.snapshot.as_ref().map(UserProfileSnapshot::revision),
+        },
+    )?;
     Ok(UserProfileUpdateDto::from(update))
 }
 
@@ -99,6 +116,7 @@ fn runtime_for_conversation(
     state: &AppState,
     conversation_id: Option<ConversationId>,
 ) -> Result<Option<Arc<HarnessRuntime>>, AppError> {
+    let conversation_id = conversation_id.or(state.active_conversation_id()?);
     let Some(conversation_id) = conversation_id else {
         return Ok(None);
     };
@@ -115,17 +133,35 @@ pub fn get_model_connection_status(state: State<'_, AppState>) -> ModelConnectio
 }
 
 #[tauri::command]
-pub fn save_model_connection(
+pub fn save_model_connection<R: Runtime>(
+    app: AppHandle<R>,
     state: State<'_, AppState>,
     input: ModelConnectionInput,
     api_key: Option<String>,
 ) -> Result<ModelConnectionStatus, AppError> {
-    state.save_model_connection(input, api_key)
+    let status = state.save_model_connection(input, api_key)?;
+    emit_configuration_change(
+        &app,
+        ConfigurationChange::Model {
+            configured: status.configured,
+            ready: status.ready,
+        },
+    )?;
+    Ok(status)
 }
 
 #[tauri::command]
-pub fn clear_model_connection(
+pub fn clear_model_connection<R: Runtime>(
+    app: AppHandle<R>,
     state: State<'_, AppState>,
 ) -> Result<ModelConnectionStatus, AppError> {
-    state.clear_model_connection()
+    let status = state.clear_model_connection()?;
+    emit_configuration_change(
+        &app,
+        ConfigurationChange::Model {
+            configured: status.configured,
+            ready: status.ready,
+        },
+    )?;
+    Ok(status)
 }

@@ -30,6 +30,7 @@ pub fn create_companion_session(state: State<'_, AppState>) -> Result<SessionSna
             .update_user_profile(session.conversation_id, profile)
             .map_err(AppError::from)?;
     }
+    state.register_active_conversation(session.conversation_id)?;
     Ok(session)
 }
 

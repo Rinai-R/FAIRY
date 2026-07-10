@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use eventsource_stream::Eventsource;
 use fairy_domain::{
     CompiledPromptRequest, ErrorCode, FairyError, GatewayCapabilities, ModelCompletion,
-    ModelConnectionConfig, ModelOutputContract, ModelStreamEvent, PromptItem, PromptLane,
+    ModelConnectionConfig, ModelProtocol, ModelStreamEvent, PromptItem, PromptLane,
 };
 use fairy_harness::{ModelEventSink, ModelGateway};
 use futures_util::StreamExt;
@@ -11,6 +11,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::request::build_responses_request;
+use crate::shared::map_http_status;
 use crate::usage::parse_usage;
 
 #[derive(Debug)]
@@ -62,7 +63,6 @@ impl ModelGateway for OpenAiResponsesGateway {
         cancellation: CancellationToken,
         sink: &mut (dyn ModelEventSink + Send),
     ) -> Result<ModelCompletion, FairyError> {
-        let structured = matches!(request.shape.output, ModelOutputContract::JsonSchema { .. });
         let lane = request.shape.lane;
         let http_request =
             build_responses_request(&self.client, &self.config, self.api_key.as_ref(), &request)?;
@@ -72,18 +72,11 @@ impl ModelGateway for OpenAiResponsesGateway {
                 result.map_err(|_| stream_failed("无法连接模型服务", true))?
             }
         };
-        let status = response.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            return Err(FairyError::new(
-                ErrorCode::ModelAuthFailed,
-                "模型认证失败，请检查连接设置",
-                false,
-            ));
-        }
-        if !status.is_success() {
-            return Err(stream_failed(
-                "模型服务返回非成功状态",
-                status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS,
+        if !response.status().is_success() {
+            return Err(map_http_status(
+                response.status(),
+                ModelProtocol::Responses,
+                response.url(),
             ));
         }
 
@@ -113,16 +106,9 @@ impl ModelGateway for OpenAiResponsesGateway {
                         continue;
                     }
                     output.push_str(delta);
-                    let event = if structured {
-                        ModelStreamEvent::StructuredTextDelta {
-                            delta: delta.to_owned(),
-                        }
-                    } else {
-                        ModelStreamEvent::TextDelta {
-                            delta: delta.to_owned(),
-                        }
-                    };
-                    sink.send(event)?;
+                    sink.send(ModelStreamEvent::TextDelta {
+                        delta: delta.to_owned(),
+                    })?;
                 }
                 "response.completed" => {
                     let response = payload
@@ -131,16 +117,9 @@ impl ModelGateway for OpenAiResponsesGateway {
                     let completed_text = extract_output_text(response);
                     if output.is_empty() && !completed_text.is_empty() {
                         output.push_str(&completed_text);
-                        let event = if structured {
-                            ModelStreamEvent::StructuredTextDelta {
-                                delta: completed_text,
-                            }
-                        } else {
-                            ModelStreamEvent::TextDelta {
-                                delta: completed_text,
-                            }
-                        };
-                        sink.send(event)?;
+                        sink.send(ModelStreamEvent::TextDelta {
+                            delta: completed_text,
+                        })?;
                     } else if !completed_text.is_empty() && completed_text != output {
                         return Err(invalid_response("模型完成文本与流式增量聚合结果不一致"));
                     }
@@ -174,7 +153,7 @@ impl ModelGateway for OpenAiResponsesGateway {
 
 fn response_items(lane: PromptLane, output: &str) -> Vec<PromptItem> {
     match lane {
-        PromptLane::Interpret | PromptLane::Respond | PromptLane::Compact => {
+        PromptLane::Respond | PromptLane::Compact => {
             vec![PromptItem::AssistantMessage {
                 content: output.to_owned(),
             }]

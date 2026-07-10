@@ -1,14 +1,35 @@
 use fairy_domain::{
-    AuthMode, ErrorCode, FairyError, ModelConnectionCompiler, ModelConnectionConfig,
-    ModelConnectionId, ModelConnectionInput,
+    AuthMode, ErrorCode, FairyError, GatewayCapabilities, ModelConnectionCompiler,
+    ModelConnectionConfig, ModelConnectionId, ModelConnectionInput, ModelProtocol,
 };
 use secrecy::SecretString;
+use serde::{Deserialize, Serialize};
 
 use crate::secret_store::validate_secret;
 use crate::{DocumentRead, SecretStore, StorageRoot};
 
 const MODEL_CONNECTION_DOCUMENT_SCHEMA: u32 = 1;
 const MODEL_CONNECTION_PATH: &str = "model/connection.json";
+const LEGACY_MODEL_CONNECTION_SCHEMA: u32 = 1;
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum StoredModelConnection {
+    Current(ModelConnectionConfig),
+    Legacy(LegacyModelConnectionConfigV1),
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyModelConnectionConfigV1 {
+    schema_version: u32,
+    connection_id: ModelConnectionId,
+    endpoint: String,
+    model: String,
+    auth_mode: AuthMode,
+    #[serde(rename = "capabilities")]
+    _capabilities: GatewayCapabilities,
+}
 
 #[derive(Debug)]
 pub struct ResolvedModelConnection {
@@ -34,16 +55,48 @@ impl<S: SecretStore> ModelConnectionStore<S> {
     }
 
     pub fn status(&self) -> Result<Option<ModelConnectionConfig>, FairyError> {
-        match self.root.read::<ModelConnectionConfig>(
+        match self.root.read::<StoredModelConnection>(
             MODEL_CONNECTION_PATH,
             MODEL_CONNECTION_DOCUMENT_SCHEMA,
         )? {
             DocumentRead::Missing => Ok(None),
-            DocumentRead::Found(config) => {
+            DocumentRead::Found(StoredModelConnection::Current(config)) => {
                 config.verify_integrity()?;
                 Ok(Some(config))
             }
+            DocumentRead::Found(StoredModelConnection::Legacy(legacy)) => {
+                self.migrate_legacy(legacy).map(Some)
+            }
         }
+    }
+
+    fn migrate_legacy(
+        &self,
+        legacy: LegacyModelConnectionConfigV1,
+    ) -> Result<ModelConnectionConfig, FairyError> {
+        if legacy.schema_version != LEGACY_MODEL_CONNECTION_SCHEMA {
+            return Err(FairyError::new(
+                ErrorCode::StorageCorrupted,
+                "旧模型连接配置版本不受支持",
+                false,
+            ));
+        }
+        let config = self.compiler.compile(
+            legacy.connection_id,
+            ModelConnectionInput {
+                protocol: ModelProtocol::Responses,
+                endpoint: legacy.endpoint,
+                model: legacy.model,
+                auth_mode: legacy.auth_mode,
+            },
+        )?;
+        config.verify_integrity()?;
+        self.root.write_replace(
+            MODEL_CONNECTION_PATH,
+            MODEL_CONNECTION_DOCUMENT_SCHEMA,
+            &config,
+        )?;
+        Ok(config)
     }
 
     pub fn save(
@@ -193,22 +246,125 @@ mod tests {
 
     fn bearer_input() -> ModelConnectionInput {
         ModelConnectionInput {
+            protocol: ModelProtocol::Responses,
             endpoint: "https://api.openai.com/v1".to_owned(),
             model: "gpt-5.4".to_owned(),
             auth_mode: AuthMode::BearerKey,
-            prompt_cache_key: true,
-            cached_tokens_usage: true,
         }
     }
 
     fn no_auth_input() -> ModelConnectionInput {
         ModelConnectionInput {
+            protocol: ModelProtocol::Responses,
             endpoint: "http://127.0.0.1:11434/v1".to_owned(),
             model: "local-model".to_owned(),
             auth_mode: AuthMode::NoAuth,
-            prompt_cache_key: false,
-            cached_tokens_usage: false,
         }
+    }
+
+    fn legacy_config(
+        connection_id: ModelConnectionId,
+        endpoint: &str,
+    ) -> LegacyModelConnectionConfigV1 {
+        LegacyModelConnectionConfigV1 {
+            schema_version: LEGACY_MODEL_CONNECTION_SCHEMA,
+            connection_id,
+            endpoint: endpoint.to_owned(),
+            model: "legacy-model".to_owned(),
+            auth_mode: AuthMode::BearerKey,
+            _capabilities: GatewayCapabilities::responses_http(false, false),
+        }
+    }
+
+    #[test]
+    fn legacy_v1_migrates_to_responses_and_keeps_keychain_reference() {
+        let temp = tempdir().expect("create temp directory");
+        let root = StorageRoot::new(temp.path()).expect("create storage root");
+        let store = ModelConnectionStore::new(root.clone(), FakeSecretStore::default());
+        let connection_id = ModelConnectionId::new();
+        let secret = SecretString::from("sk-existing-v1".to_owned());
+        store
+            .secrets
+            .save(connection_id, &secret)
+            .expect("seed legacy keychain value");
+        root.write_replace(
+            MODEL_CONNECTION_PATH,
+            MODEL_CONNECTION_DOCUMENT_SCHEMA,
+            &legacy_config(connection_id, "https://api.openai.com/v1"),
+        )
+        .expect("write legacy fixture");
+        let before = std::fs::read_to_string(root.directory().join(MODEL_CONNECTION_PATH))
+            .expect("read legacy fixture");
+        assert!(!before.contains("protocol"));
+
+        let migrated = store
+            .status()
+            .expect("migrate legacy config")
+            .expect("migrated config");
+        assert_eq!(migrated.schema_version(), 2);
+        assert_eq!(migrated.protocol(), ModelProtocol::Responses);
+        assert_eq!(migrated.connection_id(), connection_id);
+        assert!(migrated.capabilities().prompt_cache_key);
+        assert!(migrated.capabilities().cached_tokens_usage);
+
+        let resolved = store.resolve().expect("resolve migrated config");
+        assert_eq!(resolved.config.connection_id(), connection_id);
+        assert_eq!(
+            resolved
+                .api_key
+                .expect("migrated keychain value")
+                .expose_secret(),
+            "sk-existing-v1"
+        );
+        let after = std::fs::read_to_string(root.directory().join(MODEL_CONNECTION_PATH))
+            .expect("read migrated fixture");
+        assert!(after.contains("\"schema_version\":2"));
+        assert!(after.contains("\"protocol\":\"responses\""));
+    }
+
+    #[test]
+    fn invalid_legacy_config_fails_before_atomic_replacement() {
+        let temp = tempdir().expect("create temp directory");
+        let root = StorageRoot::new(temp.path()).expect("create storage root");
+        let store = ModelConnectionStore::new(root.clone(), FakeSecretStore::default());
+        root.write_replace(
+            MODEL_CONNECTION_PATH,
+            MODEL_CONNECTION_DOCUMENT_SCHEMA,
+            &legacy_config(
+                ModelConnectionId::new(),
+                "https://api.deepseek.com/chat/completions",
+            ),
+        )
+        .expect("write invalid legacy fixture");
+        let path = root.directory().join(MODEL_CONNECTION_PATH);
+        let before = std::fs::read(&path).expect("read invalid legacy bytes");
+
+        let error = store
+            .status()
+            .expect_err("invalid legacy endpoint must not migrate");
+        assert_eq!(error.code, ErrorCode::InvalidModelConfig);
+        assert_eq!(std::fs::read(path).expect("read unchanged bytes"), before);
+    }
+
+    #[test]
+    fn unknown_legacy_inner_schema_is_not_overwritten() {
+        let temp = tempdir().expect("create temp directory");
+        let root = StorageRoot::new(temp.path()).expect("create storage root");
+        let store = ModelConnectionStore::new(root.clone(), FakeSecretStore::default());
+        let mut legacy = legacy_config(ModelConnectionId::new(), "https://api.openai.com/v1");
+        legacy.schema_version = 99;
+        root.write_replace(
+            MODEL_CONNECTION_PATH,
+            MODEL_CONNECTION_DOCUMENT_SCHEMA,
+            &legacy,
+        )
+        .expect("write unknown legacy fixture");
+        let path = root.directory().join(MODEL_CONNECTION_PATH);
+        let before = std::fs::read(&path).expect("read unknown schema bytes");
+
+        let error = store.status().expect_err("unknown legacy schema must fail");
+        assert_eq!(error.code, ErrorCode::StorageCorrupted);
+        assert_eq!(std::fs::read(path).expect("read unchanged bytes"), before);
     }
 
     #[test]

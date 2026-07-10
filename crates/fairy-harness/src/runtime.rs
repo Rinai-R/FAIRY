@@ -9,9 +9,8 @@ use fairy_domain::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    CompactionCandidate, CompactionResult, ConversationHistory, HarnessEventSink,
-    InterpretTurnRequest, ModelEventSink, ModelGateway, PromptCompiler, SessionSnapshot,
-    TurnOutcome, install_compaction, interpret_turn,
+    CompactionCandidate, CompactionResult, ConversationHistory, HarnessEventSink, ModelEventSink,
+    ModelGateway, PromptCompiler, SessionSnapshot, TurnOutcome, install_compaction,
 };
 
 pub struct HarnessRuntime {
@@ -185,14 +184,7 @@ impl HarnessRuntime {
         let session = self.session(conversation_id)?;
         let turn_id = self.begin_turn(&session, conversation_id, &input)?;
         let result = self
-            .run_turn(
-                &session,
-                conversation_id,
-                turn_id,
-                input,
-                speech_enabled,
-                events,
-            )
+            .run_turn(&session, conversation_id, turn_id, speech_enabled, events)
             .await;
         match result {
             Ok(outcome) => Ok(outcome),
@@ -250,25 +242,16 @@ impl HarnessRuntime {
                         false,
                     ))
                 } else {
-                    match serde_json::from_str::<CompactionWireOutput>(&completion.output_text) {
-                        Ok(output) => {
-                            let mut session_guard = lock(&session);
-                            install_compaction(
-                                &mut session_guard.history,
-                                CompactionCandidate {
-                                    summary: output.summary,
-                                    replacement_items: Vec::new(),
-                                },
-                                &character,
-                                user_profile.as_ref(),
-                            )
-                        }
-                        Err(_) => Err(FairyError::new(
-                            ErrorCode::ModelResponseInvalid,
-                            "Compactor 返回的 summary 无法解析",
-                            false,
-                        )),
-                    }
+                    let mut session_guard = lock(&session);
+                    install_compaction(
+                        &mut session_guard.history,
+                        CompactionCandidate {
+                            summary: completion.output_text,
+                            replacement_items: Vec::new(),
+                        },
+                        &character,
+                        user_profile.as_ref(),
+                    )
                 }
             }
             Err(error) => Err(error),
@@ -304,7 +287,7 @@ impl HarnessRuntime {
         let cancellation = CancellationToken::new();
         session
             .history
-            .lane_mut(PromptLane::Interpret)
+            .lane_mut(PromptLane::Respond)
             .append(PromptItem::UserMessage {
                 content: input.to_owned(),
             });
@@ -325,68 +308,21 @@ impl HarnessRuntime {
         session: &Arc<Mutex<Session>>,
         conversation_id: ConversationId,
         turn_id: TurnId,
-        input: String,
         speech_enabled: bool,
         events: &mut (dyn HarnessEventSink + Send),
     ) -> Result<TurnOutcome, FairyError> {
         emit_state(session, turn_id, TurnState::Interpreting, events)?;
-        let (interpret_input, interpret_key, cancellation, character, user_profile, model, gateway) = {
+        let (cancellation, model, gateway) = {
             let session = lock(session);
             let active = active_turn(&session, turn_id)?;
-            let lane = session.history.lane(PromptLane::Interpret);
             (
-                lane.items().to_vec(),
-                cache_key(active.gateway.as_ref(), lane.cache_key()),
                 active.cancellation.clone(),
-                active.character.clone(),
-                active.user_profile.clone(),
                 active.model.clone(),
                 Arc::clone(&active.gateway),
             )
         };
-        let interpretation = interpret_turn(
-            gateway.as_ref(),
-            InterpretTurnRequest {
-                model: model.clone(),
-                input: interpret_input,
-                prompt_cache_key: interpret_key,
-                user_input: input.clone(),
-                character: character.clone(),
-                user_profile: user_profile.clone(),
-            },
-            cancellation.clone(),
-        )
-        .await?;
         if cancellation.is_cancelled() {
             return Err(turn_interrupted());
-        }
-
-        let turn_plan = interpretation.plan.into_inner();
-        {
-            let mut session = lock(session);
-            active_turn(&session, turn_id)?;
-            session
-                .history
-                .lane_mut(PromptLane::Interpret)
-                .append(PromptItem::TurnPlan {
-                    plan: turn_plan.clone(),
-                });
-            session
-                .history
-                .lane_mut(PromptLane::Interpret)
-                .seal_current_prefix()?;
-            session
-                .history
-                .lane_mut(PromptLane::Respond)
-                .append(PromptItem::UserMessage {
-                    content: input.clone(),
-                });
-            session
-                .history
-                .lane_mut(PromptLane::Respond)
-                .append(PromptItem::TurnPlan {
-                    plan: turn_plan.clone(),
-                });
         }
         emit_state(session, turn_id, TurnState::Planning, events)?;
         emit_state(session, turn_id, TurnState::Responding, events)?;
@@ -438,18 +374,11 @@ impl HarnessRuntime {
                 .seal_current_prefix()?;
             (character_revision, user_profile_revision)
         };
-        let usage = vec![
-            LaneModelUsage {
-                lane: PromptLane::Interpret,
-                history_window: session_window(session, PromptLane::Interpret),
-                usage: interpretation.completion.usage,
-            },
-            LaneModelUsage {
-                lane: PromptLane::Respond,
-                history_window: respond_window,
-                usage: response.usage,
-            },
-        ];
+        let usage = vec![LaneModelUsage {
+            lane: PromptLane::Respond,
+            history_window: respond_window,
+            usage: response.usage,
+        }];
         let terminal_events = complete_turn(
             session,
             turn_id,
@@ -533,23 +462,12 @@ struct CompactionOutputSink {
 impl ModelEventSink for CompactionOutputSink {
     fn send(&mut self, event: ModelStreamEvent) -> Result<(), FairyError> {
         match event {
-            ModelStreamEvent::StructuredTextDelta { delta } => {
+            ModelStreamEvent::TextDelta { delta } => {
                 self.output.push_str(&delta);
                 Ok(())
             }
-            ModelStreamEvent::TextDelta { .. } => Err(FairyError::new(
-                ErrorCode::ModelResponseInvalid,
-                "Compactor 收到了非结构化文本增量",
-                false,
-            )),
         }
     }
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CompactionWireOutput {
-    summary: String,
 }
 
 impl ModelEventSink for ResponderEventSink<'_> {
@@ -557,16 +475,7 @@ impl ModelEventSink for ResponderEventSink<'_> {
         if self.cancellation.is_cancelled() {
             return Err(turn_interrupted());
         }
-        let delta = match event {
-            ModelStreamEvent::TextDelta { delta } => delta,
-            ModelStreamEvent::StructuredTextDelta { .. } => {
-                return Err(FairyError::new(
-                    ErrorCode::ModelResponseInvalid,
-                    "Responder 收到了结构化文本增量",
-                    false,
-                ));
-            }
-        };
+        let ModelStreamEvent::TextDelta { delta } = event;
         let harness_event = {
             let mut session = lock(&self.session);
             active_turn_mut(&mut session, self.turn_id)?
@@ -623,10 +532,6 @@ fn complete_turn(
         Some(speech) => vec![completed, speech],
         None => vec![completed],
     })
-}
-
-fn session_window(session: &Arc<Mutex<Session>>, lane: PromptLane) -> fairy_domain::WindowRevision {
-    lock(session).history.lane(lane).window_revision()
 }
 
 fn active_turn(session: &Session, turn_id: TurnId) -> Result<&ActiveTurn, FairyError> {

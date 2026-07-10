@@ -1,18 +1,17 @@
-use fairy_domain::{
-    AuthMode, CompiledPromptRequest, ErrorCode, FairyError, ModelConnectionConfig,
-    ModelOutputContract, PromptItem,
-};
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
-use secrecy::{ExposeSecret, SecretString};
+use fairy_domain::{CompiledPromptRequest, FairyError, ModelConnectionConfig, ModelProtocol};
+use secrecy::SecretString;
 use serde::Serialize;
-use serde_json::Value;
-use url::Url;
+
+use crate::shared::{
+    OpenAiMessage, OpenAiRole, authenticated_post, invalid_model_request, map_prompt_items,
+    protocol_url, validate_request,
+};
 
 #[derive(Serialize)]
 struct ResponsesRequestBody<'a> {
     model: &'a str,
     instructions: &'a str,
-    input: Vec<ResponseInputMessage>,
+    input: Vec<OpenAiMessage>,
     tool_choice: &'static str,
     parallel_tool_calls: bool,
     store: bool,
@@ -20,20 +19,6 @@ struct ResponsesRequestBody<'a> {
     text: TextConfiguration,
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_key: Option<&'a str>,
-}
-
-#[derive(Serialize)]
-struct ResponseInputMessage {
-    role: ResponseRole,
-    content: String,
-}
-
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "lowercase")]
-enum ResponseRole {
-    Developer,
-    User,
-    Assistant,
 }
 
 #[derive(Serialize)]
@@ -45,16 +30,6 @@ struct TextConfiguration {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum TextFormat {
     Text,
-    JsonSchema {
-        name: String,
-        strict: bool,
-        schema: Value,
-    },
-}
-
-#[derive(Serialize)]
-struct ContextData<'a> {
-    fairy_context_data: &'a PromptItem,
 }
 
 pub fn build_responses_request(
@@ -63,38 +38,12 @@ pub fn build_responses_request(
     api_key: Option<&SecretString>,
     request: &CompiledPromptRequest,
 ) -> Result<reqwest::Request, FairyError> {
-    config.verify_integrity()?;
-    if request.shape.model != config.model() {
-        return Err(invalid_model_request(
-            "请求模型与已配置模型不一致，不能复用该请求 shape",
-        ));
-    }
-    if request.shape.parallel_tool_calls {
-        return Err(invalid_model_request(
-            "当前 FAIRY transport 不支持并行工具调用",
-        ));
-    }
+    validate_request(config, ModelProtocol::Responses, request)?;
 
-    let url = responses_url(config.endpoint())?;
-    let input = request
-        .input
-        .iter()
-        .map(map_prompt_item)
-        .collect::<Result<Vec<_>, _>>()?;
+    let url = protocol_url(config, ModelProtocol::Responses)?;
+    let input = map_prompt_items(&request.input, OpenAiRole::Developer)?;
     let text = TextConfiguration {
-        format: match &request.shape.output {
-            ModelOutputContract::Text => TextFormat::Text,
-            ModelOutputContract::JsonSchema {
-                name,
-                strict,
-                schema_json,
-            } => TextFormat::JsonSchema {
-                name: name.clone(),
-                strict: *strict,
-                schema: serde_json::from_str(schema_json)
-                    .map_err(|_| invalid_model_request("结构化输出 Schema 不是有效 JSON"))?,
-            },
-        },
+        format: TextFormat::Text,
     };
     let prompt_cache_key = if config.capabilities().prompt_cache_key {
         Some(
@@ -120,121 +69,42 @@ pub fn build_responses_request(
     })
     .map_err(|_| invalid_model_request("无法序列化 Responses 请求"))?;
 
-    let mut builder = client
-        .post(url)
-        .header(CONTENT_TYPE, "application/json")
-        .body(body);
-    match (config.auth_mode(), api_key) {
-        (AuthMode::BearerKey, Some(secret)) => {
-            let value = secret.expose_secret();
-            if value.is_empty() || value.trim() != value {
-                return Err(FairyError::new(
-                    ErrorCode::ModelSecretUnavailable,
-                    "模型密钥为空或包含首尾空白字符",
-                    false,
-                ));
-            }
-            let mut header = HeaderValue::from_str(&format!("Bearer {value}")).map_err(|_| {
-                FairyError::new(
-                    ErrorCode::ModelSecretUnavailable,
-                    "模型密钥不能编码为认证 Header",
-                    false,
-                )
-            })?;
-            header.set_sensitive(true);
-            builder = builder.header(AUTHORIZATION, header);
-        }
-        (AuthMode::BearerKey, None) => {
-            return Err(FairyError::new(
-                ErrorCode::ModelSecretUnavailable,
-                "BearerKey 连接缺少模型密钥",
-                false,
-            ));
-        }
-        (AuthMode::NoAuth, None) => {}
-        (AuthMode::NoAuth, Some(_)) => {
-            return Err(invalid_model_request("NoAuth 连接不得携带模型认证密钥"));
-        }
-    }
-
-    builder
+    authenticated_post(client, url, config, api_key)?
+        .body(body)
         .build()
         .map_err(|_| invalid_model_request("无法构造 Responses HTTP 请求"))
-}
-
-fn responses_url(endpoint: &str) -> Result<Url, FairyError> {
-    let mut url =
-        Url::parse(endpoint).map_err(|_| invalid_model_request("模型 endpoint 不是有效 URL"))?;
-    url.path_segments_mut()
-        .map_err(|_| invalid_model_request("模型 endpoint 不能作为层级 URL"))?
-        .pop_if_empty()
-        .push("responses");
-    Ok(url)
-}
-
-fn map_prompt_item(item: &PromptItem) -> Result<ResponseInputMessage, FairyError> {
-    match item {
-        PromptItem::HarnessContext { .. } => Ok(ResponseInputMessage {
-            role: ResponseRole::Developer,
-            content: context_data(item)?,
-        }),
-        PromptItem::UserMessage { content } => Ok(ResponseInputMessage {
-            role: ResponseRole::User,
-            content: content.clone(),
-        }),
-        PromptItem::AssistantMessage { content } => Ok(ResponseInputMessage {
-            role: ResponseRole::Assistant,
-            content: content.clone(),
-        }),
-        PromptItem::CharacterActivated { .. }
-        | PromptItem::UserProfileUpdated { .. }
-        | PromptItem::TurnPlan { .. }
-        | PromptItem::CompactionSummary { .. } => Ok(ResponseInputMessage {
-            role: ResponseRole::User,
-            content: context_data(item)?,
-        }),
-    }
-}
-
-fn context_data(item: &PromptItem) -> Result<String, FairyError> {
-    serde_json::to_string(&ContextData {
-        fairy_context_data: item,
-    })
-    .map_err(|_| invalid_model_request("无法序列化 FAIRY 上下文数据"))
-}
-
-fn invalid_model_request(message: &'static str) -> FairyError {
-    FairyError::new(ErrorCode::ModelResponseInvalid, message, false)
 }
 
 #[cfg(test)]
 mod tests {
     use fairy_domain::{
-        GatewayCapabilities, ModelConnectionCompiler, ModelConnectionId, ModelConnectionInput,
-        ModelRequestShape, PromptLane, ReasoningMode, ToolPolicy,
+        AuthMode, ErrorCode, GatewayCapabilities, ModelConnectionCompiler, ModelConnectionId,
+        ModelConnectionInput, ModelProtocol, ModelRequestShape, PromptItem, PromptLane,
+        ReasoningMode, ToolPolicy,
     };
+    use reqwest::header::AUTHORIZATION;
+    use serde_json::Value;
 
     use super::*;
 
-    fn config(auth_mode: AuthMode, prompt_cache_key: bool) -> ModelConnectionConfig {
+    fn config(auth_mode: AuthMode) -> ModelConnectionConfig {
         ModelConnectionCompiler
             .compile(
                 ModelConnectionId::new(),
                 ModelConnectionInput {
+                    protocol: ModelProtocol::Responses,
                     endpoint: match auth_mode {
                         AuthMode::BearerKey => "https://api.example.com/v1".to_owned(),
                         AuthMode::NoAuth => "http://127.0.0.1:11434/v1/".to_owned(),
                     },
                     model: "model-a".to_owned(),
                     auth_mode,
-                    prompt_cache_key,
-                    cached_tokens_usage: true,
                 },
             )
             .expect("compile model config")
     }
 
-    fn compiled(output: ModelOutputContract) -> CompiledPromptRequest {
+    fn compiled() -> CompiledPromptRequest {
         CompiledPromptRequest {
             shape: ModelRequestShape {
                 lane: PromptLane::Respond,
@@ -243,7 +113,6 @@ mod tests {
                 tool_policy: ToolPolicy::Disabled,
                 parallel_tool_calls: false,
                 reasoning: ReasoningMode::ProviderDefault,
-                output,
                 prompt_cache_key: Some("fairy:conversation:respond".to_owned()),
             },
             input: vec![
@@ -275,9 +144,9 @@ mod tests {
         let key = SecretString::from("sk-exact".to_owned());
         let request = build_responses_request(
             &client,
-            &config(AuthMode::BearerKey, true),
+            &config(AuthMode::BearerKey),
             Some(&key),
-            &compiled(ModelOutputContract::Text),
+            &compiled(),
         )
         .expect("build text request");
         let body = body_json(&request);
@@ -301,45 +170,18 @@ mod tests {
     }
 
     #[test]
-    fn structured_request_maps_exact_json_schema() {
-        let schema = serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["value"],
-            "properties": {"value": {"type": "string"}}
-        });
+    fn responses_cache_key_is_automatic_without_prompt_padding() {
+        let compiled = compiled();
         let request = build_responses_request(
             &reqwest::Client::new(),
-            &config(AuthMode::BearerKey, true),
-            Some(&SecretString::from("sk-exact".to_owned())),
-            &compiled(ModelOutputContract::JsonSchema {
-                name: "result".to_owned(),
-                strict: true,
-                schema_json: serde_json::to_string(&schema).expect("serialize test schema"),
-            }),
-        )
-        .expect("build structured request");
-        let body = body_json(&request);
-
-        assert_eq!(body["text"]["format"]["type"], "json_schema");
-        assert_eq!(body["text"]["format"]["name"], "result");
-        assert_eq!(body["text"]["format"]["strict"], true);
-        assert_eq!(body["text"]["format"]["schema"], schema);
-    }
-
-    #[test]
-    fn unsupported_cache_capability_omits_cache_field_without_padding() {
-        let compiled = compiled(ModelOutputContract::Text);
-        let request = build_responses_request(
-            &reqwest::Client::new(),
-            &config(AuthMode::NoAuth, false),
+            &config(AuthMode::NoAuth),
             None,
             &compiled,
         )
-        .expect("build no-cache request");
+        .expect("build automatic cache request");
         let body = body_json(&request);
 
-        assert!(body.get("prompt_cache_key").is_none());
+        assert_eq!(body["prompt_cache_key"], "fairy:conversation:respond");
         assert_eq!(
             body["input"].as_array().expect("input array").len(),
             compiled.input.len()
@@ -355,9 +197,9 @@ mod tests {
         let raw = "sk-never-log";
         let request = build_responses_request(
             &reqwest::Client::new(),
-            &config(AuthMode::BearerKey, true),
+            &config(AuthMode::BearerKey),
             Some(&SecretString::from(raw.to_owned())),
-            &compiled(ModelOutputContract::Text),
+            &compiled(),
         )
         .expect("build bearer request");
 
@@ -377,8 +219,8 @@ mod tests {
     #[test]
     fn auth_and_shape_mismatch_fail_before_network() {
         let client = reqwest::Client::new();
-        let bearer = config(AuthMode::BearerKey, true);
-        let request = compiled(ModelOutputContract::Text);
+        let bearer = config(AuthMode::BearerKey);
+        let request = compiled();
         assert_eq!(
             build_responses_request(&client, &bearer, None, &request)
                 .expect_err("missing bearer key")
@@ -403,7 +245,7 @@ mod tests {
 
     #[test]
     fn http_gateway_capabilities_remain_explicitly_non_websocket() {
-        let capabilities: GatewayCapabilities = config(AuthMode::BearerKey, true).capabilities();
+        let capabilities: GatewayCapabilities = config(AuthMode::BearerKey).capabilities();
         assert!(!capabilities.websocket_continuation);
         assert!(!capabilities.explicit_breakpoints);
         assert!(!capabilities.cache_retention);

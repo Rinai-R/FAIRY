@@ -5,8 +5,15 @@ use url::{Host, Url};
 
 use crate::{ErrorCode, FairyError, ModelConnectionId, PromptItem, PromptLane, WindowRevision};
 
-const MODEL_CONNECTION_SCHEMA_VERSION: u32 = 1;
+const MODEL_CONNECTION_SCHEMA_VERSION: u32 = 2;
 const MAX_MODEL_NAME_CHARS: usize = 200;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelProtocol {
+    Responses,
+    ChatCompletions,
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,22 +42,30 @@ impl GatewayCapabilities {
             websocket_continuation: false,
         }
     }
+
+    #[must_use]
+    pub const fn for_protocol(protocol: ModelProtocol) -> Self {
+        match protocol {
+            ModelProtocol::Responses => Self::responses_http(true, true),
+            ModelProtocol::ChatCompletions => Self::responses_http(false, true),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelConnectionInput {
+    pub protocol: ModelProtocol,
     pub endpoint: String,
     pub model: String,
     pub auth_mode: AuthMode,
-    pub prompt_cache_key: bool,
-    pub cached_tokens_usage: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ModelConnectionConfig {
     schema_version: u32,
     connection_id: ModelConnectionId,
+    protocol: ModelProtocol,
     endpoint: String,
     model: String,
     auth_mode: AuthMode,
@@ -99,7 +114,6 @@ pub struct LaneModelUsage {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ModelStreamEvent {
     TextDelta { delta: String },
-    StructuredTextDelta { delta: String },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -124,13 +138,11 @@ impl ModelConnectionCompiler {
         Ok(ModelConnectionConfig {
             schema_version: MODEL_CONNECTION_SCHEMA_VERSION,
             connection_id,
+            protocol: input.protocol,
             endpoint,
             model,
             auth_mode: input.auth_mode,
-            capabilities: GatewayCapabilities::responses_http(
-                input.prompt_cache_key,
-                input.cached_tokens_usage,
-            ),
+            capabilities: GatewayCapabilities::for_protocol(input.protocol),
         })
     }
 }
@@ -144,6 +156,11 @@ impl ModelConnectionConfig {
     #[must_use]
     pub const fn connection_id(&self) -> ModelConnectionId {
         self.connection_id
+    }
+
+    #[must_use]
+    pub const fn protocol(&self) -> ModelProtocol {
+        self.protocol
     }
 
     #[must_use]
@@ -173,11 +190,10 @@ impl ModelConnectionConfig {
         let rebuilt = ModelConnectionCompiler.compile(
             self.connection_id,
             ModelConnectionInput {
+                protocol: self.protocol,
                 endpoint: self.endpoint.clone(),
                 model: self.model.clone(),
                 auth_mode: self.auth_mode,
-                prompt_cache_key: self.capabilities.prompt_cache_key,
-                cached_tokens_usage: self.capabilities.cached_tokens_usage,
             },
         )?;
         if rebuilt != *self {
@@ -209,7 +225,22 @@ fn validate_endpoint(raw: &str) -> Result<String, FairyError> {
             ));
         }
     }
-    Ok(value.to_owned())
+    let path_segments = parsed
+        .path_segments()
+        .ok_or_else(|| invalid_model_config("模型 endpoint 不能作为层级 URL"))?
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if path_segments
+        .last()
+        .is_some_and(|segment| *segment == "responses")
+        || path_segments.ends_with(&["chat", "completions"])
+    {
+        return Err(invalid_model_config(
+            "模型 endpoint 只能填写 Base URL，不得包含协议资源路径",
+        ));
+    }
+
+    Ok(value.trim_end_matches('/').to_owned())
 }
 
 fn is_loopback_host(host: Option<Host<&str>>) -> bool {
@@ -245,11 +276,10 @@ mod tests {
 
     fn input(endpoint: &str) -> ModelConnectionInput {
         ModelConnectionInput {
+            protocol: ModelProtocol::Responses,
             endpoint: endpoint.to_owned(),
             model: "gpt-5.4".to_owned(),
             auth_mode: AuthMode::BearerKey,
-            prompt_cache_key: true,
-            cached_tokens_usage: true,
         }
     }
 
@@ -257,6 +287,7 @@ mod tests {
     fn accepts_https_and_explicit_loopback_http_only() {
         for endpoint in [
             "https://api.openai.com/v1",
+            "https://api.deepseek.com/",
             "http://localhost:11434/v1",
             "http://127.0.0.1:8080/v1",
             "http://[::1]:8080/v1",
@@ -281,6 +312,28 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_trailing_slashes_and_rejects_protocol_resource_paths() {
+        let normalized = ModelConnectionCompiler
+            .compile(
+                ModelConnectionId::new(),
+                input("https://api.deepseek.com/v1///"),
+            )
+            .expect("normalize base URL");
+        assert_eq!(normalized.endpoint(), "https://api.deepseek.com/v1");
+
+        for endpoint in [
+            "https://api.openai.com/v1/responses",
+            "https://api.deepseek.com/chat/completions/",
+        ] {
+            let error = ModelConnectionCompiler
+                .compile(ModelConnectionId::new(), input(endpoint))
+                .expect_err("protocol resource path must be rejected");
+            assert_eq!(error.code, ErrorCode::InvalidModelConfig);
+            assert!(error.message.contains("Base URL"));
+        }
+    }
+
+    #[test]
     fn rejects_blank_control_and_oversized_model_names() {
         for model in [
             " ".to_owned(),
@@ -297,17 +350,42 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_transport_capabilities_are_fixed_false() {
-        let config = ModelConnectionCompiler
+    fn protocol_computes_cache_capabilities_without_user_switches() {
+        let responses = ModelConnectionCompiler
             .compile(ModelConnectionId::new(), input("https://example.com/v1"))
-            .expect("compile config");
+            .expect("compile Responses config");
 
-        assert!(config.capabilities().prompt_cache_key);
-        assert!(config.capabilities().cached_tokens_usage);
-        assert!(!config.capabilities().explicit_breakpoints);
-        assert!(!config.capabilities().cache_retention);
-        assert!(!config.capabilities().websocket_continuation);
-        config.verify_integrity().expect("valid config integrity");
+        assert_eq!(responses.protocol(), ModelProtocol::Responses);
+        assert!(responses.capabilities().prompt_cache_key);
+        assert!(responses.capabilities().cached_tokens_usage);
+        assert!(!responses.capabilities().explicit_breakpoints);
+        assert!(!responses.capabilities().cache_retention);
+        assert!(!responses.capabilities().websocket_continuation);
+        responses
+            .verify_integrity()
+            .expect("valid config integrity");
+
+        let mut chat_input = input("https://api.deepseek.com");
+        chat_input.protocol = ModelProtocol::ChatCompletions;
+        let chat = ModelConnectionCompiler
+            .compile(ModelConnectionId::new(), chat_input)
+            .expect("compile Chat config");
+        assert_eq!(chat.protocol(), ModelProtocol::ChatCompletions);
+        assert!(!chat.capabilities().prompt_cache_key);
+        assert!(chat.capabilities().cached_tokens_usage);
+    }
+
+    #[test]
+    fn protocol_wire_values_are_exact_and_unknown_values_fail() {
+        assert_eq!(
+            serde_json::to_value(ModelProtocol::Responses).expect("serialize Responses"),
+            serde_json::json!("responses")
+        );
+        assert_eq!(
+            serde_json::to_value(ModelProtocol::ChatCompletions).expect("serialize Chat"),
+            serde_json::json!("chat_completions")
+        );
+        assert!(serde_json::from_str::<ModelProtocol>(r#""auto""#).is_err());
     }
 
     #[test]

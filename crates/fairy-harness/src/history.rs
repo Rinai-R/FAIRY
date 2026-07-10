@@ -83,7 +83,6 @@ impl LaneHistory {
 
 #[derive(Clone, Debug)]
 pub struct ConversationHistory {
-    interpret: LaneHistory,
     respond: LaneHistory,
     compact: LaneHistory,
     active_character: Option<(CharacterId, Revision)>,
@@ -95,7 +94,6 @@ impl ConversationHistory {
     #[must_use]
     pub fn new(conversation_id: ConversationId) -> Self {
         Self {
-            interpret: LaneHistory::new(conversation_id, PromptLane::Interpret),
             respond: LaneHistory::new(conversation_id, PromptLane::Respond),
             compact: LaneHistory::new(conversation_id, PromptLane::Compact),
             active_character: None,
@@ -107,7 +105,6 @@ impl ConversationHistory {
     #[must_use]
     pub fn lane(&self, lane: PromptLane) -> &LaneHistory {
         match lane {
-            PromptLane::Interpret => &self.interpret,
             PromptLane::Respond => &self.respond,
             PromptLane::Compact => &self.compact,
         }
@@ -116,7 +113,6 @@ impl ConversationHistory {
     #[must_use]
     pub fn lane_mut(&mut self, lane: PromptLane) -> &mut LaneHistory {
         match lane {
-            PromptLane::Interpret => &mut self.interpret,
             PromptLane::Respond => &mut self.respond,
             PromptLane::Compact => &mut self.compact,
         }
@@ -171,25 +167,22 @@ impl ConversationHistory {
         items: Vec<PromptItem>,
     ) -> Result<WindowRevision, FairyError> {
         canonical_item_bytes(&items)?;
-        let interpret_revision = next_window(self.interpret.window_revision)?;
         let respond_revision = next_window(self.respond.window_revision)?;
         let compact_revision = next_window(self.compact.window_revision)?;
-        if interpret_revision != respond_revision || interpret_revision != compact_revision {
+        if respond_revision != compact_revision {
             return Err(FairyError::new(
                 ErrorCode::CompactionFailed,
-                "三个缓存 lane 的 history window revision 不一致",
+                "两个缓存 lane 的 history window revision 不一致",
                 false,
             ));
         }
 
-        replace_lane_window(&mut self.interpret, items.clone(), interpret_revision);
         replace_lane_window(&mut self.respond, items.clone(), respond_revision);
         replace_lane_window(&mut self.compact, items, compact_revision);
-        Ok(interpret_revision)
+        Ok(respond_revision)
     }
 
     fn append_all_lanes(&mut self, item: PromptItem) {
-        self.interpret.append(item.clone());
         self.respond.append(item.clone());
         self.compact.append(item);
     }
@@ -277,7 +270,7 @@ mod tests {
             second.lane(PromptLane::Respond).cache_key()
         );
         assert_ne!(
-            first.lane(PromptLane::Interpret).cache_key(),
+            first.lane(PromptLane::Compact).cache_key(),
             first.lane(PromptLane::Respond).cache_key()
         );
         assert_ne!(
@@ -404,11 +397,7 @@ mod tests {
         let role = character("关注用户明确表达。", Revision::INITIAL);
         history.activate_character(&role);
 
-        for lane in [
-            PromptLane::Interpret,
-            PromptLane::Respond,
-            PromptLane::Compact,
-        ] {
+        for lane in [PromptLane::Respond, PromptLane::Compact] {
             assert!(matches!(
                 history.lane(lane).items().last(),
                 Some(PromptItem::CharacterActivated { snapshot })
@@ -417,11 +406,11 @@ mod tests {
         }
 
         history
-            .lane_mut(PromptLane::Interpret)
+            .lane_mut(PromptLane::Compact)
             .append(PromptItem::UserMessage {
-                content: "只进入 interpret".to_owned(),
+                content: "只进入 compact".to_owned(),
             });
-        assert_eq!(history.lane(PromptLane::Interpret).items().len(), 3);
+        assert_eq!(history.lane(PromptLane::Compact).items().len(), 3);
         assert_eq!(history.lane(PromptLane::Respond).items().len(), 2);
     }
 }

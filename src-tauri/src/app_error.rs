@@ -36,6 +36,14 @@ impl AppError {
         }
     }
 
+    pub fn desktop_transition_rejected(phase: &str, action: &str) -> Self {
+        Self {
+            code: "DESKTOP_TRANSITION_REJECTED".to_owned(),
+            message: format!("desktop transition rejected: {action} is unavailable during {phase}"),
+            retryable: true,
+        }
+    }
+
     pub fn window_not_found() -> Self {
         Self {
             code: "WINDOW_NOT_FOUND".to_owned(),

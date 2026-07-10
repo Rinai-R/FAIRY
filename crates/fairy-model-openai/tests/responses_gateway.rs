@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use fairy_domain::{
     AuthMode, CachedTokenObservation, CompiledPromptRequest, ErrorCode, FairyError,
-    ModelConnectionCompiler, ModelConnectionId, ModelConnectionInput, ModelOutputContract,
+    ModelConnectionCompiler, ModelConnectionId, ModelConnectionInput, ModelProtocol,
     ModelRequestShape, ModelStreamEvent, PromptItem, PromptLane, ReasoningMode, ToolPolicy,
 };
 use fairy_harness::{ModelEventSink, ModelGateway};
@@ -36,7 +36,7 @@ impl ModelEventSink for CancelAfterFirstSink {
     }
 }
 
-fn request(output: ModelOutputContract) -> CompiledPromptRequest {
+fn request() -> CompiledPromptRequest {
     CompiledPromptRequest {
         shape: ModelRequestShape {
             lane: PromptLane::Respond,
@@ -45,7 +45,6 @@ fn request(output: ModelOutputContract) -> CompiledPromptRequest {
             tool_policy: ToolPolicy::Disabled,
             parallel_tool_calls: false,
             reasoning: ReasoningMode::ProviderDefault,
-            output,
             prompt_cache_key: Some("fairy:test:respond".to_owned()),
         },
         input: vec![PromptItem::UserMessage {
@@ -54,22 +53,16 @@ fn request(output: ModelOutputContract) -> CompiledPromptRequest {
     }
 }
 
-async fn gateway_for(
-    chunks: Vec<String>,
-    status: u16,
-    cached_tokens_usage: bool,
-    delay: Duration,
-) -> OpenAiResponsesGateway {
+async fn gateway_for(chunks: Vec<String>, status: u16, delay: Duration) -> OpenAiResponsesGateway {
     let endpoint = spawn_server(chunks, status, delay).await;
     let config = ModelConnectionCompiler
         .compile(
             ModelConnectionId::new(),
             ModelConnectionInput {
+                protocol: ModelProtocol::Responses,
                 endpoint,
                 model: "test-model".to_owned(),
                 auth_mode: AuthMode::NoAuth,
-                prompt_cache_key: false,
-                cached_tokens_usage,
             },
         )
         .expect("compile test model config");
@@ -161,18 +154,13 @@ async fn streams_ordered_deltas_and_records_real_cached_usage() {
             })),
         ],
         200,
-        true,
         Duration::from_millis(2),
     )
     .await;
     let mut sink = CollectSink::default();
 
     let completion = gateway
-        .execute(
-            request(ModelOutputContract::Text),
-            CancellationToken::new(),
-            &mut sink,
-        )
+        .execute(request(), CancellationToken::new(), &mut sink)
         .await
         .expect("complete streaming response");
 
@@ -197,19 +185,13 @@ async fn streams_ordered_deltas_and_records_real_cached_usage() {
 }
 
 #[tokio::test]
-async fn cache_zero_missing_and_unsupported_are_not_conflated() {
-    for (supported, details, expected) in [
+async fn automatic_cache_observation_keeps_zero_and_missing_distinct() {
+    for (details, expected) in [
         (
-            true,
             serde_json::json!({"cached_tokens": 0}),
             CachedTokenObservation::Observed(0),
         ),
-        (true, serde_json::json!({}), CachedTokenObservation::Missing),
-        (
-            false,
-            serde_json::json!({"cached_tokens": 88}),
-            CachedTokenObservation::Unsupported,
-        ),
+        (serde_json::json!({}), CachedTokenObservation::Missing),
     ] {
         let gateway = gateway_for(
             vec![
@@ -225,13 +207,12 @@ async fn cache_zero_missing_and_unsupported_are_not_conflated() {
                 })),
             ],
             200,
-            supported,
             Duration::ZERO,
         )
         .await;
         let completion = gateway
             .execute(
-                request(ModelOutputContract::Text),
+                request(),
                 CancellationToken::new(),
                 &mut CollectSink::default(),
             )
@@ -256,18 +237,13 @@ async fn completion_payload_without_deltas_still_emits_the_single_real_text() {
             }
         }))],
         200,
-        true,
         Duration::ZERO,
     )
     .await;
     let mut sink = CollectSink::default();
 
     let completion = gateway
-        .execute(
-            request(ModelOutputContract::Text),
-            CancellationToken::new(),
-            &mut sink,
-        )
+        .execute(request(), CancellationToken::new(), &mut sink)
         .await
         .expect("complete from canonical response output");
 
@@ -285,13 +261,12 @@ async fn auth_and_server_statuses_have_safe_distinct_errors() {
     let auth = gateway_for(
         vec!["{\"secret\":\"must-not-surface\"}".to_owned()],
         401,
-        false,
         Duration::ZERO,
     )
     .await;
     let auth_error = auth
         .execute(
-            request(ModelOutputContract::Text),
+            request(),
             CancellationToken::new(),
             &mut CollectSink::default(),
         )
@@ -300,16 +275,10 @@ async fn auth_and_server_statuses_have_safe_distinct_errors() {
     assert_eq!(auth_error.code, ErrorCode::ModelAuthFailed);
     assert!(!auth_error.message.contains("secret"));
 
-    let server = gateway_for(
-        vec!["internal details".to_owned()],
-        500,
-        false,
-        Duration::ZERO,
-    )
-    .await;
+    let server = gateway_for(vec!["internal details".to_owned()], 500, Duration::ZERO).await;
     let server_error = server
         .execute(
-            request(ModelOutputContract::Text),
+            request(),
             CancellationToken::new(),
             &mut CollectSink::default(),
         )
@@ -322,16 +291,10 @@ async fn auth_and_server_statuses_have_safe_distinct_errors() {
 
 #[tokio::test]
 async fn malformed_event_and_half_stream_never_become_partial_success() {
-    let malformed = gateway_for(
-        vec!["data: {broken\n\n".to_owned()],
-        200,
-        false,
-        Duration::ZERO,
-    )
-    .await;
+    let malformed = gateway_for(vec!["data: {broken\n\n".to_owned()], 200, Duration::ZERO).await;
     let malformed_error = malformed
         .execute(
-            request(ModelOutputContract::Text),
+            request(),
             CancellationToken::new(),
             &mut CollectSink::default(),
         )
@@ -345,17 +308,12 @@ async fn malformed_event_and_half_stream_never_become_partial_success() {
             "delta": "部分"
         }))],
         200,
-        false,
         Duration::ZERO,
     )
     .await;
     let mut sink = CollectSink::default();
     let half_error = half
-        .execute(
-            request(ModelOutputContract::Text),
-            CancellationToken::new(),
-            &mut sink,
-        )
+        .execute(request(), CancellationToken::new(), &mut sink)
         .await
         .expect_err("stream without completion must fail");
     assert_eq!(half_error.code, ErrorCode::ModelStreamFailed);
@@ -376,7 +334,6 @@ async fn cancellation_after_first_delta_stops_stream_with_interrupted_error() {
             })),
         ],
         200,
-        false,
         Duration::from_millis(200),
     )
     .await;
@@ -387,7 +344,7 @@ async fn cancellation_after_first_delta_stops_stream_with_interrupted_error() {
     };
 
     let error = gateway
-        .execute(request(ModelOutputContract::Text), cancellation, &mut sink)
+        .execute(request(), cancellation, &mut sink)
         .await
         .expect_err("cancelled stream must not complete");
 

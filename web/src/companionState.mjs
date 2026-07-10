@@ -432,31 +432,23 @@ export function parseModelConnectionStatus(value) {
   if (value.config !== null) {
     assertExactKeys(
       value.config,
-      [
-        "endpoint",
-        "model",
-        "authMode",
-        "promptCacheKey",
-        "cachedTokensUsage",
-      ],
+      ["protocol", "endpoint", "model", "authMode"],
       "model status.config",
     );
     if (
-      !["bearer_key", "no_auth"].includes(value.config.authMode) ||
-      typeof value.config.promptCacheKey !== "boolean" ||
-      typeof value.config.cachedTokensUsage !== "boolean"
+      !["responses", "chat_completions"].includes(value.config.protocol) ||
+      !["bearer_key", "no_auth"].includes(value.config.authMode)
     ) {
-      throw new TypeError("model status.config has invalid capabilities");
+      throw new TypeError("model status.config has invalid protocol or auth mode");
     }
     config = Object.freeze({
+      protocol: value.config.protocol,
       endpoint: parseNonEmptyString(
         value.config.endpoint,
         "model status.config.endpoint",
       ),
       model: parseNonEmptyString(value.config.model, "model status.config.model"),
       authMode: value.config.authMode,
-      promptCacheKey: value.config.promptCacheKey,
-      cachedTokensUsage: value.config.cachedTokensUsage,
     });
   }
   return Object.freeze({

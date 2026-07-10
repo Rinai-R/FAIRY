@@ -22,14 +22,11 @@ pub use event::{HarnessEvent, HarnessEventPayload};
 pub use ids::{CharacterId, ConversationId, ModelConnectionId, Revision, TurnId, WindowRevision};
 pub use model::{
     AuthMode, CachedTokenObservation, GatewayCapabilities, LaneModelUsage, ModelCompletion,
-    ModelConnectionCompiler, ModelConnectionConfig, ModelConnectionInput, ModelStreamEvent,
-    ModelUsage,
+    ModelConnectionCompiler, ModelConnectionConfig, ModelConnectionInput, ModelProtocol,
+    ModelStreamEvent, ModelUsage,
 };
 pub use prompt::{
-    AmbiguityHandling, CharacterPerspective, CompiledPromptRequest, ConversationGoal,
-    DIALOGUE_POLICY_VERSION, DIALOGUE_PRIORITIES, DialoguePriority, EvidenceReference,
-    FactCommitment, InteractionHypothesis, ModelOutputContract, ModelRequestShape, PromptItem,
-    PromptLane, ReasoningMode, RelationshipIntent, ResponseAction, ResponseLength, ResponseText,
-    ToolPolicy, TurnPlan, TurnPolicy,
+    CompiledPromptRequest, DIALOGUE_POLICY_VERSION, DIALOGUE_PRIORITIES, DialoguePriority,
+    ModelRequestShape, PromptItem, PromptLane, ReasoningMode, ResponseText, ToolPolicy,
 };
 pub use user_profile::{UserProfileCompiler, UserProfileInput, UserProfileSnapshot};

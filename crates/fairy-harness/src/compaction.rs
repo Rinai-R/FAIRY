@@ -201,7 +201,6 @@ mod tests {
         history.activate_character(&current_character);
         history.synchronize_user_profile(&current_profile);
         let keys_before = [
-            history.lane(PromptLane::Interpret).cache_key().to_owned(),
             history.lane(PromptLane::Respond).cache_key().to_owned(),
             history.lane(PromptLane::Compact).cache_key().to_owned(),
         ];
@@ -230,13 +229,9 @@ mod tests {
 
         assert_eq!(result.window_revision.get(), 2);
         assert_eq!(result.retained_dialogue_items, 1);
-        for (index, lane) in [
-            PromptLane::Interpret,
-            PromptLane::Respond,
-            PromptLane::Compact,
-        ]
-        .into_iter()
-        .enumerate()
+        for (index, lane) in [PromptLane::Respond, PromptLane::Compact]
+            .into_iter()
+            .enumerate()
         {
             let lane_history = history.lane(lane);
             assert_eq!(lane_history.cache_key(), keys_before[index]);
@@ -277,10 +272,6 @@ mod tests {
         history.activate_character(&current_character);
         let before = [
             history
-                .lane(PromptLane::Interpret)
-                .canonical_bytes()
-                .expect("interpret bytes"),
-            history
                 .lane(PromptLane::Respond)
                 .canonical_bytes()
                 .expect("respond bytes"),
@@ -302,13 +293,9 @@ mod tests {
         .expect_err("empty summary must fail");
 
         assert_eq!(error.code, ErrorCode::CompactionFailed);
-        for (index, lane) in [
-            PromptLane::Interpret,
-            PromptLane::Respond,
-            PromptLane::Compact,
-        ]
-        .into_iter()
-        .enumerate()
+        for (index, lane) in [PromptLane::Respond, PromptLane::Compact]
+            .into_iter()
+            .enumerate()
         {
             assert_eq!(history.lane(lane).window_revision().get(), 1);
             assert_eq!(

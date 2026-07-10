@@ -298,17 +298,34 @@ test("model status parser accepts public fields only and errors stay structured"
     configured: true,
     ready: true,
     config: {
+      protocol: "responses",
       endpoint: "https://api.openai.com/v1",
       model: "gpt-5.4",
       authMode: "bearer_key",
-      promptCacheKey: true,
-      cachedTokensUsage: true,
     },
     error: null,
   });
 
   assert.equal(status.config.model, "gpt-5.4");
+  assert.equal(status.config.protocol, "responses");
   assert.equal("apiKey" in status.config, false);
+  assert.equal("promptCacheKey" in status.config, false);
+  assert.throws(
+    () =>
+      parseModelConnectionStatus({
+        configured: true,
+        ready: true,
+        config: {
+          protocol: "responses",
+          endpoint: "https://api.openai.com/v1",
+          model: "gpt-5.4",
+          authMode: "bearer_key",
+          promptCacheKey: true,
+        },
+        error: null,
+      }),
+    /invalid field set/,
+  );
   assert.deepEqual(
     normalizeCompanionError({
       code: "MODEL_AUTH_FAILED",

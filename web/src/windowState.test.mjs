@@ -1,0 +1,40 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  parseConfigurationChange,
+  parseProductWindowLabel,
+  selectRecentTranscript,
+} from "./windowState.mjs";
+
+test("only the two product window labels are accepted", () => {
+  assert.equal(parseProductWindowLabel("companion"), "companion");
+  assert.equal(parseProductWindowLabel("control-panel"), "control-panel");
+  assert.throws(() => parseProductWindowLabel("main"), /unsupported/);
+});
+
+test("recent transcript projection keeps the full source untouched", () => {
+  const transcript = Object.freeze(
+    Array.from({ length: 15 }, (_, index) => Object.freeze({ text: `${index + 1}` })),
+  );
+  assert.deepEqual(selectRecentTranscript(transcript, 4).map((item) => item.text), [
+    "12",
+    "13",
+    "14",
+    "15",
+  ]);
+  assert.equal(transcript.length, 15);
+  assert.throws(() => selectRecentTranscript(transcript, 12), /must be 4/);
+});
+
+test("configuration events accept only public invalidation payloads", () => {
+  assert.deepEqual(parseConfigurationChange({ category: "model", configured: true, ready: true }), {
+    category: "model",
+    configured: true,
+    ready: true,
+  });
+  assert.throws(
+    () => parseConfigurationChange({ category: "model", configured: true, ready: true, apiKey: "x" }),
+    /invalid field set/,
+  );
+});

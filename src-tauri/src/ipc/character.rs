@@ -3,9 +3,13 @@ use fairy_domain::{
 };
 use fairy_storage::CharacterDiagnostic;
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, Runtime, State};
 
-use crate::{app_error::AppError, app_state::AppState};
+use crate::{
+    app_error::AppError,
+    app_state::AppState,
+    ipc::{ConfigurationChange, emit_configuration_change},
+};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,28 +60,39 @@ pub struct CharacterCatalogDto {
 }
 
 #[tauri::command]
-pub fn create_character(
+pub fn create_character<R: Runtime>(
+    app: AppHandle<R>,
     state: State<'_, AppState>,
     brief: CharacterBriefInput,
 ) -> Result<CharacterDto, AppError> {
-    state
-        .characters
-        .create(brief)
-        .map(CharacterDto::from)
-        .map_err(AppError::from)
+    let snapshot = state.characters.create(brief).map_err(AppError::from)?;
+    emit_configuration_change(
+        &app,
+        ConfigurationChange::Character {
+            revision: snapshot.revision(),
+        },
+    )?;
+    Ok(CharacterDto::from(snapshot))
 }
 
 #[tauri::command]
-pub fn update_character(
+pub fn update_character<R: Runtime>(
+    app: AppHandle<R>,
     state: State<'_, AppState>,
     character_id: CharacterId,
     brief: CharacterBriefInput,
 ) -> Result<CharacterDto, AppError> {
-    state
+    let snapshot = state
         .characters
         .update(character_id, brief)
-        .map(CharacterDto::from)
-        .map_err(AppError::from)
+        .map_err(AppError::from)?;
+    emit_configuration_change(
+        &app,
+        ConfigurationChange::Character {
+            revision: snapshot.revision(),
+        },
+    )?;
+    Ok(CharacterDto::from(snapshot))
 }
 
 #[tauri::command]
@@ -104,12 +119,14 @@ pub fn list_characters(state: State<'_, AppState>) -> Result<CharacterCatalogDto
 }
 
 #[tauri::command]
-pub fn activate_character(
+pub fn activate_character<R: Runtime>(
+    app: AppHandle<R>,
     state: State<'_, AppState>,
     character_id: CharacterId,
     revision: Revision,
     conversation_id: Option<ConversationId>,
 ) -> Result<CharacterDto, AppError> {
+    let conversation_id = conversation_id.or(state.active_conversation_id()?);
     let runtime = conversation_id.map(|_| state.runtime()).transpose()?;
     let previous = state.characters.active().map_err(AppError::from)?;
     let snapshot = state
@@ -118,6 +135,12 @@ pub fn activate_character(
         .map_err(AppError::from)?;
 
     let (Some(conversation_id), Some(runtime)) = (conversation_id, runtime) else {
+        emit_configuration_change(
+            &app,
+            ConfigurationChange::Character {
+                revision: snapshot.revision(),
+            },
+        )?;
         return Ok(CharacterDto::from(snapshot));
     };
     let activation = runtime.activate_character(conversation_id, snapshot.clone());
@@ -125,6 +148,12 @@ pub fn activate_character(
         rollback_active_character(&state, previous)?;
         return Err(AppError::from(error));
     }
+    emit_configuration_change(
+        &app,
+        ConfigurationChange::Character {
+            revision: snapshot.revision(),
+        },
+    )?;
     Ok(CharacterDto::from(snapshot))
 }
 

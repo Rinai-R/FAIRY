@@ -1,9 +1,12 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use fairy_domain::{AuthMode, ErrorCode, FairyError, ModelConnectionConfig, ModelConnectionInput};
+use fairy_domain::{
+    AuthMode, ConversationId, ErrorCode, FairyError, ModelConnectionConfig, ModelConnectionInput,
+    ModelProtocol,
+};
 use fairy_harness::HarnessRuntime;
-use fairy_model_openai::OpenAiResponsesGateway;
+use fairy_model_openai::build_openai_compatible_gateway;
 use fairy_storage::{
     CharacterStore, ModelConnectionStore, StorageRoot, SystemSecretStore, UserProfileStore,
 };
@@ -18,6 +21,7 @@ pub struct AppState {
     model_connections: ModelConnectionStore<SystemSecretStore>,
     runtime: Mutex<Option<Arc<HarnessRuntime>>>,
     model_error: Mutex<Option<AppError>>,
+    active_conversation_id: Mutex<Option<ConversationId>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -32,22 +36,19 @@ pub struct ModelConnectionStatus {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicModelConnection {
+    pub protocol: ModelProtocol,
     pub endpoint: String,
     pub model: String,
     pub auth_mode: AuthMode,
-    pub prompt_cache_key: bool,
-    pub cached_tokens_usage: bool,
 }
 
 impl From<&ModelConnectionConfig> for PublicModelConnection {
     fn from(config: &ModelConnectionConfig) -> Self {
-        let capabilities = config.capabilities();
         Self {
+            protocol: config.protocol(),
             endpoint: config.endpoint().to_owned(),
             model: config.model().to_owned(),
             auth_mode: config.auth_mode(),
-            prompt_cache_key: capabilities.prompt_cache_key,
-            cached_tokens_usage: capabilities.cached_tokens_usage,
         }
     }
 }
@@ -72,6 +73,7 @@ impl AppState {
             model_connections,
             runtime: Mutex::new(runtime),
             model_error: Mutex::new(model_error),
+            active_conversation_id: Mutex::new(None),
         })
     }
 
@@ -86,6 +88,18 @@ impl AppState {
                 false,
             ))
         }))
+    }
+
+    pub fn register_active_conversation(
+        &self,
+        conversation_id: ConversationId,
+    ) -> Result<(), AppError> {
+        *self.active_conversation_lock()? = Some(conversation_id);
+        Ok(())
+    }
+
+    pub fn active_conversation_id(&self) -> Result<Option<ConversationId>, AppError> {
+        Ok(*self.active_conversation_lock()?)
     }
 
     pub fn model_status(&self) -> ModelConnectionStatus {
@@ -130,10 +144,8 @@ impl AppState {
             .map_err(AppError::from)?;
         let connection = self.model_connections.resolve().map_err(AppError::from)?;
         let model = connection.config.model().to_owned();
-        let gateway = Arc::new(
-            OpenAiResponsesGateway::new(connection.config, connection.api_key)
-                .map_err(AppError::from)?,
-        );
+        let gateway = build_openai_compatible_gateway(connection.config, connection.api_key)
+            .map_err(AppError::from)?;
 
         let mut runtime = self.runtime_lock()?;
         if let Some(current) = runtime.as_ref() {
@@ -169,6 +181,7 @@ impl AppState {
         }
         self.model_connections.clear().map_err(AppError::from)?;
         *self.runtime_lock()? = None;
+        *self.active_conversation_lock()? = None;
         let error = AppError::from(FairyError::new(
             ErrorCode::ModelConfigRequired,
             "请先配置模型连接",
@@ -194,6 +207,12 @@ impl AppState {
             .lock()
             .map_err(|_| AppError::state_unavailable())
     }
+
+    fn active_conversation_lock(&self) -> Result<MutexGuard<'_, Option<ConversationId>>, AppError> {
+        self.active_conversation_id
+            .lock()
+            .map_err(|_| AppError::state_unavailable())
+    }
 }
 
 fn build_runtime(
@@ -201,14 +220,13 @@ fn build_runtime(
     api_key: Option<SecretString>,
 ) -> Result<HarnessRuntime, FairyError> {
     let model = config.model().to_owned();
-    let gateway = Arc::new(OpenAiResponsesGateway::new(config, api_key)?);
+    let gateway = build_openai_compatible_gateway(config, api_key)?;
     HarnessRuntime::new(model, gateway)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn missing_model_is_queryable_without_a_mock_runtime() {
         let directory = tempfile::tempdir().expect("create app state directory");
@@ -235,11 +253,10 @@ mod tests {
         let status = state
             .save_model_connection(
                 ModelConnectionInput {
+                    protocol: ModelProtocol::Responses,
                     endpoint: "http://127.0.0.1:11434/v1".to_owned(),
                     model: "local-model".to_owned(),
                     auth_mode: AuthMode::NoAuth,
-                    prompt_cache_key: false,
-                    cached_tokens_usage: false,
                 },
                 None,
             )
@@ -250,10 +267,39 @@ mod tests {
         assert!(status.ready);
         assert!(state.runtime().is_ok());
         assert!(json.contains("authMode"));
-        assert!(json.contains("promptCacheKey"));
+        assert!(json.contains("protocol"));
+        assert!(json.contains("responses"));
+        assert!(!json.contains("promptCacheKey"));
+        assert!(!json.contains("cachedTokensUsage"));
         assert!(!json.contains("apiKey"));
         assert!(!json.contains("api_key"));
         assert!(!json.contains("connectionId"));
         assert!(!json.contains("connection_id"));
+    }
+
+    #[test]
+    fn active_conversation_is_explicit_and_clears_with_model_runtime() {
+        let directory = tempfile::tempdir().expect("create app state directory");
+        let state = AppState::initialize(directory.path()).expect("initialize app state");
+        assert_eq!(
+            state.active_conversation_id().expect("read active id"),
+            None
+        );
+        let conversation_id = ConversationId::new();
+        state
+            .register_active_conversation(conversation_id)
+            .expect("register active conversation");
+        assert_eq!(
+            state.active_conversation_id().expect("read active id"),
+            Some(conversation_id)
+        );
+
+        state
+            .clear_model_connection()
+            .expect("clear model connection");
+        assert_eq!(
+            state.active_conversation_id().expect("read active id"),
+            None
+        );
     }
 }

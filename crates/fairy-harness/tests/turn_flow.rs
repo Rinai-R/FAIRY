@@ -3,13 +3,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use async_trait::async_trait;
 use fairy_domain::{
-    AmbiguityHandling, CachedTokenObservation, CharacterBriefInput, CharacterCompiler, CharacterId,
-    CharacterPerspective, CompiledPromptRequest, ConversationGoal, DIALOGUE_POLICY_VERSION,
-    ErrorCode, EvidenceReference, FactCommitment, FairyError, GatewayCapabilities, HarnessEvent,
-    HarnessEventPayload, InteractionHypothesis, ModelCompletion, ModelOutputContract,
-    ModelStreamEvent, ModelUsage, PromptItem, PromptLane, RelationshipIntent, ResponseAction,
-    ResponseLength, Revision, TurnPlan, TurnPolicy, TurnState, UserProfileCompiler,
-    UserProfileInput, UserProfileSnapshot,
+    CachedTokenObservation, CharacterBriefInput, CharacterCompiler, CharacterId,
+    CompiledPromptRequest, ErrorCode, FairyError, GatewayCapabilities, HarnessEvent,
+    HarnessEventPayload, ModelCompletion, ModelStreamEvent, ModelUsage, PromptItem, PromptLane,
+    Revision, TurnState, UserProfileCompiler, UserProfileInput, UserProfileSnapshot,
 };
 use fairy_harness::{HarnessEventSink, HarnessRuntime, ModelEventSink, ModelGateway};
 use tokio::sync::Notify;
@@ -60,13 +57,7 @@ impl ModelGateway for FakeGateway {
         match behavior {
             FakeBehavior::Complete { output, deltas } => {
                 for delta in deltas {
-                    let event = match request.shape.output {
-                        ModelOutputContract::Text => ModelStreamEvent::TextDelta { delta },
-                        ModelOutputContract::JsonSchema { .. } => {
-                            ModelStreamEvent::StructuredTextDelta { delta }
-                        }
-                    };
-                    sink.send(event)?;
+                    sink.send(ModelStreamEvent::TextDelta { delta })?;
                 }
                 Ok(completion(output))
             }
@@ -150,43 +141,6 @@ fn profile(revision: Revision, name: &str) -> UserProfileSnapshot {
         .expect("compile test profile")
 }
 
-fn plan(user_input: &str) -> TurnPlan {
-    TurnPlan {
-        interaction_hypothesis: InteractionHypothesis {
-            explicit_request: "回应本轮输入".to_owned(),
-            goal: ConversationGoal::CasualConversation,
-            evidence: vec![EvidenceReference {
-                quote: user_input.to_owned(),
-            }],
-            confidence: 90,
-            ambiguity: None,
-        },
-        character_perspective: CharacterPerspective {
-            attention_focus: vec!["用户明确表达".to_owned()],
-            relationship_intent: RelationshipIntent::Companion,
-            candidate_actions: vec![ResponseAction::ShareLightReaction],
-            character_intensity: 55,
-        },
-        turn_policy: TurnPolicy {
-            policy_version: DIALOGUE_POLICY_VERSION.to_owned(),
-            primary_action: ResponseAction::ShareLightReaction,
-            secondary_action: None,
-            use_preferred_name: false,
-            response_length: ResponseLength::Brief,
-            fact_commitment: FactCommitment::EvidenceBound,
-            ambiguity_handling: AmbiguityHandling::ProceedWithExplicitRequest,
-        },
-    }
-}
-
-fn plan_behavior(user_input: &str) -> FakeBehavior {
-    let output = serde_json::to_string(&plan(user_input)).expect("serialize test plan");
-    FakeBehavior::Complete {
-        deltas: vec![output.clone()],
-        output,
-    }
-}
-
 fn response_behavior(output: &str, deltas: &[&str]) -> FakeBehavior {
     FakeBehavior::Complete {
         output: output.to_owned(),
@@ -217,10 +171,10 @@ fn setup(
 
 #[tokio::test]
 async fn normal_turn_has_ordered_states_deltas_usage_and_single_terminal() {
-    let gateway = Arc::new(FakeGateway::new(vec![
-        plan_behavior("你好"),
-        response_behavior("你好呀。", &["你好", "呀。"]),
-    ]));
+    let gateway = Arc::new(FakeGateway::new(vec![response_behavior(
+        "你好呀。",
+        &["你好", "呀。"],
+    )]));
     let (runtime, conversation_id, _) = setup(gateway.clone());
     let mut sink = RecordingSink::default();
 
@@ -231,7 +185,7 @@ async fn normal_turn_has_ordered_states_deltas_usage_and_single_terminal() {
     let events = sink.events();
 
     assert_eq!(outcome.response_text.as_str(), "你好呀。");
-    assert_eq!(outcome.usage.len(), 2);
+    assert_eq!(outcome.usage.len(), 1);
     assert_eq!(
         events
             .iter()
@@ -297,7 +251,13 @@ async fn normal_turn_has_ordered_states_deltas_usage_and_single_terminal() {
             .iter()
             .map(|request| request.shape.lane)
             .collect::<Vec<_>>(),
-        vec![PromptLane::Interpret, PromptLane::Respond]
+        vec![PromptLane::Respond]
+    );
+    assert!(
+        gateway.requests()[0]
+            .shape
+            .instructions
+            .contains("Silently infer")
     );
     assert_eq!(
         runtime
@@ -311,11 +271,9 @@ async fn normal_turn_has_ordered_states_deltas_usage_and_single_terminal() {
 #[tokio::test]
 async fn cancellation_after_partial_delta_is_interrupted_and_next_turn_can_start() {
     let gateway = Arc::new(FakeGateway::new(vec![
-        plan_behavior("第一轮"),
         FakeBehavior::WaitAfterTextDelta {
             delta: "部分".to_owned(),
         },
-        plan_behavior("第二轮"),
         response_behavior("第二轮完成", &["第二轮完成"]),
     ]));
     let (runtime, conversation_id, _) = setup(gateway.clone());
@@ -358,13 +316,70 @@ async fn cancellation_after_partial_delta_is_interrupted_and_next_turn_can_start
 }
 
 #[tokio::test]
+async fn replacing_gateway_keeps_active_turn_snapshot_and_affects_only_next_turn() {
+    let original = Arc::new(FakeGateway::new(vec![FakeBehavior::WaitAfterTextDelta {
+        delta: "旧连接仍在输出".to_owned(),
+    }]));
+    let replacement = Arc::new(FakeGateway::new(vec![response_behavior(
+        "新连接回复",
+        &["新连接回复"],
+    )]));
+    let (runtime, conversation_id, _) = setup(original.clone());
+    let sink = RecordingSink::default();
+    let first_delta = original.first_text_delta.notified();
+    let runtime_task = Arc::clone(&runtime);
+    let sink_task = sink.clone();
+    let first = tokio::spawn(async move {
+        let mut task_sink = sink_task;
+        runtime_task
+            .submit_turn(conversation_id, "第一轮".to_owned(), false, &mut task_sink)
+            .await
+    });
+    first_delta.await;
+    let active_turn_id = sink.events()[0].turn_id;
+
+    runtime
+        .replace_gateway("test-model".to_owned(), replacement.clone())
+        .expect("replace gateway while old turn is active");
+    runtime
+        .cancel_turn(active_turn_id)
+        .expect("cancel old active turn");
+    first
+        .await
+        .expect("join old turn")
+        .expect_err("old active turn remains bound to original gateway");
+
+    let mut next_sink = RecordingSink::default();
+    let next = runtime
+        .submit_turn(conversation_id, "第二轮".to_owned(), false, &mut next_sink)
+        .await
+        .expect("next turn uses replacement gateway");
+
+    assert_eq!(next.response_text.as_str(), "新连接回复");
+    assert_eq!(
+        original
+            .requests()
+            .iter()
+            .map(|request| request.shape.lane)
+            .collect::<Vec<_>>(),
+        vec![PromptLane::Respond]
+    );
+    assert_eq!(
+        replacement
+            .requests()
+            .iter()
+            .map(|request| request.shape.lane)
+            .collect::<Vec<_>>(),
+        vec![PromptLane::Respond]
+    );
+}
+
+#[tokio::test]
 async fn active_turn_rejects_second_submit_and_role_switch_but_queues_profile_revision() {
     let gateway = Arc::new(FakeGateway::new(vec![
-        plan_behavior("等待中的轮次"),
         FakeBehavior::WaitAfterTextDelta {
             delta: "等待".to_owned(),
         },
-        plan_behavior("更新后的轮次"),
         response_behavior("已使用新资料", &["已使用新资料"]),
     ]));
     let (runtime, conversation_id, _) = setup(gateway.clone());
@@ -435,12 +450,12 @@ async fn active_turn_rejects_second_submit_and_role_switch_but_queues_profile_re
         .await
         .expect("run turn with queued profile");
     let requests = gateway.requests();
-    let next_interpret = requests
+    let next_respond = requests
         .iter()
         .rev()
-        .find(|request| request.shape.lane == PromptLane::Interpret)
-        .expect("next interpret request");
-    assert!(next_interpret.input.iter().any(|item| matches!(
+        .find(|request| request.shape.lane == PromptLane::Respond)
+        .expect("next respond request");
+    assert!(next_respond.input.iter().any(|item| matches!(
         item,
         PromptItem::UserProfileUpdated { snapshot: Some(snapshot) }
             if snapshot.revision().get() == 2 && snapshot.preferred_name() == Some("凛")
@@ -449,12 +464,9 @@ async fn active_turn_rejects_second_submit_and_role_switch_but_queues_profile_re
 
 #[tokio::test]
 async fn stream_failure_after_partial_text_has_failed_terminal_not_completed() {
-    let gateway = Arc::new(FakeGateway::new(vec![
-        plan_behavior("触发失败"),
-        FakeBehavior::FailAfterTextDelta {
-            delta: "未完成部分".to_owned(),
-        },
-    ]));
+    let gateway = Arc::new(FakeGateway::new(vec![FakeBehavior::FailAfterTextDelta {
+        delta: "未完成部分".to_owned(),
+    }]));
     let (runtime, conversation_id, _) = setup(gateway);
     let mut sink = RecordingSink::default();
 
