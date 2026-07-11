@@ -43,7 +43,6 @@ fn request() -> CompiledPromptRequest {
             lane: PromptLane::Respond,
             model: "test-model".to_owned(),
             instructions: "stable".to_owned(),
-            reply_mode: None,
             max_output_tokens: 160,
             tool_policy: ToolPolicy::Disabled,
             parallel_tool_calls: false,

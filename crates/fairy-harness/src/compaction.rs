@@ -4,7 +4,7 @@ use fairy_domain::{
 };
 use serde::Serialize;
 
-use crate::{ConversationHistory, PromptCompiler};
+use crate::ConversationHistory;
 
 const MAX_COMPACTION_SUMMARY_CHARS: usize = 12_000;
 
@@ -66,10 +66,9 @@ pub fn install_compaction(
     validate_current_context(history, current_character, current_user_profile)?;
     let summary = normalize_summary(candidate.summary)?;
 
-    let mut replacement = vec![PromptCompiler::canonical_harness_context()];
-    replacement.push(PromptItem::CharacterActivated {
+    let mut replacement = vec![PromptItem::CharacterActivated {
         snapshot: current_character.clone(),
-    });
+    }];
     if let Some(profile) = current_user_profile {
         replacement.push(PromptItem::UserProfileUpdated {
             snapshot: Some(profile.clone()),
@@ -210,7 +209,6 @@ mod tests {
             CompactionCandidate {
                 summary: "  用户正在讨论自己的近况，角色先倾听。  ".to_owned(),
                 replacement_items: vec![
-                    PromptCompiler::canonical_harness_context(),
                     PromptItem::CharacterActivated {
                         snapshot: old_character,
                     },
@@ -236,14 +234,6 @@ mod tests {
             let lane_history = history.lane(lane);
             assert_eq!(lane_history.cache_key(), keys_before[index]);
             assert_eq!(lane_history.window_revision(), result.window_revision);
-            assert_eq!(
-                lane_history
-                    .items()
-                    .iter()
-                    .filter(|item| matches!(item, PromptItem::HarnessContext { .. }))
-                    .count(),
-                1
-            );
             assert_eq!(
                 lane_history
                     .items()

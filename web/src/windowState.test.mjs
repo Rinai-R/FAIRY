@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
+  configurationRefreshTarget,
   parseConfigurationChange,
   parseProductWindowLabel,
   selectRecentTranscript,
@@ -37,4 +39,29 @@ test("configuration events accept only public invalidation payloads", () => {
     () => parseConfigurationChange({ category: "model", configured: true, ready: true, apiKey: "x" }),
     /invalid field set/,
   );
+  assert.deepEqual(parseConfigurationChange({ category: "search", configured: true, ready: false }), {
+    category: "search",
+    configured: true,
+    ready: false,
+  });
+});
+
+test("configuration refresh is scoped and never clears the companion session", () => {
+  assert.equal(configurationRefreshTarget({ category: "character", revision: 2 }), "character");
+  assert.equal(
+    configurationRefreshTarget({ category: "model", configured: false, ready: false }),
+    "model",
+  );
+  assert.equal(configurationRefreshTarget({ category: "user_profile", revision: 3 }), null);
+  assert.equal(
+    configurationRefreshTarget({ category: "search", configured: true, ready: true }),
+    null,
+  );
+  assert.throws(
+    () => configurationRefreshTarget({ category: "unknown" }),
+    /unsupported configuration refresh category/,
+  );
+
+  const appSource = readFileSync(new URL("./App.jsx", import.meta.url), "utf8");
+  assert.doesNotMatch(appSource, /session_cleared/);
 });

@@ -22,7 +22,7 @@ pub use gateway::{
 pub use history::{ConversationHistory, LaneHistory};
 pub use intelligence::{CompanionIntelligence, IntelligenceBinding};
 pub use prompt_compiler::PromptCompiler;
-pub use reply::{BRIEF_OUTPUT_TOKENS, EXPANDED_OUTPUT_TOKENS, ReplyBudgetSelector, ReplyCompiler};
+pub use reply::ReplyCompiler;
 pub use runtime::HarnessRuntime;
 pub use search::{WebSearchGateway, web_search_tool_definition};
 pub use state::{HarnessEventSink, SessionSnapshot, TurnOutcome};

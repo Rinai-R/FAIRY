@@ -192,23 +192,15 @@ mod tests {
                 lane: PromptLane::Respond,
                 model: "model-a".to_owned(),
                 instructions: "stable instructions".to_owned(),
-                reply_mode: None,
                 max_output_tokens: 160,
                 tool_policy: ToolPolicy::Disabled,
                 parallel_tool_calls: false,
                 reasoning: ReasoningMode::ProviderDefault,
                 prompt_cache_key: Some("fairy:conversation:respond".to_owned()),
             },
-            input: vec![
-                PromptItem::HarnessContext {
-                    protocol_version: "v1".to_owned(),
-                    policy_version: "policy-v1".to_owned(),
-                    priorities: vec![],
-                },
-                PromptItem::UserMessage {
-                    content: "你好".to_owned(),
-                },
-            ],
+            input: vec![PromptItem::UserMessage {
+                content: "你好".to_owned(),
+            }],
         }
     }
 
@@ -248,10 +240,9 @@ mod tests {
         assert_eq!(body["max_output_tokens"], 160);
         assert_eq!(body["prompt_cache_key"], "fairy:conversation:respond");
         assert_eq!(body["text"]["format"]["type"], "text");
-        assert_eq!(body["input"].as_array().expect("input array").len(), 2);
-        assert_eq!(body["input"][0]["role"], "developer");
-        assert_eq!(body["input"][1]["role"], "user");
-        assert_eq!(body["input"][1]["content"], "你好");
+        assert_eq!(body["input"].as_array().expect("input array").len(), 1);
+        assert_eq!(body["input"][0]["role"], "user");
+        assert_eq!(body["input"][0]["content"], "你好");
     }
 
     #[test]

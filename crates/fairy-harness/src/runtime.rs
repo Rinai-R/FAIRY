@@ -6,7 +6,7 @@ use fairy_domain::{
     AssistantSource, CapabilityState, CharacterSnapshot, CompanionCapability, CompiledReply,
     ConversationId, ErrorCode, ExtractionOutput, FairyError, HarnessEvent, LaneModelUsage,
     ModelCompletion, ModelStreamEvent, ModelTurnOutput, NewKnowledge, NewPersonalMemory,
-    PromptItem, PromptLane, ReplyMode, ToolCall, ToolName, ToolResult, ToolResultOutcome, TurnId,
+    PromptItem, PromptLane, ToolCall, ToolName, ToolResult, ToolResultOutcome, TurnId,
     TurnLifecycle, TurnState, UserProfileSnapshot,
 };
 use serde::Deserialize;
@@ -620,7 +620,7 @@ async fn run_background_extraction(
     let request = PromptCompiler.compile(
         PromptLane::Extract,
         model,
-        vec![PromptCompiler::canonical_harness_context(), extraction_item],
+        vec![extraction_item],
         cache_key(gateway.as_ref(), &raw_cache_key),
     );
     let mut sink = BufferedOutputSink::default();
@@ -733,7 +733,6 @@ async fn execute_respond_loop(
                 lane.window_revision(),
             )
         };
-        let reply_mode = request.shape.reply_mode.unwrap_or(ReplyMode::Brief);
         let mut sink = BufferedOutputSink::default();
         let ModelCompletion {
             output,
@@ -760,7 +759,7 @@ async fn execute_respond_loop(
                         false,
                     ));
                 }
-                let reply = ReplyCompiler.compile(reply_mode, &text, sources)?;
+                let reply = ReplyCompiler.compile(&text, sources)?;
                 return Ok((reply, usage));
             }
             ModelTurnOutput::ToolCalls { calls } => {

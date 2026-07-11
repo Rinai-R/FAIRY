@@ -39,9 +39,8 @@ pub use model::{
 };
 pub use prompt::{
     AssistantSource, CapabilityState, CompanionCapability, CompiledPromptRequest, CompiledReply,
-    DIALOGUE_POLICY_VERSION, DIALOGUE_PRIORITIES, DialoguePriority, ModelRequestShape, PromptItem,
-    PromptLane, ReasoningMode, ReplyMode, ResponseText, SpeechText, ToolCall, ToolDefinition,
-    ToolName, ToolPolicy, ToolResult, ToolResultOutcome,
+    ModelRequestShape, PromptItem, PromptLane, ReasoningMode, ResponseText, SpeechText, ToolCall,
+    ToolDefinition, ToolName, ToolPolicy, ToolResult, ToolResultOutcome,
 };
 pub use search::{
     DEFAULT_BRAVE_SEARCH_ENDPOINT, SearchConnectionCompiler, SearchConnectionConfig,

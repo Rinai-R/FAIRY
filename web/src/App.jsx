@@ -27,6 +27,7 @@ import {
 import { normalizeInvokeError } from "./desktopState.mjs";
 import { DEFAULT_CHARACTER, describeCharacterFailure } from "./defaultCharacter.mjs";
 import { listenToConfigurationChanges } from "./windowClient.js";
+import { configurationRefreshTarget } from "./windowState.mjs";
 
 const INITIAL_ASSET_STATE = Object.freeze({ phase: "loading", error: null });
 const EMPTY_CATALOG = Object.freeze({ characters: Object.freeze([]), active: null, diagnostics: Object.freeze([]) });
@@ -114,15 +115,22 @@ export function App() {
     let cancelled = false;
     let stopListening = null;
     listenToConfigurationChanges(
-      () => {
-        Promise.all([listCharacters(), getModelConnectionStatus()])
-          .then(([nextCatalog, nextModelStatus]) => {
-            if (cancelled) return;
-            setCatalog(nextCatalog);
-            setModelStatus(nextModelStatus);
-            if (!nextModelStatus.ready) {
-              dispatchCompanion({ type: "session_cleared" });
-            }
+      (change) => {
+        const target = configurationRefreshTarget(change);
+        if (target === null) {
+          setSettingsError(null);
+          return;
+        }
+        const refresh = target === "character"
+          ? listCharacters().then((nextCatalog) => {
+            if (!cancelled) setCatalog(nextCatalog);
+          })
+          : getModelConnectionStatus().then((nextModelStatus) => {
+            if (!cancelled) setModelStatus(nextModelStatus);
+          });
+        refresh
+          .then(() => {
+            if (!cancelled) setSettingsError(null);
           })
           .catch((error) => {
             if (!cancelled) setSettingsError(normalizeCompanionError(error));
@@ -341,7 +349,7 @@ export function App() {
       data-surface={desktop?.companionSurface ?? "idle"}
       ref={companionRoot}
     >
-      <h1 className="visually-hidden">FAIRY 桌面情感陪伴</h1>
+      <h1 className="visually-hidden">FAIRY 桌面角色对话</h1>
       <CompanionPanel
         characterName={displayName}
         character={catalog.active}

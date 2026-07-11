@@ -3,8 +3,6 @@ use fairy_domain::{
     Revision, UserProfileSnapshot, WindowRevision,
 };
 
-use crate::PromptCompiler;
-
 #[derive(Clone, Debug)]
 pub struct LaneHistory {
     conversation_id: ConversationId,
@@ -22,7 +20,7 @@ impl LaneHistory {
             lane,
             cache_key: format!("fairy:{conversation_id}:{}", lane.as_str()),
             window_revision: WindowRevision::INITIAL,
-            items: vec![PromptCompiler::canonical_harness_context()],
+            items: Vec::new(),
             sealed_prefix: Vec::new(),
         }
     }
@@ -323,7 +321,7 @@ mod tests {
         });
         respond.seal_current_prefix().expect("seal history");
         let mut rewritten = respond.items().to_vec();
-        rewritten[1] = PromptItem::UserMessage {
+        rewritten[0] = PromptItem::UserMessage {
             content: "被重写".to_owned(),
         };
 
@@ -331,8 +329,8 @@ mod tests {
             .audit_candidate(&rewritten)
             .expect_err("rewritten prefix must fail");
         assert_eq!(error.code, ErrorCode::PromptHistoryInvalid);
-        assert!(error.message.contains("item 1"));
-        assert!(respond.audit_candidate(&rewritten[..1]).is_err());
+        assert!(error.message.contains("item 0"));
+        assert!(respond.audit_candidate(&[]).is_err());
     }
 
     #[test]
@@ -414,7 +412,7 @@ mod tests {
             .append(PromptItem::UserMessage {
                 content: "只进入 compact".to_owned(),
             });
-        assert_eq!(history.lane(PromptLane::Compact).items().len(), 3);
-        assert_eq!(history.lane(PromptLane::Respond).items().len(), 2);
+        assert_eq!(history.lane(PromptLane::Compact).items().len(), 2);
+        assert_eq!(history.lane(PromptLane::Respond).items().len(), 1);
     }
 }

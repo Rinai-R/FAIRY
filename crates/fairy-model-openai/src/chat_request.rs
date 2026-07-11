@@ -136,7 +136,6 @@ mod tests {
                 lane: PromptLane::Respond,
                 model: "deepseek-v4-flash".to_owned(),
                 instructions: "stable instructions".to_owned(),
-                reply_mode: None,
                 max_output_tokens: 160,
                 tool_policy: ToolPolicy::Disabled,
                 parallel_tool_calls: false,
@@ -144,11 +143,6 @@ mod tests {
                 prompt_cache_key: Some("fairy:conversation:respond".to_owned()),
             },
             input: vec![
-                PromptItem::HarnessContext {
-                    protocol_version: "v1".to_owned(),
-                    policy_version: "policy-v1".to_owned(),
-                    priorities: vec![],
-                },
                 PromptItem::UserMessage {
                     content: "你好".to_owned(),
                 },
@@ -191,11 +185,10 @@ mod tests {
         assert!(body.get("response_format").is_none());
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][0]["content"], "stable instructions");
-        assert_eq!(body["messages"][1]["role"], "system");
-        assert_eq!(body["messages"][2]["role"], "user");
-        assert_eq!(body["messages"][2]["content"], "你好");
-        assert_eq!(body["messages"][3]["role"], "assistant");
-        assert_eq!(body["messages"][3]["content"], "我在");
+        assert_eq!(body["messages"][1]["role"], "user");
+        assert_eq!(body["messages"][1]["content"], "你好");
+        assert_eq!(body["messages"][2]["role"], "assistant");
+        assert_eq!(body["messages"][2]["content"], "我在");
         for absent in [
             "prompt_cache_key",
             "previous_response_id",

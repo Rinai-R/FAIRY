@@ -322,6 +322,17 @@ fn profile(revision: Revision, name: &str) -> UserProfileSnapshot {
         .expect("compile test profile")
 }
 
+fn profile_without_name(revision: Revision) -> UserProfileSnapshot {
+    UserProfileCompiler
+        .compile(
+            revision,
+            UserProfileInput {
+                preferred_name: None,
+            },
+        )
+        .expect("compile cleared test profile")
+}
+
 fn response_behavior(output: &str, deltas: &[&str]) -> FakeBehavior {
     FakeBehavior::Complete {
         output: output.to_owned(),
@@ -447,7 +458,7 @@ async fn normal_turn_has_ordered_states_deltas_usage_and_single_terminal() {
         gateway.requests()[0]
             .shape
             .instructions
-            .contains("Silently infer")
+            .contains("期待怎样继续这段对话")
     );
     assert_eq!(
         runtime
@@ -649,6 +660,94 @@ async fn active_turn_rejects_second_submit_and_role_switch_but_queues_profile_re
         item,
         PromptItem::UserProfileUpdated { snapshot: Some(snapshot) }
             if snapshot.revision().get() == 2 && snapshot.preferred_name() == Some("凛")
+    )));
+}
+
+#[tokio::test]
+async fn profile_changes_append_context_without_replacing_conversation_history() {
+    let gateway = Arc::new(FakeGateway::new(vec![
+        response_behavior("第一轮回复", &["第一轮回复"]),
+        response_behavior("第二轮回复", &["第二轮回复"]),
+        response_behavior("第三轮回复", &["第三轮回复"]),
+    ]));
+    let (runtime, conversation_id, _) = setup(gateway.clone());
+
+    runtime
+        .submit_turn(
+            conversation_id,
+            "第一轮消息".to_owned(),
+            false,
+            &mut RecordingSink::default(),
+        )
+        .await
+        .expect("complete first turn");
+    assert!(
+        runtime
+            .update_user_profile(
+                conversation_id,
+                profile(Revision::new(2).expect("revision two"), "凛"),
+            )
+            .expect("update preferred name")
+    );
+    assert_eq!(
+        runtime
+            .session_snapshot(conversation_id)
+            .expect("session after name update")
+            .conversation_id,
+        conversation_id
+    );
+    runtime
+        .submit_turn(
+            conversation_id,
+            "第二轮消息".to_owned(),
+            false,
+            &mut RecordingSink::default(),
+        )
+        .await
+        .expect("complete second turn");
+
+    assert!(
+        runtime
+            .update_user_profile(
+                conversation_id,
+                profile_without_name(Revision::new(3).expect("revision three")),
+            )
+            .expect("clear preferred name")
+    );
+    runtime
+        .submit_turn(
+            conversation_id,
+            "第三轮消息".to_owned(),
+            false,
+            &mut RecordingSink::default(),
+        )
+        .await
+        .expect("complete third turn");
+
+    let requests = gateway.requests();
+    let second = &requests[1];
+    assert!(second.input.iter().any(|item| matches!(
+        item,
+        PromptItem::UserMessage { content } if content == "第一轮消息"
+    )));
+    assert!(second.input.iter().any(|item| matches!(
+        item,
+        PromptItem::AssistantMessage { content } if content == "第一轮回复"
+    )));
+    assert!(second.input.iter().any(|item| matches!(
+        item,
+        PromptItem::UserProfileUpdated { snapshot: Some(snapshot) }
+            if snapshot.revision().get() == 2 && snapshot.preferred_name() == Some("凛")
+    )));
+    let third = &requests[2];
+    assert!(third.input.iter().any(|item| matches!(
+        item,
+        PromptItem::UserProfileUpdated { snapshot: Some(snapshot) }
+            if snapshot.revision().get() == 3 && snapshot.preferred_name().is_none()
+    )));
+    assert!(third.input.iter().any(|item| matches!(
+        item,
+        PromptItem::AssistantMessage { content } if content == "第二轮回复"
     )));
 }
 
@@ -932,10 +1031,7 @@ async fn successful_background_extraction_commits_memory_and_sourced_knowledge()
     assert_eq!(requests[2].shape.tool_policy, ToolPolicy::Disabled);
     assert!(matches!(
         requests[2].input.as_slice(),
-        [
-            PromptItem::HarnessContext { .. },
-            PromptItem::ExtractionInput { .. }
-        ]
+        [PromptItem::ExtractionInput { .. }]
     ));
 }
 

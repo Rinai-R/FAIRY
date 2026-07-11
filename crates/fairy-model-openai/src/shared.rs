@@ -246,9 +246,6 @@ fn map_prompt_item(
     harness_role: OpenAiRole,
 ) -> Result<OpenAiMessage, FairyError> {
     match item {
-        PromptItem::HarnessContext { .. } => {
-            Ok(OpenAiMessage::new(harness_role, context_data(item)?))
-        }
         PromptItem::UserMessage { content } => {
             Ok(OpenAiMessage::new(OpenAiRole::User, content.clone()))
         }
@@ -258,15 +255,61 @@ fn map_prompt_item(
         PromptItem::ToolCall { .. } | PromptItem::ToolResult { .. } => Err(invalid_model_request(
             "当前协议 mapper 尚未启用工具历史 item",
         )),
-        PromptItem::CharacterActivated { .. }
-        | PromptItem::UserProfileUpdated { .. }
-        | PromptItem::RetrievedContext { .. }
+        PromptItem::CharacterActivated { snapshot } => Ok(OpenAiMessage::new(
+            harness_role,
+            character_context_data(snapshot)?,
+        )),
+        PromptItem::UserProfileUpdated { snapshot } => Ok(OpenAiMessage::new(
+            harness_role,
+            user_profile_context_data(snapshot.as_ref())?,
+        )),
+        PromptItem::RetrievedContext { .. }
         | PromptItem::CapabilityStatus { .. }
         | PromptItem::CompactionSummary { .. }
         | PromptItem::ExtractionInput { .. } => {
             Ok(OpenAiMessage::new(OpenAiRole::User, context_data(item)?))
         }
     }
+}
+
+fn character_context_data(
+    snapshot: &fairy_domain::CharacterSnapshot,
+) -> Result<String, FairyError> {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct CharacterContext<'a> {
+        context_type: &'static str,
+        revision: fairy_domain::Revision,
+        name: &'a str,
+        description: &'a str,
+    }
+
+    serde_json::to_string(&CharacterContext {
+        context_type: "character",
+        revision: snapshot.revision(),
+        name: &snapshot.identity().name,
+        description: &snapshot.identity().description,
+    })
+    .map_err(|_| invalid_model_request("无法序列化角色上下文"))
+}
+
+fn user_profile_context_data(
+    snapshot: Option<&fairy_domain::UserProfileSnapshot>,
+) -> Result<String, FairyError> {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct UserProfileContext<'a> {
+        context_type: &'static str,
+        revision: Option<fairy_domain::Revision>,
+        preferred_name: Option<&'a str>,
+    }
+
+    serde_json::to_string(&UserProfileContext {
+        context_type: "user_profile",
+        revision: snapshot.map(fairy_domain::UserProfileSnapshot::revision),
+        preferred_name: snapshot.and_then(fairy_domain::UserProfileSnapshot::preferred_name),
+    })
+    .map_err(|_| invalid_model_request("无法序列化用户资料上下文"))
 }
 
 fn context_data(item: &PromptItem) -> Result<String, FairyError> {
@@ -322,7 +365,50 @@ pub(crate) fn map_http_status(
 
 #[cfg(test)]
 mod http_error_tests {
+    use fairy_domain::{CharacterBriefInput, CharacterCompiler, CharacterId, Revision};
+
     use super::*;
+
+    #[test]
+    fn character_context_exposes_only_the_user_brief() {
+        let snapshot = CharacterCompiler
+            .compile(
+                CharacterId::new(),
+                Revision::INITIAL,
+                CharacterBriefInput {
+                    name: "亚托莉".to_owned(),
+                    description: "有点骄傲，说话简短，但会认真听人说话。".to_owned(),
+                },
+            )
+            .expect("compile character");
+
+        let message = map_prompt_item(
+            &PromptItem::CharacterActivated { snapshot },
+            OpenAiRole::Developer,
+        )
+        .expect("map character context");
+        let value = serde_json::to_value(message).expect("serialize mapped message");
+        let content = value["content"].as_str().expect("character content");
+
+        assert_eq!(value["role"], "developer");
+        assert!(content.contains("亚托莉"));
+        assert!(content.contains("有点骄傲"));
+        for forbidden in [
+            "attention_biases",
+            "attentionBiases",
+            "relationship_stance",
+            "relationshipStance",
+            "response_drives",
+            "responseDrives",
+            "emotional_tendencies",
+            "emotionalTendencies",
+            "hard_boundaries",
+            "hardBoundaries",
+            "fingerprint",
+        ] {
+            assert!(!content.contains(forbidden));
+        }
+    }
 
     #[test]
     fn http_diagnostics_expose_only_status_protocol_and_path() {

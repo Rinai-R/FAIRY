@@ -3,30 +3,6 @@ use sha2::{Digest, Sha256};
 
 use crate::{CharacterSnapshot, ErrorCode, FairyError, RetrievalContext, UserProfileSnapshot};
 
-pub const DIALOGUE_POLICY_VERSION: &str = "fairy-dialogue-policy-v4";
-
-pub const DIALOGUE_PRIORITIES: [DialoguePriority; 7] = [
-    DialoguePriority::FactsSafetyPrivacyRelationshipBoundaries,
-    DialoguePriority::ExplicitUserRequest,
-    DialoguePriority::ExternalFacts,
-    DialoguePriority::InteractionHypothesis,
-    DialoguePriority::CharacterPerspective,
-    DialoguePriority::LanguageStyle,
-    DialoguePriority::ImplicitExpectation,
-];
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DialoguePriority {
-    FactsSafetyPrivacyRelationshipBoundaries,
-    ExplicitUserRequest,
-    ExternalFacts,
-    InteractionHypothesis,
-    CharacterPerspective,
-    LanguageStyle,
-    ImplicitExpectation,
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct ResponseText(String);
@@ -88,13 +64,6 @@ impl SpeechText {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReplyMode {
-    Brief,
-    Expanded,
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssistantSource {
@@ -135,11 +104,6 @@ impl PromptLane {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PromptItem {
-    HarnessContext {
-        protocol_version: String,
-        policy_version: String,
-        priorities: Vec<DialoguePriority>,
-    },
     CharacterActivated {
         snapshot: CharacterSnapshot,
     },
@@ -278,7 +242,6 @@ pub struct ModelRequestShape {
     pub lane: PromptLane,
     pub model: String,
     pub instructions: String,
-    pub reply_mode: Option<ReplyMode>,
     pub max_output_tokens: u32,
     pub tool_policy: ToolPolicy,
     pub parallel_tool_calls: bool,
@@ -355,25 +318,5 @@ mod tests {
         assert_eq!(value["displayText"], "第一句。后续说明。");
         assert_eq!(value["speechText"], "第一句。");
         assert_eq!(value["sources"][0]["rank"], 1);
-    }
-
-    #[test]
-    fn policy_priority_is_fixed_and_serializes_in_declared_order() {
-        assert_eq!(
-            DIALOGUE_PRIORITIES[0],
-            DialoguePriority::FactsSafetyPrivacyRelationshipBoundaries
-        );
-        assert_eq!(
-            DIALOGUE_PRIORITIES[DIALOGUE_PRIORITIES.len() - 1],
-            DialoguePriority::ImplicitExpectation
-        );
-        let serialized =
-            serde_json::to_string(&DIALOGUE_PRIORITIES).expect("serialize dialogue priority order");
-        assert!(
-            serialized.find("facts_safety").expect("first priority")
-                < serialized
-                    .find("implicit_expectation")
-                    .expect("last priority")
-        );
     }
 }
