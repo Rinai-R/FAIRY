@@ -1,13 +1,11 @@
 use fairy_domain::{
-    CompiledPromptRequest, ModelRequestShape, PromptItem, PromptLane, ReasoningMode, ToolPolicy,
+    CompiledPromptRequest, ModelRequestShape, PromptItem, PromptLane, ReasoningMode,
 };
-
-use crate::web_search_tool_definition;
 
 const RESPOND_INSTRUCTIONS: &str = "阅读最近的真实对话，结合当前角色的名称和用户提供的角色描述，写出此刻最自然的下一条回复。根据上下文理解对方在说什么、期待怎样继续这段对话，不要只按字面套话。保持日常、口语化；普通聊天自然简短，明确要求详细说明时再展开。偏好称呼只是可选信息，不必刻意使用。只输出实际说出口的话，不输出分析、心理描写、动作、舞台指令或角色说明。";
 const RESPOND_MAX_OUTPUT_TOKENS: u32 = 640;
 const COMPACT_INSTRUCTIONS: &str = "FAIRY conversation compactor v2. Return only a concise plain-text summary of meaningful user and assistant dialogue for future companion turns. Exclude developer instructions, obsolete character revisions, obsolete user names, cache metadata, and duplicate canonical context. Do not invent facts or wrap the summary in JSON or Markdown.";
-const EXTRACT_INSTRUCTIONS: &str = "FAIRY background memory extractor v1. Return exactly one JSON object with camelCase keys personalMemories and knowledge; output no Markdown or code fence. Extract only durable user preferences, stable profile facts, relationship context, meaningful experiences, and concise objective knowledge candidates directly supported by the quoted turn. Never invent facts or hidden reasoning. User-specific facts belong only in personalMemories. Objective claims without a supplied web source must use an empty sourceRanks array and remain candidates. sourceRanks may contain only ranks of supplied sources that directly support the statement. Each personal item has kind, content, confidenceBasisPoints, supersedesId. Each knowledge item has topic, statement, confidenceBasisPoints, supersedesId, sourceRanks. Use empty arrays when there is nothing worth storing.";
+const EXTRACT_INSTRUCTIONS: &str = "Read the supplied conversation batch and existing personal memories. Return exactly one JSON object: {\"mutations\": [...]}. A mutation operation is either create with kind, scope, content, confidenceBasisPoints; or supersede with memoryId plus the same fields. Use only memory IDs supplied in existingMemories. preference, profile, and experience use global scope; relationship uses the supplied current character scope. Record only durable facts directly supported by the dialogue. Return an empty mutations array when nothing should change. Do not output Markdown, reasoning, delete, or tombstone operations.";
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PromptCompiler;
@@ -21,18 +19,6 @@ impl PromptCompiler {
         input: Vec<PromptItem>,
         prompt_cache_key: Option<String>,
     ) -> CompiledPromptRequest {
-        self.compile_with_search(lane, model, input, prompt_cache_key, false)
-    }
-
-    #[must_use]
-    pub fn compile_with_search(
-        &self,
-        lane: PromptLane,
-        model: String,
-        input: Vec<PromptItem>,
-        prompt_cache_key: Option<String>,
-        web_search_enabled: bool,
-    ) -> CompiledPromptRequest {
         let (instructions, max_output_tokens) = match lane {
             PromptLane::Respond => (RESPOND_INSTRUCTIONS, RESPOND_MAX_OUTPUT_TOKENS),
             PromptLane::Compact => (COMPACT_INSTRUCTIONS, 640),
@@ -45,14 +31,6 @@ impl PromptCompiler {
                 model,
                 instructions: instructions.to_owned(),
                 max_output_tokens,
-                tool_policy: if lane == PromptLane::Respond && web_search_enabled {
-                    ToolPolicy::Auto {
-                        tools: vec![web_search_tool_definition()],
-                    }
-                } else {
-                    ToolPolicy::Disabled
-                },
-                parallel_tool_calls: false,
                 reasoning: ReasoningMode::ProviderDefault,
                 prompt_cache_key,
             },
@@ -192,8 +170,7 @@ mod tests {
         );
 
         assert_eq!(request.input, input);
-        assert_eq!(request.shape.tool_policy, ToolPolicy::Disabled);
-        assert!(!request.shape.parallel_tool_calls);
+        assert!(!request.shape.instructions.contains("web_search"));
     }
 
     #[test]

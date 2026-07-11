@@ -39,11 +39,10 @@ test("configuration events accept only public invalidation payloads", () => {
     () => parseConfigurationChange({ category: "model", configured: true, ready: true, apiKey: "x" }),
     /invalid field set/,
   );
-  assert.deepEqual(parseConfigurationChange({ category: "search", configured: true, ready: false }), {
-    category: "search",
-    configured: true,
-    ready: false,
-  });
+  assert.throws(
+    () => parseConfigurationChange({ category: "search", configured: true, ready: false }),
+    /unsupported configuration change category/,
+  );
 });
 
 test("configuration refresh is scoped and never clears the companion session", () => {
@@ -53,10 +52,6 @@ test("configuration refresh is scoped and never clears the companion session", (
     "model",
   );
   assert.equal(configurationRefreshTarget({ category: "user_profile", revision: 3 }), null);
-  assert.equal(
-    configurationRefreshTarget({ category: "search", configured: true, ready: true }),
-    null,
-  );
   assert.throws(
     () => configurationRefreshTarget({ category: "unknown" }),
     /unsupported configuration refresh category/,

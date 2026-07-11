@@ -3,14 +3,18 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import {
   normalizeCompanionError,
   parseCharacter,
+  parseCharacterActivation,
   parseCharacterCatalog,
   parseCompactionResult,
+  parseConversationBootstrap,
   parseHarnessEvent,
   parseIntelligenceStatus,
+  parseExtractionBatchCatalog,
   parseKnowledgeCatalog,
   parseConfirmedKnowledgeRecord,
   parseModelConnectionStatus,
-  parseSearchConnectionStatus,
+  parsePersonalMemory,
+  parsePersonalMemoryCatalog,
   parseSessionSnapshot,
   parseTurnOutcome,
   parseUserProfile,
@@ -29,7 +33,7 @@ export function createCompanionSession() {
   return invokeParsed(
     "create_companion_session",
     undefined,
-    parseSessionSnapshot,
+    parseConversationBootstrap,
   );
 }
 
@@ -118,11 +122,11 @@ export function listCharacters() {
   return invokeParsed("list_characters", undefined, parseCharacterCatalog);
 }
 
-export function activateCharacter(characterId, revision, conversationId = null) {
+export function activateCharacter(characterId, revision) {
   return invokeParsed(
     "activate_character",
-    { characterId, revision, conversationId },
-    parseCharacter,
+    { characterId, revision },
+    parseCharacterActivation,
   );
 }
 
@@ -170,30 +174,6 @@ export function clearModelConnection() {
   );
 }
 
-export function getSearchConnectionStatus() {
-  return invokeParsed(
-    "get_search_connection_status",
-    undefined,
-    parseSearchConnectionStatus,
-  );
-}
-
-export function saveSearchConnection(input, apiKey = null) {
-  return invokeParsed(
-    "save_search_connection",
-    { input, apiKey },
-    parseSearchConnectionStatus,
-  );
-}
-
-export function clearSearchConnection() {
-  return invokeParsed(
-    "clear_search_connection",
-    undefined,
-    parseSearchConnectionStatus,
-  );
-}
-
 export function getIntelligenceStatus() {
   return invokeParsed(
     "get_intelligence_status",
@@ -227,4 +207,61 @@ export async function tombstoneKnowledge(id) {
   } catch (error) {
     throw normalizeCompanionError(error);
   }
+}
+
+export function getPersonalMemoryCatalog(characterId) {
+  return invokeParsed(
+    "get_personal_memory_catalog",
+    { characterId },
+    parsePersonalMemoryCatalog,
+  );
+}
+
+export function getExtractionBatchCatalog(characterId) {
+  return invokeParsed(
+    "get_extraction_batch_catalog",
+    { characterId },
+    parseExtractionBatchCatalog,
+  );
+}
+
+export function createPersonalMemory({ kind, scope, content, confidenceBasisPoints = 9000 }) {
+  return invokeParsed(
+    "create_personal_memory",
+    { kind, scope, content, confidenceBasisPoints },
+    parsePersonalMemory,
+  );
+}
+
+export function revisePersonalMemory(id, content, confidenceBasisPoints = 9000) {
+  return invokeParsed(
+    "revise_personal_memory",
+    { id, content, confidenceBasisPoints },
+    parsePersonalMemory,
+  );
+}
+
+async function invokeNull(command, args) {
+  try {
+    const result = await invoke(command, args);
+    if (result !== null) throw new TypeError(`${command} must return null`);
+  } catch (error) {
+    throw normalizeCompanionError(error);
+  }
+}
+
+export function tombstonePersonalMemory(id) {
+  return invokeNull("tombstone_personal_memory", { id });
+}
+
+export function assignLegacyRelationship(id, characterId) {
+  return invokeParsed(
+    "assign_legacy_relationship",
+    { id, characterId },
+    parsePersonalMemory,
+  );
+}
+
+export function retryExtractionBatch(id) {
+  return invokeNull("retry_extraction_batch", { id });
 }

@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
 use fairy_domain::{
-    ConversationId, KnowledgeCatalog, KnowledgeId, KnowledgeRecord, ModelConnectionInput, Revision,
-    SearchConnectionInput, UserProfileInput, UserProfileSnapshot,
+    CharacterId, ConversationId, ExtractionBatchCatalog, ExtractionBatchId, KnowledgeCatalog,
+    KnowledgeId, KnowledgeRecord, MemoryScope, ModelConnectionInput, PersonalMemoryCatalog,
+    PersonalMemoryId, PersonalMemoryKind, PersonalMemoryRecord, Revision, UserProfileInput,
+    UserProfileSnapshot,
 };
 use fairy_harness::HarnessRuntime;
 use fairy_storage::UserProfileUpdate;
@@ -11,7 +13,7 @@ use tauri::{AppHandle, Runtime, State};
 
 use crate::{
     app_error::AppError,
-    app_state::{AppState, IntelligenceStatus, ModelConnectionStatus, SearchConnectionStatus},
+    app_state::{AppState, IntelligenceStatus, ModelConnectionStatus},
     ipc::{ConfigurationChange, emit_configuration_change},
 };
 
@@ -65,10 +67,20 @@ pub fn set_user_profile<R: Runtime>(
     input: UserProfileInput,
     conversation_id: Option<ConversationId>,
 ) -> Result<UserProfileUpdateDto, AppError> {
-    let conversation_id = conversation_id.or(state.active_conversation_id()?);
     let runtime = runtime_for_conversation(&state, conversation_id)?;
     let update = state.user_profiles.update(input).map_err(AppError::from)?;
     synchronize_profile(runtime, conversation_id, &update)?;
+    if conversation_id.is_none()
+        && let (Some(snapshot), Some(character), Ok(runtime)) = (
+            update.snapshot.clone(),
+            state.characters.active().map_err(AppError::from)?,
+            state.runtime(),
+        )
+    {
+        runtime
+            .update_user_profile_for_character(character.character_id(), snapshot)
+            .map_err(AppError::from)?;
+    }
     emit_configuration_change(
         &app,
         ConfigurationChange::UserProfile {
@@ -84,7 +96,6 @@ pub fn clear_user_profile<R: Runtime>(
     state: State<'_, AppState>,
     conversation_id: Option<ConversationId>,
 ) -> Result<UserProfileUpdateDto, AppError> {
-    let conversation_id = conversation_id.or(state.active_conversation_id()?);
     let runtime = runtime_for_conversation(&state, conversation_id)?;
     let update = state.user_profiles.clear().map_err(AppError::from)?;
     synchronize_profile(runtime, conversation_id, &update)?;
@@ -117,7 +128,6 @@ fn runtime_for_conversation(
     state: &AppState,
     conversation_id: Option<ConversationId>,
 ) -> Result<Option<Arc<HarnessRuntime>>, AppError> {
-    let conversation_id = conversation_id.or(state.active_conversation_id()?);
     let Some(conversation_id) = conversation_id else {
         return Ok(None);
     };
@@ -168,45 +178,6 @@ pub fn clear_model_connection<R: Runtime>(
 }
 
 #[tauri::command]
-pub fn get_search_connection_status(state: State<'_, AppState>) -> SearchConnectionStatus {
-    state.search_status()
-}
-
-#[tauri::command]
-pub fn save_search_connection<R: Runtime>(
-    app: AppHandle<R>,
-    state: State<'_, AppState>,
-    input: SearchConnectionInput,
-    api_key: Option<String>,
-) -> Result<SearchConnectionStatus, AppError> {
-    let status = state.save_search_connection(input, api_key)?;
-    emit_configuration_change(
-        &app,
-        ConfigurationChange::Search {
-            configured: status.configured,
-            ready: status.ready,
-        },
-    )?;
-    Ok(status)
-}
-
-#[tauri::command]
-pub fn clear_search_connection<R: Runtime>(
-    app: AppHandle<R>,
-    state: State<'_, AppState>,
-) -> Result<SearchConnectionStatus, AppError> {
-    let status = state.clear_search_connection()?;
-    emit_configuration_change(
-        &app,
-        ConfigurationChange::Search {
-            configured: status.configured,
-            ready: status.ready,
-        },
-    )?;
-    Ok(status)
-}
-
-#[tauri::command]
 pub fn get_intelligence_status(state: State<'_, AppState>) -> IntelligenceStatus {
     state.intelligence_status()
 }
@@ -227,4 +198,66 @@ pub fn confirm_knowledge_candidate(
 #[tauri::command]
 pub fn tombstone_knowledge(state: State<'_, AppState>, id: KnowledgeId) -> Result<(), AppError> {
     state.tombstone_knowledge(id)
+}
+
+#[tauri::command]
+pub fn get_personal_memory_catalog(
+    state: State<'_, AppState>,
+    character_id: CharacterId,
+) -> Result<PersonalMemoryCatalog, AppError> {
+    state.personal_memory_catalog(character_id)
+}
+
+#[tauri::command]
+pub fn get_extraction_batch_catalog(
+    state: State<'_, AppState>,
+    character_id: CharacterId,
+) -> Result<ExtractionBatchCatalog, AppError> {
+    state.extraction_batch_catalog(character_id)
+}
+
+#[tauri::command]
+pub fn create_personal_memory(
+    state: State<'_, AppState>,
+    kind: PersonalMemoryKind,
+    scope: MemoryScope,
+    content: String,
+    confidence_basis_points: u16,
+) -> Result<PersonalMemoryRecord, AppError> {
+    state.create_personal_memory(kind, scope, content, confidence_basis_points)
+}
+
+#[tauri::command]
+pub fn revise_personal_memory(
+    state: State<'_, AppState>,
+    id: PersonalMemoryId,
+    content: String,
+    confidence_basis_points: u16,
+) -> Result<PersonalMemoryRecord, AppError> {
+    state.revise_personal_memory(id, content, confidence_basis_points)
+}
+
+#[tauri::command]
+pub fn tombstone_personal_memory(
+    state: State<'_, AppState>,
+    id: PersonalMemoryId,
+) -> Result<(), AppError> {
+    state.tombstone_personal_memory(id)
+}
+
+#[tauri::command]
+pub fn assign_legacy_relationship(
+    state: State<'_, AppState>,
+    id: PersonalMemoryId,
+    character_id: CharacterId,
+) -> Result<PersonalMemoryRecord, AppError> {
+    state.assign_legacy_relationship(id, character_id)
+}
+
+#[tauri::command]
+pub fn retry_extraction_batch(
+    state: State<'_, AppState>,
+    id: ExtractionBatchId,
+) -> Result<(), AppError> {
+    state.retry_extraction_batch(id).map(|_| ())
 }

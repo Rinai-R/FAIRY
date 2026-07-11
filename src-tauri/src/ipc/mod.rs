@@ -14,7 +14,6 @@ pub enum ConfigurationChange {
     Character { revision: Revision },
     UserProfile { revision: Option<Revision> },
     Model { configured: bool, ready: bool },
-    Search { configured: bool, ready: bool },
 }
 
 pub fn emit_configuration_change<R: Runtime>(
@@ -42,10 +41,6 @@ mod tests {
             },
             ConfigurationChange::UserProfile { revision: None },
             ConfigurationChange::Model {
-                configured: true,
-                ready: true,
-            },
-            ConfigurationChange::Search {
                 configured: true,
                 ready: true,
             },

@@ -1,5 +1,5 @@
 use fairy_domain::{
-    CharacterBriefInput, CharacterId, CharacterSnapshot, ConversationId, ErrorCode, Revision,
+    CharacterBriefInput, CharacterId, CharacterSnapshot, ConversationBootstrap, ErrorCode, Revision,
 };
 use fairy_storage::CharacterDiagnostic;
 use serde::Serialize;
@@ -57,6 +57,13 @@ pub struct CharacterCatalogDto {
     pub characters: Vec<CharacterDto>,
     pub active: Option<CharacterDto>,
     pub diagnostics: Vec<CharacterDiagnosticDto>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CharacterActivationDto {
+    pub character: CharacterDto,
+    pub session: ConversationBootstrap,
 }
 
 #[tauri::command]
@@ -119,42 +126,40 @@ pub fn list_characters(state: State<'_, AppState>) -> Result<CharacterCatalogDto
 }
 
 #[tauri::command]
-pub fn activate_character<R: Runtime>(
+pub async fn activate_character<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, AppState>,
     character_id: CharacterId,
     revision: Revision,
-    conversation_id: Option<ConversationId>,
-) -> Result<CharacterDto, AppError> {
-    let conversation_id = conversation_id.or(state.active_conversation_id()?);
-    let runtime = conversation_id.map(|_| state.runtime()).transpose()?;
+) -> Result<CharacterActivationDto, AppError> {
+    let runtime = state.runtime()?;
+    let profile = state.user_profiles.current().map_err(AppError::from)?;
     let previous = state.characters.active().map_err(AppError::from)?;
     let snapshot = state
         .characters
         .activate(character_id, revision)
         .map_err(AppError::from)?;
 
-    let (Some(conversation_id), Some(runtime)) = (conversation_id, runtime) else {
-        emit_configuration_change(
-            &app,
-            ConfigurationChange::Character {
-                revision: snapshot.revision(),
-            },
-        )?;
-        return Ok(CharacterDto::from(snapshot));
+    let session = match runtime
+        .open_or_create_character_session(snapshot.clone(), profile)
+        .await
+    {
+        Ok(session) => session,
+        Err(error) => {
+            rollback_active_character(&state, previous)?;
+            return Err(AppError::from(error));
+        }
     };
-    let activation = runtime.activate_character(conversation_id, snapshot.clone());
-    if let Err(error) = activation {
-        rollback_active_character(&state, previous)?;
-        return Err(AppError::from(error));
-    }
     emit_configuration_change(
         &app,
         ConfigurationChange::Character {
             revision: snapshot.revision(),
         },
     )?;
-    Ok(CharacterDto::from(snapshot))
+    Ok(CharacterActivationDto {
+        character: CharacterDto::from(snapshot),
+        session,
+    })
 }
 
 fn rollback_active_character(

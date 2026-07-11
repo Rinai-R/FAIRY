@@ -10,7 +10,6 @@ pub mod ids;
 pub mod intelligence;
 pub mod model;
 pub mod prompt;
-pub mod search;
 pub mod user_profile;
 
 pub use character::{
@@ -18,19 +17,24 @@ pub use character::{
     EmotionalTendency, HardBoundary, RelationshipStance, ResponseDrive, SpeechStyle,
     SpeechStyleFallback, Worldview,
 };
-pub use conversation::{TurnLifecycle, TurnState};
+pub use conversation::{
+    ConversationBootstrap, ConversationMessageRecord, ConversationMessageRole, ConversationRecord,
+    PersistedTurnRecord, PromptWindowRecord, TurnLifecycle, TurnState,
+};
 pub use error::{ErrorCode, FairyError};
 pub use event::{HarnessEvent, HarnessEventPayload};
 pub use ids::{
-    CharacterId, ConversationId, ExtractionJobId, KnowledgeId, KnowledgeSourceId,
-    ModelConnectionId, PersonalMemoryId, Revision, SearchConnectionId, TurnId, WindowRevision,
+    CharacterId, ConversationId, ExtractionBatchId, KnowledgeId, KnowledgeSourceId, MessageId,
+    ModelConnectionId, PersonalMemoryId, Revision, TurnId, WindowRevision,
 };
 pub use intelligence::{
-    ExtractedKnowledge, ExtractedPersonalMemory, ExtractionJobRecord, ExtractionJobStatus,
-    ExtractionOutput, IntelligenceStoreSummary, KnowledgeCatalog, KnowledgeRecord, KnowledgeStatus,
-    KnowledgeVerificationBasis, NewKnowledge, NewPersonalMemory, PersonalMemoryKind,
-    PersonalMemoryRecord, PersonalMemoryStatus, RetrievalContext, RetrievedKnowledge,
-    RetrievedPersonalMemory,
+    ExtractedKnowledge, ExtractedPersonalMemory, ExtractionBatchCatalog, ExtractionBatchInput,
+    ExtractionBatchRecord, ExtractionBatchStatus, ExtractionOutput, ExtractionTurn,
+    IntelligenceStoreSummary, KnowledgeCatalog, KnowledgeRecord, KnowledgeStatus,
+    KnowledgeVerificationBasis, MemoryMutation, MemoryMutationOutput, MemoryMutationResult,
+    MemoryScope, NewKnowledge, NewPersonalMemory, PersonalMemoryCatalog, PersonalMemoryKind,
+    PersonalMemoryRecord, PersonalMemoryReviewStatus, PersonalMemoryStatus, RetrievalContext,
+    RetrievedKnowledge, RetrievedPersonalMemory,
 };
 pub use model::{
     AuthMode, CachedTokenObservation, GatewayCapabilities, LaneModelUsage, ModelCompletion,
@@ -39,11 +43,6 @@ pub use model::{
 };
 pub use prompt::{
     AssistantSource, CapabilityState, CompanionCapability, CompiledPromptRequest, CompiledReply,
-    ModelRequestShape, PromptItem, PromptLane, ReasoningMode, ResponseText, SpeechText, ToolCall,
-    ToolDefinition, ToolName, ToolPolicy, ToolResult, ToolResultOutcome,
-};
-pub use search::{
-    DEFAULT_BRAVE_SEARCH_ENDPOINT, SearchConnectionCompiler, SearchConnectionConfig,
-    SearchConnectionInput, SearchProvider, WebSearchResponse,
+    ModelRequestShape, PromptItem, PromptLane, ReasoningMode, ResponseText, SpeechText,
 };
 pub use user_profile::{UserProfileCompiler, UserProfileInput, UserProfileSnapshot};

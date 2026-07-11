@@ -38,21 +38,25 @@ import { AnimatePresence, motion } from "motion/react";
 
 import {
   activateCharacter,
-  clearSearchConnection,
+  assignLegacyRelationship,
   clearModelConnection,
   clearUserProfile,
   createCharacter,
+  createPersonalMemory,
   confirmKnowledgeCandidate,
   getModelConnectionStatus,
   getIntelligenceStatus,
+  getExtractionBatchCatalog,
   getKnowledgeCatalog,
-  getSearchConnectionStatus,
+  getPersonalMemoryCatalog,
   getUserProfile,
   listCharacters,
   saveModelConnection,
-  saveSearchConnection,
+  retryExtractionBatch,
+  revisePersonalMemory,
   setUserProfile,
   tombstoneKnowledge,
+  tombstonePersonalMemory,
   updateCharacter,
 } from "../companionClient.mjs";
 import { normalizeCompanionError } from "../companionState.mjs";
@@ -61,7 +65,6 @@ import {
   MODEL_PROTOCOL_OPTIONS,
   assertControlPanelSection,
   buildModelConnectionInput,
-  buildSearchConnectionInput,
 } from "../controlPanelState.mjs";
 import {
   getDesktopState,
@@ -81,8 +84,6 @@ const EMPTY_CATALOG = Object.freeze({
   active: null,
   diagnostics: Object.freeze([]),
 });
-
-const DEFAULT_BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
 
 const SECTION_ICONS = Object.freeze({
   character: PersonIcon,
@@ -169,14 +170,61 @@ function KnowledgeColumn({ title, description, records, empty, disabled, onConfi
   );
 }
 
+function MemoryEntry({ record, disabled, onRevise, onDelete, onAssign }) {
+  const [editing, setEditing] = useState(false);
+  const [content, setContent] = useState(record.content);
+  return (
+    <article className="cp-memory-entry">
+      {editing ? (
+        <TextArea value={content} onChange={(event) => setContent(event.target.value)} resize="vertical" />
+      ) : (
+        <Text as="p" size="2">{record.content}</Text>
+      )}
+      <Flex align="center" justify="between" gap="2" wrap="wrap">
+        <Badge size="1" color="sky" variant="soft">{record.kind}</Badge>
+        <Flex gap="2">
+          {onAssign ? (
+            <Button size="1" variant="soft" disabled={disabled} onClick={() => onAssign(record.id)}>分配给当前角色</Button>
+          ) : editing ? (
+            <>
+              <Button size="1" variant="ghost" color="gray" onClick={() => { setEditing(false); setContent(record.content); }}>取消</Button>
+              <Button size="1" disabled={disabled || !content.trim()} onClick={() => { onRevise(record.id, content.trim()); setEditing(false); }}>保存</Button>
+            </>
+          ) : (
+            <Button size="1" variant="ghost" disabled={disabled} onClick={() => setEditing(true)}>修正</Button>
+          )}
+          <IconButton size="1" color="tomato" variant="ghost" disabled={disabled} onClick={() => onDelete(record.id)} aria-label="删除记忆">
+            <TrashIcon />
+          </IconButton>
+        </Flex>
+      </Flex>
+    </article>
+  );
+}
+
+function MemoryColumn({ title, description, records, empty, disabled, onRevise, onDelete, onAssign }) {
+  return (
+    <section className="cp-memory-column">
+      <Flex align="start" justify="between" gap="3">
+        <div><Text as="h3" size="2" weight="medium">{title}</Text><Text as="p" size="1" color="gray">{description}</Text></div>
+        <Badge size="1" color="gray" variant="outline">{records.length}</Badge>
+      </Flex>
+      {records.length === 0 ? <Text as="p" size="1" color="gray" className="cp-memory-empty">{empty}</Text> : records.map((record) => (
+        <MemoryEntry key={record.id} record={record} disabled={disabled} onRevise={onRevise} onDelete={onDelete} onAssign={onAssign} />
+      ))}
+    </section>
+  );
+}
+
 export function ControlPanelApp() {
   const [section, setSection] = useState("model");
   const [catalog, setCatalog] = useState(EMPTY_CATALOG);
   const [profile, setProfile] = useState(null);
   const [modelStatus, setModelStatus] = useState(null);
-  const [searchStatus, setSearchStatus] = useState(null);
   const [intelligenceStatus, setIntelligenceStatus] = useState(null);
   const [knowledgeCatalog, setKnowledgeCatalog] = useState(null);
+  const [memoryCatalog, setMemoryCatalog] = useState(null);
+  const [batchCatalog, setBatchCatalog] = useState(null);
   const [knowledgeCatalogLoading, setKnowledgeCatalogLoading] = useState(false);
   const [desktop, setDesktop] = useState(null);
   const [pending, setPending] = useState(null);
@@ -193,29 +241,26 @@ export function ControlPanelApp() {
   const [model, setModel] = useState("deepseek-v4-flash");
   const [authMode, setAuthMode] = useState("bearer_key");
   const [apiKey, setApiKey] = useState("");
-  const [searchEndpoint, setSearchEndpoint] = useState(DEFAULT_BRAVE_ENDPOINT);
-  const [searchApiKey, setSearchApiKey] = useState("");
+  const [memoryKind, setMemoryKind] = useState("preference");
+  const [memoryContent, setMemoryContent] = useState("");
 
   const refresh = useCallback(async (hydrateForms = false) => {
     const [
       nextCatalog,
       nextProfile,
       nextModelStatus,
-      nextSearchStatus,
       nextIntelligenceStatus,
       nextDesktop,
     ] = await Promise.all([
       listCharacters(),
       getUserProfile(),
       getModelConnectionStatus(),
-      getSearchConnectionStatus(),
       getIntelligenceStatus(),
       getDesktopState(),
     ]);
     setCatalog(nextCatalog);
     setProfile(nextProfile);
     setModelStatus(nextModelStatus);
-    setSearchStatus(nextSearchStatus);
     setIntelligenceStatus(nextIntelligenceStatus);
     setDesktop(nextDesktop);
     if (hydrateForms) {
@@ -231,35 +276,40 @@ export function ControlPanelApp() {
         setModel(nextModelStatus.config.model);
         setAuthMode(nextModelStatus.config.authMode);
       }
-      if (nextSearchStatus.config) {
-        setSearchEndpoint(nextSearchStatus.config.endpoint);
-      }
     }
   }, []);
 
   const refreshIntelligence = useCallback(async () => {
     setKnowledgeCatalogLoading(true);
     try {
-      const [nextSearchStatus, nextIntelligenceStatus] = await Promise.all([
-        getSearchConnectionStatus(),
-        getIntelligenceStatus(),
-      ]);
-      setSearchStatus(nextSearchStatus);
+      const nextIntelligenceStatus = await getIntelligenceStatus();
       setIntelligenceStatus(nextIntelligenceStatus);
       if (!nextIntelligenceStatus.ready) {
         setKnowledgeCatalog(null);
+        setMemoryCatalog(null);
+        setBatchCatalog(null);
         return;
       }
       try {
-        setKnowledgeCatalog(await getKnowledgeCatalog());
+        const activeCharacterId = catalog.active?.characterId ?? null;
+        const [nextKnowledge, nextMemories, nextBatches] = await Promise.all([
+          getKnowledgeCatalog(),
+          activeCharacterId ? getPersonalMemoryCatalog(activeCharacterId) : Promise.resolve(null),
+          activeCharacterId ? getExtractionBatchCatalog(activeCharacterId) : Promise.resolve(null),
+        ]);
+        setKnowledgeCatalog(nextKnowledge);
+        setMemoryCatalog(nextMemories);
+        setBatchCatalog(nextBatches);
       } catch (reason) {
         setKnowledgeCatalog(null);
+        setMemoryCatalog(null);
+        setBatchCatalog(null);
         throw reason;
       }
     } finally {
       setKnowledgeCatalogLoading(false);
     }
-  }, []);
+  }, [catalog.active?.characterId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -380,23 +430,6 @@ export function ControlPanelApp() {
     if (status) setModelStatus(status);
   }
 
-  async function submitSearch(event) {
-    event.preventDefault();
-    let input;
-    try {
-      input = buildSearchConnectionInput({ endpoint: searchEndpoint });
-    } catch (reason) {
-      setError({ code: "INVALID_SEARCH_CONFIG", message: reason.message, retryable: false });
-      return;
-    }
-    const status = await run("search", () => saveSearchConnection(input, searchApiKey || null));
-    setSearchApiKey("");
-    if (status) {
-      setSearchStatus(status);
-      await run("intelligence-refresh", refreshIntelligence);
-    }
-  }
-
   async function confirmKnowledge(id) {
     await run(`knowledge-confirm-${id}`, async () => {
       await confirmKnowledgeCandidate(id);
@@ -407,6 +440,48 @@ export function ControlPanelApp() {
   async function deleteKnowledge(id) {
     await run(`knowledge-delete-${id}`, async () => {
       await tombstoneKnowledge(id);
+      await refreshIntelligence();
+    });
+  }
+
+  async function addMemory(event) {
+    event.preventDefault();
+    if (!memoryContent.trim() || !catalog.active) return;
+    await run("memory-create", async () => {
+      const scope = memoryKind === "relationship"
+        ? { type: "character", characterId: catalog.active.characterId }
+        : { type: "global" };
+      await createPersonalMemory({ kind: memoryKind, scope, content: memoryContent.trim() });
+      setMemoryContent("");
+      await refreshIntelligence();
+    });
+  }
+
+  async function reviseMemory(id, content) {
+    await run(`memory-revise-${id}`, async () => {
+      await revisePersonalMemory(id, content);
+      await refreshIntelligence();
+    });
+  }
+
+  async function deleteMemory(id) {
+    await run(`memory-delete-${id}`, async () => {
+      await tombstonePersonalMemory(id);
+      await refreshIntelligence();
+    });
+  }
+
+  async function assignLegacy(id) {
+    if (!catalog.active) return;
+    await run(`memory-assign-${id}`, async () => {
+      await assignLegacyRelationship(id, catalog.active.characterId);
+      await refreshIntelligence();
+    });
+  }
+
+  async function retryBatch(id) {
+    await run(`batch-retry-${id}`, async () => {
+      await retryExtractionBatch(id);
       await refreshIntelligence();
     });
   }
@@ -604,19 +679,12 @@ export function ControlPanelApp() {
                         <>
                           <PageHeader
                             title="智能层"
-                            description="搜索、个人记忆与知识分开运行；搜索只使用你明确配置的 Brave Provider。"
+                            description="会话、个人记忆与知识都保存在本机；当前版本不接入网络搜索。"
                             status={intelligenceStatus?.ready ? "本地层已就绪" : "本地层不可用"}
                             ready={Boolean(intelligenceStatus?.ready)}
                           />
 
                           <div className="cp-intelligence-track" aria-label="智能层状态">
-                            <div className={`cp-intelligence-step ${searchStatus?.ready ? "is-ready" : ""}`}>
-                              <span className="cp-intelligence-status-dot" aria-hidden="true" />
-                              <div className="cp-intelligence-step-copy">
-                                <Text size="1" weight="medium">网络搜索</Text>
-                                <Text size="1" color="gray">{searchStatus?.ready ? "Brave 已连接" : "需要配置"}</Text>
-                              </div>
-                            </div>
                             <div className={`cp-intelligence-step ${intelligenceStatus?.ready ? "is-ready" : ""}`}>
                               <span className="cp-intelligence-status-dot" aria-hidden="true" />
                               <div className="cp-intelligence-step-copy">
@@ -643,21 +711,21 @@ export function ControlPanelApp() {
 
                           <div className="cp-intelligence-metrics" aria-label="智能层数据统计">
                             <Card size="1">
-                              <Text size="1" color="gray">个人记忆</Text>
+                              <Text size="1" color="gray">全局记忆</Text>
                               <Text size="5" weight="medium">
-                                {intelligenceStatus?.summary?.activePersonalMemories ?? "—"}
+                                {intelligenceStatus?.summary?.activeGlobalMemories ?? "—"}
                               </Text>
                             </Card>
                             <Card size="1">
-                              <Text size="1" color="gray">已验证知识</Text>
+                              <Text size="1" color="gray">角色关系</Text>
                               <Text size="5" weight="medium">
-                                {intelligenceStatus?.summary?.verifiedKnowledge ?? "—"}
+                                {intelligenceStatus?.summary?.activeCharacterMemories ?? "—"}
                               </Text>
                             </Card>
                             <Card size="1">
-                              <Text size="1" color="gray">候选知识</Text>
+                              <Text size="1" color="gray">待抽取轮次</Text>
                               <Text size="5" weight="medium">
-                                {intelligenceStatus?.summary?.candidateKnowledge ?? "—"}
+                                {intelligenceStatus?.summary?.pendingExtractionTurns ?? "—"}
                               </Text>
                             </Card>
                           </div>
@@ -669,11 +737,56 @@ export function ControlPanelApp() {
                             </Callout.Root>
                           ) : null}
 
+                          <section className="cp-memory-ledger" aria-labelledby="memory-ledger-title">
+                            <Flex align="start" justify="between" gap="3">
+                              <div>
+                                <Heading id="memory-ledger-title" as="h3" size="3" weight="medium">个人记忆</Heading>
+                                <Text as="p" size="1" color="gray">普通信息全局共享；关系记忆只属于当前角色。</Text>
+                              </div>
+                              <IconButton variant="ghost" color="gray" type="button" disabled={disabled} onClick={() => void run("intelligence-refresh", refreshIntelligence)} aria-label="刷新记忆">
+                                <ResetIcon />
+                              </IconButton>
+                            </Flex>
+                            <form className="cp-memory-create" onSubmit={addMemory}>
+                              <Select.Root value={memoryKind} onValueChange={setMemoryKind}>
+                                <Select.Trigger aria-label="记忆类型" />
+                                <Select.Content>
+                                  <Select.Item value="preference">偏好</Select.Item>
+                                  <Select.Item value="profile">用户资料</Select.Item>
+                                  <Select.Item value="experience">经历</Select.Item>
+                                  <Select.Item value="relationship">当前角色关系</Select.Item>
+                                </Select.Content>
+                              </Select.Root>
+                              <TextField.Root value={memoryContent} onChange={(event) => setMemoryContent(event.target.value)} placeholder="简单描述需要记住的信息" />
+                              <Button type="submit" disabled={disabled || !catalog.active || !memoryContent.trim()}><PlusIcon />新增</Button>
+                            </form>
+                            {memoryCatalog ? (
+                              <div className="cp-memory-columns">
+                                <MemoryColumn title="全局" description="所有角色都可使用" records={memoryCatalog.global} empty="还没有全局记忆。" disabled={disabled} onRevise={(id, content) => void reviseMemory(id, content)} onDelete={(id) => void deleteMemory(id)} />
+                                <MemoryColumn title={catalog.active ? `与 ${catalog.active.name} 的关系` : "当前角色关系"} description="不会出现在其他角色的对话中" records={memoryCatalog.character} empty="还没有当前角色的关系记忆。" disabled={disabled} onRevise={(id, content) => void reviseMemory(id, content)} onDelete={(id) => void deleteMemory(id)} />
+                                {memoryCatalog.needsReview.length > 0 ? (
+                                  <MemoryColumn title="待处理旧记录" description="迁移时无法确认属于哪个角色" records={memoryCatalog.needsReview} empty="没有待处理记录。" disabled={disabled} onRevise={() => {}} onDelete={(id) => void deleteMemory(id)} onAssign={(id) => void assignLegacy(id)} />
+                                ) : null}
+                              </div>
+                            ) : <Text as="p" size="1" color="gray" className="cp-memory-empty">选择并激活角色后读取记忆。</Text>}
+                            {batchCatalog?.failed.length > 0 ? (
+                              <div className="cp-failed-batches">
+                                <Text as="h3" size="2" weight="medium">失败的抽取批次</Text>
+                                {batchCatalog.failed.map((batch) => (
+                                  <Flex key={batch.id} align="center" justify="between" gap="3">
+                                    <Text size="1" color="gray">轮次 {batch.firstTurnSequence}–{batch.lastTurnSequence} · {batch.error?.message ?? "抽取失败"}</Text>
+                                    <Button size="1" variant="soft" disabled={disabled} onClick={() => void retryBatch(batch.id)}><ResetIcon />重试</Button>
+                                  </Flex>
+                                ))}
+                              </div>
+                            ) : null}
+                          </section>
+
                           <section className="cp-knowledge-ledger" aria-labelledby="knowledge-ledger-title">
                             <Flex className="cp-knowledge-ledger-header" align="start" justify="between" gap="3">
                               <div>
                                 <Heading id="knowledge-ledger-title" as="h3" size="3" weight="medium">知识目录</Heading>
-                                <Text as="p" size="1" color="gray">无网页来源的事实先进入候选区，只有你确认后才会参与对话。</Text>
+                                <Text as="p" size="1" color="gray">既有候选只有你确认后才会参与对话；当前版本不再自动联网验证。</Text>
                               </div>
                               <Tooltip content="重新读取本地知识目录">
                                 <IconButton variant="ghost" color="gray" type="button" disabled={disabled} onClick={() => void run("intelligence-refresh", refreshIntelligence)} aria-label="刷新知识目录">
@@ -694,7 +807,7 @@ export function ControlPanelApp() {
                                 />
                                 <KnowledgeColumn
                                   title="已验证"
-                                  description="网页有据或由你明确确认"
+                                  description="历史有据或由你明确确认"
                                   records={knowledgeCatalog.verified}
                                   empty="还没有可用知识。"
                                   disabled={disabled}
@@ -713,63 +826,6 @@ export function ControlPanelApp() {
                             )}
                           </section>
 
-                          <form className="cp-form cp-search-form" onSubmit={submitSearch}>
-                            <Field
-                              id="search-endpoint"
-                              label="Brave Search Endpoint"
-                              hint="生产地址必须是 HTTPS；不自动切换其他搜索服务。"
-                            >
-                              <TextField.Root
-                                id="search-endpoint"
-                                type="url"
-                                value={searchEndpoint}
-                                onChange={(event) => setSearchEndpoint(event.target.value)}
-                                required
-                              />
-                            </Field>
-                            <Field
-                              id="search-api-key"
-                              label="Brave API Key"
-                              hint="写入独立 Keychain；保存后清空且永不回显。"
-                            >
-                              <TextField.Root
-                                id="search-api-key"
-                                type="password"
-                                autoComplete="off"
-                                value={searchApiKey}
-                                onChange={(event) => setSearchApiKey(event.target.value)}
-                                placeholder={searchStatus?.configured ? "留空保留现有密钥" : "仅写入系统 Keychain"}
-                              >
-                                <TextField.Slot><LockClosedIcon /></TextField.Slot>
-                              </TextField.Root>
-                            </Field>
-                            <Flex justify="between" gap="3" wrap="wrap">
-                              <Flex gap="2">
-                                <Button
-                                  color="tomato"
-                                  variant="soft"
-                                  type="button"
-                                  disabled={disabled || !searchStatus?.configured}
-                                  onClick={() => void run("search", async () => {
-                                    const status = await clearSearchConnection();
-                                    setSearchStatus(status);
-                                  })}
-                                >
-                                  <TrashIcon />清除搜索连接
-                                </Button>
-                                <Button
-                                  variant="ghost"
-                                  color="gray"
-                                  type="button"
-                                  disabled={disabled}
-                                  onClick={() => void run("intelligence-refresh", refreshIntelligence)}
-                                >
-                                  <ResetIcon />刷新状态
-                                </Button>
-                              </Flex>
-                              <Button type="submit" disabled={disabled}>保存搜索连接</Button>
-                            </Flex>
-                          </form>
                         </>
                       ) : null}
 

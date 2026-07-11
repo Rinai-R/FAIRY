@@ -217,8 +217,13 @@ export function App() {
     if (
       !catalog.active ||
       !modelStatus?.ready ||
-      companion.conversationId !== null ||
       sessionCreating.current
+    ) {
+      return undefined;
+    }
+    if (
+      companion.conversationId !== null &&
+      companion.characterId === catalog.active.characterId
     ) {
       return undefined;
     }
@@ -237,7 +242,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [catalog.active, modelStatus?.ready, companion.conversationId]);
+  }, [catalog.active, modelStatus?.ready, companion.characterId, companion.conversationId]);
 
   const controlsDisabled = desktop === null || pendingAction !== null || settingsRequested;
   const displayName = catalog.active?.name ?? DEFAULT_CHARACTER.displayName;

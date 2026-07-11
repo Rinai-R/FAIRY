@@ -4,18 +4,22 @@ import assert from "node:assert/strict";
 import {
   createCompanionState,
   normalizeCompanionError,
+  parseConversationBootstrap,
+  parseCharacterActivation,
+  parseExtractionBatchCatalog,
   parseCharacterCatalog,
   parseHarnessEvent,
   parseIntelligenceStatus,
   parseKnowledgeCatalog,
   parseModelConnectionStatus,
-  parseSearchConnectionStatus,
+  parsePersonalMemoryCatalog,
   parseTurnOutcome,
   reduceCompanionState,
 } from "./companionState.mjs";
 
 const CONVERSATION_ID = "11111111-1111-4111-8111-111111111111";
 const TURN_ID = "22222222-2222-4222-8222-222222222222";
+const CHARACTER_ID = "33333333-3333-4333-8333-333333333333";
 const KNOWLEDGE_ID = "44444444-4444-4444-8444-444444444444";
 
 const USAGE = Object.freeze([
@@ -41,14 +45,29 @@ function event(sequence, state, payload) {
   };
 }
 
+function bootstrap(messages = []) {
+  return {
+    conversation: {
+      id: CONVERSATION_ID,
+      characterId: CHARACTER_ID,
+      createdAtUnixMs: 1,
+      updatedAtUnixMs: 2,
+    },
+    messages,
+    promptWindow: {
+      conversationId: CONVERSATION_ID,
+      revision: 1,
+      summary: null,
+      cutoffMessageSequence: 0,
+      updatedAtUnixMs: 2,
+    },
+  };
+}
+
 function stateWithSubmission(text = "今天有点累") {
   const session = reduceCompanionState(createCompanionState(), {
     type: "session_created",
-    session: {
-      conversationId: CONVERSATION_ID,
-      state: "idle",
-      activeTurnId: null,
-    },
+    session: bootstrap(),
   });
   return reduceCompanionState(session, {
     type: "submit_started",
@@ -265,11 +284,7 @@ test("terminal turn rejects deltas, duplicate completion, and mismatched speech"
 test("blank submission is rejected before a turn is created", () => {
   const session = reduceCompanionState(createCompanionState(), {
     type: "session_created",
-    session: {
-      conversationId: CONVERSATION_ID,
-      state: "idle",
-      activeTurnId: null,
-    },
+    session: bootstrap(),
   });
 
   assert.throws(
@@ -356,35 +371,28 @@ test("completed reply keeps one assistant message with speech text and sources",
   );
 });
 
-test("search and intelligence status parsers accept public status only", () => {
-  const search = parseSearchConnectionStatus({
-    configured: true,
-    ready: true,
-    config: {
-      provider: "brave",
-      endpoint: "https://api.search.brave.com/res/v1/web/search",
-    },
-    error: null,
-  });
+test("intelligence status parser accepts public status only", () => {
   const intelligence = parseIntelligenceStatus({
     ready: true,
     schemaVersion: 1,
     summary: {
-      activePersonalMemories: 2,
+      conversations: 1,
+      activeGlobalMemories: 2,
+      activeCharacterMemories: 1,
+      needsReviewMemories: 0,
+      pendingExtractionTurns: 0,
+      runningBatches: 0,
+      failedBatches: 0,
       candidateKnowledge: 1,
       verifiedKnowledge: 3,
-      pendingJobs: 0,
-      runningJobs: 0,
-      failedJobs: 0,
     },
     activeBackgroundJobs: 0,
     error: null,
   });
 
-  assert.equal(search.config.provider, "brave");
   assert.equal(intelligence.summary.verifiedKnowledge, 3);
   assert.throws(
-    () => parseSearchConnectionStatus({ ...search, apiKey: "forbidden" }),
+    () => parseIntelligenceStatus({ ...intelligence, apiKey: "forbidden" }),
     /invalid field set/,
   );
 });
@@ -525,4 +533,56 @@ test("character catalog exposes the active revision and session can be cleared",
   assert.deepEqual(catalog.active, character);
   assert.equal(state.conversationId, null);
   assert.equal(state.transcript.length, 0);
+});
+
+test("conversation bootstrap restores ordered transcript and character activation stays atomic", () => {
+  const messageId = "55555555-5555-4555-8555-555555555555";
+  const assistantId = "66666666-6666-4666-8666-666666666666";
+  const restored = bootstrap([
+    { id: messageId, conversationId: CONVERSATION_ID, turnId: TURN_ID, sequence: 1, role: "user", content: "之前的消息", createdAtUnixMs: 1 },
+    { id: assistantId, conversationId: CONVERSATION_ID, turnId: TURN_ID, sequence: 2, role: "assistant", content: "之前的回复", createdAtUnixMs: 2 },
+  ]);
+  const parsed = parseConversationBootstrap(restored);
+  const state = reduceCompanionState(createCompanionState(), { type: "session_created", session: restored });
+  assert.equal(parsed.messages.length, 2);
+  assert.equal(state.characterId, CHARACTER_ID);
+  assert.deepEqual(state.transcript.map(({ role, text }) => ({ role, text })), [
+    { role: "user", text: "之前的消息" },
+    { role: "assistant", text: "之前的回复" },
+  ]);
+  const activation = parseCharacterActivation({
+    character: { characterId: CHARACTER_ID, revision: 1, name: "亚托莉", description: "自然回应用户。" },
+    session: restored,
+  });
+  assert.equal(activation.session.conversation.id, CONVERSATION_ID);
+  assert.throws(
+    () => parseConversationBootstrap({ ...restored, messages: [...restored.messages].reverse() }),
+    /strictly ordered/,
+  );
+});
+
+test("personal memory and batch catalogs reject cross-shape data", () => {
+  const memoryId = "77777777-7777-4777-8777-777777777777";
+  const memory = {
+    id: memoryId,
+    kind: "relationship",
+    scope: { type: "character", characterId: CHARACTER_ID },
+    reviewStatus: "ready",
+    content: "用户愿意下次继续聊",
+    status: "active",
+    confidenceBasisPoints: 9000,
+    sourceConversationId: CONVERSATION_ID,
+    sourceTurnId: TURN_ID,
+    supersedesId: null,
+    createdAtUnixMs: 1,
+    updatedAtUnixMs: 1,
+  };
+  const catalog = parsePersonalMemoryCatalog({ global: [], character: [memory], needsReview: [] });
+  assert.equal(catalog.character[0].scope.characterId, CHARACTER_ID);
+  const batches = parseExtractionBatchCatalog({ running: [], failed: [] });
+  assert.equal(batches.failed.length, 0);
+  assert.throws(
+    () => parsePersonalMemoryCatalog({ global: [], character: [{ ...memory, apiKey: "forbidden" }], needsReview: [] }),
+    /invalid field set/,
+  );
 });

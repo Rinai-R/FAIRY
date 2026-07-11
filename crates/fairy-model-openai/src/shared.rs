@@ -1,6 +1,6 @@
 use fairy_domain::{
     AuthMode, CompiledPromptRequest, ErrorCode, FairyError, ModelConnectionConfig, ModelProtocol,
-    PromptItem, ToolCall, ToolResult,
+    PromptItem,
 };
 use reqwest::RequestBuilder;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
@@ -15,74 +15,17 @@ pub(crate) enum OpenAiRole {
     Developer,
     User,
     Assistant,
-    Tool,
 }
 
 #[derive(Serialize)]
 pub(crate) struct OpenAiMessage {
     role: OpenAiRole,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_calls: Option<Vec<OpenAiToolCall>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_call_id: Option<String>,
-}
-
-#[derive(Serialize)]
-struct OpenAiToolCall {
-    id: String,
-    #[serde(rename = "type")]
-    kind: &'static str,
-    function: OpenAiFunctionCall,
-}
-
-#[derive(Serialize)]
-struct OpenAiFunctionCall {
-    name: &'static str,
-    arguments: String,
+    content: String,
 }
 
 impl OpenAiMessage {
     pub(crate) fn new(role: OpenAiRole, content: String) -> Self {
-        Self {
-            role,
-            content: Some(content),
-            tool_calls: None,
-            tool_call_id: None,
-        }
-    }
-
-    fn tool_calls(calls: &[ToolCall]) -> Self {
-        Self {
-            role: OpenAiRole::Assistant,
-            content: None,
-            tool_calls: Some(
-                calls
-                    .iter()
-                    .map(|call| OpenAiToolCall {
-                        id: call.id.clone(),
-                        kind: "function",
-                        function: OpenAiFunctionCall {
-                            name: call.name.as_str(),
-                            arguments: call.arguments_json.clone(),
-                        },
-                    })
-                    .collect(),
-            ),
-            tool_call_id: None,
-        }
-    }
-
-    fn tool_result(result: &ToolResult) -> Result<Self, FairyError> {
-        let content = serde_json::to_string(&result.outcome)
-            .map_err(|_| invalid_model_request("无法序列化工具执行结果"))?;
-        Ok(Self {
-            role: OpenAiRole::Tool,
-            content: Some(content),
-            tool_calls: None,
-            tool_call_id: Some(result.call_id.clone()),
-        })
+        Self { role, content }
     }
 }
 
@@ -100,31 +43,8 @@ pub(crate) fn validate_request(
             "请求模型与已配置模型不一致，不能复用该请求 shape",
         ));
     }
-    if request.shape.parallel_tool_calls {
-        return Err(invalid_model_request(
-            "当前 FAIRY transport 不支持并行工具调用",
-        ));
-    }
     if request.shape.max_output_tokens == 0 {
         return Err(invalid_model_request("模型 output token budget 必须大于 0"));
-    }
-    let tools = request.shape.tool_policy.tools();
-    if matches!(
-        request.shape.tool_policy,
-        fairy_domain::ToolPolicy::Auto { .. }
-    ) && tools.is_empty()
-    {
-        return Err(invalid_model_request("Auto 工具策略至少需要一个工具定义"));
-    }
-    for (index, tool) in tools.iter().enumerate() {
-        if !tool.parameters.is_object() {
-            return Err(invalid_model_request(
-                "工具 parameters 必须是 JSON object schema",
-            ));
-        }
-        if tools[..index].iter().any(|known| known.name == tool.name) {
-            return Err(invalid_model_request("同一请求不能声明重复工具"));
-        }
     }
     Ok(())
 }
@@ -206,41 +126,6 @@ pub(crate) fn map_prompt_items(
         .collect()
 }
 
-pub(crate) fn map_chat_prompt_items(
-    items: &[PromptItem],
-    harness_role: OpenAiRole,
-) -> Result<Vec<OpenAiMessage>, FairyError> {
-    let mut messages = Vec::with_capacity(items.len());
-    let mut index = 0;
-    while index < items.len() {
-        match &items[index] {
-            PromptItem::ToolCall { .. } => {
-                let start = index;
-                while index < items.len() && matches!(items[index], PromptItem::ToolCall { .. }) {
-                    index += 1;
-                }
-                let calls = items[start..index]
-                    .iter()
-                    .map(|item| match item {
-                        PromptItem::ToolCall { call } => Ok(call.clone()),
-                        _ => Err(invalid_model_request("工具调用历史分组失败")),
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                messages.push(OpenAiMessage::tool_calls(&calls));
-            }
-            PromptItem::ToolResult { result } => {
-                messages.push(OpenAiMessage::tool_result(result)?);
-                index += 1;
-            }
-            item => {
-                messages.push(map_prompt_item(item, harness_role)?);
-                index += 1;
-            }
-        }
-    }
-    Ok(messages)
-}
-
 fn map_prompt_item(
     item: &PromptItem,
     harness_role: OpenAiRole,
@@ -252,9 +137,6 @@ fn map_prompt_item(
         PromptItem::AssistantMessage { content } => {
             Ok(OpenAiMessage::new(OpenAiRole::Assistant, content.clone()))
         }
-        PromptItem::ToolCall { .. } | PromptItem::ToolResult { .. } => Err(invalid_model_request(
-            "当前协议 mapper 尚未启用工具历史 item",
-        )),
         PromptItem::CharacterActivated { snapshot } => Ok(OpenAiMessage::new(
             harness_role,
             character_context_data(snapshot)?,
@@ -266,7 +148,7 @@ fn map_prompt_item(
         PromptItem::RetrievedContext { .. }
         | PromptItem::CapabilityStatus { .. }
         | PromptItem::CompactionSummary { .. }
-        | PromptItem::ExtractionInput { .. } => {
+        | PromptItem::ExtractionBatch { .. } => {
             Ok(OpenAiMessage::new(OpenAiRole::User, context_data(item)?))
         }
     }

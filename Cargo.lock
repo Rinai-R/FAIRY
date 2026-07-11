@@ -1158,16 +1158,10 @@ dependencies = [
  "async-trait",
  "fairy-domain",
  "fairy-harness",
- "futures-util",
- "reqwest",
  "rusqlite",
- "secrecy",
  "serde",
  "serde_json",
  "tempfile",
- "tokio",
- "tokio-util",
- "url",
 ]
 
 [[package]]

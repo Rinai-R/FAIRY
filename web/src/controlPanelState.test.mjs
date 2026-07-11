@@ -7,7 +7,6 @@ import {
   MODEL_PROTOCOL_OPTIONS,
   assertControlPanelSection,
   buildModelConnectionInput,
-  buildSearchConnectionInput,
 } from "./controlPanelState.mjs";
 
 test("control panel exposes five product sections and two protocols", () => {
@@ -23,21 +22,6 @@ test("control panel exposes five product sections and two protocols", () => {
     "responses",
   ]);
   assert.throws(() => assertControlPanelSection("provider"), /unsupported/);
-});
-
-test("search form produces one explicit Brave provider without fallback fields", () => {
-  const input = buildSearchConnectionInput({
-    endpoint: " https://api.search.brave.com/res/v1/web/search ",
-  });
-  assert.deepEqual(input, {
-    provider: "brave",
-    endpoint: "https://api.search.brave.com/res/v1/web/search",
-  });
-  assert.equal("fallbackProvider" in input, false);
-  assert.throws(
-    () => buildSearchConnectionInput({ endpoint: "   " }),
-    /endpoint is required/,
-  );
 });
 
 test("model form produces the exact public input without cache switches", () => {
@@ -69,4 +53,10 @@ test("intelligence status layout targets only its dot and stacks on narrow windo
   assert.doesNotMatch(cssSource, /\.cp-intelligence-track\s*>\s*div\s*>\s*span/);
   assert.match(cssSource, /\.cp-intelligence-status-dot\s*\{/);
   assert.match(cssSource, /@media \(max-width: 520px\)[\s\S]*\.cp-intelligence-track\s*\{[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+});
+
+test("control panel does not expose retired network search configuration", () => {
+  const appSource = readFileSync(new URL("./apps/ControlPanelApp.jsx", import.meta.url), "utf8");
+
+  assert.doesNotMatch(appSource, /Brave Search|Search Endpoint|搜索连接/);
 });

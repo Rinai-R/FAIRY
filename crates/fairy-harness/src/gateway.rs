@@ -90,7 +90,7 @@ const fn full(reason: ContinuationFullRequestReason) -> ContinuationDecision {
 
 #[cfg(test)]
 mod tests {
-    use fairy_domain::{ModelRequestShape, PromptLane, ReasoningMode, ToolPolicy};
+    use fairy_domain::{ModelRequestShape, PromptLane, ReasoningMode};
 
     use super::*;
 
@@ -107,8 +107,6 @@ mod tests {
                 model: model.to_owned(),
                 instructions: "stable".to_owned(),
                 max_output_tokens: 160,
-                tool_policy: ToolPolicy::Disabled,
-                parallel_tool_calls: false,
                 reasoning: ReasoningMode::ProviderDefault,
                 prompt_cache_key: Some("fairy:c:respond".to_owned()),
             },

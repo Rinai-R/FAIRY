@@ -48,11 +48,6 @@ export function parseConfigurationChange(value) {
     if (typeof value.configured !== "boolean" || typeof value.ready !== "boolean") {
       throw new TypeError("model change status is invalid");
     }
-  } else if (value?.category === "search") {
-    assertExactKeys(value, ["category", "configured", "ready"], "search change");
-    if (typeof value.configured !== "boolean" || typeof value.ready !== "boolean") {
-      throw new TypeError("search change status is invalid");
-    }
   } else {
     throw new TypeError("unsupported configuration change category");
   }
@@ -66,7 +61,6 @@ export function configurationRefreshTarget(change) {
     case "model":
       return "model";
     case "user_profile":
-    case "search":
       return null;
     default:
       throw new TypeError("unsupported configuration refresh category");

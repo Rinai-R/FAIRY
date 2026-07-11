@@ -37,14 +37,3 @@ export function buildModelConnectionInput({ protocol, endpoint, model, authMode 
     authMode,
   });
 }
-
-export function buildSearchConnectionInput({ endpoint }) {
-  const normalizedEndpoint = endpoint.trim();
-  if (normalizedEndpoint.length === 0) {
-    throw new TypeError("Brave Search endpoint is required");
-  }
-  return Object.freeze({
-    provider: "brave",
-    endpoint: normalizedEndpoint,
-  });
-}

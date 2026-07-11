@@ -1,6 +1,6 @@
 use fairy_domain::{
-    CharacterId, CharacterSnapshot, ConversationId, ErrorCode, FairyError, PromptItem, PromptLane,
-    Revision, UserProfileSnapshot, WindowRevision,
+    CharacterId, CharacterSnapshot, ConversationBootstrap, ConversationId, ConversationMessageRole,
+    ErrorCode, FairyError, PromptItem, PromptLane, Revision, UserProfileSnapshot, WindowRevision,
 };
 
 #[derive(Clone, Debug)]
@@ -102,6 +102,63 @@ impl ConversationHistory {
         }
     }
 
+    pub fn restore(
+        bootstrap: &ConversationBootstrap,
+        character: &CharacterSnapshot,
+        user_profile: Option<&UserProfileSnapshot>,
+    ) -> Result<Self, FairyError> {
+        bootstrap.verify_integrity()?;
+        character.verify_integrity()?;
+        if bootstrap.conversation.character_id != character.character_id() {
+            return Err(FairyError::new(
+                ErrorCode::InvalidConversationRecord,
+                "持久会话不属于待恢复角色",
+                false,
+            ));
+        }
+        if let Some(profile) = user_profile {
+            profile.verify_integrity()?;
+        }
+
+        let mut history = Self::new(bootstrap.conversation.id);
+        history.activate_character(character);
+        if let Some(profile) = user_profile {
+            history.synchronize_user_profile(profile);
+        }
+        if let Some(summary) = bootstrap.prompt_window.summary.as_ref() {
+            if summary.is_empty() || summary.chars().any(|character| character == '\0') {
+                return Err(FairyError::new(
+                    ErrorCode::PromptHistoryInvalid,
+                    "持久会话摘要为空或包含 NUL",
+                    false,
+                ));
+            }
+            history.append_restored(PromptItem::CompactionSummary {
+                summary: summary.clone(),
+            });
+        }
+        for message in bootstrap
+            .messages
+            .iter()
+            .filter(|message| message.sequence > bootstrap.prompt_window.cutoff_message_sequence)
+        {
+            let item = match message.role {
+                ConversationMessageRole::User => PromptItem::UserMessage {
+                    content: message.content.clone(),
+                },
+                ConversationMessageRole::Assistant => PromptItem::AssistantMessage {
+                    content: message.content.clone(),
+                },
+            };
+            history.append_restored(item);
+        }
+        history.respond.window_revision = bootstrap.prompt_window.revision;
+        history.compact.window_revision = bootstrap.prompt_window.revision;
+        history.respond.seal_current_prefix()?;
+        history.compact.seal_current_prefix()?;
+        Ok(history)
+    }
+
     #[must_use]
     pub fn lane(&self, lane: PromptLane) -> &LaneHistory {
         match lane {
@@ -185,6 +242,11 @@ impl ConversationHistory {
     }
 
     fn append_all_lanes(&mut self, item: PromptItem) {
+        self.respond.append(item.clone());
+        self.compact.append(item);
+    }
+
+    fn append_restored(&mut self, item: PromptItem) {
         self.respond.append(item.clone());
         self.compact.append(item);
     }

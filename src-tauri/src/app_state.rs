@@ -2,16 +2,17 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use fairy_domain::{
-    AuthMode, ConversationId, ErrorCode, FairyError, IntelligenceStoreSummary, KnowledgeCatalog,
-    KnowledgeId, KnowledgeRecord, ModelConnectionConfig, ModelConnectionInput, ModelProtocol,
-    SearchConnectionConfig, SearchConnectionInput, SearchProvider,
+    AuthMode, CharacterId, ConversationId, ErrorCode, ExtractionBatchCatalog, ExtractionBatchId,
+    FairyError, IntelligenceStoreSummary, KnowledgeCatalog, KnowledgeId, KnowledgeRecord,
+    MemoryScope, ModelConnectionConfig, ModelConnectionInput, ModelProtocol, NewPersonalMemory,
+    PersonalMemoryCatalog, PersonalMemoryId, PersonalMemoryKind, PersonalMemoryRecord, TurnId,
 };
-use fairy_harness::{CompanionIntelligence, HarnessRuntime, IntelligenceBinding, WebSearchGateway};
-use fairy_intelligence::{BraveSearchGateway, IntelligenceStore};
+use fairy_harness::{CompanionPersistence, HarnessRuntime, PersistenceBinding};
+use fairy_intelligence::IntelligenceStore;
 use fairy_model_openai::build_openai_compatible_gateway;
 use fairy_storage::{
-    CharacterStore, ModelConnectionStore, SearchConnectionStore, StorageRoot,
-    SystemSearchSecretStore, SystemSecretStore, UserProfileStore,
+    CharacterStore, ModelConnectionStore, StorageRoot, SystemSecretStore, UserProfileStore,
+    cleanup_legacy_search_artifacts,
 };
 use secrecy::SecretString;
 use serde::Serialize;
@@ -22,14 +23,10 @@ pub struct AppState {
     pub characters: CharacterStore,
     pub user_profiles: UserProfileStore,
     model_connections: ModelConnectionStore<SystemSecretStore>,
-    search_connections: SearchConnectionStore<SystemSearchSecretStore>,
-    search_gateway: Mutex<Option<Arc<dyn WebSearchGateway + Send + Sync>>>,
-    search_error: Mutex<Option<FairyError>>,
     intelligence: Option<Arc<IntelligenceStore>>,
     intelligence_error: Option<FairyError>,
     runtime: Mutex<Option<Arc<HarnessRuntime>>>,
     model_error: Mutex<Option<AppError>>,
-    active_conversation_id: Mutex<Option<ConversationId>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -48,22 +45,6 @@ pub struct PublicModelConnection {
     pub endpoint: String,
     pub model: String,
     pub auth_mode: AuthMode,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SearchConnectionStatus {
-    pub configured: bool,
-    pub ready: bool,
-    pub config: Option<PublicSearchConnection>,
-    pub error: Option<AppError>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PublicSearchConnection {
-    pub provider: SearchProvider,
-    pub endpoint: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -87,34 +68,20 @@ impl From<&ModelConnectionConfig> for PublicModelConnection {
     }
 }
 
-impl From<&SearchConnectionConfig> for PublicSearchConnection {
-    fn from(config: &SearchConnectionConfig) -> Self {
-        Self {
-            provider: config.provider(),
-            endpoint: config.endpoint().to_owned(),
-        }
-    }
-}
-
 impl AppState {
     pub fn initialize(config_directory: impl AsRef<Path>) -> Result<Self, AppError> {
         let root = StorageRoot::new(config_directory).map_err(AppError::from)?;
         let characters = CharacterStore::new(root.clone());
         let user_profiles = UserProfileStore::new(root.clone());
         let model_connections = ModelConnectionStore::new(root.clone(), SystemSecretStore);
-        let search_connections = SearchConnectionStore::new(root.clone(), SystemSearchSecretStore);
+        if let Err(error) = cleanup_legacy_search_artifacts(&root) {
+            eprintln!("FAIRY legacy search cleanup warning: {error}");
+        }
         let (intelligence, intelligence_error) =
             match IntelligenceStore::open(root.directory().join("intelligence/fairy.sqlite3")) {
                 Ok(store) => (Some(Arc::new(store)), None),
                 Err(error) => (None, Some(error)),
             };
-        let (search_gateway, search_error) = match search_connections.resolve() {
-            Ok(connection) => match build_search_gateway(connection.config, connection.api_key) {
-                Ok(gateway) => (Some(gateway), None),
-                Err(error) => (None, Some(error)),
-            },
-            Err(error) => (None, Some(error)),
-        };
         let (runtime, model_error) = match model_connections.resolve() {
             Ok(connection) => match build_runtime(connection.config, connection.api_key) {
                 Ok(runtime) => (Some(Arc::new(runtime)), None),
@@ -123,8 +90,7 @@ impl AppState {
             Err(error) => (None, Some(AppError::from(error))),
         };
         if let Some(runtime) = runtime.as_ref() {
-            runtime.replace_web_search_gateway(search_gateway.clone());
-            runtime.replace_intelligence_binding(intelligence_binding(
+            runtime.replace_persistence_binding(persistence_binding(
                 intelligence.as_ref(),
                 intelligence_error.as_ref(),
             ));
@@ -134,14 +100,10 @@ impl AppState {
             characters,
             user_profiles,
             model_connections,
-            search_connections,
-            search_gateway: Mutex::new(search_gateway),
-            search_error: Mutex::new(search_error),
             intelligence,
             intelligence_error,
             runtime: Mutex::new(runtime),
             model_error: Mutex::new(model_error),
-            active_conversation_id: Mutex::new(None),
         })
     }
 
@@ -157,18 +119,6 @@ impl AppState {
                 false,
             ))),
         }
-    }
-
-    pub fn register_active_conversation(
-        &self,
-        conversation_id: ConversationId,
-    ) -> Result<(), AppError> {
-        *self.active_conversation_lock()? = Some(conversation_id);
-        Ok(())
-    }
-
-    pub fn active_conversation_id(&self) -> Result<Option<ConversationId>, AppError> {
-        Ok(*self.active_conversation_lock()?)
     }
 
     pub fn model_status(&self) -> ModelConnectionStatus {
@@ -193,46 +143,6 @@ impl AppState {
                 }
             }
             Err(error) => ModelConnectionStatus {
-                configured: false,
-                ready: false,
-                config: None,
-                error: Some(AppError::from(error)),
-            },
-        }
-    }
-
-    pub fn search_status(&self) -> SearchConnectionStatus {
-        match self.search_connections.status() {
-            Ok(Some(config)) => {
-                let (ready, error) = match self.search_gateway_lock() {
-                    Ok(gateway) if gateway.is_some() => (true, None),
-                    Ok(_) => match self.search_error_lock() {
-                        Ok(error) => match error.clone() {
-                            Some(error) => (false, Some(AppError::from(error))),
-                            None => (false, Some(AppError::state_unavailable())),
-                        },
-                        Err(error) => (false, Some(error)),
-                    },
-                    Err(error) => (false, Some(error)),
-                };
-                SearchConnectionStatus {
-                    configured: true,
-                    ready,
-                    config: Some(PublicSearchConnection::from(&config)),
-                    error,
-                }
-            }
-            Ok(None) => SearchConnectionStatus {
-                configured: false,
-                ready: false,
-                config: None,
-                error: Some(AppError::from(FairyError::new(
-                    ErrorCode::SearchConfigRequired,
-                    "请先配置 Brave Search 连接",
-                    false,
-                ))),
-            },
-            Err(error) => SearchConnectionStatus {
                 configured: false,
                 ready: false,
                 config: None,
@@ -314,49 +224,78 @@ impl AppState {
             .map_err(AppError::from)
     }
 
-    pub fn save_search_connection(
+    pub fn personal_memory_catalog(
         &self,
-        input: SearchConnectionInput,
-        api_key: Option<String>,
-    ) -> Result<SearchConnectionStatus, AppError> {
-        let config = self
-            .search_connections
-            .save(input, api_key.map(SecretString::from))
-            .map_err(AppError::from)?;
-        let resolved = self.search_connections.resolve().map_err(AppError::from)?;
-        let gateway =
-            build_search_gateway(resolved.config, resolved.api_key).map_err(AppError::from)?;
-        *self.search_gateway_lock()? = Some(gateway.clone());
-        *self.search_error_lock()? = None;
-        if let Some(runtime) = self.runtime_lock()?.as_ref() {
-            runtime.replace_web_search_gateway(Some(gateway));
-        }
-        Ok(SearchConnectionStatus {
-            configured: true,
-            ready: true,
-            config: Some(PublicSearchConnection::from(&config)),
-            error: None,
-        })
+        character_id: CharacterId,
+    ) -> Result<PersonalMemoryCatalog, AppError> {
+        self.intelligence_store()?
+            .personal_memory_catalog(character_id)
+            .map_err(AppError::from)
     }
 
-    pub fn clear_search_connection(&self) -> Result<SearchConnectionStatus, AppError> {
-        self.search_connections.clear().map_err(AppError::from)?;
-        *self.search_gateway_lock()? = None;
-        let error = FairyError::new(
-            ErrorCode::SearchConfigRequired,
-            "请先配置 Brave Search 连接",
-            false,
-        );
-        *self.search_error_lock()? = Some(error.clone());
-        if let Some(runtime) = self.runtime_lock()?.as_ref() {
-            runtime.replace_web_search_gateway(None);
-        }
-        Ok(SearchConnectionStatus {
-            configured: false,
-            ready: false,
-            config: None,
-            error: Some(AppError::from(error)),
-        })
+    pub fn extraction_batch_catalog(
+        &self,
+        character_id: CharacterId,
+    ) -> Result<ExtractionBatchCatalog, AppError> {
+        self.intelligence_store()?
+            .extraction_batch_catalog(character_id)
+            .map_err(AppError::from)
+    }
+
+    pub fn create_personal_memory(
+        &self,
+        kind: PersonalMemoryKind,
+        scope: MemoryScope,
+        content: String,
+        confidence_basis_points: u16,
+    ) -> Result<PersonalMemoryRecord, AppError> {
+        self.intelligence_store()?
+            .append_personal_memory(NewPersonalMemory {
+                kind,
+                scope,
+                content,
+                confidence_basis_points,
+                source_conversation_id: ConversationId::new(),
+                source_turn_id: TurnId::new(),
+                supersedes_id: None,
+            })
+            .map_err(AppError::from)
+    }
+
+    pub fn revise_personal_memory(
+        &self,
+        id: PersonalMemoryId,
+        content: String,
+        confidence_basis_points: u16,
+    ) -> Result<PersonalMemoryRecord, AppError> {
+        self.intelligence_store()?
+            .revise_personal_memory(id, content, confidence_basis_points)
+            .map_err(AppError::from)
+    }
+
+    pub fn tombstone_personal_memory(&self, id: PersonalMemoryId) -> Result<(), AppError> {
+        self.intelligence_store()?
+            .tombstone_personal_memory(id)
+            .map_err(AppError::from)
+    }
+
+    pub fn assign_legacy_relationship(
+        &self,
+        id: PersonalMemoryId,
+        character_id: CharacterId,
+    ) -> Result<PersonalMemoryRecord, AppError> {
+        self.intelligence_store()?
+            .assign_legacy_relationship(id, character_id)
+            .map_err(AppError::from)
+    }
+
+    pub fn retry_extraction_batch(
+        &self,
+        id: ExtractionBatchId,
+    ) -> Result<ConversationId, AppError> {
+        self.intelligence_store()?
+            .retry_failed_extraction_batch(id)
+            .map_err(AppError::from)
     }
 
     pub fn save_model_connection(
@@ -381,8 +320,7 @@ impl AppState {
         } else {
             let new_runtime =
                 Arc::new(HarnessRuntime::new(model, gateway).map_err(AppError::from)?);
-            new_runtime.replace_web_search_gateway(self.search_gateway_lock()?.clone());
-            new_runtime.replace_intelligence_binding(intelligence_binding(
+            new_runtime.replace_persistence_binding(persistence_binding(
                 self.intelligence.as_ref(),
                 self.intelligence_error.as_ref(),
             ));
@@ -412,7 +350,6 @@ impl AppState {
         }
         self.model_connections.clear().map_err(AppError::from)?;
         *self.runtime_lock()? = None;
-        *self.active_conversation_lock()? = None;
         let error = AppError::from(FairyError::new(
             ErrorCode::ModelConfigRequired,
             "请先配置模型连接",
@@ -439,26 +376,6 @@ impl AppState {
             .map_err(|_| AppError::state_unavailable())
     }
 
-    fn search_gateway_lock(
-        &self,
-    ) -> Result<MutexGuard<'_, Option<Arc<dyn WebSearchGateway + Send + Sync>>>, AppError> {
-        self.search_gateway
-            .lock()
-            .map_err(|_| AppError::state_unavailable())
-    }
-
-    fn search_error_lock(&self) -> Result<MutexGuard<'_, Option<FairyError>>, AppError> {
-        self.search_error
-            .lock()
-            .map_err(|_| AppError::state_unavailable())
-    }
-
-    fn active_conversation_lock(&self) -> Result<MutexGuard<'_, Option<ConversationId>>, AppError> {
-        self.active_conversation_id
-            .lock()
-            .map_err(|_| AppError::state_unavailable())
-    }
-
     fn intelligence_store(&self) -> Result<&Arc<IntelligenceStore>, AppError> {
         match self.intelligence.as_ref() {
             Some(store) => Ok(store),
@@ -470,29 +387,22 @@ impl AppState {
     }
 }
 
-fn intelligence_binding(
+fn persistence_binding(
     store: Option<&Arc<IntelligenceStore>>,
     error: Option<&FairyError>,
-) -> IntelligenceBinding {
+) -> PersistenceBinding {
     if let Some(store) = store {
-        let provider: Arc<dyn CompanionIntelligence + Send + Sync> = store.clone();
-        IntelligenceBinding::Available(provider)
+        let provider: Arc<dyn CompanionPersistence + Send + Sync> = store.clone();
+        PersistenceBinding::Available(provider)
     } else if let Some(error) = error {
-        IntelligenceBinding::Unavailable(error.clone())
+        PersistenceBinding::Unavailable(error.clone())
     } else {
-        IntelligenceBinding::Unavailable(FairyError::new(
+        PersistenceBinding::Unavailable(FairyError::new(
             ErrorCode::IntelligenceUnavailable,
             "本地智能层不可用",
             false,
         ))
     }
-}
-
-fn build_search_gateway(
-    config: SearchConnectionConfig,
-    api_key: SecretString,
-) -> Result<Arc<dyn WebSearchGateway + Send + Sync>, FairyError> {
-    Ok(Arc::new(BraveSearchGateway::new(config, api_key)?))
 }
 
 fn build_runtime(
@@ -506,6 +416,8 @@ fn build_runtime(
 
 #[cfg(test)]
 mod tests {
+    use fairy_domain::ConversationId;
+
     use super::*;
     #[test]
     fn missing_model_is_queryable_without_a_mock_runtime() {
@@ -527,31 +439,23 @@ mod tests {
     }
 
     #[test]
-    fn search_and_intelligence_statuses_are_explicit_and_secret_free() {
+    fn intelligence_status_is_explicit_and_secret_free() {
         let directory = tempfile::tempdir().expect("create app state directory");
         let state = AppState::initialize(directory.path()).expect("initialize app state");
 
-        let search = state.search_status();
-        assert!(!search.configured);
-        assert!(!search.ready);
-        assert_eq!(
-            search.error.as_ref().expect("missing search error").code,
-            "SEARCH_CONFIG_REQUIRED"
-        );
-
         let intelligence = state.intelligence_status();
         assert!(intelligence.ready);
-        assert_eq!(intelligence.schema_version, Some(2));
+        assert_eq!(intelligence.schema_version, Some(3));
         assert_eq!(
             intelligence
                 .summary
                 .as_ref()
                 .expect("intelligence summary")
-                .active_personal_memories,
+                .active_global_memories,
             0
         );
 
-        let json = serde_json::to_string(&(search, intelligence)).expect("serialize statuses");
+        let json = serde_json::to_string(&intelligence).expect("serialize status");
         for forbidden in [
             "apiKey",
             "api_key",
@@ -648,6 +552,43 @@ mod tests {
     }
 
     #[test]
+    fn personal_memory_management_is_scoped_and_secret_free() {
+        let directory = tempfile::tempdir().expect("create app state directory");
+        let state = AppState::initialize(directory.path()).expect("initialize app state");
+        let character_id = CharacterId::new();
+        let created = state
+            .create_personal_memory(
+                PersonalMemoryKind::Relationship,
+                MemoryScope::Character { character_id },
+                "用户愿意下次继续聊这个话题".to_owned(),
+                9000,
+            )
+            .expect("create relationship memory");
+        let catalog = state
+            .personal_memory_catalog(character_id)
+            .expect("read personal catalog");
+        assert_eq!(catalog.character, vec![created.clone()]);
+        let revised = state
+            .revise_personal_memory(created.id, "用户明确说下次继续聊这个话题".to_owned(), 9500)
+            .expect("revise relationship memory");
+        assert_eq!(revised.supersedes_id, Some(created.id));
+        state
+            .tombstone_personal_memory(revised.id)
+            .expect("tombstone relationship memory");
+        assert!(
+            state
+                .personal_memory_catalog(character_id)
+                .expect("catalog after tombstone")
+                .character
+                .is_empty()
+        );
+        let json = serde_json::to_string(&created).expect("serialize memory");
+        for forbidden in ["apiKey", "api_key", "secret", "connectionId"] {
+            assert!(!json.contains(forbidden));
+        }
+    }
+
+    #[test]
     fn configured_status_is_ready_and_never_serializes_secret_or_internal_id() {
         let directory = tempfile::tempdir().expect("create app state directory");
         let state = AppState::initialize(directory.path()).expect("initialize app state");
@@ -676,31 +617,5 @@ mod tests {
         assert!(!json.contains("api_key"));
         assert!(!json.contains("connectionId"));
         assert!(!json.contains("connection_id"));
-    }
-
-    #[test]
-    fn active_conversation_is_explicit_and_clears_with_model_runtime() {
-        let directory = tempfile::tempdir().expect("create app state directory");
-        let state = AppState::initialize(directory.path()).expect("initialize app state");
-        assert_eq!(
-            state.active_conversation_id().expect("read active id"),
-            None
-        );
-        let conversation_id = ConversationId::new();
-        state
-            .register_active_conversation(conversation_id)
-            .expect("register active conversation");
-        assert_eq!(
-            state.active_conversation_id().expect("read active id"),
-            Some(conversation_id)
-        );
-
-        state
-            .clear_model_connection()
-            .expect("clear model connection");
-        assert_eq!(
-            state.active_conversation_id().expect("read active id"),
-            None
-        );
     }
 }

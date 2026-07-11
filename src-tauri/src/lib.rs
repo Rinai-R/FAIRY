@@ -7,7 +7,6 @@ pub mod audio;
 pub mod capability;
 pub mod desktop;
 pub mod ipc;
-pub mod memory;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,13 +62,17 @@ pub fn run() {
             ipc::settings::get_model_connection_status,
             ipc::settings::save_model_connection,
             ipc::settings::clear_model_connection,
-            ipc::settings::get_search_connection_status,
-            ipc::settings::save_search_connection,
-            ipc::settings::clear_search_connection,
             ipc::settings::get_intelligence_status,
             ipc::settings::get_knowledge_catalog,
             ipc::settings::confirm_knowledge_candidate,
-            ipc::settings::tombstone_knowledge
+            ipc::settings::tombstone_knowledge,
+            ipc::settings::get_personal_memory_catalog,
+            ipc::settings::get_extraction_batch_catalog,
+            ipc::settings::create_personal_memory,
+            ipc::settings::revise_personal_memory,
+            ipc::settings::tombstone_personal_memory,
+            ipc::settings::assign_legacy_relationship,
+            ipc::settings::retry_extraction_batch
         ])
         .run(tauri::generate_context!())
         .expect("FAIRY desktop runtime failed");

@@ -1,9 +1,95 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AssistantSource, ConversationId, ErrorCode, FairyError, HarnessEvent, HarnessEventPayload,
-    LaneModelUsage, ResponseText, Revision, SpeechText, TurnId,
+    AssistantSource, CharacterId, ConversationId, ErrorCode, FairyError, HarnessEvent,
+    HarnessEventPayload, LaneModelUsage, MessageId, ResponseText, Revision, SpeechText, TurnId,
+    WindowRevision,
 };
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationMessageRole {
+    User,
+    Assistant,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationRecord {
+    pub id: ConversationId,
+    pub character_id: CharacterId,
+    pub created_at_unix_ms: i64,
+    pub updated_at_unix_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationMessageRecord {
+    pub id: MessageId,
+    pub conversation_id: ConversationId,
+    pub turn_id: TurnId,
+    pub sequence: u64,
+    pub role: ConversationMessageRole,
+    pub content: String,
+    pub created_at_unix_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistedTurnRecord {
+    pub id: TurnId,
+    pub conversation_id: ConversationId,
+    pub state: TurnState,
+    pub error: Option<FairyError>,
+    pub created_at_unix_ms: i64,
+    pub updated_at_unix_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptWindowRecord {
+    pub conversation_id: ConversationId,
+    pub revision: WindowRevision,
+    pub summary: Option<String>,
+    pub cutoff_message_sequence: u64,
+    pub updated_at_unix_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationBootstrap {
+    pub conversation: ConversationRecord,
+    pub messages: Vec<ConversationMessageRecord>,
+    pub prompt_window: PromptWindowRecord,
+}
+
+impl ConversationBootstrap {
+    pub fn verify_integrity(&self) -> Result<(), FairyError> {
+        if self.prompt_window.conversation_id != self.conversation.id {
+            return Err(invalid_conversation(
+                "Prompt window 不属于当前 conversation",
+            ));
+        }
+        let mut previous_sequence = None;
+        for message in &self.messages {
+            if message.conversation_id != self.conversation.id {
+                return Err(invalid_conversation("消息不属于当前 conversation"));
+            }
+            if message.content.is_empty() || message.content.chars().any(|value| value == '\0') {
+                return Err(invalid_conversation("持久消息正文无效"));
+            }
+            if previous_sequence.is_some_and(|previous| message.sequence <= previous) {
+                return Err(invalid_conversation("持久消息 sequence 不是严格递增"));
+            }
+            previous_sequence = Some(message.sequence);
+        }
+        Ok(())
+    }
+}
+
+fn invalid_conversation(message: &'static str) -> FairyError {
+    FairyError::new(ErrorCode::InvalidConversationRecord, message, false)
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -162,6 +248,68 @@ impl TurnLifecycle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bootstrap() -> ConversationBootstrap {
+        let conversation_id = ConversationId::new();
+        let turn_id = TurnId::new();
+        ConversationBootstrap {
+            conversation: ConversationRecord {
+                id: conversation_id,
+                character_id: CharacterId::new(),
+                created_at_unix_ms: 1,
+                updated_at_unix_ms: 2,
+            },
+            messages: vec![
+                ConversationMessageRecord {
+                    id: MessageId::new(),
+                    conversation_id,
+                    turn_id,
+                    sequence: 1,
+                    role: ConversationMessageRole::User,
+                    content: "你好".to_owned(),
+                    created_at_unix_ms: 1,
+                },
+                ConversationMessageRecord {
+                    id: MessageId::new(),
+                    conversation_id,
+                    turn_id,
+                    sequence: 2,
+                    role: ConversationMessageRole::Assistant,
+                    content: "嗯，怎么啦？".to_owned(),
+                    created_at_unix_ms: 2,
+                },
+            ],
+            prompt_window: PromptWindowRecord {
+                conversation_id,
+                revision: WindowRevision::INITIAL,
+                summary: None,
+                cutoff_message_sequence: 0,
+                updated_at_unix_ms: 2,
+            },
+        }
+    }
+
+    #[test]
+    fn conversation_bootstrap_accepts_one_owned_ordered_transcript() {
+        bootstrap()
+            .verify_integrity()
+            .expect("valid conversation bootstrap");
+    }
+
+    #[test]
+    fn conversation_bootstrap_rejects_cross_conversation_and_unordered_messages() {
+        let mut cross_conversation = bootstrap();
+        cross_conversation.messages[1].conversation_id = ConversationId::new();
+        assert!(cross_conversation.verify_integrity().is_err());
+
+        let mut unordered = bootstrap();
+        unordered.messages[1].sequence = unordered.messages[0].sequence;
+        assert!(unordered.verify_integrity().is_err());
+
+        let mut wrong_window = bootstrap();
+        wrong_window.prompt_window.conversation_id = ConversationId::new();
+        assert!(wrong_window.verify_integrity().is_err());
+    }
 
     fn lifecycle() -> TurnLifecycle {
         TurnLifecycle::new(ConversationId::new(), TurnId::new())

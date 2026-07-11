@@ -324,6 +324,91 @@ export function parseSessionSnapshot(value) {
   });
 }
 
+function parsePersistedMessage(value, index, conversationId) {
+  const label = `conversation bootstrap.messages[${index}]`;
+  assertExactKeys(
+    value,
+    ["id", "conversationId", "turnId", "sequence", "role", "content", "createdAtUnixMs"],
+    label,
+  );
+  if (value.conversationId !== conversationId) {
+    throw new TypeError(`${label}.conversationId does not match`);
+  }
+  if (value.role !== "user" && value.role !== "assistant") {
+    throw new TypeError(`${label}.role is unsupported`);
+  }
+  return Object.freeze({
+    id: parseUuid(value.id, `${label}.id`),
+    conversationId,
+    turnId: parseUuid(value.turnId, `${label}.turnId`),
+    sequence: parseRevision(value.sequence, `${label}.sequence`),
+    role: value.role,
+    content: parseNonEmptyString(value.content, `${label}.content`),
+    createdAtUnixMs: parseNonNegativeInteger(value.createdAtUnixMs, `${label}.createdAtUnixMs`),
+  });
+}
+
+export function parseConversationBootstrap(value) {
+  assertExactKeys(value, ["conversation", "messages", "promptWindow"], "conversation bootstrap");
+  assertExactKeys(
+    value.conversation,
+    ["id", "characterId", "createdAtUnixMs", "updatedAtUnixMs"],
+    "conversation bootstrap.conversation",
+  );
+  const conversationId = parseUuid(value.conversation.id, "conversation bootstrap.conversation.id");
+  const conversation = Object.freeze({
+    id: conversationId,
+    characterId: parseUuid(value.conversation.characterId, "conversation bootstrap.conversation.characterId"),
+    createdAtUnixMs: parseNonNegativeInteger(value.conversation.createdAtUnixMs, "conversation bootstrap.conversation.createdAtUnixMs"),
+    updatedAtUnixMs: parseNonNegativeInteger(value.conversation.updatedAtUnixMs, "conversation bootstrap.conversation.updatedAtUnixMs"),
+  });
+  if (!Array.isArray(value.messages)) {
+    throw new TypeError("conversation bootstrap.messages must be an array");
+  }
+  const messages = Object.freeze(
+    value.messages.map((message, index) => parsePersistedMessage(message, index, conversationId)),
+  );
+  for (let index = 1; index < messages.length; index += 1) {
+    if (messages[index - 1].sequence >= messages[index].sequence) {
+      throw new TypeError("conversation bootstrap.messages must be strictly ordered");
+    }
+  }
+  assertExactKeys(
+    value.promptWindow,
+    ["conversationId", "revision", "summary", "cutoffMessageSequence", "updatedAtUnixMs"],
+    "conversation bootstrap.promptWindow",
+  );
+  if (value.promptWindow.conversationId !== conversationId) {
+    throw new TypeError("conversation bootstrap.promptWindow.conversationId does not match");
+  }
+  const promptWindow = Object.freeze({
+    conversationId,
+    revision: parseRevision(value.promptWindow.revision, "conversation bootstrap.promptWindow.revision"),
+    summary: value.promptWindow.summary === null
+      ? null
+      : parseNonEmptyString(value.promptWindow.summary, "conversation bootstrap.promptWindow.summary"),
+    cutoffMessageSequence: parseNonNegativeInteger(
+      value.promptWindow.cutoffMessageSequence,
+      "conversation bootstrap.promptWindow.cutoffMessageSequence",
+    ),
+    updatedAtUnixMs: parseNonNegativeInteger(
+      value.promptWindow.updatedAtUnixMs,
+      "conversation bootstrap.promptWindow.updatedAtUnixMs",
+    ),
+  });
+  return Object.freeze({ conversation, messages, promptWindow });
+}
+
+export function parseCharacterActivation(value) {
+  assertExactKeys(value, ["character", "session"], "character activation");
+  const character = parseCharacter(value.character);
+  const session = parseConversationBootstrap(value.session);
+  if (session.conversation.characterId !== character.characterId) {
+    throw new TypeError("character activation session does not belong to character");
+  }
+  return Object.freeze({ character, session });
+}
+
 export function parseTurnOutcome(value) {
   assertExactKeys(
     value,
@@ -522,40 +607,6 @@ export function parseModelConnectionStatus(value) {
   });
 }
 
-export function parseSearchConnectionStatus(value) {
-  assertExactKeys(
-    value,
-    ["configured", "ready", "config", "error"],
-    "search status",
-  );
-  if (typeof value.configured !== "boolean" || typeof value.ready !== "boolean") {
-    throw new TypeError("search status flags must be booleans");
-  }
-  let config = null;
-  if (value.config !== null) {
-    assertExactKeys(value.config, ["provider", "endpoint"], "search status.config");
-    if (value.config.provider !== "brave") {
-      throw new TypeError("search status.config provider is unsupported");
-    }
-    config = Object.freeze({
-      provider: value.config.provider,
-      endpoint: parseNonEmptyString(
-        value.config.endpoint,
-        "search status.config.endpoint",
-      ),
-    });
-  }
-  return Object.freeze({
-    configured: value.configured,
-    ready: value.ready,
-    config,
-    error:
-      value.error === null
-        ? null
-        : parseWireError(value.error, "search status.error"),
-  });
-}
-
 export function parseIntelligenceStatus(value) {
   assertExactKeys(
     value,
@@ -579,20 +630,26 @@ export function parseIntelligenceStatus(value) {
     assertExactKeys(
       value.summary,
       [
-        "activePersonalMemories",
+        "conversations",
+        "activeGlobalMemories",
+        "activeCharacterMemories",
+        "needsReviewMemories",
+        "pendingExtractionTurns",
+        "runningBatches",
+        "failedBatches",
         "candidateKnowledge",
         "verifiedKnowledge",
-        "pendingJobs",
-        "runningJobs",
-        "failedJobs",
       ],
       "intelligence status.summary",
     );
     summary = Object.freeze({
-      activePersonalMemories: parseNonNegativeInteger(
-        value.summary.activePersonalMemories,
-        "intelligence status.summary.activePersonalMemories",
-      ),
+      conversations: parseNonNegativeInteger(value.summary.conversations, "intelligence status.summary.conversations"),
+      activeGlobalMemories: parseNonNegativeInteger(value.summary.activeGlobalMemories, "intelligence status.summary.activeGlobalMemories"),
+      activeCharacterMemories: parseNonNegativeInteger(value.summary.activeCharacterMemories, "intelligence status.summary.activeCharacterMemories"),
+      needsReviewMemories: parseNonNegativeInteger(value.summary.needsReviewMemories, "intelligence status.summary.needsReviewMemories"),
+      pendingExtractionTurns: parseNonNegativeInteger(value.summary.pendingExtractionTurns, "intelligence status.summary.pendingExtractionTurns"),
+      runningBatches: parseNonNegativeInteger(value.summary.runningBatches, "intelligence status.summary.runningBatches"),
+      failedBatches: parseNonNegativeInteger(value.summary.failedBatches, "intelligence status.summary.failedBatches"),
       candidateKnowledge: parseNonNegativeInteger(
         value.summary.candidateKnowledge,
         "intelligence status.summary.candidateKnowledge",
@@ -600,18 +657,6 @@ export function parseIntelligenceStatus(value) {
       verifiedKnowledge: parseNonNegativeInteger(
         value.summary.verifiedKnowledge,
         "intelligence status.summary.verifiedKnowledge",
-      ),
-      pendingJobs: parseNonNegativeInteger(
-        value.summary.pendingJobs,
-        "intelligence status.summary.pendingJobs",
-      ),
-      runningJobs: parseNonNegativeInteger(
-        value.summary.runningJobs,
-        "intelligence status.summary.runningJobs",
-      ),
-      failedJobs: parseNonNegativeInteger(
-        value.summary.failedJobs,
-        "intelligence status.summary.failedJobs",
       ),
     });
   }
@@ -723,9 +768,107 @@ export function parseConfirmedKnowledgeRecord(value) {
   return parseKnowledgeRecord(value, 0, "verified");
 }
 
+const MEMORY_KINDS = new Set(["preference", "profile", "relationship", "experience"]);
+
+function parseMemoryScope(value, label) {
+  assertObject(value, label);
+  if (value.type === "global" || value.type === "unassigned_legacy") {
+    assertExactKeys(value, ["type"], label);
+    return Object.freeze({ type: value.type });
+  }
+  if (value.type === "character") {
+    assertExactKeys(value, ["type", "characterId"], label);
+    return Object.freeze({
+      type: value.type,
+      characterId: parseUuid(value.characterId, `${label}.characterId`),
+    });
+  }
+  throw new TypeError(`${label}.type is unsupported`);
+}
+
+function parsePersonalMemoryRecord(value, index, labelPrefix = "personal memory") {
+  const label = `${labelPrefix}[${index}]`;
+  assertExactKeys(value, [
+    "id", "kind", "scope", "reviewStatus", "content", "status",
+    "confidenceBasisPoints", "sourceConversationId", "sourceTurnId",
+    "supersedesId", "createdAtUnixMs", "updatedAtUnixMs",
+  ], label);
+  if (!MEMORY_KINDS.has(value.kind)) throw new TypeError(`${label}.kind is unsupported`);
+  if (!["ready", "needs_review"].includes(value.reviewStatus)) {
+    throw new TypeError(`${label}.reviewStatus is unsupported`);
+  }
+  if (!["active", "superseded", "tombstone"].includes(value.status)) {
+    throw new TypeError(`${label}.status is unsupported`);
+  }
+  const confidence = parseNonNegativeInteger(value.confidenceBasisPoints, `${label}.confidenceBasisPoints`);
+  if (confidence > 10000) throw new TypeError(`${label}.confidenceBasisPoints is too large`);
+  return Object.freeze({
+    id: parseUuid(value.id, `${label}.id`),
+    kind: value.kind,
+    scope: parseMemoryScope(value.scope, `${label}.scope`),
+    reviewStatus: value.reviewStatus,
+    content: parseNonEmptyString(value.content, `${label}.content`),
+    status: value.status,
+    confidenceBasisPoints: confidence,
+    sourceConversationId: parseUuid(value.sourceConversationId, `${label}.sourceConversationId`),
+    sourceTurnId: parseUuid(value.sourceTurnId, `${label}.sourceTurnId`),
+    supersedesId: value.supersedesId === null ? null : parseUuid(value.supersedesId, `${label}.supersedesId`),
+    createdAtUnixMs: parseNonNegativeInteger(value.createdAtUnixMs, `${label}.createdAtUnixMs`),
+    updatedAtUnixMs: parseNonNegativeInteger(value.updatedAtUnixMs, `${label}.updatedAtUnixMs`),
+  });
+}
+
+export function parsePersonalMemory(value) {
+  return parsePersonalMemoryRecord(value, 0);
+}
+
+export function parsePersonalMemoryCatalog(value) {
+  assertExactKeys(value, ["global", "character", "needsReview"], "personal memory catalog");
+  for (const key of ["global", "character", "needsReview"]) {
+    if (!Array.isArray(value[key])) throw new TypeError(`personal memory catalog.${key} must be an array`);
+  }
+  return Object.freeze({
+    global: Object.freeze(value.global.map((record, index) => parsePersonalMemoryRecord(record, index, "global memory"))),
+    character: Object.freeze(value.character.map((record, index) => parsePersonalMemoryRecord(record, index, "character memory"))),
+    needsReview: Object.freeze(value.needsReview.map((record, index) => parsePersonalMemoryRecord(record, index, "review memory"))),
+  });
+}
+
+function parseExtractionBatchRecord(value, index, expectedStatus) {
+  const label = `${expectedStatus} batch[${index}]`;
+  assertExactKeys(value, [
+    "id", "conversationId", "characterId", "status", "firstTurnSequence",
+    "lastTurnSequence", "error", "createdAtUnixMs", "updatedAtUnixMs",
+  ], label);
+  if (value.status !== expectedStatus) throw new TypeError(`${label}.status does not match`);
+  return Object.freeze({
+    id: parseUuid(value.id, `${label}.id`),
+    conversationId: parseUuid(value.conversationId, `${label}.conversationId`),
+    characterId: parseUuid(value.characterId, `${label}.characterId`),
+    status: value.status,
+    firstTurnSequence: parseRevision(value.firstTurnSequence, `${label}.firstTurnSequence`),
+    lastTurnSequence: parseRevision(value.lastTurnSequence, `${label}.lastTurnSequence`),
+    error: value.error === null ? null : parseWireError(value.error, `${label}.error`),
+    createdAtUnixMs: parseNonNegativeInteger(value.createdAtUnixMs, `${label}.createdAtUnixMs`),
+    updatedAtUnixMs: parseNonNegativeInteger(value.updatedAtUnixMs, `${label}.updatedAtUnixMs`),
+  });
+}
+
+export function parseExtractionBatchCatalog(value) {
+  assertExactKeys(value, ["running", "failed"], "extraction batch catalog");
+  if (!Array.isArray(value.running) || !Array.isArray(value.failed)) {
+    throw new TypeError("extraction batch catalog lists must be arrays");
+  }
+  return Object.freeze({
+    running: Object.freeze(value.running.map((record, index) => parseExtractionBatchRecord(record, index, "running"))),
+    failed: Object.freeze(value.failed.map((record, index) => parseExtractionBatchRecord(record, index, "failed"))),
+  });
+}
+
 export function createCompanionState() {
   return Object.freeze({
     conversationId: null,
+    characterId: null,
     sessionState: "idle",
     activeTurnId: null,
     terminalTurn: null,
@@ -902,12 +1045,20 @@ function reduceHarnessEvent(state, event) {
 export function reduceCompanionState(state, action) {
   switch (action.type) {
     case "session_created": {
-      const session = parseSessionSnapshot(action.session);
+      const session = parseConversationBootstrap(action.session);
+      const transcript = Object.freeze(session.messages.map((message) => Object.freeze({
+        role: message.role,
+        text: message.content,
+        speechText: message.role === "assistant" ? message.content : undefined,
+        sources: message.role === "assistant" ? Object.freeze([]) : undefined,
+        status: "completed",
+        turnId: message.turnId,
+      })));
       return Object.freeze({
         ...createCompanionState(),
-        conversationId: session.conversationId,
-        sessionState: session.state,
-        activeTurnId: session.activeTurnId,
+        conversationId: session.conversation.id,
+        characterId: session.conversation.characterId,
+        transcript,
       });
     }
     case "session_cleared":

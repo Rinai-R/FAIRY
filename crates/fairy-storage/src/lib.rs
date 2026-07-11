@@ -4,16 +4,14 @@
 
 mod atomic_json;
 mod character_store;
+mod legacy_cleanup;
 mod model_config_store;
-mod search_config_store;
 mod secret_store;
 mod user_profile_store;
 
 pub use atomic_json::{DocumentRead, StorageRoot};
 pub use character_store::{ActiveCharacter, CharacterCatalog, CharacterDiagnostic, CharacterStore};
+pub use legacy_cleanup::cleanup_legacy_search_artifacts;
 pub use model_config_store::{ModelConnectionStore, ResolvedModelConnection};
-pub use search_config_store::{ResolvedSearchConnection, SearchConnectionStore};
-pub use secret_store::{
-    SearchSecretStore, SecretStore, SystemSearchSecretStore, SystemSecretStore,
-};
+pub use secret_store::{SecretStore, SystemSecretStore};
 pub use user_profile_store::{UserProfileStore, UserProfileUpdate};

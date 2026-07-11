@@ -3,8 +3,7 @@ use std::time::Duration;
 use fairy_domain::{
     AuthMode, CachedTokenObservation, CompiledPromptRequest, ErrorCode, FairyError,
     ModelConnectionCompiler, ModelConnectionId, ModelConnectionInput, ModelProtocol,
-    ModelRequestShape, ModelStreamEvent, PromptItem, PromptLane, ReasoningMode, ToolDefinition,
-    ToolName, ToolPolicy,
+    ModelRequestShape, ModelStreamEvent, PromptItem, PromptLane, ReasoningMode,
 };
 use fairy_harness::{ModelEventSink, ModelGateway};
 use fairy_model_openai::OpenAiChatCompletionsGateway;
@@ -44,8 +43,6 @@ fn request() -> CompiledPromptRequest {
             model: "test-model".to_owned(),
             instructions: "stable companion instructions".to_owned(),
             max_output_tokens: 160,
-            tool_policy: ToolPolicy::Disabled,
-            parallel_tool_calls: false,
             reasoning: ReasoningMode::ProviderDefault,
             prompt_cache_key: Some("fairy:test:respond".to_owned()),
         },
@@ -53,23 +50,6 @@ fn request() -> CompiledPromptRequest {
             content: "你好".to_owned(),
         }],
     }
-}
-
-fn tool_request() -> CompiledPromptRequest {
-    let mut request = request();
-    request.shape.tool_policy = ToolPolicy::Auto {
-        tools: vec![ToolDefinition {
-            name: ToolName::WebSearch,
-            description: "查询最新网页事实".to_owned(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
-                "additionalProperties": false
-            }),
-        }],
-    };
-    request
 }
 
 async fn gateway_for(
@@ -360,68 +340,7 @@ async fn abnormal_finish_reasons_are_explicit_failures() {
 }
 
 #[tokio::test]
-async fn assembles_chunked_tool_call_without_emitting_visible_text() {
-    let gateway = gateway_for(
-        vec![
-            delta(
-                serde_json::json!({
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "index": 0,
-                        "id": "call_search_1",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": "{\"query\":\"Rust"
-                        }
-                    }]
-                }),
-                serde_json::Value::Null,
-            ),
-            delta(
-                serde_json::json!({
-                    "tool_calls": [{
-                        "index": 0,
-                        "function": {"arguments": " 1.95\"}"}
-                    }]
-                }),
-                serde_json::Value::Null,
-            ),
-            delta(serde_json::json!({}), serde_json::json!("tool_calls")),
-            event(serde_json::json!({
-                "id": "chatcmpl-test",
-                "choices": [],
-                "usage": {"prompt_tokens": 12, "completion_tokens": 4}
-            })),
-            done(),
-        ],
-        200,
-        Duration::ZERO,
-    )
-    .await;
-    let mut sink = CollectSink::default();
-
-    let completion = gateway
-        .execute(tool_request(), CancellationToken::new(), &mut sink)
-        .await
-        .expect("complete tool call");
-
-    let fairy_domain::ModelTurnOutput::ToolCalls { calls } = completion.output else {
-        panic!("expected tool calls")
-    };
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].id, "call_search_1");
-    assert_eq!(calls[0].name, ToolName::WebSearch);
-    assert_eq!(calls[0].arguments_json, r#"{"query":"Rust 1.95"}"#);
-    assert!(sink.events.is_empty());
-    assert!(matches!(
-        completion.response_items.as_slice(),
-        [PromptItem::ToolCall { call }] if call == &calls[0]
-    ));
-}
-
-#[tokio::test]
-async fn tool_calls_are_rejected_when_undeclared_or_mixed_with_text() {
+async fn tool_calls_are_rejected() {
     let tool_delta = serde_json::json!({
         "tool_calls": [{
             "index": 0,
@@ -440,7 +359,7 @@ async fn tool_calls_are_rejected_when_undeclared_or_mixed_with_text() {
             ],
         ),
         (
-            tool_request(),
+            request(),
             vec![
                 delta(
                     serde_json::json!({"content": "文本"}),

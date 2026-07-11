@@ -1,4 +1,6 @@
-use fairy_domain::{ConversationId, ErrorCode, FairyError, HarnessEvent, TurnId};
+use fairy_domain::{
+    ConversationBootstrap, ConversationId, ErrorCode, FairyError, HarnessEvent, TurnId,
+};
 use fairy_harness::{CompactionResult, HarnessEventSink, SessionSnapshot, TurnOutcome};
 use tauri::{State, ipc::Channel};
 
@@ -17,21 +19,26 @@ impl HarnessEventSink for ChannelEventSink {
 }
 
 #[tauri::command]
-pub fn create_companion_session(state: State<'_, AppState>) -> Result<SessionSnapshot, AppError> {
+pub async fn create_companion_session(
+    state: State<'_, AppState>,
+) -> Result<ConversationBootstrap, AppError> {
     let runtime = state.runtime()?;
-    let session = runtime.create_session();
-    if let Some(character) = state.characters.active().map_err(AppError::from)? {
-        runtime
-            .activate_character(session.conversation_id, character)
-            .map_err(AppError::from)?;
-    }
-    if let Some(profile) = state.user_profiles.current().map_err(AppError::from)? {
-        runtime
-            .update_user_profile(session.conversation_id, profile)
-            .map_err(AppError::from)?;
-    }
-    state.register_active_conversation(session.conversation_id)?;
-    Ok(session)
+    let character = state
+        .characters
+        .active()
+        .map_err(AppError::from)?
+        .ok_or_else(|| {
+            AppError::from(FairyError::new(
+                ErrorCode::CharacterNotAvailable,
+                "请先创建并激活角色",
+                false,
+            ))
+        })?;
+    let profile = state.user_profiles.current().map_err(AppError::from)?;
+    runtime
+        .open_or_create_character_session(character, profile)
+        .await
+        .map_err(AppError::from)
 }
 
 #[tauri::command]

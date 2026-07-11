@@ -3,9 +3,7 @@ use std::net::IpAddr;
 use serde::{Deserialize, Serialize};
 use url::{Host, Url};
 
-use crate::{
-    ErrorCode, FairyError, ModelConnectionId, PromptItem, PromptLane, ToolCall, WindowRevision,
-};
+use crate::{ErrorCode, FairyError, ModelConnectionId, PromptItem, PromptLane, WindowRevision};
 
 const MODEL_CONNECTION_SCHEMA_VERSION: u32 = 2;
 const MAX_MODEL_NAME_CHARS: usize = 200;
@@ -130,27 +128,18 @@ pub struct ModelCompletion {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ModelTurnOutput {
     Text { text: String },
-    ToolCalls { calls: Vec<ToolCall> },
 }
 
 impl ModelTurnOutput {
     pub fn into_text(self) -> Result<String, FairyError> {
-        match self {
-            Self::Text { text } => Ok(text),
-            Self::ToolCalls { .. } => Err(FairyError::new(
-                ErrorCode::ModelResponseInvalid,
-                "当前模型阶段需要文本，但收到工具调用",
-                false,
-            )),
-        }
+        let Self::Text { text } = self;
+        Ok(text)
     }
 
     #[must_use]
     pub fn text(&self) -> Option<&str> {
-        match self {
-            Self::Text { text } => Some(text),
-            Self::ToolCalls { .. } => None,
-        }
+        let Self::Text { text } = self;
+        Some(text)
     }
 }
 

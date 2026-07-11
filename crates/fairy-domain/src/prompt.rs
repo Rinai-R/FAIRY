@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{CharacterSnapshot, ErrorCode, FairyError, RetrievalContext, UserProfileSnapshot};
+use crate::{
+    CharacterSnapshot, ErrorCode, ExtractionBatchInput, FairyError, RetrievalContext,
+    UserProfileSnapshot,
+};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
@@ -124,19 +127,11 @@ pub enum PromptItem {
         state: CapabilityState,
         error: Option<FairyError>,
     },
-    ToolCall {
-        call: ToolCall,
-    },
-    ToolResult {
-        result: ToolResult,
-    },
     CompactionSummary {
         summary: String,
     },
-    ExtractionInput {
-        user_message: String,
-        assistant_message: String,
-        sources: Vec<AssistantSource>,
+    ExtractionBatch {
+        input: ExtractionBatchInput,
     },
 }
 
@@ -154,85 +149,6 @@ pub enum CapabilityState {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ToolName {
-    WebSearch,
-}
-
-impl ToolName {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::WebSearch => "web_search",
-        }
-    }
-
-    pub fn parse(value: &str) -> Result<Self, FairyError> {
-        match value {
-            "web_search" => Ok(Self::WebSearch),
-            _ => Err(FairyError::new(
-                ErrorCode::ModelResponseInvalid,
-                "模型请求了未声明的工具名称",
-                false,
-            )),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ToolDefinition {
-    pub name: ToolName,
-    pub description: String,
-    pub parameters: serde_json::Value,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ToolCall {
-    pub id: String,
-    pub name: ToolName,
-    pub arguments_json: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ToolResult {
-    pub call_id: String,
-    pub name: ToolName,
-    pub outcome: ToolResultOutcome,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum ToolResultOutcome {
-    Success {
-        output: String,
-        sources: Vec<AssistantSource>,
-    },
-    Failed {
-        error: FairyError,
-    },
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolPolicy {
-    Disabled,
-    Auto { tools: Vec<ToolDefinition> },
-}
-
-impl ToolPolicy {
-    #[must_use]
-    pub fn tools(&self) -> &[ToolDefinition] {
-        match self {
-            Self::Disabled => &[],
-            Self::Auto { tools } => tools,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
 pub enum ReasoningMode {
     ProviderDefault,
 }
@@ -243,8 +159,6 @@ pub struct ModelRequestShape {
     pub model: String,
     pub instructions: String,
     pub max_output_tokens: u32,
-    pub tool_policy: ToolPolicy,
-    pub parallel_tool_calls: bool,
     pub reasoning: ReasoningMode,
     pub prompt_cache_key: Option<String>,
 }
