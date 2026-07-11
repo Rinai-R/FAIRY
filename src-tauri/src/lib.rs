@@ -62,7 +62,14 @@ pub fn run() {
             ipc::settings::clear_user_profile,
             ipc::settings::get_model_connection_status,
             ipc::settings::save_model_connection,
-            ipc::settings::clear_model_connection
+            ipc::settings::clear_model_connection,
+            ipc::settings::get_search_connection_status,
+            ipc::settings::save_search_connection,
+            ipc::settings::clear_search_connection,
+            ipc::settings::get_intelligence_status,
+            ipc::settings::get_knowledge_catalog,
+            ipc::settings::confirm_knowledge_candidate,
+            ipc::settings::tombstone_knowledge
         ])
         .run(tauri::generate_context!())
         .expect("FAIRY desktop runtime failed");

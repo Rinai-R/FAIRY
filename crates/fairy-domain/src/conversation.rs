@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ConversationId, ErrorCode, FairyError, HarnessEvent, HarnessEventPayload, LaneModelUsage,
-    ResponseText, Revision, TurnId,
+    AssistantSource, ConversationId, ErrorCode, FairyError, HarnessEvent, HarnessEventPayload,
+    LaneModelUsage, ResponseText, Revision, SpeechText, TurnId,
 };
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -107,6 +107,8 @@ impl TurnLifecycle {
     pub fn complete(
         &mut self,
         text: ResponseText,
+        speech_text: SpeechText,
+        sources: Vec<AssistantSource>,
         character_revision: Revision,
         user_profile_revision: Option<Revision>,
         usage: Vec<LaneModelUsage>,
@@ -117,6 +119,8 @@ impl TurnLifecycle {
         self.state = TurnState::Completed;
         Ok(self.event(HarnessEventPayload::Completed {
             text,
+            speech_text,
+            sources,
             character_revision,
             user_profile_revision,
             usage,
@@ -125,7 +129,7 @@ impl TurnLifecycle {
 
     pub fn speech_requested(
         &mut self,
-        text: ResponseText,
+        text: SpeechText,
         character_revision: Revision,
         user_profile_revision: Option<Revision>,
     ) -> Result<HarnessEvent, FairyError> {
@@ -178,7 +182,14 @@ mod tests {
             .expect("enter responding");
         let delta = turn.text_delta("你好".to_owned()).expect("emit delta");
         let completed = turn
-            .transition(TurnState::Completed)
+            .complete(
+                ResponseText::new("你好。".to_owned()).expect("display text"),
+                SpeechText::new("你好。".to_owned()).expect("speech text"),
+                Vec::new(),
+                Revision::INITIAL,
+                None,
+                Vec::new(),
+            )
             .expect("complete turn");
 
         assert_eq!(

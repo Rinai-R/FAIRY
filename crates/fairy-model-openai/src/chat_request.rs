@@ -1,9 +1,12 @@
-use fairy_domain::{CompiledPromptRequest, FairyError, ModelConnectionConfig, ModelProtocol};
+use fairy_domain::{
+    CompiledPromptRequest, FairyError, ModelConnectionConfig, ModelProtocol, ToolDefinition,
+    ToolPolicy,
+};
 use secrecy::SecretString;
 use serde::Serialize;
 
 use crate::shared::{
-    OpenAiMessage, OpenAiRole, authenticated_post, invalid_model_request, map_prompt_items,
+    OpenAiMessage, OpenAiRole, authenticated_post, invalid_model_request, map_chat_prompt_items,
     protocol_url, validate_request,
 };
 
@@ -13,11 +16,46 @@ struct ChatCompletionsRequestBody<'a> {
     messages: Vec<OpenAiMessage>,
     stream: bool,
     stream_options: StreamOptions,
+    max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<ChatTool<'a>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parallel_tool_calls: Option<bool>,
 }
 
 #[derive(Serialize)]
 struct StreamOptions {
     include_usage: bool,
+}
+
+#[derive(Serialize)]
+struct ChatTool<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: ChatFunction<'a>,
+}
+
+#[derive(Serialize)]
+struct ChatFunction<'a> {
+    name: &'static str,
+    description: &'a str,
+    parameters: &'a serde_json::Value,
+}
+
+fn map_tools(tools: &[ToolDefinition]) -> Vec<ChatTool<'_>> {
+    tools
+        .iter()
+        .map(|tool| ChatTool {
+            kind: "function",
+            function: ChatFunction {
+                name: tool.name.as_str(),
+                description: &tool.description,
+                parameters: &tool.parameters,
+            },
+        })
+        .collect()
 }
 
 pub fn build_chat_completions_request(
@@ -32,7 +70,11 @@ pub fn build_chat_completions_request(
         OpenAiRole::System,
         request.shape.instructions.clone(),
     ));
-    messages.extend(map_prompt_items(&request.input, OpenAiRole::System)?);
+    messages.extend(map_chat_prompt_items(&request.input, OpenAiRole::System)?);
+    let (tools, tool_choice, parallel_tool_calls) = match &request.shape.tool_policy {
+        ToolPolicy::Disabled => (None, None, None),
+        ToolPolicy::Auto { tools } => (Some(map_tools(tools)), Some("auto"), Some(false)),
+    };
 
     let body = serde_json::to_vec(&ChatCompletionsRequestBody {
         model: config.model(),
@@ -41,6 +83,10 @@ pub fn build_chat_completions_request(
         stream_options: StreamOptions {
             include_usage: true,
         },
+        max_tokens: request.shape.max_output_tokens,
+        tools,
+        tool_choice,
+        parallel_tool_calls,
     })
     .map_err(|_| invalid_model_request("无法序列化 Chat Completions 请求"))?;
 
@@ -90,6 +136,8 @@ mod tests {
                 lane: PromptLane::Respond,
                 model: "deepseek-v4-flash".to_owned(),
                 instructions: "stable instructions".to_owned(),
+                reply_mode: None,
+                max_output_tokens: 160,
                 tool_policy: ToolPolicy::Disabled,
                 parallel_tool_calls: false,
                 reasoning: ReasoningMode::ProviderDefault,
@@ -139,6 +187,7 @@ mod tests {
         assert_eq!(body["model"], "deepseek-v4-flash");
         assert_eq!(body["stream"], true);
         assert_eq!(body["stream_options"]["include_usage"], true);
+        assert_eq!(body["max_tokens"], 160);
         assert!(body.get("response_format").is_none());
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][0]["content"], "stable instructions");
@@ -157,6 +206,80 @@ mod tests {
         ] {
             assert!(body.get(absent).is_none(), "unexpected field: {absent}");
         }
+    }
+
+    #[test]
+    fn tool_request_maps_schema_and_history_without_leaking_into_text() {
+        use fairy_domain::{ToolCall, ToolDefinition, ToolName, ToolResult, ToolResultOutcome};
+
+        let mut compiled = compiled();
+        compiled.shape.tool_policy = ToolPolicy::Auto {
+            tools: vec![ToolDefinition {
+                name: ToolName::WebSearch,
+                description: "查询最新网页事实".to_owned(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                    "additionalProperties": false
+                }),
+            }],
+        };
+        compiled.input.extend([
+            PromptItem::ToolCall {
+                call: ToolCall {
+                    id: "call_1".to_owned(),
+                    name: ToolName::WebSearch,
+                    arguments_json: r#"{"query":"Rust 1.95"}"#.to_owned(),
+                },
+            },
+            PromptItem::ToolResult {
+                result: ToolResult {
+                    call_id: "call_1".to_owned(),
+                    name: ToolName::WebSearch,
+                    outcome: ToolResultOutcome::Success {
+                        output: "搜索完成".to_owned(),
+                        sources: Vec::new(),
+                    },
+                },
+            },
+        ]);
+
+        let request = build_chat_completions_request(
+            &reqwest::Client::new(),
+            &config(ModelProtocol::ChatCompletions, AuthMode::BearerKey),
+            Some(&SecretString::from("sk-exact".to_owned())),
+            &compiled,
+        )
+        .expect("build tool request");
+        let body = body_json(&request);
+
+        assert_eq!(body["tool_choice"], "auto");
+        assert_eq!(body["parallel_tool_calls"], false);
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tools"][0]["function"]["name"], "web_search");
+        let assistant = body["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .find(|message| message.get("tool_calls").is_some())
+            .expect("assistant tool call history");
+        assert_eq!(assistant["role"], "assistant");
+        assert!(assistant.get("content").is_none());
+        assert_eq!(assistant["tool_calls"][0]["id"], "call_1");
+        let result = body["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .find(|message| message["role"] == "tool")
+            .expect("tool result history");
+        assert_eq!(result["tool_call_id"], "call_1");
+        assert!(
+            result["content"]
+                .as_str()
+                .expect("result json")
+                .contains("搜索完成")
+        );
     }
 
     #[test]

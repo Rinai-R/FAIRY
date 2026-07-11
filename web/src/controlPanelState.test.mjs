@@ -6,13 +6,15 @@ import {
   MODEL_PROTOCOL_OPTIONS,
   assertControlPanelSection,
   buildModelConnectionInput,
+  buildSearchConnectionInput,
 } from "./controlPanelState.mjs";
 
-test("control panel exposes exactly four product sections and two protocols", () => {
+test("control panel exposes five product sections and two protocols", () => {
   assert.deepEqual(CONTROL_PANEL_SECTIONS.map(({ id }) => id), [
     "character",
     "profile",
     "model",
+    "intelligence",
     "desktop",
   ]);
   assert.deepEqual(MODEL_PROTOCOL_OPTIONS.map(({ value }) => value), [
@@ -20,6 +22,21 @@ test("control panel exposes exactly four product sections and two protocols", ()
     "responses",
   ]);
   assert.throws(() => assertControlPanelSection("provider"), /unsupported/);
+});
+
+test("search form produces one explicit Brave provider without fallback fields", () => {
+  const input = buildSearchConnectionInput({
+    endpoint: " https://api.search.brave.com/res/v1/web/search ",
+  });
+  assert.deepEqual(input, {
+    provider: "brave",
+    endpoint: "https://api.search.brave.com/res/v1/web/search",
+  });
+  assert.equal("fallbackProvider" in input, false);
+  assert.throws(
+    () => buildSearchConnectionInput({ endpoint: "   " }),
+    /endpoint is required/,
+  );
 });
 
 test("model form produces the exact public input without cache switches", () => {

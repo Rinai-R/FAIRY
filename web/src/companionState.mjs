@@ -8,7 +8,7 @@ const TURN_STATES = new Set([
   "interrupted",
   "failed",
 ]);
-const LANES = new Set(["interpret", "respond", "compact"]);
+const LANES = new Set(["respond", "compact", "extract"]);
 
 function assertObject(value, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -64,6 +64,13 @@ function parseOptionalTokenCount(value, label) {
   if (value === null) return null;
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new TypeError(`${label} must be null or a non-negative integer`);
+  }
+  return value;
+}
+
+function parseNonNegativeInteger(value, label) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(`${label} must be a non-negative integer`);
   }
   return value;
 }
@@ -138,6 +145,45 @@ function parseUsageList(value) {
   return Object.freeze(value.map(parseLaneUsage));
 }
 
+function parseAssistantSource(value, index) {
+  const label = `source[${index}]`;
+  assertExactKeys(
+    value,
+    ["title", "url", "snippet", "rank", "fetchedAtUnixMs"],
+    label,
+  );
+  const url = parseNonEmptyString(value.url, `${label}.url`);
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    throw new TypeError(`${label}.url must be a valid URL`);
+  }
+  if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") {
+    throw new TypeError(`${label}.url must use HTTP or HTTPS`);
+  }
+  if (!Number.isSafeInteger(value.rank) || value.rank < 1 || value.rank > 5) {
+    throw new TypeError(`${label}.rank must be between 1 and 5`);
+  }
+  return Object.freeze({
+    title: parseNonEmptyString(value.title, `${label}.title`),
+    url,
+    snippet: parseNonEmptyString(value.snippet, `${label}.snippet`),
+    rank: value.rank,
+    fetchedAtUnixMs: parseNonNegativeInteger(
+      value.fetchedAtUnixMs,
+      `${label}.fetchedAtUnixMs`,
+    ),
+  });
+}
+
+function parseAssistantSources(value) {
+  if (!Array.isArray(value) || value.length > 5) {
+    throw new TypeError("sources must be an array with at most five entries");
+  }
+  return Object.freeze(value.map(parseAssistantSource));
+}
+
 export function normalizeCompanionError(error) {
   if (
     error !== null &&
@@ -189,6 +235,8 @@ function parseEventPayload(value) {
         [
           "type",
           "text",
+          "speechText",
+          "sources",
           "characterRevision",
           "userProfileRevision",
           "usage",
@@ -198,6 +246,11 @@ function parseEventPayload(value) {
       return Object.freeze({
         type: value.type,
         text: parseNonEmptyString(value.text, "event.payload.text"),
+        speechText: parseNonEmptyString(
+          value.speechText,
+          "event.payload.speechText",
+        ),
+        sources: parseAssistantSources(value.sources),
         characterRevision: parseRevision(
           value.characterRevision,
           "event.payload.characterRevision",
@@ -278,6 +331,8 @@ export function parseTurnOutcome(value) {
       "conversationId",
       "turnId",
       "responseText",
+      "speechText",
+      "sources",
       "characterRevision",
       "userProfileRevision",
       "usage",
@@ -298,6 +353,11 @@ export function parseTurnOutcome(value) {
       value.responseText,
       "turn outcome.responseText",
     ),
+    speechText: parseNonEmptyString(
+      value.speechText,
+      "turn outcome.speechText",
+    ),
+    sources: parseAssistantSources(value.sources),
     characterRevision: parseRevision(
       value.characterRevision,
       "turn outcome.characterRevision",
@@ -462,6 +522,207 @@ export function parseModelConnectionStatus(value) {
   });
 }
 
+export function parseSearchConnectionStatus(value) {
+  assertExactKeys(
+    value,
+    ["configured", "ready", "config", "error"],
+    "search status",
+  );
+  if (typeof value.configured !== "boolean" || typeof value.ready !== "boolean") {
+    throw new TypeError("search status flags must be booleans");
+  }
+  let config = null;
+  if (value.config !== null) {
+    assertExactKeys(value.config, ["provider", "endpoint"], "search status.config");
+    if (value.config.provider !== "brave") {
+      throw new TypeError("search status.config provider is unsupported");
+    }
+    config = Object.freeze({
+      provider: value.config.provider,
+      endpoint: parseNonEmptyString(
+        value.config.endpoint,
+        "search status.config.endpoint",
+      ),
+    });
+  }
+  return Object.freeze({
+    configured: value.configured,
+    ready: value.ready,
+    config,
+    error:
+      value.error === null
+        ? null
+        : parseWireError(value.error, "search status.error"),
+  });
+}
+
+export function parseIntelligenceStatus(value) {
+  assertExactKeys(
+    value,
+    [
+      "ready",
+      "schemaVersion",
+      "summary",
+      "activeBackgroundJobs",
+      "error",
+    ],
+    "intelligence status",
+  );
+  if (typeof value.ready !== "boolean") {
+    throw new TypeError("intelligence status.ready must be a boolean");
+  }
+  const schemaVersion = value.schemaVersion === null
+    ? null
+    : parseRevision(value.schemaVersion, "intelligence status.schemaVersion");
+  let summary = null;
+  if (value.summary !== null) {
+    assertExactKeys(
+      value.summary,
+      [
+        "activePersonalMemories",
+        "candidateKnowledge",
+        "verifiedKnowledge",
+        "pendingJobs",
+        "runningJobs",
+        "failedJobs",
+      ],
+      "intelligence status.summary",
+    );
+    summary = Object.freeze({
+      activePersonalMemories: parseNonNegativeInteger(
+        value.summary.activePersonalMemories,
+        "intelligence status.summary.activePersonalMemories",
+      ),
+      candidateKnowledge: parseNonNegativeInteger(
+        value.summary.candidateKnowledge,
+        "intelligence status.summary.candidateKnowledge",
+      ),
+      verifiedKnowledge: parseNonNegativeInteger(
+        value.summary.verifiedKnowledge,
+        "intelligence status.summary.verifiedKnowledge",
+      ),
+      pendingJobs: parseNonNegativeInteger(
+        value.summary.pendingJobs,
+        "intelligence status.summary.pendingJobs",
+      ),
+      runningJobs: parseNonNegativeInteger(
+        value.summary.runningJobs,
+        "intelligence status.summary.runningJobs",
+      ),
+      failedJobs: parseNonNegativeInteger(
+        value.summary.failedJobs,
+        "intelligence status.summary.failedJobs",
+      ),
+    });
+  }
+  return Object.freeze({
+    ready: value.ready,
+    schemaVersion,
+    summary,
+    activeBackgroundJobs: parseNonNegativeInteger(
+      value.activeBackgroundJobs,
+      "intelligence status.activeBackgroundJobs",
+    ),
+    error:
+      value.error === null
+        ? null
+        : parseWireError(value.error, "intelligence status.error"),
+  });
+}
+
+function parseKnowledgeRecord(value, index, expectedStatus) {
+  const label = `${expectedStatus} knowledge[${index}]`;
+  assertExactKeys(
+    value,
+    [
+      "id",
+      "topic",
+      "statement",
+      "status",
+      "verificationBasis",
+      "confidenceBasisPoints",
+      "sourceConversationId",
+      "sourceTurnId",
+      "supersedesId",
+      "sources",
+      "createdAtUnixMs",
+      "updatedAtUnixMs",
+    ],
+    label,
+  );
+  if (value.status !== expectedStatus) {
+    throw new TypeError(`${label}.status must be ${expectedStatus}`);
+  }
+  if (!Number.isSafeInteger(value.confidenceBasisPoints)
+    || value.confidenceBasisPoints < 0
+    || value.confidenceBasisPoints > 10_000) {
+    throw new TypeError(`${label}.confidenceBasisPoints must be between 0 and 10000`);
+  }
+  const sources = parseAssistantSources(value.sources);
+  if (expectedStatus === "candidate") {
+    if (value.verificationBasis !== "unverified" || sources.length !== 0) {
+      throw new TypeError(`${label} must be unverified and source-free`);
+    }
+  } else if (value.verificationBasis === "web_source") {
+    if (sources.length === 0) {
+      throw new TypeError(`${label} with web_source must include sources`);
+    }
+  } else if (value.verificationBasis === "user_confirmed") {
+    if (sources.length !== 0) {
+      throw new TypeError(`${label} with user_confirmed must be source-free`);
+    }
+  } else {
+    throw new TypeError(`${label}.verificationBasis is unsupported`);
+  }
+  return Object.freeze({
+    id: parseUuid(value.id, `${label}.id`),
+    topic: parseNonEmptyString(value.topic, `${label}.topic`),
+    statement: parseNonEmptyString(value.statement, `${label}.statement`),
+    status: value.status,
+    verificationBasis: value.verificationBasis,
+    confidenceBasisPoints: value.confidenceBasisPoints,
+    sourceConversationId: parseUuid(
+      value.sourceConversationId,
+      `${label}.sourceConversationId`,
+    ),
+    sourceTurnId: parseUuid(value.sourceTurnId, `${label}.sourceTurnId`),
+    supersedesId: value.supersedesId === null
+      ? null
+      : parseUuid(value.supersedesId, `${label}.supersedesId`),
+    sources,
+    createdAtUnixMs: parseNonNegativeInteger(
+      value.createdAtUnixMs,
+      `${label}.createdAtUnixMs`,
+    ),
+    updatedAtUnixMs: parseNonNegativeInteger(
+      value.updatedAtUnixMs,
+      `${label}.updatedAtUnixMs`,
+    ),
+  });
+}
+
+export function parseKnowledgeCatalog(value) {
+  assertExactKeys(value, ["candidates", "verified"], "knowledge catalog");
+  if (!Array.isArray(value.candidates) || value.candidates.length > 20) {
+    throw new TypeError("knowledge catalog.candidates must contain at most 20 entries");
+  }
+  if (!Array.isArray(value.verified) || value.verified.length > 20) {
+    throw new TypeError("knowledge catalog.verified must contain at most 20 entries");
+  }
+  return Object.freeze({
+    candidates: Object.freeze(
+      value.candidates.map((record, index) => parseKnowledgeRecord(record, index, "candidate")),
+    ),
+    verified: Object.freeze(
+      value.verified.map((record, index) => parseKnowledgeRecord(record, index, "verified")),
+    ),
+  });
+}
+
+export function parseConfirmedKnowledgeRecord(value) {
+  return parseKnowledgeRecord(value, 0, "verified");
+}
+
 export function createCompanionState() {
   return Object.freeze({
     conversationId: null,
@@ -505,7 +766,7 @@ function reduceHarnessEvent(state, event) {
     }
     const completed = state.terminalTurn;
     if (
-      event.payload.text !== completed.text ||
+      event.payload.text !== completed.speechText ||
       event.payload.characterRevision !== completed.characterRevision ||
       event.payload.userProfileRevision !== completed.userProfileRevision
     ) {
@@ -588,6 +849,8 @@ function reduceHarnessEvent(state, event) {
     const assistant = Object.freeze({
       role: "assistant",
       text: event.payload.text,
+      speechText: event.payload.speechText,
+      sources: event.payload.sources,
       status: "completed",
       turnId: event.turnId,
     });
@@ -599,6 +862,8 @@ function reduceHarnessEvent(state, event) {
         turnId: event.turnId,
         state: event.state,
         text: event.payload.text,
+        speechText: event.payload.speechText,
+        sources: event.payload.sources,
         characterRevision: event.payload.characterRevision,
         userProfileRevision: event.payload.userProfileRevision,
       }),

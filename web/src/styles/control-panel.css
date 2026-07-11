@@ -199,6 +199,198 @@
   gap: 12px;
 }
 
+.cp-search-form {
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--fairy-border-soft);
+}
+
+.cp-intelligence-track {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 4px 0 14px;
+}
+
+.cp-intelligence-track::before {
+  content: "";
+  position: absolute;
+  top: 7px;
+  right: 16.66%;
+  left: 16.66%;
+  height: 1px;
+  background: var(--fairy-border);
+}
+
+.cp-intelligence-track > div {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  min-width: 0;
+  justify-items: center;
+  gap: 2px;
+  text-align: center;
+}
+
+.cp-intelligence-track > div > span {
+  width: 15px;
+  height: 15px;
+  margin-bottom: 3px;
+  border: 3px solid #ffffff;
+  border-radius: 50%;
+  background: #a8b4be;
+  box-shadow: 0 0 0 1px var(--fairy-border);
+}
+
+.cp-intelligence-track > div.is-ready > span {
+  background: var(--fairy-accent-strong);
+  box-shadow: 0 0 0 1px var(--fairy-accent-strong);
+}
+
+.cp-intelligence-track > div.is-active > span {
+  background: #ffffff;
+  box-shadow: 0 0 0 2px var(--fairy-accent-strong);
+  animation: cp-intelligence-pulse 1.2s ease-in-out infinite;
+}
+
+.cp-intelligence-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.cp-intelligence-metrics .rt-Card {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  border-color: var(--fairy-border-soft);
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.cp-intelligence-metrics .rt-Text:last-child {
+  color: var(--fairy-accent-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.cp-knowledge-ledger {
+  margin-top: 14px;
+  border: 1px solid var(--fairy-border-soft);
+  border-radius: 16px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.cp-knowledge-ledger-header {
+  padding: 14px 14px 12px;
+  border-bottom: 1px solid var(--fairy-border-soft);
+}
+
+.cp-knowledge-ledger-header h3,
+.cp-knowledge-ledger-header p,
+.cp-knowledge-column-header h3,
+.cp-knowledge-column-header p,
+.cp-knowledge-statement,
+.cp-knowledge-empty,
+.cp-knowledge-unavailable {
+  margin: 0;
+}
+
+.cp-knowledge-ledger-header p {
+  max-width: 350px;
+  margin-top: 3px;
+  line-height: 1.45;
+}
+
+.cp-knowledge-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.cp-knowledge-column {
+  min-width: 0;
+  padding: 12px;
+}
+
+.cp-knowledge-column + .cp-knowledge-column {
+  border-left: 1px solid var(--fairy-border-soft);
+}
+
+.cp-knowledge-column-header {
+  min-height: 47px;
+  margin-bottom: 8px;
+}
+
+.cp-knowledge-column-header p {
+  margin-top: 2px;
+  line-height: 1.35;
+}
+
+.cp-knowledge-entry {
+  position: relative;
+  padding: 10px 8px 8px 11px;
+  border-top: 1px solid #e7f0f5;
+}
+
+.cp-knowledge-entry::before {
+  content: "";
+  position: absolute;
+  top: 10px;
+  bottom: 9px;
+  left: 0;
+  width: 2px;
+  border-radius: 2px;
+  background: #b8dce9;
+}
+
+.cp-knowledge-entry.is-candidate::before {
+  background: #e8c985;
+}
+
+.cp-knowledge-topic {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fairy-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cp-knowledge-entry .rt-Badge {
+  max-width: 96px;
+  flex: 0 0 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cp-knowledge-statement {
+  margin-top: 6px;
+  color: var(--fairy-text);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.cp-knowledge-actions {
+  min-height: 25px;
+  margin-top: 7px;
+}
+
+.cp-knowledge-empty,
+.cp-knowledge-unavailable {
+  padding: 14px 4px;
+  line-height: 1.45;
+}
+
+.cp-knowledge-unavailable {
+  padding: 18px 14px;
+}
+
+@keyframes cp-intelligence-pulse {
+  50% { transform: scale(0.72); }
+}
+
 .cp-two-column {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -234,5 +426,16 @@
 @media (prefers-reduced-motion: reduce) {
   .cp-shell.rt-Card {
     backdrop-filter: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .cp-knowledge-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cp-knowledge-column + .cp-knowledge-column {
+    border-top: 1px solid var(--fairy-border-soft);
+    border-left: 0;
   }
 }

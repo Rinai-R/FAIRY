@@ -6,7 +6,11 @@ import {
   parseCharacterCatalog,
   parseCompactionResult,
   parseHarnessEvent,
+  parseIntelligenceStatus,
+  parseKnowledgeCatalog,
+  parseConfirmedKnowledgeRecord,
   parseModelConnectionStatus,
+  parseSearchConnectionStatus,
   parseSessionSnapshot,
   parseTurnOutcome,
   parseUserProfile,
@@ -164,4 +168,63 @@ export function clearModelConnection() {
     undefined,
     parseModelConnectionStatus,
   );
+}
+
+export function getSearchConnectionStatus() {
+  return invokeParsed(
+    "get_search_connection_status",
+    undefined,
+    parseSearchConnectionStatus,
+  );
+}
+
+export function saveSearchConnection(input, apiKey = null) {
+  return invokeParsed(
+    "save_search_connection",
+    { input, apiKey },
+    parseSearchConnectionStatus,
+  );
+}
+
+export function clearSearchConnection() {
+  return invokeParsed(
+    "clear_search_connection",
+    undefined,
+    parseSearchConnectionStatus,
+  );
+}
+
+export function getIntelligenceStatus() {
+  return invokeParsed(
+    "get_intelligence_status",
+    undefined,
+    parseIntelligenceStatus,
+  );
+}
+
+export function getKnowledgeCatalog() {
+  return invokeParsed(
+    "get_knowledge_catalog",
+    undefined,
+    parseKnowledgeCatalog,
+  );
+}
+
+export function confirmKnowledgeCandidate(id) {
+  return invokeParsed(
+    "confirm_knowledge_candidate",
+    { id },
+    parseConfirmedKnowledgeRecord,
+  );
+}
+
+export async function tombstoneKnowledge(id) {
+  try {
+    const result = await invoke("tombstone_knowledge", { id });
+    if (result !== null) {
+      throw new TypeError("tombstone_knowledge must return null");
+    }
+  } catch (error) {
+    throw normalizeCompanionError(error);
+  }
 }

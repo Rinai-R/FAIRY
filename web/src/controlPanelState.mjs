@@ -1,8 +1,9 @@
 export const CONTROL_PANEL_SECTIONS = Object.freeze([
   Object.freeze({ id: "character", label: "角色" }),
   Object.freeze({ id: "profile", label: "称呼" }),
-  Object.freeze({ id: "model", label: "模型连接" }),
-  Object.freeze({ id: "desktop", label: "桌面行为" }),
+  Object.freeze({ id: "model", label: "模型" }),
+  Object.freeze({ id: "intelligence", label: "智能" }),
+  Object.freeze({ id: "desktop", label: "桌面" }),
 ]);
 
 export const MODEL_PROTOCOL_OPTIONS = Object.freeze([
@@ -34,5 +35,16 @@ export function buildModelConnectionInput({ protocol, endpoint, model, authMode 
     endpoint: normalizedEndpoint,
     model: normalizedModel,
     authMode,
+  });
+}
+
+export function buildSearchConnectionInput({ endpoint }) {
+  const normalizedEndpoint = endpoint.trim();
+  if (normalizedEndpoint.length === 0) {
+    throw new TypeError("Brave Search endpoint is required");
+  }
+  return Object.freeze({
+    provider: "brave",
+    endpoint: normalizedEndpoint,
   });
 }

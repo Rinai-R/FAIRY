@@ -9,6 +9,7 @@ import {
   Link2Icon,
   LockClosedIcon,
   MagicWandIcon,
+  MagnifyingGlassIcon,
   PersonIcon,
   PlusIcon,
   ResetIcon,
@@ -37,14 +38,21 @@ import { AnimatePresence, motion } from "motion/react";
 
 import {
   activateCharacter,
+  clearSearchConnection,
   clearModelConnection,
   clearUserProfile,
   createCharacter,
+  confirmKnowledgeCandidate,
   getModelConnectionStatus,
+  getIntelligenceStatus,
+  getKnowledgeCatalog,
+  getSearchConnectionStatus,
   getUserProfile,
   listCharacters,
   saveModelConnection,
+  saveSearchConnection,
   setUserProfile,
+  tombstoneKnowledge,
   updateCharacter,
 } from "../companionClient.mjs";
 import { normalizeCompanionError } from "../companionState.mjs";
@@ -53,6 +61,7 @@ import {
   MODEL_PROTOCOL_OPTIONS,
   assertControlPanelSection,
   buildModelConnectionInput,
+  buildSearchConnectionInput,
 } from "../controlPanelState.mjs";
 import {
   getDesktopState,
@@ -73,10 +82,13 @@ const EMPTY_CATALOG = Object.freeze({
   diagnostics: Object.freeze([]),
 });
 
+const DEFAULT_BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
+
 const SECTION_ICONS = Object.freeze({
   character: PersonIcon,
   profile: IdCardIcon,
   model: Link2Icon,
+  intelligence: MagnifyingGlassIcon,
   desktop: DesktopIcon,
 });
 
@@ -102,11 +114,70 @@ function PageHeader({ title, description, status, ready = false }) {
   );
 }
 
+function KnowledgeEntry({ record, disabled, onConfirm, onDelete }) {
+  const candidate = record.status === "candidate";
+  const basis = record.verificationBasis === "web_source"
+    ? `网页来源 · ${record.sources.length}`
+    : record.verificationBasis === "user_confirmed"
+      ? "由你确认"
+      : "等待确认";
+  return (
+    <article className={`cp-knowledge-entry ${candidate ? "is-candidate" : "is-verified"}`}>
+      <Flex align="center" justify="between" gap="2">
+        <Text size="1" weight="medium" className="cp-knowledge-topic">{record.topic}</Text>
+        <Badge size="1" color={candidate ? "amber" : "sky"} variant="soft">{basis}</Badge>
+      </Flex>
+      <Text as="p" size="2" className="cp-knowledge-statement">{record.statement}</Text>
+      <Flex className="cp-knowledge-actions" align="center" justify="end" gap="2">
+        {candidate ? (
+          <Button size="1" variant="soft" type="button" disabled={disabled} onClick={() => onConfirm(record.id)}>
+            <CheckCircledIcon />确认可用
+          </Button>
+        ) : null}
+        <Tooltip content="从可用知识中移除并保留审计记录">
+          <IconButton size="1" color="tomato" variant="ghost" type="button" disabled={disabled} onClick={() => onDelete(record.id)} aria-label={`移除知识：${record.topic}`}>
+            <TrashIcon />
+          </IconButton>
+        </Tooltip>
+      </Flex>
+    </article>
+  );
+}
+
+function KnowledgeColumn({ title, description, records, empty, disabled, onConfirm, onDelete }) {
+  return (
+    <section className="cp-knowledge-column">
+      <Flex className="cp-knowledge-column-header" align="start" justify="between" gap="3">
+        <div>
+          <Text as="h3" size="2" weight="medium">{title}</Text>
+          <Text as="p" size="1" color="gray">{description}</Text>
+        </div>
+        <Badge size="1" color="gray" variant="outline">{records.length}</Badge>
+      </Flex>
+      {records.length === 0 ? (
+        <Text as="p" className="cp-knowledge-empty" size="1" color="gray">{empty}</Text>
+      ) : records.map((record) => (
+        <KnowledgeEntry
+          key={record.id}
+          record={record}
+          disabled={disabled}
+          onConfirm={onConfirm}
+          onDelete={onDelete}
+        />
+      ))}
+    </section>
+  );
+}
+
 export function ControlPanelApp() {
   const [section, setSection] = useState("model");
   const [catalog, setCatalog] = useState(EMPTY_CATALOG);
   const [profile, setProfile] = useState(null);
   const [modelStatus, setModelStatus] = useState(null);
+  const [searchStatus, setSearchStatus] = useState(null);
+  const [intelligenceStatus, setIntelligenceStatus] = useState(null);
+  const [knowledgeCatalog, setKnowledgeCatalog] = useState(null);
+  const [knowledgeCatalogLoading, setKnowledgeCatalogLoading] = useState(false);
   const [desktop, setDesktop] = useState(null);
   const [pending, setPending] = useState(null);
   const [error, setError] = useState(null);
@@ -122,17 +193,30 @@ export function ControlPanelApp() {
   const [model, setModel] = useState("deepseek-v4-flash");
   const [authMode, setAuthMode] = useState("bearer_key");
   const [apiKey, setApiKey] = useState("");
+  const [searchEndpoint, setSearchEndpoint] = useState(DEFAULT_BRAVE_ENDPOINT);
+  const [searchApiKey, setSearchApiKey] = useState("");
 
   const refresh = useCallback(async (hydrateForms = false) => {
-    const [nextCatalog, nextProfile, nextModelStatus, nextDesktop] = await Promise.all([
+    const [
+      nextCatalog,
+      nextProfile,
+      nextModelStatus,
+      nextSearchStatus,
+      nextIntelligenceStatus,
+      nextDesktop,
+    ] = await Promise.all([
       listCharacters(),
       getUserProfile(),
       getModelConnectionStatus(),
+      getSearchConnectionStatus(),
+      getIntelligenceStatus(),
       getDesktopState(),
     ]);
     setCatalog(nextCatalog);
     setProfile(nextProfile);
     setModelStatus(nextModelStatus);
+    setSearchStatus(nextSearchStatus);
+    setIntelligenceStatus(nextIntelligenceStatus);
     setDesktop(nextDesktop);
     if (hydrateForms) {
       if (nextCatalog.active) {
@@ -147,6 +231,33 @@ export function ControlPanelApp() {
         setModel(nextModelStatus.config.model);
         setAuthMode(nextModelStatus.config.authMode);
       }
+      if (nextSearchStatus.config) {
+        setSearchEndpoint(nextSearchStatus.config.endpoint);
+      }
+    }
+  }, []);
+
+  const refreshIntelligence = useCallback(async () => {
+    setKnowledgeCatalogLoading(true);
+    try {
+      const [nextSearchStatus, nextIntelligenceStatus] = await Promise.all([
+        getSearchConnectionStatus(),
+        getIntelligenceStatus(),
+      ]);
+      setSearchStatus(nextSearchStatus);
+      setIntelligenceStatus(nextIntelligenceStatus);
+      if (!nextIntelligenceStatus.ready) {
+        setKnowledgeCatalog(null);
+        return;
+      }
+      try {
+        setKnowledgeCatalog(await getKnowledgeCatalog());
+      } catch (reason) {
+        setKnowledgeCatalog(null);
+        throw reason;
+      }
+    } finally {
+      setKnowledgeCatalogLoading(false);
     }
   }, []);
 
@@ -179,6 +290,24 @@ export function ControlPanelApp() {
       stopDesktop?.();
     };
   }, [refresh]);
+
+  useEffect(() => {
+    if (section !== "intelligence") return undefined;
+    void refreshIntelligence().catch((reason) => {
+      setError(normalizeCompanionError(reason));
+    });
+    if ((intelligenceStatus?.activeBackgroundJobs ?? 0) === 0) return undefined;
+    const timer = window.setInterval(() => {
+      void refreshIntelligence().catch((reason) => {
+        setError(normalizeCompanionError(reason));
+      });
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [
+    intelligenceStatus?.activeBackgroundJobs,
+    refreshIntelligence,
+    section,
+  ]);
 
   useEffect(() => {
     if (desktop?.phase === "control_panel_visible" && desktop.controlPanelVisible) {
@@ -249,6 +378,37 @@ export function ControlPanelApp() {
     const status = await run("model", () => saveModelConnection(input, apiKey || null));
     setApiKey("");
     if (status) setModelStatus(status);
+  }
+
+  async function submitSearch(event) {
+    event.preventDefault();
+    let input;
+    try {
+      input = buildSearchConnectionInput({ endpoint: searchEndpoint });
+    } catch (reason) {
+      setError({ code: "INVALID_SEARCH_CONFIG", message: reason.message, retryable: false });
+      return;
+    }
+    const status = await run("search", () => saveSearchConnection(input, searchApiKey || null));
+    setSearchApiKey("");
+    if (status) {
+      setSearchStatus(status);
+      await run("intelligence-refresh", refreshIntelligence);
+    }
+  }
+
+  async function confirmKnowledge(id) {
+    await run(`knowledge-confirm-${id}`, async () => {
+      await confirmKnowledgeCandidate(id);
+      await refreshIntelligence();
+    });
+  }
+
+  async function deleteKnowledge(id) {
+    await run(`knowledge-delete-${id}`, async () => {
+      await tombstoneKnowledge(id);
+      await refreshIntelligence();
+    });
   }
 
   async function runDesktop(action, operation) {
@@ -435,6 +595,173 @@ export function ControlPanelApp() {
                                 <TrashIcon />清除连接
                               </Button>
                               <Button type="submit" disabled={disabled}>保存连接</Button>
+                            </Flex>
+                          </form>
+                        </>
+                      ) : null}
+
+                      {section === "intelligence" ? (
+                        <>
+                          <PageHeader
+                            title="智能层"
+                            description="搜索、个人记忆与知识分开运行；搜索只使用你明确配置的 Brave Provider。"
+                            status={intelligenceStatus?.ready ? "本地层已就绪" : "本地层不可用"}
+                            ready={Boolean(intelligenceStatus?.ready)}
+                          />
+
+                          <div className="cp-intelligence-track" aria-label="智能层状态">
+                            <div className={searchStatus?.ready ? "is-ready" : ""}>
+                              <span aria-hidden="true" />
+                              <Text size="1" weight="medium">网络搜索</Text>
+                              <Text size="1" color="gray">{searchStatus?.ready ? "Brave 已连接" : "需要配置"}</Text>
+                            </div>
+                            <div className={intelligenceStatus?.ready ? "is-ready" : ""}>
+                              <span aria-hidden="true" />
+                              <Text size="1" weight="medium">本地存储</Text>
+                              <Text size="1" color="gray">
+                                {intelligenceStatus?.schemaVersion
+                                  ? `SQLite v${intelligenceStatus.schemaVersion}`
+                                  : "状态不可用"}
+                              </Text>
+                            </div>
+                            <div className={(intelligenceStatus?.activeBackgroundJobs ?? 0) > 0 ? "is-active" : "is-ready"}>
+                              <span aria-hidden="true" />
+                              <Text size="1" weight="medium">后台提取</Text>
+                              <Text size="1" color="gray">
+                                {(intelligenceStatus?.activeBackgroundJobs ?? 0) > 0
+                                  ? `${intelligenceStatus.activeBackgroundJobs} 个任务运行中`
+                                  : "当前空闲"}
+                              </Text>
+                            </div>
+                          </div>
+
+                          <div className="cp-intelligence-metrics" aria-label="智能层数据统计">
+                            <Card size="1">
+                              <Text size="1" color="gray">个人记忆</Text>
+                              <Text size="5" weight="medium">
+                                {intelligenceStatus?.summary?.activePersonalMemories ?? "—"}
+                              </Text>
+                            </Card>
+                            <Card size="1">
+                              <Text size="1" color="gray">已验证知识</Text>
+                              <Text size="5" weight="medium">
+                                {intelligenceStatus?.summary?.verifiedKnowledge ?? "—"}
+                              </Text>
+                            </Card>
+                            <Card size="1">
+                              <Text size="1" color="gray">候选知识</Text>
+                              <Text size="5" weight="medium">
+                                {intelligenceStatus?.summary?.candidateKnowledge ?? "—"}
+                              </Text>
+                            </Card>
+                          </div>
+
+                          {intelligenceStatus?.error ? (
+                            <Callout.Root color="tomato" size="1" role="status">
+                              <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
+                              <Callout.Text>{intelligenceStatus.error.message}</Callout.Text>
+                            </Callout.Root>
+                          ) : null}
+
+                          <section className="cp-knowledge-ledger" aria-labelledby="knowledge-ledger-title">
+                            <Flex className="cp-knowledge-ledger-header" align="start" justify="between" gap="3">
+                              <div>
+                                <Heading id="knowledge-ledger-title" as="h3" size="3" weight="medium">知识目录</Heading>
+                                <Text as="p" size="1" color="gray">无网页来源的事实先进入候选区，只有你确认后才会参与对话。</Text>
+                              </div>
+                              <Tooltip content="重新读取本地知识目录">
+                                <IconButton variant="ghost" color="gray" type="button" disabled={disabled} onClick={() => void run("intelligence-refresh", refreshIntelligence)} aria-label="刷新知识目录">
+                                  <ResetIcon />
+                                </IconButton>
+                              </Tooltip>
+                            </Flex>
+                            {knowledgeCatalog ? (
+                              <div className="cp-knowledge-columns">
+                                <KnowledgeColumn
+                                  title="等待你确认"
+                                  description="不会自动进入模型上下文"
+                                  records={knowledgeCatalog.candidates}
+                                  empty="没有待确认的知识。"
+                                  disabled={disabled}
+                                  onConfirm={(id) => void confirmKnowledge(id)}
+                                  onDelete={(id) => void deleteKnowledge(id)}
+                                />
+                                <KnowledgeColumn
+                                  title="已验证"
+                                  description="网页有据或由你明确确认"
+                                  records={knowledgeCatalog.verified}
+                                  empty="还没有可用知识。"
+                                  disabled={disabled}
+                                  onConfirm={(id) => void confirmKnowledge(id)}
+                                  onDelete={(id) => void deleteKnowledge(id)}
+                                />
+                              </div>
+                            ) : (
+                              <Text as="p" className="cp-knowledge-unavailable" size="1" color="gray">
+                                {knowledgeCatalogLoading
+                                  ? "正在读取本地知识目录…"
+                                  : intelligenceStatus?.ready
+                                    ? "知识目录未能载入，请查看上方错误后重试。"
+                                    : "本地智能层不可用，知识目录未载入。"}
+                              </Text>
+                            )}
+                          </section>
+
+                          <form className="cp-form cp-search-form" onSubmit={submitSearch}>
+                            <Field
+                              id="search-endpoint"
+                              label="Brave Search Endpoint"
+                              hint="生产地址必须是 HTTPS；不自动切换其他搜索服务。"
+                            >
+                              <TextField.Root
+                                id="search-endpoint"
+                                type="url"
+                                value={searchEndpoint}
+                                onChange={(event) => setSearchEndpoint(event.target.value)}
+                                required
+                              />
+                            </Field>
+                            <Field
+                              id="search-api-key"
+                              label="Brave API Key"
+                              hint="写入独立 Keychain；保存后清空且永不回显。"
+                            >
+                              <TextField.Root
+                                id="search-api-key"
+                                type="password"
+                                autoComplete="off"
+                                value={searchApiKey}
+                                onChange={(event) => setSearchApiKey(event.target.value)}
+                                placeholder={searchStatus?.configured ? "留空保留现有密钥" : "仅写入系统 Keychain"}
+                              >
+                                <TextField.Slot><LockClosedIcon /></TextField.Slot>
+                              </TextField.Root>
+                            </Field>
+                            <Flex justify="between" gap="3" wrap="wrap">
+                              <Flex gap="2">
+                                <Button
+                                  color="tomato"
+                                  variant="soft"
+                                  type="button"
+                                  disabled={disabled || !searchStatus?.configured}
+                                  onClick={() => void run("search", async () => {
+                                    const status = await clearSearchConnection();
+                                    setSearchStatus(status);
+                                  })}
+                                >
+                                  <TrashIcon />清除搜索连接
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  color="gray"
+                                  type="button"
+                                  disabled={disabled}
+                                  onClick={() => void run("intelligence-refresh", refreshIntelligence)}
+                                >
+                                  <ResetIcon />刷新状态
+                                </Button>
+                              </Flex>
+                              <Button type="submit" disabled={disabled}>保存搜索连接</Button>
                             </Flex>
                           </form>
                         </>

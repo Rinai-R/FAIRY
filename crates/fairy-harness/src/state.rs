@@ -1,6 +1,6 @@
 use fairy_domain::{
-    ConversationId, FairyError, HarnessEvent, LaneModelUsage, ResponseText, Revision, TurnId,
-    TurnState,
+    AssistantSource, ConversationId, FairyError, HarnessEvent, LaneModelUsage, ResponseText,
+    Revision, SpeechText, TurnId, TurnState,
 };
 use serde::Serialize;
 
@@ -22,6 +22,8 @@ pub struct TurnOutcome {
     pub conversation_id: ConversationId,
     pub turn_id: TurnId,
     pub response_text: ResponseText,
+    pub speech_text: SpeechText,
+    pub sources: Vec<AssistantSource>,
     pub character_revision: Revision,
     pub user_profile_revision: Option<Revision>,
     pub usage: Vec<LaneModelUsage>,

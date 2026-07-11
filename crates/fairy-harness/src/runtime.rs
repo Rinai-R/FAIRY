@@ -1,20 +1,31 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use fairy_domain::{
-    CharacterSnapshot, ConversationId, ErrorCode, FairyError, HarnessEvent, LaneModelUsage,
-    ModelStreamEvent, PromptItem, PromptLane, ResponseText, TurnId, TurnLifecycle, TurnState,
-    UserProfileSnapshot,
+    AssistantSource, CapabilityState, CharacterSnapshot, CompanionCapability, CompiledReply,
+    ConversationId, ErrorCode, ExtractionOutput, FairyError, HarnessEvent, LaneModelUsage,
+    ModelCompletion, ModelStreamEvent, ModelTurnOutput, NewKnowledge, NewPersonalMemory,
+    PromptItem, PromptLane, ReplyMode, ToolCall, ToolName, ToolResult, ToolResultOutcome, TurnId,
+    TurnLifecycle, TurnState, UserProfileSnapshot,
 };
+use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    CompactionCandidate, CompactionResult, ConversationHistory, HarnessEventSink, ModelEventSink,
-    ModelGateway, PromptCompiler, SessionSnapshot, TurnOutcome, install_compaction,
+    CompactionCandidate, CompactionResult, ConversationHistory, HarnessEventSink,
+    IntelligenceBinding, ModelEventSink, ModelGateway, PromptCompiler, ReplyCompiler,
+    SessionSnapshot, TurnOutcome, WebSearchGateway, install_compaction,
 };
+
+const MAX_WEB_SEARCH_CALLS_PER_TURN: usize = 2;
 
 pub struct HarnessRuntime {
     gateway_binding: RwLock<GatewayBinding>,
+    web_search_gateway: RwLock<Option<Arc<dyn WebSearchGateway + Send + Sync>>>,
+    intelligence_binding: RwLock<IntelligenceBinding>,
+    background_jobs: Arc<AtomicUsize>,
+    intelligence_background_error: Arc<Mutex<Option<FairyError>>>,
     sessions: Mutex<HashMap<ConversationId, Arc<Mutex<Session>>>>,
 }
 
@@ -41,6 +52,17 @@ struct ActiveTurn {
     user_profile: Option<UserProfileSnapshot>,
     model: String,
     gateway: Arc<dyn ModelGateway + Send + Sync>,
+    web_search_gateway: Option<Arc<dyn WebSearchGateway + Send + Sync>>,
+    intelligence_binding: IntelligenceBinding,
+    user_input: String,
+}
+
+struct ExtractionTurnInput {
+    conversation_id: ConversationId,
+    turn_id: TurnId,
+    user_message: String,
+    assistant_message: String,
+    sources: Vec<AssistantSource>,
 }
 
 impl HarnessRuntime {
@@ -51,6 +73,10 @@ impl HarnessRuntime {
         validate_runtime_model(&model)?;
         Ok(Self {
             gateway_binding: RwLock::new(GatewayBinding { model, gateway }),
+            web_search_gateway: RwLock::new(None),
+            intelligence_binding: RwLock::new(IntelligenceBinding::Disabled),
+            background_jobs: Arc::new(AtomicUsize::new(0)),
+            intelligence_background_error: Arc::new(Mutex::new(None)),
             sessions: Mutex::new(HashMap::new()),
         })
     }
@@ -63,6 +89,17 @@ impl HarnessRuntime {
         validate_runtime_model(&model)?;
         *write_lock(&self.gateway_binding) = GatewayBinding { model, gateway };
         Ok(())
+    }
+
+    pub fn replace_web_search_gateway(
+        &self,
+        gateway: Option<Arc<dyn WebSearchGateway + Send + Sync>>,
+    ) {
+        *write_lock(&self.web_search_gateway) = gateway;
+    }
+
+    pub fn replace_intelligence_binding(&self, binding: IntelligenceBinding) {
+        *write_lock(&self.intelligence_binding) = binding;
     }
 
     pub fn create_session(&self) -> SessionSnapshot {
@@ -103,11 +140,24 @@ impl HarnessRuntime {
 
     #[must_use]
     pub fn has_active_work(&self) -> bool {
+        if self.background_jobs.load(Ordering::Acquire) > 0 {
+            return true;
+        }
         let sessions: Vec<_> = lock(&self.sessions).values().cloned().collect();
         sessions.iter().any(|session| {
             let session = lock(session);
             session.active_turn.is_some() || session.compacting
         })
+    }
+
+    #[must_use]
+    pub fn active_background_jobs(&self) -> usize {
+        self.background_jobs.load(Ordering::Acquire)
+    }
+
+    #[must_use]
+    pub fn last_intelligence_background_error(&self) -> Option<FairyError> {
+        lock(&self.intelligence_background_error).clone()
     }
 
     pub fn activate_character(
@@ -182,7 +232,15 @@ impl HarnessRuntime {
             ));
         }
         let session = self.session(conversation_id)?;
-        let turn_id = self.begin_turn(&session, conversation_id, &input)?;
+        let intelligence = read_lock(&self.intelligence_binding).clone();
+        let context_item = retrieve_context_item(&intelligence, &input).await;
+        let turn_id = self.begin_turn(
+            &session,
+            conversation_id,
+            &input,
+            context_item,
+            intelligence,
+        )?;
         let result = self
             .run_turn(&session, conversation_id, turn_id, speech_enabled, events)
             .await;
@@ -235,7 +293,8 @@ impl HarnessRuntime {
             .await;
         let result = match completion {
             Ok(completion) => {
-                if !sink.output.is_empty() && sink.output != completion.output_text {
+                let output_text = completion.output.into_text()?;
+                if !sink.output.is_empty() && sink.output != output_text {
                     Err(FairyError::new(
                         ErrorCode::ModelResponseInvalid,
                         "Compactor 流式文本与完成文本不一致",
@@ -246,7 +305,7 @@ impl HarnessRuntime {
                     install_compaction(
                         &mut session_guard.history,
                         CompactionCandidate {
-                            summary: completion.output_text,
+                            summary: output_text,
                             replacement_items: Vec::new(),
                         },
                         &character,
@@ -265,6 +324,8 @@ impl HarnessRuntime {
         session: &Arc<Mutex<Session>>,
         conversation_id: ConversationId,
         input: &str,
+        context_item: Option<PromptItem>,
+        intelligence_binding: IntelligenceBinding,
     ) -> Result<TurnId, FairyError> {
         let mut session = lock(session);
         if session.active_turn.is_some() || session.compacting {
@@ -285,12 +346,13 @@ impl HarnessRuntime {
         let binding = read_lock(&self.gateway_binding).clone();
         let turn_id = TurnId::new();
         let cancellation = CancellationToken::new();
-        session
-            .history
-            .lane_mut(PromptLane::Respond)
-            .append(PromptItem::UserMessage {
-                content: input.to_owned(),
-            });
+        let respond = session.history.lane_mut(PromptLane::Respond);
+        if let Some(context_item) = context_item {
+            respond.append(context_item);
+        }
+        respond.append(PromptItem::UserMessage {
+            content: input.to_owned(),
+        });
         session.active_turn = Some(ActiveTurn {
             turn_id,
             lifecycle: TurnLifecycle::new(conversation_id, turn_id),
@@ -299,6 +361,9 @@ impl HarnessRuntime {
             user_profile,
             model: binding.model,
             gateway: binding.gateway,
+            web_search_gateway: read_lock(&self.web_search_gateway).clone(),
+            intelligence_binding,
+            user_input: input.to_owned(),
         });
         Ok(turn_id)
     }
@@ -312,13 +377,16 @@ impl HarnessRuntime {
         events: &mut (dyn HarnessEventSink + Send),
     ) -> Result<TurnOutcome, FairyError> {
         emit_state(session, turn_id, TurnState::Interpreting, events)?;
-        let (cancellation, model, gateway) = {
+        let (cancellation, model, gateway, web_search_gateway, intelligence_binding, user_input) = {
             let session = lock(session);
             let active = active_turn(&session, turn_id)?;
             (
                 active.cancellation.clone(),
                 active.model.clone(),
                 Arc::clone(&active.gateway),
+                active.web_search_gateway.clone(),
+                active.intelligence_binding.clone(),
+                active.user_input.clone(),
             )
         };
         if cancellation.is_cancelled() {
@@ -327,32 +395,21 @@ impl HarnessRuntime {
         emit_state(session, turn_id, TurnState::Planning, events)?;
         emit_state(session, turn_id, TurnState::Responding, events)?;
 
-        let (respond_request, respond_window) = {
-            let session = lock(session);
-            let lane = session.history.lane(PromptLane::Respond);
-            (
-                PromptCompiler.compile(
-                    PromptLane::Respond,
-                    model,
-                    lane.items().to_vec(),
-                    cache_key(gateway.as_ref(), lane.cache_key()),
-                ),
-                lane.window_revision(),
-            )
-        };
-        let mut responder_sink = ResponderEventSink {
-            session: Arc::clone(session),
+        let (compiled, usage) = execute_respond_loop(
+            session,
             turn_id,
-            cancellation: cancellation.clone(),
+            model.clone(),
+            Arc::clone(&gateway),
+            web_search_gateway,
+            cancellation.clone(),
+        )
+        .await?;
+        emit_text(
+            session,
+            turn_id,
+            compiled.display_text.as_str().to_owned(),
             events,
-        };
-        let response = gateway
-            .execute(respond_request, cancellation.clone(), &mut responder_sink)
-            .await?;
-        if cancellation.is_cancelled() {
-            return Err(turn_interrupted());
-        }
-        let response_text = ResponseText::new(response.output_text.clone())?;
+        )?;
 
         let (character_revision, user_profile_revision) = {
             let mut session = lock(session);
@@ -366,7 +423,7 @@ impl HarnessRuntime {
                 .history
                 .lane_mut(PromptLane::Respond)
                 .append(PromptItem::AssistantMessage {
-                    content: response_text.as_str().to_owned(),
+                    content: compiled.display_text.as_str().to_owned(),
                 });
             session
                 .history
@@ -374,15 +431,10 @@ impl HarnessRuntime {
                 .seal_current_prefix()?;
             (character_revision, user_profile_revision)
         };
-        let usage = vec![LaneModelUsage {
-            lane: PromptLane::Respond,
-            history_window: respond_window,
-            usage: response.usage,
-        }];
         let terminal_events = complete_turn(
             session,
             turn_id,
-            response_text.clone(),
+            compiled.clone(),
             character_revision,
             user_profile_revision,
             usage.clone(),
@@ -392,15 +444,82 @@ impl HarnessRuntime {
             events.send(event)?;
         }
 
+        self.schedule_background_extraction(
+            intelligence_binding,
+            gateway,
+            model,
+            ExtractionTurnInput {
+                conversation_id,
+                turn_id,
+                user_message: user_input,
+                assistant_message: compiled.display_text.as_str().to_owned(),
+                sources: compiled.sources.clone(),
+            },
+        )
+        .await;
+
         Ok(TurnOutcome {
             conversation_id,
             turn_id,
-            response_text,
+            response_text: compiled.display_text,
+            speech_text: compiled.speech_text,
+            sources: compiled.sources,
             character_revision,
             user_profile_revision,
             usage,
             speech_requested: speech_enabled,
         })
+    }
+
+    async fn schedule_background_extraction(
+        &self,
+        binding: IntelligenceBinding,
+        gateway: Arc<dyn ModelGateway + Send + Sync>,
+        model: String,
+        input: ExtractionTurnInput,
+    ) {
+        let IntelligenceBinding::Available(intelligence) = binding else {
+            return;
+        };
+        let job_id = match intelligence
+            .create_extraction_job(input.conversation_id, input.turn_id)
+            .await
+        {
+            Ok(job_id) => job_id,
+            Err(error) => {
+                *lock(&self.intelligence_background_error) = Some(error);
+                return;
+            }
+        };
+        if let Err(error) = intelligence.mark_extraction_running(job_id).await {
+            *lock(&self.intelligence_background_error) = Some(error);
+            return;
+        }
+
+        let jobs = Arc::clone(&self.background_jobs);
+        let background_error = Arc::clone(&self.intelligence_background_error);
+        jobs.fetch_add(1, Ordering::AcqRel);
+        tokio::spawn(async move {
+            let _guard = BackgroundJobGuard::new(Arc::clone(&jobs));
+            let result =
+                run_background_extraction(intelligence.as_ref(), gateway, model, job_id, input)
+                    .await;
+            match result {
+                Ok(()) => {
+                    *lock(&background_error) = None;
+                }
+                Err(error) => {
+                    let recorded = match intelligence
+                        .fail_extraction_job(job_id, error.clone())
+                        .await
+                    {
+                        Ok(()) => error,
+                        Err(recording_error) => recording_error,
+                    };
+                    *lock(&background_error) = Some(recorded);
+                }
+            }
+        });
     }
 
     fn finish_error(
@@ -447,15 +566,333 @@ impl HarnessRuntime {
     }
 }
 
-struct ResponderEventSink<'a> {
-    session: Arc<Mutex<Session>>,
+async fn retrieve_context_item(binding: &IntelligenceBinding, input: &str) -> Option<PromptItem> {
+    match binding {
+        IntelligenceBinding::Disabled => None,
+        IntelligenceBinding::Unavailable(error) => Some(PromptItem::CapabilityStatus {
+            capability: CompanionCapability::Intelligence,
+            state: CapabilityState::Unavailable,
+            error: Some(error.clone()),
+        }),
+        IntelligenceBinding::Available(intelligence) => {
+            match intelligence.retrieve(input.to_owned()).await {
+                Ok(context) if context.is_empty() => None,
+                Ok(context) => Some(PromptItem::RetrievedContext { context }),
+                Err(error) => Some(PromptItem::CapabilityStatus {
+                    capability: CompanionCapability::Intelligence,
+                    state: CapabilityState::Unavailable,
+                    error: Some(error),
+                }),
+            }
+        }
+    }
+}
+
+struct BackgroundJobGuard {
+    jobs: Arc<AtomicUsize>,
+}
+
+impl BackgroundJobGuard {
+    fn new(jobs: Arc<AtomicUsize>) -> Self {
+        Self { jobs }
+    }
+}
+
+impl Drop for BackgroundJobGuard {
+    fn drop(&mut self) {
+        self.jobs.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+async fn run_background_extraction(
+    intelligence: &(dyn crate::CompanionIntelligence + Send + Sync),
+    gateway: Arc<dyn ModelGateway + Send + Sync>,
+    model: String,
+    job_id: fairy_domain::ExtractionJobId,
+    input: ExtractionTurnInput,
+) -> Result<(), FairyError> {
+    let extraction_item = PromptItem::ExtractionInput {
+        user_message: input.user_message,
+        assistant_message: input.assistant_message,
+        sources: input.sources.clone(),
+    };
+    let raw_cache_key = format!("fairy:{}:extract", input.conversation_id);
+    let request = PromptCompiler.compile(
+        PromptLane::Extract,
+        model,
+        vec![PromptCompiler::canonical_harness_context(), extraction_item],
+        cache_key(gateway.as_ref(), &raw_cache_key),
+    );
+    let mut sink = BufferedOutputSink::default();
+    let completion = gateway
+        .execute(request, CancellationToken::new(), &mut sink)
+        .await?;
+    let text = completion.output.into_text()?;
+    if !sink.output.is_empty() && sink.output != text {
+        return Err(FairyError::new(
+            ErrorCode::IntelligenceExtractionFailed,
+            "提取模型的流式文本与完成文本不一致",
+            false,
+        ));
+    }
+    let extracted: ExtractionOutput = serde_json::from_str(&text).map_err(|_| {
+        FairyError::new(
+            ErrorCode::IntelligenceExtractionFailed,
+            "提取模型没有返回严格 ExtractionOutput JSON",
+            false,
+        )
+    })?;
+    if extracted.personal_memories.len() > 16 || extracted.knowledge.len() > 16 {
+        return Err(FairyError::new(
+            ErrorCode::IntelligenceExtractionFailed,
+            "单轮提取候选超过 16 条上限",
+            false,
+        ));
+    }
+
+    let personal_memories = extracted
+        .personal_memories
+        .into_iter()
+        .map(|candidate| NewPersonalMemory {
+            kind: candidate.kind,
+            content: candidate.content,
+            confidence_basis_points: candidate.confidence_basis_points,
+            source_conversation_id: input.conversation_id,
+            source_turn_id: input.turn_id,
+            supersedes_id: candidate.supersedes_id,
+        })
+        .collect();
+    let mut knowledge = Vec::with_capacity(extracted.knowledge.len());
+    for candidate in extracted.knowledge {
+        let mut seen_ranks = std::collections::BTreeSet::new();
+        let mut candidate_sources = Vec::with_capacity(candidate.source_ranks.len());
+        for rank in candidate.source_ranks {
+            if rank == 0 || !seen_ranks.insert(rank) {
+                return Err(FairyError::new(
+                    ErrorCode::IntelligenceExtractionFailed,
+                    "知识候选包含无效或重复 sourceRanks",
+                    false,
+                ));
+            }
+            let source = input
+                .sources
+                .iter()
+                .find(|source| source.rank == rank)
+                .ok_or_else(|| {
+                    FairyError::new(
+                        ErrorCode::IntelligenceExtractionFailed,
+                        "知识候选引用了本轮不存在的搜索来源",
+                        false,
+                    )
+                })?;
+            candidate_sources.push(source.clone());
+        }
+        knowledge.push(NewKnowledge {
+            topic: candidate.topic,
+            statement: candidate.statement,
+            confidence_basis_points: candidate.confidence_basis_points,
+            source_conversation_id: input.conversation_id,
+            source_turn_id: input.turn_id,
+            supersedes_id: candidate.supersedes_id,
+            sources: candidate_sources,
+        });
+    }
+    intelligence
+        .commit_extraction(job_id, personal_memories, knowledge)
+        .await
+}
+
+async fn execute_respond_loop(
+    session: &Arc<Mutex<Session>>,
     turn_id: TurnId,
+    model: String,
+    gateway: Arc<dyn ModelGateway + Send + Sync>,
+    web_search_gateway: Option<Arc<dyn WebSearchGateway + Send + Sync>>,
     cancellation: CancellationToken,
-    events: &'a mut (dyn HarnessEventSink + Send),
+) -> Result<(CompiledReply, Vec<LaneModelUsage>), FairyError> {
+    let mut search_call_count = 0_usize;
+    let mut sources = Vec::new();
+    let mut usage = Vec::new();
+
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(turn_interrupted());
+        }
+        let (request, window_revision) = {
+            let session = lock(session);
+            active_turn(&session, turn_id)?;
+            let lane = session.history.lane(PromptLane::Respond);
+            (
+                PromptCompiler.compile_with_search(
+                    PromptLane::Respond,
+                    model.clone(),
+                    lane.items().to_vec(),
+                    cache_key(gateway.as_ref(), lane.cache_key()),
+                    web_search_gateway.is_some(),
+                ),
+                lane.window_revision(),
+            )
+        };
+        let reply_mode = request.shape.reply_mode.unwrap_or(ReplyMode::Brief);
+        let mut sink = BufferedOutputSink::default();
+        let ModelCompletion {
+            output,
+            usage: model_usage,
+            ..
+        } = gateway
+            .execute(request, cancellation.clone(), &mut sink)
+            .await?;
+        usage.push(LaneModelUsage {
+            lane: PromptLane::Respond,
+            history_window: window_revision,
+            usage: model_usage,
+        });
+        if cancellation.is_cancelled() {
+            return Err(turn_interrupted());
+        }
+
+        match output {
+            ModelTurnOutput::Text { text } => {
+                if !sink.output.is_empty() && sink.output != text {
+                    return Err(FairyError::new(
+                        ErrorCode::ModelResponseInvalid,
+                        "Responder 流式文本与完成文本不一致",
+                        false,
+                    ));
+                }
+                let reply = ReplyCompiler.compile(reply_mode, &text, sources)?;
+                return Ok((reply, usage));
+            }
+            ModelTurnOutput::ToolCalls { calls } => {
+                if !sink.output.is_empty() {
+                    return Err(FairyError::new(
+                        ErrorCode::ModelResponseInvalid,
+                        "工具调用 completion 不得包含可见文本增量",
+                        false,
+                    ));
+                }
+                if calls.is_empty() {
+                    return Err(FairyError::new(
+                        ErrorCode::ModelResponseInvalid,
+                        "模型返回了空工具调用集合",
+                        false,
+                    ));
+                }
+                if search_call_count.saturating_add(calls.len()) > MAX_WEB_SEARCH_CALLS_PER_TURN {
+                    return Err(FairyError::new(
+                        ErrorCode::ToolLimitExceeded,
+                        "单轮 web_search 调用超过上限",
+                        false,
+                    ));
+                }
+                let search = web_search_gateway.as_ref().ok_or_else(|| {
+                    FairyError::new(
+                        ErrorCode::SearchConfigRequired,
+                        "模型请求搜索，但当前 turn 没有可用搜索 Gateway",
+                        false,
+                    )
+                })?;
+                append_tool_calls(session, turn_id, &calls)?;
+                for call in calls {
+                    search_call_count += 1;
+                    let result =
+                        execute_web_search_call(search.as_ref(), call, cancellation.clone())
+                            .await?;
+                    if let ToolResultOutcome::Success { sources: found, .. } = &result.outcome {
+                        for source in found {
+                            if !sources.iter().any(|known: &fairy_domain::AssistantSource| {
+                                known.url == source.url
+                            }) {
+                                sources.push(source.clone());
+                            }
+                        }
+                    }
+                    append_tool_result(session, turn_id, result)?;
+                }
+            }
+        }
+    }
+}
+
+fn append_tool_calls(
+    session: &Arc<Mutex<Session>>,
+    turn_id: TurnId,
+    calls: &[ToolCall],
+) -> Result<(), FairyError> {
+    let mut session = lock(session);
+    active_turn(&session, turn_id)?;
+    let lane = session.history.lane_mut(PromptLane::Respond);
+    for call in calls {
+        lane.append(PromptItem::ToolCall { call: call.clone() });
+    }
+    Ok(())
+}
+
+fn append_tool_result(
+    session: &Arc<Mutex<Session>>,
+    turn_id: TurnId,
+    result: ToolResult,
+) -> Result<(), FairyError> {
+    let mut session = lock(session);
+    active_turn(&session, turn_id)?;
+    session
+        .history
+        .lane_mut(PromptLane::Respond)
+        .append(PromptItem::ToolResult { result });
+    Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WebSearchArguments {
+    query: String,
+}
+
+async fn execute_web_search_call(
+    gateway: &(dyn WebSearchGateway + Send + Sync),
+    call: ToolCall,
+    cancellation: CancellationToken,
+) -> Result<ToolResult, FairyError> {
+    if call.name != ToolName::WebSearch {
+        return Err(FairyError::new(
+            ErrorCode::ToolArgumentsInvalid,
+            "Harness 不支持模型请求的工具",
+            false,
+        ));
+    }
+    let arguments: WebSearchArguments =
+        serde_json::from_str(&call.arguments_json).map_err(|_| {
+            FairyError::new(
+                ErrorCode::ToolArgumentsInvalid,
+                "web_search arguments 不符合严格 JSON schema",
+                false,
+            )
+        })?;
+    let outcome = match gateway.search(arguments.query.clone(), cancellation).await {
+        Ok(response) => ToolResultOutcome::Success {
+            output: format!(
+                "web_search returned {} source(s) for the quoted query",
+                response.sources.len()
+            ),
+            sources: response.sources,
+        },
+        Err(error) if error.code == ErrorCode::TurnInterrupted => return Err(error),
+        Err(error) => ToolResultOutcome::Failed { error },
+    };
+    Ok(ToolResult {
+        call_id: call.id,
+        name: call.name,
+        outcome,
+    })
 }
 
 #[derive(Default)]
 struct CompactionOutputSink {
+    output: String,
+}
+
+#[derive(Default)]
+struct BufferedOutputSink {
     output: String,
 }
 
@@ -470,19 +907,11 @@ impl ModelEventSink for CompactionOutputSink {
     }
 }
 
-impl ModelEventSink for ResponderEventSink<'_> {
+impl ModelEventSink for BufferedOutputSink {
     fn send(&mut self, event: ModelStreamEvent) -> Result<(), FairyError> {
-        if self.cancellation.is_cancelled() {
-            return Err(turn_interrupted());
-        }
         let ModelStreamEvent::TextDelta { delta } = event;
-        let harness_event = {
-            let mut session = lock(&self.session);
-            active_turn_mut(&mut session, self.turn_id)?
-                .lifecycle
-                .text_delta(delta)?
-        };
-        self.events.send(harness_event)
+        self.output.push_str(&delta);
+        Ok(())
     }
 }
 
@@ -501,10 +930,25 @@ fn emit_state(
     events.send(event)
 }
 
+fn emit_text(
+    session: &Arc<Mutex<Session>>,
+    turn_id: TurnId,
+    text: String,
+    events: &mut (dyn HarnessEventSink + Send),
+) -> Result<(), FairyError> {
+    let event = {
+        let mut session = lock(session);
+        active_turn_mut(&mut session, turn_id)?
+            .lifecycle
+            .text_delta(text)?
+    };
+    events.send(event)
+}
+
 fn complete_turn(
     session: &Arc<Mutex<Session>>,
     turn_id: TurnId,
-    response_text: ResponseText,
+    reply: CompiledReply,
     character_revision: fairy_domain::Revision,
     user_profile_revision: Option<fairy_domain::Revision>,
     usage: Vec<LaneModelUsage>,
@@ -513,14 +957,16 @@ fn complete_turn(
     let mut session = lock(session);
     let active = active_turn_mut(&mut session, turn_id)?;
     let completed = active.lifecycle.complete(
-        response_text.clone(),
+        reply.display_text,
+        reply.speech_text.clone(),
+        reply.sources,
         character_revision,
         user_profile_revision,
         usage,
     )?;
     let speech = if speech_enabled {
         Some(active.lifecycle.speech_requested(
-            response_text,
+            reply.speech_text,
             character_revision,
             user_profile_revision,
         )?)

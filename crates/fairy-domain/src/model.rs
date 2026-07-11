@@ -3,7 +3,9 @@ use std::net::IpAddr;
 use serde::{Deserialize, Serialize};
 use url::{Host, Url};
 
-use crate::{ErrorCode, FairyError, ModelConnectionId, PromptItem, PromptLane, WindowRevision};
+use crate::{
+    ErrorCode, FairyError, ModelConnectionId, PromptItem, PromptLane, ToolCall, WindowRevision,
+};
 
 const MODEL_CONNECTION_SCHEMA_VERSION: u32 = 2;
 const MAX_MODEL_NAME_CHARS: usize = 200;
@@ -119,9 +121,37 @@ pub enum ModelStreamEvent {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ModelCompletion {
     pub response_id: Option<String>,
-    pub output_text: String,
+    pub output: ModelTurnOutput,
     pub response_items: Vec<PromptItem>,
     pub usage: ModelUsage,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ModelTurnOutput {
+    Text { text: String },
+    ToolCalls { calls: Vec<ToolCall> },
+}
+
+impl ModelTurnOutput {
+    pub fn into_text(self) -> Result<String, FairyError> {
+        match self {
+            Self::Text { text } => Ok(text),
+            Self::ToolCalls { .. } => Err(FairyError::new(
+                ErrorCode::ModelResponseInvalid,
+                "当前模型阶段需要文本，但收到工具调用",
+                false,
+            )),
+        }
+    }
+
+    #[must_use]
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Self::Text { text } => Some(text),
+            Self::ToolCalls { .. } => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]

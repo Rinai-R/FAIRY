@@ -1,4 +1,4 @@
-import { MagicWandIcon } from "@radix-ui/react-icons";
+import { ExternalLinkIcon, MagicWandIcon } from "@radix-ui/react-icons";
 import { ScrollArea, Text } from "@radix-ui/themes";
 import { useEffect, useRef } from "react";
 
@@ -36,6 +36,26 @@ export function Transcript({
               key={`${message.role}-${index}-${message.text}`}
             >
               <p>{message.text}</p>
+              {assistant && message.sources?.length > 0 ? (
+                <details className="fairy-message__sources">
+                  <summary>{message.sources.length} 个来源</summary>
+                  <ol>
+                    {message.sources.map((source) => (
+                      <li key={`${source.rank}-${source.url}`}>
+                        <a
+                          href={source.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          title={source.snippet}
+                        >
+                          <span>{source.title}</span>
+                          <ExternalLinkIcon aria-hidden="true" />
+                        </a>
+                      </li>
+                    ))}
+                  </ol>
+                </details>
+              ) : null}
             </article>
           );
         })}

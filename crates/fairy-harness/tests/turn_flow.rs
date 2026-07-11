@@ -1,19 +1,27 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use fairy_domain::{
-    CachedTokenObservation, CharacterBriefInput, CharacterCompiler, CharacterId,
-    CompiledPromptRequest, ErrorCode, FairyError, GatewayCapabilities, HarnessEvent,
-    HarnessEventPayload, ModelCompletion, ModelStreamEvent, ModelUsage, PromptItem, PromptLane,
-    Revision, TurnState, UserProfileCompiler, UserProfileInput, UserProfileSnapshot,
+    AssistantSource, CachedTokenObservation, CharacterBriefInput, CharacterCompiler, CharacterId,
+    CompiledPromptRequest, ConversationId, ErrorCode, ExtractionJobId, FairyError,
+    GatewayCapabilities, HarnessEvent, HarnessEventPayload, ModelCompletion, ModelStreamEvent,
+    ModelTurnOutput, ModelUsage, NewKnowledge, NewPersonalMemory, PersonalMemoryId,
+    PersonalMemoryKind, PromptItem, PromptLane, RetrievalContext, RetrievedPersonalMemory,
+    Revision, ToolCall, ToolName, ToolPolicy, ToolResultOutcome, TurnId, TurnState,
+    UserProfileCompiler, UserProfileInput, UserProfileSnapshot, WebSearchResponse,
 };
-use fairy_harness::{HarnessEventSink, HarnessRuntime, ModelEventSink, ModelGateway};
+use fairy_harness::{
+    CompanionIntelligence, HarnessEventSink, HarnessRuntime, IntelligenceBinding, ModelEventSink,
+    ModelGateway, WebSearchGateway,
+};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 enum FakeBehavior {
     Complete { output: String, deltas: Vec<String> },
+    ToolCalls { calls: Vec<ToolCall> },
     WaitAfterTextDelta { delta: String },
     FailAfterTextDelta { delta: String },
 }
@@ -61,6 +69,7 @@ impl ModelGateway for FakeGateway {
                 }
                 Ok(completion(output))
             }
+            FakeBehavior::ToolCalls { calls } => Ok(tool_completion(calls)),
             FakeBehavior::WaitAfterTextDelta { delta } => {
                 sink.send(ModelStreamEvent::TextDelta { delta })?;
                 self.first_text_delta.notify_waiters();
@@ -86,10 +95,12 @@ impl ModelGateway for FakeGateway {
 fn completion(output: String) -> ModelCompletion {
     ModelCompletion {
         response_id: Some("fake-response".to_owned()),
+        output: ModelTurnOutput::Text {
+            text: output.clone(),
+        },
         response_items: vec![PromptItem::AssistantMessage {
             content: output.clone(),
         }],
-        output_text: output,
         usage: ModelUsage {
             input_tokens: Some(20),
             output_tokens: Some(8),
@@ -97,6 +108,176 @@ fn completion(output: String) -> ModelCompletion {
             cache_write_tokens: CachedTokenObservation::Missing,
         },
     }
+}
+
+fn tool_completion(calls: Vec<ToolCall>) -> ModelCompletion {
+    ModelCompletion {
+        response_id: Some("fake-tool-response".to_owned()),
+        output: ModelTurnOutput::ToolCalls {
+            calls: calls.clone(),
+        },
+        response_items: calls
+            .into_iter()
+            .map(|call| PromptItem::ToolCall { call })
+            .collect(),
+        usage: ModelUsage {
+            input_tokens: Some(24),
+            output_tokens: Some(4),
+            cached_input_tokens: CachedTokenObservation::Observed(8),
+            cache_write_tokens: CachedTokenObservation::Missing,
+        },
+    }
+}
+
+struct FakeSearchGateway {
+    results: Mutex<VecDeque<Result<WebSearchResponse, FairyError>>>,
+    queries: Mutex<Vec<String>>,
+}
+
+impl FakeSearchGateway {
+    fn new(results: Vec<Result<WebSearchResponse, FairyError>>) -> Self {
+        Self {
+            results: Mutex::new(results.into()),
+            queries: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn queries(&self) -> Vec<String> {
+        lock(&self.queries).clone()
+    }
+}
+
+#[async_trait]
+impl WebSearchGateway for FakeSearchGateway {
+    async fn search(
+        &self,
+        query: String,
+        cancellation: CancellationToken,
+    ) -> Result<WebSearchResponse, FairyError> {
+        if cancellation.is_cancelled() {
+            return Err(FairyError::new(
+                ErrorCode::TurnInterrupted,
+                "fake search cancelled",
+                false,
+            ));
+        }
+        lock(&self.queries).push(query);
+        lock(&self.results)
+            .pop_front()
+            .expect("fake search result for every call")
+    }
+}
+
+struct FakeIntelligence {
+    results: Mutex<VecDeque<Result<RetrievalContext, FairyError>>>,
+    extraction_enabled: bool,
+    committed: Mutex<Vec<(Vec<NewPersonalMemory>, Vec<NewKnowledge>)>>,
+    failed: Mutex<Vec<FairyError>>,
+}
+
+impl FakeIntelligence {
+    fn new(results: Vec<Result<RetrievalContext, FairyError>>) -> Self {
+        Self {
+            results: Mutex::new(results.into()),
+            extraction_enabled: false,
+            committed: Mutex::new(Vec::new()),
+            failed: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn with_extraction(results: Vec<Result<RetrievalContext, FairyError>>) -> Self {
+        Self {
+            extraction_enabled: true,
+            ..Self::new(results)
+        }
+    }
+
+    fn committed(&self) -> Vec<(Vec<NewPersonalMemory>, Vec<NewKnowledge>)> {
+        lock(&self.committed).clone()
+    }
+
+    fn failed(&self) -> Vec<FairyError> {
+        lock(&self.failed).clone()
+    }
+}
+
+#[async_trait]
+impl CompanionIntelligence for FakeIntelligence {
+    async fn retrieve(&self, _query: String) -> Result<RetrievalContext, FairyError> {
+        lock(&self.results)
+            .pop_front()
+            .expect("fake intelligence result for every turn")
+    }
+
+    async fn create_extraction_job(
+        &self,
+        _conversation_id: ConversationId,
+        _turn_id: TurnId,
+    ) -> Result<ExtractionJobId, FairyError> {
+        if self.extraction_enabled {
+            Ok(ExtractionJobId::new())
+        } else {
+            Err(FairyError::new(
+                ErrorCode::IntelligenceUnavailable,
+                "fake extraction disabled",
+                false,
+            ))
+        }
+    }
+
+    async fn mark_extraction_running(&self, _job_id: ExtractionJobId) -> Result<(), FairyError> {
+        Ok(())
+    }
+
+    async fn commit_extraction(
+        &self,
+        _job_id: ExtractionJobId,
+        personal_memories: Vec<NewPersonalMemory>,
+        knowledge: Vec<NewKnowledge>,
+    ) -> Result<(), FairyError> {
+        lock(&self.committed).push((personal_memories, knowledge));
+        Ok(())
+    }
+
+    async fn fail_extraction_job(
+        &self,
+        _job_id: ExtractionJobId,
+        error: FairyError,
+    ) -> Result<(), FairyError> {
+        lock(&self.failed).push(error);
+        Ok(())
+    }
+}
+
+fn search_call(id: &str, query: &str) -> ToolCall {
+    ToolCall {
+        id: id.to_owned(),
+        name: ToolName::WebSearch,
+        arguments_json: serde_json::json!({"query": query}).to_string(),
+    }
+}
+
+fn search_response(query: &str, url: &str) -> WebSearchResponse {
+    WebSearchResponse {
+        query: query.to_owned(),
+        sources: vec![AssistantSource {
+            title: "测试来源".to_owned(),
+            url: url.to_owned(),
+            snippet: "可验证摘要".to_owned(),
+            rank: 1,
+            fetched_at_unix_ms: 42,
+        }],
+    }
+}
+
+async fn wait_for_background(runtime: &HarnessRuntime) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while runtime.active_background_jobs() > 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("background extraction completes");
 }
 
 #[derive(Clone, Default)]
@@ -191,7 +372,7 @@ async fn normal_turn_has_ordered_states_deltas_usage_and_single_terminal() {
             .iter()
             .map(|event| event.sequence)
             .collect::<Vec<_>>(),
-        vec![1, 2, 3, 4, 5, 6, 7]
+        vec![1, 2, 3, 4, 5, 6]
     );
     assert_eq!(
         events.iter().map(|event| event.state).collect::<Vec<_>>(),
@@ -200,11 +381,18 @@ async fn normal_turn_has_ordered_states_deltas_usage_and_single_terminal() {
             TurnState::Planning,
             TurnState::Responding,
             TurnState::Responding,
-            TurnState::Responding,
             TurnState::Completed,
             TurnState::Completed,
         ]
     );
+    let deltas = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            HarnessEventPayload::TextDelta { delta } => Some(delta.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(deltas, vec!["你好呀。"]);
     assert_eq!(
         events
             .iter()
@@ -235,7 +423,9 @@ async fn normal_turn_has_ordered_states_deltas_usage_and_single_terminal() {
             _ => None,
         })
         .expect("speech requested payload");
-    assert_eq!(completed, speech);
+    assert_eq!(completed.0.as_str(), speech.0.as_str());
+    assert_eq!(completed.1, speech.1);
+    assert_eq!(completed.2, speech.2);
     assert_eq!(completed.0.as_str(), outcome.response_text.as_str());
     assert!(outcome.speech_requested);
     assert_eq!(
@@ -480,7 +670,7 @@ async fn stream_failure_after_partial_text_has_failed_terminal_not_completed() {
     assert!(
         events
             .iter()
-            .any(|event| matches!(event.payload, HarnessEventPayload::TextDelta { .. }))
+            .all(|event| !matches!(event.payload, HarnessEventPayload::TextDelta { .. }))
     );
     assert_eq!(
         events.last().expect("failed terminal").state,
@@ -502,6 +692,373 @@ async fn stream_failure_after_partial_text_has_failed_terminal_not_completed() {
             .expect("session returns idle")
             .state,
         TurnState::Idle
+    );
+}
+
+#[tokio::test]
+async fn one_search_round_produces_one_visible_reply_with_sources() {
+    let gateway = Arc::new(FakeGateway::new(vec![
+        FakeBehavior::ToolCalls {
+            calls: vec![search_call("call_1", "Rust 1.95 release")],
+        },
+        response_behavior("Rust 1.95 已经发布。", &["Rust 1.95 已经发布。"]),
+    ]));
+    let search = Arc::new(FakeSearchGateway::new(vec![Ok(search_response(
+        "Rust 1.95 release",
+        "https://example.test/rust",
+    ))]));
+    let (runtime, conversation_id, _) = setup(gateway.clone());
+    runtime.replace_web_search_gateway(Some(search.clone()));
+    let mut sink = RecordingSink::default();
+
+    let outcome = runtime
+        .submit_turn(
+            conversation_id,
+            "Rust 1.95 发布了吗？".to_owned(),
+            true,
+            &mut sink,
+        )
+        .await
+        .expect("complete search-assisted turn");
+
+    assert_eq!(outcome.response_text.as_str(), "Rust 1.95 已经发布。");
+    assert_eq!(outcome.speech_text.as_str(), "Rust 1.95 已经发布。");
+    assert_eq!(outcome.sources.len(), 1);
+    assert_eq!(outcome.sources[0].url, "https://example.test/rust");
+    assert_eq!(outcome.usage.len(), 2);
+    assert_eq!(search.queries(), vec!["Rust 1.95 release"]);
+    let requests = gateway.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].shape, requests[1].shape);
+    assert!(matches!(
+        requests[0].shape.tool_policy,
+        ToolPolicy::Auto { .. }
+    ));
+    assert!(
+        requests[1]
+            .input
+            .iter()
+            .any(|item| matches!(item, PromptItem::ToolCall { .. }))
+    );
+    assert!(
+        requests[1]
+            .input
+            .iter()
+            .any(|item| matches!(item, PromptItem::ToolResult { .. }))
+    );
+    assert_eq!(
+        sink.events()
+            .iter()
+            .filter(|event| matches!(event.payload, HarnessEventPayload::TextDelta { .. }))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn retrieval_context_is_appended_before_user_message_and_empty_is_omitted() {
+    let context = RetrievalContext {
+        personal_memories: vec![RetrievedPersonalMemory {
+            id: PersonalMemoryId::new(),
+            kind: PersonalMemoryKind::Preference,
+            content: "用户不喜欢太甜的饮料".to_owned(),
+            confidence_basis_points: 9000,
+            updated_at_unix_ms: 42,
+        }],
+        knowledge: Vec::new(),
+    };
+    let gateway = Arc::new(FakeGateway::new(vec![response_behavior(
+        "那就选清爽一点的。",
+        &["那就选清爽一点的。"],
+    )]));
+    let intelligence = Arc::new(FakeIntelligence::new(vec![Ok(context.clone())]));
+    let (runtime, conversation_id, _) = setup(gateway.clone());
+    runtime.replace_intelligence_binding(IntelligenceBinding::Available(intelligence));
+
+    runtime
+        .submit_turn(
+            conversation_id,
+            "推荐一杯太甜的饮料".to_owned(),
+            false,
+            &mut RecordingSink::default(),
+        )
+        .await
+        .expect("complete memory-assisted turn");
+    let request = &gateway.requests()[0];
+    let retrieved_index = request
+        .input
+        .iter()
+        .position(|item| matches!(item, PromptItem::RetrievedContext { .. }))
+        .expect("retrieved context item");
+    let user_index = request
+        .input
+        .iter()
+        .position(|item| matches!(item, PromptItem::UserMessage { .. }))
+        .expect("user message item");
+    assert!(retrieved_index < user_index);
+    assert!(matches!(
+        &request.input[retrieved_index],
+        PromptItem::RetrievedContext { context: injected } if injected == &context
+    ));
+
+    let empty_gateway = Arc::new(FakeGateway::new(vec![response_behavior(
+        "我在。",
+        &["我在。"],
+    )]));
+    let empty_intelligence = Arc::new(FakeIntelligence::new(vec![Ok(RetrievalContext::default())]));
+    let (empty_runtime, empty_conversation, _) = setup(empty_gateway.clone());
+    empty_runtime.replace_intelligence_binding(IntelligenceBinding::Available(empty_intelligence));
+    empty_runtime
+        .submit_turn(
+            empty_conversation,
+            "你好".to_owned(),
+            false,
+            &mut RecordingSink::default(),
+        )
+        .await
+        .expect("complete empty retrieval turn");
+    assert!(
+        empty_gateway.requests()[0]
+            .input
+            .iter()
+            .all(|item| !matches!(item, PromptItem::RetrievedContext { .. }))
+    );
+}
+
+#[tokio::test]
+async fn unavailable_intelligence_is_explicit_context_not_silent_empty_memory() {
+    let gateway = Arc::new(FakeGateway::new(vec![response_behavior(
+        "这次记忆功能暂时不可用。",
+        &["这次记忆功能暂时不可用。"],
+    )]));
+    let (runtime, conversation_id, _) = setup(gateway.clone());
+    runtime.replace_intelligence_binding(IntelligenceBinding::Unavailable(FairyError::new(
+        ErrorCode::IntelligenceUnavailable,
+        "数据库无法打开",
+        false,
+    )));
+
+    runtime
+        .submit_turn(
+            conversation_id,
+            "记住这件事".to_owned(),
+            false,
+            &mut RecordingSink::default(),
+        )
+        .await
+        .expect("model can report unavailable capability");
+
+    let request = &gateway.requests()[0];
+    assert!(request.input.iter().any(|item| matches!(
+        item,
+        PromptItem::CapabilityStatus {
+            state: fairy_domain::CapabilityState::Unavailable,
+            error: Some(error),
+            ..
+        } if error.code == ErrorCode::IntelligenceUnavailable
+    )));
+    assert!(
+        request
+            .input
+            .iter()
+            .all(|item| !matches!(item, PromptItem::RetrievedContext { .. }))
+    );
+}
+
+#[tokio::test]
+async fn successful_background_extraction_commits_memory_and_sourced_knowledge() {
+    let extraction_json = serde_json::json!({
+        "personalMemories": [{
+            "kind": "preference",
+            "content": "用户喜欢 Rust",
+            "confidenceBasisPoints": 9000,
+            "supersedesId": null
+        }],
+        "knowledge": [{
+            "topic": "Rust",
+            "statement": "Rust 1.95 已发布",
+            "confidenceBasisPoints": 9500,
+            "supersedesId": null,
+            "sourceRanks": [1]
+        }]
+    })
+    .to_string();
+    let gateway = Arc::new(FakeGateway::new(vec![
+        FakeBehavior::ToolCalls {
+            calls: vec![search_call("call_1", "Rust 1.95 release")],
+        },
+        response_behavior("已经查到相关资料。", &["已经查到相关资料。"]),
+        response_behavior(&extraction_json, &[&extraction_json]),
+    ]));
+    let search = Arc::new(FakeSearchGateway::new(vec![Ok(search_response(
+        "Rust 1.95 release",
+        "https://example.test/rust-1-95",
+    ))]));
+    let intelligence = Arc::new(FakeIntelligence::with_extraction(vec![Ok(
+        RetrievalContext::default(),
+    )]));
+    let (runtime, conversation_id, _) = setup(gateway.clone());
+    runtime.replace_web_search_gateway(Some(search));
+    runtime.replace_intelligence_binding(IntelligenceBinding::Available(intelligence.clone()));
+
+    let outcome = runtime
+        .submit_turn(
+            conversation_id,
+            "查一下 Rust 1.95，并记住我喜欢 Rust".to_owned(),
+            false,
+            &mut RecordingSink::default(),
+        )
+        .await
+        .expect("visible reply completes before extraction");
+    assert_eq!(outcome.response_text.as_str(), "已经查到相关资料。");
+    wait_for_background(&runtime).await;
+
+    let committed = intelligence.committed();
+    assert_eq!(committed.len(), 1);
+    assert_eq!(committed[0].0.len(), 1);
+    assert_eq!(committed[0].0[0].content, "用户喜欢 Rust");
+    assert_eq!(committed[0].1.len(), 1);
+    assert_eq!(committed[0].1[0].sources.len(), 1);
+    assert_eq!(
+        committed[0].1[0].sources[0].url,
+        "https://example.test/rust-1-95"
+    );
+    assert!(intelligence.failed().is_empty());
+    assert!(runtime.last_intelligence_background_error().is_none());
+    let requests = gateway.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[2].shape.lane, PromptLane::Extract);
+    assert_eq!(requests[2].shape.max_output_tokens, 800);
+    assert_eq!(requests[2].shape.tool_policy, ToolPolicy::Disabled);
+    assert!(matches!(
+        requests[2].input.as_slice(),
+        [
+            PromptItem::HarnessContext { .. },
+            PromptItem::ExtractionInput { .. }
+        ]
+    ));
+}
+
+#[tokio::test]
+async fn invalid_extraction_json_records_failed_job_without_reopening_completed_turn() {
+    let invalid = "```json\n{\"personalMemories\":[],\"knowledge\":[]}\n```";
+    let gateway = Arc::new(FakeGateway::new(vec![
+        response_behavior("我会在后台整理。", &["我会在后台整理。"]),
+        response_behavior(invalid, &[invalid]),
+    ]));
+    let intelligence = Arc::new(FakeIntelligence::with_extraction(vec![Ok(
+        RetrievalContext::default(),
+    )]));
+    let (runtime, conversation_id, _) = setup(gateway);
+    runtime.replace_intelligence_binding(IntelligenceBinding::Available(intelligence.clone()));
+    let mut sink = RecordingSink::default();
+
+    let outcome = runtime
+        .submit_turn(conversation_id, "记住这件事".to_owned(), false, &mut sink)
+        .await
+        .expect("visible turn remains successful");
+    assert_eq!(outcome.response_text.as_str(), "我会在后台整理。");
+    wait_for_background(&runtime).await;
+
+    assert!(intelligence.committed().is_empty());
+    let failed = intelligence.failed();
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0].code, ErrorCode::IntelligenceExtractionFailed);
+    assert_eq!(
+        runtime
+            .last_intelligence_background_error()
+            .expect("background diagnostic")
+            .code,
+        ErrorCode::IntelligenceExtractionFailed
+    );
+    assert_eq!(
+        sink.events()
+            .iter()
+            .filter(|event| matches!(event.payload, HarnessEventPayload::Completed { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        runtime
+            .session_snapshot(conversation_id)
+            .expect("completed session")
+            .state,
+        TurnState::Idle
+    );
+}
+
+#[tokio::test]
+async fn search_failure_is_a_truthful_tool_result_not_provider_fallback() {
+    let gateway = Arc::new(FakeGateway::new(vec![
+        FakeBehavior::ToolCalls {
+            calls: vec![search_call("call_1", "current news")],
+        },
+        response_behavior("现在暂时查不到结果。", &["现在暂时查不到结果。"]),
+    ]));
+    let search = Arc::new(FakeSearchGateway::new(vec![Err(FairyError::new(
+        ErrorCode::SearchRateLimited,
+        "fake rate limit",
+        true,
+    ))]));
+    let (runtime, conversation_id, _) = setup(gateway.clone());
+    runtime.replace_web_search_gateway(Some(search));
+
+    let outcome = runtime
+        .submit_turn(
+            conversation_id,
+            "查一下现在的新闻".to_owned(),
+            false,
+            &mut RecordingSink::default(),
+        )
+        .await
+        .expect("tool failure can produce an honest reply");
+
+    assert_eq!(outcome.response_text.as_str(), "现在暂时查不到结果。");
+    assert!(outcome.sources.is_empty());
+    let requests = gateway.requests();
+    let failed = requests[1]
+        .input
+        .iter()
+        .find_map(|item| match item {
+            PromptItem::ToolResult { result } => Some(&result.outcome),
+            _ => None,
+        })
+        .expect("failed tool result in second request");
+    assert!(matches!(
+        failed,
+        ToolResultOutcome::Failed { error }
+            if error.code == ErrorCode::SearchRateLimited
+    ));
+}
+
+#[tokio::test]
+async fn third_search_call_fails_with_explicit_limit_and_no_visible_text() {
+    let gateway = Arc::new(FakeGateway::new(vec![
+        FakeBehavior::ToolCalls {
+            calls: vec![search_call("call_1", "one"), search_call("call_2", "two")],
+        },
+        FakeBehavior::ToolCalls {
+            calls: vec![search_call("call_3", "three")],
+        },
+    ]));
+    let search = Arc::new(FakeSearchGateway::new(vec![
+        Ok(search_response("one", "https://example.test/one")),
+        Ok(search_response("two", "https://example.test/two")),
+    ]));
+    let (runtime, conversation_id, _) = setup(gateway);
+    runtime.replace_web_search_gateway(Some(search));
+    let mut sink = RecordingSink::default();
+
+    let error = runtime
+        .submit_turn(conversation_id, "连续搜索".to_owned(), false, &mut sink)
+        .await
+        .expect_err("third search must fail");
+
+    assert_eq!(error.code, ErrorCode::ToolLimitExceeded);
+    assert!(
+        sink.events()
+            .iter()
+            .all(|event| !matches!(event.payload, HarnessEventPayload::TextDelta { .. }))
     );
 }
 

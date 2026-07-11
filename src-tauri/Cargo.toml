@@ -20,6 +20,7 @@ tauri-build.workspace = true
 [dependencies]
 fairy-domain = { path = "../crates/fairy-domain" }
 fairy-harness = { path = "../crates/fairy-harness" }
+fairy-intelligence = { path = "../crates/fairy-intelligence" }
 fairy-model-openai = { path = "../crates/fairy-model-openai" }
 fairy-storage = { path = "../crates/fairy-storage" }
 secrecy.workspace = true

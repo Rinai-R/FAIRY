@@ -3,7 +3,8 @@ use std::time::Duration;
 use fairy_domain::{
     AuthMode, CachedTokenObservation, CompiledPromptRequest, ErrorCode, FairyError,
     ModelConnectionCompiler, ModelConnectionId, ModelConnectionInput, ModelProtocol,
-    ModelRequestShape, ModelStreamEvent, PromptItem, PromptLane, ReasoningMode, ToolPolicy,
+    ModelRequestShape, ModelStreamEvent, PromptItem, PromptLane, ReasoningMode, ToolDefinition,
+    ToolName, ToolPolicy,
 };
 use fairy_harness::{ModelEventSink, ModelGateway};
 use fairy_model_openai::OpenAiResponsesGateway;
@@ -42,6 +43,8 @@ fn request() -> CompiledPromptRequest {
             lane: PromptLane::Respond,
             model: "test-model".to_owned(),
             instructions: "stable".to_owned(),
+            reply_mode: None,
+            max_output_tokens: 160,
             tool_policy: ToolPolicy::Disabled,
             parallel_tool_calls: false,
             reasoning: ReasoningMode::ProviderDefault,
@@ -51,6 +54,23 @@ fn request() -> CompiledPromptRequest {
             content: "你好".to_owned(),
         }],
     }
+}
+
+fn tool_request() -> CompiledPromptRequest {
+    let mut request = request();
+    request.shape.tool_policy = ToolPolicy::Auto {
+        tools: vec![ToolDefinition {
+            name: ToolName::WebSearch,
+            description: "查询最新网页事实".to_owned(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+                "additionalProperties": false
+            }),
+        }],
+    };
+    request
 }
 
 async fn gateway_for(chunks: Vec<String>, status: u16, delay: Duration) -> OpenAiResponsesGateway {
@@ -164,7 +184,7 @@ async fn streams_ordered_deltas_and_records_real_cached_usage() {
         .await
         .expect("complete streaming response");
 
-    assert_eq!(completion.output_text, "你好");
+    assert_eq!(completion.output.text(), Some("你好"));
     assert_eq!(completion.response_id.as_deref(), Some("resp_success"));
     assert_eq!(completion.usage.input_tokens, Some(100));
     assert_eq!(
@@ -247,13 +267,128 @@ async fn completion_payload_without_deltas_still_emits_the_single_real_text() {
         .await
         .expect("complete from canonical response output");
 
-    assert_eq!(completion.output_text, "完整文本");
+    assert_eq!(completion.output.text(), Some("完整文本"));
     assert_eq!(
         sink.events,
         vec![ModelStreamEvent::TextDelta {
             delta: "完整文本".to_owned()
         }]
     );
+}
+
+#[tokio::test]
+async fn assembles_function_call_and_keeps_it_out_of_visible_text() {
+    let arguments = r#"{"query":"Rust 1.95"}"#;
+    let gateway = gateway_for(
+        vec![
+            event(serde_json::json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": "fc_1",
+                "output_index": 0,
+                "delta": "{\"query\":\"Rust"
+            })),
+            event(serde_json::json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": "fc_1",
+                "output_index": 0,
+                "delta": " 1.95\"}"
+            })),
+            event(serde_json::json!({
+                "type": "response.function_call_arguments.done",
+                "item_id": "fc_1",
+                "output_index": 0,
+                "arguments": arguments
+            })),
+            event(serde_json::json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_tool",
+                    "output": [{
+                        "type": "function_call",
+                        "id": "fc_1",
+                        "call_id": "call_1",
+                        "name": "web_search",
+                        "arguments": arguments
+                    }],
+                    "usage": {"input_tokens": 10, "output_tokens": 3}
+                }
+            })),
+        ],
+        200,
+        Duration::ZERO,
+    )
+    .await;
+    let mut sink = CollectSink::default();
+
+    let completion = gateway
+        .execute(tool_request(), CancellationToken::new(), &mut sink)
+        .await
+        .expect("complete Responses tool call");
+
+    let fairy_domain::ModelTurnOutput::ToolCalls { calls } = completion.output else {
+        panic!("expected tool calls")
+    };
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].id, "call_1");
+    assert_eq!(calls[0].name, ToolName::WebSearch);
+    assert_eq!(calls[0].arguments_json, arguments);
+    assert!(sink.events.is_empty());
+    assert!(matches!(
+        completion.response_items.as_slice(),
+        [PromptItem::ToolCall { call }] if call == &calls[0]
+    ));
+}
+
+#[tokio::test]
+async fn function_call_delta_mismatch_and_undeclared_tool_are_rejected() {
+    let fixtures = [
+        (
+            tool_request(),
+            vec![
+                event(serde_json::json!({
+                    "type": "response.function_call_arguments.delta",
+                    "item_id": "fc_1",
+                    "delta": "{\"query\":\"a\"}"
+                })),
+                event(serde_json::json!({
+                    "type": "response.completed",
+                    "response": {"output": [{
+                        "type": "function_call",
+                        "id": "fc_1",
+                        "call_id": "call_1",
+                        "name": "web_search",
+                        "arguments": "{\"query\":\"b\"}"
+                    }]}
+                })),
+            ],
+        ),
+        (
+            request(),
+            vec![event(serde_json::json!({
+                "type": "response.completed",
+                "response": {"output": [{
+                    "type": "function_call",
+                    "id": "fc_1",
+                    "call_id": "call_1",
+                    "name": "web_search",
+                    "arguments": "{\"query\":\"x\"}"
+                }]}
+            }))],
+        ),
+    ];
+
+    for (request, chunks) in fixtures {
+        let gateway = gateway_for(chunks, 200, Duration::ZERO).await;
+        let error = gateway
+            .execute(
+                request,
+                CancellationToken::new(),
+                &mut CollectSink::default(),
+            )
+            .await
+            .expect_err("invalid function call must fail");
+        assert_eq!(error.code, ErrorCode::ModelResponseInvalid);
+    }
 }
 
 #[tokio::test]

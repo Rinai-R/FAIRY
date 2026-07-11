@@ -1,4 +1,7 @@
-use fairy_domain::{CompiledPromptRequest, FairyError, ModelConnectionConfig, ModelProtocol};
+use fairy_domain::{
+    CompiledPromptRequest, FairyError, ModelConnectionConfig, ModelProtocol, PromptItem,
+    ToolDefinition, ToolPolicy,
+};
 use secrecy::SecretString;
 use serde::Serialize;
 
@@ -11,14 +14,46 @@ use crate::shared::{
 struct ResponsesRequestBody<'a> {
     model: &'a str,
     instructions: &'a str,
-    input: Vec<OpenAiMessage>,
+    input: Vec<ResponsesInputItem>,
     tool_choice: &'static str,
     parallel_tool_calls: bool,
+    max_output_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<ResponsesTool<'a>>>,
     store: bool,
     stream: bool,
     text: TextConfiguration,
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_key: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ResponsesInputItem {
+    Message(OpenAiMessage),
+    FunctionCall {
+        #[serde(rename = "type")]
+        kind: &'static str,
+        call_id: String,
+        name: &'static str,
+        arguments: String,
+    },
+    FunctionCallOutput {
+        #[serde(rename = "type")]
+        kind: &'static str,
+        call_id: String,
+        output: String,
+    },
+}
+
+#[derive(Serialize)]
+struct ResponsesTool<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    name: &'static str,
+    description: &'a str,
+    parameters: &'a serde_json::Value,
+    strict: bool,
 }
 
 #[derive(Serialize)]
@@ -32,6 +67,47 @@ enum TextFormat {
     Text,
 }
 
+fn map_tools(tools: &[ToolDefinition]) -> Vec<ResponsesTool<'_>> {
+    tools
+        .iter()
+        .map(|tool| ResponsesTool {
+            kind: "function",
+            name: tool.name.as_str(),
+            description: &tool.description,
+            parameters: &tool.parameters,
+            strict: true,
+        })
+        .collect()
+}
+
+fn map_responses_input(items: &[PromptItem]) -> Result<Vec<ResponsesInputItem>, FairyError> {
+    items
+        .iter()
+        .map(|item| match item {
+            PromptItem::ToolCall { call } => Ok(ResponsesInputItem::FunctionCall {
+                kind: "function_call",
+                call_id: call.id.clone(),
+                name: call.name.as_str(),
+                arguments: call.arguments_json.clone(),
+            }),
+            PromptItem::ToolResult { result } => Ok(ResponsesInputItem::FunctionCallOutput {
+                kind: "function_call_output",
+                call_id: result.call_id.clone(),
+                output: serde_json::to_string(&result.outcome)
+                    .map_err(|_| invalid_model_request("无法序列化 Responses 工具结果"))?,
+            }),
+            _ => {
+                let mut messages =
+                    map_prompt_items(std::slice::from_ref(item), OpenAiRole::Developer)?;
+                let message = messages
+                    .pop()
+                    .ok_or_else(|| invalid_model_request("Responses message mapper 返回空结果"))?;
+                Ok(ResponsesInputItem::Message(message))
+            }
+        })
+        .collect()
+}
+
 pub fn build_responses_request(
     client: &reqwest::Client,
     config: &ModelConnectionConfig,
@@ -41,7 +117,7 @@ pub fn build_responses_request(
     validate_request(config, ModelProtocol::Responses, request)?;
 
     let url = protocol_url(config, ModelProtocol::Responses)?;
-    let input = map_prompt_items(&request.input, OpenAiRole::Developer)?;
+    let input = map_responses_input(&request.input)?;
     let text = TextConfiguration {
         format: TextFormat::Text,
     };
@@ -56,12 +132,18 @@ pub fn build_responses_request(
     } else {
         None
     };
+    let (tools, tool_choice) = match &request.shape.tool_policy {
+        ToolPolicy::Disabled => (None, "none"),
+        ToolPolicy::Auto { tools } => (Some(map_tools(tools)), "auto"),
+    };
     let body = serde_json::to_vec(&ResponsesRequestBody {
         model: config.model(),
         instructions: &request.shape.instructions,
         input,
-        tool_choice: "none",
+        tool_choice,
         parallel_tool_calls: false,
+        max_output_tokens: request.shape.max_output_tokens,
+        tools,
         store: false,
         stream: true,
         text,
@@ -110,6 +192,8 @@ mod tests {
                 lane: PromptLane::Respond,
                 model: "model-a".to_owned(),
                 instructions: "stable instructions".to_owned(),
+                reply_mode: None,
+                max_output_tokens: 160,
                 tool_policy: ToolPolicy::Disabled,
                 parallel_tool_calls: false,
                 reasoning: ReasoningMode::ProviderDefault,
@@ -161,12 +245,77 @@ mod tests {
         assert_eq!(body["store"], false);
         assert_eq!(body["tool_choice"], "none");
         assert_eq!(body["parallel_tool_calls"], false);
+        assert_eq!(body["max_output_tokens"], 160);
         assert_eq!(body["prompt_cache_key"], "fairy:conversation:respond");
         assert_eq!(body["text"]["format"]["type"], "text");
         assert_eq!(body["input"].as_array().expect("input array").len(), 2);
         assert_eq!(body["input"][0]["role"], "developer");
         assert_eq!(body["input"][1]["role"], "user");
         assert_eq!(body["input"][1]["content"], "你好");
+    }
+
+    #[test]
+    fn tool_request_maps_responses_function_items_and_schema() {
+        use fairy_domain::{ToolCall, ToolDefinition, ToolName, ToolResult, ToolResultOutcome};
+
+        let mut compiled = compiled();
+        compiled.shape.tool_policy = ToolPolicy::Auto {
+            tools: vec![ToolDefinition {
+                name: ToolName::WebSearch,
+                description: "查询最新网页事实".to_owned(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                    "additionalProperties": false
+                }),
+            }],
+        };
+        compiled.input.extend([
+            PromptItem::ToolCall {
+                call: ToolCall {
+                    id: "call_1".to_owned(),
+                    name: ToolName::WebSearch,
+                    arguments_json: r#"{"query":"Rust"}"#.to_owned(),
+                },
+            },
+            PromptItem::ToolResult {
+                result: ToolResult {
+                    call_id: "call_1".to_owned(),
+                    name: ToolName::WebSearch,
+                    outcome: ToolResultOutcome::Success {
+                        output: "搜索完成".to_owned(),
+                        sources: Vec::new(),
+                    },
+                },
+            },
+        ]);
+        let request = build_responses_request(
+            &reqwest::Client::new(),
+            &config(AuthMode::BearerKey),
+            Some(&SecretString::from("sk-exact".to_owned())),
+            &compiled,
+        )
+        .expect("build Responses tool request");
+        let body = body_json(&request);
+
+        assert_eq!(body["tool_choice"], "auto");
+        assert_eq!(body["tools"][0]["name"], "web_search");
+        assert_eq!(body["tools"][0]["strict"], true);
+        assert!(
+            body["input"]
+                .as_array()
+                .expect("input")
+                .iter()
+                .any(|item| item["type"] == "function_call" && item["call_id"] == "call_1")
+        );
+        assert!(
+            body["input"]
+                .as_array()
+                .expect("input")
+                .iter()
+                .any(|item| item["type"] == "function_call_output" && item["call_id"] == "call_1")
+        );
     }
 
     #[test]

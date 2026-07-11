@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ConversationId, FairyError, LaneModelUsage, ResponseText, Revision, TurnId, TurnState,
+    AssistantSource, ConversationId, FairyError, LaneModelUsage, ResponseText, Revision,
+    SpeechText, TurnId, TurnState,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -17,13 +18,15 @@ pub enum HarnessEventPayload {
     },
     Completed {
         text: ResponseText,
+        speech_text: SpeechText,
+        sources: Vec<AssistantSource>,
         character_revision: Revision,
         user_profile_revision: Option<Revision>,
         usage: Vec<LaneModelUsage>,
     },
     #[serde(rename = "speech.requested")]
     SpeechRequested {
-        text: ResponseText,
+        text: SpeechText,
         character_revision: Revision,
         user_profile_revision: Option<Revision>,
     },

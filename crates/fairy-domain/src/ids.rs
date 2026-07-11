@@ -50,6 +50,11 @@ uuid_id!(ConversationId);
 uuid_id!(TurnId);
 uuid_id!(CharacterId);
 uuid_id!(ModelConnectionId);
+uuid_id!(SearchConnectionId);
+uuid_id!(PersonalMemoryId);
+uuid_id!(KnowledgeId);
+uuid_id!(KnowledgeSourceId);
+uuid_id!(ExtractionJobId);
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]

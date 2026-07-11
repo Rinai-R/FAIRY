@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use fairy_domain::{
-    ConversationId, ModelConnectionInput, Revision, UserProfileInput, UserProfileSnapshot,
+    ConversationId, KnowledgeCatalog, KnowledgeId, KnowledgeRecord, ModelConnectionInput, Revision,
+    SearchConnectionInput, UserProfileInput, UserProfileSnapshot,
 };
 use fairy_harness::HarnessRuntime;
 use fairy_storage::UserProfileUpdate;
@@ -10,7 +11,7 @@ use tauri::{AppHandle, Runtime, State};
 
 use crate::{
     app_error::AppError,
-    app_state::{AppState, ModelConnectionStatus},
+    app_state::{AppState, IntelligenceStatus, ModelConnectionStatus, SearchConnectionStatus},
     ipc::{ConfigurationChange, emit_configuration_change},
 };
 
@@ -164,4 +165,66 @@ pub fn clear_model_connection<R: Runtime>(
         },
     )?;
     Ok(status)
+}
+
+#[tauri::command]
+pub fn get_search_connection_status(state: State<'_, AppState>) -> SearchConnectionStatus {
+    state.search_status()
+}
+
+#[tauri::command]
+pub fn save_search_connection<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    input: SearchConnectionInput,
+    api_key: Option<String>,
+) -> Result<SearchConnectionStatus, AppError> {
+    let status = state.save_search_connection(input, api_key)?;
+    emit_configuration_change(
+        &app,
+        ConfigurationChange::Search {
+            configured: status.configured,
+            ready: status.ready,
+        },
+    )?;
+    Ok(status)
+}
+
+#[tauri::command]
+pub fn clear_search_connection<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<SearchConnectionStatus, AppError> {
+    let status = state.clear_search_connection()?;
+    emit_configuration_change(
+        &app,
+        ConfigurationChange::Search {
+            configured: status.configured,
+            ready: status.ready,
+        },
+    )?;
+    Ok(status)
+}
+
+#[tauri::command]
+pub fn get_intelligence_status(state: State<'_, AppState>) -> IntelligenceStatus {
+    state.intelligence_status()
+}
+
+#[tauri::command]
+pub fn get_knowledge_catalog(state: State<'_, AppState>) -> Result<KnowledgeCatalog, AppError> {
+    state.knowledge_catalog()
+}
+
+#[tauri::command]
+pub fn confirm_knowledge_candidate(
+    state: State<'_, AppState>,
+    id: KnowledgeId,
+) -> Result<KnowledgeRecord, AppError> {
+    state.confirm_knowledge_candidate(id)
+}
+
+#[tauri::command]
+pub fn tombstone_knowledge(state: State<'_, AppState>, id: KnowledgeId) -> Result<(), AppError> {
+    state.tombstone_knowledge(id)
 }

@@ -85,6 +85,7 @@ impl LaneHistory {
 pub struct ConversationHistory {
     respond: LaneHistory,
     compact: LaneHistory,
+    extract: LaneHistory,
     active_character: Option<(CharacterId, Revision)>,
     active_user_profile: Option<Revision>,
     pending_user_profile: Option<UserProfileSnapshot>,
@@ -96,6 +97,7 @@ impl ConversationHistory {
         Self {
             respond: LaneHistory::new(conversation_id, PromptLane::Respond),
             compact: LaneHistory::new(conversation_id, PromptLane::Compact),
+            extract: LaneHistory::new(conversation_id, PromptLane::Extract),
             active_character: None,
             active_user_profile: None,
             pending_user_profile: None,
@@ -107,6 +109,7 @@ impl ConversationHistory {
         match lane {
             PromptLane::Respond => &self.respond,
             PromptLane::Compact => &self.compact,
+            PromptLane::Extract => &self.extract,
         }
     }
 
@@ -115,6 +118,7 @@ impl ConversationHistory {
         match lane {
             PromptLane::Respond => &mut self.respond,
             PromptLane::Compact => &mut self.compact,
+            PromptLane::Extract => &mut self.extract,
         }
     }
 

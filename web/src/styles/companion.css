@@ -209,6 +209,53 @@
   background: var(--fairy-accent-strong);
 }
 
+.fairy-message__sources {
+  margin: 4px 3px 0;
+  color: var(--fairy-text-muted);
+  font-size: 10px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.fairy-message__sources summary {
+  width: fit-content;
+  color: var(--fairy-accent-strong);
+  cursor: pointer;
+}
+
+.fairy-message__sources ol {
+  display: grid;
+  gap: 3px;
+  margin: 5px 0 0;
+  padding-left: 18px;
+}
+
+.fairy-message__sources a {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 4px;
+  color: #355d72;
+  text-decoration: none;
+}
+
+.fairy-message__sources a:hover {
+  color: var(--fairy-accent-strong);
+  text-decoration: underline;
+}
+
+.fairy-message__sources a span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fairy-message__sources svg {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+}
+
 .fairy-message--partial span {
   display: block;
   margin: 3px 4px 0;
