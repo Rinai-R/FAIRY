@@ -207,48 +207,56 @@
 }
 
 .cp-intelligence-track {
-  position: relative;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   margin: 4px 0 14px;
+  overflow: hidden;
+  border: 1px solid var(--fairy-border-soft);
+  border-radius: 14px;
+  background: #ffffff;
 }
 
-.cp-intelligence-track::before {
-  content: "";
-  position: absolute;
-  top: 7px;
-  right: 16.66%;
-  left: 16.66%;
-  height: 1px;
-  background: var(--fairy-border);
-}
-
-.cp-intelligence-track > div {
-  position: relative;
-  z-index: 1;
+.cp-intelligence-step {
   display: grid;
   min-width: 0;
-  justify-items: center;
-  gap: 2px;
-  text-align: center;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 11px 12px;
 }
 
-.cp-intelligence-track > div > span {
-  width: 15px;
-  height: 15px;
-  margin-bottom: 3px;
-  border: 3px solid #ffffff;
+.cp-intelligence-step + .cp-intelligence-step {
+  border-left: 1px solid var(--fairy-border-soft);
+}
+
+.cp-intelligence-step-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.cp-intelligence-step-copy .rt-Text {
+  min-width: 0;
+  overflow-wrap: normal;
+  word-break: keep-all;
+}
+
+.cp-intelligence-status-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border: 2px solid #ffffff;
   border-radius: 50%;
   background: #a8b4be;
   box-shadow: 0 0 0 1px var(--fairy-border);
 }
 
-.cp-intelligence-track > div.is-ready > span {
+.cp-intelligence-step.is-ready .cp-intelligence-status-dot {
   background: var(--fairy-accent-strong);
   box-shadow: 0 0 0 1px var(--fairy-accent-strong);
 }
 
-.cp-intelligence-track > div.is-active > span {
+.cp-intelligence-step.is-active .cp-intelligence-status-dot {
   background: #ffffff;
   box-shadow: 0 0 0 2px var(--fairy-accent-strong);
   animation: cp-intelligence-pulse 1.2s ease-in-out infinite;
@@ -430,6 +438,15 @@
 }
 
 @media (max-width: 520px) {
+  .cp-intelligence-track {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cp-intelligence-step + .cp-intelligence-step {
+    border-top: 1px solid var(--fairy-border-soft);
+    border-left: 0;
+  }
+
   .cp-knowledge-columns {
     grid-template-columns: minmax(0, 1fr);
   }

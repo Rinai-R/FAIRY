@@ -14,11 +14,10 @@ impl ReplyCompiler {
         sources: Vec<AssistantSource>,
     ) -> Result<CompiledReply, FairyError> {
         validate_draft(draft)?;
-        let normalized = normalize_leading(draft);
-        if normalized.is_empty() {
-            return Err(invalid_reply("模型回复只包含动作或心理描写"));
+        let display = draft.trim().to_owned();
+        if display.is_empty() {
+            return Err(invalid_reply("模型没有返回可用回复文本"));
         }
-        let display = normalize_display(normalized)?;
         let raw_speech = first_semantic_sentence(&display);
         let speech = raw_speech.to_owned();
         validate_speech(&speech)?;
@@ -30,40 +29,6 @@ impl ReplyCompiler {
             sources,
         })
     }
-}
-
-fn normalize_display(value: &str) -> Result<String, FairyError> {
-    let mut lines = Vec::new();
-    for line in value.lines() {
-        let trimmed = line.trim();
-        if is_standalone_stage_block(trimmed) {
-            continue;
-        }
-        if contains_bracket(trimmed) {
-            return Err(invalid_reply("模型回复包含含糊的内联括号内容"));
-        }
-        lines.push(line.trim_end());
-    }
-    let display = lines.join("\n").trim().to_owned();
-    if display.is_empty() {
-        return Err(invalid_reply("模型回复只包含动作或心理描写"));
-    }
-    Ok(display)
-}
-
-fn is_standalone_stage_block(value: &str) -> bool {
-    if value.len() < 2 {
-        return false;
-    }
-    [
-        ('（', '）'),
-        ('(', ')'),
-        ('【', '】'),
-        ('[', ']'),
-        ('*', '*'),
-    ]
-    .iter()
-    .any(|(open, close)| value.starts_with(*open) && value.ends_with(*close))
 }
 
 fn validate_draft(draft: &str) -> Result<(), FairyError> {
@@ -79,39 +44,6 @@ fn validate_draft(draft: &str) -> Result<(), FairyError> {
         return Err(invalid_reply("模型回复包含不适合语音对话的 emoji"));
     }
     Ok(())
-}
-
-fn normalize_leading(mut value: &str) -> &str {
-    value = value.trim_start_matches(|character: char| character.is_whitespace());
-    loop {
-        let before = value;
-        value = strip_leading_block(value).unwrap_or(value);
-        value = value.trim_start_matches(|character: char| character.is_whitespace());
-        if value == before {
-            return value;
-        }
-    }
-}
-
-fn strip_leading_block(value: &str) -> Option<&str> {
-    let (open, close) = if value.starts_with('（') {
-        ('（', '）')
-    } else if value.starts_with('(') {
-        ('(', ')')
-    } else if value.starts_with('【') {
-        ('【', '】')
-    } else if value.starts_with('[') {
-        ('[', ']')
-    } else if value.starts_with("**") {
-        return None;
-    } else if value.starts_with('*') {
-        ('*', '*')
-    } else {
-        return None;
-    };
-    let rest = &value[open.len_utf8()..];
-    let end = rest.find(close)?;
-    Some(&rest[end + close.len_utf8()..])
 }
 
 fn first_semantic_sentence(value: &str) -> &str {
@@ -140,9 +72,6 @@ fn validate_speech(value: &str) -> Result<(), FairyError> {
     if lower.contains("https://") || lower.contains("http://") || lower.contains("www.") {
         return Err(invalid_reply("语音台词不能包含 URL"));
     }
-    if contains_bracket(value) {
-        return Err(invalid_reply("语音台词不能包含括号动作或引用"));
-    }
     if value.contains('`')
         || value.starts_with('#')
         || value.starts_with("- ")
@@ -152,12 +81,6 @@ fn validate_speech(value: &str) -> Result<(), FairyError> {
         return Err(invalid_reply("语音台词不能包含 Markdown 或列表标记"));
     }
     Ok(())
-}
-
-fn contains_bracket(value: &str) -> bool {
-    ['（', '）', '(', ')', '【', '】', '[', ']']
-        .iter()
-        .any(|bracket| value.contains(*bracket))
 }
 
 fn is_emoji(character: char) -> bool {
@@ -179,7 +102,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reply_removes_leading_stage_direction_but_keeps_spoken_filler() {
+    fn reply_preserves_leading_brackets_and_spoken_filler() {
         let reply = ReplyCompiler
             .compile(
                 "（轻轻歪头）哎呀，你先休息一会儿吧。后面不该显示。",
@@ -189,9 +112,12 @@ mod tests {
 
         assert_eq!(
             reply.display_text.as_str(),
-            "哎呀，你先休息一会儿吧。后面不该显示。"
+            "（轻轻歪头）哎呀，你先休息一会儿吧。后面不该显示。"
         );
-        assert_eq!(reply.speech_text.as_str(), "哎呀，你先休息一会儿吧。");
+        assert_eq!(
+            reply.speech_text.as_str(),
+            "（轻轻歪头）哎呀，你先休息一会儿吧。"
+        );
     }
 
     #[test]
@@ -246,42 +172,47 @@ mod tests {
     }
 
     #[test]
-    fn reply_removes_standalone_stage_lines_and_rejects_inline_brackets() {
+    fn reply_preserves_standalone_and_inline_brackets() {
         let reply = ReplyCompiler
             .compile("先检查网络。\n（轻轻点头）\n然后检查配置。", Vec::new())
-            .expect("remove standalone stage line");
-        assert_eq!(reply.display_text.as_str(), "先检查网络。\n然后检查配置。");
+            .expect("preserve standalone stage line");
+        assert_eq!(
+            reply.display_text.as_str(),
+            "先检查网络。\n（轻轻点头）\n然后检查配置。"
+        );
         assert_eq!(reply.speech_text.as_str(), "先检查网络。");
 
-        let error = ReplyCompiler
+        let inline = ReplyCompiler
             .compile("先检查网络。然后确认配置（不要猜测）。", Vec::new())
-            .expect_err("ambiguous inline brackets must fail");
-        assert_eq!(error.code, ErrorCode::ModelResponseInvalid);
+            .expect("inline brackets remain valid");
+        assert_eq!(
+            inline.display_text.as_str(),
+            "先检查网络。然后确认配置（不要猜测）。"
+        );
 
         let psychological = ReplyCompiler
             .compile(
                 "我听见了。\n（心里有些担心）\n你愿意再说一点吗？",
                 Vec::new(),
             )
-            .expect("remove standalone psychological line");
+            .expect("preserve standalone psychological line");
         assert_eq!(
             psychological.display_text.as_str(),
-            "我听见了。\n你愿意再说一点吗？"
+            "我听见了。\n（心里有些担心）\n你愿意再说一点吗？"
         );
     }
 
     #[test]
-    fn pure_stage_direction_and_invalid_speech_fail_without_template() {
-        assert!(
-            ReplyCompiler
-                .compile("（安静地看着你）", Vec::new())
-                .is_err()
-        );
+    fn pure_bracketed_text_is_valid_but_other_invalid_speech_still_fails() {
+        let bracketed = ReplyCompiler
+            .compile("（安静地看着你）", Vec::new())
+            .expect("bracketed text is allowed");
+        assert_eq!(bracketed.display_text.as_str(), "（安静地看着你）");
+        assert_eq!(bracketed.speech_text.as_str(), "（安静地看着你）");
         for invalid in [
             "看看 https://example.test。",
             "**加粗台词**",
             "我在这里🙂。",
-            "这句话包含（心理活动）。",
         ] {
             assert!(ReplyCompiler.compile(invalid, Vec::new()).is_err());
         }

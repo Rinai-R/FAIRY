@@ -610,28 +610,34 @@ export function ControlPanelApp() {
                           />
 
                           <div className="cp-intelligence-track" aria-label="智能层状态">
-                            <div className={searchStatus?.ready ? "is-ready" : ""}>
-                              <span aria-hidden="true" />
-                              <Text size="1" weight="medium">网络搜索</Text>
-                              <Text size="1" color="gray">{searchStatus?.ready ? "Brave 已连接" : "需要配置"}</Text>
+                            <div className={`cp-intelligence-step ${searchStatus?.ready ? "is-ready" : ""}`}>
+                              <span className="cp-intelligence-status-dot" aria-hidden="true" />
+                              <div className="cp-intelligence-step-copy">
+                                <Text size="1" weight="medium">网络搜索</Text>
+                                <Text size="1" color="gray">{searchStatus?.ready ? "Brave 已连接" : "需要配置"}</Text>
+                              </div>
                             </div>
-                            <div className={intelligenceStatus?.ready ? "is-ready" : ""}>
-                              <span aria-hidden="true" />
-                              <Text size="1" weight="medium">本地存储</Text>
-                              <Text size="1" color="gray">
-                                {intelligenceStatus?.schemaVersion
-                                  ? `SQLite v${intelligenceStatus.schemaVersion}`
-                                  : "状态不可用"}
-                              </Text>
+                            <div className={`cp-intelligence-step ${intelligenceStatus?.ready ? "is-ready" : ""}`}>
+                              <span className="cp-intelligence-status-dot" aria-hidden="true" />
+                              <div className="cp-intelligence-step-copy">
+                                <Text size="1" weight="medium">本地存储</Text>
+                                <Text size="1" color="gray">
+                                  {intelligenceStatus?.schemaVersion
+                                    ? `SQLite v${intelligenceStatus.schemaVersion}`
+                                    : "状态不可用"}
+                                </Text>
+                              </div>
                             </div>
-                            <div className={(intelligenceStatus?.activeBackgroundJobs ?? 0) > 0 ? "is-active" : "is-ready"}>
-                              <span aria-hidden="true" />
-                              <Text size="1" weight="medium">后台提取</Text>
-                              <Text size="1" color="gray">
-                                {(intelligenceStatus?.activeBackgroundJobs ?? 0) > 0
-                                  ? `${intelligenceStatus.activeBackgroundJobs} 个任务运行中`
-                                  : "当前空闲"}
-                              </Text>
+                            <div className={`cp-intelligence-step ${(intelligenceStatus?.activeBackgroundJobs ?? 0) > 0 ? "is-active" : "is-ready"}`}>
+                              <span className="cp-intelligence-status-dot" aria-hidden="true" />
+                              <div className="cp-intelligence-step-copy">
+                                <Text size="1" weight="medium">后台提取</Text>
+                                <Text size="1" color="gray">
+                                  {(intelligenceStatus?.activeBackgroundJobs ?? 0) > 0
+                                    ? `${intelligenceStatus.activeBackgroundJobs} 个任务运行中`
+                                    : "当前空闲"}
+                                </Text>
+                              </div>
                             </div>
                           </div>
 

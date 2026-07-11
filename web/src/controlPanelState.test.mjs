@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   CONTROL_PANEL_SECTIONS,
@@ -58,4 +59,14 @@ test("model form produces the exact public input without cache switches", () => 
     () => buildModelConnectionInput({ protocol: "auto", endpoint: "x", model: "m", authMode: "no_auth" }),
     /unsupported model protocol/,
   );
+});
+
+test("intelligence status layout targets only its dot and stacks on narrow windows", () => {
+  const appSource = readFileSync(new URL("./apps/ControlPanelApp.jsx", import.meta.url), "utf8");
+  const cssSource = readFileSync(new URL("./styles/control-panel.css", import.meta.url), "utf8");
+
+  assert.match(appSource, /className="cp-intelligence-status-dot"/);
+  assert.doesNotMatch(cssSource, /\.cp-intelligence-track\s*>\s*div\s*>\s*span/);
+  assert.match(cssSource, /\.cp-intelligence-status-dot\s*\{/);
+  assert.match(cssSource, /@media \(max-width: 520px\)[\s\S]*\.cp-intelligence-track\s*\{[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
 });
