@@ -14,8 +14,8 @@ use fairy_domain::{
     WindowRevision,
 };
 use fairy_harness::{
-    CompactionPolicy, CompanionPersistence, HarnessEventSink, HarnessRuntime, ModelEventSink, ModelGateway,
-    PersistenceBinding,
+    CompactionPolicy, CompanionPersistence, HarnessEventSink, HarnessRuntime, ModelEventSink,
+    ModelGateway, PersistenceBinding,
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -29,6 +29,10 @@ enum FakeBehavior {
         output: String,
         deltas: Vec<String>,
         input_tokens: u64,
+    },
+    CompleteWithoutInputUsage {
+        output: String,
+        deltas: Vec<String>,
     },
     WaitAfterTextDelta {
         delta: String,
@@ -95,6 +99,16 @@ impl ModelGateway for FakeGateway {
                 }
                 let mut completion = completion(output);
                 completion.usage.input_tokens = Some(input_tokens);
+                Ok(completion)
+            }
+            FakeBehavior::CompleteWithoutInputUsage { output, deltas } => {
+                let (output, deltas) =
+                    normalize_response_output(request.shape.lane, output, deltas);
+                for delta in deltas {
+                    sink.send(ModelStreamEvent::TextDelta { delta })?;
+                }
+                let mut completion = completion(output);
+                completion.usage.input_tokens = None;
                 Ok(completion)
             }
             FakeBehavior::WaitAfterTextDelta { delta } => {
@@ -687,6 +701,12 @@ fn response_behavior(output: &str, deltas: &[&str]) -> FakeBehavior {
     }
 }
 
+fn default_auto_compaction_threshold() -> u64 {
+    CompactionPolicy::default()
+        .auto_input_token_threshold
+        .expect("default auto compaction threshold")
+}
+
 fn setup(
     gateway: Arc<FakeGateway>,
 ) -> (
@@ -804,7 +824,8 @@ async fn completed_turn_below_derived_threshold_does_not_compact_at_old_32k() {
         },
         response_behavior("不应该触发的摘要", &["不应该触发的摘要"]),
     ]));
-    let runtime = HarnessRuntime::new("test-model".to_owned(), gateway.clone()).expect("create runtime");
+    let runtime =
+        HarnessRuntime::new("test-model".to_owned(), gateway.clone()).expect("create runtime");
     runtime.replace_persistence_binding(PersistenceBinding::Available(persistence.clone()));
     let bootstrap = runtime
         .open_or_create_character_session(role, None)
@@ -833,15 +854,58 @@ async fn completed_turn_below_derived_threshold_does_not_compact_at_old_32k() {
 }
 
 #[tokio::test]
-async fn completed_turn_at_derived_token_threshold_persists_compaction_before_memory_window_changes() {
+async fn completed_turn_without_input_usage_does_not_guess_compaction() {
     let persistence = Arc::new(ReopenablePersistence::default());
     let role = character(Revision::INITIAL, "自然回应。");
     let character_id = role.character_id();
     let gateway = Arc::new(FakeGateway::new(vec![
+        FakeBehavior::CompleteWithoutInputUsage {
+            output: "没有 usage 也要正常回复。".to_owned(),
+            deltas: vec!["没有 usage 也要正常回复。".to_owned()],
+        },
+        response_behavior("不应该触发的摘要", &["不应该触发的摘要"]),
+    ]));
+    let runtime =
+        HarnessRuntime::new("test-model".to_owned(), gateway.clone()).expect("create runtime");
+    runtime.replace_persistence_binding(PersistenceBinding::Available(persistence.clone()));
+    let bootstrap = runtime
+        .open_or_create_character_session(role, None)
+        .await
+        .expect("open session");
+
+    runtime
+        .submit_turn(
+            bootstrap.conversation.id,
+            "provider 没有返回 input usage".to_owned(),
+            false,
+            &mut RecordingSink::default(),
+        )
+        .await
+        .expect("complete turn without usage");
+    wait_for_background(&runtime).await;
+
+    assert_eq!(
+        persistence
+            .bootstrap_for(character_id)
+            .prompt_window
+            .revision,
+        WindowRevision::INITIAL
+    );
+    assert_eq!(gateway.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn completed_turn_at_derived_token_threshold_persists_compaction_before_memory_window_changes()
+ {
+    let persistence = Arc::new(ReopenablePersistence::default());
+    let role = character(Revision::INITIAL, "自然回应。");
+    let character_id = role.character_id();
+    let threshold = default_auto_compaction_threshold();
+    let gateway = Arc::new(FakeGateway::new(vec![
         FakeBehavior::CompleteWithInputTokens {
             output: "这一轮很长。".to_owned(),
             deltas: vec!["这一轮很长。".to_owned()],
-            input_tokens: 32_000,
+            input_tokens: threshold,
         },
         response_behavior("用户完成了一轮长对话。", &["用户完成了一轮长对话。"]),
     ]));
@@ -901,11 +965,12 @@ async fn prompt_window_commit_failure_keeps_persisted_and_in_memory_windows_unch
     persistence.fail_prompt_window();
     let role = character(Revision::INITIAL, "自然回应。");
     let character_id = role.character_id();
+    let threshold = default_auto_compaction_threshold();
     let gateway = Arc::new(FakeGateway::new(vec![
         FakeBehavior::CompleteWithInputTokens {
             output: "第一轮回复。".to_owned(),
             deltas: vec!["第一轮回复。".to_owned()],
-            input_tokens: 32_000,
+            input_tokens: threshold,
         },
         response_behavior("不会被持久化的摘要", &["不会被持久化的摘要"]),
         response_behavior("旧窗口仍可继续。", &["旧窗口仍可继续。"]),

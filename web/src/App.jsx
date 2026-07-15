@@ -29,6 +29,7 @@ import { normalizeInvokeError } from "./desktopState.mjs";
 import {
   createPixelCharacterState,
   reducePixelCharacterState,
+  shouldApplyReplyVisualState,
 } from "./pixelCharacterState.mjs";
 import { startPetWindowDrag } from "./petDragState.mjs";
 import {
@@ -439,7 +440,7 @@ export function App() {
         speechEnabled: false,
         onEvent: (event) => {
           dispatchCompanion({ type: "harness_event", event });
-          if (event.payload.type === "reply_chain" || event.payload.type === "completed") {
+          if (shouldApplyReplyVisualState(event)) {
             dispatchPixelCharacter({
               type: "visual_state_changed",
               visualState: event.payload.visualState,

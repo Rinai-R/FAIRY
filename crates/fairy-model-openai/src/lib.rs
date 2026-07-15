@@ -36,8 +36,8 @@ pub fn build_openai_compatible_gateway(
 #[cfg(test)]
 mod tests {
     use fairy_domain::{
-        AuthMode, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, ModelConnectionCompiler,
-        ModelConnectionId, ModelConnectionInput,
+        AuthMode, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, ModelConnectionCompiler, ModelConnectionId,
+        ModelConnectionInput,
     };
 
     use super::*;

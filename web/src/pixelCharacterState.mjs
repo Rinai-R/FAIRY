@@ -99,6 +99,10 @@ export function selectPixelVisualState(state) {
   return "idle";
 }
 
+export function shouldApplyReplyVisualState(event) {
+  return event?.payload?.type === "completed";
+}
+
 function finalize(state) {
   const visualState = selectPixelVisualState(state);
   return Object.freeze({ ...state, visualState, displacement: 0 });

@@ -6,6 +6,7 @@ import {
   canRunPixelAutonomy,
   createPixelCharacterState,
   reducePixelCharacterState,
+  shouldApplyReplyVisualState,
 } from "./pixelCharacterState.mjs";
 
 function context(overrides = {}) {
@@ -129,6 +130,27 @@ test("completed visual state routes only when declared", () => {
   assert.equal(state.visualState, "happy");
   state = change(state, { availableStates: ["idle", "happy"], sessionState: "completed" });
   assert.equal(state.visualState, "happy");
+});
+
+test("reply visual state is applied only after completion", () => {
+  assert.equal(
+    shouldApplyReplyVisualState({
+      payload: {
+        type: "reply_chain",
+        visualState: "thinking",
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    shouldApplyReplyVisualState({
+      payload: {
+        type: "completed",
+        visualState: "thinking",
+      },
+    }),
+    true,
+  );
 });
 
 test("state and actions reject ambiguous input", () => {

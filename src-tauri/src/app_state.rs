@@ -336,9 +336,8 @@ impl AppState {
             .map_err(AppError::from)?;
         let connection = self.model_connections.resolve().map_err(AppError::from)?;
         let model = connection.config.model().to_owned();
-        let compaction_policy = CompactionPolicy::from_context_window_tokens(
-            connection.config.context_window_tokens(),
-        );
+        let compaction_policy =
+            CompactionPolicy::from_context_window_tokens(connection.config.context_window_tokens());
         let gateway = build_openai_compatible_gateway(connection.config, connection.api_key)
             .map_err(AppError::from)?;
 
@@ -348,11 +347,10 @@ impl AppState {
                 .replace_gateway_with_compaction_policy(model, gateway, compaction_policy)
                 .map_err(AppError::from)?;
         } else {
-            let new_runtime =
-                Arc::new(
-                    HarnessRuntime::new_with_compaction_policy(model, gateway, compaction_policy)
-                        .map_err(AppError::from)?,
-                );
+            let new_runtime = Arc::new(
+                HarnessRuntime::new_with_compaction_policy(model, gateway, compaction_policy)
+                    .map_err(AppError::from)?,
+            );
             new_runtime.replace_persistence_binding(persistence_binding(
                 self.intelligence.as_ref(),
                 self.intelligence_error.as_ref(),
@@ -443,7 +441,8 @@ fn build_runtime(
     api_key: Option<SecretString>,
 ) -> Result<HarnessRuntime, FairyError> {
     let model = config.model().to_owned();
-    let compaction_policy = CompactionPolicy::from_context_window_tokens(config.context_window_tokens());
+    let compaction_policy =
+        CompactionPolicy::from_context_window_tokens(config.context_window_tokens());
     let gateway = build_openai_compatible_gateway(config, api_key)?;
     HarnessRuntime::new_with_compaction_policy(model, gateway, compaction_policy)
 }

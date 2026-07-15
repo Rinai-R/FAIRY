@@ -78,9 +78,9 @@ pub fn build_chat_completions_request(
 mod tests {
     use fairy_domain::{
         AuthMode, CharacterBriefInput, CharacterCompiler, CharacterId, CompiledPromptRequest,
-        DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, ErrorCode, ModelConnectionCompiler,
-        ModelConnectionId, ModelConnectionInput, ModelProtocol, ModelRequestShape, PromptItem,
-        PromptLane, ReasoningMode, Revision,
+        DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, ErrorCode, ModelConnectionCompiler, ModelConnectionId,
+        ModelConnectionInput, ModelProtocol, ModelRequestShape, PromptItem, PromptLane,
+        ReasoningMode, Revision,
     };
     use secrecy::SecretString;
     use serde_json::Value;

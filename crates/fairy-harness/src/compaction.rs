@@ -35,7 +35,9 @@ impl CompactionPolicy {
             .saturating_mul(AUTO_COMPACTION_THRESHOLD_BASIS_POINTS)
             / BASIS_POINTS_DENOMINATOR;
         Self {
-            auto_input_token_threshold: Some(threshold.saturating_sub(RESPOND_OUTPUT_RESERVE_TOKENS)),
+            auto_input_token_threshold: Some(
+                threshold.saturating_sub(RESPOND_OUTPUT_RESERVE_TOKENS),
+            ),
         }
     }
 
