@@ -11,8 +11,8 @@ use fairy_harness::{CompactionPolicy, CompanionPersistence, HarnessRuntime, Pers
 use fairy_intelligence::IntelligenceStore;
 use fairy_model_openai::build_openai_compatible_gateway;
 use fairy_storage::{
-    CharacterAppearanceStore, CharacterStore, ModelConnectionStore, StorageRoot, SystemSecretStore,
-    UserProfileStore, cleanup_legacy_search_artifacts,
+    CharacterAppearanceStore, CharacterStore, ModelConnectionStore, PlaintextSqliteSecretStore,
+    StorageRoot, UserProfileStore, cleanup_legacy_search_artifacts,
 };
 use secrecy::SecretString;
 use serde::Serialize;
@@ -24,7 +24,7 @@ pub struct AppState {
     pub character_appearances: CharacterAppearanceStore,
     pub visual_packs: VisualPackRegistry,
     pub user_profiles: UserProfileStore,
-    model_connections: ModelConnectionStore<SystemSecretStore>,
+    model_connections: ModelConnectionStore<PlaintextSqliteSecretStore>,
     intelligence: Option<Arc<IntelligenceStore>>,
     intelligence_error: Option<FairyError>,
     runtime: Mutex<Option<Arc<HarnessRuntime>>>,
@@ -84,9 +84,12 @@ impl AppState {
         let root = StorageRoot::new(config_directory).map_err(AppError::from)?;
         let characters = CharacterStore::new(root.clone());
         let character_appearances = CharacterAppearanceStore::new(root.clone());
-        let visual_packs = VisualPackRegistry::bundled().map_err(AppError::from)?;
+        let visual_packs = VisualPackRegistry::local(root.directory()).map_err(AppError::from)?;
         let user_profiles = UserProfileStore::new(root.clone());
-        let model_connections = ModelConnectionStore::new(root.clone(), SystemSecretStore);
+        let model_connections = ModelConnectionStore::new(
+            root.clone(),
+            PlaintextSqliteSecretStore::new(root.directory().join("model/secrets.sqlite3")),
+        );
         if let Err(error) = cleanup_legacy_search_artifacts(&root) {
             eprintln!("FAIRY legacy search cleanup warning: {error}");
         }
@@ -619,6 +622,42 @@ mod tests {
         for forbidden in ["apiKey", "api_key", "secret", "connectionId"] {
             assert!(!json.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn bearer_key_persists_in_local_sqlite_and_public_status_stays_secret_free() {
+        let directory = tempfile::tempdir().expect("create app state directory");
+        let state = AppState::initialize(directory.path()).expect("initialize app state");
+        let raw_secret = "sk-local-sqlite-app-state";
+
+        let status = state
+            .save_model_connection(
+                ModelConnectionInput {
+                    protocol: ModelProtocol::ChatCompletions,
+                    endpoint: "https://api.deepseek.com".to_owned(),
+                    model: "deepseek-v4-flash".to_owned(),
+                    context_window_tokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
+                    auth_mode: AuthMode::BearerKey,
+                },
+                Some(raw_secret.to_owned()),
+            )
+            .expect("save bearer connection");
+        let secret_database = directory.path().join("harness/v1/model/secrets.sqlite3");
+
+        assert!(secret_database.is_file());
+        assert!(status.configured);
+        assert!(status.ready);
+        let json = serde_json::to_string(&status).expect("serialize bearer status");
+        assert!(!json.contains(raw_secret));
+        for forbidden in ["apiKey", "api_key", "secret", "connectionId"] {
+            assert!(!json.contains(forbidden));
+        }
+
+        let reopened = AppState::initialize(directory.path()).expect("reopen app state");
+        let reopened_status = reopened.model_status();
+        assert!(reopened_status.configured);
+        assert!(reopened_status.ready);
+        assert!(reopened.runtime().is_ok());
     }
 
     #[test]

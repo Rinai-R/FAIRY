@@ -16,6 +16,15 @@ import {
 
 extend({ Sprite });
 
+function configureCharacterTextureLoader() {
+  for (const parser of Assets.loader.parsers) {
+    if (parser?.id === "texture" && parser.config) {
+      parser.config.preferWorkers = false;
+      parser.config.crossOrigin = "anonymous";
+    }
+  }
+}
+
 const textureReferences = new Map();
 const pendingTextureUnloads = new Map();
 
@@ -47,8 +56,10 @@ function StaticStateImage({
   visual,
   texture,
   direction,
+  displayScale,
 }) {
-  const renderScale = pixelTextureScale(visual, texture);
+  const renderScale = pixelTextureScale(visual, texture, displayScale);
+  const coordinateScale = visual.scale * displayScale;
   const anchor = {
     x: visual.anchor.x / visual.frame.width,
     y: visual.anchor.y / visual.frame.height,
@@ -58,8 +69,8 @@ function StaticStateImage({
     <pixiSprite
       texture={texture}
       anchor={anchor}
-      x={visual.anchor.x * visual.scale}
-      y={visual.anchor.y * visual.scale}
+      x={visual.anchor.x * coordinateScale}
+      y={visual.anchor.y * coordinateScale}
       scale={{
         x: direction === "left" ? -renderScale.x : renderScale.x,
         y: renderScale.y,
@@ -73,12 +84,13 @@ export function PixelCharacter({
   visual,
   visualState,
   direction = "right",
+  displayScale = 1,
   onReady,
   onError,
 }) {
   const [loaded, setLoaded] = useState(null);
   const loadedRef = useRef(null);
-  const canvas = pixelCanvasSize(visual);
+  const canvas = pixelCanvasSize(visual, displayScale);
   const onReadyRef = useRef(onReady);
   const onErrorRef = useRef(onError);
   const stateImage = useMemo(
@@ -98,6 +110,7 @@ export function PixelCharacter({
   useEffect(() => {
     let disposed = false;
     let pendingRetained = true;
+    configureCharacterTextureLoader();
     retainTexture(imageUrl);
     Assets.load(imageUrl)
       .then((loadedTexture) => {
@@ -156,6 +169,7 @@ export function PixelCharacter({
         visual={visual}
         texture={renderable.texture}
         direction={direction}
+        displayScale={displayScale}
       />
     </Application>
   );

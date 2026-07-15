@@ -1,4 +1,8 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import {
+  open as openDialog,
+  save as saveDialog,
+} from "@tauri-apps/plugin-dialog";
 
 import {
   normalizeCompanionError,
@@ -113,6 +117,50 @@ export function createCharacter(brief, visualPackId) {
     { brief, visualPackId },
     parseCharacter,
   );
+}
+
+export function importCharacterPackage(packagePath) {
+  return invokeParsed(
+    "import_character_package",
+    { packagePath },
+    parseCharacter,
+  );
+}
+
+export async function exportCharacterPackage(characterId, outputPath) {
+  try {
+    await invoke("export_character_package", { characterId, outputPath });
+  } catch (error) {
+    throw normalizeCompanionError(error);
+  }
+}
+
+export async function selectCharacterPackageFile() {
+  const selected = await openDialog({
+    title: "导入角色包",
+    multiple: false,
+    filters: [
+      { name: "FAIRY 角色包", extensions: ["pack", "zip"] },
+    ],
+  });
+  if (Array.isArray(selected)) return selected[0] ?? null;
+  return typeof selected === "string" ? selected : null;
+}
+
+export async function selectCharacterPackageSavePath(characterName = "character") {
+  const safeName = String(characterName)
+    .trim()
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-")
+    .replace(/^\.+$/, "")
+    || "character";
+  const selected = await saveDialog({
+    title: "导出角色包",
+    defaultPath: `${safeName}.pack`,
+    filters: [
+      { name: "FAIRY 角色包", extensions: ["pack"] },
+    ],
+  });
+  return typeof selected === "string" ? selected : null;
 }
 
 export function updateCharacter(characterId, brief) {

@@ -204,7 +204,7 @@ impl<S: SecretStore> ModelConnectionStore<S> {
             AuthMode::BearerKey => Some(
                 self.secrets
                     .load(config.connection_id())?
-                    .ok_or_else(|| secret_unavailable("系统 Keychain 中没有模型密钥"))?,
+                    .ok_or_else(|| secret_unavailable("本地模型密钥库中没有模型密钥"))?,
             ),
             AuthMode::NoAuth => None,
         };
@@ -253,7 +253,7 @@ mod tests {
         fn contains(&self, connection_id: ModelConnectionId) -> bool {
             self.values
                 .lock()
-                .expect("lock fake keychain")
+                .expect("lock fake secret store")
                 .contains_key(&connection_id)
         }
     }
@@ -269,7 +269,7 @@ mod tests {
             }
             self.values
                 .lock()
-                .expect("lock fake keychain")
+                .expect("lock fake secret store")
                 .insert(connection_id, secret.expose_secret().to_owned());
             Ok(())
         }
@@ -284,7 +284,7 @@ mod tests {
             Ok(self
                 .values
                 .lock()
-                .expect("lock fake keychain")
+                .expect("lock fake secret store")
                 .get(&connection_id)
                 .cloned()
                 .map(SecretString::from))
@@ -296,7 +296,7 @@ mod tests {
             }
             self.values
                 .lock()
-                .expect("lock fake keychain")
+                .expect("lock fake secret store")
                 .remove(&connection_id);
             Ok(())
         }
@@ -353,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_v1_migrates_to_responses_and_keeps_keychain_reference() {
+    fn legacy_v1_migrates_to_responses_and_keeps_secret_reference() {
         let temp = tempdir().expect("create temp directory");
         let root = StorageRoot::new(temp.path()).expect("create storage root");
         let store = ModelConnectionStore::new(root.clone(), FakeSecretStore::default());
@@ -362,7 +362,7 @@ mod tests {
         store
             .secrets
             .save(connection_id, &secret)
-            .expect("seed legacy keychain value");
+            .expect("seed legacy secret value");
         root.write_replace(
             MODEL_CONNECTION_PATH,
             MODEL_CONNECTION_DOCUMENT_SCHEMA,
@@ -392,7 +392,7 @@ mod tests {
         assert_eq!(
             resolved
                 .api_key
-                .expect("migrated keychain value")
+                .expect("migrated secret value")
                 .expose_secret(),
             "sk-existing-v1"
         );
@@ -508,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn bearer_secret_is_keychain_only_and_debug_is_redacted() {
+    fn bearer_secret_is_local_store_only_and_debug_is_redacted() {
         let temp = tempdir().expect("create temp directory");
         let root = StorageRoot::new(temp.path()).expect("create storage root");
         let store = ModelConnectionStore::new(root.clone(), FakeSecretStore::default());
@@ -558,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn keychain_save_failure_does_not_write_ready_config() {
+    fn secret_save_failure_does_not_write_ready_config() {
         let temp = tempdir().expect("create temp directory");
         let root = StorageRoot::new(temp.path()).expect("create storage root");
         let secrets = FakeSecretStore::default();
@@ -570,7 +570,7 @@ mod tests {
                 bearer_input(),
                 Some(SecretString::from("sk-valid".to_owned())),
             )
-            .expect_err("fake keychain failure must propagate");
+            .expect_err("fake secret store failure must propagate");
 
         assert_eq!(error.code, ErrorCode::ModelSecretUnavailable);
         assert_eq!(store.status().expect("read status"), None);
@@ -606,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_no_auth_does_not_require_keychain_access() {
+    fn fresh_no_auth_does_not_require_secret_store_delete() {
         let temp = tempdir().expect("create temp directory");
         let root = StorageRoot::new(temp.path()).expect("create storage root");
         let secrets = FakeSecretStore::default();
@@ -615,14 +615,14 @@ mod tests {
 
         let config = store
             .save(no_auth_input(), None)
-            .expect("fresh NoAuth must not touch Keychain");
+            .expect("fresh NoAuth must not touch secret delete");
 
         assert_eq!(config.auth_mode(), AuthMode::NoAuth);
         assert!(store.resolve().expect("resolve NoAuth").api_key.is_none());
     }
 
     #[test]
-    fn clearing_no_auth_does_not_require_keychain_access() {
+    fn clearing_no_auth_does_not_require_secret_store_delete() {
         let temp = tempdir().expect("create temp directory");
         let root = StorageRoot::new(temp.path()).expect("create storage root");
         let secrets = FakeSecretStore::default();
@@ -632,7 +632,11 @@ mod tests {
             .expect("save NoAuth config");
         store.secrets.fail_delete.store(true, Ordering::SeqCst);
 
-        assert!(store.clear().expect("clear NoAuth without Keychain"));
+        assert!(
+            store
+                .clear()
+                .expect("clear NoAuth without secret store delete")
+        );
         assert_eq!(store.status().expect("config was removed"), None);
     }
 

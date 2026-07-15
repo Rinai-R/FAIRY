@@ -5,6 +5,8 @@ pub mod app_error;
 pub mod app_state;
 pub mod audio;
 pub mod capability;
+pub mod character_asset_protocol;
+pub mod character_package;
 pub mod desktop;
 pub mod ipc;
 #[cfg(all(debug_assertions, target_os = "macos"))]
@@ -30,6 +32,11 @@ fn health() -> HealthResponse {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .register_uri_scheme_protocol(
+            "fairy-character",
+            character_asset_protocol::serve_character_asset,
+        )
         .manage(desktop::DesktopStateStore::default())
         .setup(|app| {
             let config_directory = app.path().app_config_dir()?;
@@ -61,6 +68,8 @@ pub fn run() {
             ipc::companion::cancel_companion_turn,
             ipc::companion::compact_companion_session,
             ipc::character::create_character,
+            ipc::character::import_character_package,
+            ipc::character::export_character_package,
             ipc::character::update_character,
             ipc::character::list_characters,
             ipc::character::list_visual_packs,

@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 fairy-domain = { path = "../fairy-domain" }
 keyring.workspace = true
+rusqlite.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true

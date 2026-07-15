@@ -201,9 +201,40 @@ impl ModelRequestShape {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptContinuation {
+    previous_response_id: String,
+}
+
+impl PromptContinuation {
+    pub fn new(previous_response_id: String) -> Result<Self, FairyError> {
+        if previous_response_id.is_empty()
+            || previous_response_id.trim() != previous_response_id
+            || previous_response_id.chars().any(char::is_control)
+        {
+            return Err(FairyError::new(
+                ErrorCode::ModelResponseInvalid,
+                "previous_response_id 必须是非空有效文本",
+                false,
+            ));
+        }
+        Ok(Self {
+            previous_response_id,
+        })
+    }
+
+    #[must_use]
+    pub fn previous_response_id(&self) -> &str {
+        &self.previous_response_id
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CompiledPromptRequest {
     pub shape: ModelRequestShape,
     pub input: Vec<PromptItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<PromptContinuation>,
 }
 
 #[cfg(test)]
@@ -278,5 +309,16 @@ mod tests {
             "开心回应，适合轻松确认。"
         );
         assert!(value["states"][0].get("imagePath").is_none());
+    }
+
+    #[test]
+    fn prompt_continuation_validates_previous_response_id() {
+        let continuation =
+            PromptContinuation::new("resp_123".to_owned()).expect("valid response id");
+
+        assert_eq!(continuation.previous_response_id(), "resp_123");
+        assert!(PromptContinuation::new(String::new()).is_err());
+        assert!(PromptContinuation::new(" resp_123".to_owned()).is_err());
+        assert!(PromptContinuation::new("resp\n123".to_owned()).is_err());
     }
 }

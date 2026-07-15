@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   CheckCircledIcon,
   Cross2Icon,
   DesktopIcon,
+  DownloadIcon,
   ExclamationTriangleIcon,
   IdCardIcon,
   Link2Icon,
@@ -14,6 +15,7 @@ import {
   PlusIcon,
   ResetIcon,
   TrashIcon,
+  UploadIcon,
 } from "@radix-ui/react-icons";
 import {
   Badge,
@@ -34,6 +36,7 @@ import {
   TextField,
   Tooltip,
 } from "@radix-ui/themes";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AnimatePresence, motion } from "motion/react";
 
 import {
@@ -42,7 +45,11 @@ import {
   clearModelConnection,
   clearUserProfile,
   createCharacter,
+  exportCharacterPackage,
   createPersonalMemory,
+  importCharacterPackage,
+  selectCharacterPackageFile,
+  selectCharacterPackageSavePath,
   confirmKnowledgeCandidate,
   getModelConnectionStatus,
   getIntelligenceStatus,
@@ -121,6 +128,43 @@ function PageHeader({ title, description, status, ready = false }) {
       <Badge color={ready ? "teal" : "gray"} variant="soft" radius="full">{status}</Badge>
     </Flex>
   );
+}
+
+function extractDroppedPackagePath(dataTransfer) {
+  const files = Array.from(dataTransfer?.files ?? []);
+  for (const file of files) {
+    if (typeof file?.path === "string" && file.path.trim()) {
+      return file.path.trim();
+    }
+  }
+  const uriList = dataTransfer?.getData?.("text/uri-list") ?? "";
+  const uriPath = uriList
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"))
+    .map(fileUriToPath)
+    .find(Boolean);
+  if (uriPath) return uriPath;
+  const plainText = dataTransfer?.getData?.("text/plain")?.trim() ?? "";
+  return plainText.endsWith(".pack") || plainText.endsWith(".zip") ? plainText : "";
+}
+
+function fileUriToPath(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "file:" ? decodeURIComponent(url.pathname) : "";
+  } catch {
+    return "";
+  }
+}
+
+function pointInsideElement(element, position) {
+  if (!element || !position) return false;
+  const rect = element.getBoundingClientRect();
+  const scale = window.devicePixelRatio || 1;
+  const x = Number(position.x ?? position.X ?? 0) / scale;
+  const y = Number(position.y ?? position.Y ?? 0) / scale;
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
 
 function KnowledgeEntry({ record, disabled, onConfirm, onDelete }) {
@@ -246,6 +290,8 @@ export function ControlPanelApp() {
   const [characterDescription, setCharacterDescription] = useState("");
   const [characterDialogueStyle, setCharacterDialogueStyle] = useState("");
   const [visualPackId, setVisualPackId] = useState("");
+  const [characterPackageDragActive, setCharacterPackageDragActive] = useState(false);
+  const [characterPackageStatus, setCharacterPackageStatus] = useState("");
   const [preferredName, setPreferredName] = useState("");
   const [protocol, setProtocol] = useState("chat_completions");
   const [endpoint, setEndpoint] = useState("https://api.deepseek.com");
@@ -255,6 +301,7 @@ export function ControlPanelApp() {
   const [apiKey, setApiKey] = useState("");
   const [memoryKind, setMemoryKind] = useState("preference");
   const [memoryContent, setMemoryContent] = useState("");
+  const packageDropzoneRef = useRef(null);
 
   const refresh = useCallback(async (hydrateForms = false) => {
     const [
@@ -300,6 +347,16 @@ export function ControlPanelApp() {
   const selectedVisual = visualCatalog.visualPacks.find(
     (visual) => visual.packId === visualPackId,
   ) ?? null;
+  const selectedVisualState = selectedVisual?.states?.[0] ?? null;
+  const selectedVisualImage = selectedVisualState?.imagePath ?? "";
+  const selectedCharacter = characterId
+    ? catalog.characters.find((character) => character.characterId === characterId) ?? null
+    : null;
+  const selectedCharacterCanExport = selectedCharacter?.appearance.status === "assigned";
+  const stagedCharacterName = characterName.trim() || catalog.active?.name || "尚未激活角色";
+  const stagedCharacterDescription = characterDescription.trim() || catalog.active?.description || "从角色库选择一个角色，或导入外部角色包。";
+  const stagedAppearanceName = selectedVisual?.displayName ?? "外观未选择";
+  const disabled = pending !== null || closeRequested;
 
   const refreshIntelligence = useCallback(async () => {
     setKnowledgeCatalogLoading(true);
@@ -446,6 +503,97 @@ export function ControlPanelApp() {
     });
   }
 
+  async function importPackageFromPath(packagePath) {
+    if (packagePath.length === 0) {
+      setError({ code: "INVALID_VISUAL_MANIFEST", message: "请选择本地角色包文件。", retryable: false });
+      return;
+    }
+    await run("character-package", async () => {
+      const imported = await importCharacterPackage(packagePath);
+      await activateCharacter(imported.characterId, imported.revision);
+      setCharacterPackageStatus(`已导入：${imported.name}`);
+      await refresh(true);
+    });
+  }
+
+  async function pickAndImportPackage() {
+    await run("character-package", async () => {
+      const packagePath = await selectCharacterPackageFile();
+      if (packagePath === null) return;
+      const imported = await importCharacterPackage(packagePath);
+      await activateCharacter(imported.characterId, imported.revision);
+      setCharacterPackageStatus(`已导入：${imported.name}`);
+      await refresh(true);
+    });
+  }
+
+  async function dropAndImportPackage(event) {
+    event.preventDefault();
+    setCharacterPackageDragActive(false);
+    const packagePath = extractDroppedPackagePath(event.dataTransfer);
+    if (!packagePath) {
+      setError({ code: "INVALID_VISUAL_MANIFEST", message: "无法读取拖入文件路径，请点“选择文件并导入”。", retryable: false });
+      return;
+    }
+    await importPackageFromPath(packagePath);
+  }
+
+  async function pickAndExportPackage() {
+    if (!selectedCharacter) {
+      setError({ code: "CHARACTER_NOT_AVAILABLE", message: "请先选择要导出的角色。", retryable: false });
+      return;
+    }
+    await run("character-package-export", async () => {
+      const outputPath = await selectCharacterPackageSavePath(selectedCharacter.name);
+      if (outputPath === null) return;
+      await exportCharacterPackage(selectedCharacter.characterId, outputPath);
+      setCharacterPackageStatus(`已导出：${outputPath}`);
+    });
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten = null;
+    let dragDropSubscription;
+    try {
+      dragDropSubscription = getCurrentWebview().onDragDropEvent((event) => {
+        if (cancelled || section !== "character" || disabled) return;
+        const payload = event.payload;
+        if (payload.type === "enter" || payload.type === "over") {
+          setCharacterPackageDragActive(pointInsideElement(packageDropzoneRef.current, payload.position));
+          return;
+        }
+        if (payload.type === "leave") {
+          setCharacterPackageDragActive(false);
+          return;
+        }
+        if (payload.type === "drop") {
+          const inside = pointInsideElement(packageDropzoneRef.current, payload.position);
+          setCharacterPackageDragActive(false);
+          if (!inside) return;
+          const packagePath = payload.paths?.find((path) => path.endsWith(".pack") || path.endsWith(".zip")) ?? payload.paths?.[0] ?? "";
+          if (!packagePath) {
+            setError({ code: "INVALID_VISUAL_MANIFEST", message: "拖入的文件不是 .pack 或 .zip 角色包。", retryable: false });
+            return;
+          }
+          void importPackageFromPath(packagePath);
+        }
+      });
+    } catch {
+      dragDropSubscription = null;
+    }
+    dragDropSubscription?.then((cleanup) => {
+      if (cancelled) cleanup();
+      else unlisten = cleanup;
+    }).catch(() => {
+      // Browser preview has no Tauri webview; Finder button remains the primary path.
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [disabled, section]);
+
   async function chooseCharacter(character) {
     setCharacterId(character.characterId);
     setCharacterName(character.name);
@@ -569,8 +717,6 @@ export function ControlPanelApp() {
     setPanelVisualOpen(true);
   }
 
-  const disabled = pending !== null || closeRequested;
-
   return (
     <main className="cp-stage">
       <AnimatePresence onExitComplete={() => void finishClose()}>
@@ -621,7 +767,6 @@ export function ControlPanelApp() {
                     );
                   })}
                 </Tabs.List>
-                <Separator size="4" />
 
                 <ScrollArea className="cp-scroll" type="auto" scrollbars="vertical">
                   <AnimatePresence mode="wait" initial={false}>
@@ -634,70 +779,175 @@ export function ControlPanelApp() {
                     >
                       {section === "character" ? (
                         <>
-                          <PageHeader title="她是谁" description="角色描述会交给 Harness，用来推断此刻更合适的回应。" status={catalog.active ? `当前：${catalog.active.name}` : "尚未激活"} ready={Boolean(catalog.active)} />
-                          <Flex className="cp-character-list" gap="2" aria-label="角色列表">
-                            <ScrollArea type="auto" scrollbars="horizontal">
-                              <Flex gap="2" pb="2">
-                                {catalog.characters.map((character) => {
-                                  const active = catalog.active?.characterId === character.characterId && catalog.active?.revision === character.revision;
-                                  return (
-                                    <Button key={`${character.characterId}-${character.revision}`} type="button" size="2" variant={active ? "solid" : "surface"} onClick={() => void chooseCharacter(character)} disabled={disabled}>
-                                      {active ? <CheckCircledIcon /> : <PersonIcon />}
-                                      {character.name}
-                                    </Button>
-                                  );
-                                })}
-                                <Button type="button" size="2" variant="soft" onClick={() => { setCharacterId(null); setCharacterName(""); setCharacterDescription(""); setCharacterDialogueStyle(""); setVisualPackId(""); setError(null); }} disabled={disabled}>
-                                  <PlusIcon />新建角色
-                                </Button>
-                              </Flex>
-                            </ScrollArea>
-                          </Flex>
-                          <form className="cp-form" onSubmit={submitCharacter}>
-                            <Field id="character-name" label="角色名称">
-                              <TextField.Root id="character-name" value={characterName} onChange={(event) => setCharacterName(event.target.value)} maxLength="48" required />
-                            </Field>
-                            <Field id="character-description" label="角色描述" hint="写她会留意什么、如何表达亲近与边界；不必写“你是某某”。">
-                              <TextArea id="character-description" className="cp-character-description" value={characterDescription} onChange={(event) => setCharacterDescription(event.target.value)} maxLength="2000" resize="none" required />
-                            </Field>
-                            <Field id="character-dialogue-style" label="日常说话方式" hint="写日常语气、节奏、称呼习惯或几句例句；系统仍保留上面的角色描述。">
-                              <TextArea id="character-dialogue-style" className="cp-character-description" value={characterDialogueStyle} onChange={(event) => setCharacterDialogueStyle(event.target.value)} maxLength="1200" resize="none" />
-                            </Field>
-                            <Field id="character-appearance" label="角色外观" hint="外观只影响桌宠画面，不会修改角色描述、关系记忆或聊天记录。">
-                              <div className="cp-appearance-picker">
-                                <Select.Root value={visualPackId} onValueChange={setVisualPackId}>
-                                  <Select.Trigger id="character-appearance" placeholder="选择角色外观" aria-label="角色外观" />
-                                  <Select.Content className="cp-appearance-select-content" position="popper" side="bottom" align="start" collisionPadding={14}>
-                                    {visualCatalog.visualPacks.map((visual) => (
-                                      <Select.Item key={visual.packId} value={visual.packId}>
-                                        {visual.displayName}
-                                      </Select.Item>
-                                    ))}
-                                  </Select.Content>
-                                </Select.Root>
-                                {selectedVisual ? (
-                                  <div className="cp-appearance-preview" aria-label={`${selectedVisual.displayName} 外观预览`}>
-                                    <span
-                                      className="cp-appearance-sprite"
-                                      role="img"
-                                      aria-label={selectedVisual.displayName}
-                                      style={{
-                                        width: selectedVisual.frame.width * selectedVisual.scale,
-                                        height: selectedVisual.frame.height * selectedVisual.scale,
-                                        backgroundImage: `url(${selectedVisual.states[0].imagePath})`,
-                                        backgroundSize: `${selectedVisual.frame.width * selectedVisual.scale}px ${selectedVisual.frame.height * selectedVisual.scale}px`,
-                                      }}
-                                    />
-                                  </div>
+                          <PageHeader title="角色库" description="选择当前角色，导入外部角色包，或把本地角色导出成可迁移的 .pack。" status={catalog.active ? "当前：" + catalog.active.name : "尚未激活"} ready={Boolean(catalog.active)} />
+                          <div className="cp-character-management">
+                            <section className="cp-character-stage-card" aria-label="当前角色预览">
+                              <div className="cp-character-stage-top">
+                                <div>
+                                  <Text as="p" size="1" color="gray">当前预览</Text>
+                                  <Heading as="h3" size="5" weight="medium">{stagedCharacterName}</Heading>
+                                </div>
+                                <Badge color={catalog.active ? "teal" : "gray"} variant="soft" radius="full">{catalog.characters.length} 个角色</Badge>
+                              </div>
+                              <div className="cp-character-stage-visual">
+                                {selectedVisualImage ? (
+                                  <img className="cp-character-portrait" src={selectedVisualImage} alt={stagedCharacterName} />
                                 ) : (
-                                  <Text as="p" size="1" color="gray">尚未选择外观</Text>
+                                  <div className="cp-character-portrait-empty">
+                                    <PersonIcon aria-hidden="true" />
+                                    <span>尚未选择外观</span>
+                                  </div>
                                 )}
                               </div>
-                            </Field>
-                            <Flex justify="end">
-                              <Button type="submit" disabled={disabled}>{characterId ? "更新并激活" : "创建并激活"}</Button>
-                            </Flex>
-                          </form>
+                              <div className="cp-character-dialogue">
+                                <div className="cp-character-dialogue-head">
+                                  <strong>{stagedCharacterName}</strong>
+                                  <span>{stagedAppearanceName}</span>
+                                </div>
+                                <p>{stagedCharacterDescription}</p>
+                              </div>
+                            </section>
+
+                            <section className="cp-character-roster" aria-label="角色列表">
+                              <ScrollArea type="auto" scrollbars="horizontal">
+                                <div className="cp-character-filmstrip">
+                                  <button
+                                    className="cp-character-film-card cp-character-film-card--new"
+                                    type="button"
+                                    onClick={() => { setCharacterId(null); setCharacterName(""); setCharacterDescription(""); setCharacterDialogueStyle(""); setVisualPackId(""); setCharacterPackageDragActive(false); setCharacterPackageStatus(""); setError(null); }}
+                                    disabled={disabled}
+                                  >
+                                    <span><PlusIcon aria-hidden="true" /></span>
+                                    <strong>新建角色</strong>
+                                    <small>空白档案</small>
+                                  </button>
+                                  {catalog.characters.map((character) => {
+                                    const active = catalog.active?.characterId === character.characterId && catalog.active?.revision === character.revision;
+                                    const selected = characterId === character.characterId;
+                                    return (
+                                      <button
+                                        key={character.characterId + "-" + character.revision}
+                                        className={`cp-character-film-card ${active ? "is-active" : ""} ${selected ? "is-selected" : ""}`}
+                                        type="button"
+                                        onClick={() => void chooseCharacter(character)}
+                                        disabled={disabled}
+                                      >
+                                        <span>{active ? <CheckCircledIcon aria-hidden="true" /> : <PersonIcon aria-hidden="true" />}</span>
+                                        <strong>{character.name}</strong>
+                                        <small>{character.appearance.status === "assigned" ? "外观已绑定" : "等待外观"}</small>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </ScrollArea>
+                            </section>
+
+                            <aside className="cp-character-side">
+                              <Card className="cp-character-editor-card" size="2">
+                                <Flex className="cp-character-editor-header" align="start" justify="between" gap="3">
+                                  <div>
+                                    <Text as="h3" size="2" weight="medium">{characterId ? "编辑选中角色" : "新建角色"}</Text>
+                                    <Text as="p" size="1" color="gray">保存后会激活该角色；外观选择只影响桌宠画面。</Text>
+                                  </div>
+                                  {selectedCharacter ? <Badge variant="outline" color="gray">{selectedCharacter.appearance.status === "assigned" ? selectedAppearancePackId(selectedCharacter) : "外观未就绪"}</Badge> : null}
+                                </Flex>
+                                <form className="cp-form" onSubmit={submitCharacter}>
+                                  <Field id="character-name" label="角色名称">
+                                    <TextField.Root id="character-name" value={characterName} onChange={(event) => setCharacterName(event.target.value)} maxLength="48" required />
+                                  </Field>
+                                  <Field id="character-description" label="角色描述" hint="写她会留意什么、如何表达亲近与边界；不必写“你是某某”。">
+                                    <TextArea id="character-description" className="cp-character-description" value={characterDescription} onChange={(event) => setCharacterDescription(event.target.value)} maxLength="2000" resize="none" required />
+                                  </Field>
+                                  <Field id="character-dialogue-style" label="日常说话方式" hint="写日常语气、节奏、称呼习惯或几句例句；系统仍保留上面的角色描述。">
+                                    <TextArea id="character-dialogue-style" className="cp-character-description cp-character-description--short" value={characterDialogueStyle} onChange={(event) => setCharacterDialogueStyle(event.target.value)} maxLength="1200" resize="none" />
+                                  </Field>
+                                  <Field id="character-appearance" label="角色外观" hint="外观只影响桌宠画面，不会修改角色描述、关系记忆或聊天记录。">
+                                    <div className="cp-appearance-picker">
+                                      <Select.Root value={visualPackId} onValueChange={setVisualPackId}>
+                                        <Select.Trigger id="character-appearance" placeholder="选择角色外观" aria-label="角色外观" />
+                                        <Select.Content className="cp-appearance-select-content" position="popper" side="bottom" align="start" collisionPadding={14}>
+                                          {visualCatalog.visualPacks.map((visual) => (
+                                            <Select.Item key={visual.packId} value={visual.packId}>
+                                              {visual.displayName}
+                                            </Select.Item>
+                                          ))}
+                                        </Select.Content>
+                                      </Select.Root>
+                                      {selectedVisualImage ? (
+                                        <div className="cp-appearance-preview" aria-label={selectedVisual.displayName + " 外观预览"}>
+                                          <img className="cp-appearance-image" src={selectedVisualImage} alt={selectedVisual.displayName} />
+                                        </div>
+                                      ) : (
+                                        <Text as="p" size="1" color="gray">尚未选择外观</Text>
+                                      )}
+                                    </div>
+                                  </Field>
+                                  <Flex justify="end">
+                                    <Button type="submit" disabled={disabled}>{characterId ? "更新并激活" : "创建并激活"}</Button>
+                                  </Flex>
+                                </form>
+                              </Card>
+
+                              <Card className="cp-import-card cp-package-card" size="2">
+                                <div
+                                  ref={packageDropzoneRef}
+                                  className={`cp-package-dropzone ${characterPackageDragActive ? "is-dragging" : ""}`}
+                                  role="button"
+                                  tabIndex={disabled ? -1 : 0}
+                                  aria-disabled={disabled}
+                                  aria-label="拖入或选择角色包导入"
+                                  onClick={() => { if (!disabled) void pickAndImportPackage(); }}
+                                  onKeyDown={(event) => {
+                                    if (disabled) return;
+                                    if (event.key === "Enter" || event.key === " ") {
+                                      event.preventDefault();
+                                      void pickAndImportPackage();
+                                    }
+                                  }}
+                                  onDragEnter={(event) => {
+                                    event.preventDefault();
+                                    if (!disabled) setCharacterPackageDragActive(true);
+                                  }}
+                                  onDragOver={(event) => {
+                                    event.preventDefault();
+                                    if (!disabled) event.dataTransfer.dropEffect = "copy";
+                                  }}
+                                  onDragLeave={(event) => {
+                                    if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
+                                    setCharacterPackageDragActive(false);
+                                  }}
+                                  onDrop={(event) => {
+                                    if (!disabled) void dropAndImportPackage(event);
+                                  }}
+                                >
+                                  <span className="cp-package-dropzone-icon" aria-hidden="true"><UploadIcon /></span>
+                                  <div>
+                                    <Text as="h3" size="2" weight="medium">导入角色包</Text>
+                                    <Text as="p" size="1" color="gray">拖入 .pack/.zip，或打开 Finder 选择文件；图片会复制到本地库，不进入 Git。</Text>
+                                  </div>
+                                  <Button type="button" variant="soft" disabled={disabled} onClick={(event) => { event.stopPropagation(); void pickAndImportPackage(); }}>
+                                    选择文件并导入
+                                  </Button>
+                                </div>
+                              </Card>
+
+                              <Card className="cp-export-card cp-package-card" size="2">
+                                <div className="cp-package-export-panel">
+                                  <span className="cp-package-dropzone-icon" aria-hidden="true"><DownloadIcon /></span>
+                                  <div>
+                                    <Text as="h3" size="2" weight="medium">导出角色包</Text>
+                                    <Text as="p" size="1" color="gray">
+                                      {selectedCharacterCanExport ? "用 Finder 选择保存位置，导出选中角色和当前已绑定外观为 .pack。" : "选中已绑定可用外观的角色后才能导出。"}
+                                    </Text>
+                                  </div>
+                                  <Button type="button" variant="soft" disabled={disabled || !selectedCharacterCanExport} onClick={() => void pickAndExportPackage()}>
+                                    <DownloadIcon />选择位置并导出
+                                  </Button>
+                                </div>
+                              </Card>
+                              {characterPackageStatus ? <Text as="p" className="cp-package-status" size="1" color="gray">{characterPackageStatus}</Text> : null}
+                            </aside>
+                          </div>
                         </>
                       ) : null}
 
@@ -760,8 +1010,8 @@ export function ControlPanelApp() {
                                 </Select.Root>
                               </Field>
                               {authMode === "bearer_key" ? (
-                                <Field id="model-api-key" label="API Key" hint="写入 Keychain，保存后清空且永不回显。">
-                                  <TextField.Root id="model-api-key" type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={modelStatus?.configured ? "留空保留现有密钥" : "仅写入系统 Keychain"}>
+                                <Field id="model-api-key" label="API Key" hint="保存到本机密钥库，保存后清空且永不回显。">
+                                  <TextField.Root id="model-api-key" type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={modelStatus?.configured ? "留空保留现有密钥" : "保存到本机密钥库"}>
                                     <TextField.Slot><LockClosedIcon /></TextField.Slot>
                                   </TextField.Root>
                                 </Field>

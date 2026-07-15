@@ -581,20 +581,31 @@ function parseVisualStateId(value, label) {
 }
 
 function parseVisualImagePath(value, label) {
-  if (
-    typeof value !== "string" ||
-    !value.startsWith("/characters/") ||
-    !value.endsWith(".png") ||
-    value.includes("://") ||
-    value.includes("\\") ||
-    value.includes("?") ||
-    value.includes("#") ||
-    value.split("/").includes("..") ||
-    value.split("/").includes(".")
-  ) {
+  if (typeof value !== "string" || !isLocalCharacterImagePath(value)) {
     throw new TypeError(`${label} must be a local character PNG path`);
   }
   return value;
+}
+
+function isLocalCharacterImagePath(value) {
+  if (
+    !value.endsWith(".png") ||
+    value.includes("\\") ||
+    value.includes("?") ||
+    value.includes("#")
+  ) {
+    return false;
+  }
+  const relative = value.startsWith("/characters/")
+    ? value.slice("/characters/".length)
+    : value.startsWith("fairy-character://localhost/")
+      ? value.slice("fairy-character://localhost/".length)
+      : value.startsWith("http://fairy-character.localhost/")
+        ? value.slice("http://fairy-character.localhost/".length)
+        : null;
+  if (relative === null || relative.length === 0) return false;
+  const segments = relative.split("/");
+  return segments.every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
 }
 
 function parseVisualStateImage(value, label) {

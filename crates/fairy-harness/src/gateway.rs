@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use fairy_domain::{
-    CompiledPromptRequest, FairyError, GatewayCapabilities, ModelCompletion, ModelStreamEvent,
-    PromptItem,
+    CompiledPromptRequest, ErrorCode, FairyError, GatewayCapabilities, ModelCompletion,
+    ModelStreamEvent, PromptContinuation, PromptItem,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -84,6 +84,32 @@ pub fn decide_continuation(
     }
 }
 
+pub fn materialize_continuation_request(
+    mut current: CompiledPromptRequest,
+    decision: ContinuationDecision,
+) -> Result<CompiledPromptRequest, FairyError> {
+    match decision {
+        ContinuationDecision::Incremental {
+            previous_response_id,
+            new_items,
+        } => {
+            if new_items.is_empty() {
+                return Err(FairyError::new(
+                    ErrorCode::ModelResponseInvalid,
+                    "continuation suffix input 不能为空",
+                    false,
+                ));
+            }
+            current.input = new_items;
+            current.continuation = Some(PromptContinuation::new(previous_response_id)?);
+        }
+        ContinuationDecision::FullRequest { .. } => {
+            current.continuation = None;
+        }
+    }
+    Ok(current)
+}
+
 const fn full(reason: ContinuationFullRequestReason) -> ContinuationDecision {
     ContinuationDecision::FullRequest { reason }
 }
@@ -111,6 +137,7 @@ mod tests {
                 prompt_cache_key: Some("fairy:c:respond".to_owned()),
             },
             input,
+            continuation: None,
         }
     }
 
@@ -205,5 +232,78 @@ mod tests {
             decide_continuation(true, Some(&previous), &same_known),
             full(ContinuationFullRequestReason::InputNotExtended)
         );
+    }
+
+    #[test]
+    fn materialize_incremental_request_uses_suffix_and_validated_previous_response_id() {
+        let current = request(
+            "model",
+            vec![
+                item("first"),
+                PromptItem::AssistantMessage {
+                    content: "answer".to_owned(),
+                },
+                item("second"),
+            ],
+        );
+        let materialized = materialize_continuation_request(
+            current.clone(),
+            ContinuationDecision::Incremental {
+                previous_response_id: "resp_1".to_owned(),
+                new_items: vec![item("second")],
+            },
+        )
+        .expect("materialize incremental request");
+
+        assert_eq!(materialized.shape, current.shape);
+        assert_eq!(materialized.input, vec![item("second")]);
+        assert_eq!(
+            materialized
+                .continuation
+                .as_ref()
+                .expect("continuation")
+                .previous_response_id(),
+            "resp_1"
+        );
+    }
+
+    #[test]
+    fn materialize_full_request_clears_stale_continuation() {
+        let mut current = request("model", vec![item("first"), item("second")]);
+        current.continuation =
+            Some(PromptContinuation::new("resp_stale".to_owned()).expect("valid response id"));
+        let materialized = materialize_continuation_request(
+            current.clone(),
+            full(ContinuationFullRequestReason::CapabilityUnsupported),
+        )
+        .expect("materialize full request");
+
+        assert_eq!(materialized.shape, current.shape);
+        assert_eq!(materialized.input, current.input);
+        assert_eq!(materialized.continuation, None);
+    }
+
+    #[test]
+    fn materialize_incremental_rejects_invalid_state() {
+        let current = request("model", vec![item("first"), item("second")]);
+        let empty_suffix = materialize_continuation_request(
+            current.clone(),
+            ContinuationDecision::Incremental {
+                previous_response_id: "resp_1".to_owned(),
+                new_items: Vec::new(),
+            },
+        )
+        .expect_err("empty suffix must fail");
+        assert_eq!(empty_suffix.code, ErrorCode::ModelResponseInvalid);
+
+        let invalid_response_id = materialize_continuation_request(
+            current,
+            ContinuationDecision::Incremental {
+                previous_response_id: " resp_1".to_owned(),
+                new_items: vec![item("second")],
+            },
+        )
+        .expect_err("invalid response id must fail");
+        assert_eq!(invalid_response_id.code, ErrorCode::ModelResponseInvalid);
     }
 }

@@ -46,14 +46,20 @@ struct FakeGateway {
     behaviors: Mutex<VecDeque<FakeBehavior>>,
     requests: Mutex<Vec<CompiledPromptRequest>>,
     first_text_delta: Notify,
+    capabilities: GatewayCapabilities,
 }
 
 impl FakeGateway {
     fn new(behaviors: Vec<FakeBehavior>) -> Self {
+        Self::with_capabilities(behaviors, GatewayCapabilities::responses_http(true, true))
+    }
+
+    fn with_capabilities(behaviors: Vec<FakeBehavior>, capabilities: GatewayCapabilities) -> Self {
         Self {
             behaviors: Mutex::new(behaviors.into()),
             requests: Mutex::new(Vec::new()),
             first_text_delta: Notify::new(),
+            capabilities,
         }
     }
 
@@ -65,7 +71,7 @@ impl FakeGateway {
 #[async_trait]
 impl ModelGateway for FakeGateway {
     fn capabilities(&self) -> GatewayCapabilities {
-        GatewayCapabilities::responses_http(true, true)
+        self.capabilities
     }
 
     async fn execute(
@@ -726,6 +732,96 @@ fn setup(
         .update_user_profile(session.conversation_id, profile(Revision::INITIAL, "Rinai"))
         .expect("set test profile");
     (runtime, session.conversation_id, role)
+}
+
+#[tokio::test]
+async fn runtime_keeps_full_requests_when_cache_retention_is_not_supported() {
+    let gateway = Arc::new(FakeGateway::new(vec![
+        response_behavior("第一轮回复", &["第一轮回复"]),
+        response_behavior("第二轮回复", &["第二轮回复"]),
+    ]));
+    let (runtime, conversation_id, _) = setup(gateway.clone());
+
+    runtime
+        .submit_turn(
+            conversation_id,
+            "第一轮".to_owned(),
+            false,
+            &mut RecordingSink::default(),
+        )
+        .await
+        .expect("complete first turn");
+    runtime
+        .submit_turn(
+            conversation_id,
+            "第二轮".to_owned(),
+            false,
+            &mut RecordingSink::default(),
+        )
+        .await
+        .expect("complete second turn");
+
+    let requests = gateway.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].continuation, None);
+    assert_eq!(requests[1].continuation, None);
+    assert!(requests[1].input.iter().any(|item| {
+        matches!(item, PromptItem::AssistantMessage { content } if content == "第一轮回复")
+    }));
+    assert!(requests[1].input.iter().any(|item| {
+        matches!(item, PromptItem::UserMessage { content } if content == "第二轮")
+    }));
+}
+
+#[tokio::test]
+async fn runtime_uses_suffix_only_continuation_when_cache_retention_is_supported() {
+    let mut capabilities = GatewayCapabilities::responses_http(true, true);
+    capabilities.cache_retention = true;
+    let gateway = Arc::new(FakeGateway::with_capabilities(
+        vec![
+            response_behavior("第一轮回复", &["第一轮回复"]),
+            response_behavior("第二轮回复", &["第二轮回复"]),
+        ],
+        capabilities,
+    ));
+    let (runtime, conversation_id, _) = setup(gateway.clone());
+
+    runtime
+        .submit_turn(
+            conversation_id,
+            "第一轮".to_owned(),
+            false,
+            &mut RecordingSink::default(),
+        )
+        .await
+        .expect("complete first turn");
+    runtime
+        .submit_turn(
+            conversation_id,
+            "第二轮".to_owned(),
+            false,
+            &mut RecordingSink::default(),
+        )
+        .await
+        .expect("complete second turn");
+
+    let requests = gateway.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].continuation, None);
+    assert_eq!(
+        requests[1]
+            .continuation
+            .as_ref()
+            .expect("second turn continuation")
+            .previous_response_id(),
+        "fake-response"
+    );
+    assert_eq!(
+        requests[1].input,
+        vec![PromptItem::UserMessage {
+            content: "第二轮".to_owned(),
+        }]
+    );
 }
 
 #[tokio::test]
@@ -1706,7 +1802,8 @@ async fn stream_failure_after_partial_text_has_failed_terminal_not_completed() {
 }
 
 #[tokio::test]
-async fn retrieval_context_is_ephemeral_before_current_user_and_recent_turns_feed_next_query() {
+async fn stable_respond_prefix_keeps_retrieval_context_ephemeral_and_recent_turns_feed_next_query()
+{
     let context = RetrievalContext {
         personal_memories: vec![RetrievedPersonalMemory {
             id: PersonalMemoryId::new(),
@@ -1738,22 +1835,31 @@ async fn retrieval_context_is_ephemeral_before_current_user_and_recent_turns_fee
         )
         .await
         .expect("complete memory-assisted turn");
-    let request = &gateway.requests()[0];
+    let requests = gateway.requests();
+    let request = &requests[0];
     let retrieved_index = request
         .input
         .iter()
         .position(|item| matches!(item, PromptItem::RetrievedContext { .. }))
         .expect("retrieved context item");
+    let visual_index = request
+        .input
+        .iter()
+        .position(|item| matches!(item, PromptItem::AvailableVisualStates { .. }))
+        .expect("visual states item");
     let user_index = request
         .input
         .iter()
         .position(|item| matches!(item, PromptItem::UserMessage { .. }))
         .expect("user message item");
-    assert!(retrieved_index < user_index);
+    assert!(visual_index < user_index);
+    assert_eq!(retrieved_index, request.input.len() - 1);
+    assert!(user_index < retrieved_index);
     assert!(matches!(
         &request.input[retrieved_index],
         PromptItem::RetrievedContext { context: injected } if injected == &context
     ));
+    let first_request_stable_prefix = request.input[..retrieved_index].to_vec();
 
     runtime
         .submit_turn(
@@ -1764,12 +1870,44 @@ async fn retrieval_context_is_ephemeral_before_current_user_and_recent_turns_fee
         )
         .await
         .expect("complete second turn");
+    let requests = gateway.requests();
+    let second_request = &requests[1];
     assert!(
-        gateway.requests()[1]
+        second_request
             .input
             .iter()
             .all(|item| !matches!(item, PromptItem::RetrievedContext { .. }))
     );
+    assert_eq!(
+        &second_request.input[..first_request_stable_prefix.len()],
+        first_request_stable_prefix.as_slice()
+    );
+    assert!(matches!(
+        &second_request.input[first_request_stable_prefix.len()],
+        PromptItem::AssistantMessage { content } if content == "那就选清爽一点的。"
+    ));
+    assert!(matches!(
+        second_request.input.last(),
+        Some(PromptItem::UserMessage { content }) if content == "刚才说的是什么？"
+    ));
+
+    let first_user_index = second_request
+        .input
+        .iter()
+        .position(|item| matches!(item, PromptItem::UserMessage { content } if content == "推荐一杯太甜的饮料"))
+        .expect("first user remains in second prompt");
+    let first_assistant_index = second_request
+        .input
+        .iter()
+        .position(|item| matches!(item, PromptItem::AssistantMessage { content } if content == "那就选清爽一点的。"))
+        .expect("first assistant remains in second prompt");
+    let second_user_index = second_request
+        .input
+        .iter()
+        .position(|item| matches!(item, PromptItem::UserMessage { content } if content == "刚才说的是什么？"))
+        .expect("current user remains after stable history");
+    assert!(first_user_index < first_assistant_index);
+    assert!(first_assistant_index < second_user_index);
     let queries = intelligence.queries();
     assert_eq!(queries[1].0, role.character_id());
     assert!(queries[1].1.contains("推荐一杯太甜的饮料"));

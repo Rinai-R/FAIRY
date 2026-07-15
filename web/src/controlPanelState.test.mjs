@@ -69,6 +69,50 @@ test("control panel does not expose retired network search configuration", () =>
   assert.doesNotMatch(appSource, /Brave Search|Search Endpoint|搜索连接/);
 });
 
+test("character package import and export use local file dialogs", () => {
+  const appSource = readFileSync(new URL("./apps/ControlPanelApp.jsx", import.meta.url), "utf8");
+  const clientSource = readFileSync(new URL("./companionClient.mjs", import.meta.url), "utf8");
+  const cssSource = readFileSync(new URL("./styles/control-panel.css", import.meta.url), "utf8");
+  const capability = JSON.parse(readFileSync(new URL("../../src-tauri/capabilities/control-panel-dialog.json", import.meta.url), "utf8"));
+
+  assert.match(clientSource, /@tauri-apps\/plugin-dialog/);
+  assert.match(clientSource, /extensions:\s*\["pack", "zip"\]/);
+  assert.match(clientSource, /"import_character_package"/);
+  assert.match(clientSource, /"export_character_package"/);
+  assert.match(clientSource, /selectCharacterPackageSavePath/);
+  assert.match(clientSource, /save as saveDialog/);
+  assert.deepEqual(capability.permissions, ["dialog:allow-open", "dialog:allow-save"]);
+  assert.match(appSource, /getCurrentWebview\(\)\.onDragDropEvent/);
+  assert.match(appSource, /className=\{`cp-package-dropzone/);
+  assert.match(appSource, /selectCharacterPackageFile\(\)/);
+  assert.match(appSource, /importCharacterPackage\(packagePath\)/);
+  assert.match(appSource, /selectCharacterPackageSavePath\(selectedCharacter\.name\)/);
+  assert.doesNotMatch(appSource, /character-package-path/);
+  assert.doesNotMatch(appSource, /character-package-export-path/);
+  assert.match(appSource, /图片会复制到本地库，不进入 Git/);
+  assert.match(cssSource, /\.cp-import-card\.rt-Card/);
+  assert.match(cssSource, /\.cp-package-dropzone\.is-dragging/);
+});
+
+test("character management surfaces avoid translucent stacked panels", () => {
+  const cssSource = readFileSync(new URL("./styles/control-panel.css", import.meta.url), "utf8");
+  const transparentPanelPatterns = [
+    /rgb\(255 255 255 \//,
+    /rgb\(247 251 253 \//,
+    /linear-gradient\(180deg/,
+    /radial-gradient/,
+    /backdrop-filter:\s*blur/,
+  ];
+
+  for (const pattern of transparentPanelPatterns) {
+    assert.doesNotMatch(cssSource, pattern);
+  }
+  assert.match(cssSource, /\.cp-shell\.rt-Card\s*\{[\s\S]*background: #ffffff/);
+  assert.match(cssSource, /\.cp-character-stage-card\s*\{[\s\S]*background: #ffffff/);
+  assert.match(cssSource, /\.cp-character-dialogue\s*\{[\s\S]*background: #ffffff/);
+  assert.match(cssSource, /\.cp-package-dropzone\s*\{[\s\S]*background: #f7fbfd/);
+});
+
 test("appearance picker uses a bounded popper menu", () => {
   const appSource = readFileSync(new URL("./apps/ControlPanelApp.jsx", import.meta.url), "utf8");
   const cssSource = readFileSync(new URL("./styles/control-panel.css", import.meta.url), "utf8");

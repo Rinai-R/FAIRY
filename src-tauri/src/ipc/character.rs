@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use fairy_domain::{
     CharacterBriefInput, CharacterId, CharacterSnapshot, ConversationBootstrap, ErrorCode,
     FairyError, Revision, VerifiedVisualPack, VisualPackId,
@@ -9,6 +11,9 @@ use tauri::{AppHandle, Runtime, State};
 use crate::{
     app_error::AppError,
     app_state::AppState,
+    character_package::{
+        export_character_package as export_package, import_character_package as import_package,
+    },
     ipc::{ConfigurationChange, emit_configuration_change},
 };
 
@@ -104,6 +109,92 @@ pub struct CharacterActivationDto {
 }
 
 #[tauri::command]
+pub fn import_character_package<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    package_path: String,
+) -> Result<CharacterDto, AppError> {
+    let imported = import_package(state.visual_packs.root(), Path::new(&package_path))
+        .map_err(AppError::from)?;
+    let imported_visual_pack_id = imported.visual_pack_id.clone();
+
+    if let Some(snapshot) = find_character_bound_to_visual_pack(&state, &imported_visual_pack_id)? {
+        let binding = require_assigned_appearance(&state, snapshot.character_id())?;
+        emit_configuration_change(
+            &app,
+            ConfigurationChange::Character {
+                revision: snapshot.revision(),
+            },
+        )?;
+        return Ok(CharacterDto::new(
+            snapshot,
+            assigned_appearance(binding, imported.visual),
+        ));
+    }
+
+    let character_id = CharacterId::new();
+    let binding = match state
+        .character_appearances
+        .assign(character_id, imported.visual_pack_id)
+    {
+        Ok(binding) => binding,
+        Err(error) => {
+            let _ = state.visual_packs.remove(&imported_visual_pack_id);
+            return Err(AppError::from(error));
+        }
+    };
+    let snapshot = match state
+        .characters
+        .create_with_id(character_id, imported.brief)
+    {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let _ = state.character_appearances.clear(character_id);
+            let _ = state.visual_packs.remove(&imported_visual_pack_id);
+            return Err(AppError::from(error));
+        }
+    };
+    emit_configuration_change(
+        &app,
+        ConfigurationChange::Character {
+            revision: snapshot.revision(),
+        },
+    )?;
+    Ok(CharacterDto::new(
+        snapshot,
+        assigned_appearance(binding, imported.visual),
+    ))
+}
+
+#[tauri::command]
+pub fn export_character_package(
+    state: State<'_, AppState>,
+    character_id: CharacterId,
+    output_path: String,
+) -> Result<(), AppError> {
+    let snapshot = state
+        .characters
+        .list()
+        .map_err(AppError::from)?
+        .characters
+        .into_iter()
+        .find(|snapshot| snapshot.character_id() == character_id)
+        .ok_or_else(|| AppError::from(character_not_available()))?;
+    let binding = require_assigned_appearance(&state, character_id)?;
+    let visual = state
+        .visual_packs
+        .get(&binding.visual_pack_id)
+        .map_err(AppError::from)?;
+    export_package(
+        state.visual_packs.root(),
+        &snapshot,
+        &visual,
+        Path::new(&output_path),
+    )
+    .map_err(AppError::from)
+}
+
+#[tauri::command]
 pub fn create_character<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, AppState>,
@@ -169,10 +260,10 @@ pub fn list_characters(state: State<'_, AppState>) -> Result<CharacterCatalogDto
 }
 
 #[tauri::command]
-pub fn list_visual_packs(state: State<'_, AppState>) -> VisualPackCatalogDto {
-    VisualPackCatalogDto {
-        visual_packs: state.visual_packs.list().into_iter().cloned().collect(),
-    }
+pub fn list_visual_packs(state: State<'_, AppState>) -> Result<VisualPackCatalogDto, AppError> {
+    Ok(VisualPackCatalogDto {
+        visual_packs: state.visual_packs.list().map_err(AppError::from)?,
+    })
 }
 
 #[tauri::command]
@@ -284,6 +375,38 @@ fn build_character_catalog(state: &AppState) -> Result<CharacterCatalogDto, AppE
     })
 }
 
+fn find_character_bound_to_visual_pack(
+    state: &AppState,
+    visual_pack_id: &VisualPackId,
+) -> Result<Option<CharacterSnapshot>, AppError> {
+    let active_character_id = state
+        .characters
+        .active()
+        .map_err(AppError::from)?
+        .map(|snapshot| snapshot.character_id());
+    let catalog = state.characters.list().map_err(AppError::from)?;
+    let mut first_match = None;
+
+    for snapshot in catalog.characters {
+        let Ok(CharacterAppearanceRead::Assigned(binding)) =
+            state.character_appearances.read(snapshot.character_id())
+        else {
+            continue;
+        };
+        if &binding.visual_pack_id != visual_pack_id {
+            continue;
+        }
+        if Some(snapshot.character_id()) == active_character_id {
+            return Ok(Some(snapshot));
+        }
+        if first_match.is_none() {
+            first_match = Some(snapshot);
+        }
+    }
+
+    Ok(first_match)
+}
+
 fn resolve_appearance(
     state: &AppState,
     snapshot: &CharacterSnapshot,
@@ -298,7 +421,7 @@ fn resolve_appearance(
         }
         Ok(CharacterAppearanceRead::Assigned(binding)) => {
             match state.visual_packs.get(&binding.visual_pack_id) {
-                Ok(visual) => (assigned_appearance(binding, visual.clone()), None),
+                Ok(visual) => (assigned_appearance(binding, visual), None),
                 Err(error) => (
                     CharacterAppearanceDto::Unavailable,
                     Some(CharacterDiagnosticDto::appearance(snapshot, error)),
@@ -373,6 +496,8 @@ mod tests {
 
     use fairy_domain::CharacterBriefInput;
 
+    use crate::visual_registry::write_test_visual_pack;
+
     use super::*;
 
     fn brief(name: &str) -> CharacterBriefInput {
@@ -408,6 +533,14 @@ mod tests {
     fn assigned_visual_is_public_and_does_not_change_character_revision() {
         let directory = tempfile::tempdir().expect("temp directory");
         let state = AppState::initialize(directory.path()).expect("app state");
+        write_test_visual_pack(
+            state
+                .visual_packs
+                .root()
+                .parent()
+                .expect("visual root parent"),
+            "fairy.atri",
+        );
         let snapshot = state.characters.create(brief("亚托莉")).expect("character");
         let binding = state
             .character_appearances
@@ -429,7 +562,24 @@ mod tests {
         ));
         let json = serde_json::to_string(&appearance).expect("serialize appearance");
         assert!(!json.contains("\"script\""));
-        assert!(!json.contains("://"));
+        assert!(json.contains("fairy-character://localhost/fairy.atri/idle.png"));
+    }
+
+    #[test]
+    fn corrupt_visual_pack_manifest_is_not_reported_as_an_empty_catalog() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let state = AppState::initialize(directory.path()).expect("app state");
+        let root = state.visual_packs.root().join("fairy.bad");
+        std::fs::create_dir_all(&root).expect("create corrupt visual pack");
+        std::fs::write(root.join("manifest.json"), "{\"schemaVersion\":2}")
+            .expect("write corrupt visual manifest");
+
+        let error = state
+            .visual_packs
+            .list()
+            .expect_err("corrupt visual pack should surface");
+
+        assert_eq!(AppError::from(error).code, "INVALID_VISUAL_MANIFEST");
     }
 
     #[test]
@@ -442,5 +592,32 @@ mod tests {
             .expect_err("unassigned must fail");
         assert_eq!(error.code, "CHARACTER_APPEARANCE_UNASSIGNED");
         assert!(state.characters.active().expect("active state").is_none());
+    }
+
+    #[test]
+    fn import_reuses_the_active_character_already_bound_to_the_pack_id() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let state = AppState::initialize(directory.path()).expect("app state");
+        let visual_pack_id = VisualPackId::from_str("fairy.atri").expect("pack id");
+        let first = state.characters.create(brief("亚托莉")).expect("first");
+        let second = state.characters.create(brief("亚托莉")).expect("second");
+        state
+            .character_appearances
+            .assign(first.character_id(), visual_pack_id.clone())
+            .expect("assign first");
+        state
+            .character_appearances
+            .assign(second.character_id(), visual_pack_id.clone())
+            .expect("assign second");
+        state
+            .characters
+            .activate(first.character_id(), first.revision())
+            .expect("activate first");
+
+        let reused = find_character_bound_to_visual_pack(&state, &visual_pack_id)
+            .expect("find bound character")
+            .expect("bound character");
+
+        assert_eq!(reused.character_id(), first.character_id());
     }
 }

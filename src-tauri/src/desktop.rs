@@ -11,11 +11,11 @@ use crate::app_error::AppError;
 const COMPANION_WINDOW_LABEL: &str = "companion";
 const CONTROL_PANEL_WINDOW_LABEL: &str = "control-panel";
 #[cfg(test)]
-const IDLE_WIDTH: f64 = 176.0;
+const IDLE_WIDTH: f64 = 220.0;
 #[cfg(test)]
-const IDLE_HEIGHT: f64 = 256.0;
-const CHAT_WIDTH: f64 = 520.0;
-const CHAT_HEIGHT: f64 = 380.0;
+const IDLE_HEIGHT: f64 = 344.0;
+const CHAT_WIDTH: f64 = 552.0;
+const CHAT_HEIGHT: f64 = 382.0;
 const CONTROL_PANEL_WIDTH: f64 = 560.0;
 const CONTROL_PANEL_HEIGHT: f64 = 620.0;
 const TRAY_ID: &str = "fairy-tray";
@@ -984,6 +984,8 @@ mod tests {
         );
         assert_eq!(windows[0]["width"], IDLE_WIDTH);
         assert_eq!(windows[0]["height"], IDLE_HEIGHT);
+        assert_eq!(windows[0]["minWidth"], IDLE_WIDTH);
+        assert_eq!(windows[0]["minHeight"], IDLE_HEIGHT);
         assert_eq!(windows[0]["maxWidth"], CHAT_WIDTH);
         assert_eq!(windows[0]["maxHeight"], CHAT_HEIGHT);
         assert_eq!(windows[1]["width"], CONTROL_PANEL_WIDTH);
@@ -998,6 +1000,17 @@ mod tests {
             capabilities["windows"],
             serde_json::json!([COMPANION_WINDOW_LABEL, CONTROL_PANEL_WINDOW_LABEL])
         );
+        let dialog_capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/control-panel-dialog.json"))
+                .expect("parse Tauri dialog capability");
+        assert_eq!(
+            dialog_capability["windows"],
+            serde_json::json!([CONTROL_PANEL_WINDOW_LABEL])
+        );
+        assert_eq!(
+            dialog_capability["permissions"],
+            serde_json::json!(["dialog:allow-open", "dialog:allow-save"])
+        );
     }
 
     #[test]
@@ -1008,8 +1021,8 @@ mod tests {
             .as_str()
             .expect("Tauri CSP string");
 
-        assert!(csp.contains("connect-src 'self' ipc: data: blob: tauri:"));
-        assert!(csp.contains("img-src 'self' data: blob: asset: http://asset.localhost"));
+        assert!(csp.contains("connect-src 'self' ipc: data: blob: tauri: fairy-character: http://fairy-character.localhost"));
+        assert!(csp.contains("img-src 'self' data: blob: asset: http://asset.localhost fairy-character: http://fairy-character.localhost"));
         assert!(csp.contains("worker-src 'self' blob:"));
         assert!(!csp.contains("unsafe-eval"));
     }
@@ -1049,38 +1062,38 @@ mod tests {
     fn chat_window_expands_left_and_up_when_the_pet_is_near_the_right_edge() {
         let position = chat_window_position(
             PhysicalPosition::new(1500, 600),
-            PhysicalSize::new(176, 256),
-            PhysicalSize::new(520, 380),
+            PhysicalSize::new(220, 344),
+            PhysicalSize::new(552, 382),
             PhysicalRect {
                 position: PhysicalPosition::new(0, 0),
                 size: PhysicalSize::new(1920, 1080),
             },
         );
 
-        assert_eq!(position, PhysicalPosition::new(1156, 476));
+        assert_eq!(position, PhysicalPosition::new(1168, 562));
     }
 
     #[test]
     fn chat_window_expands_right_when_the_pet_is_near_the_left_edge() {
         let position = chat_window_position(
             PhysicalPosition::new(24, 500),
-            PhysicalSize::new(176, 256),
-            PhysicalSize::new(520, 380),
+            PhysicalSize::new(220, 344),
+            PhysicalSize::new(552, 382),
             PhysicalRect {
                 position: PhysicalPosition::new(0, 0),
                 size: PhysicalSize::new(1920, 1080),
             },
         );
 
-        assert_eq!(position, PhysicalPosition::new(24, 376));
+        assert_eq!(position, PhysicalPosition::new(24, 462));
     }
 
     #[test]
     fn chat_window_is_clamped_to_a_monitor_with_a_negative_origin() {
         let position = chat_window_position(
             PhysicalPosition::new(-1200, -20),
-            PhysicalSize::new(176, 256),
-            PhysicalSize::new(520, 380),
+            PhysicalSize::new(220, 344),
+            PhysicalSize::new(552, 382),
             PhysicalRect {
                 position: PhysicalPosition::new(-1440, 0),
                 size: PhysicalSize::new(1440, 900),
@@ -1094,7 +1107,7 @@ mod tests {
     fn replacement_panel_keeps_the_pet_bottom_right_anchor() {
         let position = replacement_window_position(
             PhysicalPosition::new(1500, 600),
-            PhysicalSize::new(176, 256),
+            PhysicalSize::new(220, 344),
             PhysicalSize::new(560, 620),
             PhysicalRect {
                 position: PhysicalPosition::new(0, 0),
@@ -1102,14 +1115,14 @@ mod tests {
             },
         );
 
-        assert_eq!(position, PhysicalPosition::new(1116, 236));
+        assert_eq!(position, PhysicalPosition::new(1160, 324));
     }
 
     #[test]
     fn replacement_panel_is_clamped_on_a_negative_origin_monitor() {
         let position = replacement_window_position(
             PhysicalPosition::new(-1380, 420),
-            PhysicalSize::new(176, 256),
+            PhysicalSize::new(220, 344),
             PhysicalSize::new(560, 620),
             PhysicalRect {
                 position: PhysicalPosition::new(-1440, 0),
@@ -1117,7 +1130,7 @@ mod tests {
             },
         );
 
-        assert_eq!(position, PhysicalPosition::new(-1440, 56));
+        assert_eq!(position, PhysicalPosition::new(-1440, 144));
     }
 
     #[test]
@@ -1162,7 +1175,7 @@ mod tests {
         let settings = store
             .mark_control_panel_visible(
                 PhysicalPosition::new(100, 200),
-                PhysicalSize::new(176, 256),
+                PhysicalSize::new(220, 344),
             )
             .expect("settings should become visible");
         assert!(!settings.visible);

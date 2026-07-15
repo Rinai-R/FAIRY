@@ -25,6 +25,8 @@ import { Transcript } from "./Transcript.jsx";
 import { resolveChatKeyboardAction } from "../companionViewState.mjs";
 import { selectRecentTranscript } from "../windowState.mjs";
 
+const DESKTOP_CHARACTER_DISPLAY_SCALE = 1.69;
+
 export function CompanionPanel({
   characterName,
   character,
@@ -116,13 +118,23 @@ export function CompanionPanel({
                 visual={visual}
                 visualState={pixelCharacter.visualState}
                 direction={pixelCharacter.direction}
+                displayScale={DESKTOP_CHARACTER_DISPLAY_SCALE}
                 onReady={onAssetReady}
                 onError={onAssetError}
               />
             </motion.div>
           </motion.div>
         ) : assetState.phase === "error" ? (
-          <Callout.Root className="fairy-pet__asset-error" color="tomato" role="alert">
+          <Callout.Root
+            className="fairy-pet__asset-error"
+            color="tomato"
+            role="alert"
+            data-tauri-drag-region
+            aria-label={`拖动${accessibleCharacterName}`}
+            onPointerDown={onPetDragStart}
+            onPointerUp={onPetDragEnd}
+            onPointerCancel={onPetDragEnd}
+          >
             <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
             <Callout.Text>
               {assetState.error.code} · {assetState.error.message}

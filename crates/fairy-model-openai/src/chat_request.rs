@@ -38,6 +38,11 @@ pub fn build_chat_completions_request(
     request: &CompiledPromptRequest,
 ) -> Result<reqwest::Request, FairyError> {
     validate_request(config, ModelProtocol::ChatCompletions, request)?;
+    if request.continuation.is_some() {
+        return Err(invalid_model_request(
+            "Chat Completions 不支持 previous_response_id 续接",
+        ));
+    }
     let mut messages = Vec::with_capacity(request.input.len() + 1);
     messages.push(OpenAiMessage::new(
         OpenAiRole::System,
@@ -79,8 +84,9 @@ mod tests {
     use fairy_domain::{
         AuthMode, CharacterBriefInput, CharacterCompiler, CharacterId, CompiledPromptRequest,
         DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, ErrorCode, ModelConnectionCompiler, ModelConnectionId,
-        ModelConnectionInput, ModelProtocol, ModelRequestShape, PromptItem, PromptLane,
-        ReasoningMode, Revision,
+        ModelConnectionInput, ModelProtocol, ModelRequestShape, PromptContinuation, PromptItem,
+        PromptLane, ReasoningMode, RetrievalContext, RetrievedPersonalMemory, Revision,
+        VisualStatePromptEntry,
     };
     use secrecy::SecretString;
     use serde_json::Value;
@@ -123,6 +129,7 @@ mod tests {
                     content: "我在".to_owned(),
                 },
             ],
+            continuation: None,
         }
     }
 
@@ -153,6 +160,43 @@ mod tests {
             .input
             .insert(0, PromptItem::CharacterActivated { snapshot });
         request
+    }
+
+    fn request_with_input(input: Vec<PromptItem>) -> CompiledPromptRequest {
+        let mut request = compiled();
+        request.input = input;
+        request
+    }
+
+    fn visual_states_item() -> PromptItem {
+        PromptItem::AvailableVisualStates {
+            states: vec![
+                VisualStatePromptEntry {
+                    id: "idle".parse().expect("idle visual state"),
+                    description: "安静待机".to_owned(),
+                },
+                VisualStatePromptEntry {
+                    id: "talk".parse().expect("talk visual state"),
+                    description: "正在说话".to_owned(),
+                },
+            ],
+        }
+    }
+
+    fn retrieved_context_item(content: &str) -> PromptItem {
+        PromptItem::RetrievedContext {
+            context: RetrievalContext {
+                personal_memories: vec![RetrievedPersonalMemory {
+                    id: fairy_domain::PersonalMemoryId::new(),
+                    kind: fairy_domain::PersonalMemoryKind::Preference,
+                    scope: fairy_domain::MemoryScope::Global,
+                    content: content.to_owned(),
+                    confidence_basis_points: 9000,
+                    updated_at_unix_ms: 42,
+                }],
+                knowledge: Vec::new(),
+            },
+        }
     }
 
     #[test]
@@ -220,6 +264,100 @@ mod tests {
         assert_eq!(messages[2]["role"], "user");
         assert_eq!(messages[2]["content"], "你好");
         assert_eq!(messages[3]["role"], "assistant");
+    }
+
+    #[test]
+    fn chat_completions_serialized_messages_preserve_stable_prefix_for_provider_cache() {
+        let first_turn = request_with_input(vec![
+            visual_states_item(),
+            PromptItem::UserMessage {
+                content: "推荐一杯饮料".to_owned(),
+            },
+            retrieved_context_item("用户不喜欢太甜的饮料"),
+        ]);
+        let second_turn = request_with_input(vec![
+            visual_states_item(),
+            PromptItem::UserMessage {
+                content: "推荐一杯饮料".to_owned(),
+            },
+            PromptItem::AssistantMessage {
+                content: "那就选清爽一点的。".to_owned(),
+            },
+            PromptItem::UserMessage {
+                content: "刚才说的是什么？".to_owned(),
+            },
+        ]);
+
+        let client = reqwest::Client::new();
+        let model_config = config(ModelProtocol::ChatCompletions, AuthMode::BearerKey);
+        let api_key = SecretString::from("sk-exact".to_owned());
+        let first_request =
+            build_chat_completions_request(&client, &model_config, Some(&api_key), &first_turn)
+                .expect("build first Chat request");
+        let second_request =
+            build_chat_completions_request(&client, &model_config, Some(&api_key), &second_turn)
+                .expect("build second Chat request");
+        let first_body = body_json(&first_request);
+        let second_body = body_json(&second_request);
+        let first_messages = first_body["messages"]
+            .as_array()
+            .expect("first messages array");
+        let second_messages = second_body["messages"]
+            .as_array()
+            .expect("second messages array");
+
+        let first_stable_prefix_len = first_messages.len() - 1;
+        assert_eq!(
+            &second_messages[..first_stable_prefix_len],
+            &first_messages[..first_stable_prefix_len],
+            "Chat provider body must keep the stable prefix byte-equivalent after mapping PromptItems",
+        );
+        assert_eq!(first_messages[0]["role"], "system");
+        assert_eq!(first_messages[1]["role"], "user");
+        assert!(
+            first_messages[1]["content"]
+                .as_str()
+                .expect("visual states context")
+                .contains("available_visual_states")
+        );
+        assert_eq!(first_messages[2]["content"], "推荐一杯饮料");
+
+        let retrieved_context = first_messages
+            .last()
+            .and_then(|message| message["content"].as_str())
+            .expect("retrieved context content");
+        assert!(retrieved_context.contains("retrieved_context"));
+        assert!(retrieved_context.contains("用户不喜欢太甜的饮料"));
+        assert!(second_messages.iter().all(|message| {
+            !message["content"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("retrieved_context")
+        }));
+        assert_eq!(
+            second_messages[first_stable_prefix_len]["content"],
+            r#"{"chains":[{"visualState":"idle","text":"那就选清爽一点的。"}]}"#,
+        );
+        assert_eq!(
+            second_messages.last().expect("second user message")["content"],
+            "刚才说的是什么？"
+        );
+    }
+
+    #[test]
+    fn chat_completions_rejects_responses_continuation() {
+        let mut compiled = compiled();
+        compiled.continuation =
+            Some(PromptContinuation::new("resp_previous".to_owned()).expect("valid response id"));
+        let error = build_chat_completions_request(
+            &reqwest::Client::new(),
+            &config(ModelProtocol::ChatCompletions, AuthMode::BearerKey),
+            Some(&SecretString::from("sk-exact".to_owned())),
+            &compiled,
+        )
+        .expect_err("Chat must reject Responses continuation");
+
+        assert_eq!(error.code, ErrorCode::ModelResponseInvalid);
     }
 
     #[test]

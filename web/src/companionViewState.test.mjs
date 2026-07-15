@@ -20,10 +20,10 @@ test("chat keyboard input is strict", () => {
 });
 
 test("chat popover waits for the expanded native viewport", () => {
-  assert.equal(isCompanionChatViewportReady(176), false);
-  assert.equal(isCompanionChatViewportReady(509.99), false);
-  assert.equal(isCompanionChatViewportReady(510), true);
-  assert.equal(isCompanionChatViewportReady(520), true);
+  assert.equal(isCompanionChatViewportReady(220), false);
+  assert.equal(isCompanionChatViewportReady(541.99), false);
+  assert.equal(isCompanionChatViewportReady(542), true);
+  assert.equal(isCompanionChatViewportReady(552), true);
   assert.throws(() => isCompanionChatViewportReady(Number.NaN), /invalid/);
 });
 

@@ -48,7 +48,7 @@ pub use model::{
 };
 pub use prompt::{
     AssistantSource, CapabilityState, CompanionCapability, CompiledPromptRequest, CompiledReply,
-    CompiledReplyChain, ModelRequestShape, PromptItem, PromptLane, ReasoningMode, ResponseText,
-    SpeechText, VisualStatePromptEntry,
+    CompiledReplyChain, ModelRequestShape, PromptContinuation, PromptItem, PromptLane,
+    ReasoningMode, ResponseText, SpeechText, VisualStatePromptEntry,
 };
 pub use user_profile::{UserProfileCompiler, UserProfileInput, UserProfileSnapshot};

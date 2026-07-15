@@ -5,16 +5,17 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuar
 use fairy_domain::{
     CharacterSnapshot, CompiledReply, CompiledReplyChain, ConversationBootstrap, ConversationId,
     ErrorCode, ExtractionBatchInput, FairyError, HarnessEvent, LaneModelUsage,
-    MemoryMutationOutput, ModelCompletion, ModelStreamEvent, ModelTurnOutput, PromptItem,
-    PromptLane, TurnCompletion, TurnId, TurnLifecycle, TurnState, UserProfileSnapshot,
+    MemoryMutationOutput, ModelCompletion, ModelStreamEvent, ModelTurnOutput, PromptContinuation,
+    PromptItem, PromptLane, TurnCompletion, TurnId, TurnLifecycle, TurnState, UserProfileSnapshot,
     VisualStatePromptEntry,
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    CompactionCandidate, CompactionPolicy, CompactionResult, CompactionTrigger,
+    CompactionCandidate, CompactionPolicy, CompactionResult, CompactionTrigger, ContinuationState,
     ConversationHistory, HarnessEventSink, ModelEventSink, ModelGateway, PersistenceBinding,
-    PromptCompiler, ReplyCompiler, SessionSnapshot, TurnOutcome, install_compaction,
+    PromptCompiler, ReplyCompiler, SessionSnapshot, TurnOutcome, decide_continuation,
+    install_compaction, materialize_continuation_request,
 };
 
 pub struct HarnessRuntime {
@@ -40,6 +41,7 @@ struct Session {
     pending_user_profile: Option<UserProfileSnapshot>,
     active_turn: Option<ActiveTurn>,
     compacting: bool,
+    continuation_state: Option<ContinuationState>,
 }
 
 struct ActiveTurn {
@@ -147,6 +149,7 @@ impl HarnessRuntime {
             pending_user_profile: None,
             active_turn: None,
             compacting: false,
+            continuation_state: None,
         };
         lock(&self.sessions).insert(conversation_id, Arc::new(Mutex::new(session)));
         Ok(bootstrap)
@@ -161,6 +164,7 @@ impl HarnessRuntime {
             pending_user_profile: None,
             active_turn: None,
             compacting: false,
+            continuation_state: None,
         };
         lock(&self.sessions).insert(conversation_id, Arc::new(Mutex::new(session)));
         SessionSnapshot {
@@ -580,7 +584,7 @@ impl HarnessRuntime {
         emit_state(session, turn_id, TurnState::Planning, events)?;
         emit_state(session, turn_id, TurnState::Responding, events)?;
 
-        let (compiled, usage) = execute_respond_loop(
+        let (compiled, usage, next_continuation_state) = execute_respond_loop(
             session,
             turn_id,
             model.clone(),
@@ -615,6 +619,7 @@ impl HarnessRuntime {
                 .history
                 .lane_mut(PromptLane::Respond)
                 .seal_current_prefix()?;
+            session.continuation_state = next_continuation_state;
             (character_revision, user_profile_revision)
         };
         let terminal_events = complete_turn(
@@ -963,6 +968,18 @@ async fn retrieve_context_item(
     }
 }
 
+fn stable_visual_context_index(items: &[PromptItem]) -> usize {
+    items
+        .iter()
+        .take_while(|item| {
+            matches!(
+                item,
+                PromptItem::CharacterActivated { .. } | PromptItem::UserProfileUpdated { .. }
+            )
+        })
+        .count()
+}
+
 fn available_persistence(
     binding: &PersistenceBinding,
 ) -> Result<Arc<dyn crate::CompanionPersistence + Send + Sync>, FairyError> {
@@ -1172,45 +1189,72 @@ async fn execute_respond_loop(
     model: String,
     gateway: Arc<dyn ModelGateway + Send + Sync>,
     cancellation: CancellationToken,
-) -> Result<(CompiledReply, Vec<LaneModelUsage>), FairyError> {
+) -> Result<
+    (
+        CompiledReply,
+        Vec<LaneModelUsage>,
+        Option<ContinuationState>,
+    ),
+    FairyError,
+> {
     if cancellation.is_cancelled() {
         return Err(turn_interrupted());
     }
-    let (request, window_revision, available_visual_states) = {
+    let (request, full_request, window_revision, available_visual_states, continuation_supported) = {
         let session = lock(session);
         let active = active_turn(&session, turn_id)?;
         let lane = session.history.lane(PromptLane::Respond);
         let mut input = lane.items().to_vec();
-        let mut insertion_index = input.len().checked_sub(1).ok_or_else(|| {
+        let current_user_index = input.len().checked_sub(1).ok_or_else(|| {
             FairyError::new(
                 ErrorCode::PromptHistoryInvalid,
                 "当前 turn 缺少用户消息",
                 false,
             )
         })?;
-        if let Some(context) = active.ephemeral_context.clone() {
-            input.insert(insertion_index, context);
-            insertion_index += 1;
+        if !matches!(input[current_user_index], PromptItem::UserMessage { .. }) {
+            return Err(FairyError::new(
+                ErrorCode::PromptHistoryInvalid,
+                "当前 turn 最后一项必须是用户消息",
+                false,
+            ));
         }
+        let visual_index = stable_visual_context_index(&input);
         input.insert(
-            insertion_index,
+            visual_index,
             PromptItem::AvailableVisualStates {
                 states: active.available_visual_states.clone(),
             },
         );
-        (
-            PromptCompiler.compile(
-                PromptLane::Respond,
-                model,
-                input,
-                cache_key(gateway.as_ref(), lane.cache_key()),
+        if let Some(context) = active.ephemeral_context.clone() {
+            input.push(context);
+        }
+        let full_request = PromptCompiler.compile(
+            PromptLane::Respond,
+            model,
+            input,
+            cache_key(gateway.as_ref(), lane.cache_key()),
+        );
+        let capabilities = gateway.capabilities();
+        let request = materialize_continuation_request(
+            full_request.clone(),
+            decide_continuation(
+                capabilities.cache_retention,
+                session.continuation_state.as_ref(),
+                &full_request,
             ),
+        )?;
+        (
+            request,
+            full_request,
             lane.window_revision(),
             active.available_visual_states.clone(),
+            capabilities.cache_retention,
         )
     };
     let mut sink = BufferedOutputSink::default();
     let ModelCompletion {
+        response_id,
         output,
         usage: model_usage,
         ..
@@ -1229,6 +1273,22 @@ async fn execute_respond_loop(
         ));
     }
     let reply = ReplyCompiler.compile(&text, Vec::new(), &available_visual_states)?;
+    let next_continuation_state = if continuation_supported {
+        response_id.and_then(|previous_response_id| {
+            PromptContinuation::new(previous_response_id.clone())
+                .ok()
+                .map(|_| ContinuationState {
+                    previous_response_id,
+                    previous_request: full_request,
+                    response_items: vec![PromptItem::AssistantMessage {
+                        content: reply.display_text.as_str().to_owned(),
+                    }],
+                    response_complete: true,
+                })
+        })
+    } else {
+        None
+    };
     Ok((
         reply,
         vec![LaneModelUsage {
@@ -1236,6 +1296,7 @@ async fn execute_respond_loop(
             history_window: window_revision,
             usage: model_usage,
         }],
+        next_continuation_state,
     ))
 }
 

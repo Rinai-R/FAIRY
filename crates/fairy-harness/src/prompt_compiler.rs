@@ -35,6 +35,7 @@ impl PromptCompiler {
                 prompt_cache_key,
             },
             input,
+            continuation: None,
         }
     }
 }
@@ -68,6 +69,7 @@ mod tests {
         );
 
         assert_eq!(first, second);
+        assert_eq!(first.continuation, None);
         assert_eq!(
             first.shape.canonical_bytes().expect("first shape bytes"),
             second.shape.canonical_bytes().expect("second shape bytes")
@@ -198,6 +200,7 @@ mod tests {
         );
 
         assert_eq!(request.input, input);
+        assert_eq!(request.continuation, None);
         assert!(!request.shape.instructions.contains("web_search"));
     }
 

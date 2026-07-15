@@ -1,6 +1,22 @@
 export function resolveCharacterImageUrl(imagePath, origin) {
-  if (typeof imagePath !== "string" || !imagePath.startsWith("/characters/")) {
+  if (
+    typeof imagePath !== "string" ||
+    (
+      !imagePath.startsWith("/characters/") &&
+      !imagePath.startsWith("fairy-character://localhost/") &&
+      !imagePath.startsWith("http://fairy-character.localhost/")
+    )
+  ) {
     throw new TypeError("image path must use the local character namespace");
+  }
+  if (
+    imagePath.startsWith("fairy-character://localhost/") ||
+    imagePath.startsWith("http://fairy-character.localhost/")
+  ) {
+    return imagePath.replace(
+      "http://fairy-character.localhost/",
+      "fairy-character://localhost/",
+    );
   }
   if (typeof origin !== "string" || origin.length === 0) {
     throw new TypeError("application origin is required");
@@ -33,14 +49,26 @@ export function hasVisualState(visual, visualState) {
   );
 }
 
-export function pixelCanvasSize(visual) {
+function normalizeDisplayScale(displayScale) {
+  if (
+    typeof displayScale !== "number" ||
+    !Number.isFinite(displayScale) ||
+    displayScale <= 0
+  ) {
+    throw new TypeError("pixel display scale must be positive");
+  }
+  return displayScale;
+}
+
+export function pixelCanvasSize(visual, displayScale = 1) {
+  const scale = visual.scale * normalizeDisplayScale(displayScale);
   return Object.freeze({
-    width: visual.frame.width * visual.scale,
-    height: visual.frame.height * visual.scale,
+    width: Math.round(visual.frame.width * scale),
+    height: Math.round(visual.frame.height * scale),
   });
 }
 
-export function pixelTextureScale(visual, texture) {
+export function pixelTextureScale(visual, texture, displayScale = 1) {
   if (
     typeof texture?.width !== "number" ||
     typeof texture?.height !== "number" ||
@@ -49,9 +77,10 @@ export function pixelTextureScale(visual, texture) {
   ) {
     throw new TypeError("texture dimensions are required");
   }
+  const scale = visual.scale * normalizeDisplayScale(displayScale);
   return Object.freeze({
-    x: (visual.frame.width / texture.width) * visual.scale,
-    y: (visual.frame.height / texture.height) * visual.scale,
+    x: (visual.frame.width / texture.width) * scale,
+    y: (visual.frame.height / texture.height) * scale,
   });
 }
 

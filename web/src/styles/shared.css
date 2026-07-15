@@ -21,8 +21,9 @@
   --fairy-z-base: 0;
   --fairy-z-popover: 50;
   --fairy-z-tooltip: 250;
-  --fairy-pet-width: 222px;
-  --fairy-pet-height: 356px;
+  --fairy-pet-width: 208px;
+  --fairy-pet-height: 326px;
+  --fairy-pet-stage-height: 326px;
   --fairy-chat-width: 326px;
   --fairy-chat-height: 350px;
 }

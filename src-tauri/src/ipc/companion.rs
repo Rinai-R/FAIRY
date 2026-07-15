@@ -171,6 +171,8 @@ mod tests {
     };
     use tokio_util::sync::CancellationToken;
 
+    use crate::visual_registry::write_test_visual_pack;
+
     use super::*;
 
     const LOCAL_ENV_FILE: &str = ".env.persona.local";
@@ -210,6 +212,14 @@ mod tests {
     fn active_visual_states_follow_the_assigned_visual_pack() {
         let directory = tempfile::tempdir().expect("temp directory");
         let state = AppState::initialize(directory.path()).expect("app state");
+        write_test_visual_pack(
+            state
+                .visual_packs
+                .root()
+                .parent()
+                .expect("visual root parent"),
+            "fairy.atri",
+        );
         let snapshot = state
             .characters
             .create(CharacterBriefInput {
@@ -237,7 +247,7 @@ mod tests {
                 .iter()
                 .map(|state| state.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["idle", "thinking", "talk", "happy", "sad"]
+            vec!["idle", "happy"]
         );
         assert!(states.iter().all(|state| !state.description.is_empty()));
     }
@@ -437,6 +447,7 @@ mod tests {
                     "final speech text:\n{}",
                     outcome["speechText"].as_str().unwrap_or("<missing>")
                 );
+                print_usage_summary(&outcome["usage"]);
             } else {
                 println!("final visual state: <none - command failed>");
                 println!("final display reply:\n<none - command failed>");
@@ -849,6 +860,57 @@ mod tests {
             HarnessEventPayload::Failed { error } => {
                 format!("#{} failed={}", event.sequence, error.message)
             }
+        }
+    }
+
+    fn print_usage_summary(usage: &serde_json::Value) {
+        let Some(entries) = usage.as_array() else {
+            println!("usage: <missing>");
+            return;
+        };
+        if entries.is_empty() {
+            println!("usage: <empty>");
+            return;
+        }
+
+        for entry in entries {
+            let lane = entry["lane"].as_str().unwrap_or("<unknown>");
+            let detail = &entry["usage"];
+            let input_tokens = detail["inputTokens"].as_u64();
+            let output_tokens = detail["outputTokens"].as_u64();
+            let (cached_input, cached_input_tokens) =
+                cache_observation_label(&detail["cachedInputTokens"]);
+            let (cache_write, _) = cache_observation_label(&detail["cacheWriteTokens"]);
+            let hit_rate = match (cached_input_tokens, input_tokens) {
+                (Some(cached), Some(input)) if input > 0 => {
+                    format!("{:.1}%", (cached as f64 / input as f64) * 100.0)
+                }
+                _ => "n/a".to_owned(),
+            };
+
+            println!(
+                "usage {lane}: input={} output={} cached_input={cached_input} hit_rate={hit_rate} cache_write={cache_write}",
+                token_label(input_tokens),
+                token_label(output_tokens),
+            );
+        }
+    }
+
+    fn token_label(tokens: Option<u64>) -> String {
+        tokens
+            .map(|tokens| tokens.to_string())
+            .unwrap_or_else(|| "missing".to_owned())
+    }
+
+    fn cache_observation_label(value: &serde_json::Value) -> (String, Option<u64>) {
+        match value["status"].as_str() {
+            Some("observed") => {
+                let tokens = value["tokens"].as_u64();
+                (token_label(tokens), tokens)
+            }
+            Some("missing") => ("missing".to_owned(), None),
+            Some("unsupported") => ("unsupported".to_owned(), None),
+            _ => ("invalid".to_owned(), None),
         }
     }
 }

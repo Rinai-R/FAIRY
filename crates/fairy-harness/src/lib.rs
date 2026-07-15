@@ -16,7 +16,7 @@ pub use compaction::{
 };
 pub use gateway::{
     ContinuationDecision, ContinuationFullRequestReason, ContinuationState, ModelEventSink,
-    ModelGateway, decide_continuation,
+    ModelGateway, decide_continuation, materialize_continuation_request,
 };
 pub use history::{ConversationHistory, LaneHistory};
 pub use intelligence::{CompanionPersistence, PersistenceBinding};

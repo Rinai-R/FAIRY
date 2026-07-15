@@ -699,6 +699,18 @@ test("visual pack parser accepts exact local state image contract", () => {
   assert.equal(parsed.renderer, "state_images");
   assert.equal(parsed.states[0].id, "idle");
   assert.equal(parsed.states[1].imagePath, "/characters/atri/happy.png");
+  assert.equal(
+    parseVisualPack({
+      ...visualPack(),
+      states: [
+        {
+          ...visualPack().states[0],
+          imagePath: "fairy-character://localhost/fairy.atri/idle.png",
+        },
+      ],
+    }).states[0].imagePath,
+    "fairy-character://localhost/fairy.atri/idle.png",
+  );
   assert.equal(Object.isFrozen(parsed.states), true);
   assert.deepEqual(parseVisualPackCatalog({ visualPacks: [visualPack()] }), {
     visualPacks: [parsed],

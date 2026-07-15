@@ -14,6 +14,8 @@ struct ResponsesRequestBody<'a> {
     model: &'a str,
     instructions: &'a str,
     input: Vec<OpenAiMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_response_id: Option<&'a str>,
     max_output_tokens: u32,
     store: bool,
     stream: bool,
@@ -73,6 +75,10 @@ pub fn build_responses_request(
         model: config.model(),
         instructions: &request.shape.instructions,
         input,
+        previous_response_id: request
+            .continuation
+            .as_ref()
+            .map(fairy_domain::PromptContinuation::previous_response_id),
         max_output_tokens: request.shape.max_output_tokens,
         store: false,
         stream: true,
@@ -93,7 +99,7 @@ mod tests {
         AuthMode, CharacterBriefInput, CharacterCompiler, CharacterId,
         DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, ErrorCode, GatewayCapabilities,
         ModelConnectionCompiler, ModelConnectionId, ModelConnectionInput, ModelProtocol,
-        ModelRequestShape, PromptItem, PromptLane, ReasoningMode, Revision,
+        ModelRequestShape, PromptContinuation, PromptItem, PromptLane, ReasoningMode, Revision,
     };
     use reqwest::header::AUTHORIZATION;
     use serde_json::Value;
@@ -131,6 +137,7 @@ mod tests {
             input: vec![PromptItem::UserMessage {
                 content: "你好".to_owned(),
             }],
+            continuation: None,
         }
     }
 
@@ -184,6 +191,7 @@ mod tests {
         assert_eq!(body["instructions"], "stable instructions");
         assert_eq!(body["stream"], true);
         assert_eq!(body["store"], false);
+        assert!(body.get("previous_response_id").is_none());
         assert!(body.get("tool_choice").is_none());
         assert!(body.get("parallel_tool_calls").is_none());
         assert!(body.get("tools").is_none());
@@ -217,6 +225,31 @@ mod tests {
         );
         assert_eq!(input[1]["role"], "user");
         assert_eq!(input[1]["content"], "你好");
+    }
+
+    #[test]
+    fn responses_continuation_sends_previous_response_id_with_suffix_input() {
+        let mut compiled = compiled();
+        compiled.input = vec![PromptItem::UserMessage {
+            content: "新增问题".to_owned(),
+        }];
+        compiled.continuation =
+            Some(PromptContinuation::new("resp_previous".to_owned()).expect("valid response id"));
+        let request = build_responses_request(
+            &reqwest::Client::new(),
+            &config(AuthMode::BearerKey),
+            Some(&SecretString::from("sk-exact".to_owned())),
+            &compiled,
+        )
+        .expect("build continuation request");
+        let body = body_json(&request);
+
+        assert_eq!(body["previous_response_id"], "resp_previous");
+        assert_eq!(body["prompt_cache_key"], "fairy:conversation:respond");
+        assert_eq!(body["store"], false);
+        assert_eq!(body["input"].as_array().expect("input array").len(), 1);
+        assert_eq!(body["input"][0]["role"], "user");
+        assert_eq!(body["input"][0]["content"], "新增问题");
     }
 
     #[test]

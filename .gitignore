@@ -24,5 +24,10 @@
 /src-tauri/gen/
 /pnpm-debug.log*
 /.env.persona.local
+/web/public/characters/
+/character-packs/
+*.pack
+*.pack/
+*.character-pack.zip
 /openspec
 AGENTS.md

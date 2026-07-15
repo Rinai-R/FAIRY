@@ -27,8 +27,10 @@ secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri.workspace = true
+tauri-plugin-dialog = "=2.7.1"
 thiserror.workspace = true
 tokio.workspace = true
+zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "=0.6.2"

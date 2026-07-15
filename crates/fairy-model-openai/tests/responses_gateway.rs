@@ -49,6 +49,7 @@ fn request() -> CompiledPromptRequest {
         input: vec![PromptItem::UserMessage {
             content: "你好".to_owned(),
         }],
+        continuation: None,
     }
 }
 

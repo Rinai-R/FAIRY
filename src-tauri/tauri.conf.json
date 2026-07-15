@@ -15,12 +15,12 @@
       {
         "label": "companion",
         "title": "FAIRY",
-        "width": 176,
-        "height": 256,
-        "minWidth": 176,
-        "minHeight": 256,
-        "maxWidth": 520,
-        "maxHeight": 380,
+        "width": 220,
+        "height": 344,
+        "minWidth": 220,
+        "minHeight": 344,
+        "maxWidth": 552,
+        "maxHeight": 382,
         "resizable": false,
         "maximizable": false,
         "minimizable": false,
@@ -55,7 +55,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' ipc: data: blob: tauri:; img-src 'self' data: blob: asset: http://asset.localhost; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+      "csp": "default-src 'self'; connect-src 'self' ipc: data: blob: tauri: fairy-character: http://fairy-character.localhost; img-src 'self' data: blob: asset: http://asset.localhost fairy-character: http://fairy-character.localhost; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }
   },
   "bundle": {

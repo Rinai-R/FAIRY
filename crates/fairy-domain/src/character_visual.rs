@@ -265,22 +265,27 @@ fn validate_display_name(value: &str) -> Result<(), FairyError> {
 }
 
 fn validate_image_path(value: &str) -> Result<(), FairyError> {
-    let valid_segments = value.strip_prefix("/characters/").is_some_and(|relative| {
-        !relative.is_empty()
-            && relative
-                .split('/')
-                .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
-    });
-    if !valid_segments
-        || !value.ends_with(".png")
-        || value.contains("://")
-        || value.contains(['\\', '?', '#'])
-    {
-        return Err(invalid_manifest(
-            "角色状态图片必须是 /characters/ 下的本地 PNG 路径",
-        ));
+    let valid_segments =
+        local_character_image_relative_path(value).is_some_and(valid_relative_png_path);
+    if !valid_segments || value.contains(['\\', '?', '#']) {
+        return Err(invalid_manifest("角色状态图片必须是本地角色 PNG 路径"));
     }
     Ok(())
+}
+
+fn local_character_image_relative_path(value: &str) -> Option<&str> {
+    value
+        .strip_prefix("/characters/")
+        .or_else(|| value.strip_prefix("fairy-character://localhost/"))
+        .or_else(|| value.strip_prefix("http://fairy-character.localhost/"))
+}
+
+fn valid_relative_png_path(relative: &str) -> bool {
+    !relative.is_empty()
+        && relative.ends_with(".png")
+        && relative
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
 }
 
 fn validate_frame_geometry(

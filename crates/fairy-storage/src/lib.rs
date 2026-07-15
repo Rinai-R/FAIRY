@@ -17,5 +17,5 @@ pub use character_appearance_store::{
 pub use character_store::{ActiveCharacter, CharacterCatalog, CharacterDiagnostic, CharacterStore};
 pub use legacy_cleanup::cleanup_legacy_search_artifacts;
 pub use model_config_store::{ModelConnectionStore, ResolvedModelConnection};
-pub use secret_store::{SecretStore, SystemSecretStore};
+pub use secret_store::{PlaintextSqliteSecretStore, SecretStore, SystemSecretStore};
 pub use user_profile_store::{UserProfileStore, UserProfileUpdate};
