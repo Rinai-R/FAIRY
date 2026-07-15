@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     CharacterSnapshot, ErrorCode, ExtractionBatchInput, FairyError, RetrievalContext,
-    UserProfileSnapshot,
+    UserProfileSnapshot, VisualStateId,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -79,10 +79,27 @@ pub struct AssistantSource {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CompiledReplyChain {
+    pub text: ResponseText,
+    pub speech_text: SpeechText,
+    pub visual_state: VisualStateId,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompiledReply {
     pub display_text: ResponseText,
     pub speech_text: SpeechText,
     pub sources: Vec<AssistantSource>,
+    pub visual_state: VisualStateId,
+    pub chains: Vec<CompiledReplyChain>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisualStatePromptEntry {
+    pub id: VisualStateId,
+    pub description: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -121,6 +138,9 @@ pub enum PromptItem {
     },
     RetrievedContext {
         context: RetrievalContext,
+    },
+    AvailableVisualStates {
+        states: Vec<VisualStatePromptEntry>,
     },
     CapabilityStatus {
         capability: CompanionCapability,
@@ -226,11 +246,37 @@ mod tests {
                 rank: 1,
                 fetched_at_unix_ms: 42,
             }],
+            visual_state: "idle".parse().expect("idle visual state"),
+            chains: vec![CompiledReplyChain {
+                text: ResponseText::new("第一句。后续说明。".to_owned()).expect("chain text"),
+                speech_text: SpeechText::new("第一句。".to_owned()).expect("chain speech"),
+                visual_state: "idle".parse().expect("idle visual state"),
+            }],
         };
         let value = serde_json::to_value(reply).expect("serialize compiled reply");
 
         assert_eq!(value["displayText"], "第一句。后续说明。");
         assert_eq!(value["speechText"], "第一句。");
         assert_eq!(value["sources"][0]["rank"], 1);
+        assert_eq!(value["chains"][0]["visualState"], "idle");
+    }
+
+    #[test]
+    fn visual_state_context_serializes_without_image_paths() {
+        let item = PromptItem::AvailableVisualStates {
+            states: vec![VisualStatePromptEntry {
+                id: "happy".parse().expect("visual state"),
+                description: "开心回应，适合轻松确认。".to_owned(),
+            }],
+        };
+        let value = serde_json::to_value(item).expect("serialize visual states");
+
+        assert_eq!(value["type"], "available_visual_states");
+        assert_eq!(value["states"][0]["id"], "happy");
+        assert_eq!(
+            value["states"][0]["description"],
+            "开心回应，适合轻松确认。"
+        );
+        assert!(value["states"][0].get("imagePath").is_none());
     }
 }

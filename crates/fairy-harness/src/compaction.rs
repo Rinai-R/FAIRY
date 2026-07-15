@@ -1,12 +1,15 @@
 use fairy_domain::{
-    CharacterSnapshot, ErrorCode, FairyError, ModelUsage, PromptItem, UserProfileSnapshot,
-    WindowRevision,
+    CharacterSnapshot, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, ErrorCode, FairyError, ModelUsage,
+    PromptItem, UserProfileSnapshot, WindowRevision,
 };
 use serde::Serialize;
 
 use crate::ConversationHistory;
 
 const MAX_COMPACTION_SUMMARY_CHARS: usize = 12_000;
+const AUTO_COMPACTION_THRESHOLD_BASIS_POINTS: u64 = 8_000;
+const BASIS_POINTS_DENOMINATOR: u64 = 10_000;
+const RESPOND_OUTPUT_RESERVE_TOKENS: u64 = 640;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CompactionPolicy {
@@ -15,9 +18,7 @@ pub struct CompactionPolicy {
 
 impl Default for CompactionPolicy {
     fn default() -> Self {
-        Self {
-            auto_input_token_threshold: Some(32_000),
-        }
+        Self::from_context_window_tokens(DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS)
     }
 }
 
@@ -28,6 +29,16 @@ pub enum CompactionTrigger {
 }
 
 impl CompactionPolicy {
+    #[must_use]
+    pub const fn from_context_window_tokens(context_window_tokens: u64) -> Self {
+        let threshold = context_window_tokens
+            .saturating_mul(AUTO_COMPACTION_THRESHOLD_BASIS_POINTS)
+            / BASIS_POINTS_DENOMINATOR;
+        Self {
+            auto_input_token_threshold: Some(threshold.saturating_sub(RESPOND_OUTPUT_RESERVE_TOKENS)),
+        }
+    }
+
     #[must_use]
     pub fn should_compact(self, trigger: CompactionTrigger, usage: Option<&ModelUsage>) -> bool {
         match trigger {
@@ -167,6 +178,7 @@ mod tests {
                 CharacterBriefInput {
                     name: "亚托莉".to_owned(),
                     description: description.to_owned(),
+                    dialogue_style: None,
                 },
             )
             .expect("compile character")
@@ -323,6 +335,14 @@ mod tests {
         assert!(!policy.should_compact(CompactionTrigger::AfterCompletedTurn, Some(&unknown)));
         assert!(!policy.should_compact(CompactionTrigger::AfterCompletedTurn, None));
         assert!(policy.should_compact(CompactionTrigger::Manual, None));
+    }
+
+    #[test]
+    fn default_policy_derives_threshold_from_context_window() {
+        let policy = CompactionPolicy::from_context_window_tokens(128_000);
+
+        assert_eq!(policy.auto_input_token_threshold, Some(101_760));
+        assert_eq!(policy, CompactionPolicy::default());
     }
 
     #[test]

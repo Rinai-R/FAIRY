@@ -30,5 +30,14 @@ tauri.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "=0.6.2"
+objc2-app-kit = { version = "=0.3.2", features = ["NSImage"] }
+objc2-foundation = { version = "=0.3.2", features = ["NSData", "NSString"] }
+objc2-web-kit = { version = "=0.3.2", features = ["WKSnapshotConfiguration", "WKWebView", "block2"] }
+
 [dev-dependencies]
+async-trait.workspace = true
+tauri = { workspace = true, features = ["test"] }
 tempfile.workspace = true
+tokio-util.workspace = true

@@ -20,6 +20,7 @@ import {
 } from "@radix-ui/themes";
 import { motion } from "motion/react";
 
+import { PixelCharacter } from "./PixelCharacter.jsx";
 import { Transcript } from "./Transcript.jsx";
 import { resolveChatKeyboardAction } from "../companionViewState.mjs";
 import { selectRecentTranscript } from "../windowState.mjs";
@@ -27,10 +28,13 @@ import { selectRecentTranscript } from "../windowState.mjs";
 export function CompanionPanel({
   characterName,
   character,
-  assetPath,
+  visual,
+  pixelCharacter,
   assetState,
   onAssetReady,
   onAssetError,
+  onPetDragStart,
+  onPetDragEnd,
   popoverMounted,
   chatVisualOpen,
   petVisualOpen,
@@ -46,9 +50,10 @@ export function CompanionPanel({
   onCancel,
   externalError = null,
 }) {
-  const ready = companion.conversationId !== null && character !== null;
+  const ready = companion.conversationId !== null && character !== null && visual !== null;
   const active = companion.activeTurnId !== null || companion.submitting;
   const displayedError = companion.error ?? externalError;
+  const accessibleCharacterName = characterName ?? "桌面角色";
 
   function handleOpenChange(open) {
     if (open) onOpenChat();
@@ -78,8 +83,8 @@ export function CompanionPanel({
     <Popover.Root open={popoverMounted} onOpenChange={handleOpenChange}>
       <motion.section
         className="fairy-pet"
-        aria-label={`${characterName} 桌面角色`}
-        initial="hidden"
+        aria-label={`${accessibleCharacterName} 桌面角色`}
+        initial={false}
         animate={petVisualOpen ? "visible" : "hidden"}
         variants={{
           hidden: { opacity: 0, y: 18, scale: 0.94 },
@@ -89,30 +94,41 @@ export function CompanionPanel({
           if (definition === "hidden") onPetExitComplete();
         }}
       >
-        {assetState.phase !== "error" ? (
+        {visual !== null && assetState.phase !== "error" ? (
           <motion.div
             className="fairy-pet__character"
             data-tauri-drag-region
-            aria-label={`拖动${characterName}桌面角色`}
-            initial={{ opacity: 0, y: 14, scale: 0.97 }}
-            animate={{ opacity: assetState.phase === "ready" ? 1 : 0, y: 0, scale: 1 }}
+            aria-label={`拖动${accessibleCharacterName}`}
+            initial={false}
+            animate={{ y: 0, scale: 1 }}
+            style={{ opacity: assetState.phase === "ready" ? 1 : 0 }}
+            onPointerDown={onPetDragStart}
+            onPointerUp={onPetDragEnd}
+            onPointerCancel={onPetDragEnd}
           >
-            <img
-              src={assetPath}
-              alt={`${characterName}，白色水手服的全身桌面角色`}
-              draggable="false"
-              loading="eager"
-              fetchPriority="high"
-              onLoad={onAssetReady}
-              onError={onAssetError}
-            />
+            <motion.div
+              className="fairy-pet__pixel-motion"
+              animate={{ x: pixelCharacter.displacement }}
+              transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
+              aria-hidden="true"
+            >
+              <PixelCharacter
+                visual={visual}
+                visualState={pixelCharacter.visualState}
+                direction={pixelCharacter.direction}
+                onReady={onAssetReady}
+                onError={onAssetError}
+              />
+            </motion.div>
           </motion.div>
-        ) : (
+        ) : assetState.phase === "error" ? (
           <Callout.Root className="fairy-pet__asset-error" color="tomato" role="alert">
             <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
-            <Callout.Text>{assetState.error.message}</Callout.Text>
+            <Callout.Text>
+              {assetState.error.code} · {assetState.error.message}
+            </Callout.Text>
           </Callout.Root>
-        )}
+        ) : null}
 
         <Popover.Trigger>
           <Button
@@ -121,7 +137,7 @@ export function CompanionPanel({
             size="2"
             variant="surface"
             disabled={controlsDisabled}
-            aria-label={`和${characterName}聊一会儿`}
+            aria-label={characterName ? `和${characterName}聊一会儿` : "打开角色设置"}
           >
             <ChatBubbleIcon />
             聊一会儿
@@ -160,9 +176,9 @@ export function CompanionPanel({
                     <div>
                       <Flex align="center" gap="2" mb="1">
                         <span className={`fairy-presence-dot ${ready ? "is-ready" : ""}`} aria-hidden="true" />
-                        <Text size="1" color="gray">{ready ? `${characterName}可以听见你` : "等待模型连接"}</Text>
+                        <Text size="1" color="gray">{ready ? `${characterName}可以听见你` : "等待角色和模型就绪"}</Text>
                       </Flex>
-                      <Text as="div" size="3" weight="medium">和{characterName}说说话</Text>
+                      <Text as="div" size="3" weight="medium">{characterName ? `和${characterName}说说话` : "角色对话"}</Text>
                     </div>
                     <Tooltip content="收起聊天">
                       <IconButton
@@ -211,7 +227,7 @@ export function CompanionPanel({
                       onKeyDown={handleKeyDown}
                       rows={2}
                       resize="none"
-                      placeholder={`想对${characterName}说什么？`}
+                      placeholder={characterName ? `想对${characterName}说什么？` : "选择角色后开始对话"}
                       aria-label="消息输入框"
                       autoFocus={ready}
                       disabled={!ready || active}

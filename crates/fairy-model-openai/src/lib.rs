@@ -36,7 +36,8 @@ pub fn build_openai_compatible_gateway(
 #[cfg(test)]
 mod tests {
     use fairy_domain::{
-        AuthMode, ModelConnectionCompiler, ModelConnectionId, ModelConnectionInput,
+        AuthMode, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, ModelConnectionCompiler,
+        ModelConnectionId, ModelConnectionInput,
     };
 
     use super::*;
@@ -49,6 +50,7 @@ mod tests {
                     protocol,
                     endpoint: "http://127.0.0.1:11434/v1".to_owned(),
                     model: "test-model".to_owned(),
+                    context_window_tokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
                     auth_mode: AuthMode::NoAuth,
                 },
             )

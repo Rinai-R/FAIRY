@@ -189,6 +189,33 @@
   line-height: 1.62;
 }
 
+.cp-appearance-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 112px;
+  align-items: center;
+  gap: 14px;
+}
+
+.cp-appearance-picker .rt-SelectTrigger {
+  width: 100%;
+}
+
+.cp-appearance-preview {
+  display: grid;
+  width: 112px;
+  height: 112px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--fairy-border-soft);
+  background: #ffffff;
+}
+
+.cp-appearance-sprite {
+  display: block;
+  background-repeat: no-repeat;
+  background-position: 0 0;
+}
+
 .cp-section-card.rt-Card {
   border-color: var(--fairy-border-soft);
   background: rgb(255 255 255 / 76%);

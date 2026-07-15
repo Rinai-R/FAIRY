@@ -1,6 +1,7 @@
 use fairy_domain::{
-    AuthMode, ErrorCode, FairyError, GatewayCapabilities, ModelConnectionCompiler,
-    ModelConnectionConfig, ModelConnectionId, ModelConnectionInput, ModelProtocol,
+    AuthMode, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, ErrorCode, FairyError, GatewayCapabilities,
+    ModelConnectionCompiler, ModelConnectionConfig, ModelConnectionId, ModelConnectionInput,
+    ModelProtocol,
 };
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -10,12 +11,14 @@ use crate::{DocumentRead, SecretStore, StorageRoot};
 
 const MODEL_CONNECTION_DOCUMENT_SCHEMA: u32 = 1;
 const MODEL_CONNECTION_PATH: &str = "model/connection.json";
-const LEGACY_MODEL_CONNECTION_SCHEMA: u32 = 1;
+const LEGACY_MODEL_CONNECTION_SCHEMA_V1: u32 = 1;
+const LEGACY_MODEL_CONNECTION_SCHEMA_V2: u32 = 2;
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum StoredModelConnection {
     Current(ModelConnectionConfig),
+    LegacyV2(LegacyModelConnectionConfigV2),
     Legacy(LegacyModelConnectionConfigV1),
 }
 
@@ -24,6 +27,19 @@ enum StoredModelConnection {
 struct LegacyModelConnectionConfigV1 {
     schema_version: u32,
     connection_id: ModelConnectionId,
+    endpoint: String,
+    model: String,
+    auth_mode: AuthMode,
+    #[serde(rename = "capabilities")]
+    _capabilities: GatewayCapabilities,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyModelConnectionConfigV2 {
+    schema_version: u32,
+    connection_id: ModelConnectionId,
+    protocol: ModelProtocol,
     endpoint: String,
     model: String,
     auth_mode: AuthMode,
@@ -65,16 +81,19 @@ impl<S: SecretStore> ModelConnectionStore<S> {
                 Ok(Some(config))
             }
             DocumentRead::Found(StoredModelConnection::Legacy(legacy)) => {
-                self.migrate_legacy(legacy).map(Some)
+                self.migrate_legacy_v1(legacy).map(Some)
+            }
+            DocumentRead::Found(StoredModelConnection::LegacyV2(legacy)) => {
+                self.migrate_legacy_v2(legacy).map(Some)
             }
         }
     }
 
-    fn migrate_legacy(
+    fn migrate_legacy_v1(
         &self,
         legacy: LegacyModelConnectionConfigV1,
     ) -> Result<ModelConnectionConfig, FairyError> {
-        if legacy.schema_version != LEGACY_MODEL_CONNECTION_SCHEMA {
+        if legacy.schema_version != LEGACY_MODEL_CONNECTION_SCHEMA_V1 {
             return Err(FairyError::new(
                 ErrorCode::StorageCorrupted,
                 "旧模型连接配置版本不受支持",
@@ -87,6 +106,37 @@ impl<S: SecretStore> ModelConnectionStore<S> {
                 protocol: ModelProtocol::Responses,
                 endpoint: legacy.endpoint,
                 model: legacy.model,
+                context_window_tokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
+                auth_mode: legacy.auth_mode,
+            },
+        )?;
+        config.verify_integrity()?;
+        self.root.write_replace(
+            MODEL_CONNECTION_PATH,
+            MODEL_CONNECTION_DOCUMENT_SCHEMA,
+            &config,
+        )?;
+        Ok(config)
+    }
+
+    fn migrate_legacy_v2(
+        &self,
+        legacy: LegacyModelConnectionConfigV2,
+    ) -> Result<ModelConnectionConfig, FairyError> {
+        if legacy.schema_version != LEGACY_MODEL_CONNECTION_SCHEMA_V2 {
+            return Err(FairyError::new(
+                ErrorCode::StorageCorrupted,
+                "旧模型连接配置版本不受支持",
+                false,
+            ));
+        }
+        let config = self.compiler.compile(
+            legacy.connection_id,
+            ModelConnectionInput {
+                protocol: legacy.protocol,
+                endpoint: legacy.endpoint,
+                model: legacy.model,
+                context_window_tokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
                 auth_mode: legacy.auth_mode,
             },
         )?;
@@ -104,8 +154,9 @@ impl<S: SecretStore> ModelConnectionStore<S> {
         input: ModelConnectionInput,
         api_key: Option<SecretString>,
     ) -> Result<ModelConnectionConfig, FairyError> {
-        let connection_id = self
-            .status()?
+        let existing = self.status()?;
+        let connection_id = existing
+            .as_ref()
             .map(|config| config.connection_id())
             .unwrap_or_else(ModelConnectionId::new);
         let config = self.compiler.compile(connection_id, input)?;
@@ -130,7 +181,12 @@ impl<S: SecretStore> ModelConnectionStore<S> {
                         false,
                     ));
                 }
-                self.secrets.delete(connection_id)?;
+                if existing
+                    .as_ref()
+                    .is_some_and(|current| current.auth_mode() == AuthMode::BearerKey)
+                {
+                    self.secrets.delete(connection_id)?;
+                }
             }
         }
 
@@ -159,7 +215,9 @@ impl<S: SecretStore> ModelConnectionStore<S> {
         let Some(config) = self.status()? else {
             return Ok(false);
         };
-        self.secrets.delete(config.connection_id())?;
+        if config.auth_mode() == AuthMode::BearerKey {
+            self.secrets.delete(config.connection_id())?;
+        }
         self.root.remove(MODEL_CONNECTION_PATH)
     }
 }
@@ -249,6 +307,7 @@ mod tests {
             protocol: ModelProtocol::Responses,
             endpoint: "https://api.openai.com/v1".to_owned(),
             model: "gpt-5.4".to_owned(),
+            context_window_tokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
             auth_mode: AuthMode::BearerKey,
         }
     }
@@ -258,6 +317,7 @@ mod tests {
             protocol: ModelProtocol::Responses,
             endpoint: "http://127.0.0.1:11434/v1".to_owned(),
             model: "local-model".to_owned(),
+            context_window_tokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
             auth_mode: AuthMode::NoAuth,
         }
     }
@@ -267,12 +327,28 @@ mod tests {
         endpoint: &str,
     ) -> LegacyModelConnectionConfigV1 {
         LegacyModelConnectionConfigV1 {
-            schema_version: LEGACY_MODEL_CONNECTION_SCHEMA,
+            schema_version: LEGACY_MODEL_CONNECTION_SCHEMA_V1,
             connection_id,
             endpoint: endpoint.to_owned(),
             model: "legacy-model".to_owned(),
             auth_mode: AuthMode::BearerKey,
             _capabilities: GatewayCapabilities::responses_http(false, false),
+        }
+    }
+
+    fn legacy_v2_config(
+        connection_id: ModelConnectionId,
+        protocol: ModelProtocol,
+        endpoint: &str,
+    ) -> LegacyModelConnectionConfigV2 {
+        LegacyModelConnectionConfigV2 {
+            schema_version: LEGACY_MODEL_CONNECTION_SCHEMA_V2,
+            connection_id,
+            protocol,
+            endpoint: endpoint.to_owned(),
+            model: "legacy-v2-model".to_owned(),
+            auth_mode: AuthMode::BearerKey,
+            _capabilities: GatewayCapabilities::for_protocol(protocol),
         }
     }
 
@@ -301,9 +377,13 @@ mod tests {
             .status()
             .expect("migrate legacy config")
             .expect("migrated config");
-        assert_eq!(migrated.schema_version(), 2);
+        assert_eq!(migrated.schema_version(), 3);
         assert_eq!(migrated.protocol(), ModelProtocol::Responses);
         assert_eq!(migrated.connection_id(), connection_id);
+        assert_eq!(
+            migrated.context_window_tokens(),
+            DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS
+        );
         assert!(migrated.capabilities().prompt_cache_key);
         assert!(migrated.capabilities().cached_tokens_usage);
 
@@ -318,8 +398,48 @@ mod tests {
         );
         let after = std::fs::read_to_string(root.directory().join(MODEL_CONNECTION_PATH))
             .expect("read migrated fixture");
-        assert!(after.contains("\"schema_version\":2"));
+        assert!(after.contains("\"schema_version\":3"));
         assert!(after.contains("\"protocol\":\"responses\""));
+        assert!(after.contains("\"context_window_tokens\":128000"));
+    }
+
+    #[test]
+    fn legacy_v2_without_context_window_migrates_to_current_schema() {
+        let temp = tempdir().expect("create temp directory");
+        let root = StorageRoot::new(temp.path()).expect("create storage root");
+        let store = ModelConnectionStore::new(root.clone(), FakeSecretStore::default());
+        let connection_id = ModelConnectionId::new();
+        root.write_replace(
+            MODEL_CONNECTION_PATH,
+            MODEL_CONNECTION_DOCUMENT_SCHEMA,
+            &legacy_v2_config(
+                connection_id,
+                ModelProtocol::ChatCompletions,
+                "https://api.deepseek.com",
+            ),
+        )
+        .expect("write v2 legacy fixture");
+        let before = std::fs::read_to_string(root.directory().join(MODEL_CONNECTION_PATH))
+            .expect("read v2 legacy fixture");
+        assert!(!before.contains("context_window_tokens"));
+
+        let migrated = store
+            .status()
+            .expect("migrate v2 legacy config")
+            .expect("migrated config");
+        assert_eq!(migrated.schema_version(), 3);
+        assert_eq!(migrated.protocol(), ModelProtocol::ChatCompletions);
+        assert_eq!(migrated.connection_id(), connection_id);
+        assert_eq!(
+            migrated.context_window_tokens(),
+            DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS
+        );
+
+        let after = std::fs::read_to_string(root.directory().join(MODEL_CONNECTION_PATH))
+            .expect("read migrated v2 fixture");
+        assert!(after.contains("\"schema_version\":3"));
+        assert!(after.contains("\"protocol\":\"chat_completions\""));
+        assert!(after.contains("\"context_window_tokens\":128000"));
     }
 
     #[test]
@@ -483,6 +603,37 @@ mod tests {
         assert_eq!(no_auth.connection_id(), bearer.connection_id());
         assert!(!store.secrets.contains(no_auth.connection_id()));
         assert!(store.resolve().expect("resolve NoAuth").api_key.is_none());
+    }
+
+    #[test]
+    fn fresh_no_auth_does_not_require_keychain_access() {
+        let temp = tempdir().expect("create temp directory");
+        let root = StorageRoot::new(temp.path()).expect("create storage root");
+        let secrets = FakeSecretStore::default();
+        secrets.fail_delete.store(true, Ordering::SeqCst);
+        let store = ModelConnectionStore::new(root, secrets);
+
+        let config = store
+            .save(no_auth_input(), None)
+            .expect("fresh NoAuth must not touch Keychain");
+
+        assert_eq!(config.auth_mode(), AuthMode::NoAuth);
+        assert!(store.resolve().expect("resolve NoAuth").api_key.is_none());
+    }
+
+    #[test]
+    fn clearing_no_auth_does_not_require_keychain_access() {
+        let temp = tempdir().expect("create temp directory");
+        let root = StorageRoot::new(temp.path()).expect("create storage root");
+        let secrets = FakeSecretStore::default();
+        let store = ModelConnectionStore::new(root, secrets);
+        store
+            .save(no_auth_input(), None)
+            .expect("save NoAuth config");
+        store.secrets.fail_delete.store(true, Ordering::SeqCst);
+
+        assert!(store.clear().expect("clear NoAuth without Keychain"));
+        assert_eq!(store.status().expect("config was removed"), None);
     }
 
     #[test]

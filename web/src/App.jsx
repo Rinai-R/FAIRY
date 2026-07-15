@@ -1,4 +1,5 @@
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useReducedMotion } from "motion/react";
 
 import {
   cancelCompanionTurn,
@@ -25,8 +26,15 @@ import {
   showControlPanel,
 } from "./desktopClient.js";
 import { normalizeInvokeError } from "./desktopState.mjs";
-import { DEFAULT_CHARACTER, describeCharacterFailure } from "./defaultCharacter.mjs";
-import { listenToConfigurationChanges } from "./windowClient.js";
+import {
+  createPixelCharacterState,
+  reducePixelCharacterState,
+} from "./pixelCharacterState.mjs";
+import { startPetWindowDrag } from "./petDragState.mjs";
+import {
+  listenToConfigurationChanges,
+  startCurrentWindowDrag,
+} from "./windowClient.js";
 import { configurationRefreshTarget } from "./windowState.mjs";
 
 const INITIAL_ASSET_STATE = Object.freeze({ phase: "loading", error: null });
@@ -49,11 +57,95 @@ export function App() {
   const returningFromControlPanel = useRef(false);
   const companionRoot = useRef(null);
   const sessionCreating = useRef(false);
+  const reducedMotion = Boolean(useReducedMotion());
+  const [petDragging, setPetDragging] = useState(false);
   const [companion, dispatchCompanion] = useReducer(
     reduceCompanionState,
     undefined,
     createCompanionState,
   );
+  const [pixelCharacter, dispatchPixelCharacter] = useReducer(
+    reducePixelCharacterState,
+    undefined,
+    createPixelCharacterState,
+  );
+  const activeAppearance = catalog.active?.appearance ?? null;
+  const activeVisual = activeAppearance?.status === "assigned"
+    ? activeAppearance.visual
+    : null;
+  const characterName = catalog.active?.name ?? null;
+
+  useEffect(() => {
+    if (catalog.active === null) {
+      setAssetState(INITIAL_ASSET_STATE);
+      return;
+    }
+    if (activeAppearance?.status === "unassigned") {
+      setAssetState({
+        phase: "error",
+        error: {
+          code: "CHARACTER_APPEARANCE_UNASSIGNED",
+          message: `${catalog.active.name} 尚未选择外观。`,
+        },
+      });
+      return;
+    }
+    if (activeAppearance?.status === "unavailable") {
+      setAssetState({
+        phase: "error",
+        error: {
+          code: "CHARACTER_APPEARANCE_UNAVAILABLE",
+          message: `${catalog.active.name} 的外观不可用。`,
+        },
+      });
+      return;
+    }
+    setAssetState(INITIAL_ASSET_STATE);
+  }, [
+    activeAppearance?.status,
+    activeAppearance?.bindingRevision,
+    activeVisual?.packId,
+    catalog.active?.characterId,
+    catalog.active?.name,
+  ]);
+
+  useEffect(() => {
+    dispatchPixelCharacter({
+      type: "context_changed",
+      context: {
+        availableStates: activeVisual?.states?.map((state) => state.id) ?? ["idle"],
+        chatOpen: desktop?.companionSurface === "chat",
+        dragging: petDragging,
+        petVisible: petVisualOpen && desktop?.visible !== false,
+        reducedMotion,
+        sessionState: companion.sessionState,
+        settingsOpen: settingsRequested || desktop?.controlPanelVisible === true,
+        submitting: companion.submitting,
+      },
+    });
+  }, [
+    activeVisual?.states,
+    companion.sessionState,
+    companion.submitting,
+    desktop?.companionSurface,
+    desktop?.controlPanelVisible,
+    desktop?.visible,
+    petDragging,
+    petVisualOpen,
+    reducedMotion,
+    settingsRequested,
+  ]);
+
+  useEffect(() => {
+    if (!petDragging) return undefined;
+    const finishDrag = () => setPetDragging(false);
+    window.addEventListener("pointerup", finishDrag, { once: true });
+    window.addEventListener("blur", finishDrag, { once: true });
+    return () => {
+      window.removeEventListener("pointerup", finishDrag);
+      window.removeEventListener("blur", finishDrag);
+    };
+  }, [petDragging]);
 
   useEffect(() => {
     let cancelled = false;
@@ -216,6 +308,7 @@ export function App() {
   useEffect(() => {
     if (
       !catalog.active ||
+      activeVisual === null ||
       !modelStatus?.ready ||
       sessionCreating.current
     ) {
@@ -242,11 +335,15 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [catalog.active, modelStatus?.ready, companion.characterId, companion.conversationId]);
+  }, [
+    activeVisual,
+    catalog.active,
+    modelStatus?.ready,
+    companion.characterId,
+    companion.conversationId,
+  ]);
 
   const controlsDisabled = desktop === null || pendingAction !== null || settingsRequested;
-  const displayName = catalog.active?.name ?? DEFAULT_CHARACTER.displayName;
-
   function setSettingsMode(requested) {
     settingsRequestedRef.current = requested;
     setSettingsRequested(requested);
@@ -315,6 +412,19 @@ export function App() {
     }
   }
 
+  function handlePetDragStart(event) {
+    startPetWindowDrag({
+      event,
+      desktopReady: desktop !== null,
+      petVisualOpen,
+      startDragging: startCurrentWindowDrag,
+      setDragging: setPetDragging,
+      onError: (error) => {
+        setDesktopError(normalizeInvokeError(error));
+      },
+    });
+  }
+
   async function handleSubmit() {
     if (!catalog.active || !modelStatus?.ready || !companion.conversationId) {
       handleRequestControlPanel();
@@ -327,7 +437,15 @@ export function App() {
         conversationId: companion.conversationId,
         input,
         speechEnabled: false,
-        onEvent: (event) => dispatchCompanion({ type: "harness_event", event }),
+        onEvent: (event) => {
+          dispatchCompanion({ type: "harness_event", event });
+          if (event.payload.type === "reply_chain" || event.payload.type === "completed") {
+            dispatchPixelCharacter({
+              type: "visual_state_changed",
+              visualState: event.payload.visualState,
+            });
+          }
+        },
         onProtocolError: (error) => dispatchCompanion({ type: "invoke_failed", error }),
       });
     } catch (error) {
@@ -344,9 +462,21 @@ export function App() {
     }
   }
 
-  function markAssetFailed() {
-    setAssetState({ phase: "error", error: describeCharacterFailure(DEFAULT_CHARACTER) });
-  }
+  const markAssetReady = useCallback(() => {
+    setAssetState({ phase: "ready", error: null });
+  }, []);
+
+  const markAssetFailed = useCallback(() => {
+    setAssetState({
+      phase: "error",
+      error: {
+        code: "CHARACTER_ASSET_FAILED",
+        message: characterName
+          ? `无法加载 ${characterName} 的角色图片。`
+          : "无法加载当前角色图片。",
+      },
+    });
+  }, [characterName]);
 
   return (
     <main
@@ -356,12 +486,15 @@ export function App() {
     >
       <h1 className="visually-hidden">FAIRY 桌面角色对话</h1>
       <CompanionPanel
-        characterName={displayName}
+        characterName={characterName}
         character={catalog.active}
-        assetPath={DEFAULT_CHARACTER.assetPath}
+        visual={activeVisual}
+        pixelCharacter={pixelCharacter}
         assetState={assetState}
-        onAssetReady={() => setAssetState({ phase: "ready", error: null })}
+        onAssetReady={markAssetReady}
         onAssetError={markAssetFailed}
+        onPetDragStart={handlePetDragStart}
+        onPetDragEnd={() => setPetDragging(false)}
         popoverMounted={chatPopoverMounted}
         chatVisualOpen={chatVisualOpen}
         petVisualOpen={petVisualOpen}

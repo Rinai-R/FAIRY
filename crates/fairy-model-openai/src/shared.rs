@@ -12,7 +12,6 @@ use url::Url;
 #[serde(rename_all = "lowercase")]
 pub(crate) enum OpenAiRole {
     System,
-    Developer,
     User,
     Assistant,
 }
@@ -27,6 +26,12 @@ impl OpenAiMessage {
     pub(crate) fn new(role: OpenAiRole, content: String) -> Self {
         Self { role, content }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AssistantMessageFormat {
+    PlainText,
+    ReplyChainsJson,
 }
 
 pub(crate) fn validate_request(
@@ -118,40 +123,71 @@ pub(crate) fn authenticated_post(
 
 pub(crate) fn map_prompt_items(
     items: &[PromptItem],
-    harness_role: OpenAiRole,
+    assistant_message_format: AssistantMessageFormat,
 ) -> Result<Vec<OpenAiMessage>, FairyError> {
     items
         .iter()
-        .map(|item| map_prompt_item(item, harness_role))
+        .map(|item| map_prompt_item(item, assistant_message_format))
         .collect()
 }
 
 fn map_prompt_item(
     item: &PromptItem,
-    harness_role: OpenAiRole,
+    assistant_message_format: AssistantMessageFormat,
 ) -> Result<OpenAiMessage, FairyError> {
     match item {
         PromptItem::UserMessage { content } => {
             Ok(OpenAiMessage::new(OpenAiRole::User, content.clone()))
         }
-        PromptItem::AssistantMessage { content } => {
-            Ok(OpenAiMessage::new(OpenAiRole::Assistant, content.clone()))
-        }
+        PromptItem::AssistantMessage { content } => Ok(OpenAiMessage::new(
+            OpenAiRole::Assistant,
+            assistant_context_data(content, assistant_message_format)?,
+        )),
         PromptItem::CharacterActivated { snapshot } => Ok(OpenAiMessage::new(
-            harness_role,
+            OpenAiRole::User,
             character_context_data(snapshot)?,
         )),
         PromptItem::UserProfileUpdated { snapshot } => Ok(OpenAiMessage::new(
-            harness_role,
+            OpenAiRole::User,
             user_profile_context_data(snapshot.as_ref())?,
         )),
-        PromptItem::RetrievedContext { .. }
+        PromptItem::AvailableVisualStates { .. }
+        | PromptItem::RetrievedContext { .. }
         | PromptItem::CapabilityStatus { .. }
         | PromptItem::CompactionSummary { .. }
         | PromptItem::ExtractionBatch { .. } => {
             Ok(OpenAiMessage::new(OpenAiRole::User, context_data(item)?))
         }
     }
+}
+
+fn assistant_context_data(
+    content: &str,
+    format: AssistantMessageFormat,
+) -> Result<String, FairyError> {
+    if format == AssistantMessageFormat::PlainText {
+        return Ok(content.to_owned());
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ReplyChain<'a> {
+        visual_state: &'static str,
+        text: &'a str,
+    }
+
+    #[derive(Serialize)]
+    struct ReplyChains<'a> {
+        chains: Vec<ReplyChain<'a>>,
+    }
+
+    serde_json::to_string(&ReplyChains {
+        chains: vec![ReplyChain {
+            visual_state: "idle",
+            text: content,
+        }],
+    })
+    .map_err(|_| invalid_model_request("无法序列化助手历史回复"))
 }
 
 fn character_context_data(
@@ -164,6 +200,8 @@ fn character_context_data(
         revision: fairy_domain::Revision,
         name: &'a str,
         description: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dialogue_style: Option<&'a str>,
     }
 
     serde_json::to_string(&CharacterContext {
@@ -171,6 +209,7 @@ fn character_context_data(
         revision: snapshot.revision(),
         name: &snapshot.identity().name,
         description: &snapshot.identity().description,
+        dialogue_style: snapshot.identity().dialogue_style.as_deref(),
     })
     .map_err(|_| invalid_model_request("无法序列化角色上下文"))
 }
@@ -252,29 +291,33 @@ mod http_error_tests {
     use super::*;
 
     #[test]
-    fn character_context_exposes_only_the_user_brief() {
+    fn character_context_is_user_data_and_exposes_only_the_user_brief() {
         let snapshot = CharacterCompiler
             .compile(
                 CharacterId::new(),
                 Revision::INITIAL,
                 CharacterBriefInput {
                     name: "亚托莉".to_owned(),
-                    description: "有点骄傲，说话简短，但会认真听人说话。".to_owned(),
+                    description: "有点骄傲，说话简短；口癖「我是高性能的嘛！」。".to_owned(),
+                    dialogue_style: Some("日常短句，少说设定；先接住用户当下的话。".to_owned()),
                 },
             )
             .expect("compile character");
 
         let message = map_prompt_item(
             &PromptItem::CharacterActivated { snapshot },
-            OpenAiRole::Developer,
+            AssistantMessageFormat::PlainText,
         )
         .expect("map character context");
         let value = serde_json::to_value(message).expect("serialize mapped message");
         let content = value["content"].as_str().expect("character content");
 
-        assert_eq!(value["role"], "developer");
+        assert_eq!(value["role"], "user");
         assert!(content.contains("亚托莉"));
         assert!(content.contains("有点骄傲"));
+        assert!(content.contains("我是高性能的嘛"));
+        assert!(content.contains("dialogueStyle"));
+        assert!(content.contains("日常短句"));
         for forbidden in [
             "attention_biases",
             "attentionBiases",
@@ -286,10 +329,39 @@ mod http_error_tests {
             "emotionalTendencies",
             "hard_boundaries",
             "hardBoundaries",
+            "usageGuidance",
+            "usage_guidance",
             "fingerprint",
         ] {
             assert!(!content.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn character_context_omits_absent_dialogue_style() {
+        let snapshot = CharacterCompiler
+            .compile(
+                CharacterId::new(),
+                Revision::INITIAL,
+                CharacterBriefInput {
+                    name: "亚托莉".to_owned(),
+                    description: "有点骄傲，说话简短。".to_owned(),
+                    dialogue_style: None,
+                },
+            )
+            .expect("compile character without dialogue style");
+
+        let message = map_prompt_item(
+            &PromptItem::CharacterActivated { snapshot },
+            AssistantMessageFormat::PlainText,
+        )
+        .expect("map character context");
+        let value = serde_json::to_value(message).expect("serialize mapped message");
+        let content = value["content"].as_str().expect("character content");
+
+        assert_eq!(value["role"], "user");
+        assert!(content.contains("description"));
+        assert!(!content.contains("dialogueStyle"));
     }
 
     #[test]

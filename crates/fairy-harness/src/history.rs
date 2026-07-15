@@ -307,6 +307,7 @@ mod tests {
                 CharacterBriefInput {
                     name: "亚托莉".to_owned(),
                     description: description.to_owned(),
+                    dialogue_style: None,
                 },
             )
             .expect("compile character")
@@ -413,6 +414,7 @@ mod tests {
                 CharacterBriefInput {
                     name: "亚托莉".to_owned(),
                     description: "先倾听，再轻轻询问。".to_owned(),
+                    dialogue_style: None,
                 },
             )
             .expect("compile updated role");

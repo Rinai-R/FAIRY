@@ -1,6 +1,6 @@
 .fairy-companion {
-  --fairy-pet-width: 222px;
-  --fairy-pet-height: 356px;
+  --fairy-pet-width: 148px;
+  --fairy-pet-height: 232px;
   --fairy-chat-width: 326px;
   --fairy-chat-height: 350px;
   position: relative;
@@ -15,8 +15,8 @@
 
 .fairy-pet {
   position: absolute;
-  right: 18px;
-  bottom: 14px;
+  right: 14px;
+  bottom: 10px;
   width: var(--fairy-pet-width);
   height: var(--fairy-pet-height);
 }
@@ -25,26 +25,29 @@
   position: absolute;
   inset: 0;
   width: var(--fairy-pet-width);
-  height: var(--fairy-pet-height);
+  height: 192px;
   padding: 0;
   overflow: visible;
   border: 0;
   background: transparent;
   cursor: grab;
-  filter: drop-shadow(0 15px 11px rgb(43 80 99 / 18%));
   transform-origin: 50% 90%;
+  display: grid;
+  place-items: center;
 }
 
 .fairy-pet__character:active {
   cursor: grabbing;
 }
 
-.fairy-pet__character img {
-  width: auto;
-  max-width: none;
-  height: 100%;
-  margin-left: -34px;
-  object-fit: fill;
+.fairy-pet__pixel-motion {
+  display: grid;
+  place-items: center;
+  will-change: transform;
+}
+
+.fairy-pet__pixel-motion canvas {
+  display: block;
   pointer-events: none;
   user-select: none;
   -webkit-user-drag: none;
@@ -53,7 +56,7 @@
 .fairy-chat-trigger.rt-Button {
   position: absolute;
   left: 0;
-  bottom: 17px;
+  bottom: 0;
   z-index: var(--fairy-z-popover);
   min-width: 0;
   min-height: 38px;

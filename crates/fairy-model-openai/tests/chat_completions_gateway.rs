@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use fairy_domain::{
-    AuthMode, CachedTokenObservation, CompiledPromptRequest, ErrorCode, FairyError,
-    ModelConnectionCompiler, ModelConnectionId, ModelConnectionInput, ModelProtocol,
-    ModelRequestShape, ModelStreamEvent, PromptItem, PromptLane, ReasoningMode,
+    AuthMode, CachedTokenObservation, CompiledPromptRequest, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
+    ErrorCode, FairyError, ModelConnectionCompiler, ModelConnectionId, ModelConnectionInput,
+    ModelProtocol, ModelRequestShape, ModelStreamEvent, PromptItem, PromptLane, ReasoningMode,
 };
 use fairy_harness::{ModelEventSink, ModelGateway};
 use fairy_model_openai::OpenAiChatCompletionsGateway;
@@ -65,6 +65,7 @@ async fn gateway_for(
                 protocol: ModelProtocol::ChatCompletions,
                 endpoint,
                 model: "test-model".to_owned(),
+                context_window_tokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
                 auth_mode: AuthMode::NoAuth,
             },
         )

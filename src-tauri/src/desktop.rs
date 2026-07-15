@@ -11,11 +11,11 @@ use crate::app_error::AppError;
 const COMPANION_WINDOW_LABEL: &str = "companion";
 const CONTROL_PANEL_WINDOW_LABEL: &str = "control-panel";
 #[cfg(test)]
-const IDLE_WIDTH: f64 = 260.0;
+const IDLE_WIDTH: f64 = 176.0;
 #[cfg(test)]
-const IDLE_HEIGHT: f64 = 380.0;
-const CHAT_WIDTH: f64 = 600.0;
-const CHAT_HEIGHT: f64 = 420.0;
+const IDLE_HEIGHT: f64 = 256.0;
+const CHAT_WIDTH: f64 = 520.0;
+const CHAT_HEIGHT: f64 = 380.0;
 const CONTROL_PANEL_WIDTH: f64 = 560.0;
 const CONTROL_PANEL_HEIGHT: f64 = 620.0;
 const TRAY_ID: &str = "fairy-tray";
@@ -1001,6 +1001,20 @@ mod tests {
     }
 
     #[test]
+    fn tauri_csp_allows_local_pixi_image_detection_and_worker_decoding() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("parse Tauri config");
+        let csp = config["app"]["security"]["csp"]
+            .as_str()
+            .expect("Tauri CSP string");
+
+        assert!(csp.contains("connect-src 'self' ipc: data: blob: tauri:"));
+        assert!(csp.contains("img-src 'self' data: blob: asset: http://asset.localhost"));
+        assert!(csp.contains("worker-src 'self' blob:"));
+        assert!(!csp.contains("unsafe-eval"));
+    }
+
+    #[test]
     fn successful_recovery_sequence_restores_pointer_and_visibility() {
         let store = DesktopStateStore::default();
         store
@@ -1035,38 +1049,38 @@ mod tests {
     fn chat_window_expands_left_and_up_when_the_pet_is_near_the_right_edge() {
         let position = chat_window_position(
             PhysicalPosition::new(1500, 600),
-            PhysicalSize::new(260, 380),
-            PhysicalSize::new(600, 420),
+            PhysicalSize::new(176, 256),
+            PhysicalSize::new(520, 380),
             PhysicalRect {
                 position: PhysicalPosition::new(0, 0),
                 size: PhysicalSize::new(1920, 1080),
             },
         );
 
-        assert_eq!(position, PhysicalPosition::new(1160, 560));
+        assert_eq!(position, PhysicalPosition::new(1156, 476));
     }
 
     #[test]
     fn chat_window_expands_right_when_the_pet_is_near_the_left_edge() {
         let position = chat_window_position(
             PhysicalPosition::new(24, 500),
-            PhysicalSize::new(260, 380),
-            PhysicalSize::new(600, 420),
+            PhysicalSize::new(176, 256),
+            PhysicalSize::new(520, 380),
             PhysicalRect {
                 position: PhysicalPosition::new(0, 0),
                 size: PhysicalSize::new(1920, 1080),
             },
         );
 
-        assert_eq!(position, PhysicalPosition::new(24, 460));
+        assert_eq!(position, PhysicalPosition::new(24, 376));
     }
 
     #[test]
     fn chat_window_is_clamped_to_a_monitor_with_a_negative_origin() {
         let position = chat_window_position(
             PhysicalPosition::new(-1200, -20),
-            PhysicalSize::new(260, 380),
-            PhysicalSize::new(600, 420),
+            PhysicalSize::new(176, 256),
+            PhysicalSize::new(520, 380),
             PhysicalRect {
                 position: PhysicalPosition::new(-1440, 0),
                 size: PhysicalSize::new(1440, 900),
@@ -1080,7 +1094,7 @@ mod tests {
     fn replacement_panel_keeps_the_pet_bottom_right_anchor() {
         let position = replacement_window_position(
             PhysicalPosition::new(1500, 600),
-            PhysicalSize::new(260, 380),
+            PhysicalSize::new(176, 256),
             PhysicalSize::new(560, 620),
             PhysicalRect {
                 position: PhysicalPosition::new(0, 0),
@@ -1088,14 +1102,14 @@ mod tests {
             },
         );
 
-        assert_eq!(position, PhysicalPosition::new(1200, 360));
+        assert_eq!(position, PhysicalPosition::new(1116, 236));
     }
 
     #[test]
     fn replacement_panel_is_clamped_on_a_negative_origin_monitor() {
         let position = replacement_window_position(
             PhysicalPosition::new(-1380, 420),
-            PhysicalSize::new(260, 380),
+            PhysicalSize::new(176, 256),
             PhysicalSize::new(560, 620),
             PhysicalRect {
                 position: PhysicalPosition::new(-1440, 0),
@@ -1103,7 +1117,7 @@ mod tests {
             },
         );
 
-        assert_eq!(position, PhysicalPosition::new(-1440, 180));
+        assert_eq!(position, PhysicalPosition::new(-1440, 56));
     }
 
     #[test]
@@ -1148,7 +1162,7 @@ mod tests {
         let settings = store
             .mark_control_panel_visible(
                 PhysicalPosition::new(100, 200),
-                PhysicalSize::new(260, 380),
+                PhysicalSize::new(176, 256),
             )
             .expect("settings should become visible");
         assert!(!settings.visible);

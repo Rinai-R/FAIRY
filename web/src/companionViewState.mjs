@@ -11,7 +11,7 @@ export function isCompanionChatViewportReady(width) {
   if (typeof width !== "number" || !Number.isFinite(width) || width < 0) {
     throw new TypeError("companion viewport width is invalid");
   }
-  return width >= 590;
+  return width >= 510;
 }
 
 export function trackControlPanelReturn(latched, phase, visible) {

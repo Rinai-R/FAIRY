@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod character;
+pub mod character_visual;
 pub mod conversation;
 pub mod error;
 pub mod event;
@@ -17,9 +18,13 @@ pub use character::{
     EmotionalTendency, HardBoundary, RelationshipStance, ResponseDrive, SpeechStyle,
     SpeechStyleFallback, Worldview,
 };
+pub use character_visual::{
+    CharacterVisualCompiler, FrameAnchor, FrameSize, VerifiedVisualPack, VisualPackId,
+    VisualRenderer, VisualStateId, VisualStateImage,
+};
 pub use conversation::{
     ConversationBootstrap, ConversationMessageRecord, ConversationMessageRole, ConversationRecord,
-    PersistedTurnRecord, PromptWindowRecord, TurnLifecycle, TurnState,
+    PersistedTurnRecord, PromptWindowRecord, TurnCompletion, TurnLifecycle, TurnState,
 };
 pub use error::{ErrorCode, FairyError};
 pub use event::{HarnessEvent, HarnessEventPayload};
@@ -37,12 +42,13 @@ pub use intelligence::{
     RetrievedKnowledge, RetrievedPersonalMemory,
 };
 pub use model::{
-    AuthMode, CachedTokenObservation, GatewayCapabilities, LaneModelUsage, ModelCompletion,
-    ModelConnectionCompiler, ModelConnectionConfig, ModelConnectionInput, ModelProtocol,
-    ModelStreamEvent, ModelTurnOutput, ModelUsage,
+    AuthMode, CachedTokenObservation, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, GatewayCapabilities,
+    LaneModelUsage, ModelCompletion, ModelConnectionCompiler, ModelConnectionConfig,
+    ModelConnectionInput, ModelProtocol, ModelStreamEvent, ModelTurnOutput, ModelUsage,
 };
 pub use prompt::{
     AssistantSource, CapabilityState, CompanionCapability, CompiledPromptRequest, CompiledReply,
-    ModelRequestShape, PromptItem, PromptLane, ReasoningMode, ResponseText, SpeechText,
+    CompiledReplyChain, ModelRequestShape, PromptItem, PromptLane, ReasoningMode, ResponseText,
+    SpeechText, VisualStatePromptEntry,
 };
 pub use user_profile::{UserProfileCompiler, UserProfileInput, UserProfileSnapshot};

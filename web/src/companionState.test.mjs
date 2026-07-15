@@ -15,6 +15,8 @@ import {
   parsePersonalMemoryCatalog,
   parseTurnOutcome,
   reduceCompanionState,
+  parseVisualPack,
+  parseVisualPackCatalog,
 } from "./companionState.mjs";
 
 const CONVERSATION_ID = "11111111-1111-4111-8111-111111111111";
@@ -64,6 +66,36 @@ function bootstrap(messages = []) {
   };
 }
 
+function visualPack(overrides = {}) {
+  return {
+    schemaVersion: 2,
+    packId: "fairy.atri",
+    displayName: "亚托莉",
+    renderer: "state_images",
+    frame: { width: 128, height: 192 },
+    scale: 1,
+    anchor: { x: 64, y: 190 },
+    states: [
+      {
+        id: "idle",
+        description: "安静站立，适合普通等待。",
+        imagePath: "/characters/atri/idle.png",
+      },
+      {
+        id: "happy",
+        description: "开心微笑，适合轻松回应。",
+        imagePath: "/characters/atri/happy.png",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+
+function assignedAppearance(pack = visualPack()) {
+  return { status: "assigned", bindingRevision: 1, visual: pack };
+}
+
 function stateWithSubmission(text = "今天有点累") {
   const session = reduceCompanionState(createCompanionState(), {
     type: "session_created",
@@ -100,6 +132,14 @@ function completedPayload(text = "那就先歇一会儿，我陪着你。") {
     characterRevision: 3,
     userProfileRevision: 2,
     usage: USAGE,
+    visualState: "idle",
+    chains: [
+      {
+        text,
+        speechText: text,
+        visualState: "idle",
+      },
+    ],
   };
 }
 
@@ -167,6 +207,60 @@ test("normal stream produces one completed transcript and matching speech reques
   );
   assert.equal(state.speechRequest.text, state.terminalTurn.text);
   assert.deepEqual(state.usage, USAGE);
+});
+
+test("reply chain events append draft and carry segment visual states", () => {
+  let state = advanceToResponding();
+  state = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(4, "responding", {
+      type: "reply_chain",
+      index: 0,
+      delta: "嗯，我懂。",
+      text: "嗯，我懂。",
+      speechText: "嗯，我懂。",
+      visualState: "thinking",
+    }),
+  });
+  state = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(5, "responding", {
+      type: "reply_chain",
+      index: 1,
+      delta: "\n先这样改。",
+      text: "先这样改。",
+      speechText: "先这样改。",
+      visualState: "happy",
+    }),
+  });
+
+  assert.equal(state.responseDraft, "嗯，我懂。\n先这样改。");
+
+  state = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(6, "completed", {
+      ...completedPayload("嗯，我懂。\n先这样改。"),
+      speechText: "嗯，我懂。",
+      visualState: "happy",
+      chains: [
+        {
+          text: "嗯，我懂。",
+          speechText: "嗯，我懂。",
+          visualState: "thinking",
+        },
+        {
+          text: "先这样改。",
+          speechText: "先这样改。",
+          visualState: "happy",
+        },
+      ],
+    }),
+  });
+
+  assert.equal(state.responseDraft, "");
+  assert.equal(state.transcript[1].text, "嗯，我懂。\n先这样改。");
+  assert.equal(state.transcript[1].chains[1].visualState, "happy");
+  assert.equal(state.terminalTurn.chains[0].visualState, "thinking");
 });
 
 test("out-of-order and invalid state events are rejected", () => {
@@ -322,6 +416,14 @@ test("event and outcome parsers reject missing fields and preserve zero cache hi
     userProfileRevision: null,
     usage: parsed.payload.usage,
     speechRequested: false,
+    visualState: "idle",
+    chains: [
+      {
+        text: "好",
+        speechText: "好。",
+        visualState: "idle",
+      },
+    ],
   });
 
   assert.equal(
@@ -472,6 +574,7 @@ test("model status parser accepts public fields only and errors stay structured"
       protocol: "responses",
       endpoint: "https://api.openai.com/v1",
       model: "gpt-5.4",
+      contextWindowTokens: 128000,
       authMode: "bearer_key",
     },
     error: null,
@@ -479,6 +582,7 @@ test("model status parser accepts public fields only and errors stay structured"
 
   assert.equal(status.config.model, "gpt-5.4");
   assert.equal(status.config.protocol, "responses");
+  assert.equal(status.config.contextWindowTokens, 128000);
   assert.equal("apiKey" in status.config, false);
   assert.equal("promptCacheKey" in status.config, false);
   assert.throws(
@@ -490,12 +594,29 @@ test("model status parser accepts public fields only and errors stay structured"
           protocol: "responses",
           endpoint: "https://api.openai.com/v1",
           model: "gpt-5.4",
+          contextWindowTokens: 128000,
           authMode: "bearer_key",
           promptCacheKey: true,
         },
         error: null,
       }),
     /invalid field set/,
+  );
+  assert.throws(
+    () =>
+      parseModelConnectionStatus({
+        configured: true,
+        ready: true,
+        config: {
+          protocol: "responses",
+          endpoint: "https://api.openai.com/v1",
+          model: "gpt-5.4",
+          contextWindowTokens: 2048,
+          authMode: "bearer_key",
+        },
+        error: null,
+      }),
+    /contextWindowTokens/,
   );
   assert.deepEqual(
     normalizeCompanionError({
@@ -521,6 +642,8 @@ test("character catalog exposes the active revision and session can be cleared",
     revision: 2,
     name: "亚托莉",
     description: "来自海边的仿生少女。",
+    dialogueStyle: "短句，先接住用户当下的话。",
+    appearance: assignedAppearance(),
   };
   const catalog = parseCharacterCatalog({
     characters: [character],
@@ -531,6 +654,7 @@ test("character catalog exposes the active revision and session can be cleared",
   state = reduceCompanionState(state, { type: "session_cleared" });
 
   assert.deepEqual(catalog.active, character);
+  assert.equal(catalog.active.dialogueStyle, "短句，先接住用户当下的话。");
   assert.equal(state.conversationId, null);
   assert.equal(state.transcript.length, 0);
 });
@@ -551,13 +675,102 @@ test("conversation bootstrap restores ordered transcript and character activatio
     { role: "assistant", text: "之前的回复" },
   ]);
   const activation = parseCharacterActivation({
-    character: { characterId: CHARACTER_ID, revision: 1, name: "亚托莉", description: "自然回应用户。" },
+    character: {
+      characterId: CHARACTER_ID,
+      revision: 1,
+      name: "亚托莉",
+      description: "自然回应用户。",
+      dialogueStyle: null,
+      appearance: assignedAppearance(),
+    },
     session: restored,
   });
   assert.equal(activation.session.conversation.id, CONVERSATION_ID);
   assert.throws(
     () => parseConversationBootstrap({ ...restored, messages: [...restored.messages].reverse() }),
     /strictly ordered/,
+  );
+});
+
+test("visual pack parser accepts exact local state image contract", () => {
+  const parsed = parseVisualPack(visualPack());
+
+  assert.equal(parsed.packId, "fairy.atri");
+  assert.equal(parsed.renderer, "state_images");
+  assert.equal(parsed.states[0].id, "idle");
+  assert.equal(parsed.states[1].imagePath, "/characters/atri/happy.png");
+  assert.equal(Object.isFrozen(parsed.states), true);
+  assert.deepEqual(parseVisualPackCatalog({ visualPacks: [visualPack()] }), {
+    visualPacks: [parsed],
+  });
+});
+
+test("visual pack parser rejects fallback-shaped and executable input", () => {
+  assert.throws(
+    () => parseVisualPack({ ...visualPack(), renderer: "static_png" }),
+    /unsupported/,
+  );
+  assert.throws(
+    () => parseVisualPack({
+      ...visualPack(),
+      states: [{ ...visualPack().states[0], imagePath: "https://example.com/idle.png" }],
+    }),
+    /local character PNG path/,
+  );
+  assert.throws(
+    () => parseVisualPack({ ...visualPack(), script: "role.js" }),
+    /invalid field set/,
+  );
+  assert.throws(
+    () => parseVisualPack({
+      ...visualPack(),
+      states: [{ ...visualPack().states[1] }],
+    }),
+    /idle state/,
+  );
+  assert.throws(
+    () => parseVisualPack({
+      ...visualPack(),
+      states: [visualPack().states[0], { ...visualPack().states[1], id: "idle" }],
+    }),
+    /unique/,
+  );
+  assert.throws(
+    () => parseVisualPackCatalog({ visualPacks: [visualPack(), visualPack()] }),
+    /duplicate/,
+  );
+});
+
+test("character appearance keeps unassigned and unavailable distinct", () => {
+  const base = {
+    characterId: CHARACTER_ID,
+    revision: 1,
+    name: "旧角色",
+    description: "保留原有角色身份。",
+    dialogueStyle: null,
+  };
+  const catalog = parseCharacterCatalog({
+    characters: [
+      { ...base, appearance: { status: "unassigned" } },
+      {
+        ...base,
+        characterId: "99999999-9999-4999-8999-999999999999",
+        appearance: { status: "unavailable" },
+      },
+    ],
+    active: null,
+    diagnostics: [],
+  });
+
+  assert.equal(catalog.characters[0].appearance.status, "unassigned");
+  assert.equal(catalog.characters[1].appearance.status, "unavailable");
+  assert.throws(
+    () => parseCharacterCatalog({
+      characters: [{ ...base, appearance: { status: "assigned" } }],
+      active: null,
+      diagnostics: [],
+    }),
+    /invalid field set/,
   );
 });
 

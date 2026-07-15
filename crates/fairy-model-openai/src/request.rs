@@ -5,8 +5,8 @@ use secrecy::SecretString;
 use serde::Serialize;
 
 use crate::shared::{
-    OpenAiMessage, OpenAiRole, authenticated_post, invalid_model_request, map_prompt_items,
-    protocol_url, validate_request,
+    AssistantMessageFormat, OpenAiMessage, authenticated_post, invalid_model_request,
+    map_prompt_items, protocol_url, validate_request,
 };
 
 #[derive(Serialize)]
@@ -33,8 +33,11 @@ enum TextFormat {
     Text,
 }
 
-fn map_responses_input(items: &[PromptItem]) -> Result<Vec<OpenAiMessage>, FairyError> {
-    map_prompt_items(items, OpenAiRole::Developer)
+fn map_responses_input(
+    items: &[PromptItem],
+    assistant_message_format: AssistantMessageFormat,
+) -> Result<Vec<OpenAiMessage>, FairyError> {
+    map_prompt_items(items, assistant_message_format)
 }
 
 pub fn build_responses_request(
@@ -46,7 +49,12 @@ pub fn build_responses_request(
     validate_request(config, ModelProtocol::Responses, request)?;
 
     let url = protocol_url(config, ModelProtocol::Responses)?;
-    let input = map_responses_input(&request.input)?;
+    let assistant_message_format = if request.shape.lane == fairy_domain::PromptLane::Respond {
+        AssistantMessageFormat::ReplyChainsJson
+    } else {
+        AssistantMessageFormat::PlainText
+    };
+    let input = map_responses_input(&request.input, assistant_message_format)?;
     let text = TextConfiguration {
         format: TextFormat::Text,
     };
@@ -82,9 +90,10 @@ pub fn build_responses_request(
 #[cfg(test)]
 mod tests {
     use fairy_domain::{
-        AuthMode, ErrorCode, GatewayCapabilities, ModelConnectionCompiler, ModelConnectionId,
-        ModelConnectionInput, ModelProtocol, ModelRequestShape, PromptItem, PromptLane,
-        ReasoningMode,
+        AuthMode, CharacterBriefInput, CharacterCompiler, CharacterId,
+        DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, ErrorCode, GatewayCapabilities,
+        ModelConnectionCompiler, ModelConnectionId, ModelConnectionInput, ModelProtocol,
+        ModelRequestShape, PromptItem, PromptLane, ReasoningMode, Revision,
     };
     use reqwest::header::AUTHORIZATION;
     use serde_json::Value;
@@ -102,6 +111,7 @@ mod tests {
                         AuthMode::NoAuth => "http://127.0.0.1:11434/v1/".to_owned(),
                     },
                     model: "model-a".to_owned(),
+                    context_window_tokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
                     auth_mode,
                 },
             )
@@ -134,6 +144,25 @@ mod tests {
         .expect("parse request body")
     }
 
+    fn character_context_request() -> CompiledPromptRequest {
+        let snapshot = CharacterCompiler
+            .compile(
+                CharacterId::new(),
+                Revision::INITIAL,
+                CharacterBriefInput {
+                    name: "亚托莉".to_owned(),
+                    description: "有点骄傲，说话简短；口癖「我是高性能的嘛！」。".to_owned(),
+                    dialogue_style: None,
+                },
+            )
+            .expect("compile character");
+        let mut request = compiled();
+        request
+            .input
+            .insert(0, PromptItem::CharacterActivated { snapshot });
+        request
+    }
+
     #[test]
     fn text_request_has_stable_full_http_shape_and_ordered_input() {
         let client = reqwest::Client::new();
@@ -164,6 +193,30 @@ mod tests {
         assert_eq!(body["input"].as_array().expect("input array").len(), 1);
         assert_eq!(body["input"][0]["role"], "user");
         assert_eq!(body["input"][0]["content"], "你好");
+    }
+
+    #[test]
+    fn responses_keeps_character_context_as_user_data() {
+        let request = build_responses_request(
+            &reqwest::Client::new(),
+            &config(AuthMode::BearerKey),
+            Some(&SecretString::from("sk-exact".to_owned())),
+            &character_context_request(),
+        )
+        .expect("build Responses request");
+        let body = body_json(&request);
+        let input = body["input"].as_array().expect("input array");
+
+        assert_eq!(body["instructions"], "stable instructions");
+        assert_eq!(input[0]["role"], "user");
+        assert!(
+            input[0]["content"]
+                .as_str()
+                .expect("character content")
+                .contains("我是高性能的嘛")
+        );
+        assert_eq!(input[1]["role"], "user");
+        assert_eq!(input[1]["content"], "你好");
     }
 
     #[test]

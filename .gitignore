@@ -23,5 +23,6 @@
 /src-tauri/target/
 /src-tauri/gen/
 /pnpm-debug.log*
+/.env.persona.local
 /openspec
 AGENTS.md

@@ -10,10 +10,11 @@ use fairy_domain::{
     HarnessEvent, HarnessEventPayload, MessageId, ModelCompletion, ModelStreamEvent,
     ModelTurnOutput, ModelUsage, PersonalMemoryId, PersonalMemoryKind, PromptItem, PromptLane,
     PromptWindowRecord, RetrievalContext, RetrievedPersonalMemory, Revision, TurnId, TurnState,
-    UserProfileCompiler, UserProfileInput, UserProfileSnapshot, WindowRevision,
+    UserProfileCompiler, UserProfileInput, UserProfileSnapshot, VisualStatePromptEntry,
+    WindowRevision,
 };
 use fairy_harness::{
-    CompanionPersistence, HarnessEventSink, HarnessRuntime, ModelEventSink, ModelGateway,
+    CompactionPolicy, CompanionPersistence, HarnessEventSink, HarnessRuntime, ModelEventSink, ModelGateway,
     PersistenceBinding,
 };
 use tokio::sync::Notify;
@@ -75,6 +76,8 @@ impl ModelGateway for FakeGateway {
             .expect("fake behavior for every request");
         match behavior {
             FakeBehavior::Complete { output, deltas } => {
+                let (output, deltas) =
+                    normalize_response_output(request.shape.lane, output, deltas);
                 for delta in deltas {
                     sink.send(ModelStreamEvent::TextDelta { delta })?;
                 }
@@ -85,6 +88,8 @@ impl ModelGateway for FakeGateway {
                 deltas,
                 input_tokens,
             } => {
+                let (output, deltas) =
+                    normalize_response_output(request.shape.lane, output, deltas);
                 for delta in deltas {
                     sink.send(ModelStreamEvent::TextDelta { delta })?;
                 }
@@ -93,6 +98,7 @@ impl ModelGateway for FakeGateway {
                 Ok(completion)
             }
             FakeBehavior::WaitAfterTextDelta { delta } => {
+                let delta = normalize_response_delta(request.shape.lane, delta);
                 sink.send(ModelStreamEvent::TextDelta { delta })?;
                 self.first_text_delta.notify_waiters();
                 cancellation.cancelled().await;
@@ -103,6 +109,7 @@ impl ModelGateway for FakeGateway {
                 ))
             }
             FakeBehavior::FailAfterTextDelta { delta } => {
+                let delta = normalize_response_delta(request.shape.lane, delta);
                 sink.send(ModelStreamEvent::TextDelta { delta })?;
                 Err(FairyError::new(
                     ErrorCode::ModelStreamFailed,
@@ -111,6 +118,36 @@ impl ModelGateway for FakeGateway {
                 ))
             }
         }
+    }
+}
+
+fn normalize_response_output(
+    lane: PromptLane,
+    output: String,
+    deltas: Vec<String>,
+) -> (String, Vec<String>) {
+    let trimmed = output.trim_start();
+    if lane != PromptLane::Respond
+        || trimmed.starts_with("VISUAL_STATE:")
+        || trimmed.starts_with('{')
+    {
+        return (output, deltas);
+    }
+    let mut normalized_deltas = Vec::with_capacity(deltas.len() + 1);
+    normalized_deltas.push("VISUAL_STATE: idle\n".to_owned());
+    normalized_deltas.extend(deltas);
+    (format!("VISUAL_STATE: idle\n{output}"), normalized_deltas)
+}
+
+fn normalize_response_delta(lane: PromptLane, delta: String) -> String {
+    let trimmed = delta.trim_start();
+    if lane == PromptLane::Respond
+        && !trimmed.starts_with("VISUAL_STATE:")
+        && !trimmed.starts_with('{')
+    {
+        format!("VISUAL_STATE: idle\n{delta}")
+    } else {
+        delta
     }
 }
 
@@ -608,6 +645,7 @@ fn character_for(
             CharacterBriefInput {
                 name: "亚托莉".to_owned(),
                 description: description.to_owned(),
+                dialogue_style: None,
             },
         )
         .expect("compile test character")
@@ -633,6 +671,13 @@ fn profile_without_name(revision: Revision) -> UserProfileSnapshot {
             },
         )
         .expect("compile cleared test profile")
+}
+
+fn visual_state(id: &str, description: &str) -> VisualStatePromptEntry {
+    VisualStatePromptEntry {
+        id: id.parse().expect("visual state id"),
+        description: description.to_owned(),
+    }
 }
 
 fn response_behavior(output: &str, deltas: &[&str]) -> FakeBehavior {
@@ -747,7 +792,48 @@ async fn persistent_character_session_restores_after_runtime_restart_and_isolate
 }
 
 #[tokio::test]
-async fn completed_turn_at_token_threshold_persists_compaction_before_memory_window_changes() {
+async fn completed_turn_below_derived_threshold_does_not_compact_at_old_32k() {
+    let persistence = Arc::new(ReopenablePersistence::default());
+    let role = character(Revision::INITIAL, "自然回应。");
+    let character_id = role.character_id();
+    let gateway = Arc::new(FakeGateway::new(vec![
+        FakeBehavior::CompleteWithInputTokens {
+            output: "这一轮超过旧阈值。".to_owned(),
+            deltas: vec!["这一轮超过旧阈值。".to_owned()],
+            input_tokens: 32_000,
+        },
+        response_behavior("不应该触发的摘要", &["不应该触发的摘要"]),
+    ]));
+    let runtime = HarnessRuntime::new("test-model".to_owned(), gateway.clone()).expect("create runtime");
+    runtime.replace_persistence_binding(PersistenceBinding::Available(persistence.clone()));
+    let bootstrap = runtime
+        .open_or_create_character_session(role, None)
+        .await
+        .expect("open session");
+
+    runtime
+        .submit_turn(
+            bootstrap.conversation.id,
+            "超过旧 32k 阈值".to_owned(),
+            false,
+            &mut RecordingSink::default(),
+        )
+        .await
+        .expect("complete turn below derived threshold");
+    wait_for_background(&runtime).await;
+
+    assert_eq!(
+        persistence
+            .bootstrap_for(character_id)
+            .prompt_window
+            .revision,
+        WindowRevision::INITIAL
+    );
+    assert_eq!(gateway.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn completed_turn_at_derived_token_threshold_persists_compaction_before_memory_window_changes() {
     let persistence = Arc::new(ReopenablePersistence::default());
     let role = character(Revision::INITIAL, "自然回应。");
     let character_id = role.character_id();
@@ -919,6 +1005,7 @@ async fn assistant_persistence_failure_emits_no_text_or_completed_success() {
     assert!(sink.events().iter().all(|event| !matches!(
         event.payload,
         HarnessEventPayload::TextDelta { .. }
+            | HarnessEventPayload::ReplyChain { .. }
             | HarnessEventPayload::Completed { .. }
             | HarnessEventPayload::SpeechRequested { .. }
     )));
@@ -1044,11 +1131,13 @@ async fn normal_turn_has_ordered_states_deltas_usage_and_single_terminal() {
     let deltas = events
         .iter()
         .filter_map(|event| match &event.payload {
-            HarnessEventPayload::TextDelta { delta } => Some(delta.as_str()),
+            HarnessEventPayload::ReplyChain { delta, .. } => Some(delta.as_str()),
             _ => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(deltas, vec!["你好呀。"]);
+    assert_eq!(outcome.chains.len(), 1);
+    assert_eq!(outcome.chains[0].text.as_str(), "你好呀。");
     assert_eq!(
         events
             .iter()
@@ -1063,8 +1152,14 @@ async fn normal_turn_has_ordered_states_deltas_usage_and_single_terminal() {
                 text,
                 character_revision,
                 user_profile_revision,
+                visual_state,
                 ..
-            } => Some((text, character_revision, user_profile_revision)),
+            } => Some((
+                text,
+                character_revision,
+                user_profile_revision,
+                visual_state,
+            )),
             _ => None,
         })
         .expect("completed payload");
@@ -1083,6 +1178,8 @@ async fn normal_turn_has_ordered_states_deltas_usage_and_single_terminal() {
     assert_eq!(completed.1, speech.1);
     assert_eq!(completed.2, speech.2);
     assert_eq!(completed.0.as_str(), outcome.response_text.as_str());
+    assert_eq!(completed.3.as_str(), "idle");
+    assert_eq!(outcome.visual_state.as_str(), "idle");
     assert!(outcome.speech_requested);
     assert_eq!(
         runtime
@@ -1099,12 +1196,20 @@ async fn normal_turn_has_ordered_states_deltas_usage_and_single_terminal() {
             .collect::<Vec<_>>(),
         vec![PromptLane::Respond]
     );
+    let request = &gateway.requests()[0];
     assert!(
-        gateway.requests()[0]
+        request
             .shape
             .instructions
-            .contains("期待怎样继续这段对话")
+            .contains("available_visual_states")
     );
+    assert!(request.input.iter().any(|item| {
+        matches!(
+            item,
+            PromptItem::AvailableVisualStates { states }
+                if states.len() == 1 && states[0].id.as_str() == "idle"
+        )
+    }));
     assert_eq!(
         runtime
             .cancel_turn(outcome.turn_id)
@@ -1112,6 +1217,103 @@ async fn normal_turn_has_ordered_states_deltas_usage_and_single_terminal() {
             .code,
         ErrorCode::TurnNotActive
     );
+}
+
+#[tokio::test]
+async fn respond_turn_uses_available_visual_states_and_strips_header() {
+    let gateway = Arc::new(FakeGateway::new(vec![response_behavior(
+        "VISUAL_STATE: happy\n好呀，我也觉得这个方向不错。",
+        &["VISUAL_STATE: happy\n好呀，我也觉得这个方向不错。"],
+    )]));
+    let (runtime, conversation_id, _) = setup(gateway.clone());
+    let mut sink = RecordingSink::default();
+
+    let outcome = runtime
+        .submit_turn_with_visual_states(
+            conversation_id,
+            "这样可以吗？".to_owned(),
+            false,
+            vec![
+                visual_state("idle", "安静待机，适合普通回复。"),
+                visual_state("happy", "开心回应，适合认可和鼓励。"),
+                visual_state("sad", "低落回应，适合共情和安慰。"),
+            ],
+            &mut sink,
+        )
+        .await
+        .expect("complete with visual state");
+    let request = &gateway.requests()[0];
+
+    assert_eq!(outcome.visual_state.as_str(), "happy");
+    assert_eq!(
+        outcome.response_text.as_str(),
+        "好呀，我也觉得这个方向不错。"
+    );
+    assert!(request.input.iter().any(|item| {
+        matches!(
+            item,
+            PromptItem::AvailableVisualStates { states }
+                if states.iter().any(|state| state.id.as_str() == "happy")
+        )
+    }));
+    let events = sink.events();
+    let completed_visual = events.iter().find_map(|event| match &event.payload {
+        HarnessEventPayload::Completed { visual_state, .. } => Some(visual_state.as_str()),
+        _ => None,
+    });
+    assert_eq!(completed_visual, Some("happy"));
+}
+
+#[tokio::test]
+async fn respond_turn_emits_reply_chain_events_for_json_chains() {
+    let output = r#"{"chains":[{"visualState":"thinking","text":"嗯，我懂。"},{"visualState":"happy","text":"先这样改。"}]}"#;
+    let gateway = Arc::new(FakeGateway::new(vec![response_behavior(output, &[output])]));
+    let (runtime, conversation_id, _) = setup(gateway);
+    let mut sink = RecordingSink::default();
+
+    let outcome = runtime
+        .submit_turn_with_visual_states(
+            conversation_id,
+            "按这个方向来。".to_owned(),
+            false,
+            vec![
+                visual_state("idle", "安静待机，适合普通回复。"),
+                visual_state("thinking", "思考回应，适合理解和确认。"),
+                visual_state("happy", "开心回应，适合认可和鼓励。"),
+            ],
+            &mut sink,
+        )
+        .await
+        .expect("complete json chains");
+
+    assert_eq!(outcome.response_text.as_str(), "嗯，我懂。\n先这样改。");
+    assert_eq!(outcome.speech_text.as_str(), "嗯，我懂。");
+    assert_eq!(outcome.visual_state.as_str(), "happy");
+    assert_eq!(outcome.chains.len(), 2);
+
+    let events = sink.events();
+    let chain_events = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            HarnessEventPayload::ReplyChain {
+                index,
+                delta,
+                visual_state,
+                ..
+            } => Some((*index, delta.as_str(), visual_state.as_str())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        chain_events,
+        vec![(0, "嗯，我懂。", "thinking"), (1, "\n先这样改。", "happy")]
+    );
+
+    let completed_chains = events.iter().find_map(|event| match &event.payload {
+        HarnessEventPayload::Completed { chains, .. } => Some(chains),
+        _ => None,
+    });
+    assert_eq!(completed_chains.expect("completed chains").len(), 2);
 }
 
 #[tokio::test]
@@ -1411,11 +1613,10 @@ async fn stream_failure_after_partial_text_has_failed_terminal_not_completed() {
     let events = sink.events();
 
     assert_eq!(error.code, ErrorCode::ModelStreamFailed);
-    assert!(
-        events
-            .iter()
-            .all(|event| !matches!(event.payload, HarnessEventPayload::TextDelta { .. }))
-    );
+    assert!(events.iter().all(|event| !matches!(
+        event.payload,
+        HarnessEventPayload::TextDelta { .. } | HarnessEventPayload::ReplyChain { .. }
+    )));
     assert_eq!(
         events.last().expect("failed terminal").state,
         TurnState::Failed
@@ -1532,6 +1733,41 @@ async fn retrieval_context_is_ephemeral_before_current_user_and_recent_turns_fee
             .iter()
             .all(|item| !matches!(item, PromptItem::RetrievedContext { .. }))
     );
+}
+
+#[tokio::test]
+async fn retrieval_failure_is_not_model_visible_and_turn_still_completes() {
+    let gateway = Arc::new(FakeGateway::new(vec![response_behavior(
+        "我在，先慢慢说。",
+        &["我在，先慢慢说。"],
+    )]));
+    let intelligence = Arc::new(FakeIntelligence::new(vec![Err(FairyError::new(
+        ErrorCode::StorageIo,
+        "检索临时失败",
+        true,
+    ))]));
+    let (runtime, conversation_id, _) = setup(gateway.clone());
+    runtime.replace_persistence_binding(PersistenceBinding::Available(intelligence.clone()));
+
+    let outcome = runtime
+        .submit_turn(
+            conversation_id,
+            "今天有点乱".to_owned(),
+            false,
+            &mut RecordingSink::default(),
+        )
+        .await
+        .expect("retrieval failure does not block ordinary reply");
+
+    assert_eq!(outcome.response_text.as_str(), "我在，先慢慢说。");
+    let request = &gateway.requests()[0];
+    assert!(request.input.iter().all(|item| {
+        !matches!(
+            item,
+            PromptItem::CapabilityStatus { .. } | PromptItem::RetrievedContext { .. }
+        )
+    }));
+    assert_eq!(intelligence.queries().len(), 1);
 }
 
 #[tokio::test]

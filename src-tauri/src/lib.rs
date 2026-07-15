@@ -7,6 +7,9 @@ pub mod audio;
 pub mod capability;
 pub mod desktop;
 pub mod ipc;
+#[cfg(all(debug_assertions, target_os = "macos"))]
+mod native_snapshot_smoke;
+pub mod visual_registry;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,8 +33,13 @@ pub fn run() {
         .manage(desktop::DesktopStateStore::default())
         .setup(|app| {
             let config_directory = app.path().app_config_dir()?;
-            app.manage(app_state::AppState::initialize(config_directory)?);
+            let state = app_state::AppState::initialize(config_directory)?;
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            native_snapshot_smoke::seed_from_env(&state)?;
+            app.manage(state);
             desktop::setup(app);
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            native_snapshot_smoke::schedule_from_env(app);
             Ok(())
         })
         .on_window_event(desktop::handle_window_event)
@@ -55,6 +63,8 @@ pub fn run() {
             ipc::character::create_character,
             ipc::character::update_character,
             ipc::character::list_characters,
+            ipc::character::list_visual_packs,
+            ipc::character::set_character_appearance,
             ipc::character::activate_character,
             ipc::settings::get_user_profile,
             ipc::settings::set_user_profile,

@@ -1,23 +1,25 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use fairy_domain::{
-    CapabilityState, CharacterSnapshot, CompanionCapability, CompiledReply, ConversationBootstrap,
-    ConversationId, ErrorCode, ExtractionBatchInput, FairyError, HarnessEvent, LaneModelUsage,
+    CharacterSnapshot, CompiledReply, CompiledReplyChain, ConversationBootstrap, ConversationId,
+    ErrorCode, ExtractionBatchInput, FairyError, HarnessEvent, LaneModelUsage,
     MemoryMutationOutput, ModelCompletion, ModelStreamEvent, ModelTurnOutput, PromptItem,
-    PromptLane, TurnId, TurnLifecycle, TurnState, UserProfileSnapshot,
+    PromptLane, TurnCompletion, TurnId, TurnLifecycle, TurnState, UserProfileSnapshot,
+    VisualStatePromptEntry,
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    CompactionCandidate, CompactionResult, ConversationHistory, HarnessEventSink, ModelEventSink,
-    ModelGateway, PersistenceBinding, PromptCompiler, ReplyCompiler, SessionSnapshot, TurnOutcome,
-    install_compaction,
+    CompactionCandidate, CompactionPolicy, CompactionResult, CompactionTrigger,
+    ConversationHistory, HarnessEventSink, ModelEventSink, ModelGateway, PersistenceBinding,
+    PromptCompiler, ReplyCompiler, SessionSnapshot, TurnOutcome, install_compaction,
 };
 
 pub struct HarnessRuntime {
     gateway_binding: RwLock<GatewayBinding>,
+    compaction_policy: RwLock<CompactionPolicy>,
     persistence_binding: RwLock<PersistenceBinding>,
     background_jobs: Arc<AtomicUsize>,
     intelligence_background_error: Arc<Mutex<Option<FairyError>>>,
@@ -50,6 +52,7 @@ struct ActiveTurn {
     gateway: Arc<dyn ModelGateway + Send + Sync>,
     persistence_binding: PersistenceBinding,
     ephemeral_context: Option<PromptItem>,
+    available_visual_states: Vec<VisualStatePromptEntry>,
 }
 
 struct CompactionWork {
@@ -72,9 +75,18 @@ impl HarnessRuntime {
         model: String,
         gateway: Arc<dyn ModelGateway + Send + Sync>,
     ) -> Result<Self, FairyError> {
+        Self::new_with_compaction_policy(model, gateway, CompactionPolicy::default())
+    }
+
+    pub fn new_with_compaction_policy(
+        model: String,
+        gateway: Arc<dyn ModelGateway + Send + Sync>,
+        compaction_policy: CompactionPolicy,
+    ) -> Result<Self, FairyError> {
         validate_runtime_model(&model)?;
         Ok(Self {
             gateway_binding: RwLock::new(GatewayBinding { model, gateway }),
+            compaction_policy: RwLock::new(compaction_policy),
             persistence_binding: RwLock::new(PersistenceBinding::Disabled),
             background_jobs: Arc::new(AtomicUsize::new(0)),
             intelligence_background_error: Arc::new(Mutex::new(None)),
@@ -90,6 +102,18 @@ impl HarnessRuntime {
     ) -> Result<(), FairyError> {
         validate_runtime_model(&model)?;
         *write_lock(&self.gateway_binding) = GatewayBinding { model, gateway };
+        Ok(())
+    }
+
+    pub fn replace_gateway_with_compaction_policy(
+        &self,
+        model: String,
+        gateway: Arc<dyn ModelGateway + Send + Sync>,
+        compaction_policy: CompactionPolicy,
+    ) -> Result<(), FairyError> {
+        validate_runtime_model(&model)?;
+        *write_lock(&self.gateway_binding) = GatewayBinding { model, gateway };
+        *write_lock(&self.compaction_policy) = compaction_policy;
         Ok(())
     }
 
@@ -281,6 +305,24 @@ impl HarnessRuntime {
         speech_enabled: bool,
         events: &mut (dyn HarnessEventSink + Send),
     ) -> Result<TurnOutcome, FairyError> {
+        self.submit_turn_with_visual_states(
+            conversation_id,
+            input,
+            speech_enabled,
+            idle_visual_states(),
+            events,
+        )
+        .await
+    }
+
+    pub async fn submit_turn_with_visual_states(
+        &self,
+        conversation_id: ConversationId,
+        input: String,
+        speech_enabled: bool,
+        available_visual_states: Vec<VisualStatePromptEntry>,
+        events: &mut (dyn HarnessEventSink + Send),
+    ) -> Result<TurnOutcome, FairyError> {
         if input.trim().is_empty() {
             return Err(FairyError::new(
                 ErrorCode::InvalidEventPayload,
@@ -288,11 +330,17 @@ impl HarnessRuntime {
                 false,
             ));
         }
+        validate_available_visual_states(&available_visual_states)?;
         let session = self.session(conversation_id)?;
         let persistence = read_lock(&self.persistence_binding).clone();
         let (character_id, query) = retrieval_query(&session, &input)?;
         let context_item = retrieve_context_item(&persistence, character_id, &query).await;
-        let turn_id = self.prepare_turn(&session, conversation_id, persistence.clone())?;
+        let turn_id = self.prepare_turn(
+            &session,
+            conversation_id,
+            persistence.clone(),
+            available_visual_states,
+        )?;
         if let Err(error) =
             persist_user_turn(&persistence, conversation_id, turn_id, input.clone()).await
         {
@@ -444,6 +492,7 @@ impl HarnessRuntime {
         session: &Arc<Mutex<Session>>,
         conversation_id: ConversationId,
         persistence_binding: PersistenceBinding,
+        available_visual_states: Vec<VisualStatePromptEntry>,
     ) -> Result<TurnId, FairyError> {
         let mut session = lock(session);
         if session.active_turn.is_some() || session.compacting {
@@ -474,6 +523,7 @@ impl HarnessRuntime {
             gateway: binding.gateway,
             persistence_binding,
             ephemeral_context: None,
+            available_visual_states,
         });
         Ok(turn_id)
     }
@@ -545,12 +595,7 @@ impl HarnessRuntime {
             compiled.display_text.as_str().to_owned(),
         )
         .await?;
-        emit_text(
-            session,
-            turn_id,
-            compiled.display_text.as_str().to_owned(),
-            events,
-        )?;
+        emit_reply_chains(session, turn_id, &compiled.chains, events)?;
 
         let (character_revision, user_profile_revision) = {
             let mut session = lock(session);
@@ -587,13 +632,12 @@ impl HarnessRuntime {
 
         self.schedule_background_extraction(persistence_binding, gateway, model, conversation_id)
             .await;
-        if usage.iter().any(|entry| {
-            entry.lane == PromptLane::Respond
-                && entry
-                    .usage
-                    .input_tokens
-                    .is_some_and(|tokens| tokens >= 32_000)
-        }) {
+        let respond_usage = usage
+            .iter()
+            .find(|entry| entry.lane == PromptLane::Respond)
+            .map(|entry| &entry.usage);
+        let compaction_policy = *read_lock(&self.compaction_policy);
+        if compaction_policy.should_compact(CompactionTrigger::AfterCompletedTurn, respond_usage) {
             self.schedule_auto_compaction(conversation_id);
         }
 
@@ -607,6 +651,8 @@ impl HarnessRuntime {
             user_profile_revision,
             usage,
             speech_requested: speech_enabled,
+            visual_state: compiled.visual_state,
+            chains: compiled.chains,
         })
     }
 
@@ -906,20 +952,12 @@ async fn retrieve_context_item(
 ) -> Option<PromptItem> {
     match binding {
         PersistenceBinding::Disabled => None,
-        PersistenceBinding::Unavailable(error) => Some(PromptItem::CapabilityStatus {
-            capability: CompanionCapability::Intelligence,
-            state: CapabilityState::Unavailable,
-            error: Some(error.clone()),
-        }),
+        PersistenceBinding::Unavailable(_) => None,
         PersistenceBinding::Available(intelligence) => {
             match intelligence.retrieve(character_id, input.to_owned()).await {
                 Ok(context) if context.is_empty() => None,
                 Ok(context) => Some(PromptItem::RetrievedContext { context }),
-                Err(error) => Some(PromptItem::CapabilityStatus {
-                    capability: CompanionCapability::Intelligence,
-                    state: CapabilityState::Unavailable,
-                    error: Some(error),
-                }),
+                Err(_) => None,
             }
         }
     }
@@ -1138,21 +1176,28 @@ async fn execute_respond_loop(
     if cancellation.is_cancelled() {
         return Err(turn_interrupted());
     }
-    let (request, window_revision) = {
+    let (request, window_revision, available_visual_states) = {
         let session = lock(session);
         let active = active_turn(&session, turn_id)?;
         let lane = session.history.lane(PromptLane::Respond);
         let mut input = lane.items().to_vec();
+        let mut insertion_index = input.len().checked_sub(1).ok_or_else(|| {
+            FairyError::new(
+                ErrorCode::PromptHistoryInvalid,
+                "当前 turn 缺少用户消息",
+                false,
+            )
+        })?;
         if let Some(context) = active.ephemeral_context.clone() {
-            let insertion_index = input.len().checked_sub(1).ok_or_else(|| {
-                FairyError::new(
-                    ErrorCode::PromptHistoryInvalid,
-                    "当前 turn 缺少用户消息",
-                    false,
-                )
-            })?;
             input.insert(insertion_index, context);
+            insertion_index += 1;
         }
+        input.insert(
+            insertion_index,
+            PromptItem::AvailableVisualStates {
+                states: active.available_visual_states.clone(),
+            },
+        );
         (
             PromptCompiler.compile(
                 PromptLane::Respond,
@@ -1161,6 +1206,7 @@ async fn execute_respond_loop(
                 cache_key(gateway.as_ref(), lane.cache_key()),
             ),
             lane.window_revision(),
+            active.available_visual_states.clone(),
         )
     };
     let mut sink = BufferedOutputSink::default();
@@ -1182,7 +1228,7 @@ async fn execute_respond_loop(
             false,
         ));
     }
-    let reply = ReplyCompiler.compile(&text, Vec::new())?;
+    let reply = ReplyCompiler.compile(&text, Vec::new(), &available_visual_states)?;
     Ok((
         reply,
         vec![LaneModelUsage {
@@ -1278,19 +1324,27 @@ fn emit_state(
     events.send(event)
 }
 
-fn emit_text(
+fn emit_reply_chains(
     session: &Arc<Mutex<Session>>,
     turn_id: TurnId,
-    text: String,
+    chains: &[CompiledReplyChain],
     events: &mut (dyn HarnessEventSink + Send),
 ) -> Result<(), FairyError> {
-    let event = {
-        let mut session = lock(session);
-        active_turn_mut(&mut session, turn_id)?
-            .lifecycle
-            .text_delta(text)?
-    };
-    events.send(event)
+    for (index, chain) in chains.iter().enumerate() {
+        let delta = if index == 0 {
+            chain.text.as_str().to_owned()
+        } else {
+            format!("\n{}", chain.text.as_str())
+        };
+        let event = {
+            let mut session = lock(session);
+            active_turn_mut(&mut session, turn_id)?
+                .lifecycle
+                .reply_chain(index as u8, delta, chain.clone())?
+        };
+        events.send(event)?;
+    }
+    Ok(())
 }
 
 fn complete_turn(
@@ -1304,14 +1358,16 @@ fn complete_turn(
 ) -> Result<Vec<HarnessEvent>, FairyError> {
     let mut session = lock(session);
     let active = active_turn_mut(&mut session, turn_id)?;
-    let completed = active.lifecycle.complete(
-        reply.display_text,
-        reply.speech_text.clone(),
-        reply.sources,
+    let completed = active.lifecycle.complete(TurnCompletion {
+        text: reply.display_text,
+        speech_text: reply.speech_text.clone(),
+        sources: reply.sources,
         character_revision,
         user_profile_revision,
         usage,
-    )?;
+        visual_state: reply.visual_state.clone(),
+        chains: reply.chains,
+    })?;
     let speech = if speech_enabled {
         Some(active.lifecycle.speech_requested(
             reply.speech_text,
@@ -1368,6 +1424,55 @@ fn validate_runtime_model(model: &str) -> Result<(), FairyError> {
         return Err(FairyError::new(
             ErrorCode::InvalidModelConfig,
             "Harness Runtime 需要有效模型名称",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn idle_visual_states() -> Vec<VisualStatePromptEntry> {
+    vec![VisualStatePromptEntry {
+        id: "idle".parse().expect("idle visual state"),
+        description: "安静待机，适合普通回复。".to_owned(),
+    }]
+}
+
+fn validate_available_visual_states(states: &[VisualStatePromptEntry]) -> Result<(), FairyError> {
+    if states.is_empty() || states.len() > 16 {
+        return Err(FairyError::new(
+            ErrorCode::InvalidEventPayload,
+            "可用视觉状态清单必须包含 1-16 个状态",
+            false,
+        ));
+    }
+    let mut ids = BTreeSet::new();
+    let mut has_idle = false;
+    for state in states {
+        if !ids.insert(state.id.as_str()) {
+            return Err(FairyError::new(
+                ErrorCode::InvalidEventPayload,
+                "可用视觉状态清单包含重复状态",
+                false,
+            ));
+        }
+        has_idle |= state.id.as_str() == "idle";
+        let description_length = state.description.chars().count();
+        if description_length == 0
+            || description_length > 96
+            || state.description.trim() != state.description
+            || state.description.chars().any(char::is_control)
+        {
+            return Err(FairyError::new(
+                ErrorCode::InvalidEventPayload,
+                "可用视觉状态描述无效",
+                false,
+            ));
+        }
+    }
+    if !has_idle {
+        return Err(FairyError::new(
+            ErrorCode::InvalidEventPayload,
+            "可用视觉状态清单必须包含 idle",
             false,
         ));
     }

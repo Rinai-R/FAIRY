@@ -7,20 +7,22 @@ use fairy_domain::{
     MemoryScope, ModelConnectionConfig, ModelConnectionInput, ModelProtocol, NewPersonalMemory,
     PersonalMemoryCatalog, PersonalMemoryId, PersonalMemoryKind, PersonalMemoryRecord, TurnId,
 };
-use fairy_harness::{CompanionPersistence, HarnessRuntime, PersistenceBinding};
+use fairy_harness::{CompactionPolicy, CompanionPersistence, HarnessRuntime, PersistenceBinding};
 use fairy_intelligence::IntelligenceStore;
 use fairy_model_openai::build_openai_compatible_gateway;
 use fairy_storage::{
-    CharacterStore, ModelConnectionStore, StorageRoot, SystemSecretStore, UserProfileStore,
-    cleanup_legacy_search_artifacts,
+    CharacterAppearanceStore, CharacterStore, ModelConnectionStore, StorageRoot, SystemSecretStore,
+    UserProfileStore, cleanup_legacy_search_artifacts,
 };
 use secrecy::SecretString;
 use serde::Serialize;
 
-use crate::app_error::AppError;
+use crate::{app_error::AppError, visual_registry::VisualPackRegistry};
 
 pub struct AppState {
     pub characters: CharacterStore,
+    pub character_appearances: CharacterAppearanceStore,
+    pub visual_packs: VisualPackRegistry,
     pub user_profiles: UserProfileStore,
     model_connections: ModelConnectionStore<SystemSecretStore>,
     intelligence: Option<Arc<IntelligenceStore>>,
@@ -44,6 +46,7 @@ pub struct PublicModelConnection {
     pub protocol: ModelProtocol,
     pub endpoint: String,
     pub model: String,
+    pub context_window_tokens: u64,
     pub auth_mode: AuthMode,
 }
 
@@ -63,6 +66,7 @@ impl From<&ModelConnectionConfig> for PublicModelConnection {
             protocol: config.protocol(),
             endpoint: config.endpoint().to_owned(),
             model: config.model().to_owned(),
+            context_window_tokens: config.context_window_tokens(),
             auth_mode: config.auth_mode(),
         }
     }
@@ -70,8 +74,17 @@ impl From<&ModelConnectionConfig> for PublicModelConnection {
 
 impl AppState {
     pub fn initialize(config_directory: impl AsRef<Path>) -> Result<Self, AppError> {
+        Self::initialize_with_runtime_override(config_directory, None)
+    }
+
+    fn initialize_with_runtime_override(
+        config_directory: impl AsRef<Path>,
+        runtime_override: Option<HarnessRuntime>,
+    ) -> Result<Self, AppError> {
         let root = StorageRoot::new(config_directory).map_err(AppError::from)?;
         let characters = CharacterStore::new(root.clone());
+        let character_appearances = CharacterAppearanceStore::new(root.clone());
+        let visual_packs = VisualPackRegistry::bundled().map_err(AppError::from)?;
         let user_profiles = UserProfileStore::new(root.clone());
         let model_connections = ModelConnectionStore::new(root.clone(), SystemSecretStore);
         if let Err(error) = cleanup_legacy_search_artifacts(&root) {
@@ -82,12 +95,16 @@ impl AppState {
                 Ok(store) => (Some(Arc::new(store)), None),
                 Err(error) => (None, Some(error)),
             };
-        let (runtime, model_error) = match model_connections.resolve() {
-            Ok(connection) => match build_runtime(connection.config, connection.api_key) {
-                Ok(runtime) => (Some(Arc::new(runtime)), None),
+        let (runtime, model_error) = if let Some(runtime) = runtime_override {
+            (Some(Arc::new(runtime)), None)
+        } else {
+            match model_connections.resolve() {
+                Ok(connection) => match build_runtime(connection.config, connection.api_key) {
+                    Ok(runtime) => (Some(Arc::new(runtime)), None),
+                    Err(error) => (None, Some(AppError::from(error))),
+                },
                 Err(error) => (None, Some(AppError::from(error))),
-            },
-            Err(error) => (None, Some(AppError::from(error))),
+            }
         };
         if let Some(runtime) = runtime.as_ref() {
             runtime.replace_persistence_binding(persistence_binding(
@@ -98,6 +115,8 @@ impl AppState {
 
         Ok(Self {
             characters,
+            character_appearances,
+            visual_packs,
             user_profiles,
             model_connections,
             intelligence,
@@ -105,6 +124,14 @@ impl AppState {
             runtime: Mutex::new(runtime),
             model_error: Mutex::new(model_error),
         })
+    }
+
+    #[cfg(test)]
+    pub fn initialize_with_runtime(
+        config_directory: impl AsRef<Path>,
+        runtime: HarnessRuntime,
+    ) -> Result<Self, AppError> {
+        Self::initialize_with_runtime_override(config_directory, Some(runtime))
     }
 
     pub fn runtime(&self) -> Result<Arc<HarnessRuntime>, AppError> {
@@ -309,17 +336,23 @@ impl AppState {
             .map_err(AppError::from)?;
         let connection = self.model_connections.resolve().map_err(AppError::from)?;
         let model = connection.config.model().to_owned();
+        let compaction_policy = CompactionPolicy::from_context_window_tokens(
+            connection.config.context_window_tokens(),
+        );
         let gateway = build_openai_compatible_gateway(connection.config, connection.api_key)
             .map_err(AppError::from)?;
 
         let mut runtime = self.runtime_lock()?;
         if let Some(current) = runtime.as_ref() {
             current
-                .replace_gateway(model, gateway)
+                .replace_gateway_with_compaction_policy(model, gateway, compaction_policy)
                 .map_err(AppError::from)?;
         } else {
             let new_runtime =
-                Arc::new(HarnessRuntime::new(model, gateway).map_err(AppError::from)?);
+                Arc::new(
+                    HarnessRuntime::new_with_compaction_policy(model, gateway, compaction_policy)
+                        .map_err(AppError::from)?,
+                );
             new_runtime.replace_persistence_binding(persistence_binding(
                 self.intelligence.as_ref(),
                 self.intelligence_error.as_ref(),
@@ -410,13 +443,14 @@ fn build_runtime(
     api_key: Option<SecretString>,
 ) -> Result<HarnessRuntime, FairyError> {
     let model = config.model().to_owned();
+    let compaction_policy = CompactionPolicy::from_context_window_tokens(config.context_window_tokens());
     let gateway = build_openai_compatible_gateway(config, api_key)?;
-    HarnessRuntime::new(model, gateway)
+    HarnessRuntime::new_with_compaction_policy(model, gateway, compaction_policy)
 }
 
 #[cfg(test)]
 mod tests {
-    use fairy_domain::ConversationId;
+    use fairy_domain::{ConversationId, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS};
 
     use super::*;
     #[test]
@@ -598,6 +632,7 @@ mod tests {
                     protocol: ModelProtocol::Responses,
                     endpoint: "http://127.0.0.1:11434/v1".to_owned(),
                     model: "local-model".to_owned(),
+                    context_window_tokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
                     auth_mode: AuthMode::NoAuth,
                 },
                 None,
@@ -610,6 +645,7 @@ mod tests {
         assert!(state.runtime().is_ok());
         assert!(json.contains("authMode"));
         assert!(json.contains("protocol"));
+        assert!(json.contains("contextWindowTokens"));
         assert!(json.contains("responses"));
         assert!(!json.contains("promptCacheKey"));
         assert!(!json.contains("cachedTokensUsage"));

@@ -10,6 +10,10 @@ export function currentProductWindowLabel() {
   return parseProductWindowLabel(getCurrentWindow().label);
 }
 
+export function startCurrentWindowDrag() {
+  return getCurrentWindow().startDragging();
+}
+
 export function listenToConfigurationChanges(onChange, onError) {
   return listen("companion-configuration-changed", (event) => {
     try {

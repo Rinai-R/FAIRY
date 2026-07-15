@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AssistantSource, CharacterId, ConversationId, ErrorCode, FairyError, HarnessEvent,
-    HarnessEventPayload, LaneModelUsage, MessageId, ResponseText, Revision, SpeechText, TurnId,
-    WindowRevision,
+    AssistantSource, CharacterId, CompiledReplyChain, ConversationId, ErrorCode, FairyError,
+    HarnessEvent, HarnessEventPayload, LaneModelUsage, MessageId, ResponseText, Revision,
+    SpeechText, TurnId, VisualStateId, WindowRevision,
 };
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -32,6 +32,18 @@ pub struct ConversationMessageRecord {
     pub role: ConversationMessageRole,
     pub content: String,
     pub created_at_unix_ms: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TurnCompletion {
+    pub text: ResponseText,
+    pub speech_text: SpeechText,
+    pub sources: Vec<AssistantSource>,
+    pub character_revision: Revision,
+    pub user_profile_revision: Option<Revision>,
+    pub usage: Vec<LaneModelUsage>,
+    pub visual_state: VisualStateId,
+    pub chains: Vec<CompiledReplyChain>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -181,6 +193,39 @@ impl TurnLifecycle {
         Ok(self.event(HarnessEventPayload::TextDelta { delta }))
     }
 
+    pub fn reply_chain(
+        &mut self,
+        index: u8,
+        delta: String,
+        chain: CompiledReplyChain,
+    ) -> Result<HarnessEvent, FairyError> {
+        if self.state != TurnState::Responding {
+            return Err(FairyError::new(
+                ErrorCode::InvalidStateTransition,
+                format!(
+                    "只有 Responding 状态可以发送回复分段，当前为 {:?}",
+                    self.state
+                ),
+                false,
+            ));
+        }
+        if delta.is_empty() {
+            return Err(FairyError::new(
+                ErrorCode::InvalidEventPayload,
+                "回复分段增量不能为空",
+                false,
+            ));
+        }
+
+        Ok(self.event(HarnessEventPayload::ReplyChain {
+            index,
+            delta,
+            text: chain.text,
+            speech_text: chain.speech_text,
+            visual_state: chain.visual_state,
+        }))
+    }
+
     pub fn fail(&mut self, error: FairyError) -> Result<HarnessEvent, FairyError> {
         if !self.state.can_transition_to(TurnState::Failed) {
             return Err(FairyError::invalid_state(self.state, TurnState::Failed));
@@ -190,26 +235,20 @@ impl TurnLifecycle {
         Ok(self.event(HarnessEventPayload::Failed { error }))
     }
 
-    pub fn complete(
-        &mut self,
-        text: ResponseText,
-        speech_text: SpeechText,
-        sources: Vec<AssistantSource>,
-        character_revision: Revision,
-        user_profile_revision: Option<Revision>,
-        usage: Vec<LaneModelUsage>,
-    ) -> Result<HarnessEvent, FairyError> {
+    pub fn complete(&mut self, completion: TurnCompletion) -> Result<HarnessEvent, FairyError> {
         if !self.state.can_transition_to(TurnState::Completed) {
             return Err(FairyError::invalid_state(self.state, TurnState::Completed));
         }
         self.state = TurnState::Completed;
         Ok(self.event(HarnessEventPayload::Completed {
-            text,
-            speech_text,
-            sources,
-            character_revision,
-            user_profile_revision,
-            usage,
+            text: completion.text,
+            speech_text: completion.speech_text,
+            sources: completion.sources,
+            character_revision: completion.character_revision,
+            user_profile_revision: completion.user_profile_revision,
+            usage: completion.usage,
+            visual_state: completion.visual_state,
+            chains: completion.chains,
         }))
     }
 
@@ -330,14 +369,20 @@ mod tests {
             .expect("enter responding");
         let delta = turn.text_delta("你好".to_owned()).expect("emit delta");
         let completed = turn
-            .complete(
-                ResponseText::new("你好。".to_owned()).expect("display text"),
-                SpeechText::new("你好。".to_owned()).expect("speech text"),
-                Vec::new(),
-                Revision::INITIAL,
-                None,
-                Vec::new(),
-            )
+            .complete(TurnCompletion {
+                text: ResponseText::new("你好。".to_owned()).expect("display text"),
+                speech_text: SpeechText::new("你好。".to_owned()).expect("speech text"),
+                sources: Vec::new(),
+                character_revision: Revision::INITIAL,
+                user_profile_revision: None,
+                usage: Vec::new(),
+                visual_state: "idle".parse().expect("idle visual state"),
+                chains: vec![CompiledReplyChain {
+                    text: ResponseText::new("你好。".to_owned()).expect("chain text"),
+                    speech_text: SpeechText::new("你好。".to_owned()).expect("chain speech"),
+                    visual_state: "idle".parse().expect("idle visual state"),
+                }],
+            })
             .expect("complete turn");
 
         assert_eq!(
@@ -441,5 +486,38 @@ mod tests {
             HarnessEventPayload::TextDelta { ref delta } if delta == " "
         ));
         assert!(turn.text_delta(String::new()).is_err());
+    }
+
+    #[test]
+    fn reply_chain_events_carry_segment_text_and_visual_state() {
+        let mut turn = lifecycle();
+        turn.transition(TurnState::Interpreting)
+            .expect("enter interpreting");
+        turn.transition(TurnState::Planning)
+            .expect("enter planning");
+        turn.transition(TurnState::Responding)
+            .expect("enter responding");
+
+        let event = turn
+            .reply_chain(
+                0,
+                "你好。".to_owned(),
+                CompiledReplyChain {
+                    text: ResponseText::new("你好。".to_owned()).expect("text"),
+                    speech_text: SpeechText::new("你好。".to_owned()).expect("speech"),
+                    visual_state: "happy".parse().expect("visual state"),
+                },
+            )
+            .expect("emit reply chain");
+
+        assert!(matches!(
+            event.payload,
+            HarnessEventPayload::ReplyChain {
+                index: 0,
+                ref delta,
+                ref visual_state,
+                ..
+            } if delta == "你好。" && visual_state.as_str() == "happy"
+        ));
     }
 }

@@ -7,17 +7,27 @@ pub const CHARACTER_COMPILER_VERSION: &str = "fairy-character-v1";
 const CHARACTER_SCHEMA_VERSION: u32 = 1;
 const MAX_CHARACTER_NAME_CHARS: usize = 48;
 const MAX_CHARACTER_DESCRIPTION_CHARS: usize = 2_000;
+const MAX_CHARACTER_DIALOGUE_STYLE_CHARS: usize = 1_200;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CharacterBriefInput {
     pub name: String,
     pub description: String,
+    #[serde(default, rename = "dialogueStyle", alias = "dialogue_style")]
+    pub dialogue_style: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CharacterIdentity {
     pub name: String,
     pub description: String,
+    #[serde(
+        default,
+        rename = "dialogueStyle",
+        alias = "dialogue_style",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub dialogue_style: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -119,9 +129,11 @@ impl CharacterCompiler {
     ) -> Result<CharacterSnapshot, FairyError> {
         let name = normalize_name(&brief.name)?;
         let description = normalize_description(&brief.description)?;
+        let dialogue_style = normalize_optional_dialogue_style(brief.dialogue_style.as_deref())?;
         let identity = CharacterIdentity {
             name,
             description: description.clone(),
+            dialogue_style,
         };
         let speech_style = SpeechStyle {
             character_description_guidance: description,
@@ -253,6 +265,7 @@ impl CharacterSnapshot {
             || self.compiler_version != CHARACTER_COMPILER_VERSION
             || self.identity.name.is_empty()
             || self.identity.description.is_empty()
+            || !valid_optional_dialogue_style(self.identity.dialogue_style.as_deref())
             || self.attention_biases.is_empty()
             || self.response_drives.is_empty()
             || self.emotional_tendencies.is_empty()
@@ -309,6 +322,31 @@ fn normalize_description(raw: &str) -> Result<String, FairyError> {
     Ok(value.to_owned())
 }
 
+fn normalize_optional_dialogue_style(raw: Option<&str>) -> Result<Option<String>, FairyError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let normalized_newlines = raw.replace("\r\n", "\n").replace('\r', "\n");
+    let value = normalized_newlines.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let length = value.chars().count();
+    let has_forbidden_control = value
+        .chars()
+        .any(|character| character.is_control() && !character.is_whitespace());
+    if length > MAX_CHARACTER_DIALOGUE_STYLE_CHARS || has_forbidden_control {
+        return Err(invalid_character_brief(
+            "角色日常说话方式必须是 1–1200 个 Unicode 字符，且不能包含非法控制字符",
+        ));
+    }
+    Ok(Some(value.to_owned()))
+}
+
+fn valid_optional_dialogue_style(value: Option<&str>) -> bool {
+    normalize_optional_dialogue_style(value).is_ok()
+}
+
 fn fingerprint(value: &CanonicalCharacterSnapshot<'_>) -> Result<String, FairyError> {
     let bytes = serde_json::to_vec(value).map_err(|_| character_compile_error())?;
     let digest = Sha256::digest(bytes);
@@ -343,6 +381,7 @@ mod tests {
             name: "  亚托莉  ".to_owned(),
             description: "  有一点骄傲，但会认真留意用户真正想说什么。\r\n回复自然简短。  "
                 .to_owned(),
+            dialogue_style: None,
         }
     }
 
@@ -357,6 +396,7 @@ mod tests {
             snapshot.identity().description,
             "有一点骄傲，但会认真留意用户真正想说什么。\n回复自然简短。"
         );
+        assert_eq!(snapshot.identity().dialogue_style, None);
         assert_eq!(snapshot.worldview(), Worldview::NotSpecified);
         assert_eq!(
             snapshot.relationship_stance(),
@@ -396,22 +436,37 @@ mod tests {
             CharacterBriefInput {
                 name: "  ".to_owned(),
                 description: "有效描述".to_owned(),
+                dialogue_style: None,
             },
             CharacterBriefInput {
                 name: "名字\n第二行".to_owned(),
                 description: "有效描述".to_owned(),
+                dialogue_style: None,
             },
             CharacterBriefInput {
                 name: "角色".to_owned(),
                 description: "\0隐藏内容".to_owned(),
+                dialogue_style: None,
             },
             CharacterBriefInput {
                 name: "角".repeat(MAX_CHARACTER_NAME_CHARS + 1),
                 description: "有效描述".to_owned(),
+                dialogue_style: None,
             },
             CharacterBriefInput {
                 name: "角色".to_owned(),
                 description: "述".repeat(MAX_CHARACTER_DESCRIPTION_CHARS + 1),
+                dialogue_style: None,
+            },
+            CharacterBriefInput {
+                name: "角色".to_owned(),
+                description: "有效描述".to_owned(),
+                dialogue_style: Some("\0隐藏内容".to_owned()),
+            },
+            CharacterBriefInput {
+                name: "角色".to_owned(),
+                description: "有效描述".to_owned(),
+                dialogue_style: Some("说".repeat(MAX_CHARACTER_DIALOGUE_STYLE_CHARS + 1)),
             },
         ];
 
@@ -434,12 +489,17 @@ mod tests {
                 CharacterBriefInput {
                     name: "测试角色".to_owned(),
                     description: description.to_owned(),
+                    dialogue_style: Some("短句、自然，不解释系统规则。".to_owned()),
                 },
             )
             .expect("text is retained as data");
         let value = serde_json::to_value(&snapshot).expect("serialize snapshot");
 
         assert_eq!(value["identity"]["description"], description);
+        assert_eq!(
+            value["identity"]["dialogueStyle"],
+            "短句、自然，不解释系统规则。"
+        );
         assert_eq!(
             value["hard_boundaries"],
             serde_json::json!([
@@ -452,6 +512,42 @@ mod tests {
         assert!(value.get("script").is_none());
         assert!(value.get("url").is_none());
         assert!(value.get("permissions").is_none());
+    }
+
+    #[test]
+    fn optional_dialogue_style_normalizes_and_omits_blank_values() {
+        let with_style = CharacterCompiler
+            .compile(
+                stable_id(),
+                Revision::INITIAL,
+                CharacterBriefInput {
+                    name: "亚托莉".to_owned(),
+                    description: "背景设定保留在这里。".to_owned(),
+                    dialogue_style: Some(
+                        "  日常短句；少说设定，自然接话。\r\n可以偶尔活泼。  ".to_owned(),
+                    ),
+                },
+            )
+            .expect("compile dialogue style");
+        assert_eq!(
+            with_style.identity().dialogue_style.as_deref(),
+            Some("日常短句；少说设定，自然接话。\n可以偶尔活泼。")
+        );
+
+        let blank = CharacterCompiler
+            .compile(
+                stable_id(),
+                Revision::INITIAL,
+                CharacterBriefInput {
+                    name: "亚托莉".to_owned(),
+                    description: "背景设定保留在这里。".to_owned(),
+                    dialogue_style: Some("  \n\t  ".to_owned()),
+                },
+            )
+            .expect("compile blank dialogue style");
+        assert_eq!(blank.identity().dialogue_style, None);
+        let value = serde_json::to_value(blank).expect("serialize blank style snapshot");
+        assert!(value["identity"].get("dialogueStyle").is_none());
     }
 
     #[test]

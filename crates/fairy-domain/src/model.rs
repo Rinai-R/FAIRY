@@ -5,8 +5,11 @@ use url::{Host, Url};
 
 use crate::{ErrorCode, FairyError, ModelConnectionId, PromptItem, PromptLane, WindowRevision};
 
-const MODEL_CONNECTION_SCHEMA_VERSION: u32 = 2;
+const MODEL_CONNECTION_SCHEMA_VERSION: u32 = 3;
 const MAX_MODEL_NAME_CHARS: usize = 200;
+pub const DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS: u64 = 128_000;
+const MIN_MODEL_CONTEXT_WINDOW_TOKENS: u64 = 4_096;
+const MAX_MODEL_CONTEXT_WINDOW_TOKENS: u64 = 2_000_000;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -58,6 +61,7 @@ pub struct ModelConnectionInput {
     pub protocol: ModelProtocol,
     pub endpoint: String,
     pub model: String,
+    pub context_window_tokens: u64,
     pub auth_mode: AuthMode,
 }
 
@@ -68,6 +72,7 @@ pub struct ModelConnectionConfig {
     protocol: ModelProtocol,
     endpoint: String,
     model: String,
+    context_window_tokens: u64,
     auth_mode: AuthMode,
     capabilities: GatewayCapabilities,
 }
@@ -154,12 +159,14 @@ impl ModelConnectionCompiler {
     ) -> Result<ModelConnectionConfig, FairyError> {
         let endpoint = validate_endpoint(&input.endpoint)?;
         let model = validate_model(&input.model)?;
+        let context_window_tokens = validate_context_window_tokens(input.context_window_tokens)?;
         Ok(ModelConnectionConfig {
             schema_version: MODEL_CONNECTION_SCHEMA_VERSION,
             connection_id,
             protocol: input.protocol,
             endpoint,
             model,
+            context_window_tokens,
             auth_mode: input.auth_mode,
             capabilities: GatewayCapabilities::for_protocol(input.protocol),
         })
@@ -193,6 +200,11 @@ impl ModelConnectionConfig {
     }
 
     #[must_use]
+    pub const fn context_window_tokens(&self) -> u64 {
+        self.context_window_tokens
+    }
+
+    #[must_use]
     pub const fn auth_mode(&self) -> AuthMode {
         self.auth_mode
     }
@@ -212,6 +224,7 @@ impl ModelConnectionConfig {
                 protocol: self.protocol,
                 endpoint: self.endpoint.clone(),
                 model: self.model.clone(),
+                context_window_tokens: self.context_window_tokens,
                 auth_mode: self.auth_mode,
             },
         )?;
@@ -285,6 +298,15 @@ fn validate_model(raw: &str) -> Result<String, FairyError> {
     Ok(value.to_owned())
 }
 
+fn validate_context_window_tokens(value: u64) -> Result<u64, FairyError> {
+    if !(MIN_MODEL_CONTEXT_WINDOW_TOKENS..=MAX_MODEL_CONTEXT_WINDOW_TOKENS).contains(&value) {
+        return Err(invalid_model_config(
+            "模型上下文窗口必须是 4096–2000000 tokens",
+        ));
+    }
+    Ok(value)
+}
+
 fn invalid_model_config(message: &'static str) -> FairyError {
     FairyError::new(ErrorCode::InvalidModelConfig, message, false)
 }
@@ -298,6 +320,7 @@ mod tests {
             protocol: ModelProtocol::Responses,
             endpoint: endpoint.to_owned(),
             model: "gpt-5.4".to_owned(),
+            context_window_tokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
             auth_mode: AuthMode::BearerKey,
         }
     }
@@ -369,12 +392,41 @@ mod tests {
     }
 
     #[test]
+    fn validates_context_window_tokens() {
+        let mut minimum = input("https://example.com/v1");
+        minimum.context_window_tokens = MIN_MODEL_CONTEXT_WINDOW_TOKENS;
+        let compiled = ModelConnectionCompiler
+            .compile(ModelConnectionId::new(), minimum)
+            .expect("minimum context window is valid");
+        assert_eq!(
+            compiled.context_window_tokens(),
+            MIN_MODEL_CONTEXT_WINDOW_TOKENS
+        );
+
+        for value in [
+            MIN_MODEL_CONTEXT_WINDOW_TOKENS - 1,
+            MAX_MODEL_CONTEXT_WINDOW_TOKENS + 1,
+        ] {
+            let mut invalid = input("https://example.com/v1");
+            invalid.context_window_tokens = value;
+            let error = ModelConnectionCompiler
+                .compile(ModelConnectionId::new(), invalid)
+                .expect_err("invalid context window must fail");
+            assert_eq!(error.code, ErrorCode::InvalidModelConfig);
+        }
+    }
+
+    #[test]
     fn protocol_computes_cache_capabilities_without_user_switches() {
         let responses = ModelConnectionCompiler
             .compile(ModelConnectionId::new(), input("https://example.com/v1"))
             .expect("compile Responses config");
 
         assert_eq!(responses.protocol(), ModelProtocol::Responses);
+        assert_eq!(
+            responses.context_window_tokens(),
+            DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS
+        );
         assert!(responses.capabilities().prompt_cache_key);
         assert!(responses.capabilities().cached_tokens_usage);
         assert!(!responses.capabilities().explicit_breakpoints);

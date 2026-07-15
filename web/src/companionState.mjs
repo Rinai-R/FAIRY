@@ -9,6 +9,8 @@ const TURN_STATES = new Set([
   "failed",
 ]);
 const LANES = new Set(["respond", "compact", "extract"]);
+const MIN_MODEL_CONTEXT_WINDOW_TOKENS = 4_096;
+const MAX_MODEL_CONTEXT_WINDOW_TOKENS = 2_000_000;
 
 function assertObject(value, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -60,6 +62,10 @@ function parseNonEmptyString(value, label) {
   return value;
 }
 
+function parseOptionalNonEmptyString(value, label) {
+  return value === null ? null : parseNonEmptyString(value, label);
+}
+
 function parseOptionalTokenCount(value, label) {
   if (value === null) return null;
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -71,6 +77,17 @@ function parseOptionalTokenCount(value, label) {
 function parseNonNegativeInteger(value, label) {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new TypeError(`${label} must be a non-negative integer`);
+  }
+  return value;
+}
+
+function parseContextWindowTokens(value, label) {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < MIN_MODEL_CONTEXT_WINDOW_TOKENS ||
+    value > MAX_MODEL_CONTEXT_WINDOW_TOKENS
+  ) {
+    throw new TypeError(`${label} must be between 4096 and 2000000`);
   }
   return value;
 }
@@ -184,6 +201,22 @@ function parseAssistantSources(value) {
   return Object.freeze(value.map(parseAssistantSource));
 }
 
+function parseReplyChain(value, index, label = `reply chain[${index}]`) {
+  assertExactKeys(value, ["text", "speechText", "visualState"], label);
+  return Object.freeze({
+    text: parseNonEmptyString(value.text, `${label}.text`),
+    speechText: parseNonEmptyString(value.speechText, `${label}.speechText`),
+    visualState: parseVisualStateId(value.visualState, `${label}.visualState`),
+  });
+}
+
+function parseReplyChains(value, label = "reply chains") {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 5) {
+    throw new TypeError(`${label} must contain 1-5 entries`);
+  }
+  return Object.freeze(value.map((chain, index) => parseReplyChain(chain, index, `${label}[${index}]`)));
+}
+
 export function normalizeCompanionError(error) {
   if (
     error !== null &&
@@ -229,6 +262,26 @@ function parseEventPayload(value) {
         type: value.type,
         delta: parseNonEmptyString(value.delta, "event.payload.delta"),
       });
+    case "reply_chain":
+      assertExactKeys(
+        value,
+        ["type", "index", "delta", "text", "speechText", "visualState"],
+        "event.payload",
+      );
+      if (!Number.isSafeInteger(value.index) || value.index < 0 || value.index > 4) {
+        throw new TypeError("event.payload.index must be between 0 and 4");
+      }
+      return Object.freeze({
+        type: value.type,
+        index: value.index,
+        delta: parseNonEmptyString(value.delta, "event.payload.delta"),
+        text: parseNonEmptyString(value.text, "event.payload.text"),
+        speechText: parseNonEmptyString(
+          value.speechText,
+          "event.payload.speechText",
+        ),
+        visualState: parseVisualStateId(value.visualState, "event.payload.visualState"),
+      });
     case "completed":
       assertExactKeys(
         value,
@@ -240,6 +293,8 @@ function parseEventPayload(value) {
           "characterRevision",
           "userProfileRevision",
           "usage",
+          "visualState",
+          "chains",
         ],
         "event.payload",
       );
@@ -260,6 +315,8 @@ function parseEventPayload(value) {
           "event.payload.userProfileRevision",
         ),
         usage: parseUsageList(value.usage),
+        visualState: parseVisualStateId(value.visualState, "event.payload.visualState"),
+        chains: parseReplyChains(value.chains, "event.payload.chains"),
       });
     case "speech.requested":
       assertExactKeys(
@@ -422,6 +479,8 @@ export function parseTurnOutcome(value) {
       "userProfileRevision",
       "usage",
       "speechRequested",
+      "visualState",
+      "chains",
     ],
     "turn outcome",
   );
@@ -453,6 +512,8 @@ export function parseTurnOutcome(value) {
     ),
     usage: parseUsageList(value.usage),
     speechRequested: value.speechRequested,
+    visualState: parseVisualStateId(value.visualState, "turn outcome.visualState"),
+    chains: parseReplyChains(value.chains, "turn outcome.chains"),
   });
 }
 
@@ -482,7 +543,7 @@ export function parseCompactionResult(value) {
 export function parseCharacter(value) {
   assertExactKeys(
     value,
-    ["characterId", "revision", "name", "description"],
+    ["characterId", "revision", "name", "description", "dialogueStyle", "appearance"],
     "character",
   );
   return Object.freeze({
@@ -490,7 +551,154 @@ export function parseCharacter(value) {
     revision: parseRevision(value.revision, "character.revision"),
     name: parseNonEmptyString(value.name, "character.name"),
     description: parseNonEmptyString(value.description, "character.description"),
+    dialogueStyle: parseOptionalNonEmptyString(value.dialogueStyle, "character.dialogueStyle"),
+    appearance: parseCharacterAppearance(value.appearance),
   });
+}
+
+const VISUAL_PACK_ID_PATTERN = /^[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/;
+const VISUAL_STATE_ID_PATTERN = /^[a-z](?:[a-z0-9_-]{0,30}[a-z0-9])?$/;
+
+function parseBoundedInteger(value, minimum, maximum, label) {
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new TypeError(`${label} is out of range`);
+  }
+  return value;
+}
+
+function parseVisualPackId(value, label) {
+  if (typeof value !== "string" || !VISUAL_PACK_ID_PATTERN.test(value)) {
+    throw new TypeError(`${label} must be a visual pack id`);
+  }
+  return value;
+}
+
+function parseVisualStateId(value, label) {
+  if (typeof value !== "string" || !VISUAL_STATE_ID_PATTERN.test(value)) {
+    throw new TypeError(`${label} must be a visual state id`);
+  }
+  return value;
+}
+
+function parseVisualImagePath(value, label) {
+  if (
+    typeof value !== "string" ||
+    !value.startsWith("/characters/") ||
+    !value.endsWith(".png") ||
+    value.includes("://") ||
+    value.includes("\\") ||
+    value.includes("?") ||
+    value.includes("#") ||
+    value.split("/").includes("..") ||
+    value.split("/").includes(".")
+  ) {
+    throw new TypeError(`${label} must be a local character PNG path`);
+  }
+  return value;
+}
+
+function parseVisualStateImage(value, label) {
+  assertExactKeys(value, ["id", "description", "imagePath"], label);
+  const description = parseNonEmptyString(value.description, `${label}.description`);
+  if (description.trim() !== description || description.length > 96) {
+    throw new TypeError(`${label}.description is invalid`);
+  }
+  return Object.freeze({
+    id: parseVisualStateId(value.id, `${label}.id`),
+    description,
+    imagePath: parseVisualImagePath(value.imagePath, `${label}.imagePath`),
+  });
+}
+
+export function parseVisualPack(value) {
+  assertExactKeys(
+    value,
+    [
+      "schemaVersion",
+      "packId",
+      "displayName",
+      "renderer",
+      "frame",
+      "scale",
+      "anchor",
+      "states",
+    ],
+    "visual pack",
+  );
+  if (value.schemaVersion !== 2 || value.renderer !== "state_images") {
+    throw new TypeError("visual pack schema or renderer is unsupported");
+  }
+  assertExactKeys(value.frame, ["width", "height"], "visual pack.frame");
+  assertExactKeys(value.anchor, ["x", "y"], "visual pack.anchor");
+  const frame = Object.freeze({
+    width: parseBoundedInteger(value.frame.width, 1, 512, "visual pack.frame.width"),
+    height: parseBoundedInteger(value.frame.height, 1, 512, "visual pack.frame.height"),
+  });
+  const anchor = Object.freeze({
+    x: parseBoundedInteger(value.anchor.x, 0, frame.width - 1, "visual pack.anchor.x"),
+    y: parseBoundedInteger(value.anchor.y, 0, frame.height - 1, "visual pack.anchor.y"),
+  });
+  if (!Array.isArray(value.states) || value.states.length < 1 || value.states.length > 16) {
+    throw new TypeError("visual pack.states must contain 1-16 entries");
+  }
+  const states = Object.freeze(value.states.map((state, index) =>
+    parseVisualStateImage(state, `visual pack.states[${index}]`),
+  ));
+  const stateIds = new Set(states.map((state) => state.id));
+  const imagePaths = new Set(states.map((state) => state.imagePath));
+  if (stateIds.size !== states.length || imagePaths.size !== states.length) {
+    throw new TypeError("visual pack states must have unique ids and image paths");
+  }
+  if (!stateIds.has("idle")) {
+    throw new TypeError("visual pack must declare idle state");
+  }
+  return Object.freeze({
+    schemaVersion: 2,
+    packId: parseVisualPackId(value.packId, "visual pack.packId"),
+    displayName: parseNonEmptyString(value.displayName, "visual pack.displayName"),
+    renderer: value.renderer,
+    frame,
+    scale: parseBoundedInteger(value.scale, 1, 8, "visual pack.scale"),
+    anchor,
+    states,
+  });
+}
+
+function parseCharacterAppearance(value) {
+  assertObject(value, "character.appearance");
+  if (value.status === "unassigned" || value.status === "unavailable") {
+    assertExactKeys(value, ["status"], "character.appearance");
+    return Object.freeze({ status: value.status });
+  }
+  if (value.status === "assigned") {
+    assertExactKeys(
+      value,
+      ["status", "bindingRevision", "visual"],
+      "character.appearance",
+    );
+    return Object.freeze({
+      status: value.status,
+      bindingRevision: parseRevision(
+        value.bindingRevision,
+        "character.appearance.bindingRevision",
+      ),
+      visual: parseVisualPack(value.visual),
+    });
+  }
+  throw new TypeError("character.appearance.status is unsupported");
+}
+
+export function parseVisualPackCatalog(value) {
+  assertExactKeys(value, ["visualPacks"], "visual pack catalog");
+  if (!Array.isArray(value.visualPacks)) {
+    throw new TypeError("visual pack catalog.visualPacks must be an array");
+  }
+  const visualPacks = Object.freeze(value.visualPacks.map(parseVisualPack));
+  const ids = new Set(visualPacks.map((pack) => pack.packId));
+  if (ids.size !== visualPacks.length) {
+    throw new TypeError("visual pack catalog contains duplicate ids");
+  }
+  return Object.freeze({ visualPacks });
 }
 
 export function parseCharacterCatalog(value) {
@@ -577,7 +785,7 @@ export function parseModelConnectionStatus(value) {
   if (value.config !== null) {
     assertExactKeys(
       value.config,
-      ["protocol", "endpoint", "model", "authMode"],
+      ["protocol", "endpoint", "model", "contextWindowTokens", "authMode"],
       "model status.config",
     );
     if (
@@ -593,6 +801,10 @@ export function parseModelConnectionStatus(value) {
         "model status.config.endpoint",
       ),
       model: parseNonEmptyString(value.config.model, "model status.config.model"),
+      contextWindowTokens: parseContextWindowTokens(
+        value.config.contextWindowTokens,
+        "model status.config.contextWindowTokens",
+      ),
       authMode: value.config.authMode,
     });
   }
@@ -976,6 +1188,19 @@ function reduceHarnessEvent(state, event) {
     });
   }
 
+  if (event.payload.type === "reply_chain") {
+    if (event.state !== "responding") {
+      protocolError("reply chain must be in responding state");
+    }
+    return Object.freeze({
+      ...state,
+      sessionState: event.state,
+      activeTurnId,
+      lastSequence: event.sequence,
+      responseDraft: state.responseDraft + event.payload.delta,
+    });
+  }
+
   if (event.payload.type === "completed") {
     if (event.state !== "completed") {
       protocolError("completed payload must use completed state");
@@ -994,6 +1219,7 @@ function reduceHarnessEvent(state, event) {
       text: event.payload.text,
       speechText: event.payload.speechText,
       sources: event.payload.sources,
+      chains: event.payload.chains,
       status: "completed",
       turnId: event.turnId,
     });
@@ -1007,6 +1233,7 @@ function reduceHarnessEvent(state, event) {
         text: event.payload.text,
         speechText: event.payload.speechText,
         sources: event.payload.sources,
+        chains: event.payload.chains,
         characterRevision: event.payload.characterRevision,
         userProfileRevision: event.payload.userProfileRevision,
       }),

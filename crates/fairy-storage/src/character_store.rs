@@ -50,7 +50,14 @@ impl CharacterStore {
     }
 
     pub fn create(&self, brief: CharacterBriefInput) -> Result<CharacterSnapshot, FairyError> {
-        let character_id = CharacterId::new();
+        self.create_with_id(CharacterId::new(), brief)
+    }
+
+    pub fn create_with_id(
+        &self,
+        character_id: CharacterId,
+        brief: CharacterBriefInput,
+    ) -> Result<CharacterSnapshot, FairyError> {
         let snapshot = self
             .compiler
             .compile(character_id, Revision::INITIAL, brief)?;
@@ -312,6 +319,7 @@ mod tests {
         CharacterBriefInput {
             name: name.to_owned(),
             description: description.to_owned(),
+            dialogue_style: None,
         }
     }
 

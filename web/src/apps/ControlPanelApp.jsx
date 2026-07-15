@@ -51,10 +51,12 @@ import {
   getPersonalMemoryCatalog,
   getUserProfile,
   listCharacters,
+  listVisualPacks,
   saveModelConnection,
   retryExtractionBatch,
   revisePersonalMemory,
   setUserProfile,
+  setCharacterAppearance,
   tombstoneKnowledge,
   tombstonePersonalMemory,
   updateCharacter,
@@ -62,9 +64,14 @@ import {
 import { normalizeCompanionError } from "../companionState.mjs";
 import {
   CONTROL_PANEL_SECTIONS,
+  DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
+  MAX_MODEL_CONTEXT_WINDOW_TOKENS,
+  MIN_MODEL_CONTEXT_WINDOW_TOKENS,
   MODEL_PROTOCOL_OPTIONS,
   assertControlPanelSection,
   buildModelConnectionInput,
+  buildCharacterSaveInput,
+  selectedAppearancePackId,
 } from "../controlPanelState.mjs";
 import {
   getDesktopState,
@@ -84,6 +91,7 @@ const EMPTY_CATALOG = Object.freeze({
   active: null,
   diagnostics: Object.freeze([]),
 });
+const EMPTY_VISUAL_CATALOG = Object.freeze({ visualPacks: Object.freeze([]) });
 
 const SECTION_ICONS = Object.freeze({
   character: PersonIcon,
@@ -219,6 +227,7 @@ function MemoryColumn({ title, description, records, empty, disabled, onRevise, 
 export function ControlPanelApp() {
   const [section, setSection] = useState("model");
   const [catalog, setCatalog] = useState(EMPTY_CATALOG);
+  const [visualCatalog, setVisualCatalog] = useState(EMPTY_VISUAL_CATALOG);
   const [profile, setProfile] = useState(null);
   const [modelStatus, setModelStatus] = useState(null);
   const [intelligenceStatus, setIntelligenceStatus] = useState(null);
@@ -235,10 +244,13 @@ export function ControlPanelApp() {
   const [characterId, setCharacterId] = useState(null);
   const [characterName, setCharacterName] = useState("");
   const [characterDescription, setCharacterDescription] = useState("");
+  const [characterDialogueStyle, setCharacterDialogueStyle] = useState("");
+  const [visualPackId, setVisualPackId] = useState("");
   const [preferredName, setPreferredName] = useState("");
   const [protocol, setProtocol] = useState("chat_completions");
   const [endpoint, setEndpoint] = useState("https://api.deepseek.com");
   const [model, setModel] = useState("deepseek-v4-flash");
+  const [contextWindowTokens, setContextWindowTokens] = useState(String(DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS));
   const [authMode, setAuthMode] = useState("bearer_key");
   const [apiKey, setApiKey] = useState("");
   const [memoryKind, setMemoryKind] = useState("preference");
@@ -247,18 +259,21 @@ export function ControlPanelApp() {
   const refresh = useCallback(async (hydrateForms = false) => {
     const [
       nextCatalog,
+      nextVisualCatalog,
       nextProfile,
       nextModelStatus,
       nextIntelligenceStatus,
       nextDesktop,
     ] = await Promise.all([
       listCharacters(),
+      listVisualPacks(),
       getUserProfile(),
       getModelConnectionStatus(),
       getIntelligenceStatus(),
       getDesktopState(),
     ]);
     setCatalog(nextCatalog);
+    setVisualCatalog(nextVisualCatalog);
     setProfile(nextProfile);
     setModelStatus(nextModelStatus);
     setIntelligenceStatus(nextIntelligenceStatus);
@@ -268,16 +283,23 @@ export function ControlPanelApp() {
         setCharacterId(nextCatalog.active.characterId);
         setCharacterName(nextCatalog.active.name);
         setCharacterDescription(nextCatalog.active.description);
+        setCharacterDialogueStyle(nextCatalog.active.dialogueStyle ?? "");
+        setVisualPackId(selectedAppearancePackId(nextCatalog.active));
       }
       setPreferredName(nextProfile?.preferredName ?? "");
       if (nextModelStatus.config) {
         setProtocol(nextModelStatus.config.protocol);
         setEndpoint(nextModelStatus.config.endpoint);
         setModel(nextModelStatus.config.model);
+        setContextWindowTokens(String(nextModelStatus.config.contextWindowTokens));
         setAuthMode(nextModelStatus.config.authMode);
       }
     }
   }, []);
+
+  const selectedVisual = visualCatalog.visualPacks.find(
+    (visual) => visual.packId === visualPackId,
+  ) ?? null;
 
   const refreshIntelligence = useCallback(async () => {
     setKnowledgeCatalogLoading(true);
@@ -387,25 +409,63 @@ export function ControlPanelApp() {
 
   async function submitCharacter(event) {
     event.preventDefault();
-    if (!characterName.trim() || !characterDescription.trim()) {
-      setError({ code: "INVALID_CHARACTER_BRIEF", message: "角色名称和描述都需要填写。", retryable: false });
+    let input;
+    try {
+      input = buildCharacterSaveInput({
+        name: characterName,
+        description: characterDescription,
+        dialogueStyle: characterDialogueStyle,
+        visualPackId,
+      });
+    } catch (reason) {
+      setError({ code: "INVALID_CHARACTER_BRIEF", message: reason.message, retryable: false });
       return;
     }
     await run("character", async () => {
-      const saved = characterId
-        ? await updateCharacter(characterId, { name: characterName, description: characterDescription })
-        : await createCharacter({ name: characterName, description: characterDescription });
+      const existing = characterId
+        ? catalog.characters.find((character) => character.characterId === characterId) ?? null
+        : null;
+      let saved;
+      if (existing === null) {
+        saved = await createCharacter(input.brief, input.visualPackId);
+      } else {
+        const existingDialogueStyle = existing.dialogueStyle ?? "";
+        const nextDialogueStyle = input.brief.dialogueStyle ?? "";
+        const briefChanged = existing.name !== input.brief.name ||
+          existing.description !== input.brief.description ||
+          existingDialogueStyle !== nextDialogueStyle;
+        saved = briefChanged
+          ? await updateCharacter(characterId, input.brief)
+          : existing;
+        if (selectedAppearancePackId(saved) !== input.visualPackId) {
+          saved = await setCharacterAppearance(characterId, input.visualPackId);
+        }
+      }
       await activateCharacter(saved.characterId, saved.revision);
       await refresh(true);
     });
   }
 
   async function chooseCharacter(character) {
+    setCharacterId(character.characterId);
+    setCharacterName(character.name);
+    setCharacterDescription(character.description);
+    setCharacterDialogueStyle(character.dialogueStyle ?? "");
+    setVisualPackId(selectedAppearancePackId(character));
+    if (character.appearance.status !== "assigned") {
+      setError({
+        code: character.appearance.status === "unassigned"
+          ? "CHARACTER_APPEARANCE_UNASSIGNED"
+          : "CHARACTER_APPEARANCE_UNAVAILABLE",
+        message: character.appearance.status === "unassigned"
+          ? `${character.name} 尚未选择外观，请选择后保存。`
+          : `${character.name} 的外观不可用，请重新选择。`,
+        retryable: false,
+      });
+      return;
+    }
     await run("character", async () => {
       await activateCharacter(character.characterId, character.revision);
-      setCharacterId(character.characterId);
-      setCharacterName(character.name);
-      setCharacterDescription(character.description);
       await refresh(false);
     });
   }
@@ -420,7 +480,7 @@ export function ControlPanelApp() {
     event.preventDefault();
     let input;
     try {
-      input = buildModelConnectionInput({ protocol, endpoint, model, authMode });
+      input = buildModelConnectionInput({ protocol, endpoint, model, contextWindowTokens, authMode });
     } catch (reason) {
       setError({ code: "INVALID_MODEL_CONFIG", message: reason.message, retryable: false });
       return;
@@ -587,7 +647,7 @@ export function ControlPanelApp() {
                                     </Button>
                                   );
                                 })}
-                                <Button type="button" size="2" variant="soft" onClick={() => { setCharacterId(null); setCharacterName(""); setCharacterDescription(""); }} disabled={disabled}>
+                                <Button type="button" size="2" variant="soft" onClick={() => { setCharacterId(null); setCharacterName(""); setCharacterDescription(""); setCharacterDialogueStyle(""); setVisualPackId(""); setError(null); }} disabled={disabled}>
                                   <PlusIcon />新建角色
                                 </Button>
                               </Flex>
@@ -599,6 +659,40 @@ export function ControlPanelApp() {
                             </Field>
                             <Field id="character-description" label="角色描述" hint="写她会留意什么、如何表达亲近与边界；不必写“你是某某”。">
                               <TextArea id="character-description" className="cp-character-description" value={characterDescription} onChange={(event) => setCharacterDescription(event.target.value)} maxLength="2000" resize="none" required />
+                            </Field>
+                            <Field id="character-dialogue-style" label="日常说话方式" hint="写日常语气、节奏、称呼习惯或几句例句；系统仍保留上面的角色描述。">
+                              <TextArea id="character-dialogue-style" className="cp-character-description" value={characterDialogueStyle} onChange={(event) => setCharacterDialogueStyle(event.target.value)} maxLength="1200" resize="none" />
+                            </Field>
+                            <Field id="character-appearance" label="角色外观" hint="外观只影响桌宠画面，不会修改角色描述、关系记忆或聊天记录。">
+                              <div className="cp-appearance-picker">
+                                <Select.Root value={visualPackId} onValueChange={setVisualPackId}>
+                                  <Select.Trigger id="character-appearance" placeholder="选择角色外观" aria-label="角色外观" />
+                                  <Select.Content>
+                                    {visualCatalog.visualPacks.map((visual) => (
+                                      <Select.Item key={visual.packId} value={visual.packId}>
+                                        {visual.displayName}
+                                      </Select.Item>
+                                    ))}
+                                  </Select.Content>
+                                </Select.Root>
+                                {selectedVisual ? (
+                                  <div className="cp-appearance-preview" aria-label={`${selectedVisual.displayName} 外观预览`}>
+                                    <span
+                                      className="cp-appearance-sprite"
+                                      role="img"
+                                      aria-label={selectedVisual.displayName}
+                                      style={{
+                                        width: selectedVisual.frame.width * selectedVisual.scale,
+                                        height: selectedVisual.frame.height * selectedVisual.scale,
+                                        backgroundImage: `url(${selectedVisual.states[0].imagePath})`,
+                                        backgroundSize: `${selectedVisual.frame.width * selectedVisual.scale}px ${selectedVisual.frame.height * selectedVisual.scale}px`,
+                                      }}
+                                    />
+                                  </div>
+                                ) : (
+                                  <Text as="p" size="1" color="gray">尚未选择外观</Text>
+                                )}
+                              </div>
                             </Field>
                             <Flex justify="end">
                               <Button type="submit" disabled={disabled}>{characterId ? "更新并激活" : "创建并激活"}</Button>
@@ -644,6 +738,18 @@ export function ControlPanelApp() {
                               </Field>
                             </div>
                             <div className="cp-two-column">
+                              <Field id="model-context-window" label="上下文窗口" hint="按模型实际 context window 填写，自动压缩阈值由它推导。">
+                                <TextField.Root
+                                  id="model-context-window"
+                                  type="number"
+                                  min={MIN_MODEL_CONTEXT_WINDOW_TOKENS}
+                                  max={MAX_MODEL_CONTEXT_WINDOW_TOKENS}
+                                  step="1"
+                                  value={contextWindowTokens}
+                                  onChange={(event) => setContextWindowTokens(event.target.value)}
+                                  required
+                                />
+                              </Field>
                               <Field id="model-auth" label="认证方式">
                                 <Select.Root value={authMode} onValueChange={setAuthMode}>
                                   <Select.Trigger id="model-auth" aria-label="认证方式" />

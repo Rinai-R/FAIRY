@@ -1,10 +1,12 @@
-use fairy_domain::{CompiledPromptRequest, FairyError, ModelConnectionConfig, ModelProtocol};
+use fairy_domain::{
+    CompiledPromptRequest, FairyError, ModelConnectionConfig, ModelProtocol, PromptLane,
+};
 use secrecy::SecretString;
 use serde::Serialize;
 
 use crate::shared::{
-    OpenAiMessage, OpenAiRole, authenticated_post, invalid_model_request, map_prompt_items,
-    protocol_url, validate_request,
+    AssistantMessageFormat, OpenAiMessage, OpenAiRole, authenticated_post, invalid_model_request,
+    map_prompt_items, protocol_url, validate_request,
 };
 
 #[derive(Serialize)]
@@ -14,11 +16,19 @@ struct ChatCompletionsRequestBody<'a> {
     stream: bool,
     stream_options: StreamOptions,
     max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<ResponseFormat>,
 }
 
 #[derive(Serialize)]
 struct StreamOptions {
     include_usage: bool,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ResponseFormat {
+    JsonObject,
 }
 
 pub fn build_chat_completions_request(
@@ -33,7 +43,12 @@ pub fn build_chat_completions_request(
         OpenAiRole::System,
         request.shape.instructions.clone(),
     ));
-    messages.extend(map_prompt_items(&request.input, OpenAiRole::System)?);
+    let assistant_message_format = if request.shape.lane == PromptLane::Respond {
+        AssistantMessageFormat::ReplyChainsJson
+    } else {
+        AssistantMessageFormat::PlainText
+    };
+    messages.extend(map_prompt_items(&request.input, assistant_message_format)?);
 
     let body = serde_json::to_vec(&ChatCompletionsRequestBody {
         model: config.model(),
@@ -43,6 +58,8 @@ pub fn build_chat_completions_request(
             include_usage: true,
         },
         max_tokens: request.shape.max_output_tokens,
+        response_format: (request.shape.lane == PromptLane::Respond)
+            .then_some(ResponseFormat::JsonObject),
     })
     .map_err(|_| invalid_model_request("无法序列化 Chat Completions 请求"))?;
 
@@ -60,9 +77,10 @@ pub fn build_chat_completions_request(
 #[cfg(test)]
 mod tests {
     use fairy_domain::{
-        AuthMode, CompiledPromptRequest, ErrorCode, ModelConnectionCompiler, ModelConnectionId,
-        ModelConnectionInput, ModelProtocol, ModelRequestShape, PromptItem, PromptLane,
-        ReasoningMode,
+        AuthMode, CharacterBriefInput, CharacterCompiler, CharacterId, CompiledPromptRequest,
+        DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, ErrorCode, ModelConnectionCompiler,
+        ModelConnectionId, ModelConnectionInput, ModelProtocol, ModelRequestShape, PromptItem,
+        PromptLane, ReasoningMode, Revision,
     };
     use secrecy::SecretString;
     use serde_json::Value;
@@ -80,6 +98,7 @@ mod tests {
                         AuthMode::NoAuth => "http://127.0.0.1:11434/v1/".to_owned(),
                     },
                     model: "deepseek-v4-flash".to_owned(),
+                    context_window_tokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
                     auth_mode,
                 },
             )
@@ -117,8 +136,27 @@ mod tests {
         .expect("parse request body")
     }
 
+    fn character_context_request() -> CompiledPromptRequest {
+        let snapshot = CharacterCompiler
+            .compile(
+                CharacterId::new(),
+                Revision::INITIAL,
+                CharacterBriefInput {
+                    name: "亚托莉".to_owned(),
+                    description: "有点骄傲，说话简短；口癖「我是高性能的嘛！」。".to_owned(),
+                    dialogue_style: None,
+                },
+            )
+            .expect("compile character");
+        let mut request = compiled();
+        request
+            .input
+            .insert(0, PromptItem::CharacterActivated { snapshot });
+        request
+    }
+
     #[test]
-    fn text_request_has_minimal_deepseek_compatible_shape() {
+    fn respond_request_uses_deepseek_json_output_without_tools() {
         let request = build_chat_completions_request(
             &reqwest::Client::new(),
             &config(ModelProtocol::ChatCompletions, AuthMode::BearerKey),
@@ -136,13 +174,16 @@ mod tests {
         assert_eq!(body["stream"], true);
         assert_eq!(body["stream_options"]["include_usage"], true);
         assert_eq!(body["max_tokens"], 160);
-        assert!(body.get("response_format").is_none());
+        assert_eq!(body["response_format"]["type"], "json_object");
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][0]["content"], "stable instructions");
         assert_eq!(body["messages"][1]["role"], "user");
         assert_eq!(body["messages"][1]["content"], "你好");
         assert_eq!(body["messages"][2]["role"], "assistant");
-        assert_eq!(body["messages"][2]["content"], "我在");
+        assert_eq!(
+            body["messages"][2]["content"],
+            r#"{"chains":[{"visualState":"idle","text":"我在"}]}"#
+        );
         for absent in [
             "prompt_cache_key",
             "previous_response_id",
@@ -153,6 +194,32 @@ mod tests {
         ] {
             assert!(body.get(absent).is_none(), "unexpected field: {absent}");
         }
+    }
+
+    #[test]
+    fn chat_completions_keeps_character_context_as_user_data() {
+        let request = build_chat_completions_request(
+            &reqwest::Client::new(),
+            &config(ModelProtocol::ChatCompletions, AuthMode::BearerKey),
+            Some(&SecretString::from("sk-exact".to_owned())),
+            &character_context_request(),
+        )
+        .expect("build Chat request");
+        let body = body_json(&request);
+        let messages = body["messages"].as_array().expect("messages array");
+
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], "stable instructions");
+        assert_eq!(messages[1]["role"], "user");
+        assert!(
+            messages[1]["content"]
+                .as_str()
+                .expect("character content")
+                .contains("我是高性能的嘛")
+        );
+        assert_eq!(messages[2]["role"], "user");
+        assert_eq!(messages[2]["content"], "你好");
+        assert_eq!(messages[3]["role"], "assistant");
     }
 
     #[test]

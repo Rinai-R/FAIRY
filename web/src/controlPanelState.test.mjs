@@ -7,6 +7,8 @@ import {
   MODEL_PROTOCOL_OPTIONS,
   assertControlPanelSection,
   buildModelConnectionInput,
+  buildCharacterSaveInput,
+  selectedAppearancePackId,
 } from "./controlPanelState.mjs";
 
 test("control panel exposes five product sections and two protocols", () => {
@@ -29,6 +31,7 @@ test("model form produces the exact public input without cache switches", () => 
     protocol: "chat_completions",
     endpoint: " https://api.deepseek.com ",
     model: " deepseek-chat ",
+    contextWindowTokens: " 128000 ",
     authMode: "bearer_key",
     promptCacheKey: false,
   });
@@ -36,12 +39,17 @@ test("model form produces the exact public input without cache switches", () => 
     protocol: "chat_completions",
     endpoint: "https://api.deepseek.com",
     model: "deepseek-chat",
+    contextWindowTokens: 128000,
     authMode: "bearer_key",
   });
   assert.equal("promptCacheKey" in input, false);
   assert.throws(
-    () => buildModelConnectionInput({ protocol: "auto", endpoint: "x", model: "m", authMode: "no_auth" }),
+    () => buildModelConnectionInput({ protocol: "auto", endpoint: "x", model: "m", contextWindowTokens: 128000, authMode: "no_auth" }),
     /unsupported model protocol/,
+  );
+  assert.throws(
+    () => buildModelConnectionInput({ protocol: "responses", endpoint: "x", model: "m", contextWindowTokens: 2048, authMode: "no_auth" }),
+    /context window/,
   );
 });
 
@@ -59,4 +67,58 @@ test("control panel does not expose retired network search configuration", () =>
   const appSource = readFileSync(new URL("./apps/ControlPanelApp.jsx", import.meta.url), "utf8");
 
   assert.doesNotMatch(appSource, /Brave Search|Search Endpoint|搜索连接/);
+});
+
+test("character form requires an explicit visual pack without inventing a default", () => {
+  assert.deepEqual(
+    buildCharacterSaveInput({
+      name: " 亚托莉 ",
+      description: " 会认真听用户说话。 ",
+      visualPackId: "fairy.atri",
+    }),
+    {
+      brief: { name: "亚托莉", description: "会认真听用户说话。" },
+      visualPackId: "fairy.atri",
+    },
+  );
+  assert.throws(
+    () => buildCharacterSaveInput({ name: "旧角色", description: "保留历史", visualPackId: "" }),
+    /must be selected/,
+  );
+  assert.deepEqual(
+    buildCharacterSaveInput({
+      name: " 亚托莉 ",
+      description: " 来自海边的仿生少女。 ",
+      dialogueStyle: "  短句，先接住用户当下的话。  ",
+      visualPackId: "fairy.atri",
+    }),
+    {
+      brief: {
+        name: "亚托莉",
+        description: "来自海边的仿生少女。",
+        dialogueStyle: "短句，先接住用户当下的话。",
+      },
+      visualPackId: "fairy.atri",
+    },
+  );
+  assert.equal(
+    "dialogueStyle" in buildCharacterSaveInput({
+      name: "旧角色",
+      description: "保留历史",
+      dialogueStyle: "   ",
+      visualPackId: "fairy.atri",
+    }).brief,
+    false,
+  );
+  assert.equal(selectedAppearancePackId(null), "");
+  assert.equal(
+    selectedAppearancePackId({ appearance: { status: "unassigned" } }),
+    "",
+  );
+  assert.equal(
+    selectedAppearancePackId({
+      appearance: { status: "assigned", visual: { packId: "fairy.atri" } },
+    }),
+    "fairy.atri",
+  );
 });

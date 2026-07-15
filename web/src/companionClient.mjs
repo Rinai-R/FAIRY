@@ -19,6 +19,7 @@ import {
   parseTurnOutcome,
   parseUserProfile,
   parseUserProfileUpdate,
+  parseVisualPackCatalog,
 } from "./companionState.mjs";
 
 async function invokeParsed(command, args, parser) {
@@ -106,8 +107,12 @@ export function compactCompanionSession(conversationId) {
   );
 }
 
-export function createCharacter(brief) {
-  return invokeParsed("create_character", { brief }, parseCharacter);
+export function createCharacter(brief, visualPackId) {
+  return invokeParsed(
+    "create_character",
+    { brief, visualPackId },
+    parseCharacter,
+  );
 }
 
 export function updateCharacter(characterId, brief) {
@@ -120,6 +125,18 @@ export function updateCharacter(characterId, brief) {
 
 export function listCharacters() {
   return invokeParsed("list_characters", undefined, parseCharacterCatalog);
+}
+
+export function listVisualPacks() {
+  return invokeParsed("list_visual_packs", undefined, parseVisualPackCatalog);
+}
+
+export function setCharacterAppearance(characterId, visualPackId) {
+  return invokeParsed(
+    "set_character_appearance",
+    { characterId, visualPackId },
+    parseCharacter,
+  );
 }
 
 export function activateCharacter(characterId, revision) {
