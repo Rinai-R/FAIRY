@@ -69,6 +69,16 @@ test("control panel does not expose retired network search configuration", () =>
   assert.doesNotMatch(appSource, /Brave Search|Search Endpoint|搜索连接/);
 });
 
+test("appearance picker uses a bounded popper menu", () => {
+  const appSource = readFileSync(new URL("./apps/ControlPanelApp.jsx", import.meta.url), "utf8");
+  const cssSource = readFileSync(new URL("./styles/control-panel.css", import.meta.url), "utf8");
+
+  assert.match(appSource, /className="cp-appearance-select-content" position="popper"/);
+  assert.match(cssSource, /\.cp-appearance-select-content\.rt-SelectContent:where\(\[data-side\]\)\s*\{/);
+  assert.match(cssSource, /max-height: min\(184px, var\(--radix-select-content-available-height\)\)/);
+  assert.match(cssSource, /\.cp-appearance-picker\s*\{[\s\S]*align-items: start/);
+});
+
 test("character form requires an explicit visual pack without inventing a default", () => {
   assert.deepEqual(
     buildCharacterSaveInput({

@@ -667,7 +667,7 @@ export function ControlPanelApp() {
                               <div className="cp-appearance-picker">
                                 <Select.Root value={visualPackId} onValueChange={setVisualPackId}>
                                   <Select.Trigger id="character-appearance" placeholder="选择角色外观" aria-label="角色外观" />
-                                  <Select.Content>
+                                  <Select.Content className="cp-appearance-select-content" position="popper" side="bottom" align="start" collisionPadding={14}>
                                     {visualCatalog.visualPacks.map((visual) => (
                                       <Select.Item key={visual.packId} value={visual.packId}>
                                         {visual.displayName}

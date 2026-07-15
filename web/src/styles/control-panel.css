@@ -192,12 +192,25 @@
 .cp-appearance-picker {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 112px;
-  align-items: center;
+  align-items: start;
   gap: 14px;
 }
 
 .cp-appearance-picker .rt-SelectTrigger {
   width: 100%;
+}
+
+.cp-appearance-select-content.rt-SelectContent:where([data-side]) {
+  width: var(--radix-select-trigger-width);
+  max-height: min(184px, var(--radix-select-content-available-height));
+}
+
+.cp-appearance-select-content .rt-ScrollAreaRoot {
+  max-height: 184px;
+}
+
+.cp-appearance-select-content .rt-SelectViewport {
+  padding-block: 4px;
 }
 
 .cp-appearance-preview {
