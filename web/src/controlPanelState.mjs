@@ -1,3 +1,8 @@
+import {
+  resolveCharacterImageUrl,
+  selectVisualStateImage,
+} from "./pixelTexture.mjs";
+
 export const CONTROL_PANEL_SECTIONS = Object.freeze([
   Object.freeze({ id: "character", label: "角色" }),
   Object.freeze({ id: "profile", label: "称呼" }),
@@ -13,6 +18,7 @@ export const MODEL_PROTOCOL_OPTIONS = Object.freeze([
 export const DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = 128_000;
 export const MIN_MODEL_CONTEXT_WINDOW_TOKENS = 4_096;
 export const MAX_MODEL_CONTEXT_WINDOW_TOKENS = 2_000_000;
+export const DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS = 1_048_576;
 
 export function assertControlPanelSection(value) {
   if (!CONTROL_PANEL_SECTIONS.some((section) => section.id === value)) {
@@ -31,6 +37,26 @@ function parseContextWindowTokens(value) {
     throw new TypeError("model context window must be 4096-2000000 tokens");
   }
   return numericValue;
+}
+
+function endpointHost(value) {
+  try {
+    return new URL(value.trim()).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+export function suggestModelContextWindowTokens({ endpoint, model }) {
+  const host = endpointHost(endpoint);
+  const normalizedModel = model.trim().toLowerCase();
+  if (
+    (host === "api.deepseek.com" || host.endsWith(".deepseek.com")) &&
+    (normalizedModel === "deepseek-v4-flash" || normalizedModel.startsWith("deepseek-v4-"))
+  ) {
+    return DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS;
+  }
+  return DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS;
 }
 
 export function buildModelConnectionInput({ protocol, endpoint, model, contextWindowTokens, authMode }) {
@@ -86,4 +112,23 @@ export function selectedAppearancePackId(character) {
   if (character === null) return "";
   if (character.appearance.status !== "assigned") return "";
   return character.appearance.visual.packId;
+}
+
+/** Resolve a visual pack idle image for control-panel <img> tags (Wails/Tauri). */
+export function controlPanelVisualPreviewUrl(visual, origin) {
+  if (visual === null || visual === undefined) return "";
+  if (typeof origin !== "string" || origin.length === 0) return "";
+  try {
+    const idle = selectVisualStateImage(visual, "idle");
+    return resolveCharacterImageUrl(idle.imagePath, origin);
+  } catch {
+    return "";
+  }
+}
+
+/** Resolve an assigned character's idle preview, or "" when unassigned/unavailable. */
+export function controlPanelCharacterPreviewUrl(character, origin) {
+  if (character === null || character === undefined) return "";
+  if (character.appearance?.status !== "assigned") return "";
+  return controlPanelVisualPreviewUrl(character.appearance.visual, origin);
 }

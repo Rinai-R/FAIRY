@@ -18,7 +18,8 @@
     "motion": "^12.42.2",
     "pixi.js": "8.19.0",
     "react": "19.2.7",
-    "react-dom": "19.2.7"
+    "react-dom": "19.2.7",
+    "@wailsio/runtime": "3.0.0-alpha.97"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "6.0.3",

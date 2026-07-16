@@ -48,8 +48,6 @@ import {
   exportCharacterPackage,
   createPersonalMemory,
   importCharacterPackage,
-  selectCharacterPackageFile,
-  selectCharacterPackageSavePath,
   confirmKnowledgeCandidate,
   getModelConnectionStatus,
   getIntelligenceStatus,
@@ -68,6 +66,39 @@ import {
   tombstonePersonalMemory,
   updateCharacter,
 } from "../companionClient.mjs";
+import {
+  selectCharacterPackageFile,
+  selectCharacterPackageSavePath,
+} from "../fileDialogClient.mjs";
+import {
+  activateWailsCharacter,
+  assignWailsLegacyRelationship,
+  clearWailsModelConnection,
+  clearWailsUserProfile,
+  confirmWailsKnowledgeCandidate,
+  createWailsCharacter,
+  createWailsCompanionSession,
+  createWailsPersonalMemory,
+  exportWailsCharacterPackage,
+  importWailsCharacterPackage,
+  loadWailsActiveBackgroundJobs,
+  loadWailsCharacterCatalog,
+  loadWailsExtractionBatchCatalog,
+  loadWailsKnowledgeCatalog,
+  loadWailsMemorySummary,
+  loadWailsModelStatus,
+  loadWailsPersonalMemoryCatalog,
+  loadWailsUserProfile,
+  loadWailsVisualPackCatalog,
+  retryWailsExtractionBatch,
+  reviseWailsPersonalMemory,
+  saveWailsModelConnection,
+  setWailsCharacterAppearance,
+  setWailsUserProfile,
+  tombstoneWailsKnowledge,
+  tombstoneWailsPersonalMemory,
+  updateWailsCharacter,
+} from "../wailsClient.mjs";
 import { normalizeCompanionError } from "../companionState.mjs";
 import {
   CONTROL_PANEL_SECTIONS,
@@ -78,6 +109,8 @@ import {
   assertControlPanelSection,
   buildModelConnectionInput,
   buildCharacterSaveInput,
+  controlPanelCharacterPreviewUrl,
+  controlPanelVisualPreviewUrl,
   selectedAppearancePackId,
 } from "../controlPanelState.mjs";
 import {
@@ -91,7 +124,7 @@ import {
   showCompanion,
 } from "../desktopClient.js";
 import { normalizeInvokeError } from "../desktopState.mjs";
-import { listenToConfigurationChanges } from "../windowClient.js";
+import { isWailsRuntime, listenToConfigurationChanges } from "../windowClient.js";
 
 const EMPTY_CATALOG = Object.freeze({
   characters: Object.freeze([]),
@@ -165,6 +198,59 @@ function pointInsideElement(element, position) {
   const x = Number(position.x ?? position.X ?? 0) / scale;
   const y = Number(position.y ?? position.Y ?? 0) / scale;
   return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+function intelligenceStatusFromWailsSummary(summary, activeBackgroundJobs = 0) {
+  return Object.freeze({
+    ready: true,
+    schemaVersion: summary.schemaVersion,
+    summary: Object.freeze({
+      conversations: summary.conversations,
+      activeGlobalMemories: summary.activeGlobalMemories,
+      activeCharacterMemories: summary.activeCharacterMemories,
+      needsReviewMemories: summary.needsReviewMemories,
+      pendingExtractionTurns: summary.pendingExtractionTurns,
+      runningBatches: summary.runningBatches,
+      failedBatches: summary.failedBatches,
+      candidateKnowledge: summary.candidateKnowledge,
+      verifiedKnowledge: summary.verifiedKnowledge,
+    }),
+    activeBackgroundJobs,
+    error: null,
+  });
+}
+
+function intelligenceStatusFromWailsError(error) {
+  const normalized = normalizeCompanionError(error);
+  return Object.freeze({
+    ready: false,
+    schemaVersion: null,
+    summary: null,
+    activeBackgroundJobs: 0,
+    error: Object.freeze({
+      code: normalized.code,
+      message: normalized.message,
+      retryable: Boolean(normalized.retryable),
+    }),
+  });
+}
+
+function controlPanelModelStatusFromWails(status) {
+  if (!status.configured) {
+    return Object.freeze({ configured: false, ready: false, config: null, error: null });
+  }
+  return Object.freeze({
+    configured: true,
+    ready: true,
+    config: Object.freeze({
+      protocol: status.protocol,
+      endpoint: status.endpoint,
+      model: status.model,
+      contextWindowTokens: status.contextWindowTokens,
+      authMode: status.authMode,
+    }),
+    error: null,
+  });
 }
 
 function KnowledgeEntry({ record, disabled, onConfirm, onDelete }) {
@@ -312,11 +398,11 @@ export function ControlPanelApp() {
       nextIntelligenceStatus,
       nextDesktop,
     ] = await Promise.all([
-      listCharacters(),
-      listVisualPacks(),
-      getUserProfile(),
-      getModelConnectionStatus(),
-      getIntelligenceStatus(),
+      loadActiveCharacterCatalog(),
+      loadActiveVisualCatalog(),
+      loadActiveUserProfile(),
+      loadActiveModelStatus(),
+      loadActiveIntelligenceStatus(),
       getDesktopState(),
     ]);
     setCatalog(nextCatalog);
@@ -347,8 +433,8 @@ export function ControlPanelApp() {
   const selectedVisual = visualCatalog.visualPacks.find(
     (visual) => visual.packId === visualPackId,
   ) ?? null;
-  const selectedVisualState = selectedVisual?.states?.[0] ?? null;
-  const selectedVisualImage = selectedVisualState?.imagePath ?? "";
+  const previewOrigin = typeof window !== "undefined" ? window.location.origin : "";
+  const selectedVisualImage = controlPanelVisualPreviewUrl(selectedVisual, previewOrigin);
   const selectedCharacter = characterId
     ? catalog.characters.find((character) => character.characterId === characterId) ?? null
     : null;
@@ -358,10 +444,148 @@ export function ControlPanelApp() {
   const stagedAppearanceName = selectedVisual?.displayName ?? "外观未选择";
   const disabled = pending !== null || closeRequested;
 
+  async function loadActiveCharacterCatalog() {
+    if (isWailsRuntime()) return loadWailsCharacterCatalog();
+    return listCharacters();
+  }
+
+  async function loadActiveIntelligenceStatus() {
+    if (isWailsRuntime()) {
+      try {
+        const [summary, activeBackgroundJobs] = await Promise.all([
+          loadWailsMemorySummary(),
+          loadWailsActiveBackgroundJobs(),
+        ]);
+        return intelligenceStatusFromWailsSummary(summary, activeBackgroundJobs);
+      } catch (error) {
+        return intelligenceStatusFromWailsError(error);
+      }
+    }
+    return getIntelligenceStatus();
+  }
+
+  async function loadActiveModelStatus() {
+    if (isWailsRuntime()) return controlPanelModelStatusFromWails(await loadWailsModelStatus());
+    return getModelConnectionStatus();
+  }
+
+  async function saveActiveModelConnection(input, key) {
+    if (isWailsRuntime()) return controlPanelModelStatusFromWails(await saveWailsModelConnection(input, key));
+    return saveModelConnection(input, key);
+  }
+
+  async function clearActiveModelConnection() {
+    if (isWailsRuntime()) return controlPanelModelStatusFromWails(await clearWailsModelConnection());
+    return clearModelConnection();
+  }
+
+  async function loadActiveUserProfile() {
+    if (isWailsRuntime()) return loadWailsUserProfile();
+    return getUserProfile();
+  }
+
+  async function setActiveUserProfile(name) {
+    if (isWailsRuntime()) return setWailsUserProfile(name);
+    return setUserProfile(name);
+  }
+
+  async function clearActiveUserProfile() {
+    if (isWailsRuntime()) return clearWailsUserProfile();
+    return clearUserProfile();
+  }
+
+  async function createActiveCharacter(brief, packId) {
+    if (isWailsRuntime()) return createWailsCharacter(brief, packId);
+    return createCharacter(brief, packId);
+  }
+
+  async function updateActiveCharacter(id, brief) {
+    if (isWailsRuntime()) return updateWailsCharacter(id, brief);
+    return updateCharacter(id, brief);
+  }
+
+  async function setActiveCharacterAppearance(id, packId) {
+    if (isWailsRuntime()) return setWailsCharacterAppearance(id, packId);
+    return setCharacterAppearance(id, packId);
+  }
+
+  async function activateActiveCharacter(id, revision) {
+    if (isWailsRuntime()) {
+      await activateWailsCharacter(id, revision);
+      return createWailsCompanionSession(id);
+    }
+    return activateCharacter(id, revision);
+  }
+
+  async function importActiveCharacterPackage(packagePath) {
+    if (isWailsRuntime()) return importWailsCharacterPackage(packagePath);
+    return importCharacterPackage(packagePath);
+  }
+
+  async function exportActiveCharacterPackage(id, outputPath) {
+    if (isWailsRuntime()) return exportWailsCharacterPackage(id, outputPath);
+    return exportCharacterPackage(id, outputPath);
+  }
+
+  async function loadActiveVisualCatalog() {
+    if (isWailsRuntime()) return loadWailsVisualPackCatalog();
+    return listVisualPacks();
+  }
+
+  async function loadActivePersonalMemoryCatalog(characterIdValue) {
+    if (isWailsRuntime()) return loadWailsPersonalMemoryCatalog(characterIdValue);
+    return getPersonalMemoryCatalog(characterIdValue);
+  }
+
+  async function createActivePersonalMemory(input) {
+    if (isWailsRuntime()) return createWailsPersonalMemory(input);
+    return createPersonalMemory(input);
+  }
+
+  async function reviseActivePersonalMemory(id, content) {
+    if (isWailsRuntime()) return reviseWailsPersonalMemory(id, content);
+    return revisePersonalMemory(id, content);
+  }
+
+  async function tombstoneActivePersonalMemory(id) {
+    if (isWailsRuntime()) return tombstoneWailsPersonalMemory(id);
+    return tombstonePersonalMemory(id);
+  }
+
+  async function assignActiveLegacyRelationship(id, characterIdValue) {
+    if (isWailsRuntime()) return assignWailsLegacyRelationship(id, characterIdValue);
+    return assignLegacyRelationship(id, characterIdValue);
+  }
+
+  async function loadActiveKnowledgeCatalog() {
+    if (isWailsRuntime()) return loadWailsKnowledgeCatalog();
+    return getKnowledgeCatalog();
+  }
+
+  async function confirmActiveKnowledgeCandidate(id) {
+    if (isWailsRuntime()) return confirmWailsKnowledgeCandidate(id);
+    return confirmKnowledgeCandidate(id);
+  }
+
+  async function tombstoneActiveKnowledge(id) {
+    if (isWailsRuntime()) return tombstoneWailsKnowledge(id);
+    return tombstoneKnowledge(id);
+  }
+
+  async function loadActiveExtractionBatchCatalog(characterIdValue) {
+    if (isWailsRuntime()) return loadWailsExtractionBatchCatalog(characterIdValue);
+    return getExtractionBatchCatalog(characterIdValue);
+  }
+
+  async function retryActiveExtractionBatch(id) {
+    if (isWailsRuntime()) return retryWailsExtractionBatch(id);
+    return retryExtractionBatch(id);
+  }
+
   const refreshIntelligence = useCallback(async () => {
     setKnowledgeCatalogLoading(true);
     try {
-      const nextIntelligenceStatus = await getIntelligenceStatus();
+      const nextIntelligenceStatus = await loadActiveIntelligenceStatus();
       setIntelligenceStatus(nextIntelligenceStatus);
       if (!nextIntelligenceStatus.ready) {
         setKnowledgeCatalog(null);
@@ -372,9 +596,9 @@ export function ControlPanelApp() {
       try {
         const activeCharacterId = catalog.active?.characterId ?? null;
         const [nextKnowledge, nextMemories, nextBatches] = await Promise.all([
-          getKnowledgeCatalog(),
-          activeCharacterId ? getPersonalMemoryCatalog(activeCharacterId) : Promise.resolve(null),
-          activeCharacterId ? getExtractionBatchCatalog(activeCharacterId) : Promise.resolve(null),
+          loadActiveKnowledgeCatalog(),
+          activeCharacterId ? loadActivePersonalMemoryCatalog(activeCharacterId) : Promise.resolve(null),
+          activeCharacterId ? loadActiveExtractionBatchCatalog(activeCharacterId) : Promise.resolve(null),
         ]);
         setKnowledgeCatalog(nextKnowledge);
         setMemoryCatalog(nextMemories);
@@ -484,7 +708,7 @@ export function ControlPanelApp() {
         : null;
       let saved;
       if (existing === null) {
-        saved = await createCharacter(input.brief, input.visualPackId);
+        saved = await createActiveCharacter(input.brief, input.visualPackId);
       } else {
         const existingDialogueStyle = existing.dialogueStyle ?? "";
         const nextDialogueStyle = input.brief.dialogueStyle ?? "";
@@ -492,13 +716,13 @@ export function ControlPanelApp() {
           existing.description !== input.brief.description ||
           existingDialogueStyle !== nextDialogueStyle;
         saved = briefChanged
-          ? await updateCharacter(characterId, input.brief)
+          ? await updateActiveCharacter(characterId, input.brief)
           : existing;
         if (selectedAppearancePackId(saved) !== input.visualPackId) {
-          saved = await setCharacterAppearance(characterId, input.visualPackId);
+          saved = await setActiveCharacterAppearance(characterId, input.visualPackId);
         }
       }
-      await activateCharacter(saved.characterId, saved.revision);
+      await activateActiveCharacter(saved.characterId, saved.revision);
       await refresh(true);
     });
   }
@@ -509,8 +733,8 @@ export function ControlPanelApp() {
       return;
     }
     await run("character-package", async () => {
-      const imported = await importCharacterPackage(packagePath);
-      await activateCharacter(imported.characterId, imported.revision);
+      const imported = await importActiveCharacterPackage(packagePath);
+      await activateActiveCharacter(imported.characterId, imported.revision);
       setCharacterPackageStatus(`已导入：${imported.name}`);
       await refresh(true);
     });
@@ -520,8 +744,8 @@ export function ControlPanelApp() {
     await run("character-package", async () => {
       const packagePath = await selectCharacterPackageFile();
       if (packagePath === null) return;
-      const imported = await importCharacterPackage(packagePath);
-      await activateCharacter(imported.characterId, imported.revision);
+      const imported = await importActiveCharacterPackage(packagePath);
+      await activateActiveCharacter(imported.characterId, imported.revision);
       setCharacterPackageStatus(`已导入：${imported.name}`);
       await refresh(true);
     });
@@ -546,7 +770,7 @@ export function ControlPanelApp() {
     await run("character-package-export", async () => {
       const outputPath = await selectCharacterPackageSavePath(selectedCharacter.name);
       if (outputPath === null) return;
-      await exportCharacterPackage(selectedCharacter.characterId, outputPath);
+      await exportActiveCharacterPackage(selectedCharacter.characterId, outputPath);
       setCharacterPackageStatus(`已导出：${outputPath}`);
     });
   }
@@ -555,39 +779,71 @@ export function ControlPanelApp() {
     let cancelled = false;
     let unlisten = null;
     let dragDropSubscription;
-    try {
-      dragDropSubscription = getCurrentWebview().onDragDropEvent((event) => {
-        if (cancelled || section !== "character" || disabled) return;
-        const payload = event.payload;
-        if (payload.type === "enter" || payload.type === "over") {
-          setCharacterPackageDragActive(pointInsideElement(packageDropzoneRef.current, payload.position));
-          return;
+
+    if (isWailsRuntime()) {
+      (async () => {
+        try {
+          const { Events } = await import("@wailsio/runtime");
+          if (cancelled || typeof Events?.On !== "function") return;
+          const off = Events.On("character-package-dropped", (event) => {
+            if (cancelled || section !== "character" || disabled) return;
+            const files = event?.data?.files ?? event?.files ?? [];
+            const packagePath =
+              files.find((path) => typeof path === "string" && (path.endsWith(".pack") || path.endsWith(".zip"))) ??
+              files[0] ??
+              "";
+            if (!packagePath) {
+              setError({
+                code: "INVALID_VISUAL_MANIFEST",
+                message: "拖入的文件不是 .pack 或 .zip 角色包。",
+                retryable: false,
+              });
+              return;
+            }
+            setCharacterPackageDragActive(false);
+            void importPackageFromPath(packagePath);
+          });
+          unlisten = typeof off === "function" ? off : () => {};
+        } catch {
+          // Browser preview has no Wails events; Finder button remains the primary path.
         }
-        if (payload.type === "leave") {
-          setCharacterPackageDragActive(false);
-          return;
-        }
-        if (payload.type === "drop") {
-          const inside = pointInsideElement(packageDropzoneRef.current, payload.position);
-          setCharacterPackageDragActive(false);
-          if (!inside) return;
-          const packagePath = payload.paths?.find((path) => path.endsWith(".pack") || path.endsWith(".zip")) ?? payload.paths?.[0] ?? "";
-          if (!packagePath) {
-            setError({ code: "INVALID_VISUAL_MANIFEST", message: "拖入的文件不是 .pack 或 .zip 角色包。", retryable: false });
+      })();
+    } else {
+      try {
+        dragDropSubscription = getCurrentWebview().onDragDropEvent((event) => {
+          if (cancelled || section !== "character" || disabled) return;
+          const payload = event.payload;
+          if (payload.type === "enter" || payload.type === "over") {
+            setCharacterPackageDragActive(pointInsideElement(packageDropzoneRef.current, payload.position));
             return;
           }
-          void importPackageFromPath(packagePath);
-        }
+          if (payload.type === "leave") {
+            setCharacterPackageDragActive(false);
+            return;
+          }
+          if (payload.type === "drop") {
+            const inside = pointInsideElement(packageDropzoneRef.current, payload.position);
+            setCharacterPackageDragActive(false);
+            if (!inside) return;
+            const packagePath = payload.paths?.find((path) => path.endsWith(".pack") || path.endsWith(".zip")) ?? payload.paths?.[0] ?? "";
+            if (!packagePath) {
+              setError({ code: "INVALID_VISUAL_MANIFEST", message: "拖入的文件不是 .pack 或 .zip 角色包。", retryable: false });
+              return;
+            }
+            void importPackageFromPath(packagePath);
+          }
+        });
+      } catch {
+        dragDropSubscription = null;
+      }
+      dragDropSubscription?.then((cleanup) => {
+        if (cancelled) cleanup();
+        else unlisten = cleanup;
+      }).catch(() => {
+        // Browser preview has no Tauri webview; Finder button remains the primary path.
       });
-    } catch {
-      dragDropSubscription = null;
     }
-    dragDropSubscription?.then((cleanup) => {
-      if (cancelled) cleanup();
-      else unlisten = cleanup;
-    }).catch(() => {
-      // Browser preview has no Tauri webview; Finder button remains the primary path.
-    });
+
     return () => {
       cancelled = true;
       unlisten?.();
@@ -613,14 +869,14 @@ export function ControlPanelApp() {
       return;
     }
     await run("character", async () => {
-      await activateCharacter(character.characterId, character.revision);
+      await activateActiveCharacter(character.characterId, character.revision);
       await refresh(false);
     });
   }
 
   async function submitProfile(event) {
     event.preventDefault();
-    const update = await run("profile", () => setUserProfile(preferredName));
+    const update = await run("profile", () => setActiveUserProfile(preferredName));
     if (update) setProfile(update.profile);
   }
 
@@ -633,21 +889,21 @@ export function ControlPanelApp() {
       setError({ code: "INVALID_MODEL_CONFIG", message: reason.message, retryable: false });
       return;
     }
-    const status = await run("model", () => saveModelConnection(input, apiKey || null));
+    const status = await run("model", () => saveActiveModelConnection(input, apiKey || null));
     setApiKey("");
     if (status) setModelStatus(status);
   }
 
   async function confirmKnowledge(id) {
     await run(`knowledge-confirm-${id}`, async () => {
-      await confirmKnowledgeCandidate(id);
+      await confirmActiveKnowledgeCandidate(id);
       await refreshIntelligence();
     });
   }
 
   async function deleteKnowledge(id) {
     await run(`knowledge-delete-${id}`, async () => {
-      await tombstoneKnowledge(id);
+      await tombstoneActiveKnowledge(id);
       await refreshIntelligence();
     });
   }
@@ -659,7 +915,7 @@ export function ControlPanelApp() {
       const scope = memoryKind === "relationship"
         ? { type: "character", characterId: catalog.active.characterId }
         : { type: "global" };
-      await createPersonalMemory({ kind: memoryKind, scope, content: memoryContent.trim() });
+      await createActivePersonalMemory({ kind: memoryKind, scope, content: memoryContent.trim() });
       setMemoryContent("");
       await refreshIntelligence();
     });
@@ -667,14 +923,14 @@ export function ControlPanelApp() {
 
   async function reviseMemory(id, content) {
     await run(`memory-revise-${id}`, async () => {
-      await revisePersonalMemory(id, content);
+      await reviseActivePersonalMemory(id, content);
       await refreshIntelligence();
     });
   }
 
   async function deleteMemory(id) {
     await run(`memory-delete-${id}`, async () => {
-      await tombstonePersonalMemory(id);
+      await tombstoneActivePersonalMemory(id);
       await refreshIntelligence();
     });
   }
@@ -682,14 +938,14 @@ export function ControlPanelApp() {
   async function assignLegacy(id) {
     if (!catalog.active) return;
     await run(`memory-assign-${id}`, async () => {
-      await assignLegacyRelationship(id, catalog.active.characterId);
+      await assignActiveLegacyRelationship(id, catalog.active.characterId);
       await refreshIntelligence();
     });
   }
 
   async function retryBatch(id) {
     await run(`batch-retry-${id}`, async () => {
-      await retryExtractionBatch(id);
+      await retryActiveExtractionBatch(id);
       await refreshIntelligence();
     });
   }
@@ -773,9 +1029,10 @@ export function ControlPanelApp() {
                     <motion.section
                       className="cp-page"
                       key={section}
-                      initial={{ opacity: 0, x: 10 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: -8 }}
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.14 }}
                     >
                       {section === "character" ? (
                         <>
@@ -824,6 +1081,7 @@ export function ControlPanelApp() {
                                   {catalog.characters.map((character) => {
                                     const active = catalog.active?.characterId === character.characterId && catalog.active?.revision === character.revision;
                                     const selected = characterId === character.characterId;
+                                    const thumb = controlPanelCharacterPreviewUrl(character, previewOrigin);
                                     return (
                                       <button
                                         key={character.characterId + "-" + character.revision}
@@ -832,7 +1090,15 @@ export function ControlPanelApp() {
                                         onClick={() => void chooseCharacter(character)}
                                         disabled={disabled}
                                       >
-                                        <span>{active ? <CheckCircledIcon aria-hidden="true" /> : <PersonIcon aria-hidden="true" />}</span>
+                                        <span className={thumb ? "cp-character-film-thumb" : undefined}>
+                                          {thumb ? (
+                                            <img src={thumb} alt="" />
+                                          ) : active ? (
+                                            <CheckCircledIcon aria-hidden="true" />
+                                          ) : (
+                                            <PersonIcon aria-hidden="true" />
+                                          )}
+                                        </span>
                                         <strong>{character.name}</strong>
                                         <small>{character.appearance.status === "assigned" ? "外观已绑定" : "等待外观"}</small>
                                       </button>
@@ -863,7 +1129,11 @@ export function ControlPanelApp() {
                                   </Field>
                                   <Field id="character-appearance" label="角色外观" hint="外观只影响桌宠画面，不会修改角色描述、关系记忆或聊天记录。">
                                     <div className="cp-appearance-picker">
-                                      <Select.Root value={visualPackId} onValueChange={setVisualPackId}>
+                                      <Select.Root
+                                        key={characterId ?? "new-character"}
+                                        value={visualPackId || undefined}
+                                        onValueChange={setVisualPackId}
+                                      >
                                         <Select.Trigger id="character-appearance" placeholder="选择角色外观" aria-label="角色外观" />
                                         <Select.Content className="cp-appearance-select-content" position="popper" side="bottom" align="start" collisionPadding={14}>
                                           {visualCatalog.visualPacks.map((visual) => (
@@ -874,8 +1144,8 @@ export function ControlPanelApp() {
                                         </Select.Content>
                                       </Select.Root>
                                       {selectedVisualImage ? (
-                                        <div className="cp-appearance-preview" aria-label={selectedVisual.displayName + " 外观预览"}>
-                                          <img className="cp-appearance-image" src={selectedVisualImage} alt={selectedVisual.displayName} />
+                                        <div className="cp-appearance-preview" aria-label={(selectedVisual?.displayName ?? "角色") + " 外观预览"}>
+                                          <img className="cp-appearance-image" src={selectedVisualImage} alt={selectedVisual?.displayName ?? "角色外观"} />
                                         </div>
                                       ) : (
                                         <Text as="p" size="1" color="gray">尚未选择外观</Text>
@@ -960,7 +1230,7 @@ export function ControlPanelApp() {
                                 <TextField.Root id="preferred-name" value={preferredName} onChange={(event) => setPreferredName(event.target.value)} maxLength="64" placeholder="你希望她怎样叫你？" />
                               </Field>
                               <Flex justify="between" gap="3">
-                                <Button color="tomato" variant="soft" type="button" disabled={disabled || !profile?.preferredName} onClick={() => void run("profile", async () => { const update = await clearUserProfile(); setProfile(update.profile); setPreferredName(""); })}>
+                                <Button color="tomato" variant="soft" type="button" disabled={disabled || !profile?.preferredName} onClick={() => void run("profile", async () => { const update = await clearActiveUserProfile(); setProfile(update.profile); setPreferredName(""); })}>
                                   <TrashIcon />清除称呼
                                 </Button>
                                 <Button type="submit" disabled={disabled}>保存称呼</Button>
@@ -1022,7 +1292,7 @@ export function ControlPanelApp() {
                               <Callout.Text><strong>缓存始终自动</strong>：Runtime 保持稳定前缀，只记录服务端返回的真实缓存用量。</Callout.Text>
                             </Callout.Root>
                             <Flex justify="between" gap="3">
-                              <Button color="tomato" variant="soft" type="button" disabled={disabled || !modelStatus?.configured} onClick={() => void run("model", async () => { const status = await clearModelConnection(); setModelStatus(status); })}>
+                              <Button color="tomato" variant="soft" type="button" disabled={disabled || !modelStatus?.configured} onClick={() => void run("model", async () => { const status = await clearActiveModelConnection(); setModelStatus(status); })}>
                                 <TrashIcon />清除连接
                               </Button>
                               <Button type="submit" disabled={disabled}>保存连接</Button>

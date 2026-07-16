@@ -15,6 +15,16 @@ test("only the two product window labels are accepted", () => {
   assert.throws(() => parseProductWindowLabel("main"), /unsupported/);
 });
 
+test("Wails product window label is driven by surface query", () => {
+  const source = readFileSync(new URL("./windowClient.js", import.meta.url), "utf8");
+  assert.match(source, /surface=control-panel|get\("surface"\)/);
+  assert.match(source, /control-panel/);
+  assert.doesNotMatch(
+    source,
+    /isWailsRuntime\(\) \{\s*return "companion";/,
+  );
+});
+
 test("recent transcript projection keeps the full source untouched", () => {
   const transcript = Object.freeze(
     Array.from({ length: 15 }, (_, index) => Object.freeze({ text: `${index + 1}` })),

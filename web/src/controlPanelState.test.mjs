@@ -8,8 +8,27 @@ import {
   assertControlPanelSection,
   buildModelConnectionInput,
   buildCharacterSaveInput,
+  controlPanelCharacterPreviewUrl,
+  controlPanelVisualPreviewUrl,
   selectedAppearancePackId,
 } from "./controlPanelState.mjs";
+
+const ATRI_VISUAL = Object.freeze({
+  schemaVersion: 2,
+  packId: "fairy.atri",
+  displayName: "亚托莉",
+  renderer: "state_images",
+  frame: Object.freeze({ width: 128, height: 192 }),
+  scale: 1,
+  anchor: Object.freeze({ x: 64, y: 190 }),
+  states: Object.freeze([
+    Object.freeze({
+      id: "idle",
+      description: "安静站立",
+      imagePath: "fairy-character://localhost/fairy.atri/images/idle.png",
+    }),
+  ]),
+});
 
 test("control panel exposes five product sections and two protocols", () => {
   assert.deepEqual(CONTROL_PANEL_SECTIONS.map(({ id }) => id), [
@@ -121,6 +140,49 @@ test("appearance picker uses a bounded popper menu", () => {
   assert.match(cssSource, /\.cp-appearance-select-content\.rt-SelectContent:where\(\[data-side\]\)\s*\{/);
   assert.match(cssSource, /max-height: min\(184px, var\(--radix-select-content-available-height\)\)/);
   assert.match(cssSource, /\.cp-appearance-picker\s*\{[\s\S]*align-items: start/);
+  assert.match(appSource, /controlPanelVisualPreviewUrl/);
+  assert.match(appSource, /controlPanelCharacterPreviewUrl/);
+  assert.match(appSource, /value=\{visualPackId \|\| undefined\}/);
+});
+
+test("character page scroll path avoids transform and filter flicker sources", () => {
+  const appSource = readFileSync(new URL("./apps/ControlPanelApp.jsx", import.meta.url), "utf8");
+  const cssSource = readFileSync(new URL("./styles/control-panel.css", import.meta.url), "utf8");
+
+  assert.match(appSource, /initial=\{\{\s*opacity:\s*0\s*\}\}/);
+  assert.doesNotMatch(appSource, /initial=\{\{\s*opacity:\s*0,\s*x:/);
+  assert.match(cssSource, /\.cp-character-portrait\s*\{[\s\S]*filter:\s*none/);
+  assert.match(cssSource, /\.cp-scroll \.rt-ScrollAreaViewport\s*\{[\s\S]*transform:\s*none/);
+});
+
+test("control panel preview URLs rewrite fairy-character onto the Wails asset route", () => {
+  const previous = globalThis.window;
+  globalThis.window = { _wails: {} };
+  try {
+    assert.equal(
+      controlPanelVisualPreviewUrl(ATRI_VISUAL, "http://wails.localhost"),
+      "http://wails.localhost/fairy-character/fairy.atri/images/idle.png",
+    );
+    assert.equal(
+      controlPanelCharacterPreviewUrl(
+        { appearance: { status: "assigned", visual: ATRI_VISUAL } },
+        "http://wails.localhost",
+      ),
+      "http://wails.localhost/fairy-character/fairy.atri/images/idle.png",
+    );
+    assert.equal(
+      controlPanelCharacterPreviewUrl(
+        { appearance: { status: "unassigned" } },
+        "http://wails.localhost",
+      ),
+      "",
+    );
+    assert.equal(controlPanelVisualPreviewUrl(null, "http://wails.localhost"), "");
+    assert.equal(controlPanelVisualPreviewUrl(ATRI_VISUAL, ""), "");
+  } finally {
+    if (previous === undefined) delete globalThis.window;
+    else globalThis.window = previous;
+  }
 });
 
 test("character form requires an explicit visual pack without inventing a default", () => {

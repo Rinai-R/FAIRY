@@ -77,3 +77,21 @@ test("pet window drag ignores inactive cases without consuming the event", () =>
   assert.equal(started, false);
   assert.deepEqual(event.calls, []);
 });
+
+test("Wails pet window drag marks dragging without consuming pointerdown", () => {
+  const event = dragEvent();
+  const dragging = [];
+  const started = startPetWindowDrag({
+    event,
+    desktopReady: true,
+    petVisualOpen: true,
+    consumePointerEvent: false,
+    startDragging: () => Promise.resolve(),
+    setDragging: (value) => dragging.push(value),
+    onError: () => assert.fail("drag should not fail"),
+  });
+
+  assert.equal(started, true);
+  assert.deepEqual(event.calls, []);
+  assert.deepEqual(dragging, [true]);
+});

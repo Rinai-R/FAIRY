@@ -42,6 +42,7 @@
   right: 58px;
   left: 0;
   height: 72px;
+  --wails-draggable: drag;
 }
 
 .cp-header {
@@ -132,9 +133,17 @@
   flex: 1;
 }
 
+/* Keep the scroll viewport free of CSS transforms so WKWebView does not
+   flicker the lower half of long character-library pages while scrolling. */
+.cp-scroll .rt-ScrollAreaViewport {
+  transform: none;
+  will-change: auto;
+}
+
 .cp-page {
   box-sizing: border-box;
   padding: 26px 20px 24px;
+  transform: none;
 }
 
 .cp-page-header {
@@ -229,7 +238,9 @@
   max-height: 320px;
   object-fit: contain;
   object-position: center bottom;
-  filter: drop-shadow(0 24px 28px rgb(21 74 108 / 18%));
+  /* drop-shadow filters repaint on every scroll frame in WKWebView; use a
+     plain shadow on a wrapper instead if needed. */
+  filter: none;
   image-rendering: auto;
 }
 
@@ -367,11 +378,26 @@
   border-radius: 10px;
   background: var(--fairy-accent-soft);
   color: var(--fairy-accent-strong);
+  overflow: hidden;
 }
 
 .cp-character-film-card span svg {
   width: 15px;
   height: 15px;
+}
+
+.cp-character-film-card span.cp-character-film-thumb {
+  width: 40px;
+  height: 48px;
+  border-radius: 12px;
+  background: #f7fbfd;
+}
+
+.cp-character-film-card span.cp-character-film-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center bottom;
 }
 
 .cp-character-film-card strong,
@@ -471,7 +497,8 @@
     transform var(--fairy-motion-fast) var(--fairy-ease-out);
 }
 
-.cp-package-dropzone.is-dragging {
+.cp-package-dropzone.is-dragging,
+.cp-package-dropzone.file-drop-target-active {
   border-color: var(--fairy-accent-strong);
   background: #edf8fc;
   transform: translateY(-1px);

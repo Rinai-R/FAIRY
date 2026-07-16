@@ -1,6 +1,7 @@
 .DS_Store
 /bin/
 /dist/
+/fairy/assets/dist/
 /tmp/
 /data/*.jsonl
 /data/*.json
@@ -20,8 +21,6 @@
 /node_modules/
 /.pnpm-store/
 /target/
-/src-tauri/target/
-/src-tauri/gen/
 /pnpm-debug.log*
 /.env.persona.local
 /web/public/characters/
@@ -31,3 +30,4 @@
 *.character-pack.zip
 /openspec
 AGENTS.md
+.agents/

@@ -1,0 +1,8 @@
+name: FAIRY
+outputfilename: FAIRY
+frontend:
+  directory: web
+  install: pnpm install --frozen-lockfile
+  build: pnpm build
+  dev: pnpm dev
+  serve: pnpm dev

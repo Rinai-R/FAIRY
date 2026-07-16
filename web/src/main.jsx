@@ -14,15 +14,18 @@ import "./styles/control-panel.css";
 class RootErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
-    this.state = { failed: false };
+    this.state = { failed: false, message: "" };
   }
 
-  static getDerivedStateFromError() {
-    return { failed: true };
+  static getDerivedStateFromError(error) {
+    return {
+      failed: true,
+      message: error instanceof Error ? error.message : String(error ?? "unknown"),
+    };
   }
 
-  componentDidCatch(error) {
-    console.error("FAIRY_RENDER_FAILURE", error);
+  componentDidCatch(error, info) {
+    console.error("FAIRY_RENDER_FAILURE", error, info?.componentStack);
   }
 
   render() {
@@ -32,6 +35,9 @@ class RootErrorBoundary extends React.Component {
         <CrossCircledIcon aria-hidden="true" />
         <h1>FAIRY 暂时无法显示</h1>
         <p>界面发生了未预期错误，请从菜单栏退出后重新启动。</p>
+        {this.state.message ? (
+          <pre className="fatal-error-detail">{this.state.message}</pre>
+        ) : null}
       </main>
     );
   }

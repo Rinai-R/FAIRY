@@ -11,6 +11,7 @@ export function isCompanionChatViewportReady(width) {
   if (typeof width !== "number" || !Number.isFinite(width) || width < 0) {
     throw new TypeError("companion viewport width is invalid");
   }
+  // Native chat window is 552 logical px; wait until resize has landed.
   return width >= 542;
 }
 

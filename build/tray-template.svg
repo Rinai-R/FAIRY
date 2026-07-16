@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 44 44">
+  <g transform="translate(2,2) scale(0.078125)">
+    <!-- 0.078125 = 40/512 -->
+    <path d="M256 74C273 157 315 199 398 216C315 233 273 275 256 438C239 275 197 233 114 216C197 199 239 157 256 74Z" fill="#000000"/>
+  </g>
+</svg>

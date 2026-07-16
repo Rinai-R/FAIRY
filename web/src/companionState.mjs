@@ -1339,6 +1339,42 @@ export function reduceCompanionState(state, action) {
     }
     case "harness_event":
       return reduceHarnessEvent(state, parseHarnessEvent(action.event));
+    case "compiled_turn_completed": {
+      const outcome = parseTurnOutcome(action.outcome);
+      if (state.conversationId !== outcome.conversationId) {
+        throw new TypeError("compiled turn outcome conversation id does not match");
+      }
+      if (!state.submitting) {
+        throw new TypeError("compiled turn outcome has no pending submission");
+      }
+      const transcript = state.transcript.map((entry, index) => {
+        if (index !== state.transcript.length - 1 || entry.role !== "user") return entry;
+        return Object.freeze({ ...entry, turnId: outcome.turnId });
+      });
+      transcript.push(Object.freeze({
+        role: "assistant",
+        text: outcome.responseText,
+        speechText: outcome.speechText,
+        sources: outcome.sources,
+        chains: outcome.chains,
+        status: "completed",
+        turnId: outcome.turnId,
+      }));
+      return Object.freeze({
+        ...state,
+        sessionState: "completed",
+        activeTurnId: null,
+        terminalTurn: Object.freeze({ turnId: outcome.turnId, state: "completed" }),
+        responseDraft: "",
+        transcript: Object.freeze(transcript),
+        error: null,
+        usage: outcome.usage,
+        speechRequest: outcome.speechRequested
+          ? Object.freeze({ text: outcome.speechText, turnId: outcome.turnId })
+          : null,
+        submitting: false,
+      });
+    }
     case "invoke_failed":
       return Object.freeze({
         ...state,

@@ -11,7 +11,13 @@
     "dev": "pnpm --dir web dev",
     "build": "pnpm --dir web build",
     "test": "pnpm --dir web test",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "wails:doctor": "wails3 doctor",
+    "wails:bindings": "pnpm --dir web build && mkdir -p fairy/assets && rm -rf fairy/assets/dist && cp -R web/dist fairy/assets/dist && cp build/icon.png fairy/assets/icon.png && go test -C fairy ./... && (cd fairy && wails3 generate bindings)",
+    "wails:build": "wails3 build"
+  },
+  "dependencies": {
+    "@wailsio/runtime": "3.0.0-alpha.97"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4"

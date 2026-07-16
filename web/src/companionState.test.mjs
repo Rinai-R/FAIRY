@@ -436,6 +436,69 @@ test("event and outcome parsers reject missing fields and preserve zero cache hi
   );
 });
 
+test("completed harness usage accepts missing CacheObservation wire shape from Go", () => {
+  let state = advanceToResponding();
+  state = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(4, "responding", {
+      type: "reply_chain",
+      index: 0,
+      delta: "你好",
+      text: "你好",
+      speechText: "你好",
+      visualState: "idle",
+    }),
+  });
+  state = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(5, "completed", {
+      type: "completed",
+      text: "你好",
+      speechText: "你好",
+      sources: [],
+      characterRevision: 1,
+      userProfileRevision: null,
+      usage: [{
+        lane: "respond",
+        historyWindow: 1,
+        usage: {
+          inputTokens: 100,
+          outputTokens: 50,
+          cachedInputTokens: { status: "missing" },
+          cacheWriteTokens: { status: "missing" },
+        },
+      }],
+      visualState: "idle",
+      chains: [{ text: "你好", speechText: "你好", visualState: "idle" }],
+    }),
+  });
+  assert.equal(state.sessionState, "completed");
+  assert.equal(state.usage[0].usage.cachedInputTokens.status, "missing");
+  assert.throws(
+    () => parseHarnessEvent(event(1, "completed", {
+      type: "completed",
+      text: "你好",
+      speechText: "你好",
+      sources: [],
+      characterRevision: 1,
+      userProfileRevision: null,
+      usage: [{
+        lane: "respond",
+        historyWindow: 1,
+        usage: {
+          inputTokens: 100,
+          outputTokens: 50,
+          cachedInputTokens: 0,
+          cacheWriteTokens: 0,
+        },
+      }],
+      visualState: "idle",
+      chains: [{ text: "你好", speechText: "你好", visualState: "idle" }],
+    })),
+    /cachedInputTokens must be an object/,
+  );
+});
+
 test("completed reply keeps one assistant message with speech text and sources", () => {
   let state = advanceToResponding();
   state = reduceCompanionState(state, {

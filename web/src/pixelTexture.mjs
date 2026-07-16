@@ -1,3 +1,15 @@
+import { isWailsRuntime } from "./runtimeEnv.mjs";
+
+function fairyCharacterRelativePath(imagePath) {
+  if (imagePath.startsWith("fairy-character://localhost/")) {
+    return imagePath.slice("fairy-character://localhost/".length);
+  }
+  if (imagePath.startsWith("http://fairy-character.localhost/")) {
+    return imagePath.slice("http://fairy-character.localhost/".length);
+  }
+  return null;
+}
+
 export function resolveCharacterImageUrl(imagePath, origin) {
   if (
     typeof imagePath !== "string" ||
@@ -9,14 +21,15 @@ export function resolveCharacterImageUrl(imagePath, origin) {
   ) {
     throw new TypeError("image path must use the local character namespace");
   }
-  if (
-    imagePath.startsWith("fairy-character://localhost/") ||
-    imagePath.startsWith("http://fairy-character.localhost/")
-  ) {
-    return imagePath.replace(
-      "http://fairy-character.localhost/",
-      "fairy-character://localhost/",
-    );
+  const relative = fairyCharacterRelativePath(imagePath);
+  if (relative !== null) {
+    if (isWailsRuntime()) {
+      if (typeof origin !== "string" || origin.length === 0) {
+        throw new TypeError("application origin is required");
+      }
+      return new URL(`/fairy-character/${relative}`, `${origin}/`).href;
+    }
+    return `fairy-character://localhost/${relative}`;
   }
   if (typeof origin !== "string" || origin.length === 0) {
     throw new TypeError("application origin is required");

@@ -101,3 +101,27 @@ test("image URL keeps the Tauri localhost origin", () => {
     /local character namespace/,
   );
 });
+
+test("image URL rewrites fairy-character protocol onto Wails asset route", () => {
+  const previous = globalThis.window;
+  globalThis.window = { _wails: {} };
+  try {
+    assert.equal(
+      resolveCharacterImageUrl(
+        "fairy-character://localhost/fairy.atri/images/idle.png",
+        "http://wails.localhost",
+      ),
+      "http://wails.localhost/fairy-character/fairy.atri/images/idle.png",
+    );
+    assert.equal(
+      resolveCharacterImageUrl(
+        "http://fairy-character.localhost/fairy.atri/images/happy.png",
+        "http://wails.localhost",
+      ),
+      "http://wails.localhost/fairy-character/fairy.atri/images/happy.png",
+    );
+  } finally {
+    if (previous === undefined) delete globalThis.window;
+    else globalThis.window = previous;
+  }
+});

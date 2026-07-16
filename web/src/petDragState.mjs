@@ -9,6 +9,9 @@ export function startPetWindowDrag({
   startDragging,
   setDragging,
   onError,
+  // Wails CSS drag arms on mousedown; preventDefault on pointerdown suppresses
+  // that mouse event, so Wails must leave the pointer event unconsumed.
+  consumePointerEvent = true,
 }) {
   if (
     !canStartPetWindowDrag({
@@ -19,8 +22,10 @@ export function startPetWindowDrag({
   ) {
     return false;
   }
-  event.preventDefault?.();
-  event.stopPropagation?.();
+  if (consumePointerEvent) {
+    event.preventDefault?.();
+    event.stopPropagation?.();
+  }
   setDragging(true);
   startDragging().catch((error) => {
     setDragging(false);
