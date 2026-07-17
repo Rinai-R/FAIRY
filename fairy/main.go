@@ -13,26 +13,35 @@ package main
 
 import (
 	"io/fs"
-	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"syscall"
+	"time"
 
 	"fairy/character"
 	"fairy/companion"
 	"fairy/config"
 	"fairy/desktop"
+	"fairy/logx"
 	"fairy/memory"
 	"fairy/model"
 	"fairy/notify"
 	"fairy/profile"
 	"fairy/visual"
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"go.uber.org/zap"
 )
 
 func main() {
+	logger := logx.New()
+	defer func() { _ = logger.Sync() }()
+
 	assets, err := fs.Sub(embeddedAssets, "assets/dist")
 	if err != nil {
-		log.Fatal(err)
+		logger.Fatal("embed assets", zap.Error(err))
 	}
 
 	configRoot := os.Getenv("FAIRY_CONFIG_ROOT")
@@ -48,24 +57,59 @@ func main() {
 	})
 	memoryPath, err := memory.DatabasePath(configRoot)
 	if err != nil {
-		log.Fatal(err)
+		logger.Fatal("resolve memory path", zap.Error(err))
 	}
 	memoryStore, err := memory.OpenOrCreate(memoryPath)
 	if err != nil {
-		log.Fatal(err)
+		logger.Fatal("open memory store", zap.Error(err))
 	}
 	modelService := model.NewModelService(configRoot)
 	desktopService := desktop.NewDesktopService()
 	companionService := companion.NewCompanionServiceWithRuntime(configRoot, memoryStore, modelService)
 	defer companionService.Close()
 
+	characterService := character.NewCharacterService(configRoot)
+	assetHandler := visual.NewAssetHandler(configRoot)
+
+	// Dependency injection of the logger (project Attach* idiom): no package
+	// global; each service receives the logger from main.
+	companion.AttachLogger(companionService, logger.Named("companion"))
+	character.AttachLogger(characterService, logger.Named("character"))
+	visual.AttachLogger(assetHandler, logger.Named("visual"))
+
+	// shuttingDown gates teardown-only log filtering (see WarningHandler).
+	var shuttingDown atomic.Bool
+
 	app := application.New(application.Options{
 		Name:        "FAIRY",
 		Description: "Desktop companion app with a Go/Wails migration runtime.",
 		Icon:        appIcon,
+		// Route Wails system logs through the same zap backend for uniform output.
+		Logger: logx.NewSlog(logger.Named("wails")),
+		// During teardown Wails dispatches late window events after the window
+		// map is cleared, emitting benign "Window #N not found" warnings. Drop
+		// those once shutdown has begun; surface every other warning so real
+		// issues during normal operation stay visible.
+		WarningHandler: func(msg string) {
+			if shuttingDown.Load() && strings.Contains(msg, "not found") {
+				return
+			}
+			logger.Warn("wails warning", zap.String("msg", msg))
+		},
+		// OnShutdown runs on the native app-terminate path (tray Quit / Cmd+Q),
+		// cancelling in-flight turns and extraction timers and stopping the
+		// openserp sidecar rather than orphaning them. SIGINT/SIGTERM are NOT
+		// covered here (Wails v3 alpha2.117 sets up a signal handler but never
+		// starts it), so main installs its own handler below. Close is idempotent.
+		OnShutdown: func() {
+			shuttingDown.Store(true)
+			if err := companionService.Close(); err != nil {
+				logger.Error("companion shutdown", zap.Error(err))
+			}
+		},
 		Services: []application.Service{
 			application.NewService(bootstrap),
-			application.NewService(character.NewCharacterService(configRoot)),
+			application.NewService(characterService),
 			application.NewService(config.NewConfigService(configRoot)),
 			application.NewService(desktopService),
 			application.NewService(modelService),
@@ -73,7 +117,7 @@ func main() {
 			application.NewService(memory.NewMemoryServiceWithStore(configRoot, memoryStore)),
 			application.NewService(profile.NewProfileService(configRoot)),
 			application.NewService(visual.NewVisualService(configRoot)),
-			application.NewServiceWithOptions(visual.NewAssetHandler(configRoot), application.ServiceOptions{
+			application.NewServiceWithOptions(assetHandler, application.ServiceOptions{
 				Name:  "CharacterAssetHandler",
 				Route: "/fairy-character",
 			}),
@@ -96,10 +140,33 @@ func main() {
 		app.Event.Emit("companion-configuration-changed", change)
 	})
 
-	attachProductWindows(app, desktopService)
-	setupSystemTray(app, desktopService)
+	attachProductWindows(app, desktopService, logger)
+	setupSystemTray(app, desktopService, logger)
+
+	// Wails v3 alpha2.117 creates a SIGINT/SIGTERM handler but never starts it,
+	// so without this an interrupt kills the process immediately, skipping every
+	// defer and OnShutdown and orphaning the openserp sidecar. Run business
+	// cleanup ourselves, then Quit for native teardown; a second signal or a
+	// stalled teardown forces exit. Close is idempotent with OnShutdown.
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		sig := <-signals
+		logger.Info("received signal, shutting down", zap.String("signal", sig.String()))
+		shuttingDown.Store(true)
+		if err := companionService.Close(); err != nil {
+			logger.Error("companion shutdown", zap.Error(err))
+		}
+		app.Quit()
+		time.AfterFunc(5*time.Second, func() {
+			logger.Warn("shutdown timed out, forcing exit")
+			os.Exit(1)
+		})
+		<-signals
+		os.Exit(1)
+	}()
 
 	if err := app.Run(); err != nil {
-		log.Fatal(err)
+		logger.Fatal("app run", zap.Error(err))
 	}
 }

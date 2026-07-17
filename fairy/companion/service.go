@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +15,8 @@ import (
 	"fairy/model"
 	"fairy/profile"
 	"fairy/search"
+
+	"go.uber.org/zap"
 )
 
 type CompanionService struct {
@@ -23,6 +24,7 @@ type CompanionService struct {
 	memoryStore       *memory.Store
 	modelService      *model.ModelService
 	webSearch         WebSearchBackend
+	logger            *zap.Logger
 	backgroundJobs    atomic.Int64
 	extractionMu      sync.Mutex
 	extractionIdle    map[string]context.CancelFunc
@@ -61,6 +63,7 @@ func (s *CompanionService) emitEvent(event HarnessEvent) {
 
 func NewCompanionService() *CompanionService {
 	return &CompanionService{
+		logger:         zap.NewNop(),
 		extractionIdle: make(map[string]context.CancelFunc),
 		gates:          make(map[string]*conversationGate),
 	}
@@ -72,16 +75,66 @@ func NewCompanionServiceWithRuntime(root string, memoryStore *memory.Store, mode
 		memoryStore:    memoryStore,
 		modelService:   modelService,
 		webSearch:      search.NewService(root),
+		logger:         zap.NewNop(),
 		extractionIdle: make(map[string]context.CancelFunc),
 		gates:          make(map[string]*conversationGate),
 	}
 }
 
+// AttachLogger injects the process logger (dependency injection, no global) and
+// forwards it to the internal openserp search service.
+func AttachLogger(s *CompanionService, logger *zap.Logger) {
+	if s == nil || logger == nil {
+		return
+	}
+	s.logger = logger
+	if svc, ok := s.webSearch.(*search.Service); ok {
+		search.AttachLogger(svc, logger.Named("openserp"))
+	}
+}
+
+// Close performs graceful shutdown cleanup: it cancels in-flight turns and
+// pending background extraction timers, then stops the openserp sidecar. It is
+// safe to call multiple times and safe when no model runtime is attached.
 func (s *CompanionService) Close() error {
-	if s == nil || s.webSearch == nil {
+	if s == nil {
+		return nil
+	}
+	s.cancelActiveTurns()
+	s.cancelExtractionTimers()
+	if s.webSearch == nil {
 		return nil
 	}
 	return s.webSearch.Close()
+}
+
+func (s *CompanionService) cancelActiveTurns() {
+	s.gateMu.Lock()
+	gates := make([]*conversationGate, 0, len(s.gates))
+	for _, gate := range s.gates {
+		gates = append(gates, gate)
+	}
+	s.gateMu.Unlock()
+	for _, gate := range gates {
+		gate.mu.Lock()
+		if gate.activeTurn != nil {
+			gate.activeTurn.cancel()
+			gate.activeTurn = nil
+		}
+		gate.mu.Unlock()
+	}
+}
+
+func (s *CompanionService) cancelExtractionTimers() {
+	s.extractionMu.Lock()
+	timers := s.extractionIdle
+	s.extractionIdle = make(map[string]context.CancelFunc)
+	s.extractionMu.Unlock()
+	for _, cancel := range timers {
+		if cancel != nil {
+			cancel()
+		}
+	}
 }
 
 func (s *CompanionService) SubmitTurn(request SubmitTurnRequest) (TurnOutcome, error) {
@@ -130,6 +183,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	s.bindTurn(request.ConversationID, persisted.ID)
 	defer s.endTurn(request.ConversationID, persisted.ID)
 
+	lg := s.logger.With(zap.String("turn", persisted.ID))
 	life := NewTurnLifecycle(request.ConversationID, persisted.ID)
 	fail := func(code string, cause error) (TurnOutcome, error) {
 		_ = s.memoryStore.FailTurn(request.ConversationID, persisted.ID, code, cause.Error(), false)
@@ -186,7 +240,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		"omitReason":       retrievalOmitReason,
 		"modelDrivenIndex": 0,
 	})
-	log.Printf("cognition loop turn=%s phase=skip_auto_retrieve", persisted.ID)
+	lg.Info("cognition loop", zap.String("phase", "skip_auto_retrieve"))
 	if err := transition(TurnStatePlanning); err != nil {
 		return fail("INVALID_STATE_TRANSITION", err)
 	}
@@ -270,17 +324,16 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 			}
 			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContinuation, TurnStatePlanning, "", runtimeContinuationLedgerMetadata(connectionConfig.Capabilities.CacheRetention, previous, fullRequest, executeRequest, decision))
 		}
-		log.Printf(
-			"cognition loop turn=%s phase=model_call attempt=%d allowTools=%v webSearch=%v toolCount=%d continuation=%s inputItems=%d personal=%d knowledge=%d",
-			persisted.ID,
-			attempt,
-			allowTools,
-			webSearchEnabled,
-			len(tools),
-			continuationMode,
-			len(input),
-			len(retrieval.PersonalMemories),
-			len(retrieval.Knowledge),
+		lg.Info("cognition loop",
+			zap.String("phase", "model_call"),
+			zap.Int("attempt", attempt),
+			zap.Bool("allowTools", allowTools),
+			zap.Bool("webSearch", webSearchEnabled),
+			zap.Int("toolCount", len(tools)),
+			zap.String("continuation", continuationMode),
+			zap.Int("inputItems", len(input)),
+			zap.Int("personal", len(retrieval.PersonalMemories)),
+			zap.Int("knowledge", len(retrieval.Knowledge)),
 		)
 		if err := turnCtx.Err(); err != nil {
 			return fail("TURN_INTERRUPTED", ErrTurnInterrupted)
@@ -292,7 +345,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 			if errors.Is(err, ErrTurnInterrupted) {
 				code = "TURN_INTERRUPTED"
 			}
-			log.Printf("cognition loop turn=%s phase=model_call_failed attempt=%d code=%s err=%v", persisted.ID, attempt, code, err)
+			lg.Error("cognition loop", zap.String("phase", "model_call_failed"), zap.Int("attempt", attempt), zap.String("code", code), zap.Error(err))
 			return fail(code, err)
 		}
 		if err := turnCtx.Err(); err != nil {
@@ -305,22 +358,22 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		toolCalls := model.FunctionCallsFromEvents(events)
 		draft := collectText(events)
 		if strings.Contains(draft, `"gather"`) && len(toolCalls) == 0 {
-			log.Printf("cognition loop turn=%s phase=gather_json_rejected attempt=%d", persisted.ID, attempt)
+			lg.Warn("cognition loop", zap.String("phase", "gather_json_rejected"), zap.Int("attempt", attempt))
 			return fail("MODEL_RESPONSE_INVALID", errors.New("gather JSON is not supported; use function tools"))
 		}
 		if len(toolCalls) > 0 {
 			if !allowTools {
-				log.Printf("cognition loop turn=%s phase=tool_rejected reason=budget_exhausted count=%d", persisted.ID, len(toolCalls))
+				lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("reason", "budget_exhausted"), zap.Int("count", len(toolCalls)))
 				return fail("MODEL_RESPONSE_INVALID", errors.New("tool budget exhausted"))
 			}
 			for _, call := range toolCalls {
 				if modelDrivenTools >= maxModelDrivenToolCalls {
-					log.Printf("cognition loop turn=%s phase=tool_rejected reason=budget_exhausted tool=%s", persisted.ID, call.Name)
+					lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("reason", "budget_exhausted"), zap.String("tool", call.Name))
 					return fail("MODEL_RESPONSE_INVALID", errors.New("tool budget exhausted"))
 				}
 				query, queryErr := parseToolQuery(call.Arguments)
 				if queryErr != nil {
-					log.Printf("cognition loop turn=%s phase=tool_args_invalid tool=%s err=%v", persisted.ID, call.Name, queryErr)
+					lg.Warn("cognition loop", zap.String("phase", "tool_args_invalid"), zap.String("tool", call.Name), zap.Error(queryErr))
 					retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, queryErr))
 					retrievalOmitReason = ""
 					modelDrivenTools++
@@ -332,19 +385,18 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 					})
 					continue
 				}
-				log.Printf(
-					"cognition loop turn=%s phase=tool_call tool=%s callId=%s queryRunes=%d queryHash=%s",
-					persisted.ID,
-					call.Name,
-					call.CallID,
-					utf8.RuneCountInString(query),
-					runtimeHash(query),
+				lg.Info("cognition loop",
+					zap.String("phase", "tool_call"),
+					zap.String("tool", call.Name),
+					zap.String("callId", call.CallID),
+					zap.Int("queryRunes", utf8.RuneCountInString(query)),
+					zap.String("queryHash", runtimeHash(query)),
 				)
 				switch call.Name {
 				case toolMemorySearch:
 					extra, toolErr := s.memoryStore.Retrieve(bootstrap.Conversation.CharacterID, query)
 					if toolErr != nil {
-						log.Printf("cognition loop turn=%s phase=tool_failed tool=%s err=%v", persisted.ID, call.Name, toolErr)
+						lg.Warn("cognition loop", zap.String("phase", "tool_failed"), zap.String("tool", call.Name), zap.Error(toolErr))
 						retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
 						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
 							"tool":             call.Name,
@@ -366,21 +418,20 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 							"mergedKnowledge":  len(retrieval.Knowledge),
 							"modelDrivenIndex": modelDrivenTools + 1,
 						})
-						log.Printf(
-							"cognition loop turn=%s phase=tool_done tool=%s personal+=%d knowledge+=%d mergedPersonal=%d mergedKnowledge=%d index=%d",
-							persisted.ID,
-							call.Name,
-							len(extra.PersonalMemories),
-							len(extra.Knowledge),
-							len(retrieval.PersonalMemories),
-							len(retrieval.Knowledge),
-							modelDrivenTools+1,
+						lg.Info("cognition loop",
+							zap.String("phase", "tool_done"),
+							zap.String("tool", call.Name),
+							zap.Int("personalAdded", len(extra.PersonalMemories)),
+							zap.Int("knowledgeAdded", len(extra.Knowledge)),
+							zap.Int("mergedPersonal", len(retrieval.PersonalMemories)),
+							zap.Int("mergedKnowledge", len(retrieval.Knowledge)),
+							zap.Int("index", modelDrivenTools+1),
 						)
 					}
 				case toolWebSearch:
 					if !webSearchEnabled {
 						toolErr := errors.New("web search is disabled")
-						log.Printf("cognition loop turn=%s phase=tool_rejected tool=%s reason=disabled", persisted.ID, call.Name)
+						lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("tool", call.Name), zap.String("reason", "disabled"))
 						retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
 						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
 							"tool":             call.Name,
@@ -390,7 +441,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 							"modelDrivenIndex": modelDrivenTools + 1,
 						})
 					} else if s.webSearch == nil {
-						log.Printf("cognition loop turn=%s phase=tool_rejected tool=%s reason=binary_missing", persisted.ID, call.Name)
+						lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("tool", call.Name), zap.String("reason", "binary_missing"))
 						retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, search.ErrBinaryNotFound))
 						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
 							"tool":             call.Name,
@@ -402,7 +453,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 					} else {
 						hits, toolErr := s.webSearch.Search(turnCtx, query, 5)
 						if toolErr != nil {
-							log.Printf("cognition loop turn=%s phase=tool_failed tool=%s err=%v", persisted.ID, call.Name, toolErr)
+							lg.Warn("cognition loop", zap.String("phase", "tool_failed"), zap.String("tool", call.Name), zap.Error(toolErr))
 							retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
 							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
 								"tool":             call.Name,
@@ -423,19 +474,18 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 								"mergedKnowledge":  len(retrieval.Knowledge),
 								"modelDrivenIndex": modelDrivenTools + 1,
 							})
-							log.Printf(
-								"cognition loop turn=%s phase=tool_done tool=%s webHits=%d mergedKnowledge=%d index=%d",
-								persisted.ID,
-								call.Name,
-								len(hits),
-								len(retrieval.Knowledge),
-								modelDrivenTools+1,
+							lg.Info("cognition loop",
+								zap.String("phase", "tool_done"),
+								zap.String("tool", call.Name),
+								zap.Int("webHits", len(hits)),
+								zap.Int("mergedKnowledge", len(retrieval.Knowledge)),
+								zap.Int("index", modelDrivenTools+1),
 							)
 						}
 					}
 				default:
 					toolErr := fmt.Errorf("tool %q is not whitelisted", call.Name)
-					log.Printf("cognition loop turn=%s phase=tool_rejected tool=%s reason=not_whitelisted", persisted.ID, call.Name)
+					lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("tool", call.Name), zap.String("reason", "not_whitelisted"))
 					retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
 					s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
 						"tool":             call.Name,
@@ -451,7 +501,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		}
 		reply, err = CompileReply(draft, request.AvailableVisualStates)
 		if err != nil {
-			log.Printf("cognition loop turn=%s phase=compile_failed attempt=%d err=%v", persisted.ID, attempt, err)
+			lg.Error("cognition loop", zap.String("phase", "compile_failed"), zap.Int("attempt", attempt), zap.Error(err))
 			return fail("MODEL_RESPONSE_INVALID", err)
 		}
 		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventCompile, TurnStatePlanning, "", map[string]any{
@@ -462,12 +512,11 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 			"speechTextHash":     runtimeHash(reply.SpeechText),
 			"modelDrivenTools":   modelDrivenTools,
 		})
-		log.Printf(
-			"cognition loop turn=%s phase=reply_ready chains=%d visual=%q modelDrivenTools=%d",
-			persisted.ID,
-			len(reply.Chains),
-			reply.VisualState,
-			modelDrivenTools,
+		lg.Info("cognition loop",
+			zap.String("phase", "reply_ready"),
+			zap.Int("chains", len(reply.Chains)),
+			zap.String("visual", reply.VisualState),
+			zap.Int("modelDrivenTools", modelDrivenTools),
 		)
 		break
 	}

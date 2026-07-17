@@ -1,11 +1,10 @@
 package main
 
 import (
-	"log"
-
 	"fairy/desktop"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
+	"go.uber.org/zap"
 )
 
 type companionWindowAdapter struct {
@@ -76,7 +75,7 @@ func (a speechBubbleWindowAdapter) SetBounds(bounds desktop.WindowBounds) {
 	setWindowBoundsAtomic(a.window, bounds)
 }
 
-func attachProductWindows(app *application.App, desktopService *desktop.DesktopService) {
+func attachProductWindows(app *application.App, desktopService *desktop.DesktopService, logger *zap.Logger) {
 	companionWindow := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            "FAIRY",
 		Name:             "companion",
@@ -152,7 +151,7 @@ func attachProductWindows(app *application.App, desktopService *desktop.DesktopS
 	desktop.AttachSpeechBubbleWindow(desktopService, speechBubbleWindowAdapter{window: speechBubbleWindow})
 	companionWindow.Show()
 	companionWindow.SetAlwaysOnTop(true)
-	log.Printf("companion window attached and shown")
+	logger.Info("companion window attached and shown")
 
 	// Keep the bubble window glued to the character while it is dragged.
 	companionWindow.OnWindowEvent(events.Common.WindowDidMove, func(*application.WindowEvent) {
@@ -162,7 +161,7 @@ func attachProductWindows(app *application.App, desktopService *desktop.DesktopS
 	controlPanelWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
 		event.Cancel()
 		if _, err := desktopService.RestoreCompanionAfterControlPanel(); err != nil {
-			log.Printf("restore companion after control panel close: %v", err)
+			logger.Error("restore companion after control panel close", zap.Error(err))
 		}
 	})
 	controlPanelWindow.OnWindowEvent(events.Common.WindowFilesDropped, func(event *application.WindowEvent) {

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -19,6 +18,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"go.uber.org/zap"
 )
 
 const (
@@ -43,6 +44,7 @@ type Hit struct {
 type Service struct {
 	root   string
 	client *http.Client
+	logger *zap.Logger
 
 	mu      sync.Mutex
 	cmd     *exec.Cmd
@@ -56,7 +58,16 @@ func NewService(root string) *Service {
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		logger: zap.NewNop(),
 	}
+}
+
+// AttachLogger injects the process logger (dependency injection, no global).
+func AttachLogger(s *Service, logger *zap.Logger) {
+	if s == nil || logger == nil {
+		return
+	}
+	s.logger = logger
 }
 
 func BinaryName() string {
@@ -130,11 +141,11 @@ func (s *Service) EnsureRunning(ctx context.Context) (string, error) {
 	s.port = port
 	s.baseURL = baseURL
 	if err := s.healthLocked(ctx, baseURL); err != nil {
-		log.Printf("openserp sidecar health failed port=%d err=%v", port, err)
+		s.logger.Error("openserp sidecar health failed", zap.Int("port", port), zap.Error(err))
 		_ = s.stopLocked()
 		return "", err
 	}
-	log.Printf("openserp sidecar started port=%d binary=%s", port, binary)
+	s.logger.Info("openserp sidecar started", zap.Int("port", port), zap.String("binary", binary))
 	go s.reap()
 	return baseURL, nil
 }
@@ -151,7 +162,7 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Hit, e
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("openserp search start engine=%s limit=%d queryRunes=%d", defaultEngine, limit, utf8.RuneCountInString(query))
+	s.logger.Info("openserp search start", zap.String("engine", defaultEngine), zap.Int("limit", limit), zap.Int("queryRunes", utf8.RuneCountInString(query)))
 	endpoint := fmt.Sprintf("%s/%s/search?text=%s&limit=%d", baseURL, defaultEngine, url.QueryEscape(query), limit)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -159,7 +170,7 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Hit, e
 	}
 	res, err := s.client.Do(req)
 	if err != nil {
-		log.Printf("openserp search failed err=%v", err)
+		s.logger.Error("openserp search failed", zap.Error(err))
 		return nil, err
 	}
 	defer res.Body.Close()
@@ -169,15 +180,15 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Hit, e
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		err := fmt.Errorf("openserp search status %d: %s", res.StatusCode, truncate(string(body), 200))
-		log.Printf("openserp search failed err=%v", err)
+		s.logger.Error("openserp search failed", zap.Error(err))
 		return nil, err
 	}
 	hits, err := parseSearchHits(body, limit)
 	if err != nil {
-		log.Printf("openserp search parse failed err=%v", err)
+		s.logger.Error("openserp search parse failed", zap.Error(err))
 		return nil, err
 	}
-	log.Printf("openserp search done hits=%d", len(hits))
+	s.logger.Info("openserp search done", zap.Int("hits", len(hits)))
 	return hits, nil
 }
 

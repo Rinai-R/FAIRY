@@ -1,30 +1,39 @@
 package character
 
 import (
-	"log"
-
 	"fairy/notify"
+
+	"go.uber.org/zap"
 )
 
 type CharacterService struct {
-	root string
+	root   string
+	logger *zap.Logger
 }
 
 func NewCharacterService(root string) *CharacterService {
-	return &CharacterService{root: root}
+	return &CharacterService{root: root, logger: zap.NewNop()}
+}
+
+// AttachLogger injects the process logger (dependency injection, no global).
+func AttachLogger(s *CharacterService, logger *zap.Logger) {
+	if s == nil || logger == nil {
+		return
+	}
+	s.logger = logger
 }
 
 func (s *CharacterService) ListCharacters() (Catalog, error) {
 	catalog, err := NewStore(s.root).List()
 	if err != nil {
-		log.Printf("ListCharacters error: %v", err)
+		s.logger.Error("list characters failed", zap.Error(err))
 		return Catalog{}, err
 	}
 	activeName := ""
 	if catalog.Active != nil {
 		activeName = catalog.Active.Name
 	}
-	log.Printf("ListCharacters ok characters=%d active=%q", len(catalog.Characters), activeName)
+	s.logger.Info("list characters", zap.Int("characters", len(catalog.Characters)), zap.String("active", activeName))
 	return catalog, nil
 }
 
