@@ -582,7 +582,6 @@ impl HarnessRuntime {
             return Err(turn_interrupted());
         }
         emit_state(session, turn_id, TurnState::Planning, events)?;
-        emit_state(session, turn_id, TurnState::Responding, events)?;
 
         let (compiled, usage, next_continuation_state) = execute_respond_loop(
             session,
@@ -592,6 +591,7 @@ impl HarnessRuntime {
             cancellation.clone(),
         )
         .await?;
+        emit_state(session, turn_id, TurnState::Responding, events)?;
         persist_assistant_turn(
             &persistence_binding,
             conversation_id,

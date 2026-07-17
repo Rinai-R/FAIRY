@@ -9,6 +9,7 @@ import {
   createWailsCharacter,
   createWailsCompanionSession,
   listenWailsHarnessEvents,
+  normalizeWailsEventUnlisten,
   loadWailsActiveBackgroundJobs,
   loadWailsMemorySummary,
   loadWailsPersonalMemoryCatalog,
@@ -738,4 +739,17 @@ test("listenWailsHarnessEvents requires both event and protocol error handlers",
     () => listenWailsHarnessEvents(null, () => {}),
     /protocol error handlers/,
   );
+});
+
+test("normalizeWailsEventUnlisten accepts Wails v3 subscription shapes", () => {
+  let calls = 0;
+  normalizeWailsEventUnlisten(() => { calls += 1; })();
+  assert.equal(calls, 1);
+
+  const subscription = { Cancel: () => { calls += 1; } };
+  normalizeWailsEventUnlisten(subscription)();
+  assert.equal(calls, 2);
+
+  normalizeWailsEventUnlisten(null)();
+  assert.equal(calls, 2);
 });

@@ -93,6 +93,7 @@ func TestModelServiceExecuteRequestUsesStoredSecretWithoutReturningIt(t *testing
 		if r.Header.Get("Authorization") != "Bearer sk-service-secret" {
 			t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
 		}
+		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n")
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1}}\n\n")
 	}))
@@ -101,7 +102,7 @@ func TestModelServiceExecuteRequestUsesStoredSecretWithoutReturningIt(t *testing
 	root := t.TempDir()
 	writeModelConnectionWithEndpoint(t, root, "chat_completions", server.URL, "bearer_key")
 	saveModelSecret(t, root, "sk-service-secret")
-	service := NewModelServiceWithTransport(root, HTTPTransport{Client: server.Client()})
+	service := NewModelServiceWithTransport(root, SDKTransport{HTTPClient: server.Client()})
 
 	events, err := service.ExecuteRequest(modelServiceRequest())
 	if err != nil {
@@ -140,13 +141,14 @@ func TestModelServiceExecuteRequestOmitsSecretForNoAuth(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "" {
 			t.Fatalf("Authorization = %q, want empty", got)
 		}
+		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	t.Cleanup(server.Close)
 
 	root := t.TempDir()
 	writeModelConnectionWithEndpoint(t, root, "chat_completions", server.URL, "no_auth")
-	service := NewModelServiceWithTransport(root, HTTPTransport{Client: server.Client()})
+	service := NewModelServiceWithTransport(root, SDKTransport{HTTPClient: server.Client()})
 
 	events, err := service.ExecuteRequest(modelServiceRequest())
 	if err != nil {

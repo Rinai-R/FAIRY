@@ -3,7 +3,6 @@ package companion
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -23,8 +22,8 @@ func TestSubmitCompiledTurnRejectsConcurrentTurn(t *testing.T) {
 			close(started)
 		}
 		<-release
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"chains\\\":[{\\\"visualState\\\":\\\"idle\\\",\\\"text\\\":\\\"我在。\\\"}]}\"}}]}\n\n")
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		writeChatTextDelta(w, testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "我在。"}))
+		writeChatStop(w)
 	}))
 	t.Cleanup(server.Close)
 
@@ -35,7 +34,7 @@ func TestSubmitCompiledTurnRejectsConcurrentTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.HTTPTransport{Client: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
 	req := SubmitCompiledTurnRequest{
 		ConversationID:        bootstrap.Conversation.ID,
 		Input:                 "第一轮",
@@ -70,6 +69,152 @@ func TestSubmitCompiledTurnRejectsConcurrentTurn(t *testing.T) {
 	wg.Wait()
 	if firstErr != nil {
 		t.Fatalf("first turn error = %v", firstErr)
+	}
+}
+
+func TestSubmitCompiledTurnStaysPlanningWhileModelRuns(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-release
+		writeChatTextDelta(w, testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "我在。"}))
+		writeChatStop(w)
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+
+	root := t.TempDir()
+	writeModelConnectionWithEndpoint(t, root, "chat_completions", server.URL, "no_auth")
+	memoryStore, characterID := seedCompanionRuntime(t, root)
+	bootstrap, err := memoryStore.OpenOrCreateCharacterConversation(characterID)
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
+	}
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	var mu sync.Mutex
+	var emitted []HarnessEvent
+	AttachEventEmitter(service, func(event HarnessEvent) {
+		mu.Lock()
+		emitted = append(emitted, event)
+		mu.Unlock()
+	})
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+			ConversationID:        bootstrap.Conversation.ID,
+			Input:                 "你好",
+			MaxOutputTokens:       160,
+			AvailableVisualStates: visualStates("idle"),
+		})
+		result <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn did not reach model")
+	}
+	mu.Lock()
+	statesWhileRunning := make([]TurnState, 0, len(emitted))
+	for _, event := range emitted {
+		statesWhileRunning = append(statesWhileRunning, event.State)
+	}
+	mu.Unlock()
+	if len(statesWhileRunning) != 2 || statesWhileRunning[0] != TurnStateInterpreting || statesWhileRunning[1] != TurnStatePlanning {
+		t.Fatalf("states while model runs = %#v, want interpreting/planning", statesWhileRunning)
+	}
+	close(release)
+	if err := <-result; err != nil {
+		t.Fatalf("SubmitCompiledTurn() error = %v", err)
+	}
+}
+
+func TestCancelTurnDuringPlanningDoesNotRespondOrPersistAssistant(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(release) })
+
+	root := t.TempDir()
+	writeModelConnectionWithEndpoint(t, root, "chat_completions", server.URL, "no_auth")
+	memoryStore, characterID := seedCompanionRuntime(t, root)
+	bootstrap, err := memoryStore.OpenOrCreateCharacterConversation(characterID)
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
+	}
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	var mu sync.Mutex
+	var emitted []HarnessEvent
+	AttachEventEmitter(service, func(event HarnessEvent) {
+		mu.Lock()
+		emitted = append(emitted, event)
+		mu.Unlock()
+	})
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+			ConversationID:        bootstrap.Conversation.ID,
+			Input:                 "先停一下",
+			MaxOutputTokens:       160,
+			AvailableVisualStates: visualStates("idle"),
+		})
+		result <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn did not reach model")
+	}
+	mu.Lock()
+	if len(emitted) != 2 {
+		mu.Unlock()
+		t.Fatalf("events before cancel = %#v, want interpreting/planning", emitted)
+	}
+	turnID := emitted[0].TurnID
+	mu.Unlock()
+	if err := service.CancelTurn(bootstrap.Conversation.ID, turnID); err != nil {
+		t.Fatalf("CancelTurn() error = %v", err)
+	}
+	if err := <-result; !errors.Is(err, ErrTurnInterrupted) {
+		t.Fatalf("SubmitCompiledTurn() error = %v, want %v", err, ErrTurnInterrupted)
+	}
+
+	mu.Lock()
+	states := make([]TurnState, 0, len(emitted))
+	for _, event := range emitted {
+		states = append(states, event.State)
+		if _, ok := event.Payload.(replyChainPayload); ok {
+			mu.Unlock()
+			t.Fatalf("cancelled turn emitted reply chain: %#v", event)
+		}
+	}
+	mu.Unlock()
+	if len(states) != 3 || states[0] != TurnStateInterpreting || states[1] != TurnStatePlanning || states[2] != TurnStateInterrupted {
+		t.Fatalf("states = %#v, want interpreting/planning/interrupted", states)
+	}
+	reloaded, err := memoryStore.LoadConversation(bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatalf("LoadConversation() error = %v", err)
+	}
+	if len(reloaded.Messages) != 1 || reloaded.Messages[0].Role != "user" {
+		t.Fatalf("messages = %#v, want only persisted user", reloaded.Messages)
 	}
 }
 

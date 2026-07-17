@@ -71,9 +71,6 @@ func (s *Store) OpenOrCreateCharacterConversation(characterID string) (Conversat
 		return ConversationBootstrap{}, err
 	}
 	defer db.Close()
-	if err := initializeSchema(db); err != nil {
-		return ConversationBootstrap{}, err
-	}
 	now := nowUnixMS()
 	tx, err := db.Begin()
 	if err != nil {
@@ -256,9 +253,9 @@ func (s *Store) openWrite() (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening memory database: %w", err)
 	}
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+	if err := configureSQLiteConnection(db, false); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("enabling memory database foreign keys: %w", err)
+		return nil, err
 	}
 	return db, nil
 }
@@ -266,12 +263,16 @@ func (s *Store) openWrite() (*sql.DB, error) {
 func initializeSchema(db *sql.DB) error {
 	_, err := db.Exec(`
 CREATE TABLE IF NOT EXISTS schema_meta(singleton INTEGER PRIMARY KEY CHECK(singleton = 1), version INTEGER NOT NULL);
-INSERT OR IGNORE INTO schema_meta(singleton, version) VALUES (1, 3);
+INSERT OR IGNORE INTO schema_meta(singleton, version) VALUES (1, 5);
 CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY, character_id TEXT NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS conversations_character_updated ON conversations(character_id, updated_at_ms DESC, id ASC);
 CREATE TABLE IF NOT EXISTS conversation_turns(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), sequence INTEGER NOT NULL CHECK(sequence > 0), status TEXT NOT NULL CHECK(status IN ('interpreting', 'planning', 'responding', 'completed', 'interrupted', 'failed')), error_code TEXT, error_message TEXT, error_retryable INTEGER, extraction_state TEXT NOT NULL DEFAULT 'ineligible' CHECK(extraction_state IN ('ineligible', 'pending', 'claimed', 'processed')), created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL, UNIQUE(conversation_id, sequence));
 CREATE TABLE IF NOT EXISTS conversation_messages(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), turn_id TEXT NOT NULL REFERENCES conversation_turns(id), sequence INTEGER NOT NULL CHECK(sequence > 0), role TEXT NOT NULL CHECK(role IN ('user', 'assistant')), content TEXT NOT NULL, created_at_ms INTEGER NOT NULL, UNIQUE(conversation_id, sequence), UNIQUE(turn_id, role));
 CREATE TABLE IF NOT EXISTS prompt_windows(conversation_id TEXT PRIMARY KEY REFERENCES conversations(id), revision INTEGER NOT NULL CHECK(revision > 0), summary TEXT, cutoff_message_sequence INTEGER NOT NULL DEFAULT 0 CHECK(cutoff_message_sequence >= 0), updated_at_ms INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS turn_runtime_events(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), turn_id TEXT NOT NULL REFERENCES conversation_turns(id), sequence INTEGER NOT NULL CHECK(sequence > 0), event_type TEXT NOT NULL, state TEXT, code TEXT, metadata_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, UNIQUE(conversation_id, turn_id, sequence));
+CREATE INDEX IF NOT EXISTS turn_runtime_events_turn_sequence ON turn_runtime_events(conversation_id, turn_id, sequence ASC);
+CREATE TABLE IF NOT EXISTS lane_continuations(conversation_id TEXT NOT NULL REFERENCES conversations(id), lane TEXT NOT NULL, previous_response_id TEXT NOT NULL, request_shape_hash TEXT NOT NULL, input_prefix_hash TEXT NOT NULL, response_item_hash TEXT NOT NULL, window_revision INTEGER NOT NULL CHECK(window_revision > 0), updated_at_ms INTEGER NOT NULL, PRIMARY KEY(conversation_id, lane));
+CREATE TABLE IF NOT EXISTS context_windows(conversation_id TEXT NOT NULL REFERENCES conversations(id), lane TEXT NOT NULL, window_number INTEGER NOT NULL CHECK(window_number >= 0), first_window_id TEXT NOT NULL, previous_window_id TEXT, window_id TEXT NOT NULL, observed_prefill_tokens INTEGER CHECK(observed_prefill_tokens IS NULL OR observed_prefill_tokens >= 0), estimated_prefill_tokens INTEGER CHECK(estimated_prefill_tokens IS NULL OR estimated_prefill_tokens >= 0), last_trigger TEXT NOT NULL DEFAULT 'created', failure_count INTEGER NOT NULL DEFAULT 0 CHECK(failure_count >= 0), prompt_window_revision INTEGER NOT NULL CHECK(prompt_window_revision > 0), updated_at_ms INTEGER NOT NULL, PRIMARY KEY(conversation_id, lane));
 CREATE TABLE IF NOT EXISTS personal_memories(id TEXT PRIMARY KEY, kind TEXT NOT NULL, scope_kind TEXT NOT NULL, character_id TEXT, review_status TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL, confidence_basis_points INTEGER NOT NULL, source_conversation_id TEXT NOT NULL, source_turn_id TEXT NOT NULL, supersedes_id TEXT REFERENCES personal_memories(id), created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS knowledge_entries(id TEXT PRIMARY KEY, topic TEXT NOT NULL, statement TEXT NOT NULL, status TEXT NOT NULL, verification_basis TEXT NOT NULL, confidence_basis_points INTEGER NOT NULL, source_conversation_id TEXT NOT NULL, source_turn_id TEXT NOT NULL, supersedes_id TEXT REFERENCES knowledge_entries(id), created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS knowledge_sources(knowledge_id TEXT NOT NULL REFERENCES knowledge_entries(id), source_id TEXT NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL, snippet TEXT NOT NULL, rank INTEGER NOT NULL, fetched_at_ms INTEGER NOT NULL, PRIMARY KEY(knowledge_id, source_id));
@@ -317,9 +318,41 @@ CREATE TRIGGER IF NOT EXISTS knowledge_entries_au AFTER UPDATE OF topic, stateme
   INSERT INTO knowledge_entries_fts(rowid, topic, statement)
   VALUES (new.rowid, new.topic, new.statement);
 END;
+UPDATE schema_meta SET version = 5 WHERE singleton = 1 AND version < 5;
 `)
 	if err != nil {
 		return fmt.Errorf("initializing memory schema: %w", err)
+	}
+	if err := ensureContextWindowLastTriggerColumn(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureContextWindowLastTriggerColumn(db *sql.DB) error {
+	rows, err := db.Query("PRAGMA table_info(context_windows)")
+	if err != nil {
+		return fmt.Errorf("inspecting context_windows schema: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return fmt.Errorf("scanning context_windows schema: %w", err)
+		}
+		if name == "last_trigger" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterating context_windows schema: %w", err)
+	}
+	if _, err := db.Exec("ALTER TABLE context_windows ADD COLUMN last_trigger TEXT NOT NULL DEFAULT 'created'"); err != nil {
+		return fmt.Errorf("migrating context_windows last_trigger: %w", err)
 	}
 	return nil
 }

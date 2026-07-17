@@ -147,28 +147,30 @@ fn normalize_response_output(
     deltas: Vec<String>,
 ) -> (String, Vec<String>) {
     let trimmed = output.trim_start();
-    if lane != PromptLane::Respond
-        || trimmed.starts_with("VISUAL_STATE:")
-        || trimmed.starts_with('{')
-    {
+    if lane != PromptLane::Respond || trimmed.starts_with('{') {
         return (output, deltas);
     }
-    let mut normalized_deltas = Vec::with_capacity(deltas.len() + 1);
-    normalized_deltas.push("VISUAL_STATE: idle\n".to_owned());
-    normalized_deltas.extend(deltas);
-    (format!("VISUAL_STATE: idle\n{output}"), normalized_deltas)
+    let envelope = test_respond_envelope("idle", &output);
+    (envelope.clone(), vec![envelope])
 }
 
 fn normalize_response_delta(lane: PromptLane, delta: String) -> String {
     let trimmed = delta.trim_start();
-    if lane == PromptLane::Respond
-        && !trimmed.starts_with("VISUAL_STATE:")
-        && !trimmed.starts_with('{')
-    {
-        format!("VISUAL_STATE: idle\n{delta}")
+    if lane == PromptLane::Respond && !trimmed.starts_with('{') {
+        test_respond_envelope("idle", &delta)
     } else {
         delta
     }
+}
+
+fn test_respond_envelope(visual_state: &str, text: &str) -> String {
+    serde_json::json!({
+        "chains": [{
+            "visualState": visual_state,
+            "text": text
+        }]
+    })
+    .to_string()
 }
 
 fn completion(output: String) -> ModelCompletion {
@@ -1252,6 +1254,66 @@ async fn cancellation_persists_interrupted_turn_without_assistant_message() {
     assert_eq!(error.code, ErrorCode::TurnInterrupted);
     assert_eq!(persistence.terminations(), vec![TurnState::Interrupted]);
     assert_eq!(persistence.bootstrap_for(character_id).messages.len(), 1);
+    assert_eq!(
+        sink.events()
+            .iter()
+            .map(|event| event.state)
+            .collect::<Vec<_>>(),
+        vec![
+            TurnState::Interpreting,
+            TurnState::Planning,
+            TurnState::Interrupted,
+        ]
+    );
+}
+
+#[tokio::test]
+async fn invalid_reply_fails_from_planning_without_assistant_or_reply_events() {
+    let persistence = Arc::new(ReopenablePersistence::default());
+    let invalid = r#"{"chains":[{"visualState":"idle","text":"不该成功。"}],"unexpected":true}"#;
+    let gateway = Arc::new(FakeGateway::new(vec![response_behavior(
+        invalid,
+        &[invalid],
+    )]));
+    let runtime = HarnessRuntime::new("test-model".to_owned(), gateway).expect("create runtime");
+    runtime.replace_persistence_binding(PersistenceBinding::Available(persistence.clone()));
+    let role = character(Revision::INITIAL, "自然回应。");
+    let character_id = role.character_id();
+    let bootstrap = runtime
+        .open_or_create_character_session(role, None)
+        .await
+        .expect("open session");
+    let mut sink = RecordingSink::default();
+
+    let error = runtime
+        .submit_turn(
+            bootstrap.conversation.id,
+            "你好".to_owned(),
+            false,
+            &mut sink,
+        )
+        .await
+        .expect_err("unknown reply field must fail");
+
+    assert_eq!(error.code, ErrorCode::ModelResponseInvalid);
+    assert_eq!(persistence.bootstrap_for(character_id).messages.len(), 1);
+    assert_eq!(
+        sink.events()
+            .iter()
+            .map(|event| event.state)
+            .collect::<Vec<_>>(),
+        vec![
+            TurnState::Interpreting,
+            TurnState::Planning,
+            TurnState::Failed
+        ]
+    );
+    assert!(sink.events().iter().all(|event| !matches!(
+        event.payload,
+        HarnessEventPayload::ReplyChain { .. }
+            | HarnessEventPayload::Completed { .. }
+            | HarnessEventPayload::SpeechRequested { .. }
+    )));
 }
 
 #[tokio::test]
@@ -1299,6 +1361,17 @@ async fn normal_turn_has_ordered_states_deltas_usage_and_single_terminal() {
     assert_eq!(deltas, vec!["你好呀。"]);
     assert_eq!(outcome.chains.len(), 1);
     assert_eq!(outcome.chains[0].text.as_str(), "你好呀。");
+    let wire = serde_json::to_string(&(events.clone(), outcome.clone())).expect("serialize wire");
+    for forbidden in [
+        "\"decision\"",
+        "\"stance\"",
+        "\"replyIntent\"",
+        "\"tone\"",
+        "\"relationshipSignal\"",
+        "\"replyMode\"",
+    ] {
+        assert!(!wire.contains(forbidden), "wire leaked {forbidden}: {wire}");
+    }
     assert_eq!(
         events
             .iter()
@@ -1381,10 +1454,11 @@ async fn normal_turn_has_ordered_states_deltas_usage_and_single_terminal() {
 }
 
 #[tokio::test]
-async fn respond_turn_uses_available_visual_states_and_strips_header() {
+async fn respond_turn_uses_available_visual_states_from_chains_envelope() {
+    let output = test_respond_envelope("happy", "好呀，我也觉得这个方向不错。");
     let gateway = Arc::new(FakeGateway::new(vec![response_behavior(
-        "VISUAL_STATE: happy\n好呀，我也觉得这个方向不错。",
-        &["VISUAL_STATE: happy\n好呀，我也觉得这个方向不错。"],
+        &output,
+        &[&output],
     )]));
     let (runtime, conversation_id, _) = setup(gateway.clone());
     let mut sink = RecordingSink::default();
@@ -1427,8 +1501,17 @@ async fn respond_turn_uses_available_visual_states_and_strips_header() {
 
 #[tokio::test]
 async fn respond_turn_emits_reply_chain_events_for_json_chains() {
-    let output = r#"{"chains":[{"visualState":"thinking","text":"嗯，我懂。"},{"visualState":"happy","text":"先这样改。"}]}"#;
-    let gateway = Arc::new(FakeGateway::new(vec![response_behavior(output, &[output])]));
+    let output = serde_json::json!({
+        "chains": [
+            {"visualState": "thinking", "text": "嗯，我懂。"},
+            {"visualState": "happy", "text": "先这样改。"}
+        ]
+    })
+    .to_string();
+    let gateway = Arc::new(FakeGateway::new(vec![response_behavior(
+        &output,
+        &[&output],
+    )]));
     let (runtime, conversation_id, _) = setup(gateway);
     let mut sink = RecordingSink::default();
 

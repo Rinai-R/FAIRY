@@ -10,14 +10,17 @@ import (
 
 type ModelService struct {
 	root      string
-	transport HTTPTransport
+	transport Transport
 }
 
 func NewModelService(root string) *ModelService {
-	return &ModelService{root: root}
+	return &ModelService{root: root, transport: SDKTransport{}}
 }
 
-func NewModelServiceWithTransport(root string, transport HTTPTransport) *ModelService {
+func NewModelServiceWithTransport(root string, transport Transport) *ModelService {
+	if transport == nil {
+		transport = SDKTransport{}
+	}
 	return &ModelService{root: root, transport: transport}
 }
 

@@ -4,8 +4,6 @@ use fairy_domain::{
 };
 use serde::Deserialize;
 
-const VISUAL_STATE_PREFIX: &str = "VISUAL_STATE:";
-
 const MAX_SPEECH_CHARS: usize = 96;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -20,24 +18,18 @@ impl ReplyCompiler {
     ) -> Result<CompiledReply, FairyError> {
         validate_available_visual_states(available_visual_states)?;
         validate_draft(draft)?;
-        if draft.trim_start().starts_with('{') {
-            return compile_json_reply_chains(draft, sources, available_visual_states);
-        }
-        let (visual_state, body) = parse_visual_state_header(draft.trim())?;
-        let chain = compile_chain(visual_state, body, available_visual_states)?;
-
-        Ok(compiled_reply_from_chains(vec![chain], sources)?)
+        compile_json_reply_chains(draft, sources, available_visual_states)
     }
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct JsonReplyChains {
     chains: Vec<JsonReplyChain>,
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct JsonReplyChain {
     visual_state: VisualStateId,
     text: String,
@@ -89,29 +81,6 @@ fn compiled_reply_from_chains(
     })
 }
 
-fn parse_visual_state_header(value: &str) -> Result<(VisualStateId, &str), FairyError> {
-    let Some((first_line, body)) = value.split_once(['\n', '\r']) else {
-        if value.trim_start().starts_with("VISUAL_STATE") {
-            return Err(invalid_reply("模型回复缺少视觉状态正文"));
-        }
-        return Ok((idle_visual_state(), value));
-    };
-    let Some(raw_state) = first_line.trim().strip_prefix(VISUAL_STATE_PREFIX) else {
-        if first_line.trim_start().starts_with("VISUAL_STATE") {
-            return Err(invalid_reply("模型返回了无效视觉状态"));
-        }
-        return Ok((idle_visual_state(), value));
-    };
-    let visual_state = raw_state.trim().parse().map_err(|_| {
-        FairyError::new(
-            ErrorCode::ModelResponseInvalid,
-            "模型返回了无效视觉状态",
-            false,
-        )
-    })?;
-    Ok((visual_state, body))
-}
-
 fn compile_chain(
     visual_state: VisualStateId,
     raw_text: &str,
@@ -134,12 +103,6 @@ fn compile_chain(
         speech_text: SpeechText::new(speech)?,
         visual_state,
     })
-}
-
-fn idle_visual_state() -> VisualStateId {
-    "idle"
-        .parse()
-        .expect("idle visual state id is static-valid")
 }
 
 fn sanitize_display_text(value: &str) -> String {
@@ -326,13 +289,23 @@ mod tests {
         ReplyCompiler.compile(draft, Vec::new(), &states(&["idle"]))
     }
 
-    fn with_header(state: &str, body: &str) -> String {
-        format!("VISUAL_STATE: {state}\n{body}")
+    fn chains_envelope(chains: serde_json::Value) -> String {
+        serde_json::json!({
+            "chains": chains
+        })
+        .to_string()
+    }
+
+    fn envelope(state: &str, body: &str) -> String {
+        chains_envelope(serde_json::json!([{
+            "visualState": state,
+            "text": body
+        }]))
     }
 
     #[test]
     fn reply_strips_leading_action_brackets_and_keeps_spoken_text() {
-        let reply = compile(&with_header(
+        let reply = compile(&envelope(
             "idle",
             "（轻轻歪头）哎呀，你先休息一会儿吧。后面不该显示。",
         ))
@@ -347,7 +320,7 @@ mod tests {
 
     #[test]
     fn display_keeps_one_message_but_speech_is_only_first_sentence() {
-        let reply = compile(&with_header(
+        let reply = compile(&envelope(
             "idle",
             "先检查网络连接。然后确认 Base URL 和协议是否一致。",
         ))
@@ -363,36 +336,36 @@ mod tests {
     #[test]
     fn natural_sentence_final_particles_are_preserved() {
         let reply =
-            compile(&with_header("idle", "那就先休息一会儿吧。")).expect("compile natural speech");
+            compile(&envelope("idle", "那就先休息一会儿吧。")).expect("compile natural speech");
         assert_eq!(reply.speech_text.as_str(), "那就先休息一会儿吧。");
     }
 
     #[test]
     fn natural_fillers_are_preserved_across_the_whole_speech_sentence() {
-        let reply = compile(&with_header("idle", "我，嗯，觉得你可以先休息。"))
+        let reply = compile(&envelope("idle", "我，嗯，觉得你可以先休息。"))
             .expect("compile sentence with middle filler");
         assert_eq!(reply.speech_text.as_str(), "我，嗯，觉得你可以先休息。");
 
-        let leading = compile(&with_header("idle", "唔，我觉得你可以先休息一下。"))
+        let leading = compile(&envelope("idle", "唔，我觉得你可以先休息一下。"))
             .expect("compile sentence with leading filler");
         assert_eq!(leading.speech_text.as_str(), "唔，我觉得你可以先休息一下。");
 
-        let semantic = compile(&with_header("idle", "嗯哼，这次我听懂了。"))
-            .expect("keep semantic expression");
+        let semantic =
+            compile(&envelope("idle", "嗯哼，这次我听懂了。")).expect("keep semantic expression");
         assert_eq!(semantic.speech_text.as_str(), "嗯哼，这次我听懂了。");
     }
 
     #[test]
     fn filler_only_reply_is_valid_spoken_dialogue() {
         let reply =
-            compile(&with_header("idle", "嗯。")).expect("a filler can be a complete human reply");
+            compile(&envelope("idle", "嗯。")).expect("a filler can be a complete human reply");
         assert_eq!(reply.display_text.as_str(), "嗯。");
         assert_eq!(reply.speech_text.as_str(), "嗯。");
     }
 
     #[test]
     fn reply_strips_standalone_actions_but_preserves_inline_brackets() {
-        let reply = compile(&with_header(
+        let reply = compile(&envelope(
             "idle",
             "先检查网络。\n（轻轻点头）\n然后检查配置。",
         ))
@@ -400,17 +373,14 @@ mod tests {
         assert_eq!(reply.display_text.as_str(), "先检查网络。\n然后检查配置。");
         assert_eq!(reply.speech_text.as_str(), "先检查网络。");
 
-        let inline = compile(&with_header(
-            "idle",
-            "先检查网络。然后确认配置（不要猜测）。",
-        ))
-        .expect("inline brackets remain valid");
+        let inline = compile(&envelope("idle", "先检查网络。然后确认配置（不要猜测）。"))
+            .expect("inline brackets remain valid");
         assert_eq!(
             inline.display_text.as_str(),
             "先检查网络。然后确认配置（不要猜测）。"
         );
 
-        let psychological = compile(&with_header(
+        let psychological = compile(&envelope(
             "idle",
             "我听见了。\n（心里有些担心）\n你愿意再说一点吗？",
         ))
@@ -423,27 +393,27 @@ mod tests {
 
     #[test]
     fn pure_bracketed_action_and_other_invalid_speech_fail() {
-        assert!(compile(&with_header("idle", "（安静地看着你）")).is_err());
+        assert!(compile(&envelope("idle", "（安静地看着你）")).is_err());
         for invalid in [
             "看看 https://example.test。",
             "**加粗台词**",
             "我在这里🙂。",
         ] {
-            assert!(compile(&with_header("idle", invalid)).is_err());
+            assert!(compile(&envelope("idle", invalid)).is_err());
         }
     }
 
     #[test]
     fn short_unpunctuated_line_is_still_speakable() {
-        let reply = compile(&with_header("idle", "我在")).expect("compile short line");
+        let reply = compile(&envelope("idle", "我在")).expect("compile short line");
         assert_eq!(reply.speech_text.as_str(), "我在");
     }
 
     #[test]
-    fn visual_state_header_is_stripped_and_validated_against_available_states() {
+    fn chains_envelope_visual_state_is_validated_against_available_states() {
         let reply = ReplyCompiler
             .compile(
-                "VISUAL_STATE: happy\n好呀，我也觉得这个方向不错。",
+                &envelope("happy", "好呀，我也觉得这个方向不错。"),
                 Vec::new(),
                 &states(&["idle", "happy", "sad"]),
             )
@@ -458,12 +428,12 @@ mod tests {
 
     #[test]
     fn json_reply_chains_compile_to_aggregate_fields() {
+        let draft = chains_envelope(serde_json::json!([
+            {"visualState": "thinking", "text": "嗯，我懂。"},
+            {"visualState": "happy", "text": "先这样改。"}
+        ]));
         let reply = ReplyCompiler
-            .compile(
-                r#"{"chains":[{"visualState":"thinking","text":"嗯，我懂。"},{"visualState":"happy","text":"先这样改。"}]}"#,
-                Vec::new(),
-                &states(&["idle", "thinking", "happy"]),
-            )
+            .compile(&draft, Vec::new(), &states(&["idle", "thinking", "happy"]))
             .expect("compile json chains");
 
         assert_eq!(reply.chains.len(), 2);
@@ -476,12 +446,9 @@ mod tests {
 
     #[test]
     fn json_reply_chains_do_not_semantically_reject_character_catchphrases() {
+        let draft = envelope("happy", "我是高性能的嘛！不过今天先慢慢来。");
         let reply = ReplyCompiler
-            .compile(
-                r#"{"chains":[{"visualState":"happy","text":"我是高性能的嘛！不过今天先慢慢来。"}]}"#,
-                Vec::new(),
-                &states(&["idle", "happy"]),
-            )
+            .compile(&draft, Vec::new(), &states(&["idle", "happy"]))
             .expect("compile catchphrase as ordinary model text");
 
         assert_eq!(
@@ -494,52 +461,42 @@ mod tests {
 
     #[test]
     fn json_reply_chains_reject_undeclared_state_and_bad_counts() {
+        let undeclared_draft = envelope("angry", "我在。");
         let undeclared = ReplyCompiler
-            .compile(
-                r#"{"chains":[{"visualState":"angry","text":"我在。"}]}"#,
-                Vec::new(),
-                &states(&["idle", "happy"]),
-            )
+            .compile(&undeclared_draft, Vec::new(), &states(&["idle", "happy"]))
             .expect_err("undeclared state fails");
         assert_eq!(undeclared.code, ErrorCode::ModelResponseInvalid);
 
+        let empty_draft = chains_envelope(serde_json::json!([]));
         let empty = ReplyCompiler
-            .compile(r#"{"chains":[]}"#, Vec::new(), &states(&["idle"]))
+            .compile(&empty_draft, Vec::new(), &states(&["idle"]))
             .expect_err("empty chains fail");
         assert_eq!(empty.code, ErrorCode::ModelResponseInvalid);
 
+        let too_many_draft = chains_envelope(serde_json::json!([
+            {"visualState": "idle", "text": "1"},
+            {"visualState": "idle", "text": "2"},
+            {"visualState": "idle", "text": "3"},
+            {"visualState": "idle", "text": "4"},
+            {"visualState": "idle", "text": "5"},
+            {"visualState": "idle", "text": "6"}
+        ]));
         let too_many = ReplyCompiler
-            .compile(
-                r#"{"chains":[
-                    {"visualState":"idle","text":"1"},
-                    {"visualState":"idle","text":"2"},
-                    {"visualState":"idle","text":"3"},
-                    {"visualState":"idle","text":"4"},
-                    {"visualState":"idle","text":"5"},
-                    {"visualState":"idle","text":"6"}
-                ]}"#,
-                Vec::new(),
-                &states(&["idle"]),
-            )
+            .compile(&too_many_draft, Vec::new(), &states(&["idle"]))
             .expect_err("too many chains fail");
         assert_eq!(too_many.code, ErrorCode::ModelResponseInvalid);
     }
 
     #[test]
-    fn missing_or_undeclared_visual_state_fails() {
-        let fallback = ReplyCompiler
-            .compile(
-                "（开心地蹦跳）在的在的！",
-                Vec::new(),
-                &states(&["idle", "happy"]),
-            )
-            .expect("missing header falls back to idle");
-        assert_eq!(fallback.visual_state.as_str(), "idle");
-        assert_eq!(fallback.display_text.as_str(), "在的在的！");
-
-        for invalid in ["VISUAL_STATE: angry\n我在。", "VISUAL_STATE: Bad\n我在。"] {
+    fn legacy_or_undeclared_visual_state_fails() {
+        for invalid in [
+            "（开心地蹦跳）在的在的！".to_owned(),
+            "VISUAL_STATE: idle\n我在。".to_owned(),
+            envelope("angry", "我在。"),
+            envelope("Bad", "我在。"),
+        ] {
             let error = ReplyCompiler
-                .compile(invalid, Vec::new(), &states(&["idle", "happy"]))
+                .compile(&invalid, Vec::new(), &states(&["idle", "happy"]))
                 .expect_err("invalid visual state fails");
             assert_eq!(error.code, ErrorCode::ModelResponseInvalid);
         }
@@ -548,8 +505,51 @@ mod tests {
     #[test]
     fn invalid_available_state_context_fails_before_model_text_is_used() {
         let error = ReplyCompiler
-            .compile("VISUAL_STATE: idle\n我在。", Vec::new(), &[])
+            .compile(&envelope("idle", "我在。"), Vec::new(), &[])
             .expect_err("empty available states fail");
         assert_eq!(error.code, ErrorCode::InvalidEventPayload);
+    }
+
+    #[test]
+    fn strict_chains_envelope_compiles() {
+        let reply = compile(r#"{"chains":[{"visualState":"idle","text":"我在。"}]}"#)
+            .expect("compile strict chains envelope");
+        assert_eq!(reply.display_text.as_str(), "我在。");
+        assert_eq!(reply.speech_text.as_str(), "我在。");
+        assert_eq!(reply.visual_state.as_str(), "idle");
+    }
+
+    #[test]
+    fn strict_chains_envelope_rejects_unknown_trailing_and_legacy_outputs() {
+        let valid_chains = r#"[{"visualState":"idle","text":"我在。"}]"#;
+        let valid = format!(r#"{{"chains":{valid_chains}}}"#);
+        let cases = vec![
+            ("missing chains", "{}".to_owned()),
+            (
+                "unknown top field",
+                format!(r#"{{"chains":{valid_chains},"reasoning":"no"}}"#),
+            ),
+            (
+                "decision field is not part of the wire schema",
+                format!(r#"{{"decision":{{"stance":"先回应"}},"chains":{valid_chains}}}"#),
+            ),
+            (
+                "unknown chain field",
+                r#"{"chains":[{"visualState":"idle","text":"我在。","gesture":"wave"}]}"#
+                    .to_string(),
+            ),
+            ("second json value", format!("{valid}{{}}")),
+            ("trailing text", format!("{valid} trailing")),
+            (
+                "legacy visual header",
+                "VISUAL_STATE: idle\n我在。".to_owned(),
+            ),
+            ("legacy plain text", "我在。".to_owned()),
+        ];
+
+        for (name, draft) in cases {
+            let error = compile(&draft).expect_err(name);
+            assert_eq!(error.code, ErrorCode::ModelResponseInvalid, "{name}");
+        }
     }
 }

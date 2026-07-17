@@ -213,7 +213,7 @@ export async function listenWailsHarnessEvents(onEvent, onProtocolError) {
   if (typeof Events?.On !== "function") {
     throw new Error("Wails Events.On is unavailable");
   }
-  const off = Events.On("companion-harness-event", (event) => {
+  const off = await Events.On("companion-harness-event", (event) => {
     const payload = event?.data ?? event;
     try {
       onEvent(parseHarnessEvent(payload));
@@ -227,7 +227,17 @@ export async function listenWailsHarnessEvents(onEvent, onProtocolError) {
       );
     }
   });
-  return typeof off === "function" ? off : () => {};
+  return normalizeWailsEventUnlisten(off);
+}
+
+export function normalizeWailsEventUnlisten(value) {
+  if (typeof value === "function") return value;
+  for (const key of ["off", "Off", "cancel", "Cancel", "dispose", "Dispose", "unsubscribe", "Unsubscribe"]) {
+    if (typeof value?.[key] === "function") {
+      return () => value[key]();
+    }
+  }
+  return () => {};
 }
 
 export async function compactWailsConversation(conversationId, loadBindings = defaultLoadBindings) {

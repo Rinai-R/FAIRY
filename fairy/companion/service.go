@@ -15,20 +15,18 @@ import (
 )
 
 type CompanionService struct {
-	root               string
-	memoryStore        *memory.Store
-	modelService       *model.ModelService
-	backgroundJobs     atomic.Int64
-	extractionMu       sync.Mutex
-	extractionIdle     map[string]context.CancelFunc
-	backgroundErrorMu  sync.Mutex
-	backgroundError    error
-	continuationMu     sync.Mutex
-	continuationByConv map[string]*model.ContinuationState
-	gateMu             sync.Mutex
-	gates              map[string]*conversationGate
-	emitMu             sync.Mutex
-	emit               EventEmitter
+	root              string
+	memoryStore       *memory.Store
+	modelService      *model.ModelService
+	backgroundJobs    atomic.Int64
+	extractionMu      sync.Mutex
+	extractionIdle    map[string]context.CancelFunc
+	backgroundErrorMu sync.Mutex
+	backgroundError   error
+	gateMu            sync.Mutex
+	gates             map[string]*conversationGate
+	emitMu            sync.Mutex
+	emit              EventEmitter
 }
 
 // AttachEventEmitter wires a Wails-free sink from main (package function, not a bound service method).
@@ -52,20 +50,18 @@ func (s *CompanionService) emitEvent(event HarnessEvent) {
 
 func NewCompanionService() *CompanionService {
 	return &CompanionService{
-		extractionIdle:     make(map[string]context.CancelFunc),
-		continuationByConv: make(map[string]*model.ContinuationState),
-		gates:              make(map[string]*conversationGate),
+		extractionIdle: make(map[string]context.CancelFunc),
+		gates:          make(map[string]*conversationGate),
 	}
 }
 
 func NewCompanionServiceWithRuntime(root string, memoryStore *memory.Store, modelService *model.ModelService) *CompanionService {
 	return &CompanionService{
-		root:               root,
-		memoryStore:        memoryStore,
-		modelService:       modelService,
-		extractionIdle:     make(map[string]context.CancelFunc),
-		continuationByConv: make(map[string]*model.ContinuationState),
-		gates:              make(map[string]*conversationGate),
+		root:           root,
+		memoryStore:    memoryStore,
+		modelService:   modelService,
+		extractionIdle: make(map[string]context.CancelFunc),
+		gates:          make(map[string]*conversationGate),
 	}
 }
 
@@ -100,6 +96,9 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	if !s.RespondRuntimeMigrated() {
 		return TurnOutcome{}, ErrRespondRuntimeNotMigrated
 	}
+	if err := s.maybeCompactBeforeTurn(request); err != nil {
+		s.setBackgroundError(err)
+	}
 	turnCtx, err := s.reserveTurn(request.ConversationID)
 	if err != nil {
 		return TurnOutcome{}, err
@@ -119,8 +118,12 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 			if event, err := life.Interrupt(); err == nil {
 				s.emitEvent(event)
 			}
+			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTerminal, TurnStateInterrupted, code, runtimeFailureLedgerMetadata(code, cause, false))
 		} else if event, err := life.Fail(code, cause.Error(), false); err == nil {
 			s.emitEvent(event)
+			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTerminal, TurnStateFailed, code, runtimeFailureLedgerMetadata(code, cause, false))
+		} else {
+			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTerminal, TurnStateFailed, code, runtimeFailureLedgerMetadata(code, cause, false))
 		}
 		return TurnOutcome{}, cause
 	}
@@ -130,6 +133,9 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 			return err
 		}
 		s.emitEvent(event)
+		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTransition, state, "", map[string]any{
+			"source": "turn_lifecycle",
+		})
 		return nil
 	}
 
@@ -148,17 +154,24 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	if err != nil {
 		return fail("USER_PROFILE_UNAVAILABLE", err)
 	}
-	retrieval, err := s.memoryStore.Retrieve(bootstrap.Conversation.CharacterID, request.Input)
-	if err != nil {
-		return fail("RETRIEVAL_FAILED", err)
+	retrieval, retrievalErr := s.memoryStore.Retrieve(bootstrap.Conversation.CharacterID, request.Input)
+	retrievalOmitReason := ""
+	if retrievalErr != nil {
+		retrieval = memory.RetrievalContext{}
+		retrievalOmitReason = "retrieval_failed"
 	}
 	if err := transition(TurnStatePlanning); err != nil {
 		return fail("INVALID_STATE_TRANSITION", err)
 	}
-	input, err := BuildRespondInput(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval)
+	slots, err := BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval)
 	if err != nil {
 		return fail("PROMPT_BUILD_FAILED", err)
 	}
+	if retrievalOmitReason != "" {
+		setContextSlotOmitReason(slots, "retrieved_context", retrievalOmitReason)
+	}
+	input := PromptItemsFromContextSlots(slots)
+	s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventPrompt, TurnStatePlanning, "", runtimePromptLedgerMetadata(input, slots, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval))
 	connectionConfig, err := config.ReadModelConnection(s.root)
 	if err != nil {
 		return fail("MODEL_FAILED", err)
@@ -177,15 +190,15 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		},
 		Input: input,
 	}
-	previous := s.continuationState(request.ConversationID)
-	decision := model.DecideContinuation(connectionConfig.Capabilities.CacheRetention, previous, fullRequest)
+	decision, previous, err := s.decideContinuation(request.ConversationID, connectionConfig.Capabilities.CacheRetention, bootstrap.PromptWindow.Revision, fullRequest)
+	if err != nil {
+		return fail("MODEL_FAILED", err)
+	}
 	executeRequest, err := model.MaterializeContinuationRequest(fullRequest, decision)
 	if err != nil {
 		return fail("MODEL_FAILED", err)
 	}
-	if err := transition(TurnStateResponding); err != nil {
-		return fail("INVALID_STATE_TRANSITION", err)
-	}
+	s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContinuation, TurnStatePlanning, "", runtimeContinuationLedgerMetadata(connectionConfig.Capabilities.CacheRetention, previous, fullRequest, executeRequest, decision))
 	if err := turnCtx.Err(); err != nil {
 		return fail("TURN_INTERRUPTED", ErrTurnInterrupted)
 	}
@@ -198,10 +211,25 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		}
 		return fail(code, err)
 	}
+	if err := turnCtx.Err(); err != nil {
+		return fail("TURN_INTERRUPTED", ErrTurnInterrupted)
+	}
+	usage := laneUsageFromEvents(events, bootstrap.PromptWindow.Revision)
+	s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventModel, TurnStatePlanning, "", runtimeModelLedgerMetadata(events, usage))
 	draft := collectText(events)
 	reply, err := CompileReply(draft, request.AvailableVisualStates)
 	if err != nil {
 		return fail("MODEL_RESPONSE_INVALID", err)
+	}
+	s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventCompile, TurnStatePlanning, "", map[string]any{
+		"status":          "succeeded",
+		"visualState":     reply.VisualState,
+		"chainCount":      len(reply.Chains),
+		"displayTextHash": runtimeHash(reply.DisplayText),
+		"speechTextHash":  runtimeHash(reply.SpeechText),
+	})
+	if err := transition(TurnStateResponding); err != nil {
+		return fail("INVALID_STATE_TRANSITION", err)
 	}
 	for index, chain := range reply.Chains {
 		delta := chain.Text
@@ -222,7 +250,6 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		value := userProfile.Revision
 		profileRevision = &value
 	}
-	usage := laneUsageFromEvents(events, bootstrap.PromptWindow.Revision)
 	completed, err := life.Complete(TurnCompletion{
 		Text:                reply.DisplayText,
 		SpeechText:          reply.SpeechText,
@@ -236,7 +263,16 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		return fail("INVALID_STATE_TRANSITION", err)
 	}
 	s.emitEvent(completed)
-	s.updateContinuationState(request.ConversationID, connectionConfig.Capabilities.CacheRetention, fullRequest, reply.DisplayText, events)
+	s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTerminal, TurnStateCompleted, "", runtimeTerminalLedgerMetadata("completed", reply, usage))
+	contextWindow, err := s.recordObservedContextWindow(request.ConversationID, bootstrap.PromptWindow.Revision, usage)
+	if err != nil {
+		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContextWindow, TurnStateCompleted, "CONTEXT_WINDOW_STATE_FAILED", runtimeFailureLedgerMetadata("CONTEXT_WINDOW_STATE_FAILED", err, false))
+	} else {
+		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContextWindow, TurnStateCompleted, "", runtimeContextWindowLedgerMetadata(contextWindow))
+	}
+	if err := s.updateContinuationState(request.ConversationID, connectionConfig.Capabilities.CacheRetention, bootstrap.PromptWindow.Revision, fullRequest, reply.DisplayText, events); err != nil {
+		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContinuation, TurnStateCompleted, "CONTINUATION_STATE_FAILED", runtimeFailureLedgerMetadata("CONTINUATION_STATE_FAILED", err, false))
+	}
 	s.scheduleBackgroundExtraction(request.ConversationID)
 	s.scheduleAutoCompaction(request.ConversationID, events)
 	return TurnOutcome{
@@ -253,11 +289,15 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 
 func laneUsageFromEvents(events []model.StreamEvent, historyWindow uint64) []LaneModelUsage {
 	promptTokens, completionTokens := 0, 0
+	var cachedInputTokens *uint64
+	var cacheWriteTokens *uint64
 	known := false
 	for _, event := range events {
 		if event.Type == "usage" && event.Usage != nil {
 			promptTokens = event.Usage.PromptTokens
 			completionTokens = event.Usage.CompletionTokens
+			cachedInputTokens = event.Usage.CachedInputTokens
+			cacheWriteTokens = event.Usage.CacheWriteTokens
 			known = true
 		}
 	}
@@ -266,18 +306,23 @@ func laneUsageFromEvents(events []model.StreamEvent, historyWindow uint64) []Lan
 	}
 	input := uint64(promptTokens)
 	output := uint64(completionTokens)
-	// Provider transport does not yet surface cached token fields; emit Missing
-	// (same wire shape as Rust CachedTokenObservation::Missing).
 	return []LaneModelUsage{{
 		Lane:          string(model.PromptLaneRespond),
 		HistoryWindow: historyWindow,
 		Usage: LaneUsage{
 			InputTokens:       &input,
 			OutputTokens:      &output,
-			CachedInputTokens: CacheMissing(),
-			CacheWriteTokens:  CacheMissing(),
+			CachedInputTokens: cacheObservationFromProvider(cachedInputTokens),
+			CacheWriteTokens:  cacheObservationFromProvider(cacheWriteTokens),
 		},
 	}}
+}
+
+func cacheObservationFromProvider(tokens *uint64) CachedTokenObservation {
+	if tokens == nil {
+		return CacheMissing()
+	}
+	return CacheObserved(*tokens)
 }
 
 func (s *CompanionService) CompactConversation(conversationID string) (memory.CompactionResult, error) {
@@ -328,55 +373,13 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 		return memory.CompactionResult{}, err
 	}
 	result.RetainedDialogueItems = len(windowed)
-	s.clearContinuationState(conversationID)
+	if _, err := s.advanceContextWindowAfterCompaction(conversationID, result.WindowRevision); err != nil {
+		return memory.CompactionResult{}, err
+	}
+	if err := s.clearContinuationState(conversationID); err != nil {
+		return memory.CompactionResult{}, err
+	}
 	return result, nil
-}
-
-func (s *CompanionService) continuationState(conversationID string) *model.ContinuationState {
-	s.continuationMu.Lock()
-	defer s.continuationMu.Unlock()
-	if s.continuationByConv == nil {
-		return nil
-	}
-	return s.continuationByConv[conversationID]
-}
-
-func (s *CompanionService) clearContinuationState(conversationID string) {
-	s.continuationMu.Lock()
-	defer s.continuationMu.Unlock()
-	delete(s.continuationByConv, conversationID)
-}
-
-func (s *CompanionService) updateContinuationState(
-	conversationID string,
-	cacheRetention bool,
-	fullRequest model.CompiledPromptRequest,
-	displayText string,
-	events []model.StreamEvent,
-) {
-	s.continuationMu.Lock()
-	defer s.continuationMu.Unlock()
-	if s.continuationByConv == nil {
-		s.continuationByConv = make(map[string]*model.ContinuationState)
-	}
-	if !cacheRetention {
-		delete(s.continuationByConv, conversationID)
-		return
-	}
-	responseID := model.ResponseIDFromEvents(events)
-	if err := model.ValidatePreviousResponseID(responseID); err != nil {
-		delete(s.continuationByConv, conversationID)
-		return
-	}
-	s.continuationByConv[conversationID] = &model.ContinuationState{
-		PreviousResponseID: responseID,
-		PreviousRequest:    fullRequest,
-		ResponseItems: []model.PromptItem{{
-			Type:    model.PromptItemAssistantMessage,
-			Content: displayText,
-		}},
-		ResponseComplete: true,
-	}
 }
 
 func (s *CompanionService) activeCharacter(characterID string) (character.Record, error) {

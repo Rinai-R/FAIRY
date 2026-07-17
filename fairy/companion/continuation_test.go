@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"fairy/memory"
 	"fairy/model"
 )
 
@@ -48,7 +49,7 @@ func TestSubmitCompiledTurnUsesSuffixContinuationWhenCacheRetentionSupported(t *
 			return
 		}
 		text := fmt.Sprintf("第%d轮回复", turn)
-		payload := fmt.Sprintf(`{"chains":[{"visualState":"idle","text":%q}]}`, text)
+		payload := testRespondEnvelope(testReplyChain{VisualState: "idle", Text: text})
 		fmt.Fprintf(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":%q}\n\n", payload)
 		fmt.Fprintf(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_%d\",\"output\":[{\"type\":\"message\",\"content\":[{\"text\":%q}]}],\"usage\":{\"input_tokens\":10,\"output_tokens\":4}}}\n\n", turn, payload)
 	}))
@@ -61,7 +62,7 @@ func TestSubmitCompiledTurnUsesSuffixContinuationWhenCacheRetentionSupported(t *
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.HTTPTransport{Client: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
 	states := []VisualState{{ID: "idle", Description: "idle 状态说明"}}
 
 	if _, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
@@ -72,13 +73,28 @@ func TestSubmitCompiledTurnUsesSuffixContinuationWhenCacheRetentionSupported(t *
 	}); err != nil {
 		t.Fatalf("first turn error = %v", err)
 	}
-	if _, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+	if record, ok, err := memoryStore.LoadLaneContinuation(bootstrap.Conversation.ID, string(model.PromptLaneRespond)); err != nil {
+		t.Fatalf("LoadLaneContinuation() after first turn error = %v", err)
+	} else if !ok || record.PreviousResponseID != "resp_1" || record.RequestShapeHash == "" || record.InputPrefixHash == "" || record.ResponseItemHash == "" {
+		t.Fatalf("persisted continuation record = %#v ok=%t", record, ok)
+	}
+	service = NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	secondOutcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 		ConversationID:        bootstrap.Conversation.ID,
 		Input:                 "第二轮",
 		MaxOutputTokens:       160,
 		AvailableVisualStates: states,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("second turn error = %v", err)
+	}
+	ledger, err := memoryStore.ListTurnRuntimeEvents(secondOutcome.ConversationID, secondOutcome.TurnID)
+	if err != nil {
+		t.Fatalf("ListTurnRuntimeEvents(second) error = %v", err)
+	}
+	metadata := runtimeLedgerMetadataForType(t, ledger, runtimeLedgerEventContinuation)
+	if metadata["incremental"] != true || metadata["previousStateSource"] != "sqlite_lane_continuations" {
+		t.Fatalf("second continuation metadata = %#v", metadata)
 	}
 
 	mu.Lock()
@@ -109,4 +125,90 @@ func TestSubmitCompiledTurnUsesSuffixContinuationWhenCacheRetentionSupported(t *
 	if respondBodies[0]["prompt_cache_key"] != "fairy:"+bootstrap.Conversation.ID+":respond" {
 		t.Fatalf("prompt_cache_key = %#v", respondBodies[0]["prompt_cache_key"])
 	}
+}
+
+func TestDecideContinuationFromPersistentHashesUsesDistinctReasons(t *testing.T) {
+	root := t.TempDir()
+	memoryStore, characterID := seedCompanionRuntime(t, root)
+	bootstrap, err := memoryStore.OpenOrCreateCharacterConversation(characterID)
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
+	}
+	service := NewCompanionServiceWithRuntime(root, memoryStore, nil)
+	shape := model.ModelRequestShape{
+		Lane:            model.PromptLaneRespond,
+		Model:           "deepseek-v4-flash",
+		Instructions:    RespondInstructions,
+		MaxOutputTokens: 160,
+		PromptCacheKey:  model.LaneCacheKey(bootstrap.Conversation.ID, model.PromptLaneRespond),
+	}
+	previousInput := []model.PromptItem{{Type: model.PromptItemUserMessage, Content: "第一轮"}}
+	assistantItem := []model.PromptItem{{Type: model.PromptItemAssistantMessage, Content: "第一轮回复"}}
+	if _, err := memoryStore.SaveLaneContinuation(memory.LaneContinuationRecord{
+		ConversationID:     bootstrap.Conversation.ID,
+		Lane:               string(model.PromptLaneRespond),
+		PreviousResponseID: "resp_1",
+		RequestShapeHash:   runtimeHash(shape),
+		InputPrefixHash:    runtimeHash(previousInput),
+		ResponseItemHash:   runtimeHash(assistantItem),
+		WindowRevision:     bootstrap.PromptWindow.Revision,
+	}); err != nil {
+		t.Fatalf("SaveLaneContinuation() error = %v", err)
+	}
+
+	current := model.CompiledPromptRequest{
+		Shape: shape,
+		Input: []model.PromptItem{
+			previousInput[0],
+			assistantItem[0],
+			{Type: model.PromptItemUserMessage, Content: "第二轮"},
+		},
+	}
+	decision, previous, err := service.decideContinuation(bootstrap.Conversation.ID, true, bootstrap.PromptWindow.Revision, current)
+	if err != nil {
+		t.Fatalf("decideContinuation(incremental) error = %v", err)
+	}
+	if previous == nil || !decision.Incremental || decision.PreviousResponseID != "resp_1" || len(decision.NewItems) != 1 || decision.NewItems[0].Content != "第二轮" {
+		t.Fatalf("incremental decision = %#v previous=%#v", decision, previous)
+	}
+	if decision, _, err := service.decideContinuation(bootstrap.Conversation.ID, false, bootstrap.PromptWindow.Revision, current); err != nil || decision.FullReason != model.ContinuationCapabilityUnsupported {
+		t.Fatalf("capability unsupported = %#v err=%v", decision, err)
+	}
+	changedShape := current
+	changedShape.Shape.MaxOutputTokens = 200
+	if decision, _, err := service.decideContinuation(bootstrap.Conversation.ID, true, bootstrap.PromptWindow.Revision, changedShape); err != nil || decision.FullReason != model.ContinuationRequestShapeChanged {
+		t.Fatalf("shape changed = %#v err=%v", decision, err)
+	}
+	mismatch := current
+	mismatch.Input = []model.PromptItem{{Type: model.PromptItemUserMessage, Content: "重写第一轮"}, assistantItem[0], {Type: model.PromptItemUserMessage, Content: "第二轮"}}
+	if decision, _, err := service.decideContinuation(bootstrap.Conversation.ID, true, bootstrap.PromptWindow.Revision, mismatch); err != nil || decision.FullReason != model.ContinuationPrefixMismatch {
+		t.Fatalf("prefix mismatch = %#v err=%v", decision, err)
+	}
+	notExtended := current
+	notExtended.Input = []model.PromptItem{previousInput[0], assistantItem[0]}
+	if decision, _, err := service.decideContinuation(bootstrap.Conversation.ID, true, bootstrap.PromptWindow.Revision, notExtended); err != nil || decision.FullReason != model.ContinuationInputNotExtended {
+		t.Fatalf("not extended = %#v err=%v", decision, err)
+	}
+	if err := memoryStore.ClearLaneContinuation(bootstrap.Conversation.ID, string(model.PromptLaneRespond)); err != nil {
+		t.Fatalf("ClearLaneContinuation() error = %v", err)
+	}
+	if decision, previous, err := service.decideContinuation(bootstrap.Conversation.ID, true, bootstrap.PromptWindow.Revision, current); err != nil || previous != nil || decision.FullReason != model.ContinuationNoPreviousState {
+		t.Fatalf("no previous state = %#v previous=%#v err=%v", decision, previous, err)
+	}
+}
+
+func runtimeLedgerMetadataForType(t *testing.T, events []memory.TurnRuntimeEventRecord, eventType string) map[string]any {
+	t.Helper()
+	for _, event := range events {
+		if event.EventType != eventType {
+			continue
+		}
+		var metadata map[string]any
+		if err := json.Unmarshal([]byte(event.MetadataJSON), &metadata); err != nil {
+			t.Fatalf("json.Unmarshal(%s metadata) error = %v", eventType, err)
+		}
+		return metadata
+	}
+	t.Fatalf("missing runtime ledger event %s: %#v", eventType, events)
+	return nil
 }

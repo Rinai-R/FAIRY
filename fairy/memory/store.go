@@ -126,7 +126,37 @@ func (s *Store) openReadOnly() (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening memory database read-only: %w", err)
 	}
+	if err := configureSQLiteConnection(db, true); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return db, nil
+}
+
+func configureSQLiteConnection(db *sql.DB, readOnly bool) error {
+	if readOnly {
+		db.SetMaxOpenConns(4)
+		db.SetMaxIdleConns(4)
+	} else {
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+	}
+	pragmas := []string{
+		"PRAGMA busy_timeout = 5000",
+		"PRAGMA foreign_keys = ON",
+	}
+	if !readOnly {
+		pragmas = append(pragmas,
+			"PRAGMA journal_mode = WAL",
+			"PRAGMA synchronous = NORMAL",
+		)
+	}
+	for _, pragma := range pragmas {
+		if _, err := db.Exec(pragma); err != nil {
+			return fmt.Errorf("configuring memory database connection: %w", err)
+		}
+	}
+	return nil
 }
 
 func countScalar(db *sql.DB, query string) (int64, error) {

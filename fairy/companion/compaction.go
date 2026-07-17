@@ -17,6 +17,8 @@ const (
 	autoCompactionThresholdBasisPoints uint64 = 8_000
 	basisPointsDenominator             uint64 = 10_000
 	respondOutputReserveTokens         uint64 = 640
+	compactionFailureBreakerThreshold  uint64 = 3
+	estimatedPromptCharsPerToken       uint64 = 4
 	maxCompactionSummaryChars                 = 12_000
 )
 
@@ -29,6 +31,7 @@ type CompactionTrigger int
 const (
 	CompactionTriggerManual CompactionTrigger = iota
 	CompactionTriggerAfterCompletedTurn
+	CompactionTriggerPreTurnPredictive
 )
 
 func CompactionPolicyFromContextWindow(contextWindowTokens uint64) CompactionPolicy {
@@ -52,6 +55,11 @@ func (p CompactionPolicy) ShouldCompact(trigger CompactionTrigger, promptTokens 
 			return false
 		}
 		return promptTokens >= *p.AutoInputTokenThreshold
+	case CompactionTriggerPreTurnPredictive:
+		if p.AutoInputTokenThreshold == nil || promptTokens == 0 {
+			return false
+		}
+		return promptTokens >= *p.AutoInputTokenThreshold
 	default:
 		return false
 	}
@@ -59,6 +67,30 @@ func (p CompactionPolicy) ShouldCompact(trigger CompactionTrigger, promptTokens 
 
 func (p CompactionPolicy) ShouldCompactAfterTurn(promptTokens uint64) bool {
 	return p.ShouldCompact(CompactionTriggerAfterCompletedTurn, promptTokens, promptTokens > 0)
+}
+
+func (p CompactionPolicy) ShouldCompactWindow(trigger CompactionTrigger, promptTokens uint64, usageKnown bool, window *memory.ContextWindowRecord) bool {
+	if trigger != CompactionTriggerManual && contextWindowBreakerOpen(window) {
+		return false
+	}
+	return p.ShouldCompact(trigger, promptTokens, usageKnown)
+}
+
+func contextWindowBreakerOpen(window *memory.ContextWindowRecord) bool {
+	return window != nil && window.FailureCount >= compactionFailureBreakerThreshold
+}
+
+func estimatePromptPrefillTokens(instructions string, input []model.PromptItem) uint64 {
+	chars := uint64(utf8.RuneCountInString(instructions))
+	for _, item := range input {
+		chars += uint64(utf8.RuneCountInString(string(item.Type)))
+		chars += uint64(utf8.RuneCountInString(item.Content))
+		chars += 12
+	}
+	if chars == 0 {
+		return 0
+	}
+	return (chars + estimatedPromptCharsPerToken - 1) / estimatedPromptCharsPerToken
 }
 
 func normalizeCompactionSummary(summary string) (string, error) {
@@ -113,18 +145,86 @@ func (s *CompanionService) scheduleAutoCompaction(conversationID string, events 
 		return
 	}
 	policy := CompactionPolicyFromContextWindow(connection.ContextWindowTokens)
-	if !policy.ShouldCompact(CompactionTriggerAfterCompletedTurn, promptTokens, true) {
+	window, found, err := s.memoryStore.LoadContextWindow(conversationID, string(model.PromptLaneRespond))
+	if err != nil {
+		s.setBackgroundError(err)
+		return
+	}
+	var windowPtr *memory.ContextWindowRecord
+	if found {
+		windowPtr = &window
+	}
+	if !policy.ShouldCompactWindow(CompactionTriggerAfterCompletedTurn, promptTokens, true, windowPtr) {
 		return
 	}
 	go func() {
 		s.backgroundJobs.Add(1)
 		defer s.backgroundJobs.Add(-1)
 		if _, err := s.CompactConversation(conversationID); err != nil {
+			if recordErr := s.recordContextWindowFailure(conversationID); recordErr != nil {
+				s.setBackgroundError(recordErr)
+				return
+			}
 			s.setBackgroundError(err)
 			return
 		}
 		s.clearBackgroundError()
 	}()
+}
+
+func (s *CompanionService) maybeCompactBeforeTurn(request SubmitCompiledTurnRequest) error {
+	if s == nil || !s.RespondRuntimeMigrated() {
+		return nil
+	}
+	bootstrap, err := s.memoryStore.LoadConversation(request.ConversationID)
+	if err != nil {
+		return err
+	}
+	if len(messagesAfterCutoff(bootstrap.Messages, bootstrap.PromptWindow.CutoffMessageSequence)) == 0 {
+		return nil
+	}
+	characterRecord, err := s.activeCharacter(bootstrap.Conversation.CharacterID)
+	if err != nil {
+		return err
+	}
+	userProfile, err := profile.NewStore(s.root).Current()
+	if err != nil {
+		return err
+	}
+	estimatedMessages := append([]memory.MessageRecord(nil), bootstrap.Messages...)
+	estimatedMessages = append(estimatedMessages, memory.MessageRecord{
+		Role:     "user",
+		Content:  request.Input,
+		Sequence: uint64(len(estimatedMessages) + 1),
+	})
+	slots, err := BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, estimatedMessages, request.AvailableVisualStates, memory.RetrievalContext{})
+	if err != nil {
+		return err
+	}
+	estimatedTokens := estimatePromptPrefillTokens(RespondInstructions, PromptItemsFromContextSlots(slots))
+	window, err := s.recordEstimatedContextWindow(request.ConversationID, bootstrap.PromptWindow.Revision, estimatedTokens)
+	if err != nil {
+		return err
+	}
+	connection, err := config.ReadModelConnection(s.root)
+	if err != nil {
+		return err
+	}
+	policy := CompactionPolicyFromContextWindow(connection.ContextWindowTokens)
+	if !policy.ShouldCompactWindow(CompactionTriggerPreTurnPredictive, estimatedTokens, true, window) {
+		return nil
+	}
+	if _, err := s.CompactConversation(request.ConversationID); err != nil {
+		if errors.Is(err, ErrTurnInProgress) {
+			return nil
+		}
+		if recordErr := s.recordContextWindowFailure(request.ConversationID); recordErr != nil {
+			return recordErr
+		}
+		return err
+	}
+	s.clearBackgroundError()
+	return nil
 }
 
 func lastPromptTokens(events []model.StreamEvent) (uint64, bool) {

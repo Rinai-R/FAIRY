@@ -47,6 +47,16 @@ function event(sequence, state, payload) {
   };
 }
 
+function turnEvent(turnId, sequence, state, payload) {
+  return {
+    conversationId: CONVERSATION_ID,
+    turnId,
+    sequence,
+    state,
+    payload,
+  };
+}
+
 function bootstrap(messages = []) {
   return {
     conversation: {
@@ -282,6 +292,36 @@ test("out-of-order and invalid state events are rejected", () => {
       }),
     /state transition is invalid/,
   );
+});
+
+test("new submitted turn accepts sequence restart from backend", () => {
+  let state = advanceToResponding();
+  state = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(4, "responding", {
+      type: "reply_chain",
+      index: 0,
+      delta: "第一轮回复",
+      text: "第一轮回复",
+      speechText: "第一轮回复",
+      visualState: "idle",
+    }),
+  });
+  state = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(5, "completed", completedPayload("第一轮回复")),
+  });
+
+  state = reduceCompanionState(state, { type: "draft_changed", value: "第二轮" });
+  state = reduceCompanionState(state, { type: "submit_started", text: "第二轮" });
+  state = reduceCompanionState(state, {
+    type: "harness_event",
+    event: turnEvent("55555555-5555-4555-8555-555555555555", 1, "interpreting", { type: "state_changed" }),
+  });
+
+  assert.equal(state.lastSequence, 1);
+  assert.equal(state.activeTurnId, "55555555-5555-4555-8555-555555555555");
+  assert.equal(state.sessionState, "interpreting");
 });
 
 test("interrupted partial text is retained but never marked complete", () => {

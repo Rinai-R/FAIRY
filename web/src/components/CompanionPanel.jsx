@@ -1,6 +1,5 @@
 import {
   ChatBubbleIcon,
-  Cross2Icon,
   ExclamationTriangleIcon,
   GearIcon,
   MagicWandIcon,
@@ -22,7 +21,11 @@ import { motion } from "motion/react";
 
 import { PixelCharacter } from "./PixelCharacter.jsx";
 import { Transcript } from "./Transcript.jsx";
-import { resolveChatKeyboardAction } from "../companionViewState.mjs";
+import {
+  isCompanionPetDragTarget,
+  resolvePixelCharacterRenderKey,
+  resolveChatKeyboardAction,
+} from "../companionViewState.mjs";
 import { selectRecentTranscript } from "../windowState.mjs";
 
 const DESKTOP_CHARACTER_DISPLAY_SCALE = 1.69;
@@ -56,6 +59,7 @@ export function CompanionPanel({
   const active = companion.activeTurnId !== null || companion.submitting;
   const displayedError = companion.error ?? externalError;
   const accessibleCharacterName = characterName ?? "桌面角色";
+  const pixelCharacterRenderKey = resolvePixelCharacterRenderKey(character, visual);
 
   function handleOpenChange(open) {
     if (open) onOpenChat();
@@ -100,6 +104,7 @@ export function CompanionPanel({
           <motion.div
             className="fairy-pet__character"
             data-tauri-drag-region
+            data-fairy-pet-drag-region
             aria-label={`拖动${accessibleCharacterName}`}
             initial={false}
             animate={{ y: 0, scale: 1 }}
@@ -115,6 +120,7 @@ export function CompanionPanel({
               aria-hidden="true"
             >
               <PixelCharacter
+                key={pixelCharacterRenderKey}
                 visual={visual}
                 visualState={pixelCharacter.visualState}
                 direction={pixelCharacter.direction}
@@ -130,6 +136,7 @@ export function CompanionPanel({
             color="tomato"
             role="alert"
             data-tauri-drag-region
+            data-fairy-pet-drag-region
             aria-label={`拖动${accessibleCharacterName}`}
             onPointerDown={onPetDragStart}
             onPointerUp={onPetDragEnd}
@@ -169,6 +176,11 @@ export function CompanionPanel({
             event.preventDefault();
             onRequestCloseChat();
           }}
+          onPointerDownOutside={(event) => {
+            if (isCompanionPetDragTarget(event.detail.originalEvent.target)) {
+              event.preventDefault();
+            }
+          }}
         >
               <motion.div
                 key="chat-card"
@@ -184,28 +196,7 @@ export function CompanionPanel({
                 }}
               >
                 <Card className="fairy-chat-card" size="1">
-                  <header className="fairy-chat-card__header">
-                    <div>
-                      <Flex align="center" gap="2" mb="1">
-                        <span className={`fairy-presence-dot ${ready ? "is-ready" : ""}`} aria-hidden="true" />
-                        <Text size="1" color="gray">{ready ? `${characterName}可以听见你` : "等待角色和模型就绪"}</Text>
-                      </Flex>
-                      <Text as="div" size="3" weight="medium">{characterName ? `和${characterName}说说话` : "角色对话"}</Text>
-                    </div>
-                    <Tooltip content="收起聊天">
-                      <IconButton
-                        type="button"
-                        size="2"
-                        variant="soft"
-                        color="gray"
-                        aria-label="收起聊天"
-                        onClick={onRequestCloseChat}
-                      >
-                        <Cross2Icon />
-                      </IconButton>
-                    </Tooltip>
-                  </header>
-
+                  <span className="fairy-chat-card__tail" aria-hidden="true" />
                   {ready ? (
                     <Transcript
                       characterName={characterName}
@@ -237,9 +228,9 @@ export function CompanionPanel({
                       value={companion.draft}
                       onChange={(event) => onDraftChange(event.target.value)}
                       onKeyDown={handleKeyDown}
-                      rows={2}
+                      rows={1}
                       resize="none"
-                      placeholder={characterName ? `想对${characterName}说什么？` : "选择角色后开始对话"}
+                      placeholder={characterName ? `想对 ${characterName} 说什么？` : "选择角色后开始对话"}
                       aria-label="消息输入框"
                       autoFocus={ready}
                       disabled={!ready || active}

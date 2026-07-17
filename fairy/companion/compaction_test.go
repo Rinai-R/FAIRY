@@ -1,6 +1,7 @@
 package companion
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -9,7 +10,7 @@ import (
 	"fairy/model"
 )
 
-func TestCompactionPolicyFromContextWindowMatchesRustBasisPoints(t *testing.T) {
+func TestCompactionPolicyFromContextWindowUsesBasisPoints(t *testing.T) {
 	policy := CompactionPolicyFromContextWindow(1_048_576)
 	if policy.AutoInputTokenThreshold == nil {
 		t.Fatal("threshold is nil")
@@ -27,8 +28,72 @@ func TestCompactionPolicyFromContextWindowMatchesRustBasisPoints(t *testing.T) {
 	if policy.ShouldCompact(CompactionTriggerAfterCompletedTurn, want, false) {
 		t.Fatal("unknown usage must never guess compaction")
 	}
+	if !policy.ShouldCompact(CompactionTriggerPreTurnPredictive, want, false) {
+		t.Fatal("predictive trigger should use explicit local estimate")
+	}
 	if !policy.ShouldCompact(CompactionTriggerManual, 0, false) {
 		t.Fatal("manual trigger should always compact")
+	}
+}
+
+func TestCompactionPolicyUsesContextWindowFailureBreaker(t *testing.T) {
+	threshold := uint64(10)
+	policy := CompactionPolicy{AutoInputTokenThreshold: &threshold}
+	belowBreaker := &memory.ContextWindowRecord{FailureCount: compactionFailureBreakerThreshold - 1}
+	if !policy.ShouldCompactWindow(CompactionTriggerAfterCompletedTurn, threshold, true, belowBreaker) {
+		t.Fatal("below breaker threshold should allow automatic compaction")
+	}
+	openBreaker := &memory.ContextWindowRecord{FailureCount: compactionFailureBreakerThreshold}
+	if policy.ShouldCompactWindow(CompactionTriggerAfterCompletedTurn, threshold, true, openBreaker) {
+		t.Fatal("open breaker should stop automatic compaction")
+	}
+	if !policy.ShouldCompactWindow(CompactionTriggerManual, 0, false, openBreaker) {
+		t.Fatal("manual compaction must bypass automatic breaker")
+	}
+}
+
+func TestEstimatePromptPrefillTokensIsExplicitAndNonZero(t *testing.T) {
+	estimated := estimatePromptPrefillTokens("system", []model.PromptItem{
+		{Type: model.PromptItemUserMessage, Content: "你好"},
+		{Type: model.PromptItemAssistantMessage, Content: "我在。"},
+	})
+	if estimated == 0 {
+		t.Fatal("estimated prompt tokens = 0, want explicit positive estimate")
+	}
+}
+
+func TestRecordContextWindowFailureIncrementsBreakerCount(t *testing.T) {
+	store, err := memory.OpenOrCreate(filepath.Join(t.TempDir(), "fairy.sqlite3"))
+	if err != nil {
+		t.Fatalf("OpenOrCreate() error = %v", err)
+	}
+	bootstrap, err := store.OpenOrCreateCharacterConversation("character-1")
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
+	}
+	observed := uint64(20)
+	if _, err := store.SaveContextWindow(memory.ContextWindowRecord{
+		ConversationID:        bootstrap.Conversation.ID,
+		Lane:                  string(model.PromptLaneRespond),
+		WindowNumber:          1,
+		FirstWindowID:         "window-1",
+		WindowID:              "window-1",
+		ObservedPrefillTokens: &observed,
+		LastTrigger:           contextWindowTriggerCompletedUsage,
+		PromptWindowRevision:  bootstrap.PromptWindow.Revision,
+	}); err != nil {
+		t.Fatalf("SaveContextWindow() error = %v", err)
+	}
+	service := NewCompanionServiceWithRuntime(t.TempDir(), store, nil)
+	if err := service.recordContextWindowFailure(bootstrap.Conversation.ID); err != nil {
+		t.Fatalf("recordContextWindowFailure() error = %v", err)
+	}
+	loaded, ok, err := store.LoadContextWindow(bootstrap.Conversation.ID, string(model.PromptLaneRespond))
+	if err != nil {
+		t.Fatalf("LoadContextWindow() error = %v", err)
+	}
+	if !ok || loaded.FailureCount != 1 || loaded.LastTrigger != contextWindowTriggerCompactionFailed {
+		t.Fatalf("context window after failure = %#v ok=%v", loaded, ok)
 	}
 }
 

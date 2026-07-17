@@ -123,8 +123,8 @@ func TestCompanionServiceSubmitTurnResolvesVisualStates(t *testing.T) {
 		if !strings.Contains(joined, "idle 状态说明") {
 			t.Fatalf("visual states missing from prompt: %#v", body.Messages)
 		}
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"chains\\\":[{\\\"visualState\\\":\\\"idle\\\",\\\"text\\\":\\\"好。\\\"}]}\"}}]}\n\n")
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		writeChatTextDelta(w, testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "好。"}))
+		writeChatStop(w)
 	}))
 	t.Cleanup(server.Close)
 
@@ -135,7 +135,7 @@ func TestCompanionServiceSubmitTurnResolvesVisualStates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.HTTPTransport{Client: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
 	outcome, err := service.SubmitTurn(SubmitTurnRequest{
 		ConversationID: bootstrap.Conversation.ID,
 		Input:          "你好",
@@ -186,7 +186,7 @@ func TestCompanionServiceSubmitCompiledTurnPersistsCompletedAssistant(t *testing
 		if len(body.Messages) < 5 {
 			t.Fatalf("messages too short: %#v", body.Messages)
 		}
-		if body.Messages[0].Role != "system" || !strings.Contains(body.Messages[0].Content, "严格 JSON object") || strings.Contains(body.Messages[0].Content, "亚托莉") {
+		if body.Messages[0].Role != "system" || !strings.Contains(body.Messages[0].Content, "strict JSON object") || strings.Contains(body.Messages[0].Content, "亚托莉") {
 			t.Fatalf("system instructions must stay stable and persona-free: %#v", body.Messages[0])
 		}
 		joined := ""
@@ -200,8 +200,8 @@ func TestCompanionServiceSubmitCompiledTurnPersistsCompletedAssistant(t *testing
 		if last.Role != "user" || !strings.Contains(last.Content, "fairy_context_data") || !strings.Contains(last.Content, "太甜的饮料") || !strings.Contains(last.Content, "主题陈述系统") {
 			t.Fatalf("retrieval context missing from tail: %#v", body.Messages)
 		}
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"chains\\\":[{\\\"visualState\\\":\\\"happy\\\",\\\"text\\\":\\\"我在。\\\"}]}\"}}]}\n\n")
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		writeChatTextDelta(w, testRespondEnvelope(testReplyChain{VisualState: "happy", Text: "我在。"}))
+		writeChatStop(w)
 	}))
 	t.Cleanup(server.Close)
 
@@ -223,7 +223,7 @@ func TestCompanionServiceSubmitCompiledTurnPersistsCompletedAssistant(t *testing
 		t.Fatalf("CreatePersonalMemory() error = %v", err)
 	}
 	insertKnowledgeFixtureForCompanion(t, root, bootstrap.Conversation.ID, seedTurn.ID)
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.HTTPTransport{Client: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
 
 	outcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 		ConversationID:        bootstrap.Conversation.ID,
@@ -245,6 +245,9 @@ func TestCompanionServiceSubmitCompiledTurnPersistsCompletedAssistant(t *testing
 	if len(reloaded.Messages) != 4 || reloaded.Messages[2].Role != "user" || reloaded.Messages[3].Role != "assistant" {
 		t.Fatalf("messages = %#v", reloaded.Messages)
 	}
+	if reloaded.Messages[3].Content != "我在。" || strings.Contains(reloaded.Messages[3].Content, `"decision"`) || strings.Contains(reloaded.Messages[3].Content, "replyIntent") {
+		t.Fatalf("assistant message leaked internal decision labels: %#v", reloaded.Messages[3])
+	}
 }
 
 func TestCompanionServiceSubmitCompiledTurnFailureKeepsOnlyUserMessage(t *testing.T) {
@@ -260,7 +263,7 @@ func TestCompanionServiceSubmitCompiledTurnFailureKeepsOnlyUserMessage(t *testin
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.HTTPTransport{Client: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
 
 	_, err = service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 		ConversationID:        bootstrap.Conversation.ID,
@@ -278,6 +281,74 @@ func TestCompanionServiceSubmitCompiledTurnFailureKeepsOnlyUserMessage(t *testin
 	}
 	if len(reloaded.Messages) != 1 || reloaded.Messages[0].Role != "user" {
 		t.Fatalf("messages = %#v", reloaded.Messages)
+	}
+}
+
+func TestCompanionServiceSubmitCompiledTurnOmitsRetrievalFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("request body is not JSON: %v", err)
+		}
+		if len(body.Messages) > 0 && strings.Contains(body.Messages[0].Content, "existing personal memories") {
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"mutations\\\":[]}\"}}]}\n\n")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+			return
+		}
+		joined := ""
+		for _, message := range body.Messages {
+			joined += message.Content + "\n"
+		}
+		if strings.Contains(joined, "retrieved_context") {
+			t.Fatalf("retrieval context should be omitted after retrieval failure: %s", joined)
+		}
+		writeChatTextDelta(w, testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "我在。"}))
+		writeChatStop(w)
+	}))
+	t.Cleanup(server.Close)
+
+	root := t.TempDir()
+	writeModelConnectionWithEndpoint(t, root, "chat_completions", server.URL, "no_auth")
+	memoryStore, characterID := seedCompanionRuntime(t, root)
+	bootstrap, err := memoryStore.OpenOrCreateCharacterConversation(characterID)
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(root, memory.RelativePath))
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	if _, err := db.Exec("DROP TABLE personal_memories_fts"); err != nil {
+		t.Fatalf("DROP personal_memories_fts error = %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("db.Close() error = %v", err)
+	}
+
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	outcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+		ConversationID:        bootstrap.Conversation.ID,
+		Input:                 "你好世界",
+		MaxOutputTokens:       160,
+		AvailableVisualStates: []VisualState{{ID: "idle", Description: "idle 状态说明"}},
+	})
+	if err != nil {
+		t.Fatalf("SubmitCompiledTurn() error = %v", err)
+	}
+	if outcome.ResponseText != "我在。" {
+		t.Fatalf("outcome = %#v", outcome)
+	}
+	ledger, err := memoryStore.ListTurnRuntimeEvents(outcome.ConversationID, outcome.TurnID)
+	if err != nil {
+		t.Fatalf("ListTurnRuntimeEvents() error = %v", err)
+	}
+	assertRuntimeLedgerNoForbidden(t, ledger)
+	if !runtimeLedgerMetadataContains(ledger, runtimeLedgerEventPrompt, "retrieval_failed") {
+		t.Fatalf("prompt ledger missing retrieval_failed omit reason: %#v", ledger)
 	}
 }
 
@@ -302,7 +373,33 @@ func TestCompanionServiceCompactConversationCommitsPromptWindow(t *testing.T) {
 	if _, err := memoryStore.CompleteTurn(bootstrap.Conversation.ID, turn.ID, "我在。"); err != nil {
 		t.Fatalf("CompleteTurn() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.HTTPTransport{Client: server.Client()}))
+	if _, err := memoryStore.SaveLaneContinuation(memory.LaneContinuationRecord{
+		ConversationID:     bootstrap.Conversation.ID,
+		Lane:               string(model.PromptLaneRespond),
+		PreviousResponseID: "resp_before_compaction",
+		RequestShapeHash:   runtimeHash("shape"),
+		InputPrefixHash:    runtimeHash("input"),
+		ResponseItemHash:   runtimeHash("response"),
+		WindowRevision:     bootstrap.PromptWindow.Revision,
+	}); err != nil {
+		t.Fatalf("SaveLaneContinuation() error = %v", err)
+	}
+	observed := uint64(42)
+	oldWindowID := contextWindowID(bootstrap.Conversation.ID, string(model.PromptLaneRespond), bootstrap.PromptWindow.Revision)
+	if _, err := memoryStore.SaveContextWindow(memory.ContextWindowRecord{
+		ConversationID:        bootstrap.Conversation.ID,
+		Lane:                  string(model.PromptLaneRespond),
+		WindowNumber:          1,
+		FirstWindowID:         oldWindowID,
+		WindowID:              oldWindowID,
+		ObservedPrefillTokens: &observed,
+		LastTrigger:           contextWindowTriggerCompletedUsage,
+		FailureCount:          2,
+		PromptWindowRevision:  bootstrap.PromptWindow.Revision,
+	}); err != nil {
+		t.Fatalf("SaveContextWindow() error = %v", err)
+	}
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
 	result, err := service.CompactConversation(bootstrap.Conversation.ID)
 	if err != nil {
 		t.Fatalf("CompactConversation() error = %v", err)
@@ -316,5 +413,87 @@ func TestCompanionServiceCompactConversationCommitsPromptWindow(t *testing.T) {
 	}
 	if reloaded.PromptWindow.Summary == nil || *reloaded.PromptWindow.Summary != "用户问候，角色回应在场。" || reloaded.PromptWindow.CutoffMessageSequence != 2 {
 		t.Fatalf("prompt window = %#v", reloaded.PromptWindow)
+	}
+	if record, ok, err := memoryStore.LoadLaneContinuation(bootstrap.Conversation.ID, string(model.PromptLaneRespond)); err != nil {
+		t.Fatalf("LoadLaneContinuation() error = %v", err)
+	} else if ok {
+		t.Fatalf("continuation was not cleared after committed compaction: %#v", record)
+	}
+	window, ok, err := memoryStore.LoadContextWindow(bootstrap.Conversation.ID, string(model.PromptLaneRespond))
+	if err != nil {
+		t.Fatalf("LoadContextWindow() error = %v", err)
+	}
+	if !ok || window.PromptWindowRevision != result.WindowRevision || window.WindowNumber != 2 || window.PreviousWindowID == nil || *window.PreviousWindowID != oldWindowID || window.WindowID == oldWindowID || window.LastTrigger != contextWindowTriggerCompactionCommit || window.FailureCount != 0 || window.ObservedPrefillTokens != nil || window.EstimatedPrefillTokens != nil {
+		t.Fatalf("context window after compaction = %#v ok=%v", window, ok)
+	}
+}
+
+func TestCompanionServiceCompactConversationCommitFailureKeepsContinuationAndWindow(t *testing.T) {
+	root := t.TempDir()
+	memoryStore, characterID := seedCompanionRuntime(t, root)
+	bootstrap, err := memoryStore.OpenOrCreateCharacterConversation(characterID)
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
+	}
+	turn, err := memoryStore.BeginTurn(bootstrap.Conversation.ID, "你好")
+	if err != nil {
+		t.Fatalf("BeginTurn() error = %v", err)
+	}
+	if _, err := memoryStore.CompleteTurn(bootstrap.Conversation.ID, turn.ID, "我在。"); err != nil {
+		t.Fatalf("CompleteTurn() error = %v", err)
+	}
+	if _, err := memoryStore.SaveLaneContinuation(memory.LaneContinuationRecord{
+		ConversationID:     bootstrap.Conversation.ID,
+		Lane:               string(model.PromptLaneRespond),
+		PreviousResponseID: "resp_before_failure",
+		RequestShapeHash:   runtimeHash("shape"),
+		InputPrefixHash:    runtimeHash("input"),
+		ResponseItemHash:   runtimeHash("response"),
+		WindowRevision:     bootstrap.PromptWindow.Revision,
+	}); err != nil {
+		t.Fatalf("SaveLaneContinuation() error = %v", err)
+	}
+	observed := uint64(24)
+	oldWindowID := contextWindowID(bootstrap.Conversation.ID, string(model.PromptLaneRespond), bootstrap.PromptWindow.Revision)
+	if _, err := memoryStore.SaveContextWindow(memory.ContextWindowRecord{
+		ConversationID:        bootstrap.Conversation.ID,
+		Lane:                  string(model.PromptLaneRespond),
+		WindowNumber:          1,
+		FirstWindowID:         oldWindowID,
+		WindowID:              oldWindowID,
+		ObservedPrefillTokens: &observed,
+		LastTrigger:           contextWindowTriggerCompletedUsage,
+		FailureCount:          1,
+		PromptWindowRevision:  bootstrap.PromptWindow.Revision,
+	}); err != nil {
+		t.Fatalf("SaveContextWindow() error = %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := memoryStore.CommitPromptWindow(bootstrap.Conversation.ID, bootstrap.PromptWindow.Revision, "并发摘要"); err != nil {
+			t.Fatalf("concurrent CommitPromptWindow() error = %v", err)
+		}
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"用户问候，角色回应在场。\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+	}))
+	t.Cleanup(server.Close)
+
+	writeModelConnectionWithEndpoint(t, root, "chat_completions", server.URL, "no_auth")
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	if _, err := service.CompactConversation(bootstrap.Conversation.ID); err == nil || !strings.Contains(err.Error(), "prompt window revision changed") {
+		t.Fatalf("CompactConversation() error = %v, want stale revision", err)
+	}
+	continuation, ok, err := memoryStore.LoadLaneContinuation(bootstrap.Conversation.ID, string(model.PromptLaneRespond))
+	if err != nil {
+		t.Fatalf("LoadLaneContinuation() error = %v", err)
+	}
+	if !ok || continuation.PreviousResponseID != "resp_before_failure" {
+		t.Fatalf("continuation after failed commit = %#v ok=%v", continuation, ok)
+	}
+	window, ok, err := memoryStore.LoadContextWindow(bootstrap.Conversation.ID, string(model.PromptLaneRespond))
+	if err != nil {
+		t.Fatalf("LoadContextWindow() error = %v", err)
+	}
+	if !ok || window.PromptWindowRevision != bootstrap.PromptWindow.Revision || window.WindowNumber != 1 || window.WindowID != oldWindowID || window.LastTrigger != contextWindowTriggerCompletedUsage || window.FailureCount != 1 || window.ObservedPrefillTokens == nil || *window.ObservedPrefillTokens != observed {
+		t.Fatalf("context window after failed commit = %#v ok=%v", window, ok)
 	}
 }

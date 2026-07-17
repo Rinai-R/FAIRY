@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"unicode/utf8"
 )
@@ -29,29 +30,28 @@ func CompileReply(draft string, availableVisualStates []VisualState) (CompiledRe
 	if err := validateDraft(draft); err != nil {
 		return CompiledReply{}, err
 	}
-	if strings.HasPrefix(strings.TrimLeft(draft, " \t\r\n"), "{") {
-		return compileJSONReplyChains(draft, availableVisualStates)
-	}
-	visualState, body, err := parseVisualStateHeader(strings.TrimSpace(draft))
-	if err != nil {
-		return CompiledReply{}, err
-	}
-	chain, err := compileChain(visualState, body, availableVisualStates)
-	if err != nil {
-		return CompiledReply{}, err
-	}
-	return compiledReplyFromChains([]ReplyChain{chain})
+	return compileJSONReplyChains(draft, availableVisualStates)
+}
+
+type jsonReplyChains struct {
+	Chains []jsonReplyChain `json:"chains"`
+}
+
+type jsonReplyChain struct {
+	VisualState string `json:"visualState"`
+	Text        string `json:"text"`
 }
 
 func compileJSONReplyChains(draft string, availableVisualStates []VisualState) (CompiledReply, error) {
-	var parsed struct {
-		Chains []struct {
-			VisualState string `json:"visualState"`
-			Text        string `json:"text"`
-		} `json:"chains"`
-	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(draft)), &parsed); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(draft))
+	decoder.DisallowUnknownFields()
+	var parsed jsonReplyChains
+	if err := decoder.Decode(&parsed); err != nil {
 		return CompiledReply{}, errors.New("model reply must be strict reply chains JSON")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return CompiledReply{}, errors.New("model reply must contain exactly one JSON object")
 	}
 	if len(parsed.Chains) == 0 || len(parsed.Chains) > 5 {
 		return CompiledReply{}, errors.New("model reply chains count must be 1-5")
@@ -81,31 +81,6 @@ func compiledReplyFromChains(chains []ReplyChain) (CompiledReply, error) {
 		VisualState: chains[len(chains)-1].VisualState,
 		Chains:      chains,
 	}, nil
-}
-
-func parseVisualStateHeader(value string) (string, string, error) {
-	firstLine, body, found := strings.Cut(value, "\n")
-	if !found {
-		firstLine, body, found = strings.Cut(value, "\r")
-	}
-	if !found {
-		if strings.HasPrefix(strings.TrimLeft(value, " \t"), "VISUAL_STATE") {
-			return "", "", errors.New("model reply is missing visual state body")
-		}
-		return "idle", value, nil
-	}
-	rawState, ok := strings.CutPrefix(strings.TrimSpace(firstLine), "VISUAL_STATE:")
-	if !ok {
-		if strings.HasPrefix(strings.TrimLeft(firstLine, " \t"), "VISUAL_STATE") {
-			return "", "", errors.New("model reply returned invalid visual state")
-		}
-		return "idle", value, nil
-	}
-	visualState := strings.TrimSpace(rawState)
-	if !validVisualStateID(visualState) {
-		return "", "", errors.New("model reply returned invalid visual state")
-	}
-	return visualState, body, nil
 }
 
 func compileChain(visualState string, rawText string, availableVisualStates []VisualState) (ReplyChain, error) {

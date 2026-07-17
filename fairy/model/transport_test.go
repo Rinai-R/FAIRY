@@ -10,14 +10,25 @@ import (
 )
 
 func transportDraft(url string, protocol Protocol, auth AuthRequirement) RequestDraft {
+	body := `{"model":"deepseek-v4-flash","stream":true,"instructions":"hi","input":[{"role":"user","content":"ping"}],"max_output_tokens":16,"store":false,"text":{"format":{"type":"text"}}}`
+	if protocol == ProtocolChatCompletions {
+		body = `{"model":"deepseek-v4-flash","stream":true,"messages":[{"role":"user","content":"ping"}],"max_tokens":16,"stream_options":{"include_usage":true}}`
+	}
 	return RequestDraft{
 		Protocol:        protocol,
 		Method:          "POST",
 		URL:             url,
 		ContentType:     "application/json",
 		AuthRequirement: auth,
-		BodyJSON:        `{"model":"deepseek-v4-flash","stream":true}`,
+		BodyJSON:        body,
 	}
+}
+
+func protocolRequestURL(serverURL string, protocol Protocol) string {
+	if protocol == ProtocolChatCompletions {
+		return strings.TrimRight(serverURL, "/") + "/chat/completions"
+	}
+	return strings.TrimRight(serverURL, "/") + "/responses"
 }
 
 func executeWithServer(t *testing.T, handler http.HandlerFunc, protocol Protocol, auth AuthRequirement) ([]StreamEvent, error) {
@@ -25,29 +36,39 @@ func executeWithServer(t *testing.T, handler http.HandlerFunc, protocol Protocol
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	var events []StreamEvent
-	err := HTTPTransport{Client: server.Client()}.Execute(t.Context(), transportDraft(server.URL, protocol, auth), "sk-test-secret", func(event StreamEvent) {
-		events = append(events, event)
-	})
+	err := SDKTransport{HTTPClient: server.Client()}.Execute(
+		t.Context(),
+		transportDraft(protocolRequestURL(server.URL, protocol), protocol, auth),
+		"sk-test-secret",
+		func(event StreamEvent) {
+			events = append(events, event)
+		},
+	)
 	return events, err
 }
 
 const responsesCompletedSSE = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n" +
 	"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"output\":[{\"type\":\"message\",\"content\":[{\"text\":\"ok\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
 
+func TestNewModelServiceDefaultsToSDKTransport(t *testing.T) {
+	service := NewModelService(t.TempDir())
+	if _, ok := service.transport.(SDKTransport); !ok {
+		t.Fatalf("default transport = %T, want SDKTransport", service.transport)
+	}
+}
+
 func TestExecuteRequestPostsToCorrectURL(t *testing.T) {
 	_, err := executeWithServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %q, want POST", r.Method)
 		}
-		if r.URL.Path != "/" {
-			t.Fatalf("path = %q", r.URL.Path)
+		if r.URL.Path != "/responses" {
+			t.Fatalf("path = %q, want /responses", r.URL.Path)
 		}
 		if r.Header.Get("Content-Type") != "application/json" {
 			t.Fatalf("Content-Type = %q", r.Header.Get("Content-Type"))
 		}
-		if r.Header.Get("Accept") != "text/event-stream" {
-			t.Fatalf("Accept = %q", r.Header.Get("Accept"))
-		}
+		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, responsesCompletedSSE)
 	}, ProtocolResponses, AuthRequirementBearerKey)
 	if err != nil {
@@ -60,6 +81,7 @@ func TestExecuteRequestIncludesBearerAuth(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer sk-test-secret" {
 			t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
 		}
+		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, responsesCompletedSSE)
 	}, ProtocolResponses, AuthRequirementBearerKey)
 	if err != nil {
@@ -72,6 +94,7 @@ func TestExecuteRequestOmitsAuthForNone(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "" {
 			t.Fatalf("Authorization = %q, want empty", got)
 		}
+		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, responsesCompletedSSE)
 	}, ProtocolResponses, AuthRequirementNone)
 	if err != nil {
@@ -103,8 +126,35 @@ func TestExecuteRequestParsesResponsesSSE(t *testing.T) {
 	}
 }
 
+func TestExecuteRequestParsesResponsesCacheUsage(t *testing.T) {
+	events, err := executeWithServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"type":"response.output_text.delta","delta":"好"}`+"\n\n")
+		fmt.Fprint(w, `data: {"type":"response.completed","response":{"id":"resp_cache","output":[{"type":"message","content":[{"text":"好"}]}],"usage":{"input_tokens":9,"input_tokens_details":{"cached_tokens":4,"cache_write_tokens":3},"output_tokens":2}}}`+"\n\n")
+	}, ProtocolResponses, AuthRequirementNone)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(events) != 3 || events[1].Type != "usage" || events[1].Usage == nil {
+		t.Fatalf("events = %#v", events)
+	}
+	usage := events[1].Usage
+	if usage.PromptTokens != 9 || usage.CompletionTokens != 2 {
+		t.Fatalf("usage token counts = %#v", usage)
+	}
+	if usage.CachedInputTokens == nil || *usage.CachedInputTokens != 4 {
+		t.Fatalf("cached input tokens = %#v", usage.CachedInputTokens)
+	}
+	if usage.CacheWriteTokens == nil || *usage.CacheWriteTokens != 3 {
+		t.Fatalf("cache write tokens = %#v", usage.CacheWriteTokens)
+	}
+}
+
 func TestExecuteRequestParsesChatCompletionsSSE(t *testing.T) {
 	events, err := executeWithServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("path = %q, want /chat/completions", r.URL.Path)
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n")
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n\n")
@@ -127,8 +177,33 @@ func TestExecuteRequestParsesChatCompletionsSSE(t *testing.T) {
 	}
 }
 
+func TestExecuteRequestParsesChatCompletionsCacheUsage(t *testing.T) {
+	events, err := executeWithServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"好"}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":7},"cache_write_input_tokens":2}}`+"\n\n")
+	}, ProtocolChatCompletions, AuthRequirementNone)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(events) != 3 || events[1].Type != "usage" || events[1].Usage == nil {
+		t.Fatalf("events = %#v", events)
+	}
+	usage := events[1].Usage
+	if usage.PromptTokens != 11 || usage.CompletionTokens != 3 {
+		t.Fatalf("usage token counts = %#v", usage)
+	}
+	if usage.CachedInputTokens == nil || *usage.CachedInputTokens != 7 {
+		t.Fatalf("cached input tokens = %#v", usage.CachedInputTokens)
+	}
+	if usage.CacheWriteTokens == nil || *usage.CacheWriteTokens != 2 {
+		t.Fatalf("cache write tokens = %#v", usage.CacheWriteTokens)
+	}
+}
+
 func TestExecuteRequestHandlesStreamDone(t *testing.T) {
 	_, err := executeWithServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	}, ProtocolResponses, AuthRequirementNone)
 	if err == nil || !strings.Contains(err.Error(), "IncompleteStream") {
@@ -138,6 +213,7 @@ func TestExecuteRequestHandlesStreamDone(t *testing.T) {
 
 func TestExecuteRequestChatCompletionsDoneCompletes(t *testing.T) {
 	events, err := executeWithServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n")
 	}, ProtocolChatCompletions, AuthRequirementNone)
 	if err != nil {
@@ -155,13 +231,14 @@ func TestExecuteRequestReturnsErrorOnNon2xx(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error")
 	}
-	if !strings.Contains(err.Error(), "status 401") {
+	if !strings.Contains(err.Error(), "401") {
 		t.Fatalf("error = %q", err.Error())
 	}
 }
 
 func TestExecuteRequestReturnsErrorOnMalformedSSE(t *testing.T) {
 	_, err := executeWithServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "not-sse\n")
 	}, ProtocolResponses, AuthRequirementNone)
 	if err == nil {
@@ -170,7 +247,7 @@ func TestExecuteRequestReturnsErrorOnMalformedSSE(t *testing.T) {
 }
 
 func TestExecuteRequestRejectsEmptyURL(t *testing.T) {
-	err := HTTPTransport{}.Execute(t.Context(), transportDraft("", ProtocolResponses, AuthRequirementNone), "", nil)
+	err := SDKTransport{}.Execute(t.Context(), transportDraft("", ProtocolResponses, AuthRequirementNone), "", nil)
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error")
 	}
@@ -181,7 +258,12 @@ func TestExecuteRequestDoesNotLeakKey(t *testing.T) {
 		http.Error(w, "bad key sk-test-secret", http.StatusUnauthorized)
 	}))
 	t.Cleanup(server.Close)
-	err := HTTPTransport{Client: server.Client()}.Execute(context.Background(), transportDraft(server.URL, ProtocolResponses, AuthRequirementBearerKey), "sk-test-secret", nil)
+	err := SDKTransport{HTTPClient: server.Client()}.Execute(
+		context.Background(),
+		transportDraft(protocolRequestURL(server.URL, ProtocolResponses), ProtocolResponses, AuthRequirementBearerKey),
+		"sk-test-secret",
+		nil,
+	)
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error")
 	}
@@ -191,7 +273,7 @@ func TestExecuteRequestDoesNotLeakKey(t *testing.T) {
 }
 
 func TestExecuteRequestRequiresBearerKeyWhenNeeded(t *testing.T) {
-	err := HTTPTransport{}.Execute(t.Context(), transportDraft("https://example.test", ProtocolResponses, AuthRequirementBearerKey), "", nil)
+	err := SDKTransport{}.Execute(t.Context(), transportDraft("https://example.test/responses", ProtocolResponses, AuthRequirementBearerKey), "", nil)
 	if err == nil {
 		t.Fatal("Execute() error = nil, want missing bearer error")
 	}

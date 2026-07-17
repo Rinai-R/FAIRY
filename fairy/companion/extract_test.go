@@ -64,12 +64,17 @@ func TestCompanionServiceBackgroundExtractionCommitsCreateMutation(t *testing.T)
 			t.Fatalf("request body is not JSON: %v", err)
 		}
 		if strings.Contains(body.Messages[0].Content, "existing personal memories") {
+			for _, message := range body.Messages {
+				if strings.Contains(message.Content, `"decision"`) || strings.Contains(message.Content, "replyIntent") {
+					t.Fatalf("internal decision labels leaked into extraction input: %#v", body.Messages)
+				}
+			}
 			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"mutations\\\":[{\\\"operation\\\":\\\"create\\\",\\\"kind\\\":\\\"preference\\\",\\\"scope\\\":{\\\"type\\\":\\\"global\\\"},\\\"content\\\":\\\"用户喜欢 Rust\\\",\\\"confidenceBasisPoints\\\":9000}]}\"}}]}\n\n")
 			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
 			return
 		}
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"chains\\\":[{\\\"visualState\\\":\\\"idle\\\",\\\"text\\\":\\\"好，我记住了。\\\"}]}\"}}]}\n\n")
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		writeChatTextDelta(w, testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "好，我记住了。"}))
+		writeChatStop(w)
 	}))
 	t.Cleanup(server.Close)
 
@@ -80,7 +85,7 @@ func TestCompanionServiceBackgroundExtractionCommitsCreateMutation(t *testing.T)
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.HTTPTransport{Client: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
 	for index := 0; index < int(extractionThreshold); index++ {
 		outcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 			ConversationID:        bootstrap.Conversation.ID,
@@ -126,7 +131,7 @@ func TestScheduleBackgroundExtractionWaitsBelowThreshold(t *testing.T) {
 	if _, err := memoryStore.CompleteTurn(bootstrap.Conversation.ID, turn.ID, "好。"); err != nil {
 		t.Fatalf("CompleteTurn() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.HTTPTransport{}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{}))
 	service.scheduleBackgroundExtraction(bootstrap.Conversation.ID)
 	time.Sleep(50 * time.Millisecond)
 	pending, err := memoryStore.PendingExtractionTurnCount(bootstrap.Conversation.ID)

@@ -300,7 +300,7 @@ mod tests {
             .characters
             .active()
             .map_err(AppError::from)?
-            .ok_or_else(|| "active character is required for companion E2E")?;
+            .ok_or("active character is required for companion E2E")?;
         let profile = state.user_profiles.current().map_err(AppError::from)?;
         let visual_states = active_visual_states(&state)?;
         let event_bodies = Arc::new(Mutex::new(Vec::new()));
