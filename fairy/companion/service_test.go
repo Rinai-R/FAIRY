@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"fairy/character"
@@ -164,12 +165,14 @@ func TestNilCompanionServiceSubmitTurnReturnsNotMigrated(t *testing.T) {
 }
 
 func TestCompanionServiceSubmitCompiledTurnPersistsCompletedAssistant(t *testing.T) {
+	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Messages []struct {
 				Role    string `json:"role"`
 				Content string `json:"content"`
 			} `json:"messages"`
+			Tools []any `json:"tools"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("request body is not JSON: %v", err)
@@ -183,9 +186,6 @@ func TestCompanionServiceSubmitCompiledTurnPersistsCompletedAssistant(t *testing
 			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
 			return
 		}
-		if len(body.Messages) < 5 {
-			t.Fatalf("messages too short: %#v", body.Messages)
-		}
 		if body.Messages[0].Role != "system" || !strings.Contains(body.Messages[0].Content, "strict JSON object") || strings.Contains(body.Messages[0].Content, "亚托莉") {
 			t.Fatalf("system instructions must stay stable and persona-free: %#v", body.Messages[0])
 		}
@@ -196,9 +196,19 @@ func TestCompanionServiceSubmitCompiledTurnPersistsCompletedAssistant(t *testing
 		if !strings.Contains(joined, "亚托莉") || !strings.Contains(joined, "Rinai") {
 			t.Fatalf("messages missing persona/profile context data: %#v", body.Messages)
 		}
-		last := body.Messages[len(body.Messages)-1]
-		if last.Role != "user" || !strings.Contains(last.Content, "fairy_context_data") || !strings.Contains(last.Content, "太甜的饮料") || !strings.Contains(last.Content, "主题陈述系统") {
-			t.Fatalf("retrieval context missing from tail: %#v", body.Messages)
+		n := calls.Add(1)
+		if n == 1 {
+			if len(body.Tools) == 0 {
+				t.Fatalf("first respond call missing tools: %#v", body.Tools)
+			}
+			if !strings.Contains(joined, "太甜的饮料推荐") {
+				t.Fatalf("dialogue missing user input: %#v", body.Messages)
+			}
+			writeChatToolCall(w, toolMemorySearch, `{"query":"太甜的饮料"}`)
+			return
+		}
+		if !strings.Contains(joined, "retrieved_context") || !strings.Contains(joined, "太甜的饮料") {
+			t.Fatalf("retrieval context missing after memory tool: %#v", body.Messages)
 		}
 		writeChatTextDelta(w, testRespondEnvelope(testReplyChain{VisualState: "happy", Text: "我在。"}))
 		writeChatStop(w)
@@ -237,6 +247,9 @@ func TestCompanionServiceSubmitCompiledTurnPersistsCompletedAssistant(t *testing
 	}
 	if outcome.ResponseText != "我在。" || outcome.SpeechText != "我在。" || outcome.VisualState != "happy" || !outcome.RespondMigrated {
 		t.Fatalf("outcome = %#v", outcome)
+	}
+	if calls.Load() < 2 {
+		t.Fatalf("model calls = %d, want at least 2", calls.Load())
 	}
 	reloaded, err := memoryStore.LoadConversation(bootstrap.Conversation.ID)
 	if err != nil {
@@ -284,7 +297,7 @@ func TestCompanionServiceSubmitCompiledTurnFailureKeepsOnlyUserMessage(t *testin
 	}
 }
 
-func TestCompanionServiceSubmitCompiledTurnOmitsRetrievalFailure(t *testing.T) {
+func TestCompanionServiceSubmitCompiledTurnSkipsAutoRetrieve(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Messages []struct {
@@ -303,8 +316,8 @@ func TestCompanionServiceSubmitCompiledTurnOmitsRetrievalFailure(t *testing.T) {
 		for _, message := range body.Messages {
 			joined += message.Content + "\n"
 		}
-		if strings.Contains(joined, "retrieved_context") {
-			t.Fatalf("retrieval context should be omitted after retrieval failure: %s", joined)
+		if strings.Contains(joined, `"type":"retrieved_context"`) || strings.Contains(joined, `"type": "retrieved_context"`) {
+			t.Fatalf("retrieval context should be omitted before tools: %s", joined)
 		}
 		writeChatTextDelta(w, testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "我在。"}))
 		writeChatStop(w)
@@ -318,17 +331,6 @@ func TestCompanionServiceSubmitCompiledTurnOmitsRetrievalFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	db, err := sql.Open("sqlite", filepath.Join(root, memory.RelativePath))
-	if err != nil {
-		t.Fatalf("sql.Open() error = %v", err)
-	}
-	if _, err := db.Exec("DROP TABLE personal_memories_fts"); err != nil {
-		t.Fatalf("DROP personal_memories_fts error = %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("db.Close() error = %v", err)
-	}
-
 	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
 	outcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 		ConversationID:        bootstrap.Conversation.ID,
@@ -347,8 +349,11 @@ func TestCompanionServiceSubmitCompiledTurnOmitsRetrievalFailure(t *testing.T) {
 		t.Fatalf("ListTurnRuntimeEvents() error = %v", err)
 	}
 	assertRuntimeLedgerNoForbidden(t, ledger)
-	if !runtimeLedgerMetadataContains(ledger, runtimeLedgerEventPrompt, "retrieval_failed") {
-		t.Fatalf("prompt ledger missing retrieval_failed omit reason: %#v", ledger)
+	if !runtimeLedgerMetadataContains(ledger, runtimeLedgerEventGather, "awaiting_tools") {
+		t.Fatalf("gather ledger missing awaiting_tools: %#v", ledger)
+	}
+	if !runtimeLedgerMetadataContains(ledger, runtimeLedgerEventPrompt, "awaiting_tools") {
+		t.Fatalf("prompt ledger missing awaiting_tools omit reason: %#v", ledger)
 	}
 }
 

@@ -2,101 +2,73 @@ package companion
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"fairy/memory"
+	"fairy/model"
 	"fairy/search"
 )
 
 const (
-	gatherToolMemorySearch      = "memory.search"
-	gatherToolWebSearch         = "web.search"
-	maxModelDrivenMemoryGathers = 1
-	maxGatherQueryRunes         = 200
-	runtimeLedgerEventGather    = "gather"
+	toolMemorySearch         = "memory_search"
+	toolWebSearch            = "web_search"
+	maxModelDrivenToolCalls  = 2
+	maxToolQueryRunes        = 200
+	runtimeLedgerEventGather = "gather"
+	runtimeLedgerEventTool   = "tool"
 )
 
-// RespondInstructionsAllowGather extends reply rules with optional memory.search gather.
-const RespondInstructionsAllowGather = RespondInstructions + ` If personal memories in context are insufficient to understand the user's intent, you MAY instead output exactly {"gather":{"tool":"memory.search","query":"<short search query>"}} with no other top-level fields. Use gather at most when a different memory query would materially help; otherwise output chains. Never request tools other than memory.search. Never narrate gather or tools to the user.`
+// RespondInstructionsAllowTools extends reply rules with native function tools.
+const RespondInstructionsAllowTools = RespondInstructions + ` When personal memories or public facts in context are insufficient, call function tools instead of guessing. Available tools: memory_search for personal/relationship facts; web_search (when provided) for timely public topics such as anime, games, versions, or news. After tool results appear in retrieved context, output chains only. Never narrate tools, search, or system settings to the user. Never output a gather JSON object.`
 
-// RespondInstructionsAllowGatherWithWeb also permits web.search when OpenSERP sidecar search is enabled.
-const RespondInstructionsAllowGatherWithWeb = RespondInstructions + ` If personal memories or fresh public facts are insufficient, you MAY instead output exactly {"gather":{"tool":"memory.search"|"web.search","query":"<short search query>"}} with no other top-level fields. Use memory.search for personal/relationship facts and web.search for timely public topics (anime, games, news). Otherwise output chains. Never request tools other than memory.search or web.search. Never narrate gather or tools to the user.`
-
-func RespondGatherInstructions(webSearchEnabled bool) string {
-	if webSearchEnabled {
-		return RespondInstructionsAllowGatherWithWeb
-	}
-	return RespondInstructionsAllowGather
-}
-
-type CognitionKind int
-
-const (
-	CognitionReply CognitionKind = iota
-	CognitionGather
-)
-
-type GatherRequest struct {
-	Tool  string
-	Query string
-}
-
-type gatherEnvelope struct {
-	Gather *gatherPayload `json:"gather"`
-}
-
-type gatherPayload struct {
-	Tool  string `json:"tool"`
+type toolQueryArgs struct {
 	Query string `json:"query"`
 }
 
-// ParseCognitionOutput accepts either strict reply chains or a gather envelope.
-func ParseCognitionOutput(draft string) (CognitionKind, GatherRequest, error) {
-	trimmed := strings.TrimSpace(draft)
-	if trimmed == "" {
-		return 0, GatherRequest{}, errors.New("model cognition output is empty")
+func RespondToolSpecs(webSearchEnabled bool) []model.ToolSpec {
+	querySchema := json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"Short search query"}},"required":["query"],"additionalProperties":false}`)
+	tools := []model.ToolSpec{{
+		Name:        toolMemorySearch,
+		Description: "Search local personal memories and confirmed knowledge for this user/character.",
+		Parameters:  querySchema,
+	}}
+	if webSearchEnabled {
+		tools = append(tools, model.ToolSpec{
+			Name:        toolWebSearch,
+			Description: "Search the public web via local OpenSERP for timely public facts (anime, games, versions, news).",
+			Parameters:  querySchema,
+		})
 	}
-	if strings.Contains(trimmed, `"gather"`) {
-		decoder := json.NewDecoder(strings.NewReader(trimmed))
-		decoder.DisallowUnknownFields()
-		var parsed gatherEnvelope
-		if err := decoder.Decode(&parsed); err != nil {
-			return 0, GatherRequest{}, errors.New("model gather output must be strict gather JSON")
-		}
-		var trailing any
-		if err := decoder.Decode(&trailing); err != io.EOF {
-			return 0, GatherRequest{}, errors.New("model gather output must contain exactly one JSON object")
-		}
-		if parsed.Gather == nil {
-			return 0, GatherRequest{}, errors.New("model gather output missing gather object")
-		}
-		req, err := normalizeGatherRequest(*parsed.Gather)
-		if err != nil {
-			return 0, GatherRequest{}, err
-		}
-		return CognitionGather, req, nil
-	}
-	return CognitionReply, GatherRequest{}, nil
+	return tools
 }
 
-func normalizeGatherRequest(payload gatherPayload) (GatherRequest, error) {
-	tool := strings.TrimSpace(payload.Tool)
-	query := strings.TrimSpace(payload.Query)
-	if tool == "" || query == "" {
-		return GatherRequest{}, errors.New("gather tool and query are required")
+func RespondInstructionsForTools(toolsEnabled bool) string {
+	if toolsEnabled {
+		return RespondInstructionsAllowTools
 	}
-	if utf8.RuneCountInString(query) > maxGatherQueryRunes {
-		return GatherRequest{}, errors.New("gather query is too long")
+	return RespondInstructions
+}
+
+func parseToolQuery(arguments string) (string, error) {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" {
+		return "", fmt.Errorf("tool arguments are empty")
 	}
-	if tool != gatherToolMemorySearch && tool != gatherToolWebSearch {
-		return GatherRequest{}, errors.New("gather tool is not whitelisted")
+	var parsed toolQueryArgs
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return "", fmt.Errorf("tool arguments must be JSON object with query")
 	}
-	return GatherRequest{Tool: tool, Query: query}, nil
+	query := strings.TrimSpace(parsed.Query)
+	if query == "" {
+		return "", fmt.Errorf("tool query is required")
+	}
+	if utf8.RuneCountInString(query) > maxToolQueryRunes {
+		return "", fmt.Errorf("tool query is too long")
+	}
+	return query, nil
 }
 
 func mergeRetrievalContext(base memory.RetrievalContext, extra memory.RetrievalContext) memory.RetrievalContext {
@@ -196,4 +168,18 @@ func retrievalFromWebHits(hits []search.Hit) memory.RetrievalContext {
 		})
 	}
 	return memory.RetrievalContext{Knowledge: knowledge}
+}
+
+func retrievalFromToolError(toolName string, err error) memory.RetrievalContext {
+	now := time.Now().UnixMilli()
+	return memory.RetrievalContext{
+		Knowledge: []memory.RetrievedKnowledge{{
+			ID:                    fmt.Sprintf("tool-error-%s", toolName),
+			Topic:                 "tool_error",
+			Statement:             fmt.Sprintf("%s failed: %s", toolName, err.Error()),
+			VerificationBasis:     "tool_error",
+			ConfidenceBasisPoints: 0,
+			UpdatedAtUnixMS:       now,
+		}},
+	}
 }

@@ -11,7 +11,8 @@ import (
 // responsesStreamState accumulates Responses SSE the same way as
 // crates/fairy-model-openai/src/response_stream.rs.
 type responsesStreamState struct {
-	output string
+	output        string
+	functionCalls []FunctionCall
 }
 
 func (s *responsesStreamState) handle(payload string, onEvent func(StreamEvent)) (done bool, err error) {
@@ -19,6 +20,7 @@ func (s *responsesStreamState) handle(payload string, onEvent func(StreamEvent))
 		Type     string          `json:"type"`
 		Delta    string          `json:"delta"`
 		Response json.RawMessage `json:"response"`
+		Item     json.RawMessage `json:"item"`
 		Error    *struct {
 			Message string `json:"message"`
 		} `json:"error"`
@@ -44,7 +46,13 @@ func (s *responsesStreamState) handle(payload string, onEvent func(StreamEvent))
 		}
 		return false, nil
 	case "response.function_call_arguments.delta", "response.function_call_arguments.done":
-		return false, errors.New("current FAIRY Responses request does not accept tool calls")
+		// Arguments are finalized on response.completed output items.
+		return false, nil
+	case "response.output_item.done":
+		if call, ok := parseResponsesFunctionCallItem(event.Item); ok {
+			s.functionCalls = append(s.functionCalls, call)
+		}
+		return false, nil
 	case "response.completed":
 		if len(event.Response) == 0 {
 			return false, errors.New("completed event missing response")
@@ -52,10 +60,14 @@ func (s *responsesStreamState) handle(payload string, onEvent func(StreamEvent))
 		var response struct {
 			ID     string `json:"id"`
 			Output []struct {
-				Type    string `json:"type"`
-				Content []struct {
-					Text     string `json:"text"`
-					Refusal  string `json:"refusal"`
+				Type      string `json:"type"`
+				ID        string `json:"id"`
+				CallID    string `json:"call_id"`
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+				Content   []struct {
+					Text    string `json:"text"`
+					Refusal string `json:"refusal"`
 				} `json:"content"`
 			} `json:"output"`
 			Usage responsesUsage `json:"usage"`
@@ -63,10 +75,23 @@ func (s *responsesStreamState) handle(payload string, onEvent func(StreamEvent))
 		if err := json.Unmarshal(event.Response, &response); err != nil {
 			return false, fmt.Errorf("parsing completed response: %w", err)
 		}
+		calls := make([]FunctionCall, 0)
 		for _, item := range response.Output {
-			if item.Type == "function_call" {
-				return false, errors.New("current FAIRY Responses request does not accept tool calls")
+			if item.Type != "function_call" {
+				continue
 			}
+			callID := strings.TrimSpace(item.CallID)
+			if callID == "" {
+				callID = strings.TrimSpace(item.ID)
+			}
+			calls = append(calls, FunctionCall{
+				CallID:    callID,
+				Name:      strings.TrimSpace(item.Name),
+				Arguments: item.Arguments,
+			})
+		}
+		if len(calls) == 0 && len(s.functionCalls) > 0 {
+			calls = append(calls, s.functionCalls...)
 		}
 		completedText := extractResponsesOutputText(response.Output)
 		if s.output == "" && completedText != "" {
@@ -77,10 +102,13 @@ func (s *responsesStreamState) handle(payload string, onEvent func(StreamEvent))
 		} else if completedText != "" && completedText != s.output {
 			return false, errors.New("model completion text diverged from streamed deltas")
 		}
-		if s.output == "" {
+		if s.output == "" && len(calls) == 0 {
 			return false, errors.New("model completed without returning text")
 		}
 		if onEvent != nil {
+			if len(calls) > 0 {
+				onEvent(StreamEvent{Type: "function_calls", FunctionCalls: calls})
+			}
 			if usage := response.Usage.public(); usage != nil {
 				onEvent(StreamEvent{Type: "usage", Usage: usage})
 			}
@@ -104,9 +132,41 @@ func (s *responsesStreamState) handle(payload string, onEvent func(StreamEvent))
 	}
 }
 
+func parseResponsesFunctionCallItem(raw json.RawMessage) (FunctionCall, bool) {
+	if len(raw) == 0 {
+		return FunctionCall{}, false
+	}
+	var item struct {
+		Type      string `json:"type"`
+		ID        string `json:"id"`
+		CallID    string `json:"call_id"`
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	}
+	if err := json.Unmarshal(raw, &item); err != nil || item.Type != "function_call" {
+		return FunctionCall{}, false
+	}
+	callID := strings.TrimSpace(item.CallID)
+	if callID == "" {
+		callID = strings.TrimSpace(item.ID)
+	}
+	if strings.TrimSpace(item.Name) == "" {
+		return FunctionCall{}, false
+	}
+	return FunctionCall{
+		CallID:    callID,
+		Name:      strings.TrimSpace(item.Name),
+		Arguments: item.Arguments,
+	}, true
+}
+
 func extractResponsesOutputText(output []struct {
-	Type    string `json:"type"`
-	Content []struct {
+	Type      string `json:"type"`
+	ID        string `json:"id"`
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+	Content   []struct {
 		Text    string `json:"text"`
 		Refusal string `json:"refusal"`
 	} `json:"content"`
@@ -132,7 +192,6 @@ func isIgnorableResponsesEvent(eventType string) bool {
 		"response.queued",
 		"response.in_progress",
 		"response.output_item.added",
-		"response.output_item.done",
 		"response.content_part.added",
 		"response.content_part.done",
 		"response.output_text.done",

@@ -135,7 +135,22 @@ func TestBuildResponsesRequestDraftMatchesOpenAICompatibleShape(t *testing.T) {
 		t.Fatalf("prompt_cache_key = %v", body["prompt_cache_key"])
 	}
 	if _, ok := body["tools"]; ok {
-		t.Fatal("Responses body must not include tools")
+		t.Fatal("Responses body must not include tools when none requested")
+	}
+	req := request()
+	req.Tools = []ToolSpec{{
+		Name:        "memory_search",
+		Description: "Search personal memories",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`),
+	}}
+	draftWithTools, err := BuildRequestDraft(connection(ProtocolResponses), req)
+	if err != nil {
+		t.Fatalf("BuildRequestDraft(tools) error = %v", err)
+	}
+	bodyWithTools := bodyMap(t, draftWithTools)
+	tools, ok := bodyWithTools["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %#v", bodyWithTools["tools"])
 	}
 	if strings.Contains(draft.BodyJSON, "sk-") || strings.Contains(strings.ToLower(draft.BodyJSON), "authorization") {
 		t.Fatalf("BodyJSON leaked secret-shaped data: %s", draft.BodyJSON)

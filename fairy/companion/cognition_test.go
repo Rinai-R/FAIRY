@@ -15,20 +15,37 @@ import (
 	"fairy/search"
 )
 
-func TestParseCognitionOutputGatherAndReply(t *testing.T) {
-	kind, req, err := ParseCognitionOutput(`{"gather":{"tool":"memory.search","query":"喜欢安静"}}`)
-	if err != nil {
-		t.Fatalf("ParseCognitionOutput(gather) error = %v", err)
+func writeChatToolCall(w http.ResponseWriter, name string, argumentsJSON string) {
+	payload := fmt.Sprintf(
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":%q,"arguments":%q}}]},"finish_reason":null}]}`,
+		name,
+		argumentsJSON,
+	)
+	fmt.Fprintf(w, "data: %s\n\n", payload)
+	fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n")
+}
+
+func TestParseToolQueryAndSpecs(t *testing.T) {
+	query, err := parseToolQuery(`{"query":"喜欢安静"}`)
+	if err != nil || query != "喜欢安静" {
+		t.Fatalf("parseToolQuery = %q err=%v", query, err)
 	}
-	if kind != CognitionGather || req.Tool != gatherToolMemorySearch || req.Query != "喜欢安静" {
-		t.Fatalf("gather = %v %#v", kind, req)
+	if _, err := parseToolQuery(`{"query":""}`); err == nil {
+		t.Fatal("empty query should fail")
 	}
-	kind, _, err = ParseCognitionOutput(testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "我在。"}))
-	if err != nil || kind != CognitionReply {
-		t.Fatalf("reply kind = %v err=%v", kind, err)
+	specs := RespondToolSpecs(false)
+	if len(specs) != 1 || specs[0].Name != toolMemorySearch {
+		t.Fatalf("memory-only specs = %#v", specs)
 	}
-	if _, _, err := ParseCognitionOutput(`{"gather":{"tool":"vector.knn","query":"x"}}`); err == nil || !strings.Contains(err.Error(), "whitelisted") {
-		t.Fatalf("non-whitelist error = %v", err)
+	specs = RespondToolSpecs(true)
+	if len(specs) != 2 || specs[1].Name != toolWebSearch {
+		t.Fatalf("web specs = %#v", specs)
+	}
+	if !strings.Contains(RespondInstructionsAllowTools, toolMemorySearch) {
+		t.Fatal("tool instructions missing memory_search")
+	}
+	if !strings.HasPrefix(RespondInstructionsAllowTools, RespondInstructions) {
+		t.Fatal("tool instructions must extend RespondInstructions")
 	}
 }
 
@@ -42,13 +59,12 @@ func TestMergeRetrievalContextDedupesByID(t *testing.T) {
 	}
 }
 
-func TestSubmitCompiledTurnOptionalMemoryGatherThenReply(t *testing.T) {
+func TestSubmitCompiledTurnMemoryToolThenReply(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := calls.Add(1)
 		if n == 1 {
-			writeChatTextDelta(w, `{"gather":{"tool":"memory.search","query":"安静"}}`)
-			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+			writeChatToolCall(w, toolMemorySearch, `{"query":"安静"}`)
 			return
 		}
 		writeChatTextDelta(w, testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "我记得你喜欢安静。"}))
@@ -105,22 +121,22 @@ func TestSubmitCompiledTurnOptionalMemoryGatherThenReply(t *testing.T) {
 		t.Fatalf("LoadConversation() error = %v", err)
 	}
 	for _, message := range reloaded.Messages {
-		if strings.Contains(message.Content, `"gather"`) || strings.Contains(message.Content, "memory.search") {
-			t.Fatalf("transcript leaked gather: %#v", message)
+		if strings.Contains(message.Content, `"gather"`) || strings.Contains(message.Content, "memory_search") {
+			t.Fatalf("transcript leaked tool/gather: %#v", message)
 		}
 	}
 	ledger, err := memoryStore.ListTurnRuntimeEvents(outcome.ConversationID, outcome.TurnID)
 	if err != nil {
 		t.Fatalf("ListTurnRuntimeEvents() error = %v", err)
 	}
-	if !runtimeLedgerContainsType(ledger, runtimeLedgerEventGather) {
-		t.Fatalf("ledger missing gather: %#v", ledger)
+	if !runtimeLedgerContainsType(ledger, runtimeLedgerEventTool) {
+		t.Fatalf("ledger missing tool: %#v", ledger)
 	}
 }
 
-func TestSubmitCompiledTurnRejectsNonWhitelistGather(t *testing.T) {
+func TestSubmitCompiledTurnRejectsGatherJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeChatTextDelta(w, `{"gather":{"tool":"shell.exec","query":"ls"}}`)
+		writeChatTextDelta(w, `{"gather":{"tool":"memory.search","query":"x"}}`)
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
 	}))
 	t.Cleanup(server.Close)
@@ -139,23 +155,8 @@ func TestSubmitCompiledTurnRejectsNonWhitelistGather(t *testing.T) {
 		MaxOutputTokens:       160,
 		AvailableVisualStates: visualStates("idle"),
 	})
-	if err == nil || !strings.Contains(err.Error(), "whitelisted") {
-		t.Fatalf("error = %v, want whitelist rejection", err)
-	}
-}
-
-func TestRespondInstructionsAllowGatherMentionsMemorySearchOnly(t *testing.T) {
-	if !strings.Contains(RespondInstructionsAllowGather, gatherToolMemorySearch) {
-		t.Fatal("AllowGather missing memory.search")
-	}
-	if strings.Contains(RespondInstructionsAllowGather, gatherToolWebSearch) {
-		t.Fatal("memory-only AllowGather must not advertise web.search")
-	}
-	if !strings.Contains(RespondGatherInstructions(true), gatherToolWebSearch) {
-		t.Fatal("web-enabled gather instructions missing web.search")
-	}
-	if !strings.HasPrefix(RespondInstructionsAllowGather, RespondInstructions) {
-		t.Fatal("AllowGather must extend RespondInstructions")
+	if err == nil || !strings.Contains(err.Error(), "gather JSON") {
+		t.Fatalf("error = %v, want gather JSON rejection", err)
 	}
 }
 
@@ -169,13 +170,12 @@ func (s stubWebSearch) Search(ctx context.Context, query string, limit int) ([]s
 
 func (s stubWebSearch) Close() error { return nil }
 
-func TestSubmitCompiledTurnWebSearchGatherThenReply(t *testing.T) {
+func TestSubmitCompiledTurnWebSearchToolThenReply(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := calls.Add(1)
 		if n == 1 {
-			writeChatTextDelta(w, `{"gather":{"tool":"web.search","query":"最新动画"}}`)
-			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+			writeChatToolCall(w, toolWebSearch, `{"query":"最新动画"}`)
 			return
 		}
 		writeChatTextDelta(w, testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "这部最近确实有更新。"}))
@@ -216,7 +216,7 @@ func TestSubmitCompiledTurnWebSearchGatherThenReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !runtimeLedgerContainsType(ledger, runtimeLedgerEventGather) {
-		t.Fatalf("missing gather ledger: %#v", ledger)
+	if !runtimeLedgerContainsType(ledger, runtimeLedgerEventTool) {
+		t.Fatalf("missing tool ledger: %#v", ledger)
 	}
 }

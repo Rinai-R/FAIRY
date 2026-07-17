@@ -7,12 +7,19 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
 	"fairy/memory"
 	"fairy/model"
 )
+
+func isRespondLaneInstructions(instructions string) bool {
+	return instructions == RespondInstructions ||
+		instructions == RespondInstructionsAllowTools ||
+		strings.HasPrefix(instructions, RespondInstructions)
+}
 
 func writeModelConnectionCapabilities(t *testing.T, root string, protocol string, endpoint string, cacheRetention bool) {
 	t.Helper()
@@ -101,7 +108,7 @@ func TestSubmitCompiledTurnUsesSuffixContinuationWhenCacheRetentionSupported(t *
 	defer mu.Unlock()
 	respondBodies := make([]map[string]any, 0, 2)
 	for _, body := range bodies {
-		if instructions, _ := body["instructions"].(string); instructions == RespondInstructions || instructions == RespondInstructionsAllowGather {
+		if instructions, _ := body["instructions"].(string); isRespondLaneInstructions(instructions) {
 			respondBodies = append(respondBodies, body)
 		}
 	}

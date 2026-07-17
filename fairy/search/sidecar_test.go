@@ -47,7 +47,7 @@ func TestSearchAgainstMockOpenSERP(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		if r.URL.Path != "/duckduckgo/search" {
+		if r.URL.Path != "/duck/search" {
 			http.NotFound(w, r)
 			return
 		}
@@ -62,25 +62,13 @@ func TestSearchAgainstMockOpenSERP(t *testing.T) {
 	service := NewService(t.TempDir())
 	service.mu.Lock()
 	service.baseURL = server.URL
-	service.cmd = nil // pretend already running without process
 	service.mu.Unlock()
 
-	// Bypass EnsureRunning by setting baseURL; Search still calls EnsureRunning which will try binary.
-	// Use direct HTTP through a thin test helper instead:
-	req, err := http.NewRequest(http.MethodGet, server.URL+"/duckduckgo/search?text=test&limit=5", nil)
+	hits, err := service.Search(t.Context(), "test", 5)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := service.client.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer res.Body.Close()
-	var payload searchResponse
-	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
-		t.Fatal(err)
-	}
-	if len(payload.Results) != 1 || payload.Results[0].Title != "最新情报" {
-		t.Fatalf("payload = %#v", payload)
+	if len(hits) != 1 || hits[0].Title != "最新情报" {
+		t.Fatalf("hits = %#v", hits)
 	}
 }

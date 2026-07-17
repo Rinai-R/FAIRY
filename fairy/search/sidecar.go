@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,11 +18,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
 	defaultSearchLimit = 5
-	defaultEngine      = "duckduckgo"
+	// OpenSERP HTTP path segment is "duck"; response meta still says "duckduckgo".
+	defaultEngine = "duck"
 	healthTimeout      = 15 * time.Second
 	healthPollInterval = 200 * time.Millisecond
 )
@@ -101,7 +104,7 @@ func (s *Service) Close() error {
 func (s *Service) EnsureRunning(ctx context.Context) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.baseURL != "" && s.cmd != nil && s.cmd.Process != nil {
+	if s.baseURL != "" {
 		if err := s.healthLocked(ctx, s.baseURL); err == nil {
 			return s.baseURL, nil
 		}
@@ -127,9 +130,11 @@ func (s *Service) EnsureRunning(ctx context.Context) (string, error) {
 	s.port = port
 	s.baseURL = baseURL
 	if err := s.healthLocked(ctx, baseURL); err != nil {
+		log.Printf("openserp sidecar health failed port=%d err=%v", port, err)
 		_ = s.stopLocked()
 		return "", err
 	}
+	log.Printf("openserp sidecar started port=%d binary=%s", port, binary)
 	go s.reap()
 	return baseURL, nil
 }
@@ -146,6 +151,7 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Hit, e
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("openserp search start engine=%s limit=%d queryRunes=%d", defaultEngine, limit, utf8.RuneCountInString(query))
 	endpoint := fmt.Sprintf("%s/%s/search?text=%s&limit=%d", baseURL, defaultEngine, url.QueryEscape(query), limit)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -153,6 +159,7 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Hit, e
 	}
 	res, err := s.client.Do(req)
 	if err != nil {
+		log.Printf("openserp search failed err=%v", err)
 		return nil, err
 	}
 	defer res.Body.Close()
@@ -161,9 +168,17 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Hit, e
 		return nil, err
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, fmt.Errorf("openserp search status %d: %s", res.StatusCode, truncate(string(body), 200))
+		err := fmt.Errorf("openserp search status %d: %s", res.StatusCode, truncate(string(body), 200))
+		log.Printf("openserp search failed err=%v", err)
+		return nil, err
 	}
-	return parseSearchHits(body, limit)
+	hits, err := parseSearchHits(body, limit)
+	if err != nil {
+		log.Printf("openserp search parse failed err=%v", err)
+		return nil, err
+	}
+	log.Printf("openserp search done hits=%d", len(hits))
+	return hits, nil
 }
 
 func (s *Service) healthLocked(ctx context.Context, baseURL string) error {

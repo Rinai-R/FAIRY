@@ -3,9 +3,12 @@ package companion
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"fairy/character"
 	"fairy/config"
@@ -173,21 +176,17 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	if err := transition(TurnStateGathering); err != nil {
 		return fail("INVALID_STATE_TRANSITION", err)
 	}
-	retrieval, retrievalErr := s.memoryStore.Retrieve(bootstrap.Conversation.CharacterID, request.Input)
-	retrievalOmitReason := ""
-	if retrievalErr != nil {
-		retrieval = memory.RetrievalContext{}
-		retrievalOmitReason = "retrieval_failed"
-	}
+	// Compatibility pulse only: no automatic memory retrieve. Evidence comes from tool calls.
+	retrieval := memory.RetrievalContext{}
+	retrievalOmitReason := "awaiting_tools"
 	s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventGather, TurnStateGathering, "", map[string]any{
-		"tool":             gatherToolMemorySearch,
-		"phase":            "initial",
-		"queryHash":        runtimeHash(request.Input),
-		"personalCount":    len(retrieval.PersonalMemories),
-		"knowledgeCount":   len(retrieval.Knowledge),
+		"phase":            "skip_auto_retrieve",
+		"personalCount":    0,
+		"knowledgeCount":   0,
 		"omitReason":       retrievalOmitReason,
 		"modelDrivenIndex": 0,
 	})
+	log.Printf("cognition loop turn=%s phase=skip_auto_retrieve", persisted.ID)
 	if err := transition(TurnStatePlanning); err != nil {
 		return fail("INVALID_STATE_TRANSITION", err)
 	}
@@ -201,27 +200,29 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	}
 
 	var (
-		reply              CompiledReply
-		events             []model.StreamEvent
-		fullRequest        model.CompiledPromptRequest
-		modelDrivenGathers int
-		finalUsage         []LaneModelUsage
+		reply             CompiledReply
+		events            []model.StreamEvent
+		fullRequest       model.CompiledPromptRequest
+		modelDrivenTools  int
+		finalUsage        []LaneModelUsage
 	)
 	webSearchEnabled := false
 	if settings, err := config.ReadWebSearchSettings(s.root); err == nil {
 		webSearchEnabled = settings.Enabled
 	}
 	for {
-		allowGather := modelDrivenGathers < maxModelDrivenMemoryGathers
-		instructions := RespondInstructions
-		if allowGather {
-			instructions = RespondGatherInstructions(webSearchEnabled)
+		allowTools := modelDrivenTools < maxModelDrivenToolCalls
+		tools := []model.ToolSpec(nil)
+		if allowTools {
+			tools = RespondToolSpecs(webSearchEnabled)
 		}
+		instructions := RespondInstructionsForTools(allowTools)
+		attempt := modelDrivenTools + 1
 		slots, err := BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval)
 		if err != nil {
 			return fail("PROMPT_BUILD_FAILED", err)
 		}
-		if retrievalOmitReason != "" {
+		if retrievalOmitReason != "" && retrieval.Empty() {
 			setContextSlotOmitReason(slots, "retrieved_context", retrievalOmitReason)
 		}
 		input := PromptItemsFromContextSlots(slots)
@@ -235,19 +236,22 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 				PromptCacheKey:  cacheKey,
 			},
 			Input: input,
+			Tools: tools,
 		}
 		var executeRequest model.CompiledPromptRequest
-		if modelDrivenGathers > 0 {
-			// Retrieval changed mid-turn; never continue from a gather JSON response.
+		continuationMode := "decide"
+		if modelDrivenTools > 0 {
+			// Retrieval changed mid-turn after tools; always full request.
 			var matErr error
 			executeRequest, matErr = model.MaterializeContinuationRequest(fullRequest, model.ContinuationDecision{})
 			if matErr != nil {
 				return fail("MODEL_FAILED", matErr)
 			}
+			continuationMode = "full_post_tool"
 			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContinuation, TurnStatePlanning, "", map[string]any{
-				"incremental":         false,
-				"fullReason":          "cognition_post_gather",
-				"modelDrivenGathers":  modelDrivenGathers,
+				"incremental":        false,
+				"fullReason":         "cognition_post_tool",
+				"modelDrivenTools":   modelDrivenTools,
 				"previousStateSource": "none",
 			})
 		} else {
@@ -259,8 +263,25 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 			if err != nil {
 				return fail("MODEL_FAILED", err)
 			}
+			if decision.Incremental {
+				continuationMode = "incremental"
+			} else {
+				continuationMode = "full:" + string(decision.FullReason)
+			}
 			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContinuation, TurnStatePlanning, "", runtimeContinuationLedgerMetadata(connectionConfig.Capabilities.CacheRetention, previous, fullRequest, executeRequest, decision))
 		}
+		log.Printf(
+			"cognition loop turn=%s phase=model_call attempt=%d allowTools=%v webSearch=%v toolCount=%d continuation=%s inputItems=%d personal=%d knowledge=%d",
+			persisted.ID,
+			attempt,
+			allowTools,
+			webSearchEnabled,
+			len(tools),
+			continuationMode,
+			len(input),
+			len(retrieval.PersonalMemories),
+			len(retrieval.Knowledge),
+		)
 		if err := turnCtx.Err(); err != nil {
 			return fail("TURN_INTERRUPTED", ErrTurnInterrupted)
 		}
@@ -271,6 +292,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 			if errors.Is(err, ErrTurnInterrupted) {
 				code = "TURN_INTERRUPTED"
 			}
+			log.Printf("cognition loop turn=%s phase=model_call_failed attempt=%d code=%s err=%v", persisted.ID, attempt, code, err)
 			return fail(code, err)
 		}
 		if err := turnCtx.Err(); err != nil {
@@ -279,74 +301,174 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		usage := laneUsageFromEvents(events, bootstrap.PromptWindow.Revision)
 		finalUsage = usage
 		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventModel, TurnStatePlanning, "", runtimeModelLedgerMetadata(events, usage))
+
+		toolCalls := model.FunctionCallsFromEvents(events)
 		draft := collectText(events)
-		kind, gatherReq, parseErr := ParseCognitionOutput(draft)
-		if parseErr != nil {
-			return fail("MODEL_RESPONSE_INVALID", parseErr)
+		if strings.Contains(draft, `"gather"`) && len(toolCalls) == 0 {
+			log.Printf("cognition loop turn=%s phase=gather_json_rejected attempt=%d", persisted.ID, attempt)
+			return fail("MODEL_RESPONSE_INVALID", errors.New("gather JSON is not supported; use function tools"))
 		}
-		if kind == CognitionGather {
-			if !allowGather {
-				return fail("MODEL_RESPONSE_INVALID", errors.New("gather budget exhausted"))
+		if len(toolCalls) > 0 {
+			if !allowTools {
+				log.Printf("cognition loop turn=%s phase=tool_rejected reason=budget_exhausted count=%d", persisted.ID, len(toolCalls))
+				return fail("MODEL_RESPONSE_INVALID", errors.New("tool budget exhausted"))
 			}
-			switch gatherReq.Tool {
-			case gatherToolMemorySearch:
-				extra, gatherErr := s.memoryStore.Retrieve(bootstrap.Conversation.CharacterID, gatherReq.Query)
-				if gatherErr != nil {
-					return fail("MODEL_RESPONSE_INVALID", gatherErr)
+			for _, call := range toolCalls {
+				if modelDrivenTools >= maxModelDrivenToolCalls {
+					log.Printf("cognition loop turn=%s phase=tool_rejected reason=budget_exhausted tool=%s", persisted.ID, call.Name)
+					return fail("MODEL_RESPONSE_INVALID", errors.New("tool budget exhausted"))
 				}
-				retrieval = mergeRetrievalContext(retrieval, extra)
+				query, queryErr := parseToolQuery(call.Arguments)
+				if queryErr != nil {
+					log.Printf("cognition loop turn=%s phase=tool_args_invalid tool=%s err=%v", persisted.ID, call.Name, queryErr)
+					retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, queryErr))
+					retrievalOmitReason = ""
+					modelDrivenTools++
+					s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+						"tool":             call.Name,
+						"phase":            "model_driven",
+						"status":           "args_invalid",
+						"modelDrivenIndex": modelDrivenTools,
+					})
+					continue
+				}
+				log.Printf(
+					"cognition loop turn=%s phase=tool_call tool=%s callId=%s queryRunes=%d queryHash=%s",
+					persisted.ID,
+					call.Name,
+					call.CallID,
+					utf8.RuneCountInString(query),
+					runtimeHash(query),
+				)
+				switch call.Name {
+				case toolMemorySearch:
+					extra, toolErr := s.memoryStore.Retrieve(bootstrap.Conversation.CharacterID, query)
+					if toolErr != nil {
+						log.Printf("cognition loop turn=%s phase=tool_failed tool=%s err=%v", persisted.ID, call.Name, toolErr)
+						retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
+						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+							"tool":             call.Name,
+							"phase":            "model_driven",
+							"status":           "failed",
+							"queryHash":        runtimeHash(query),
+							"modelDrivenIndex": modelDrivenTools + 1,
+						})
+					} else {
+						retrieval = mergeRetrievalContext(retrieval, extra)
+						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+							"tool":             call.Name,
+							"phase":            "model_driven",
+							"status":           "ok",
+							"queryHash":        runtimeHash(query),
+							"personalCount":    len(extra.PersonalMemories),
+							"knowledgeCount":   len(extra.Knowledge),
+							"mergedPersonal":   len(retrieval.PersonalMemories),
+							"mergedKnowledge":  len(retrieval.Knowledge),
+							"modelDrivenIndex": modelDrivenTools + 1,
+						})
+						log.Printf(
+							"cognition loop turn=%s phase=tool_done tool=%s personal+=%d knowledge+=%d mergedPersonal=%d mergedKnowledge=%d index=%d",
+							persisted.ID,
+							call.Name,
+							len(extra.PersonalMemories),
+							len(extra.Knowledge),
+							len(retrieval.PersonalMemories),
+							len(retrieval.Knowledge),
+							modelDrivenTools+1,
+						)
+					}
+				case toolWebSearch:
+					if !webSearchEnabled {
+						toolErr := errors.New("web search is disabled")
+						log.Printf("cognition loop turn=%s phase=tool_rejected tool=%s reason=disabled", persisted.ID, call.Name)
+						retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
+						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+							"tool":             call.Name,
+							"phase":            "model_driven",
+							"status":           "disabled",
+							"queryHash":        runtimeHash(query),
+							"modelDrivenIndex": modelDrivenTools + 1,
+						})
+					} else if s.webSearch == nil {
+						log.Printf("cognition loop turn=%s phase=tool_rejected tool=%s reason=binary_missing", persisted.ID, call.Name)
+						retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, search.ErrBinaryNotFound))
+						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+							"tool":             call.Name,
+							"phase":            "model_driven",
+							"status":           "binary_missing",
+							"queryHash":        runtimeHash(query),
+							"modelDrivenIndex": modelDrivenTools + 1,
+						})
+					} else {
+						hits, toolErr := s.webSearch.Search(turnCtx, query, 5)
+						if toolErr != nil {
+							log.Printf("cognition loop turn=%s phase=tool_failed tool=%s err=%v", persisted.ID, call.Name, toolErr)
+							retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
+							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+								"tool":             call.Name,
+								"phase":            "model_driven",
+								"status":           "failed",
+								"queryHash":        runtimeHash(query),
+								"modelDrivenIndex": modelDrivenTools + 1,
+							})
+						} else {
+							extra := retrievalFromWebHits(hits)
+							retrieval = mergeRetrievalContext(retrieval, extra)
+							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+								"tool":             call.Name,
+								"phase":            "model_driven",
+								"status":           "ok",
+								"queryHash":        runtimeHash(query),
+								"webHitCount":      len(hits),
+								"mergedKnowledge":  len(retrieval.Knowledge),
+								"modelDrivenIndex": modelDrivenTools + 1,
+							})
+							log.Printf(
+								"cognition loop turn=%s phase=tool_done tool=%s webHits=%d mergedKnowledge=%d index=%d",
+								persisted.ID,
+								call.Name,
+								len(hits),
+								len(retrieval.Knowledge),
+								modelDrivenTools+1,
+							)
+						}
+					}
+				default:
+					toolErr := fmt.Errorf("tool %q is not whitelisted", call.Name)
+					log.Printf("cognition loop turn=%s phase=tool_rejected tool=%s reason=not_whitelisted", persisted.ID, call.Name)
+					retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
+					s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+						"tool":             call.Name,
+						"phase":            "model_driven",
+						"status":           "not_whitelisted",
+						"modelDrivenIndex": modelDrivenTools + 1,
+					})
+				}
 				retrievalOmitReason = ""
-				modelDrivenGathers++
-				s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventGather, TurnStatePlanning, "", map[string]any{
-					"tool":             gatherReq.Tool,
-					"phase":            "model_driven",
-					"queryHash":        runtimeHash(gatherReq.Query),
-					"personalCount":    len(extra.PersonalMemories),
-					"knowledgeCount":   len(extra.Knowledge),
-					"mergedPersonal":   len(retrieval.PersonalMemories),
-					"mergedKnowledge":  len(retrieval.Knowledge),
-					"modelDrivenIndex": modelDrivenGathers,
-				})
-			case gatherToolWebSearch:
-				if !webSearchEnabled {
-					return fail("MODEL_RESPONSE_INVALID", errors.New("web search is disabled"))
-				}
-				if s.webSearch == nil {
-					return fail("MODEL_RESPONSE_INVALID", search.ErrBinaryNotFound)
-				}
-				hits, gatherErr := s.webSearch.Search(turnCtx, gatherReq.Query, 5)
-				if gatherErr != nil {
-					return fail("MODEL_RESPONSE_INVALID", gatherErr)
-				}
-				extra := retrievalFromWebHits(hits)
-				retrieval = mergeRetrievalContext(retrieval, extra)
-				retrievalOmitReason = ""
-				modelDrivenGathers++
-				s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventGather, TurnStatePlanning, "", map[string]any{
-					"tool":             gatherReq.Tool,
-					"phase":            "model_driven",
-					"queryHash":        runtimeHash(gatherReq.Query),
-					"webHitCount":      len(hits),
-					"mergedKnowledge":  len(retrieval.Knowledge),
-					"modelDrivenIndex": modelDrivenGathers,
-				})
-			default:
-				return fail("MODEL_RESPONSE_INVALID", errors.New("gather tool is not whitelisted"))
+				modelDrivenTools++
 			}
 			continue
 		}
 		reply, err = CompileReply(draft, request.AvailableVisualStates)
 		if err != nil {
+			log.Printf("cognition loop turn=%s phase=compile_failed attempt=%d err=%v", persisted.ID, attempt, err)
 			return fail("MODEL_RESPONSE_INVALID", err)
 		}
 		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventCompile, TurnStatePlanning, "", map[string]any{
-			"status":               "succeeded",
-			"visualState":          reply.VisualState,
-			"chainCount":           len(reply.Chains),
-			"displayTextHash":      runtimeHash(reply.DisplayText),
-			"speechTextHash":       runtimeHash(reply.SpeechText),
-			"modelDrivenGathers":   modelDrivenGathers,
+			"status":             "succeeded",
+			"visualState":        reply.VisualState,
+			"chainCount":         len(reply.Chains),
+			"displayTextHash":    runtimeHash(reply.DisplayText),
+			"speechTextHash":     runtimeHash(reply.SpeechText),
+			"modelDrivenTools":   modelDrivenTools,
 		})
+		log.Printf(
+			"cognition loop turn=%s phase=reply_ready chains=%d visual=%q modelDrivenTools=%d",
+			persisted.ID,
+			len(reply.Chains),
+			reply.VisualState,
+			modelDrivenTools,
+		)
 		break
 	}
 	if err := transition(TurnStateResponding); err != nil {

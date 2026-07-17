@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/openai/openai-go/v3"
@@ -112,6 +113,12 @@ func (t SDKTransport) executeChatCompletions(ctx context.Context, client openai.
 	stream := client.Chat.Completions.NewStreaming(ctx, params)
 	defer stream.Close()
 
+	type pendingToolCall struct {
+		ID        string
+		Name      string
+		Arguments strings.Builder
+	}
+	pending := map[int64]*pendingToolCall{}
 	completed := false
 	for stream.Next() {
 		if err := ctx.Err(); err != nil {
@@ -136,8 +143,42 @@ func (t SDKTransport) executeChatCompletions(ctx context.Context, client openai.
 		if choice.Delta.Content != "" && onEvent != nil {
 			onEvent(StreamEvent{Type: "text_delta", Data: choice.Delta.Content})
 		}
+		for _, toolCall := range choice.Delta.ToolCalls {
+			index := toolCall.Index
+			slot, ok := pending[index]
+			if !ok {
+				slot = &pendingToolCall{}
+				pending[index] = slot
+			}
+			if toolCall.ID != "" {
+				slot.ID = toolCall.ID
+			}
+			if toolCall.Function.Name != "" {
+				slot.Name = toolCall.Function.Name
+			}
+			if toolCall.Function.Arguments != "" {
+				slot.Arguments.WriteString(toolCall.Function.Arguments)
+			}
+		}
 		if choice.FinishReason != "" {
 			if onEvent != nil {
+				if len(pending) > 0 {
+					indexes := make([]int64, 0, len(pending))
+					for index := range pending {
+						indexes = append(indexes, index)
+					}
+					sort.Slice(indexes, func(i, j int) bool { return indexes[i] < indexes[j] })
+					calls := make([]FunctionCall, 0, len(indexes))
+					for _, index := range indexes {
+						slot := pending[index]
+						calls = append(calls, FunctionCall{
+							CallID:    strings.TrimSpace(slot.ID),
+							Name:      strings.TrimSpace(slot.Name),
+							Arguments: slot.Arguments.String(),
+						})
+					}
+					onEvent(StreamEvent{Type: "function_calls", FunctionCalls: calls})
+				}
 				onEvent(StreamEvent{Type: "completed"})
 			}
 			completed = true
@@ -197,7 +238,7 @@ func mapResponsesSDKEvent(event responses.ResponseStreamEventUnion, state *respo
 		}
 		return false, nil
 	case responses.ResponseFunctionCallArgumentsDeltaEvent, responses.ResponseFunctionCallArgumentsDoneEvent:
-		return false, errors.New("current FAIRY Responses request does not accept tool calls")
+		return false, nil
 	case responses.ResponseCompletedEvent:
 		raw := variant.Response.RawJSON()
 		if raw == "" {

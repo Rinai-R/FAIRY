@@ -36,7 +36,7 @@ func ReadWebSearchSettings(root string) (WebSearchSettings, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return WebSearchSettings{SchemaVersion: 1, Enabled: false}, nil
+			return WebSearchSettings{SchemaVersion: 1, Enabled: true}, nil
 		}
 		return WebSearchSettings{}, err
 	}

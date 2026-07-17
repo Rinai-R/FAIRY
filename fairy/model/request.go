@@ -67,6 +67,7 @@ type CompiledPromptRequest struct {
 	Shape              ModelRequestShape `json:"shape"`
 	Input              []PromptItem      `json:"input"`
 	PreviousResponseID string            `json:"previousResponseId,omitempty"`
+	Tools              []ToolSpec        `json:"tools,omitempty"`
 }
 
 type RequestDraft struct {
@@ -274,15 +275,16 @@ type replyChain struct {
 }
 
 type responsesRequestBody struct {
-	Model              string          `json:"model"`
-	Instructions       string          `json:"instructions"`
-	Input              []openAIMessage `json:"input"`
-	PreviousResponseID string          `json:"previous_response_id,omitempty"`
-	MaxOutputTokens    uint32          `json:"max_output_tokens"`
-	Store              bool            `json:"store"`
-	Stream             bool            `json:"stream"`
-	Text               textConfig      `json:"text"`
-	PromptCacheKey     string          `json:"prompt_cache_key,omitempty"`
+	Model              string           `json:"model"`
+	Instructions       string           `json:"instructions"`
+	Input              []openAIMessage  `json:"input"`
+	PreviousResponseID string           `json:"previous_response_id,omitempty"`
+	MaxOutputTokens    uint32           `json:"max_output_tokens"`
+	Store              bool             `json:"store"`
+	Stream             bool             `json:"stream"`
+	Text               textConfig       `json:"text"`
+	PromptCacheKey     string           `json:"prompt_cache_key,omitempty"`
+	Tools              []map[string]any `json:"tools,omitempty"`
 }
 
 type textConfig struct {
@@ -315,16 +317,18 @@ func responsesBody(connection Connection, request CompiledPromptRequest) (respon
 		Stream:             true,
 		Text:               textConfig{Format: textFormat{Type: "text"}},
 		PromptCacheKey:     promptCacheKey,
+		Tools:              responsesToolDefinitions(request.Tools),
 	}, nil
 }
 
 type chatCompletionsRequestBody struct {
-	Model          string          `json:"model"`
-	Messages       []openAIMessage `json:"messages"`
-	Stream         bool            `json:"stream"`
-	StreamOptions  streamOptions   `json:"stream_options"`
-	MaxTokens      uint32          `json:"max_tokens"`
-	ResponseFormat *responseFormat `json:"response_format,omitempty"`
+	Model          string           `json:"model"`
+	Messages       []openAIMessage  `json:"messages"`
+	Stream         bool             `json:"stream"`
+	StreamOptions  streamOptions    `json:"stream_options"`
+	MaxTokens      uint32           `json:"max_tokens"`
+	ResponseFormat *responseFormat  `json:"response_format,omitempty"`
+	Tools          []map[string]any `json:"tools,omitempty"`
 }
 
 type streamOptions struct {
@@ -345,7 +349,8 @@ func chatCompletionsBody(connection Connection, request CompiledPromptRequest) (
 	}
 	messages = append([]openAIMessage{{Role: "system", Content: request.Shape.Instructions}}, messages...)
 	var format *responseFormat
-	if request.Shape.Lane == PromptLaneRespond {
+	// json_object conflicts with tool calling on many providers; only force it when no tools.
+	if request.Shape.Lane == PromptLaneRespond && len(request.Tools) == 0 {
 		format = &responseFormat{Type: "json_object"}
 	}
 	return chatCompletionsRequestBody{
@@ -355,5 +360,6 @@ func chatCompletionsBody(connection Connection, request CompiledPromptRequest) (
 		StreamOptions:  streamOptions{IncludeUsage: true},
 		MaxTokens:      request.Shape.MaxOutputTokens,
 		ResponseFormat: format,
+		Tools:          chatToolDefinitions(request.Tools),
 	}, nil
 }

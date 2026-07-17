@@ -14,9 +14,10 @@ type Usage struct {
 }
 
 type StreamEvent struct {
-	Type  string `json:"type"`
-	Data  string `json:"data,omitempty"`
-	Usage *Usage `json:"usage,omitempty"`
+	Type          string         `json:"type"`
+	Data          string         `json:"data,omitempty"`
+	Usage         *Usage         `json:"usage,omitempty"`
+	FunctionCalls []FunctionCall `json:"functionCalls,omitempty"`
 }
 
 type responsesUsage struct {

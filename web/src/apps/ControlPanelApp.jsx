@@ -447,12 +447,12 @@ export function ControlPanelApp() {
 
   async function loadActiveWebSearchStatus() {
     if (!isWailsRuntime()) {
-      return Object.freeze({ enabled: false, binaryPath: "", binaryFound: false });
+      return Object.freeze({ enabled: true, binaryPath: "", binaryFound: false });
     }
     try {
       return await loadWailsWebSearchStatus();
     } catch {
-      return Object.freeze({ enabled: false, binaryPath: "", binaryFound: false });
+      return Object.freeze({ enabled: true, binaryPath: "", binaryFound: false });
     }
   }
 
@@ -1239,7 +1239,7 @@ export function ControlPanelApp() {
                         <>
                           <PageHeader
                             title="智能层"
-                            description="会话、个人记忆与知识保存在本机；可选开启近况查询（本机 OpenSERP sidecar）。"
+                            description="会话、个人记忆和知识都在本机。聊到动漫、游戏这类公开资料时，可以走本机检索。"
                             status={intelligenceStatus?.ready ? "本地层已就绪" : "本地层不可用"}
                             ready={Boolean(intelligenceStatus?.ready)}
                           />
@@ -1247,11 +1247,11 @@ export function ControlPanelApp() {
                           <Card className="cp-panel-card" size="2">
                             <Flex align="center" justify="between" gap="3">
                               <div>
-                                <Text size="2" weight="medium">允许查近况</Text>
+                                <Text size="2" weight="medium">允许检索公开资料</Text>
                                 <Text size="1" color="gray" as="p">
                                   {webSearchStatus?.binaryFound
-                                    ? "已找到 openserp 二进制，开启后按需启动本机 sidecar。"
-                                    : "未找到 openserp：请放到配置目录 bin/openserp 或设置 FAIRY_OPENSERP_PATH。"}
+                                    ? "默认开启。需要时会按需启动本机 openserp。"
+                                    : "还没找到 openserp，把它放到配置目录的 bin/openserp，或设置环境变量 FAIRY_OPENSERP_PATH。"}
                                 </Text>
                               </div>
                               <Switch
