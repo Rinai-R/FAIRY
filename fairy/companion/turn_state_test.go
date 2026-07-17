@@ -128,8 +128,8 @@ func TestSubmitCompiledTurnStaysPlanningWhileModelRuns(t *testing.T) {
 		statesWhileRunning = append(statesWhileRunning, event.State)
 	}
 	mu.Unlock()
-	if len(statesWhileRunning) != 2 || statesWhileRunning[0] != TurnStateInterpreting || statesWhileRunning[1] != TurnStatePlanning {
-		t.Fatalf("states while model runs = %#v, want interpreting/planning", statesWhileRunning)
+	if len(statesWhileRunning) != 3 || statesWhileRunning[0] != TurnStateInterpreting || statesWhileRunning[1] != TurnStateGathering || statesWhileRunning[2] != TurnStatePlanning {
+		t.Fatalf("states while model runs = %#v, want interpreting/gathering/planning", statesWhileRunning)
 	}
 	close(release)
 	if err := <-result; err != nil {
@@ -183,9 +183,9 @@ func TestCancelTurnDuringPlanningDoesNotRespondOrPersistAssistant(t *testing.T) 
 		t.Fatal("turn did not reach model")
 	}
 	mu.Lock()
-	if len(emitted) != 2 {
+	if len(emitted) != 3 {
 		mu.Unlock()
-		t.Fatalf("events before cancel = %#v, want interpreting/planning", emitted)
+		t.Fatalf("events before cancel = %#v, want interpreting/gathering/planning", emitted)
 	}
 	turnID := emitted[0].TurnID
 	mu.Unlock()
@@ -206,8 +206,8 @@ func TestCancelTurnDuringPlanningDoesNotRespondOrPersistAssistant(t *testing.T) 
 		}
 	}
 	mu.Unlock()
-	if len(states) != 3 || states[0] != TurnStateInterpreting || states[1] != TurnStatePlanning || states[2] != TurnStateInterrupted {
-		t.Fatalf("states = %#v, want interpreting/planning/interrupted", states)
+	if len(states) != 4 || states[0] != TurnStateInterpreting || states[1] != TurnStateGathering || states[2] != TurnStatePlanning || states[3] != TurnStateInterrupted {
+		t.Fatalf("states = %#v, want interpreting/gathering/planning/interrupted", states)
 	}
 	reloaded, err := memoryStore.LoadConversation(bootstrap.Conversation.ID)
 	if err != nil {

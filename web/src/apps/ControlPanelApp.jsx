@@ -62,11 +62,13 @@ import {
   loadWailsPersonalMemoryCatalog,
   loadWailsUserProfile,
   loadWailsVisualPackCatalog,
+  loadWailsWebSearchStatus,
   retryWailsExtractionBatch,
   reviseWailsPersonalMemory,
   saveWailsModelConnection,
   setWailsCharacterAppearance,
   setWailsUserProfile,
+  setWailsWebSearchEnabled,
   tombstoneWailsKnowledge,
   tombstoneWailsPersonalMemory,
   updateWailsCharacter,
@@ -329,6 +331,7 @@ export function ControlPanelApp() {
   const [profile, setProfile] = useState(null);
   const [modelStatus, setModelStatus] = useState(null);
   const [intelligenceStatus, setIntelligenceStatus] = useState(null);
+  const [webSearchStatus, setWebSearchStatus] = useState(null);
   const [knowledgeCatalog, setKnowledgeCatalog] = useState(null);
   const [memoryCatalog, setMemoryCatalog] = useState(null);
   const [batchCatalog, setBatchCatalog] = useState(null);
@@ -364,6 +367,7 @@ export function ControlPanelApp() {
       nextProfile,
       nextModelStatus,
       nextIntelligenceStatus,
+      nextWebSearchStatus,
       nextDesktop,
     ] = await Promise.all([
       loadActiveCharacterCatalog(),
@@ -371,6 +375,7 @@ export function ControlPanelApp() {
       loadActiveUserProfile(),
       loadActiveModelStatus(),
       loadActiveIntelligenceStatus(),
+      loadActiveWebSearchStatus(),
       getDesktopState(),
     ]);
     setCatalog(nextCatalog);
@@ -378,6 +383,7 @@ export function ControlPanelApp() {
     setProfile(nextProfile);
     setModelStatus(nextModelStatus);
     setIntelligenceStatus(nextIntelligenceStatus);
+    setWebSearchStatus(nextWebSearchStatus);
     setDesktop(nextDesktop);
     if (hydrateForms) {
       if (nextCatalog.active) {
@@ -437,6 +443,17 @@ export function ControlPanelApp() {
       return Object.freeze({ configured: false, ready: false, config: null, error: null });
     }
     return controlPanelModelStatusFromWails(await loadWailsModelStatus());
+  }
+
+  async function loadActiveWebSearchStatus() {
+    if (!isWailsRuntime()) {
+      return Object.freeze({ enabled: false, binaryPath: "", binaryFound: false });
+    }
+    try {
+      return await loadWailsWebSearchStatus();
+    } catch {
+      return Object.freeze({ enabled: false, binaryPath: "", binaryFound: false });
+    }
   }
 
   async function saveActiveModelConnection(input, key) {
@@ -1222,10 +1239,33 @@ export function ControlPanelApp() {
                         <>
                           <PageHeader
                             title="智能层"
-                            description="会话、个人记忆与知识都保存在本机；当前版本不接入网络搜索。"
+                            description="会话、个人记忆与知识保存在本机；可选开启近况查询（本机 OpenSERP sidecar）。"
                             status={intelligenceStatus?.ready ? "本地层已就绪" : "本地层不可用"}
                             ready={Boolean(intelligenceStatus?.ready)}
                           />
+
+                          <Card className="cp-panel-card" size="2">
+                            <Flex align="center" justify="between" gap="3">
+                              <div>
+                                <Text size="2" weight="medium">允许查近况</Text>
+                                <Text size="1" color="gray" as="p">
+                                  {webSearchStatus?.binaryFound
+                                    ? "已找到 openserp 二进制，开启后按需启动本机 sidecar。"
+                                    : "未找到 openserp：请放到配置目录 bin/openserp 或设置 FAIRY_OPENSERP_PATH。"}
+                                </Text>
+                              </div>
+                              <Switch
+                                checked={Boolean(webSearchStatus?.enabled)}
+                                disabled={disabled}
+                                onCheckedChange={(checked) => {
+                                  void run("web-search-toggle", async () => {
+                                    const next = await setWailsWebSearchEnabled(checked);
+                                    setWebSearchStatus(next);
+                                  });
+                                }}
+                              />
+                            </Flex>
+                          </Card>
 
                           <div className="cp-intelligence-track" aria-label="智能层状态">
                             <div className={`cp-intelligence-step ${intelligenceStatus?.ready ? "is-ready" : ""}`}>

@@ -59,8 +59,8 @@ func TestSubmitCompiledTurnEmitsHarnessLifecycle(t *testing.T) {
 		}
 		states = append(states, event.State)
 	}
-	if states[0] != TurnStateInterpreting || states[1] != TurnStatePlanning || states[2] != TurnStateResponding {
-		t.Fatalf("prefix states = %#v", states[:3])
+	if states[0] != TurnStateInterpreting || states[1] != TurnStateGathering || states[2] != TurnStatePlanning || states[3] != TurnStateResponding {
+		t.Fatalf("prefix states = %#v", states[:4])
 	}
 	if states[len(states)-1] != TurnStateCompleted {
 		t.Fatalf("terminal state = %#v", states)
@@ -96,6 +96,7 @@ func TestSubmitCompiledTurnEmitsHarnessLifecycle(t *testing.T) {
 	assertRuntimeLedgerNoForbidden(t, ledger)
 	for _, eventType := range []string{
 		runtimeLedgerEventTransition,
+		runtimeLedgerEventGather,
 		runtimeLedgerEventPrompt,
 		runtimeLedgerEventContinuation,
 		runtimeLedgerEventModel,
@@ -225,8 +226,8 @@ func TestSubmitCompiledTurnInvalidReplyFailsFromPlanningWithoutAssistant(t *test
 		}
 	}
 	mu.Unlock()
-	if len(states) != 3 || states[0] != TurnStateInterpreting || states[1] != TurnStatePlanning || states[2] != TurnStateFailed {
-		t.Fatalf("states = %#v, want interpreting/planning/failed", states)
+	if len(states) != 4 || states[0] != TurnStateInterpreting || states[1] != TurnStateGathering || states[2] != TurnStatePlanning || states[3] != TurnStateFailed {
+		t.Fatalf("states = %#v, want interpreting/gathering/planning/failed", states)
 	}
 	reloaded, err := memoryStore.LoadConversation(bootstrap.Conversation.ID)
 	if err != nil {

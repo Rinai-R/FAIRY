@@ -1,6 +1,7 @@
 const SESSION_STATES = new Set([
   "idle",
   "interpreting",
+  "gathering",
   "planning",
   "responding",
   "completed",

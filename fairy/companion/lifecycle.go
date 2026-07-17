@@ -12,6 +12,7 @@ type TurnState string
 const (
 	TurnStateIdle         TurnState = "idle"
 	TurnStateInterpreting TurnState = "interpreting"
+	TurnStateGathering    TurnState = "gathering"
 	TurnStatePlanning     TurnState = "planning"
 	TurnStateResponding   TurnState = "responding"
 	TurnStateCompleted    TurnState = "completed"
@@ -24,6 +25,8 @@ func (s TurnState) canTransitionTo(next TurnState) bool {
 	case TurnStateIdle:
 		return next == TurnStateInterpreting
 	case TurnStateInterpreting:
+		return next == TurnStateGathering || next == TurnStateInterrupted || next == TurnStateFailed
+	case TurnStateGathering:
 		return next == TurnStatePlanning || next == TurnStateInterrupted || next == TurnStateFailed
 	case TurnStatePlanning:
 		return next == TurnStateResponding || next == TurnStateInterrupted || next == TurnStateFailed

@@ -2,6 +2,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 const TURN_STATES = new Set([
   "idle",
   "interpreting",
+  "gathering",
   "planning",
   "responding",
   "completed",
@@ -1155,7 +1156,7 @@ function reduceHarnessEvent(state, event) {
       protocolError("completed and failed states require typed terminal payloads");
     }
     if (event.state === "interrupted") {
-      if (!["interpreting", "planning", "responding"].includes(state.sessionState)) {
+      if (!["interpreting", "gathering", "planning", "responding"].includes(state.sessionState)) {
         protocolError("interrupted state has no active predecessor");
       }
       return Object.freeze({
@@ -1172,7 +1173,8 @@ function reduceHarnessEvent(state, event) {
     }
     const expectedState = {
       idle: "interpreting",
-      interpreting: "planning",
+      interpreting: "gathering",
+      gathering: "planning",
       planning: "responding",
     }[state.sessionState];
     if (event.state !== expectedState) {
@@ -1260,7 +1262,7 @@ function reduceHarnessEvent(state, event) {
     if (event.state !== "failed") {
       protocolError("failed payload must use failed state");
     }
-    if (!["interpreting", "planning", "responding"].includes(state.sessionState)) {
+    if (!["interpreting", "gathering", "planning", "responding"].includes(state.sessionState)) {
       protocolError("failed payload has no active predecessor");
     }
     return Object.freeze({

@@ -36,6 +36,8 @@ test("dialogue lifecycle keeps the current image while waiting", () => {
   assert.equal(state.visualState, "idle");
   state = change(state, { sessionState: "interpreting" });
   assert.equal(state.visualState, "idle");
+  state = change(state, { sessionState: "gathering" });
+  assert.equal(state.visualState, "idle");
   state = change(state, { sessionState: "planning" });
   assert.equal(state.visualState, "idle");
   state = change(state, { sessionState: "responding" });

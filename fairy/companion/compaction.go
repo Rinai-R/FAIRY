@@ -102,25 +102,44 @@ func normalizeCompactionSummary(summary string) (string, error) {
 	return value, nil
 }
 
-// BuildCompactInput mirrors Compact lane items: current character, profile, windowed dialogue, prior summary.
+// BuildStablePrefixItems returns the respond/compact shared cacheable prefix:
+// character → profile → available_visual_states.
+func BuildStablePrefixItems(
+	record character.Record,
+	userProfile *profile.Snapshot,
+	states []VisualState,
+) ([]model.PromptItem, error) {
+	characterItem, err := encodeCharacterContext(record)
+	if err != nil {
+		return nil, err
+	}
+	profileItem, err := encodeUserProfileContext(userProfile)
+	if err != nil {
+		return nil, err
+	}
+	visualItem, err := encodeAvailableVisualStates(states)
+	if err != nil {
+		return nil, err
+	}
+	return []model.PromptItem{characterItem, profileItem, visualItem}, nil
+}
+
+// BuildCompactInput mirrors respond's stable prefix, then window summary/dialogue,
+// then a trailing compaction directive. Only the dialogue window is compacted.
 func BuildCompactInput(
 	record character.Record,
 	userProfile *profile.Snapshot,
 	promptWindow memory.PromptWindowRecord,
 	messages []memory.MessageRecord,
+	states []VisualState,
 ) ([]model.PromptItem, error) {
 	windowed := messagesAfterCutoff(messages, promptWindow.CutoffMessageSequence)
-	items := make([]model.PromptItem, 0, len(windowed)+3)
-	characterItem, err := encodeCharacterContext(record)
+	prefix, err := BuildStablePrefixItems(record, userProfile, states)
 	if err != nil {
 		return nil, err
 	}
-	items = append(items, characterItem)
-	profileItem, err := encodeUserProfileContext(userProfile)
-	if err != nil {
-		return nil, err
-	}
-	items = append(items, profileItem)
+	items := make([]model.PromptItem, 0, len(prefix)+len(windowed)+2)
+	items = append(items, prefix...)
 	if promptWindow.Summary != nil && *promptWindow.Summary != "" {
 		summaryItem, err := encodeCompactionSummary(*promptWindow.Summary)
 		if err != nil {
@@ -129,6 +148,10 @@ func BuildCompactInput(
 		items = append(items, summaryItem)
 	}
 	items = append(items, promptItemsFromMessages(windowed)...)
+	items = append(items, model.PromptItem{
+		Type:    model.PromptItemUserMessage,
+		Content: CompactInstructions,
+	})
 	return items, nil
 }
 

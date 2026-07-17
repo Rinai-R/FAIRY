@@ -93,22 +93,16 @@ func BuildRespondContextSlots(
 ) ([]ContextSlot, error) {
 	windowed := messagesAfterCutoff(messages, promptWindow.CutoffMessageSequence)
 	slots := make([]ContextSlot, 0, 6)
-	characterItem, err := encodeCharacterContext(record)
+	prefix, err := BuildStablePrefixItems(record, userProfile, states)
 	if err != nil {
 		return nil, err
 	}
-	slots = append(slots, presentContextSlot("character", true, "local_trusted", "stable", []model.PromptItem{characterItem}, map[string]any{"revision": record.Revision}))
-	profileItem, err := encodeUserProfileContext(userProfile)
-	if err != nil {
-		return nil, err
+	if len(prefix) != 3 {
+		return nil, fmt.Errorf("stable prefix must contain 3 items, got %d", len(prefix))
 	}
-	slots = append(slots, presentContextSlot("profile", true, "local_trusted", "stable", []model.PromptItem{profileItem}, map[string]any{"profile": userProfile}))
-	// Keep visual context stable: visual sits after character/profile, before summary/dialogue.
-	visualItem, err := encodeAvailableVisualStates(states)
-	if err != nil {
-		return nil, err
-	}
-	slots = append(slots, presentContextSlot("available_visual_states", true, "local_trusted", "stable", []model.PromptItem{visualItem}, states))
+	slots = append(slots, presentContextSlot("character", true, "local_trusted", "stable", []model.PromptItem{prefix[0]}, map[string]any{"revision": record.Revision}))
+	slots = append(slots, presentContextSlot("profile", true, "local_trusted", "stable", []model.PromptItem{prefix[1]}, map[string]any{"profile": userProfile}))
+	slots = append(slots, presentContextSlot("available_visual_states", true, "local_trusted", "stable", []model.PromptItem{prefix[2]}, states))
 	if promptWindow.Summary != nil && *promptWindow.Summary != "" {
 		summaryItem, err := encodeCompactionSummary(*promptWindow.Summary)
 		if err != nil {

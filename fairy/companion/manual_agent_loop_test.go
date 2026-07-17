@@ -109,7 +109,7 @@ func TestManualCharacterDecisionAgentLoop(t *testing.T) {
 		mu.Lock()
 		turnEvents := append([]HarnessEvent(nil), events[start:]...)
 		mu.Unlock()
-		if len(turnEvents) < 5 || turnEvents[0].State != TurnStateInterpreting || turnEvents[1].State != TurnStatePlanning || turnEvents[2].State != TurnStateResponding || turnEvents[len(turnEvents)-1].State != TurnStateCompleted {
+		if len(turnEvents) < 6 || turnEvents[0].State != TurnStateInterpreting || turnEvents[1].State != TurnStateGathering || turnEvents[2].State != TurnStatePlanning || turnEvents[3].State != TurnStateResponding || turnEvents[len(turnEvents)-1].State != TurnStateCompleted {
 			t.Fatalf("SubmitTurn(%d) states = %#v", index+1, turnEvents)
 		}
 		wire, err := json.Marshal(struct {

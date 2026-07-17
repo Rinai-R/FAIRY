@@ -7,7 +7,7 @@ import (
 
 func TestTurnLifecycleHappyPathJSONShape(t *testing.T) {
 	life := NewTurnLifecycle("6a129284-6358-47b0-ad64-2a5907d36c91", "6a129284-6358-47b0-ad64-2a5907d36c92")
-	for _, state := range []TurnState{TurnStateInterpreting, TurnStatePlanning, TurnStateResponding} {
+	for _, state := range []TurnState{TurnStateInterpreting, TurnStateGathering, TurnStatePlanning, TurnStateResponding} {
 		event, err := life.Transition(state)
 		if err != nil {
 			t.Fatalf("Transition(%s) error = %v", state, err)
@@ -30,7 +30,7 @@ func TestTurnLifecycleHappyPathJSONShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReplyChain() error = %v", err)
 	}
-	if reply.Sequence != 4 {
+	if reply.Sequence != 5 {
 		t.Fatalf("reply sequence = %d", reply.Sequence)
 	}
 	completed, err := life.Complete(TurnCompletion{
@@ -69,7 +69,7 @@ func TestTurnLifecycleRejectsInvalidTransition(t *testing.T) {
 
 func TestCompletedUsageWireShapeMatchesFrontendContract(t *testing.T) {
 	life := NewTurnLifecycle("6a129284-6358-47b0-ad64-2a5907d36c91", "6a129284-6358-47b0-ad64-2a5907d36c92")
-	for _, state := range []TurnState{TurnStateInterpreting, TurnStatePlanning, TurnStateResponding} {
+	for _, state := range []TurnState{TurnStateInterpreting, TurnStateGathering, TurnStatePlanning, TurnStateResponding} {
 		if _, err := life.Transition(state); err != nil {
 			t.Fatalf("Transition(%s) error = %v", state, err)
 		}

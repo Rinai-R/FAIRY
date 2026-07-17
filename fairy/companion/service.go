@@ -12,12 +12,14 @@ import (
 	"fairy/memory"
 	"fairy/model"
 	"fairy/profile"
+	"fairy/search"
 )
 
 type CompanionService struct {
 	root              string
 	memoryStore       *memory.Store
 	modelService      *model.ModelService
+	webSearch         WebSearchBackend
 	backgroundJobs    atomic.Int64
 	extractionMu      sync.Mutex
 	extractionIdle    map[string]context.CancelFunc
@@ -27,6 +29,12 @@ type CompanionService struct {
 	gates             map[string]*conversationGate
 	emitMu            sync.Mutex
 	emit              EventEmitter
+}
+
+// WebSearchBackend is the optional OpenSERP sidecar search surface.
+type WebSearchBackend interface {
+	Search(ctx context.Context, query string, limit int) ([]search.Hit, error)
+	Close() error
 }
 
 // AttachEventEmitter wires a Wails-free sink from main (package function, not a bound service method).
@@ -60,9 +68,17 @@ func NewCompanionServiceWithRuntime(root string, memoryStore *memory.Store, mode
 		root:           root,
 		memoryStore:    memoryStore,
 		modelService:   modelService,
+		webSearch:      search.NewService(root),
 		extractionIdle: make(map[string]context.CancelFunc),
 		gates:          make(map[string]*conversationGate),
 	}
+}
+
+func (s *CompanionService) Close() error {
+	if s == nil || s.webSearch == nil {
+		return nil
+	}
+	return s.webSearch.Close()
 }
 
 func (s *CompanionService) SubmitTurn(request SubmitTurnRequest) (TurnOutcome, error) {
@@ -154,24 +170,27 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	if err != nil {
 		return fail("USER_PROFILE_UNAVAILABLE", err)
 	}
+	if err := transition(TurnStateGathering); err != nil {
+		return fail("INVALID_STATE_TRANSITION", err)
+	}
 	retrieval, retrievalErr := s.memoryStore.Retrieve(bootstrap.Conversation.CharacterID, request.Input)
 	retrievalOmitReason := ""
 	if retrievalErr != nil {
 		retrieval = memory.RetrievalContext{}
 		retrievalOmitReason = "retrieval_failed"
 	}
+	s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventGather, TurnStateGathering, "", map[string]any{
+		"tool":             gatherToolMemorySearch,
+		"phase":            "initial",
+		"queryHash":        runtimeHash(request.Input),
+		"personalCount":    len(retrieval.PersonalMemories),
+		"knowledgeCount":   len(retrieval.Knowledge),
+		"omitReason":       retrievalOmitReason,
+		"modelDrivenIndex": 0,
+	})
 	if err := transition(TurnStatePlanning); err != nil {
 		return fail("INVALID_STATE_TRANSITION", err)
 	}
-	slots, err := BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval)
-	if err != nil {
-		return fail("PROMPT_BUILD_FAILED", err)
-	}
-	if retrievalOmitReason != "" {
-		setContextSlotOmitReason(slots, "retrieved_context", retrievalOmitReason)
-	}
-	input := PromptItemsFromContextSlots(slots)
-	s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventPrompt, TurnStatePlanning, "", runtimePromptLedgerMetadata(input, slots, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval))
 	connectionConfig, err := config.ReadModelConnection(s.root)
 	if err != nil {
 		return fail("MODEL_FAILED", err)
@@ -180,54 +199,156 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	if connectionConfig.Capabilities.PromptCacheKey {
 		cacheKey = model.LaneCacheKey(request.ConversationID, model.PromptLaneRespond)
 	}
-	fullRequest := model.CompiledPromptRequest{
-		Shape: model.ModelRequestShape{
-			Lane:            model.PromptLaneRespond,
-			Model:           connectionConfig.Model,
-			Instructions:    RespondInstructions,
-			MaxOutputTokens: request.MaxOutputTokens,
-			PromptCacheKey:  cacheKey,
-		},
-		Input: input,
+
+	var (
+		reply              CompiledReply
+		events             []model.StreamEvent
+		fullRequest        model.CompiledPromptRequest
+		modelDrivenGathers int
+		finalUsage         []LaneModelUsage
+	)
+	webSearchEnabled := false
+	if settings, err := config.ReadWebSearchSettings(s.root); err == nil {
+		webSearchEnabled = settings.Enabled
 	}
-	decision, previous, err := s.decideContinuation(request.ConversationID, connectionConfig.Capabilities.CacheRetention, bootstrap.PromptWindow.Revision, fullRequest)
-	if err != nil {
-		return fail("MODEL_FAILED", err)
-	}
-	executeRequest, err := model.MaterializeContinuationRequest(fullRequest, decision)
-	if err != nil {
-		return fail("MODEL_FAILED", err)
-	}
-	s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContinuation, TurnStatePlanning, "", runtimeContinuationLedgerMetadata(connectionConfig.Capabilities.CacheRetention, previous, fullRequest, executeRequest, decision))
-	if err := turnCtx.Err(); err != nil {
-		return fail("TURN_INTERRUPTED", ErrTurnInterrupted)
-	}
-	events, err := s.modelService.ExecuteRequestContext(turnCtx, executeRequest)
-	if err != nil {
-		err = mapModelCancelError(err)
-		code := "MODEL_FAILED"
-		if errors.Is(err, ErrTurnInterrupted) {
-			code = "TURN_INTERRUPTED"
+	for {
+		allowGather := modelDrivenGathers < maxModelDrivenMemoryGathers
+		instructions := RespondInstructions
+		if allowGather {
+			instructions = RespondGatherInstructions(webSearchEnabled)
 		}
-		return fail(code, err)
+		slots, err := BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval)
+		if err != nil {
+			return fail("PROMPT_BUILD_FAILED", err)
+		}
+		if retrievalOmitReason != "" {
+			setContextSlotOmitReason(slots, "retrieved_context", retrievalOmitReason)
+		}
+		input := PromptItemsFromContextSlots(slots)
+		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventPrompt, TurnStatePlanning, "", runtimePromptLedgerMetadata(input, slots, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval))
+		fullRequest = model.CompiledPromptRequest{
+			Shape: model.ModelRequestShape{
+				Lane:            model.PromptLaneRespond,
+				Model:           connectionConfig.Model,
+				Instructions:    instructions,
+				MaxOutputTokens: request.MaxOutputTokens,
+				PromptCacheKey:  cacheKey,
+			},
+			Input: input,
+		}
+		var executeRequest model.CompiledPromptRequest
+		if modelDrivenGathers > 0 {
+			// Retrieval changed mid-turn; never continue from a gather JSON response.
+			var matErr error
+			executeRequest, matErr = model.MaterializeContinuationRequest(fullRequest, model.ContinuationDecision{})
+			if matErr != nil {
+				return fail("MODEL_FAILED", matErr)
+			}
+			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContinuation, TurnStatePlanning, "", map[string]any{
+				"incremental":         false,
+				"fullReason":          "cognition_post_gather",
+				"modelDrivenGathers":  modelDrivenGathers,
+				"previousStateSource": "none",
+			})
+		} else {
+			decision, previous, contErr := s.decideContinuation(request.ConversationID, connectionConfig.Capabilities.CacheRetention, bootstrap.PromptWindow.Revision, fullRequest)
+			if contErr != nil {
+				return fail("MODEL_FAILED", contErr)
+			}
+			executeRequest, err = model.MaterializeContinuationRequest(fullRequest, decision)
+			if err != nil {
+				return fail("MODEL_FAILED", err)
+			}
+			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContinuation, TurnStatePlanning, "", runtimeContinuationLedgerMetadata(connectionConfig.Capabilities.CacheRetention, previous, fullRequest, executeRequest, decision))
+		}
+		if err := turnCtx.Err(); err != nil {
+			return fail("TURN_INTERRUPTED", ErrTurnInterrupted)
+		}
+		events, err = s.modelService.ExecuteRequestContext(turnCtx, executeRequest)
+		if err != nil {
+			err = mapModelCancelError(err)
+			code := "MODEL_FAILED"
+			if errors.Is(err, ErrTurnInterrupted) {
+				code = "TURN_INTERRUPTED"
+			}
+			return fail(code, err)
+		}
+		if err := turnCtx.Err(); err != nil {
+			return fail("TURN_INTERRUPTED", ErrTurnInterrupted)
+		}
+		usage := laneUsageFromEvents(events, bootstrap.PromptWindow.Revision)
+		finalUsage = usage
+		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventModel, TurnStatePlanning, "", runtimeModelLedgerMetadata(events, usage))
+		draft := collectText(events)
+		kind, gatherReq, parseErr := ParseCognitionOutput(draft)
+		if parseErr != nil {
+			return fail("MODEL_RESPONSE_INVALID", parseErr)
+		}
+		if kind == CognitionGather {
+			if !allowGather {
+				return fail("MODEL_RESPONSE_INVALID", errors.New("gather budget exhausted"))
+			}
+			switch gatherReq.Tool {
+			case gatherToolMemorySearch:
+				extra, gatherErr := s.memoryStore.Retrieve(bootstrap.Conversation.CharacterID, gatherReq.Query)
+				if gatherErr != nil {
+					return fail("MODEL_RESPONSE_INVALID", gatherErr)
+				}
+				retrieval = mergeRetrievalContext(retrieval, extra)
+				retrievalOmitReason = ""
+				modelDrivenGathers++
+				s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventGather, TurnStatePlanning, "", map[string]any{
+					"tool":             gatherReq.Tool,
+					"phase":            "model_driven",
+					"queryHash":        runtimeHash(gatherReq.Query),
+					"personalCount":    len(extra.PersonalMemories),
+					"knowledgeCount":   len(extra.Knowledge),
+					"mergedPersonal":   len(retrieval.PersonalMemories),
+					"mergedKnowledge":  len(retrieval.Knowledge),
+					"modelDrivenIndex": modelDrivenGathers,
+				})
+			case gatherToolWebSearch:
+				if !webSearchEnabled {
+					return fail("MODEL_RESPONSE_INVALID", errors.New("web search is disabled"))
+				}
+				if s.webSearch == nil {
+					return fail("MODEL_RESPONSE_INVALID", search.ErrBinaryNotFound)
+				}
+				hits, gatherErr := s.webSearch.Search(turnCtx, gatherReq.Query, 5)
+				if gatherErr != nil {
+					return fail("MODEL_RESPONSE_INVALID", gatherErr)
+				}
+				extra := retrievalFromWebHits(hits)
+				retrieval = mergeRetrievalContext(retrieval, extra)
+				retrievalOmitReason = ""
+				modelDrivenGathers++
+				s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventGather, TurnStatePlanning, "", map[string]any{
+					"tool":             gatherReq.Tool,
+					"phase":            "model_driven",
+					"queryHash":        runtimeHash(gatherReq.Query),
+					"webHitCount":      len(hits),
+					"mergedKnowledge":  len(retrieval.Knowledge),
+					"modelDrivenIndex": modelDrivenGathers,
+				})
+			default:
+				return fail("MODEL_RESPONSE_INVALID", errors.New("gather tool is not whitelisted"))
+			}
+			continue
+		}
+		reply, err = CompileReply(draft, request.AvailableVisualStates)
+		if err != nil {
+			return fail("MODEL_RESPONSE_INVALID", err)
+		}
+		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventCompile, TurnStatePlanning, "", map[string]any{
+			"status":               "succeeded",
+			"visualState":          reply.VisualState,
+			"chainCount":           len(reply.Chains),
+			"displayTextHash":      runtimeHash(reply.DisplayText),
+			"speechTextHash":       runtimeHash(reply.SpeechText),
+			"modelDrivenGathers":   modelDrivenGathers,
+		})
+		break
 	}
-	if err := turnCtx.Err(); err != nil {
-		return fail("TURN_INTERRUPTED", ErrTurnInterrupted)
-	}
-	usage := laneUsageFromEvents(events, bootstrap.PromptWindow.Revision)
-	s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventModel, TurnStatePlanning, "", runtimeModelLedgerMetadata(events, usage))
-	draft := collectText(events)
-	reply, err := CompileReply(draft, request.AvailableVisualStates)
-	if err != nil {
-		return fail("MODEL_RESPONSE_INVALID", err)
-	}
-	s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventCompile, TurnStatePlanning, "", map[string]any{
-		"status":          "succeeded",
-		"visualState":     reply.VisualState,
-		"chainCount":      len(reply.Chains),
-		"displayTextHash": runtimeHash(reply.DisplayText),
-		"speechTextHash":  runtimeHash(reply.SpeechText),
-	})
 	if err := transition(TurnStateResponding); err != nil {
 		return fail("INVALID_STATE_TRANSITION", err)
 	}
@@ -255,7 +376,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		SpeechText:          reply.SpeechText,
 		CharacterRevision:   characterRecord.Revision,
 		UserProfileRevision: profileRevision,
-		Usage:               usage,
+		Usage:               finalUsage,
 		VisualState:         reply.VisualState,
 		Chains:              reply.Chains,
 	})
@@ -263,13 +384,14 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		return fail("INVALID_STATE_TRANSITION", err)
 	}
 	s.emitEvent(completed)
-	s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTerminal, TurnStateCompleted, "", runtimeTerminalLedgerMetadata("completed", reply, usage))
-	contextWindow, err := s.recordObservedContextWindow(request.ConversationID, bootstrap.PromptWindow.Revision, usage)
+	s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTerminal, TurnStateCompleted, "", runtimeTerminalLedgerMetadata("completed", reply, finalUsage))
+	contextWindow, err := s.recordObservedContextWindow(request.ConversationID, bootstrap.PromptWindow.Revision, finalUsage)
 	if err != nil {
 		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContextWindow, TurnStateCompleted, "CONTEXT_WINDOW_STATE_FAILED", runtimeFailureLedgerMetadata("CONTEXT_WINDOW_STATE_FAILED", err, false))
 	} else {
 		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContextWindow, TurnStateCompleted, "", runtimeContextWindowLedgerMetadata(contextWindow))
 	}
+	// Persist the successful reply request shape (AllowGather or reply-only after gather).
 	if err := s.updateContinuationState(request.ConversationID, connectionConfig.Capabilities.CacheRetention, bootstrap.PromptWindow.Revision, fullRequest, reply.DisplayText, events); err != nil {
 		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContinuation, TurnStateCompleted, "CONTINUATION_STATE_FAILED", runtimeFailureLedgerMetadata("CONTINUATION_STATE_FAILED", err, false))
 	}
@@ -350,16 +472,28 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 	if len(windowed) == 0 {
 		return memory.CompactionResult{}, errors.New("compaction requires dialogue after the current prompt window cutoff")
 	}
-	input, err := BuildCompactInput(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages)
+	states, err := s.availableVisualStatesForConversation(conversationID)
 	if err != nil {
 		return memory.CompactionResult{}, err
+	}
+	input, err := BuildCompactInput(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, states)
+	if err != nil {
+		return memory.CompactionResult{}, err
+	}
+	cacheKey := ""
+	connectionConfig, err := config.ReadModelConnection(s.root)
+	if err != nil {
+		return memory.CompactionResult{}, err
+	}
+	if connectionConfig.Capabilities.PromptCacheKey {
+		cacheKey = model.LaneCacheKey(conversationID, model.PromptLaneRespond)
 	}
 	events, err := s.modelService.ExecutePrompt(
 		model.PromptLaneCompact,
 		CompactInstructions,
 		CompactMaxOutputTokens,
 		input,
-		model.LaneCacheKey(conversationID, model.PromptLaneCompact),
+		cacheKey,
 	)
 	if err != nil {
 		return memory.CompactionResult{}, err

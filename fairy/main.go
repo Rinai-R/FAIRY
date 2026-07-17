@@ -57,6 +57,7 @@ func main() {
 	modelService := model.NewModelService(configRoot)
 	desktopService := desktop.NewDesktopService()
 	companionService := companion.NewCompanionServiceWithRuntime(configRoot, memoryStore, modelService)
+	defer companionService.Close()
 
 	app := application.New(application.Options{
 		Name:        "FAIRY",

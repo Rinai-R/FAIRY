@@ -101,7 +101,7 @@ func TestSubmitCompiledTurnUsesSuffixContinuationWhenCacheRetentionSupported(t *
 	defer mu.Unlock()
 	respondBodies := make([]map[string]any, 0, 2)
 	for _, body := range bodies {
-		if instructions, _ := body["instructions"].(string); instructions == RespondInstructions {
+		if instructions, _ := body["instructions"].(string); instructions == RespondInstructions || instructions == RespondInstructionsAllowGather {
 			respondBodies = append(respondBodies, body)
 		}
 	}

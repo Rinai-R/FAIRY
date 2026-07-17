@@ -125,11 +125,15 @@ function advanceToResponding(initial = stateWithSubmission()) {
   });
   state = reduceCompanionState(state, {
     type: "harness_event",
-    event: event(2, "planning", { type: "state_changed" }),
+    event: event(2, "gathering", { type: "state_changed" }),
+  });
+  state = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(3, "planning", { type: "state_changed" }),
   });
   return reduceCompanionState(state, {
     type: "harness_event",
-    event: event(3, "responding", { type: "state_changed" }),
+    event: event(4, "responding", { type: "state_changed" }),
   });
 }
 
@@ -175,25 +179,25 @@ test("normal stream produces one completed transcript and matching speech reques
   let state = advanceToResponding();
   state = reduceCompanionState(state, {
     type: "harness_event",
-    event: event(4, "responding", {
+    event: event(5, "responding", {
       type: "text_delta",
       delta: "那就先歇一会儿，",
     }),
   });
   state = reduceCompanionState(state, {
     type: "harness_event",
-    event: event(5, "responding", {
+    event: event(6, "responding", {
       type: "text_delta",
       delta: "我陪着你。",
     }),
   });
   state = reduceCompanionState(state, {
     type: "harness_event",
-    event: event(6, "completed", completedPayload()),
+    event: event(7, "completed", completedPayload()),
   });
   state = reduceCompanionState(state, {
     type: "harness_event",
-    event: event(7, "completed", {
+    event: event(8, "completed", {
       type: "speech.requested",
       text: "那就先歇一会儿，我陪着你。",
       characterRevision: 3,
@@ -223,7 +227,7 @@ test("reply chain events append draft and carry segment visual states", () => {
   let state = advanceToResponding();
   state = reduceCompanionState(state, {
     type: "harness_event",
-    event: event(4, "responding", {
+    event: event(5, "responding", {
       type: "reply_chain",
       index: 0,
       delta: "嗯，我懂。",
@@ -234,7 +238,7 @@ test("reply chain events append draft and carry segment visual states", () => {
   });
   state = reduceCompanionState(state, {
     type: "harness_event",
-    event: event(5, "responding", {
+    event: event(6, "responding", {
       type: "reply_chain",
       index: 1,
       delta: "\n先这样改。",
@@ -248,7 +252,7 @@ test("reply chain events append draft and carry segment visual states", () => {
 
   state = reduceCompanionState(state, {
     type: "harness_event",
-    event: event(6, "completed", {
+    event: event(7, "completed", {
       ...completedPayload("嗯，我懂。\n先这样改。"),
       speechText: "嗯，我懂。",
       visualState: "happy",
@@ -298,7 +302,7 @@ test("new submitted turn accepts sequence restart from backend", () => {
   let state = advanceToResponding();
   state = reduceCompanionState(state, {
     type: "harness_event",
-    event: event(4, "responding", {
+    event: event(5, "responding", {
       type: "reply_chain",
       index: 0,
       delta: "第一轮回复",
@@ -309,7 +313,7 @@ test("new submitted turn accepts sequence restart from backend", () => {
   });
   state = reduceCompanionState(state, {
     type: "harness_event",
-    event: event(5, "completed", completedPayload("第一轮回复")),
+    event: event(6, "completed", completedPayload("第一轮回复")),
   });
 
   state = reduceCompanionState(state, { type: "draft_changed", value: "第二轮" });
@@ -328,14 +332,14 @@ test("interrupted partial text is retained but never marked complete", () => {
   let state = advanceToResponding();
   state = reduceCompanionState(state, {
     type: "harness_event",
-    event: event(4, "responding", {
+    event: event(5, "responding", {
       type: "text_delta",
       delta: "还没有说完",
     }),
   });
   state = reduceCompanionState(state, {
     type: "harness_event",
-    event: event(5, "interrupted", { type: "state_changed" }),
+    event: event(6, "interrupted", { type: "state_changed" }),
   });
 
   assert.equal(state.sessionState, "interrupted");
@@ -348,14 +352,14 @@ test("failed stream preserves diagnostics without promoting partial text", () =>
   let state = advanceToResponding();
   state = reduceCompanionState(state, {
     type: "harness_event",
-    event: event(4, "responding", {
+    event: event(5, "responding", {
       type: "text_delta",
       delta: "部分回复",
     }),
   });
   state = reduceCompanionState(state, {
     type: "harness_event",
-    event: event(5, "failed", {
+    event: event(6, "failed", {
       type: "failed",
       error: {
         code: "MODEL_STREAM_FAILED",
@@ -378,14 +382,14 @@ test("terminal turn rejects deltas, duplicate completion, and mismatched speech"
   let state = advanceToResponding();
   state = reduceCompanionState(state, {
     type: "harness_event",
-    event: event(4, "completed", completedPayload("完成文本")),
+    event: event(5, "completed", completedPayload("完成文本")),
   });
 
   assert.throws(
     () =>
       reduceCompanionState(state, {
         type: "harness_event",
-        event: event(5, "responding", {
+        event: event(6, "responding", {
           type: "text_delta",
           delta: "越界增量",
         }),
@@ -396,7 +400,7 @@ test("terminal turn rejects deltas, duplicate completion, and mismatched speech"
     () =>
       reduceCompanionState(state, {
         type: "harness_event",
-        event: event(5, "completed", completedPayload("完成文本")),
+        event: event(6, "completed", completedPayload("完成文本")),
       }),
     /terminal turn cannot accept/,
   );
@@ -404,7 +408,7 @@ test("terminal turn rejects deltas, duplicate completion, and mismatched speech"
     () =>
       reduceCompanionState(state, {
         type: "harness_event",
-        event: event(5, "completed", {
+        event: event(6, "completed", {
           type: "speech.requested",
           text: "不同文本",
           characterRevision: 3,
@@ -480,7 +484,7 @@ test("completed harness usage accepts missing CacheObservation wire shape from G
   let state = advanceToResponding();
   state = reduceCompanionState(state, {
     type: "harness_event",
-    event: event(4, "responding", {
+    event: event(5, "responding", {
       type: "reply_chain",
       index: 0,
       delta: "你好",
@@ -491,7 +495,7 @@ test("completed harness usage accepts missing CacheObservation wire shape from G
   });
   state = reduceCompanionState(state, {
     type: "harness_event",
-    event: event(5, "completed", {
+    event: event(6, "completed", {
       type: "completed",
       text: "你好",
       speechText: "你好",
@@ -543,7 +547,7 @@ test("completed reply keeps one assistant message with speech text and sources",
   let state = advanceToResponding();
   state = reduceCompanionState(state, {
     type: "harness_event",
-    event: event(4, "completed", {
+    event: event(5, "completed", {
       ...completedPayload("今天的更新已经发布，晚点我再陪你细看。"),
       speechText: "今天的更新已经发布。",
       sources: [

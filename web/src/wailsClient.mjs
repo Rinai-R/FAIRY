@@ -102,6 +102,27 @@ export async function clearWailsModelConnection(loadBindings = defaultLoadBindin
   return parseModelConnectionStatus(status);
 }
 
+export function parseWebSearchStatus(status) {
+  if (status === null || typeof status !== "object" || Array.isArray(status)) {
+    throw new TypeError("web search status must be an object");
+  }
+  return Object.freeze({
+    enabled: Boolean(status.enabled),
+    binaryPath: typeof status.binaryPath === "string" ? status.binaryPath : "",
+    binaryFound: Boolean(status.binaryFound),
+  });
+}
+
+export async function loadWailsWebSearchStatus(loadBindings = defaultLoadBindings) {
+  const bindings = await loadBindings();
+  return parseWebSearchStatus(await bindings.ConfigService.WebSearchStatus());
+}
+
+export async function setWailsWebSearchEnabled(enabled, loadBindings = defaultLoadBindings) {
+  const bindings = await loadBindings();
+  return parseWebSearchStatus(await bindings.ConfigService.SetWebSearchEnabled(Boolean(enabled)));
+}
+
 export async function loadWailsModelRequestDraft(request, loadBindings = defaultLoadBindings) {
   const bindings = await loadBindings();
   const draft = await bindings.ModelService.BuildRequestDraft(request);

@@ -15,7 +15,7 @@ export function Transcript({
   }, [transcript, responseDraft, sessionState]);
 
   const waiting = responseDraft.length === 0
-    && ["interpreting", "planning", "responding"].includes(sessionState);
+    && ["interpreting", "gathering", "planning", "responding"].includes(sessionState);
 
   return (
     <ScrollArea className="fairy-transcript" type="auto" scrollbars="vertical">
