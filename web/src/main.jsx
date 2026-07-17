@@ -53,11 +53,22 @@ function UnsupportedWindow() {
   );
 }
 
+function productWindowFor(label) {
+  switch (label) {
+    case "companion":
+      return LazyCompanionApp;
+    case "control-panel":
+      return LazyControlPanelApp;
+    case "speech":
+      return LazySpeechBubbleApp;
+    default:
+      throw new TypeError("unsupported FAIRY product window label");
+  }
+}
+
 function ProductApp() {
   try {
-    const ProductWindow = currentProductWindowLabel() === "companion"
-      ? LazyCompanionApp
-      : LazyControlPanelApp;
+    const ProductWindow = productWindowFor(currentProductWindowLabel());
     return (
       <Suspense fallback={<div className="window-loading" aria-label="正在加载 FAIRY" />}>
         <ProductWindow />
@@ -70,6 +81,7 @@ function ProductApp() {
 
 const LazyCompanionApp = lazy(() => import("./App.jsx").then(({ App }) => ({ default: App })));
 const LazyControlPanelApp = lazy(() => import("./apps/ControlPanelApp.jsx").then(({ ControlPanelApp }) => ({ default: ControlPanelApp })));
+const LazySpeechBubbleApp = lazy(() => import("./apps/SpeechBubbleApp.jsx").then(({ SpeechBubbleApp }) => ({ default: SpeechBubbleApp })));
 
 createRoot(document.querySelector("#root")).render(
   <React.StrictMode>

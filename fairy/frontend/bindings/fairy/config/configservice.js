@@ -39,5 +39,25 @@ export function SaveModelConnection(input, apiKey) {
     }));
 }
 
+/**
+ * @param {boolean} enabled
+ * @returns {$CancellablePromise<$models.WebSearchStatus>}
+ */
+export function SetWebSearchEnabled(enabled) {
+    return $Call.ByID(2014502367, enabled).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType1($result);
+    }));
+}
+
+/**
+ * @returns {$CancellablePromise<$models.WebSearchStatus>}
+ */
+export function WebSearchStatus() {
+    return $Call.ByID(2401839252).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType1($result);
+    }));
+}
+
 // Private type creation functions
 const $$createType0 = $models.ModelConnectionStatus.createFrom;
+const $$createType1 = $models.WebSearchStatus.createFrom;

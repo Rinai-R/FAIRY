@@ -626,13 +626,14 @@ export function App() {
         onAssetError={markAssetFailed}
         onPetDragStart={handlePetDragStart}
         onPetDragEnd={() => setPetDragging(false)}
-        popoverMounted={chatPopoverMounted}
-        chatVisualOpen={chatVisualOpen}
+        petDragging={petDragging}
+        historyMounted={chatPopoverMounted}
+        historyVisualOpen={chatVisualOpen}
         petVisualOpen={petVisualOpen}
         controlsDisabled={controlsDisabled}
-        onOpenChat={() => void handleOpenChat()}
-        onRequestCloseChat={handleRequestCloseChat}
-        onChatExitComplete={() => void handleChatExitComplete()}
+        onOpenHistory={() => void handleOpenChat()}
+        onRequestCloseHistory={handleRequestCloseChat}
+        onHistoryExitComplete={() => void handleChatExitComplete()}
         onPetExitComplete={() => void handlePetExitComplete()}
         onOpenControlPanel={handleRequestControlPanel}
         companion={companion}

@@ -20,21 +20,26 @@ export function Transcript({
   transcript,
   responseDraft,
   sessionState,
+  variant = "live",
 }) {
+  const historyMode = variant === "history";
   const endRef = useRef(null);
   const [typewriter, setTypewriter] = useState(() => createTypewriterState());
-  const draftActive = responseDraft.length > 0;
+  const draftActive = !historyMode && responseDraft.length > 0;
   const terminal = sessionState === "failed" || sessionState === "interrupted";
   const caughtUp = isTypewriterCaughtUp(typewriter);
-  const showPartial = typewriterPartialActive(typewriter, draftActive);
-  const displayTranscript = holdBackMatchingAssistant(
-    transcript,
-    typewriter.target,
-    draftActive,
-    caughtUp || typewriter.target.length === 0,
-  );
+  const showPartial = !historyMode && typewriterPartialActive(typewriter, draftActive);
+  const displayTranscript = historyMode
+    ? transcript
+    : holdBackMatchingAssistant(
+      transcript,
+      typewriter.target,
+      draftActive,
+      caughtUp || typewriter.target.length === 0,
+    );
 
   useLayoutEffect(() => {
+    if (historyMode) return;
     if (draftActive) {
       setTypewriter((prev) => setTypewriterTarget(prev, responseDraft));
       return;
@@ -52,10 +57,10 @@ export function Transcript({
       }
       return prev;
     });
-  }, [responseDraft, draftActive, terminal]);
+  }, [historyMode, responseDraft, draftActive, terminal]);
 
   useEffect(() => {
-    if (terminal) {
+    if (historyMode || terminal) {
       return undefined;
     }
     if (caughtUp) {
@@ -71,23 +76,26 @@ export function Transcript({
       setTypewriter((prev) => tickTypewriter(prev, TYPEWRITER_CHARS_PER_TICK));
     }, TYPEWRITER_TICK_MS);
     return () => clearInterval(id);
-  }, [typewriter.target, typewriter.visible, caughtUp, draftActive, terminal]);
+  }, [historyMode, typewriter.target, typewriter.visible, caughtUp, draftActive, terminal]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "nearest" });
   }, [displayTranscript, typewriter.visible, showPartial, sessionState]);
 
-  const waiting = !showPartial
+  const waiting = !historyMode
+    && !showPartial
     && responseDraft.length === 0
     && ["interpreting", "gathering", "planning", "responding"].includes(sessionState);
 
   return (
     <ScrollArea className="fairy-transcript" type="auto" scrollbars="vertical">
-      <div role="log" aria-live="polite" aria-label="对话消息">
+      <div role="log" aria-live="polite" aria-label={historyMode ? "历史消息" : "对话消息"}>
         {displayTranscript.length === 0 && !showPartial && !waiting ? (
           <div className="fairy-transcript__empty">
             <MagicWandIcon aria-hidden="true" />
-            <Text as="p" size="2">说一句此刻最自然的话就好。</Text>
+            <Text as="p" size="2">
+              {historyMode ? "还没有可回看的对话。" : "说一句此刻最自然的话就好。"}
+            </Text>
           </div>
         ) : null}
 
@@ -131,7 +139,7 @@ export function Transcript({
             aria-busy={!caughtUp && !terminal}
           >
             <p>{typewriter.visible}</p>
-            <Text as="span" size="1" color="gray">
+            <Text as="span" size="1" className="fairy-message__status">
               {terminal ? "回复未完成" : "正在回复"}
             </Text>
           </article>

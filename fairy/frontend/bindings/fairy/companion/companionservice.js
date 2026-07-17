@@ -32,6 +32,13 @@ export function CancelTurn(conversationID, turnID) {
 }
 
 /**
+ * @returns {$CancellablePromise<void>}
+ */
+export function Close() {
+    return $Call.ByID(263699248);
+}
+
+/**
  * @param {string} conversationID
  * @returns {$CancellablePromise<memory$0.CompactionResult>}
  */

@@ -12,6 +12,7 @@ function wailsSurfaceFromLocation() {
   }
   const surface = new URLSearchParams(window.location.search).get("surface");
   if (surface === "control-panel") return "control-panel";
+  if (surface === "speech") return "speech";
   return "companion";
 }
 

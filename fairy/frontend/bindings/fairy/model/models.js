@@ -6,6 +6,10 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as json$0 from "../../encoding/json/models.js";
+
 /**
  * @readonly
  * @enum {string}
@@ -47,6 +51,13 @@ export class CompiledPromptRequest {
              */
             this["previousResponseId"] = undefined;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {ToolSpec[] | undefined}
+             */
+            this["tools"] = undefined;
+        }
 
         Object.assign(this, $$source);
     }
@@ -59,6 +70,7 @@ export class CompiledPromptRequest {
     static createFrom($$source = {}) {
         const $$createField0_0 = $$createType0;
         const $$createField1_0 = $$createType2;
+        const $$createField3_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("shape" in $$parsedSource) {
             $$parsedSource["shape"] = $$createField0_0($$parsedSource["shape"]);
@@ -66,7 +78,55 @@ export class CompiledPromptRequest {
         if ("input" in $$parsedSource) {
             $$parsedSource["input"] = $$createField1_0($$parsedSource["input"]);
         }
+        if ("tools" in $$parsedSource) {
+            $$parsedSource["tools"] = $$createField3_0($$parsedSource["tools"]);
+        }
         return new CompiledPromptRequest(/** @type {Partial<CompiledPromptRequest>} */($$parsedSource));
+    }
+}
+
+/**
+ * FunctionCall is a model-requested tool invocation.
+ */
+export class FunctionCall {
+    /**
+     * Creates a new FunctionCall instance.
+     * @param {Partial<FunctionCall>} [$$source = {}] - The source object to create the FunctionCall.
+     */
+    constructor($$source = {}) {
+        if (!("callId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["callId"] = "";
+        }
+        if (!("name" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["name"] = "";
+        }
+        if (!("arguments" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["arguments"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new FunctionCall instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {FunctionCall}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new FunctionCall(/** @type {Partial<FunctionCall>} */($$parsedSource));
     }
 }
 
@@ -295,6 +355,13 @@ export class StreamEvent {
              */
             this["usage"] = undefined;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {FunctionCall[] | undefined}
+             */
+            this["functionCalls"] = undefined;
+        }
 
         Object.assign(this, $$source);
     }
@@ -305,12 +372,61 @@ export class StreamEvent {
      * @returns {StreamEvent}
      */
     static createFrom($$source = {}) {
-        const $$createField2_0 = $$createType4;
+        const $$createField2_0 = $$createType6;
+        const $$createField3_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("usage" in $$parsedSource) {
             $$parsedSource["usage"] = $$createField2_0($$parsedSource["usage"]);
         }
+        if ("functionCalls" in $$parsedSource) {
+            $$parsedSource["functionCalls"] = $$createField3_0($$parsedSource["functionCalls"]);
+        }
         return new StreamEvent(/** @type {Partial<StreamEvent>} */($$parsedSource));
+    }
+}
+
+/**
+ * ToolSpec is an OpenAI-compatible function tool declaration.
+ */
+export class ToolSpec {
+    /**
+     * Creates a new ToolSpec instance.
+     * @param {Partial<ToolSpec>} [$$source = {}] - The source object to create the ToolSpec.
+     */
+    constructor($$source = {}) {
+        if (!("name" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["name"] = "";
+        }
+        if (!("description" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["description"] = "";
+        }
+        if (!("parameters" in $$source)) {
+            /**
+             * @member
+             * @type {json$0.RawMessage}
+             */
+            this["parameters"] = null;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ToolSpec instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ToolSpec}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ToolSpec(/** @type {Partial<ToolSpec>} */($$parsedSource));
     }
 }
 
@@ -367,5 +483,9 @@ export class Usage {
 const $$createType0 = ModelRequestShape.createFrom;
 const $$createType1 = PromptItem.createFrom;
 const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = Usage.createFrom;
-const $$createType4 = $Create.Nullable($$createType3);
+const $$createType3 = ToolSpec.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = Usage.createFrom;
+const $$createType6 = $Create.Nullable($$createType5);
+const $$createType7 = FunctionCall.createFrom;
+const $$createType8 = $Create.Array($$createType7);

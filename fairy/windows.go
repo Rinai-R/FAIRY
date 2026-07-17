@@ -60,6 +60,22 @@ func (a controlPanelWindowAdapter) SetBounds(bounds desktop.WindowBounds) {
 	setWindowBoundsAtomic(a.window, bounds)
 }
 
+type speechBubbleWindowAdapter struct {
+	window application.Window
+}
+
+func (a speechBubbleWindowAdapter) Show() {
+	a.window.Show()
+}
+
+func (a speechBubbleWindowAdapter) Hide() {
+	a.window.Hide()
+}
+
+func (a speechBubbleWindowAdapter) SetBounds(bounds desktop.WindowBounds) {
+	setWindowBoundsAtomic(a.window, bounds)
+}
+
 func attachProductWindows(app *application.App, desktopService *desktop.DesktopService) {
 	companionWindow := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            "FAIRY",
@@ -105,11 +121,43 @@ func attachProductWindows(app *application.App, desktopService *desktop.DesktopS
 		},
 	})
 
+	speechBubbleWindow := app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Title:            "FAIRY 气泡",
+		Name:             "speech-bubble",
+		Width:            250,
+		Height:           200,
+		URL:              "/?surface=speech",
+		Hidden:           true,
+		AlwaysOnTop:      true,
+		DisableResize:    true,
+		Frameless:        true,
+		BackgroundType:   application.BackgroundTypeTransparent,
+		BackgroundColour: application.NewRGBA(0, 0, 0, 0),
+		Mac: application.MacWindow{
+			Backdrop:      application.MacBackdropTransparent,
+			DisableShadow: true,
+			WindowLevel:   application.MacWindowLevelFloating,
+			CollectionBehavior: application.MacWindowCollectionBehaviorCanJoinAllSpaces |
+				application.MacWindowCollectionBehaviorFullScreenAuxiliary |
+				application.MacWindowCollectionBehaviorTransient,
+			TabbingMode: application.MacWindowTabbingModeDisallowed,
+		},
+	})
+	// The bubble never receives input; it only floats above the character.
+	speechBubbleWindow.SetIgnoreMouseEvents(true)
+	speechBubbleWindow.SetAlwaysOnTop(true)
+
 	desktop.AttachCompanionWindow(desktopService, companionWindowAdapter{window: companionWindow})
 	desktop.AttachControlPanelWindow(desktopService, controlPanelWindowAdapter{window: controlPanelWindow})
+	desktop.AttachSpeechBubbleWindow(desktopService, speechBubbleWindowAdapter{window: speechBubbleWindow})
 	companionWindow.Show()
 	companionWindow.SetAlwaysOnTop(true)
 	log.Printf("companion window attached and shown")
+
+	// Keep the bubble window glued to the character while it is dragged.
+	companionWindow.OnWindowEvent(events.Common.WindowDidMove, func(*application.WindowEvent) {
+		desktopService.RepositionSpeechBubble()
+	})
 
 	controlPanelWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
 		event.Cancel()

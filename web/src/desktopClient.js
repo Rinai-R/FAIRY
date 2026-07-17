@@ -69,6 +69,14 @@ export async function closeCompanionChat() {
   return callDesktopService("CloseCompanionChat");
 }
 
+export async function expandCompanionForSpeech() {
+  return callDesktopService("ExpandCompanionForSpeech");
+}
+
+export async function restoreCompanionAfterSpeech() {
+  return callDesktopService("RestoreCompanionAfterSpeech");
+}
+
 export async function showControlPanel() {
   return callDesktopService("ShowControlPanel");
 }

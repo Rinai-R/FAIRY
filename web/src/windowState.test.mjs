@@ -9,9 +9,10 @@ import {
   selectRecentTranscript,
 } from "./windowState.mjs";
 
-test("only the two product window labels are accepted", () => {
+test("only the known product window labels are accepted", () => {
   assert.equal(parseProductWindowLabel("companion"), "companion");
   assert.equal(parseProductWindowLabel("control-panel"), "control-panel");
+  assert.equal(parseProductWindowLabel("speech"), "speech");
   assert.throws(() => parseProductWindowLabel("main"), /unsupported/);
 });
 

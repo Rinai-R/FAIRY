@@ -10,6 +10,7 @@ export {
 export {
     AuthRequirement,
     CompiledPromptRequest,
+    FunctionCall,
     ModelRequestShape,
     PromptItem,
     PromptItemType,
@@ -17,5 +18,6 @@ export {
     Protocol,
     RequestDraft,
     StreamEvent,
+    ToolSpec,
     Usage
 } from "./models.js";

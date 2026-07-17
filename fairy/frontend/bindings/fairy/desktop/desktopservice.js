@@ -20,6 +20,18 @@ export function CloseCompanionChat() {
 }
 
 /**
+ * ExpandCompanionForSpeech shows and positions the standalone speech-bubble
+ * window above the character. It is a no-op unless the companion is idle so the
+ * bubble never appears over the chat or control panel.
+ * @returns {$CancellablePromise<$models.DesktopState>}
+ */
+export function ExpandCompanionForSpeech() {
+    return $Call.ByID(139116139).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType0($result);
+    }));
+}
+
+/**
  * @returns {$CancellablePromise<$models.DesktopState>}
  */
 export function GetDesktopState() {
@@ -56,10 +68,31 @@ export function OpenCompanionChat() {
 }
 
 /**
+ * RepositionSpeechBubble keeps the bubble window glued to the character while it
+ * is dragged. It is invoked from the companion window's move hook and is a no-op
+ * unless the bubble is currently shown.
+ * @returns {$CancellablePromise<void>}
+ */
+export function RepositionSpeechBubble() {
+    return $Call.ByID(1782573626);
+}
+
+/**
  * @returns {$CancellablePromise<$models.DesktopState>}
  */
 export function RestoreCompanionAfterControlPanel() {
     return $Call.ByID(3859867995).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType0($result);
+    }));
+}
+
+/**
+ * RestoreCompanionAfterSpeech hides the standalone speech-bubble window. It is a
+ * no-op when the bubble is not currently shown.
+ * @returns {$CancellablePromise<$models.DesktopState>}
+ */
+export function RestoreCompanionAfterSpeech() {
+    return $Call.ByID(1140294260).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType0($result);
     }));
 }

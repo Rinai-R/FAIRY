@@ -10,5 +10,6 @@ export {
 export {
     GatewayCapabilities,
     ModelConnectionInput,
-    ModelConnectionStatus
+    ModelConnectionStatus,
+    WebSearchStatus
 } from "./models.js";

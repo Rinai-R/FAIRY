@@ -13,7 +13,7 @@ function assertExactKeys(value, keys, label) {
 }
 
 export function parseProductWindowLabel(label) {
-  if (label !== "companion" && label !== "control-panel") {
+  if (label !== "companion" && label !== "control-panel" && label !== "speech") {
     throw new TypeError("unsupported FAIRY product window label");
   }
   return label;

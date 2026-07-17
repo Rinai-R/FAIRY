@@ -41,6 +41,122 @@ func TestDesktopServiceChatLifecycle(t *testing.T) {
 	}
 }
 
+func TestSpeechBubbleBoundsFloatsAboveCharacter(t *testing.T) {
+	got := speechBubbleBounds(WindowBounds{X: 400, Y: 300, Width: idleWidth, Height: idleHeight})
+	want := WindowBounds{
+		X:      400 - speechBubbleInsetX,
+		Y:      300 + speechBubbleOverlap - speechBubbleHeight,
+		Width:  speechBubbleWidth,
+		Height: speechBubbleHeight,
+	}
+	if got != want {
+		t.Fatalf("speechBubbleBounds() = %#v, want %#v", got, want)
+	}
+	// The bubble window must sit above the character (its bottom edge only dips
+	// slightly into the top of the companion window).
+	if got.Y+got.Height != 300+speechBubbleOverlap {
+		t.Fatalf("bubble bottom = %d, want %d", got.Y+got.Height, 300+speechBubbleOverlap)
+	}
+}
+
+func TestSpeechBubbleShowsPositionsAndHides(t *testing.T) {
+	service := NewDesktopService()
+	base := WindowBounds{X: 400, Y: 300, Width: idleWidth, Height: idleHeight}
+	companion := &stubCompanionWindow{bounds: base}
+	bubble := &stubSpeechBubbleWindow{}
+	AttachCompanionWindow(service, companion)
+	AttachSpeechBubbleWindow(service, bubble)
+
+	if _, err := service.ExpandCompanionForSpeech(); err != nil {
+		t.Fatalf("ExpandCompanionForSpeech() error = %v", err)
+	}
+	if bubble.shown != 1 {
+		t.Fatalf("bubble shown = %d, want 1", bubble.shown)
+	}
+	if bubble.bounds != speechBubbleBounds(base) {
+		t.Fatalf("bubble bounds = %#v, want %#v", bubble.bounds, speechBubbleBounds(base))
+	}
+	// The companion window itself must never move for speech.
+	if companion.bounds != base {
+		t.Fatalf("companion bounds changed for speech: %#v", companion.bounds)
+	}
+
+	if _, err := service.RestoreCompanionAfterSpeech(); err != nil {
+		t.Fatalf("RestoreCompanionAfterSpeech() error = %v", err)
+	}
+	if bubble.hidden != 1 {
+		t.Fatalf("bubble hidden = %d, want 1", bubble.hidden)
+	}
+	// Restore is idempotent when the bubble is already hidden.
+	if _, err := service.RestoreCompanionAfterSpeech(); err != nil {
+		t.Fatalf("second RestoreCompanionAfterSpeech() error = %v", err)
+	}
+	if bubble.hidden != 1 {
+		t.Fatalf("bubble hidden after idempotent restore = %d, want 1", bubble.hidden)
+	}
+}
+
+func TestSpeechBubbleFollowsCompanionMove(t *testing.T) {
+	service := NewDesktopService()
+	companion := &stubCompanionWindow{bounds: WindowBounds{X: 400, Y: 300, Width: idleWidth, Height: idleHeight}}
+	bubble := &stubSpeechBubbleWindow{}
+	AttachCompanionWindow(service, companion)
+	AttachSpeechBubbleWindow(service, bubble)
+
+	// No-op while the bubble is hidden.
+	service.RepositionSpeechBubble()
+	if bubble.boundsSet != 0 {
+		t.Fatalf("reposition while hidden set bounds %d times, want 0", bubble.boundsSet)
+	}
+
+	if _, err := service.ExpandCompanionForSpeech(); err != nil {
+		t.Fatalf("ExpandCompanionForSpeech() error = %v", err)
+	}
+	companion.bounds = WindowBounds{X: 900, Y: 120, Width: idleWidth, Height: idleHeight}
+	service.RepositionSpeechBubble()
+	if bubble.bounds != speechBubbleBounds(companion.bounds) {
+		t.Fatalf("bubble did not follow: %#v, want %#v", bubble.bounds, speechBubbleBounds(companion.bounds))
+	}
+}
+
+func TestSpeechBubbleIgnoredOutsideIdle(t *testing.T) {
+	service := NewDesktopService()
+	base := WindowBounds{X: 400, Y: 300, Width: idleWidth, Height: idleHeight}
+	companion := &stubCompanionWindow{bounds: base}
+	bubble := &stubSpeechBubbleWindow{}
+	AttachCompanionWindow(service, companion)
+	AttachSpeechBubbleWindow(service, bubble)
+
+	if _, err := service.OpenCompanionChat(); err != nil {
+		t.Fatalf("OpenCompanionChat() error = %v", err)
+	}
+	if _, err := service.ExpandCompanionForSpeech(); err != nil {
+		t.Fatalf("ExpandCompanionForSpeech() error = %v", err)
+	}
+	if bubble.shown != 0 {
+		t.Fatalf("bubble must not show on chat surface: shown = %d", bubble.shown)
+	}
+}
+
+func TestOpenChatHidesSpeechBubble(t *testing.T) {
+	service := NewDesktopService()
+	base := WindowBounds{X: 400, Y: 300, Width: idleWidth, Height: idleHeight}
+	companion := &stubCompanionWindow{bounds: base}
+	bubble := &stubSpeechBubbleWindow{}
+	AttachCompanionWindow(service, companion)
+	AttachSpeechBubbleWindow(service, bubble)
+
+	if _, err := service.ExpandCompanionForSpeech(); err != nil {
+		t.Fatalf("ExpandCompanionForSpeech() error = %v", err)
+	}
+	if _, err := service.OpenCompanionChat(); err != nil {
+		t.Fatalf("OpenCompanionChat() error = %v", err)
+	}
+	if bubble.hidden != 1 {
+		t.Fatalf("opening chat must hide the bubble: hidden = %d", bubble.hidden)
+	}
+}
+
 func TestCompanionWindowSizesStayMinimalPerSurface(t *testing.T) {
 	if idleWidth >= chatWidth || idleHeight >= chatHeight {
 		t.Fatalf("idle (%dx%d) must be smaller than chat (%dx%d)", idleWidth, idleHeight, chatWidth, chatHeight)
@@ -98,6 +214,17 @@ func (s *stubControlPanelWindow) Show()                    { s.shown++ }
 func (s *stubControlPanelWindow) Hide()                    { s.hidden++ }
 func (s *stubControlPanelWindow) Focus()                   { s.focus++ }
 func (s *stubControlPanelWindow) SetBounds(b WindowBounds) { s.bounds = b }
+
+type stubSpeechBubbleWindow struct {
+	shown     int
+	hidden    int
+	boundsSet int
+	bounds    WindowBounds
+}
+
+func (s *stubSpeechBubbleWindow) Show()                    { s.shown++ }
+func (s *stubSpeechBubbleWindow) Hide()                    { s.hidden++ }
+func (s *stubSpeechBubbleWindow) SetBounds(b WindowBounds) { s.bounds = b; s.boundsSet++ }
 
 func TestDesktopServiceControlPanelLifecycle(t *testing.T) {
 	service := NewDesktopService()

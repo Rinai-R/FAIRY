@@ -1,5 +1,6 @@
 import {
-  ChatBubbleIcon,
+  ClockIcon,
+  Cross2Icon,
   ExclamationTriangleIcon,
   GearIcon,
   MagicWandIcon,
@@ -7,28 +8,160 @@ import {
   StopIcon,
 } from "@radix-ui/react-icons";
 import {
-  Button,
   Callout,
   Card,
   Flex,
   IconButton,
-  Popover,
   Text,
   TextArea,
-  Tooltip,
 } from "@radix-ui/themes";
 import { motion } from "motion/react";
+import { useEffect, useLayoutEffect, useReducer, useRef } from "react";
 
 import { PixelCharacter } from "./PixelCharacter.jsx";
 import { Transcript } from "./Transcript.jsx";
 import {
-  isCompanionPetDragTarget,
   resolvePixelCharacterRenderKey,
   resolveChatKeyboardAction,
 } from "../companionViewState.mjs";
-import { selectRecentTranscript } from "../windowState.mjs";
+import {
+  createFootComposerUiState,
+  isFootComposerVisible,
+  reduceFootComposerUiState,
+} from "../footComposerState.mjs";
 
 const DESKTOP_CHARACTER_DISPLAY_SCALE = 1.69;
+const FOOT_INPUT_MAX_HEIGHT = 96;
+const BUSY_SESSION_STATES = new Set([
+  "interpreting",
+  "gathering",
+  "planning",
+  "responding",
+]);
+
+function FootDock({
+  className = "",
+  visible = true,
+  ready,
+  active,
+  characterName,
+  companion,
+  controlsDisabled,
+  showClock = true,
+  historyOpen = false,
+  onPointerEnter,
+  onPointerLeave,
+  onDraftChange,
+  onKeyDown,
+  onFocus,
+  onBlur,
+  onSubmit,
+  onCancel,
+  onOpenControlPanel,
+  onToggleHistory,
+}) {
+  const formRef = useRef(null);
+
+  useLayoutEffect(() => {
+    if (!ready) return;
+    const el = formRef.current?.querySelector("textarea");
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, FOOT_INPUT_MAX_HEIGHT)}px`;
+  }, [companion.draft, ready]);
+
+  return (
+    <div
+      className={`fairy-foot-dock${visible ? " is-visible" : ""}${className ? ` ${className}` : ""}`}
+      onPointerEnter={onPointerEnter}
+      onPointerLeave={onPointerLeave}
+    >
+      <div className="fairy-foot-dock__shell">
+        <div className="fairy-foot-dock__tools">
+          <IconButton
+            type="button"
+            size="1"
+            variant="ghost"
+            color="gray"
+            className="fairy-foot-dock__btn"
+            aria-label="打开设置"
+            disabled={controlsDisabled}
+            onClick={onOpenControlPanel}
+          >
+            <GearIcon />
+          </IconButton>
+
+          {showClock ? (
+            <IconButton
+              type="button"
+              size="1"
+              variant={historyOpen ? "soft" : "ghost"}
+              color="gray"
+              className="fairy-foot-dock__btn"
+              aria-label={historyOpen ? "关闭历史聊天" : "打开历史聊天"}
+              aria-pressed={historyOpen}
+              disabled={controlsDisabled || !ready}
+              onClick={onToggleHistory}
+            >
+              <ClockIcon />
+            </IconButton>
+          ) : null}
+        </div>
+
+        <form className="fairy-foot-dock__form" ref={formRef} onSubmit={onSubmit}>
+          {ready ? (
+            <TextArea
+              className="fairy-foot-dock__input"
+              value={companion.draft}
+              onChange={(event) => onDraftChange(event.target.value)}
+              onKeyDown={onKeyDown}
+              onFocus={onFocus}
+              onBlur={onBlur}
+              rows={1}
+              resize="none"
+              placeholder={characterName ? `对 ${characterName} 说…` : "选择角色后开始对话"}
+              aria-label="快捷消息输入"
+              disabled={!ready || active}
+            />
+          ) : (
+            <button
+              type="button"
+              className="fairy-foot-dock__setup"
+              onClick={onOpenControlPanel}
+            >
+              <MagicWandIcon aria-hidden="true" />
+              <span>先配置角色与模型</span>
+            </button>
+          )}
+          {ready && active && companion.activeTurnId ? (
+            <IconButton
+              type="button"
+              size="1"
+              color="tomato"
+              variant="soft"
+              className="fairy-foot-dock__btn"
+              aria-label="停止回复"
+              onClick={onCancel}
+            >
+              <StopIcon />
+            </IconButton>
+          ) : (
+            <IconButton
+              type="submit"
+              size="1"
+              variant="solid"
+              className="fairy-foot-dock__send"
+              aria-label="发送消息"
+              disabled={!ready || active || companion.draft.trim().length === 0}
+            >
+              <PaperPlaneIcon />
+            </IconButton>
+          )}
+        </form>
+      </div>
+    </div>
+  );
+}
 
 export function CompanionPanel({
   characterName,
@@ -41,13 +174,14 @@ export function CompanionPanel({
   onAssetError,
   onPetDragStart,
   onPetDragEnd,
-  popoverMounted,
-  chatVisualOpen,
+  petDragging = false,
+  historyMounted,
+  historyVisualOpen,
   petVisualOpen,
   controlsDisabled,
-  onOpenChat,
-  onRequestCloseChat,
-  onChatExitComplete,
+  onOpenHistory,
+  onRequestCloseHistory,
+  onHistoryExitComplete,
   onPetExitComplete,
   onOpenControlPanel,
   companion,
@@ -57,7 +191,9 @@ export function CompanionPanel({
   externalError = null,
 }) {
   const ready = companion.conversationId !== null && character !== null && visual !== null;
-  const active = companion.activeTurnId !== null || companion.submitting;
+  const turnBusy = companion.submitting
+    || companion.activeTurnId !== null
+    || BUSY_SESSION_STATES.has(companion.sessionState);
   const displayedError = companion.error ?? externalError;
   const accessibleCharacterName = characterName ?? "桌面角色";
   const pixelCharacterRenderKey = resolvePixelCharacterRenderKey(character, visual);
@@ -65,10 +201,17 @@ export function CompanionPanel({
     ? null
     : `${pixelCharacterRenderKey}:${pixelSurfaceEpoch}`;
 
-  function handleOpenChange(open) {
-    if (open) onOpenChat();
-    else onRequestCloseChat();
-  }
+  const [footUi, dispatchFootUi] = useReducer(
+    reduceFootComposerUiState,
+    undefined,
+    createFootComposerUiState,
+  );
+  const footVisible = isFootComposerVisible(footUi);
+
+  useEffect(() => {
+    if (petDragging) dispatchFootUi({ type: "drag_start" });
+    else dispatchFootUi({ type: "drag_end" });
+  }, [petDragging]);
 
   function handleSubmit(event) {
     event.preventDefault();
@@ -80,17 +223,39 @@ export function CompanionPanel({
     if (action === "close") {
       event.preventDefault();
       event.stopPropagation();
-      onRequestCloseChat();
+      if (historyMounted) {
+        onRequestCloseHistory();
+        return;
+      }
+      event.currentTarget.blur();
+      dispatchFootUi({ type: "blur" });
       return;
     }
     if (action === "submit") {
       event.preventDefault();
-      if (!active && companion.draft.trim().length > 0) onSubmit();
+      if (!turnBusy && companion.draft.trim().length > 0) onSubmit();
     }
   }
 
+  const dockProps = {
+    ready,
+    active: turnBusy,
+    characterName,
+    companion,
+    controlsDisabled,
+    onDraftChange,
+    onKeyDown: handleKeyDown,
+    onFocus: () => dispatchFootUi({ type: "focus" }),
+    onBlur: () => dispatchFootUi({ type: "blur" }),
+    onSubmit: handleSubmit,
+    onCancel,
+    onOpenControlPanel,
+    historyOpen: historyMounted,
+    onToggleHistory: historyMounted ? onRequestCloseHistory : onOpenHistory,
+  };
+
   return (
-    <Popover.Root open={popoverMounted} onOpenChange={handleOpenChange}>
+    <>
       <motion.section
         className="fairy-pet"
         aria-label={`${accessibleCharacterName} 桌面角色`}
@@ -122,21 +287,26 @@ export function CompanionPanel({
               transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
               aria-hidden="true"
             >
-              <PixelCharacter
-                key={pixelMountKey}
-                visual={visual}
-                visualState={pixelCharacter.visualState}
-                direction={pixelCharacter.direction}
-                displayScale={DESKTOP_CHARACTER_DISPLAY_SCALE}
-                onReady={onAssetReady}
-                onError={onAssetError}
-              />
+              {pixelMountKey !== null ? (
+                <PixelCharacter
+                  key={pixelMountKey}
+                  visual={visual}
+                  visualState={pixelCharacter.visualState}
+                  direction={pixelCharacter.direction}
+                  displayScale={DESKTOP_CHARACTER_DISPLAY_SCALE}
+                  onReady={onAssetReady}
+                  onError={onAssetError}
+                />
+              ) : null}
             </motion.div>
           </motion.div>
-        ) : assetState.phase === "error" ? (
+        ) : null}
+
+        {assetState.phase === "error" ? (
           <Callout.Root
             className="fairy-pet__asset-error"
             color="tomato"
+            size="1"
             role="alert"
             data-fairy-pet-drag-region
             aria-label={`拖动${accessibleCharacterName}`}
@@ -151,128 +321,65 @@ export function CompanionPanel({
           </Callout.Root>
         ) : null}
 
-        <Popover.Trigger>
-          <Button
-            className="fairy-chat-trigger"
-            type="button"
-            size="2"
-            variant="surface"
-            disabled={controlsDisabled}
-            aria-label={characterName ? `和${characterName}聊一会儿` : "打开角色设置"}
-          >
-            <ChatBubbleIcon />
-            聊一会儿
-          </Button>
-        </Popover.Trigger>
+        <FootDock
+          {...dockProps}
+          visible={footVisible || historyMounted}
+          showClock
+          onPointerEnter={() => dispatchFootUi({ type: "pointer_enter" })}
+          onPointerLeave={() => dispatchFootUi({ type: "pointer_leave" })}
+        />
+
+        {displayedError && !historyMounted ? (
+          <Callout.Root className="fairy-foot-error" color="tomato" size="1" role="alert">
+            <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
+            <Callout.Text>{displayedError.message}</Callout.Text>
+          </Callout.Root>
+        ) : null}
       </motion.section>
 
-      {popoverMounted ? (
-        <Popover.Content
-          className="fairy-popover-content"
-          forceMount
-          side="left"
-          align="end"
-          sideOffset={10}
-          collisionPadding={14}
-          onEscapeKeyDown={(event) => {
-            event.preventDefault();
-            onRequestCloseChat();
+      {historyMounted ? (
+        <motion.div
+          className="fairy-history-layer"
+          initial={false}
+          animate={historyVisualOpen ? "visible" : "hidden"}
+          variants={{
+            hidden: { opacity: 0, x: 8, y: 6, scale: 0.98 },
+            visible: { opacity: 1, x: 0, y: 0, scale: 1 },
           }}
-          onPointerDownOutside={(event) => {
-            if (isCompanionPetDragTarget(event.detail.originalEvent.target)) {
-              event.preventDefault();
-            }
+          onAnimationComplete={(definition) => {
+            if (definition === "hidden") onHistoryExitComplete();
           }}
         >
-              <motion.div
-                key="chat-card"
-                className="fairy-chat-motion"
-                initial="hidden"
-                animate={chatVisualOpen ? "visible" : "hidden"}
-                variants={{
-                  hidden: { opacity: 0, x: 10, y: 7, scale: 0.97 },
-                  visible: { opacity: 1, x: 0, y: 0, scale: 1 },
-                }}
-                onAnimationComplete={(definition) => {
-                  if (definition === "hidden") onChatExitComplete();
-                }}
+          <Card className="fairy-history-card" size="1">
+            <Flex className="fairy-history-card__bar" align="center" justify="between">
+              <Text size="2" weight="medium">历史</Text>
+              <IconButton
+                type="button"
+                size="1"
+                variant="ghost"
+                color="gray"
+                aria-label="关闭历史"
+                onClick={onRequestCloseHistory}
               >
-                <Card className="fairy-chat-card" size="1">
-                  <span className="fairy-chat-card__tail" aria-hidden="true" />
-                  {ready ? (
-                    <Transcript
-                      characterName={characterName}
-                      transcript={selectRecentTranscript(companion.transcript, 4)}
-                      responseDraft={companion.responseDraft}
-                      sessionState={companion.sessionState}
-                    />
-                  ) : (
-                    <div className="fairy-chat-onboarding">
-                      <MagicWandIcon aria-hidden="true" />
-                      <Text as="p" size="2" weight="medium">还需要选择角色并配置模型连接。</Text>
-                      <Button type="button" size="2" variant="soft" onClick={onOpenControlPanel}>
-                        <GearIcon />
-                        打开设置
-                      </Button>
-                    </div>
-                  )}
-
-                  {displayedError ? (
-                    <Callout.Root className="fairy-chat-error" color="tomato" size="1" role="alert">
-                      <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
-                      <Callout.Text>{displayedError.message}</Callout.Text>
-                    </Callout.Root>
-                  ) : null}
-
-                  <form className="fairy-composer" onSubmit={handleSubmit}>
-                    <TextArea
-                      className="fairy-composer__input"
-                      value={companion.draft}
-                      onChange={(event) => onDraftChange(event.target.value)}
-                      onKeyDown={handleKeyDown}
-                      rows={1}
-                      resize="none"
-                      placeholder={characterName ? `想对 ${characterName} 说什么？` : "选择角色后开始对话"}
-                      aria-label="消息输入框"
-                      autoFocus={ready}
-                      disabled={!ready || active}
-                    />
-                    <Flex className="fairy-composer__actions" align="center" gap="2">
-                      <Tooltip content="打开设置">
-                        <IconButton
-                          type="button"
-                          size="2"
-                          variant="ghost"
-                          color="gray"
-                          aria-label="打开设置"
-                          onClick={onOpenControlPanel}
-                        >
-                          <GearIcon />
-                        </IconButton>
-                      </Tooltip>
-                      <Text className="fairy-composer__hint" size="1" color="gray">Enter 发送 · Shift+Enter 换行</Text>
-                      {active && companion.activeTurnId ? (
-                        <Button type="button" size="2" color="tomato" variant="soft" onClick={onCancel}>
-                          <StopIcon />
-                          停止
-                        </Button>
-                      ) : (
-                        <IconButton
-                          type="submit"
-                          size="2"
-                          variant="solid"
-                          aria-label="发送消息"
-                          disabled={!ready || active || companion.draft.trim().length === 0}
-                        >
-                          <PaperPlaneIcon />
-                        </IconButton>
-                      )}
-                    </Flex>
-                  </form>
-                </Card>
-              </motion.div>
-        </Popover.Content>
+                <Cross2Icon />
+              </IconButton>
+            </Flex>
+            {displayedError ? (
+              <Callout.Root className="fairy-chat-error" color="tomato" size="1" role="alert">
+                <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
+                <Callout.Text>{displayedError.message}</Callout.Text>
+              </Callout.Root>
+            ) : null}
+            <Transcript
+              characterName={characterName}
+              transcript={companion.transcript}
+              responseDraft=""
+              sessionState="idle"
+              variant="history"
+            />
+          </Card>
+        </motion.div>
       ) : null}
-    </Popover.Root>
+    </>
   );
 }

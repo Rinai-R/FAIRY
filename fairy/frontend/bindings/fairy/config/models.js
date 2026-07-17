@@ -199,5 +199,47 @@ export class ModelConnectionStatus {
     }
 }
 
+export class WebSearchStatus {
+    /**
+     * Creates a new WebSearchStatus instance.
+     * @param {Partial<WebSearchStatus>} [$$source = {}] - The source object to create the WebSearchStatus.
+     */
+    constructor($$source = {}) {
+        if (!("enabled" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["enabled"] = false;
+        }
+        if (!("binaryPath" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["binaryPath"] = "";
+        }
+        if (!("binaryFound" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["binaryFound"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WebSearchStatus instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {WebSearchStatus}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WebSearchStatus(/** @type {Partial<WebSearchStatus>} */($$parsedSource));
+    }
+}
+
 // Private type creation functions
 const $$createType0 = GatewayCapabilities.createFrom;

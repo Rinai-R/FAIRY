@@ -32,6 +32,14 @@ type ControlPanelWindow interface {
 	SetBounds(bounds WindowBounds)
 }
 
+// SpeechBubbleWindow is the transparent, click-through window that floats the
+// character's speech bubble above the companion window.
+type SpeechBubbleWindow interface {
+	Show()
+	Hide()
+	SetBounds(bounds WindowBounds)
+}
+
 const (
 	// Idle hugs the full-size pet (+ chat trigger). Chat grows just enough for
 	// the anchored card beside the pet — spare transparent cover stays minimal.
@@ -41,6 +49,14 @@ const (
 	chatHeight         = 382
 	controlPanelWidth  = 560
 	controlPanelHeight = 620
+	// The speech bubble lives in its own transparent, click-through window that
+	// floats above the character. It is shown/positioned while the character is
+	// talking and hidden once the bubble is gone, so the companion window itself
+	// never resizes (which would flicker the character).
+	speechBubbleWidth   = 250
+	speechBubbleHeight  = 200
+	speechBubbleOverlap = 30
+	speechBubbleInsetX  = 14
 )
 
 type DesktopState struct {
@@ -57,12 +73,14 @@ type DesktopState struct {
 type StateEmitter func(DesktopState)
 
 type DesktopService struct {
-	mu           sync.Mutex
-	state        DesktopState
-	window       CompanionWindow
-	controlPanel ControlPanelWindow
-	emit         StateEmitter
-	idleAnchor   *WindowBounds
+	mu            sync.Mutex
+	state         DesktopState
+	window        CompanionWindow
+	controlPanel  ControlPanelWindow
+	speechBubble  SpeechBubbleWindow
+	emit          StateEmitter
+	idleAnchor    *WindowBounds
+	speechVisible bool
 }
 
 // AttachStateEmitter wires a Wails-free sink from main.
@@ -107,6 +125,17 @@ func AttachControlPanelWindow(service *DesktopService, window ControlPanelWindow
 	service.mu.Lock()
 	defer service.mu.Unlock()
 	service.controlPanel = window
+}
+
+// AttachSpeechBubbleWindow wires the speech-bubble window adapter from main.
+// It is intentionally not a service method so Wails does not bind it.
+func AttachSpeechBubbleWindow(service *DesktopService, window SpeechBubbleWindow) {
+	if service == nil {
+		return
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	service.speechBubble = window
 }
 
 // commit applies mutator under lock, then emits desktop-state-changed outside the lock
@@ -201,6 +230,7 @@ func (s *DesktopService) OpenCompanionChat() (DesktopState, error) {
 		s.state.ControlPanelVisible = false
 		s.state.CompanionSurface = "chat"
 		s.state.Phase = "companion_chat_open"
+		s.hideSpeechLocked()
 		if s.window != nil {
 			current := s.window.Bounds()
 			anchor := current
@@ -233,8 +263,68 @@ func (s *DesktopService) CloseCompanionChat() (DesktopState, error) {
 	}), nil
 }
 
+// speechBubbleBounds places the transparent bubble window above the character,
+// anchored so its bottom edge dips slightly into the top of the companion window
+// (over the hair, above the face). The bubble content is bottom-anchored inside
+// this window and grows upward.
+func speechBubbleBounds(companion WindowBounds) WindowBounds {
+	return WindowBounds{
+		X:      companion.X - speechBubbleInsetX,
+		Y:      companion.Y + speechBubbleOverlap - speechBubbleHeight,
+		Width:  speechBubbleWidth,
+		Height: speechBubbleHeight,
+	}
+}
+
+// ExpandCompanionForSpeech shows and positions the standalone speech-bubble
+// window above the character. It is a no-op unless the companion is idle so the
+// bubble never appears over the chat or control panel.
+func (s *DesktopService) ExpandCompanionForSpeech() (DesktopState, error) {
+	return s.commit(func() {
+		if s.window == nil || s.speechBubble == nil {
+			return
+		}
+		if s.state.CompanionSurface != "idle" || s.state.ControlPanelVisible {
+			return
+		}
+		s.speechVisible = true
+		s.speechBubble.SetBounds(speechBubbleBounds(s.window.Bounds()))
+		s.speechBubble.Show()
+	}), nil
+}
+
+// RestoreCompanionAfterSpeech hides the standalone speech-bubble window. It is a
+// no-op when the bubble is not currently shown.
+func (s *DesktopService) RestoreCompanionAfterSpeech() (DesktopState, error) {
+	return s.commit(func() {
+		s.hideSpeechLocked()
+	}), nil
+}
+
+// RepositionSpeechBubble keeps the bubble window glued to the character while it
+// is dragged. It is invoked from the companion window's move hook and is a no-op
+// unless the bubble is currently shown.
+func (s *DesktopService) RepositionSpeechBubble() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.window == nil || s.speechBubble == nil || !s.speechVisible {
+		return
+	}
+	s.speechBubble.SetBounds(speechBubbleBounds(s.window.Bounds()))
+}
+
+// hideSpeechLocked hides the bubble window; caller holds s.mu.
+func (s *DesktopService) hideSpeechLocked() {
+	if s.speechBubble == nil || !s.speechVisible {
+		return
+	}
+	s.speechVisible = false
+	s.speechBubble.Hide()
+}
+
 func (s *DesktopService) ShowControlPanel() (DesktopState, error) {
 	return s.commit(func() {
+		s.hideSpeechLocked()
 		s.state.Visible = false
 		s.state.ControlPanelVisible = true
 		s.state.CompanionSurface = "idle"
