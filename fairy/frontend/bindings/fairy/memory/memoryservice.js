@@ -113,6 +113,15 @@ export function Summary() {
 }
 
 /**
+ * @returns {$CancellablePromise<$models.UsageReport>}
+ */
+export function TokenUsageReport() {
+    return $Call.ByID(92611580).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType7($result);
+    }));
+}
+
+/**
  * @param {string} id
  * @returns {$CancellablePromise<void>}
  */
@@ -136,3 +145,4 @@ const $$createType3 = $models.KnowledgeCatalog.createFrom;
 const $$createType4 = $models.ConversationBootstrap.createFrom;
 const $$createType5 = $models.PersonalMemoryCatalog.createFrom;
 const $$createType6 = $models.Summary.createFrom;
+const $$createType7 = $models.UsageReport.createFrom;

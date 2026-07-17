@@ -905,6 +905,211 @@ export class Summary {
     }
 }
 
+/**
+ * UsageLaneAggregate sums token usage for a single prompt lane. Cache figures
+ * only reflect observations the provider actually returned; unobserved calls do
+ * not inflate hit rates.
+ */
+export class UsageLaneAggregate {
+    /**
+     * Creates a new UsageLaneAggregate instance.
+     * @param {Partial<UsageLaneAggregate>} [$$source = {}] - The source object to create the UsageLaneAggregate.
+     */
+    constructor($$source = {}) {
+        if (!("lane" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["lane"] = "";
+        }
+        if (!("inputTokens" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["inputTokens"] = 0;
+        }
+        if (!("outputTokens" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["outputTokens"] = 0;
+        }
+        if (!("cachedInputTokens" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["cachedInputTokens"] = 0;
+        }
+        if (!("cachedObservedInputTokens" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["cachedObservedInputTokens"] = 0;
+        }
+        if (!("cacheWriteTokens" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["cacheWriteTokens"] = 0;
+        }
+        if (!("callCount" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["callCount"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UsageLaneAggregate instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {UsageLaneAggregate}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new UsageLaneAggregate(/** @type {Partial<UsageLaneAggregate>} */($$parsedSource));
+    }
+}
+
+/**
+ * UsageReport is the read-only token usage rollup surfaced to the control panel.
+ */
+export class UsageReport {
+    /**
+     * Creates a new UsageReport instance.
+     * @param {Partial<UsageReport>} [$$source = {}] - The source object to create the UsageReport.
+     */
+    constructor($$source = {}) {
+        if (!("overall" in $$source)) {
+            /**
+             * @member
+             * @type {UsageLaneAggregate[]}
+             */
+            this["overall"] = [];
+        }
+        if (!("turns" in $$source)) {
+            /**
+             * @member
+             * @type {UsageTurn[]}
+             */
+            this["turns"] = [];
+        }
+        if (!("turnCount" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["turnCount"] = 0;
+        }
+        if (!("truncated" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["truncated"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UsageReport instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {UsageReport}
+     */
+    static createFrom($$source = {}) {
+        const $$createField0_0 = $$createType16;
+        const $$createField1_0 = $$createType18;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("overall" in $$parsedSource) {
+            $$parsedSource["overall"] = $$createField0_0($$parsedSource["overall"]);
+        }
+        if ("turns" in $$parsedSource) {
+            $$parsedSource["turns"] = $$createField1_0($$parsedSource["turns"]);
+        }
+        return new UsageReport(/** @type {Partial<UsageReport>} */($$parsedSource));
+    }
+}
+
+/**
+ * UsageTurn is one user send (a conversation turn) with its per-lane usage.
+ */
+export class UsageTurn {
+    /**
+     * Creates a new UsageTurn instance.
+     * @param {Partial<UsageTurn>} [$$source = {}] - The source object to create the UsageTurn.
+     */
+    constructor($$source = {}) {
+        if (!("conversationId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["conversationId"] = "";
+        }
+        if (!("turnId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["turnId"] = "";
+        }
+        if (!("characterId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["characterId"] = "";
+        }
+        if (!("createdAtUnixMs" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["createdAtUnixMs"] = 0;
+        }
+        if (!("status" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["status"] = "";
+        }
+        if (!("lanes" in $$source)) {
+            /**
+             * @member
+             * @type {UsageLaneAggregate[]}
+             */
+            this["lanes"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UsageTurn instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {UsageTurn}
+     */
+    static createFrom($$source = {}) {
+        const $$createField5_0 = $$createType16;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("lanes" in $$parsedSource) {
+            $$parsedSource["lanes"] = $$createField5_0($$parsedSource["lanes"]);
+        }
+        return new UsageTurn(/** @type {Partial<UsageTurn>} */($$parsedSource));
+    }
+}
+
 export class WireError {
     /**
      * Creates a new WireError instance.
@@ -963,3 +1168,7 @@ const $$createType11 = $Create.Array($$createType10);
 const $$createType12 = PersonalMemoryRecord.createFrom;
 const $$createType13 = $Create.Array($$createType12);
 const $$createType14 = MemoryScope.createFrom;
+const $$createType15 = UsageLaneAggregate.createFrom;
+const $$createType16 = $Create.Array($$createType15);
+const $$createType17 = UsageTurn.createFrom;
+const $$createType18 = $Create.Array($$createType17);

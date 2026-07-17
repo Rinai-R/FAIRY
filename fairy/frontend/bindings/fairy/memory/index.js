@@ -22,5 +22,8 @@ export {
     PersonalMemoryRecord,
     PromptWindowRecord,
     Summary,
+    UsageLaneAggregate,
+    UsageReport,
+    UsageTurn,
     WireError
 } from "./models.js";

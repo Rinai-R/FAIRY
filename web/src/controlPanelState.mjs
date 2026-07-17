@@ -8,6 +8,7 @@ export const CONTROL_PANEL_SECTIONS = Object.freeze([
   Object.freeze({ id: "profile", label: "称呼" }),
   Object.freeze({ id: "model", label: "模型" }),
   Object.freeze({ id: "intelligence", label: "智能" }),
+  Object.freeze({ id: "usage", label: "用量" }),
   Object.freeze({ id: "desktop", label: "桌面" }),
 ]);
 

@@ -113,6 +113,14 @@ func (s *MemoryService) RetryExtractionBatch(id string) error {
 	return store.RetryExtractionBatch(id)
 }
 
+func (s *MemoryService) TokenUsageReport() (UsageReport, error) {
+	store, err := s.openStore()
+	if err != nil {
+		return UsageReport{}, err
+	}
+	return store.AggregateTokenUsage(DefaultUsageTurnLimit)
+}
+
 func (s *MemoryService) openStore() (*Store, error) {
 	if s.store != nil {
 		return s.store, nil

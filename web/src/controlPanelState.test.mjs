@@ -30,12 +30,13 @@ const ATRI_VISUAL = Object.freeze({
   ]),
 });
 
-test("control panel exposes five product sections and two protocols", () => {
+test("control panel exposes six product sections and two protocols", () => {
   assert.deepEqual(CONTROL_PANEL_SECTIONS.map(({ id }) => id), [
     "character",
     "profile",
     "model",
     "intelligence",
+    "usage",
     "desktop",
   ]);
   assert.deepEqual(MODEL_PROTOCOL_OPTIONS.map(({ value }) => value), [

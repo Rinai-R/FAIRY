@@ -12,6 +12,7 @@ import {
   parseUserProfile,
   parseUserProfileUpdate,
 } from "./companionState.mjs";
+import { parseUsageReport } from "./usageReport.mjs";
 
 export async function loadWailsBootstrap(loadBindings = defaultLoadBindings) {
   const bindings = await loadBindings();
@@ -178,6 +179,12 @@ export async function loadWailsKnowledgeCatalog(loadBindings = defaultLoadBindin
   const bindings = await loadBindings();
   const catalog = await bindings.MemoryService.KnowledgeCatalog();
   return parseKnowledgeCatalog(catalog);
+}
+
+export async function loadWailsTokenUsageReport(loadBindings = defaultLoadBindings) {
+  const bindings = await loadBindings();
+  const report = await bindings.MemoryService.TokenUsageReport();
+  return parseUsageReport(report);
 }
 
 export async function confirmWailsKnowledgeCandidate(id, loadBindings = defaultLoadBindings) {

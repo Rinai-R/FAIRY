@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
+  BarChartIcon,
   CheckCircledIcon,
   Cross2Icon,
   DesktopIcon,
@@ -60,6 +61,7 @@ import {
   loadWailsMemorySummary,
   loadWailsModelStatus,
   loadWailsPersonalMemoryCatalog,
+  loadWailsTokenUsageReport,
   loadWailsUserProfile,
   loadWailsVisualPackCatalog,
   loadWailsWebSearchStatus,
@@ -74,6 +76,15 @@ import {
   updateWailsCharacter,
 } from "../wailsClient.mjs";
 import { normalizeCompanionError } from "../companionState.mjs";
+import {
+  USAGE_LANE_FILTER_ALL,
+  availableLaneFilters,
+  formatHitRate,
+  formatTokenCount,
+  overallUsageForLane,
+  turnUsageForLane,
+  usageHitRate,
+} from "../usageReport.mjs";
 import {
   CONTROL_PANEL_SECTIONS,
   DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
@@ -117,7 +128,22 @@ const SECTION_ICONS = Object.freeze({
   profile: IdCardIcon,
   model: Link2Icon,
   intelligence: MagnifyingGlassIcon,
+  usage: BarChartIcon,
   desktop: DesktopIcon,
+});
+
+const USAGE_LANE_LABELS = Object.freeze({
+  [USAGE_LANE_FILTER_ALL]: "全部通道",
+  respond: "仅回复",
+  compact: "仅压缩",
+  extract: "仅抽取",
+});
+
+const USAGE_TURN_STATUS_LABELS = Object.freeze({
+  completed: "已完成",
+  failed: "失败",
+  interrupted: "已中断",
+  unknown: "未知",
 });
 
 function Field({ id, label, hint, children }) {
@@ -324,6 +350,116 @@ function MemoryColumn({ title, description, records, empty, disabled, onRevise, 
   );
 }
 
+function formatUsageTimestamp(unixMs) {
+  try {
+    return new Date(unixMs).toLocaleString("zh-CN", { hour12: false });
+  } catch {
+    return String(unixMs);
+  }
+}
+
+function UsageMetric({ label, value, hint }) {
+  return (
+    <Card size="1" className="cp-usage-metric">
+      <Text size="1" color="gray">{label}</Text>
+      <Text size="6" weight="medium">{value}</Text>
+      {hint ? <Text size="1" color="gray">{hint}</Text> : null}
+    </Card>
+  );
+}
+
+function usageStatusColor(status) {
+  if (status === "completed") return "teal";
+  if (status === "failed") return "tomato";
+  if (status === "interrupted") return "amber";
+  return "gray";
+}
+
+function UsagePage({ report, laneFilter, onLaneFilterChange, loading, ready, onRefresh, disabled }) {
+  const laneOptions = report ? availableLaneFilters(report) : [USAGE_LANE_FILTER_ALL];
+  const overall = report ? overallUsageForLane(report, laneFilter) : null;
+  const hitRate = overall ? usageHitRate(overall) : null;
+  return (
+    <>
+      <PageHeader
+        title="用量"
+        description="按每次发送统计 token 消耗与缓存命中，数据来自本机运行台账，不上传。"
+        status={ready ? (report ? `${report.turnCount} 次发送` : "读取中") : "不可用"}
+        ready={ready && Boolean(report)}
+      />
+      <Card className="cp-panel-card cp-usage-controls" size="2">
+        <Flex align="center" justify="between" gap="3" wrap="wrap">
+          <SegmentedControl.Root value={laneFilter} onValueChange={onLaneFilterChange} size="1" radius="large" disabled={disabled || !report}>
+            {laneOptions.map((lane) => (
+              <SegmentedControl.Item key={lane} value={lane}>{USAGE_LANE_LABELS[lane] ?? lane}</SegmentedControl.Item>
+            ))}
+          </SegmentedControl.Root>
+          <Tooltip content="重新读取本机用量台账">
+            <IconButton variant="ghost" color="gray" type="button" disabled={disabled || loading} onClick={onRefresh} aria-label="刷新用量">
+              <ResetIcon />
+            </IconButton>
+          </Tooltip>
+        </Flex>
+      </Card>
+      {overall ? (
+        <div className="cp-usage-metrics" aria-label="用量累计">
+          <UsageMetric label="命中缓存输入" value={formatTokenCount(overall.cachedInputTokens)} />
+          <UsageMetric label="未命中输入" value={formatTokenCount(overall.uncachedInputTokens)} />
+          <UsageMetric label="输出" value={formatTokenCount(overall.outputTokens)} />
+          <UsageMetric
+            label="缓存命中率"
+            value={formatHitRate(hitRate)}
+            hint={hitRate === null ? "无缓存观测" : `${formatTokenCount(overall.cachedObservedInputTokens)} tokens 被观测`}
+          />
+        </div>
+      ) : null}
+      <section className="cp-usage-ledger" aria-label="每次发送用量">
+        {!ready ? (
+          <Text as="p" size="1" color="gray" className="cp-usage-empty">浏览器预览无法读取本机用量台账。</Text>
+        ) : loading && !report ? (
+          <Text as="p" size="1" color="gray" className="cp-usage-empty">正在读取用量…</Text>
+        ) : report && report.turns.length > 0 ? (
+          <>
+            <div className="cp-usage-row cp-usage-row--head" aria-hidden="true">
+              <span>时间</span>
+              <span>角色</span>
+              <span>命中</span>
+              <span>未命中</span>
+              <span>输出</span>
+              <span>命中率</span>
+              <span>状态</span>
+            </div>
+            {report.turns.map((turn) => {
+              const usage = turnUsageForLane(turn, laneFilter);
+              const rate = usageHitRate(usage);
+              return (
+                <div className="cp-usage-row" key={turn.conversationId + "-" + turn.turnId}>
+                  <span className="cp-usage-time">{formatUsageTimestamp(turn.createdAtUnixMs)}</span>
+                  <span className="cp-usage-character">{turn.characterId || "—"}</span>
+                  <span>{formatTokenCount(usage.cachedInputTokens)}</span>
+                  <span>{formatTokenCount(usage.uncachedInputTokens)}</span>
+                  <span>{formatTokenCount(usage.outputTokens)}</span>
+                  <span>{formatHitRate(rate)}</span>
+                  <span>
+                    <Badge size="1" variant="soft" color={usageStatusColor(turn.status)}>
+                      {USAGE_TURN_STATUS_LABELS[turn.status] ?? turn.status}
+                    </Badge>
+                  </span>
+                </div>
+              );
+            })}
+            {report.truncated ? (
+              <Text as="p" size="1" color="gray" className="cp-usage-note">仅显示最近 {report.turns.length} 次发送。</Text>
+            ) : null}
+          </>
+        ) : (
+          <Text as="p" size="1" color="gray" className="cp-usage-empty">还没有任何发送记录。</Text>
+        )}
+      </section>
+    </>
+  );
+}
+
 export function ControlPanelApp() {
   const [section, setSection] = useState("model");
   const [catalog, setCatalog] = useState(EMPTY_CATALOG);
@@ -336,6 +472,9 @@ export function ControlPanelApp() {
   const [memoryCatalog, setMemoryCatalog] = useState(null);
   const [batchCatalog, setBatchCatalog] = useState(null);
   const [knowledgeCatalogLoading, setKnowledgeCatalogLoading] = useState(false);
+  const [usageReport, setUsageReport] = useState(null);
+  const [usageLane, setUsageLane] = useState(USAGE_LANE_FILTER_ALL);
+  const [usageLoading, setUsageLoading] = useState(false);
   const [desktop, setDesktop] = useState(null);
   const [pending, setPending] = useState(null);
   const [error, setError] = useState(null);
@@ -608,6 +747,24 @@ export function ControlPanelApp() {
       stopDesktop?.();
     };
   }, [refresh]);
+
+  const refreshUsage = useCallback(async () => {
+    if (!isWailsRuntime()) {
+      setUsageReport(null);
+      return;
+    }
+    setUsageLoading(true);
+    try {
+      setUsageReport(await loadWailsTokenUsageReport());
+    } finally {
+      setUsageLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (section !== "usage") return;
+    void refreshUsage().catch((reason) => setError(normalizeCompanionError(reason)));
+  }, [section, refreshUsage]);
 
   useEffect(() => {
     if (section !== "intelligence") return undefined;
@@ -1410,6 +1567,18 @@ export function ControlPanelApp() {
                           </section>
 
                         </>
+                      ) : null}
+
+                      {section === "usage" ? (
+                        <UsagePage
+                          report={usageReport}
+                          laneFilter={usageLane}
+                          onLaneFilterChange={setUsageLane}
+                          loading={usageLoading}
+                          ready={isWailsRuntime()}
+                          onRefresh={() => void refreshUsage().catch((reason) => setError(normalizeCompanionError(reason)))}
+                          disabled={disabled}
+                        />
                       ) : null}
 
                       {section === "desktop" ? (
