@@ -36,7 +36,7 @@ export function CompanionPanel({
   visual,
   pixelCharacter,
   assetState,
-  mountPixelSurface = true,
+  pixelSurfaceEpoch = 0,
   onAssetReady,
   onAssetError,
   onPetDragStart,
@@ -61,6 +61,9 @@ export function CompanionPanel({
   const displayedError = companion.error ?? externalError;
   const accessibleCharacterName = characterName ?? "桌面角色";
   const pixelCharacterRenderKey = resolvePixelCharacterRenderKey(character, visual);
+  const pixelMountKey = pixelCharacterRenderKey === null
+    ? null
+    : `${pixelCharacterRenderKey}:${pixelSurfaceEpoch}`;
 
   function handleOpenChange(open) {
     if (open) onOpenChat();
@@ -101,7 +104,7 @@ export function CompanionPanel({
           if (definition === "hidden") onPetExitComplete();
         }}
       >
-        {visual !== null && assetState.phase !== "error" && mountPixelSurface ? (
+        {visual !== null && assetState.phase !== "error" ? (
           <motion.div
             className="fairy-pet__character"
             data-fairy-pet-drag-region
@@ -120,7 +123,7 @@ export function CompanionPanel({
               aria-hidden="true"
             >
               <PixelCharacter
-                key={pixelCharacterRenderKey}
+                key={pixelMountKey}
                 visual={visual}
                 visualState={pixelCharacter.visualState}
                 direction={pixelCharacter.direction}

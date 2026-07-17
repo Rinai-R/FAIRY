@@ -13,7 +13,8 @@ import {
 import { ensureWailsRuntimeReady, isWailsRuntime } from "./runtimeEnv.mjs";
 import {
   isCompanionChatViewportReady,
-  shouldMountPixelCharacterSurface,
+  resolvePixelCharacterRenderKey,
+  shouldDeferPixelCharacterCommit,
   trackControlPanelReturn,
 } from "./companionViewState.mjs";
 import {
@@ -85,15 +86,15 @@ export function App() {
     : null;
   const characterName = catalog.active?.name ?? null;
   const wailsCompanion = isWailsCompanionRuntime(wailsBootstrap);
-  // Companion window starts visible; only unmount Pixi after desktop state says
-  // the native window is hidden behind the control panel.
-  const mountPixelSurface = desktop === null
-    ? true
-    : shouldMountPixelCharacterSurface({
-      desktopVisible: desktop.visible,
-      controlPanelVisible: desktop.controlPanelVisible,
-    });
-  const mountPixelSurfaceRef = useRef(mountPixelSurface);
+  const [displayCharacter, setDisplayCharacter] = useState(null);
+  const [displayVisual, setDisplayVisual] = useState(null);
+  const [pixelSurfaceEpoch, setPixelSurfaceEpoch] = useState(0);
+  const latestPixelTargetRef = useRef({ character: null, visual: null });
+  const committedPixelKeyRef = useRef(null);
+  latestPixelTargetRef.current = {
+    character: catalog.active,
+    visual: activeVisual,
+  };
 
   async function loadActiveModelStatus() {
     if (!(await ensureWailsRuntimeReady())) {
@@ -138,49 +139,79 @@ export function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (catalog.active === null) {
+  function commitPixelDisplay({ remount }) {
+    const { character, visual } = latestPixelTargetRef.current;
+    if (character === null) {
+      if (committedPixelKeyRef.current === null) return;
+      committedPixelKeyRef.current = null;
+      setDisplayCharacter(null);
+      setDisplayVisual(null);
       setAssetState(INITIAL_ASSET_STATE);
       return;
     }
-    if (activeAppearance?.status === "unassigned") {
+    const appearance = character.appearance ?? null;
+    if (appearance?.status === "unassigned") {
+      committedPixelKeyRef.current = null;
+      setDisplayCharacter(character);
+      setDisplayVisual(null);
       setAssetState({
         phase: "error",
         error: {
           code: "CHARACTER_APPEARANCE_UNASSIGNED",
-          message: `${catalog.active.name} 尚未选择外观。`,
+          message: `${character.name} 尚未选择外观。`,
         },
       });
       return;
     }
-    if (activeAppearance?.status === "unavailable") {
+    if (appearance?.status === "unavailable") {
+      committedPixelKeyRef.current = null;
+      setDisplayCharacter(character);
+      setDisplayVisual(null);
       setAssetState({
         phase: "error",
         error: {
           code: "CHARACTER_APPEARANCE_UNAVAILABLE",
-          message: `${catalog.active.name} 的外观不可用。`,
+          message: `${character.name} 的外观不可用。`,
         },
       });
       return;
     }
+    const nextKey = resolvePixelCharacterRenderKey(character, visual);
+    if (!remount && nextKey === committedPixelKeyRef.current) {
+      return;
+    }
+    committedPixelKeyRef.current = nextKey;
+    setDisplayCharacter(character);
+    setDisplayVisual(visual);
+    if (remount) {
+      setPixelSurfaceEpoch((epoch) => epoch + 1);
+    }
     setAssetState(INITIAL_ASSET_STATE);
+  }
+
+  useEffect(() => {
+    // While settings hide the companion window, keep the last committed Pixi
+    // identity. Committing a character switch into a hidden WKWebView leaves a
+    // blank canvas that opacity/drag cannot recover.
+    if (
+      desktop !== null
+      && shouldDeferPixelCharacterCommit({
+        desktopVisible: desktop.visible,
+        controlPanelVisible: desktop.controlPanelVisible,
+      })
+    ) {
+      return;
+    }
+    commitPixelDisplay({ remount: false });
   }, [
     activeAppearance?.status,
     activeAppearance?.bindingRevision,
     activeVisual?.packId,
     catalog.active?.characterId,
     catalog.active?.name,
+    desktop?.visible,
+    desktop?.controlPanelVisible,
   ]);
-
-  useEffect(() => {
-    const wasMounted = mountPixelSurfaceRef.current;
-    mountPixelSurfaceRef.current = mountPixelSurface;
-    if (mountPixelSurface && !wasMounted) {
-      // Remount Pixi only after the companion window is shown again so a
-      // character switch during settings does not create a blank WebGL surface.
-      setAssetState(INITIAL_ASSET_STATE);
-    }
-  }, [mountPixelSurface]);
 
   useEffect(() => {
     dispatchPixelCharacter({
@@ -339,6 +370,8 @@ export function App() {
         if (returnState.revealPet) {
           setSettingsMode(false);
           setPetVisualOpen(true);
+          // Force a fresh Pixi surface after the native window is shown again.
+          commitPixelDisplay({ remount: true });
         }
         setDesktop(nextDesktop);
       },
@@ -584,11 +617,11 @@ export function App() {
       <h1 className="visually-hidden">FAIRY 桌面角色对话</h1>
       <CompanionPanel
         characterName={characterName}
-        character={catalog.active}
-        visual={activeVisual}
+        character={displayCharacter}
+        visual={displayVisual}
         pixelCharacter={pixelCharacter}
         assetState={assetState}
-        mountPixelSurface={mountPixelSurface}
+        pixelSurfaceEpoch={pixelSurfaceEpoch}
         onAssetReady={markAssetReady}
         onAssetError={markAssetFailed}
         onPetDragStart={handlePetDragStart}

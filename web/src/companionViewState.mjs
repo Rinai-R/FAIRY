@@ -26,7 +26,13 @@ export function trackControlPanelReturn(latched, phase, visible) {
   if (typeof latched !== "boolean" || typeof phase !== "string" || typeof visible !== "boolean") {
     throw new TypeError("control panel return state is invalid");
   }
-  if (phase === "transitioning_to_companion") {
+  // Latch as soon as settings is shown so restore does not depend on receiving
+  // the short-lived transitioning_to_companion event.
+  if (
+    phase === "control_panel_visible"
+    || phase === "transitioning_to_settings"
+    || phase === "transitioning_to_companion"
+  ) {
     return Object.freeze({ latched: true, revealPet: false });
   }
   if (phase === "companion_idle" && visible && latched) {
@@ -35,14 +41,14 @@ export function trackControlPanelReturn(latched, phase, visible) {
   return Object.freeze({ latched, revealPet: false });
 }
 
-export function shouldMountPixelCharacterSurface({ desktopVisible, controlPanelVisible }) {
+export function shouldDeferPixelCharacterCommit({ desktopVisible, controlPanelVisible }) {
   if (typeof desktopVisible !== "boolean" || typeof controlPanelVisible !== "boolean") {
-    throw new TypeError("pixel character surface mount state is invalid");
+    throw new TypeError("pixel character commit defer state is invalid");
   }
-  // Creating a Pixi/WebGL Application while the companion native window is
-  // hidden (settings open) leaves a blank canvas until the next window move.
-  // Character switches during settings must wait until the window is shown again.
-  return desktopVisible && !controlPanelVisible;
+  // Keep the currently committed Pixi identity while the companion window is
+  // hidden. Committing a character switch in a hidden WKWebView creates a blank
+  // WebGL canvas that stays invisible even after drag.
+  return !desktopVisible || controlPanelVisible;
 }
 
 export function resolvePixelCharacterRenderKey(character, visual) {

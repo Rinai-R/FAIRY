@@ -6,7 +6,7 @@ import {
   isCompanionPetDragTarget,
   resolvePixelCharacterRenderKey,
   resolveChatKeyboardAction,
-  shouldMountPixelCharacterSurface,
+  shouldDeferPixelCharacterCommit,
   trackControlPanelReturn,
 } from "./companionViewState.mjs";
 
@@ -42,8 +42,15 @@ test("chat popover preserves pointer interactions from the pet drag region", () 
   assert.equal(isCompanionPetDragTarget(null), false);
 });
 
-test("control panel return survives batched desktop lifecycle events", () => {
-  const transitioning = trackControlPanelReturn(false, "transitioning_to_companion", false);
+test("control panel return latches on settings visible and survives restore events", () => {
+  const settingsOpen = trackControlPanelReturn(false, "control_panel_visible", false);
+  assert.deepEqual(settingsOpen, { latched: true, revealPet: false });
+
+  const transitioning = trackControlPanelReturn(
+    settingsOpen.latched,
+    "transitioning_to_companion",
+    false,
+  );
   assert.deepEqual(transitioning, { latched: true, revealPet: false });
 
   const restored = trackControlPanelReturn(
@@ -52,6 +59,12 @@ test("control panel return survives batched desktop lifecycle events", () => {
     true,
   );
   assert.deepEqual(restored, { latched: false, revealPet: true });
+
+  // Even if the transitioning event is dropped, latch from settings is enough.
+  assert.deepEqual(
+    trackControlPanelReturn(true, "companion_idle", true),
+    { latched: false, revealPet: true },
+  );
   assert.deepEqual(trackControlPanelReturn(false, "companion_idle", true), {
     latched: false,
     revealPet: false,
@@ -59,37 +72,38 @@ test("control panel return survives batched desktop lifecycle events", () => {
   assert.throws(() => trackControlPanelReturn(false, null, true), /invalid/);
 });
 
-test("pixel character surface stays unmounted while companion window is hidden", () => {
+test("pixel character commit is deferred while companion window is hidden", () => {
   assert.equal(
-    shouldMountPixelCharacterSurface({ desktopVisible: true, controlPanelVisible: false }),
+    shouldDeferPixelCharacterCommit({ desktopVisible: true, controlPanelVisible: false }),
+    false,
+  );
+  assert.equal(
+    shouldDeferPixelCharacterCommit({ desktopVisible: false, controlPanelVisible: true }),
     true,
   );
   assert.equal(
-    shouldMountPixelCharacterSurface({ desktopVisible: false, controlPanelVisible: true }),
-    false,
+    shouldDeferPixelCharacterCommit({ desktopVisible: true, controlPanelVisible: true }),
+    true,
   );
   assert.equal(
-    shouldMountPixelCharacterSurface({ desktopVisible: true, controlPanelVisible: true }),
-    false,
-  );
-  assert.equal(
-    shouldMountPixelCharacterSurface({ desktopVisible: false, controlPanelVisible: false }),
-    false,
+    shouldDeferPixelCharacterCommit({ desktopVisible: false, controlPanelVisible: false }),
+    true,
   );
   assert.throws(
-    () => shouldMountPixelCharacterSurface({ desktopVisible: null, controlPanelVisible: false }),
+    () => shouldDeferPixelCharacterCommit({ desktopVisible: null, controlPanelVisible: false }),
     /invalid/,
   );
 });
 
-test("companion app remounts pixel surface only after control panel returns", async () => {
+test("companion app defers pixel commit until control panel returns", async () => {
   const { readFileSync } = await import("node:fs");
   const appSource = readFileSync(new URL("./App.jsx", import.meta.url), "utf8");
-  const panelSource = readFileSync(new URL("./components/CompanionPanel.jsx", import.meta.url), "utf8");
-  assert.match(appSource, /shouldMountPixelCharacterSurface/);
-  assert.match(appSource, /mountPixelSurface/);
-  assert.match(panelSource, /mountPixelSurface/);
-  assert.match(panelSource, /assetState\.phase !== "error" && mountPixelSurface/);
+  assert.match(appSource, /shouldDeferPixelCharacterCommit/);
+  assert.match(appSource, /pixelSurfaceEpoch/);
+  assert.match(appSource, /displayCharacter/);
+  assert.match(appSource, /displayVisual/);
+  assert.doesNotMatch(appSource, /mountPixelSurface/);
+  assert.doesNotMatch(appSource, /shouldMountPixelCharacterSurface/);
 });
 
 test("pixel character render key changes when active character changes on the same visual pack", () => {
