@@ -92,7 +92,7 @@ function chooseAvailable(context, preferred) {
 }
 
 export function selectPixelVisualState(state) {
-  if (state.context.dragging) return chooseAvailable(state.context, "dragged");
+  // Dragging must not preempt expression (no idle/dragged flash).
   if (state.explicitVisualState !== null) {
     return chooseAvailable(state.context, state.explicitVisualState);
   }

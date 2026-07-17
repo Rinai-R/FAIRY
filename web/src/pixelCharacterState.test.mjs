@@ -46,13 +46,13 @@ test("dialogue lifecycle keeps the current image while waiting", () => {
   assert.equal(state.visualState, "idle");
 });
 
-test("dragging preempts the current image and release restores it", () => {
+test("dragging keeps the current image", () => {
   let state = createPixelCharacterState(context());
   state = reducePixelCharacterState(state, { type: "visual_state_changed", visualState: "happy" });
   state = change(state, { sessionState: "responding" });
   assert.equal(state.visualState, "happy");
   state = change(state, { sessionState: "responding", dragging: true });
-  assert.equal(state.visualState, "dragged");
+  assert.equal(state.visualState, "happy");
   state = change(state, { sessionState: "responding", dragging: false });
   assert.equal(state.visualState, "happy");
 });
