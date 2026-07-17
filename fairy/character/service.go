@@ -8,11 +8,26 @@ import (
 
 type CharacterService struct {
 	root   string
+	store  *Store
 	logger *zap.Logger
+	emit   notify.ConfigEmitter
 }
 
 func NewCharacterService(root string) *CharacterService {
-	return &CharacterService{root: root, logger: zap.NewNop()}
+	return &CharacterService{
+		root:   root,
+		store:  NewStore(root),
+		logger: zap.NewNop(),
+	}
+}
+
+// CatalogStore returns the process-scoped character catalog store for sharing
+// with other composition-root consumers (e.g. companion).
+func (s *CharacterService) CatalogStore() *Store {
+	if s == nil {
+		return nil
+	}
+	return s.store
 }
 
 // AttachLogger injects the process logger (dependency injection, no global).
@@ -23,8 +38,22 @@ func AttachLogger(s *CharacterService, logger *zap.Logger) {
 	s.logger = logger
 }
 
+// AttachConfigEmitter wires configuration-change delivery from main.
+func AttachConfigEmitter(s *CharacterService, emit notify.ConfigEmitter) {
+	if s == nil {
+		return
+	}
+	s.emit = emit
+}
+
+func (s *CharacterService) emitChange(change notify.ConfigurationChange) {
+	if s != nil && s.emit != nil {
+		s.emit(change)
+	}
+}
+
 func (s *CharacterService) ListCharacters() (Catalog, error) {
-	catalog, err := NewStore(s.root).List()
+	catalog, err := s.store.List()
 	if err != nil {
 		s.logger.Error("list characters failed", zap.Error(err))
 		return Catalog{}, err
@@ -38,50 +67,50 @@ func (s *CharacterService) ListCharacters() (Catalog, error) {
 }
 
 func (s *CharacterService) CreateCharacter(brief Brief, visualPackID string) (Record, error) {
-	record, err := NewStore(s.root).Create(brief, visualPackID)
+	record, err := s.store.Create(brief, visualPackID)
 	if err != nil {
 		return Record{}, err
 	}
-	notify.Emit(notify.CharacterChanged(record.Revision))
+	s.emitChange(notify.CharacterChanged(record.Revision))
 	return record, nil
 }
 
 func (s *CharacterService) UpdateCharacter(characterID string, brief Brief) (Record, error) {
-	record, err := NewStore(s.root).Update(characterID, brief)
+	record, err := s.store.Update(characterID, brief)
 	if err != nil {
 		return Record{}, err
 	}
-	notify.Emit(notify.CharacterChanged(record.Revision))
+	s.emitChange(notify.CharacterChanged(record.Revision))
 	return record, nil
 }
 
 func (s *CharacterService) SetCharacterAppearance(characterID string, visualPackID string) (Record, error) {
-	record, err := NewStore(s.root).SetAppearance(characterID, visualPackID)
+	record, err := s.store.SetAppearance(characterID, visualPackID)
 	if err != nil {
 		return Record{}, err
 	}
-	notify.Emit(notify.CharacterChanged(record.Revision))
+	s.emitChange(notify.CharacterChanged(record.Revision))
 	return record, nil
 }
 
 func (s *CharacterService) ActivateCharacter(characterID string, revision uint64) (Record, error) {
-	record, err := NewStore(s.root).Activate(characterID, revision)
+	record, err := s.store.Activate(characterID, revision)
 	if err != nil {
 		return Record{}, err
 	}
-	notify.Emit(notify.CharacterChanged(record.Revision))
+	s.emitChange(notify.CharacterChanged(record.Revision))
 	return record, nil
 }
 
 func (s *CharacterService) ImportCharacterPackage(packagePath string) (Record, error) {
-	record, err := NewStore(s.root).ImportPackage(packagePath)
+	record, err := s.store.ImportPackage(packagePath)
 	if err != nil {
 		return Record{}, err
 	}
-	notify.Emit(notify.CharacterChanged(record.Revision))
+	s.emitChange(notify.CharacterChanged(record.Revision))
 	return record, nil
 }
 
 func (s *CharacterService) ExportCharacterPackage(characterID string, outputPath string) error {
-	return NewStore(s.root).ExportPackage(characterID, outputPath)
+	return s.store.ExportPackage(characterID, outputPath)
 }

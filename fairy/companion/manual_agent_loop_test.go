@@ -75,7 +75,7 @@ func TestManualCharacterDecisionAgentLoop(t *testing.T) {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
 	transport := &recordingModelTransport{inner: model.SDKTransport{}}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, transport))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, transport, nil), nil)
 	var mu sync.Mutex
 	var events []HarnessEvent
 	AttachEventEmitter(service, func(event HarnessEvent) {

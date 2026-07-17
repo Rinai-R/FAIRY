@@ -51,7 +51,7 @@ const responsesCompletedSSE = "data: {\"type\":\"response.output_text.delta\",\"
 	"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"output\":[{\"type\":\"message\",\"content\":[{\"text\":\"ok\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
 
 func TestNewModelServiceDefaultsToSDKTransport(t *testing.T) {
-	service := NewModelService(t.TempDir())
+	service := NewModelService(t.TempDir(), nil)
 	if _, ok := service.transport.(SDKTransport); !ok {
 		t.Fatalf("default transport = %T, want SDKTransport", service.transport)
 	}

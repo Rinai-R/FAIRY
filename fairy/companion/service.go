@@ -24,6 +24,9 @@ type CompanionService struct {
 	memoryStore       *memory.Store
 	modelService      *model.ModelService
 	webSearch         WebSearchBackend
+	characters        *character.Store
+	profiles          *profile.Store
+	cfg               *config.Reader
 	logger            *zap.Logger
 	backgroundJobs    atomic.Int64
 	extractionMu      sync.Mutex
@@ -69,28 +72,80 @@ func NewCompanionService() *CompanionService {
 	}
 }
 
-func NewCompanionServiceWithRuntime(root string, memoryStore *memory.Store, modelService *model.ModelService) *CompanionService {
+// NewCompanionServiceWithRuntime wires the companion runtime. webSearch is owned
+// by the composition root (main); pass nil when the sidecar is unavailable.
+func NewCompanionServiceWithRuntime(root string, memoryStore *memory.Store, modelService *model.ModelService, webSearch WebSearchBackend) *CompanionService {
 	return &CompanionService{
 		root:           root,
 		memoryStore:    memoryStore,
 		modelService:   modelService,
-		webSearch:      search.NewService(root),
+		webSearch:      webSearch,
 		logger:         zap.NewNop(),
 		extractionIdle: make(map[string]context.CancelFunc),
 		gates:          make(map[string]*conversationGate),
 	}
 }
 
-// AttachLogger injects the process logger (dependency injection, no global) and
-// forwards it to the internal openserp search service.
+// AttachLogger injects the process logger (dependency injection, no global).
 func AttachLogger(s *CompanionService, logger *zap.Logger) {
 	if s == nil || logger == nil {
 		return
 	}
 	s.logger = logger
-	if svc, ok := s.webSearch.(*search.Service); ok {
-		search.AttachLogger(svc, logger.Named("openserp"))
+}
+
+// AttachCharacterStore injects the character catalog store from main.
+func AttachCharacterStore(s *CompanionService, store *character.Store) {
+	if s == nil || store == nil {
+		return
 	}
+	s.characters = store
+}
+
+// AttachProfileStore injects the user-profile store from main.
+func AttachProfileStore(s *CompanionService, store *profile.Store) {
+	if s == nil || store == nil {
+		return
+	}
+	s.profiles = store
+}
+
+// AttachConfigReader injects the durable config reader from main.
+func AttachConfigReader(s *CompanionService, reader *config.Reader) {
+	if s == nil || reader == nil {
+		return
+	}
+	s.cfg = reader
+}
+
+func (s *CompanionService) characterStore() *character.Store {
+	if s != nil && s.characters != nil {
+		return s.characters
+	}
+	if s == nil {
+		return character.NewStore("")
+	}
+	return character.NewStore(s.root)
+}
+
+func (s *CompanionService) profileStore() *profile.Store {
+	if s != nil && s.profiles != nil {
+		return s.profiles
+	}
+	if s == nil {
+		return profile.NewStore("")
+	}
+	return profile.NewStore(s.root)
+}
+
+func (s *CompanionService) configReader() *config.Reader {
+	if s != nil && s.cfg != nil {
+		return s.cfg
+	}
+	if s == nil {
+		return config.NewReader("")
+	}
+	return config.NewReader(s.root)
 }
 
 // Close performs graceful shutdown cleanup: it cancels in-flight turns and
@@ -223,7 +278,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	if err != nil {
 		return fail("CHARACTER_NOT_AVAILABLE", err)
 	}
-	userProfile, err := profile.NewStore(s.root).Current()
+	userProfile, err := s.profileStore().Current()
 	if err != nil {
 		return fail("USER_PROFILE_UNAVAILABLE", err)
 	}
@@ -244,7 +299,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	if err := transition(TurnStatePlanning); err != nil {
 		return fail("INVALID_STATE_TRANSITION", err)
 	}
-	connectionConfig, err := config.ReadModelConnection(s.root)
+	connectionConfig, err := s.configReader().ModelConnection()
 	if err != nil {
 		return fail("MODEL_FAILED", err)
 	}
@@ -261,7 +316,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		finalUsage        []LaneModelUsage
 	)
 	webSearchEnabled := false
-	if settings, err := config.ReadWebSearchSettings(s.root); err == nil {
+	if settings, err := s.configReader().WebSearchSettings(); err == nil {
 		webSearchEnabled = settings.Enabled
 	}
 	for {
@@ -635,7 +690,7 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
-	userProfile, err := profile.NewStore(s.root).Current()
+	userProfile, err := s.profileStore().Current()
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
@@ -652,7 +707,7 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 		return memory.CompactionResult{}, err
 	}
 	cacheKey := ""
-	connectionConfig, err := config.ReadModelConnection(s.root)
+	connectionConfig, err := s.configReader().ModelConnection()
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
@@ -688,7 +743,7 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 }
 
 func (s *CompanionService) activeCharacter(characterID string) (character.Record, error) {
-	catalog, err := character.NewStore(s.root).List()
+	catalog, err := s.characterStore().List()
 	if err != nil {
 		return character.Record{}, err
 	}

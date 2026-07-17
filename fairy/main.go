@@ -30,6 +30,8 @@ import (
 	"fairy/model"
 	"fairy/notify"
 	"fairy/profile"
+	"fairy/search"
+	"fairy/secret"
 	"fairy/visual"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"go.uber.org/zap"
@@ -63,19 +65,32 @@ func main() {
 	if err != nil {
 		logger.Fatal("open memory store", zap.Error(err))
 	}
-	modelService := model.NewModelService(configRoot)
+	secretPath, err := secret.DatabasePath(configRoot)
+	if err != nil {
+		logger.Fatal("resolve secret path", zap.Error(err))
+	}
+	secretStore := secret.NewStore(secretPath)
+	webSearch := search.NewService(configRoot)
+	modelService := model.NewModelService(configRoot, secretStore)
 	desktopService := desktop.NewDesktopService()
-	companionService := companion.NewCompanionServiceWithRuntime(configRoot, memoryStore, modelService)
+	companionService := companion.NewCompanionServiceWithRuntime(configRoot, memoryStore, modelService, webSearch)
 	defer companionService.Close()
 
 	characterService := character.NewCharacterService(configRoot)
+	configService := config.NewConfigService(configRoot, secretStore)
+	profileService := profile.NewProfileService(configRoot)
 	assetHandler := visual.NewAssetHandler(configRoot)
+	configReader := config.NewReader(configRoot)
 
-	// Dependency injection of the logger (project Attach* idiom): no package
-	// global; each service receives the logger from main.
+	// Dependency injection from the composition root (project Attach* idiom):
+	// no package globals; each service receives its long-lived handles from main.
 	companion.AttachLogger(companionService, logger.Named("companion"))
+	companion.AttachCharacterStore(companionService, characterService.CatalogStore())
+	companion.AttachProfileStore(companionService, profileService.ProfileStore())
+	companion.AttachConfigReader(companionService, configReader)
 	character.AttachLogger(characterService, logger.Named("character"))
 	visual.AttachLogger(assetHandler, logger.Named("visual"))
+	search.AttachLogger(webSearch, logger.Named("openserp"))
 
 	// shuttingDown gates teardown-only log filtering (see WarningHandler).
 	var shuttingDown atomic.Bool
@@ -110,12 +125,12 @@ func main() {
 		Services: []application.Service{
 			application.NewService(bootstrap),
 			application.NewService(characterService),
-			application.NewService(config.NewConfigService(configRoot)),
+			application.NewService(configService),
 			application.NewService(desktopService),
 			application.NewService(modelService),
 			application.NewService(companionService),
 			application.NewService(memory.NewMemoryServiceWithStore(configRoot, memoryStore)),
-			application.NewService(profile.NewProfileService(configRoot)),
+			application.NewService(profileService),
 			application.NewService(visual.NewVisualService(configRoot)),
 			application.NewServiceWithOptions(assetHandler, application.ServiceOptions{
 				Name:  "CharacterAssetHandler",
@@ -136,9 +151,12 @@ func main() {
 	desktop.AttachStateEmitter(desktopService, func(state desktop.DesktopState) {
 		app.Event.Emit("desktop-state-changed", state)
 	})
-	notify.AttachConfigEmitter(func(change notify.ConfigurationChange) {
+	emitConfig := func(change notify.ConfigurationChange) {
 		app.Event.Emit("companion-configuration-changed", change)
-	})
+	}
+	character.AttachConfigEmitter(characterService, emitConfig)
+	config.AttachConfigEmitter(configService, emitConfig)
+	profile.AttachConfigEmitter(profileService, emitConfig)
 
 	attachProductWindows(app, desktopService, logger)
 	setupSystemTray(app, desktopService, logger)

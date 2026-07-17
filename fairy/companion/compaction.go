@@ -6,7 +6,6 @@ import (
 	"unicode/utf8"
 
 	"fairy/character"
-	"fairy/config"
 	"fairy/memory"
 	"fairy/model"
 	"fairy/profile"
@@ -163,7 +162,7 @@ func (s *CompanionService) scheduleAutoCompaction(conversationID string, events 
 	if !known {
 		return
 	}
-	connection, err := config.ReadModelConnection(s.root)
+	connection, err := s.configReader().ModelConnection()
 	if err != nil {
 		return
 	}
@@ -210,7 +209,7 @@ func (s *CompanionService) maybeCompactBeforeTurn(request SubmitCompiledTurnRequ
 	if err != nil {
 		return err
 	}
-	userProfile, err := profile.NewStore(s.root).Current()
+	userProfile, err := s.profileStore().Current()
 	if err != nil {
 		return err
 	}
@@ -229,7 +228,7 @@ func (s *CompanionService) maybeCompactBeforeTurn(request SubmitCompiledTurnRequ
 	if err != nil {
 		return err
 	}
-	connection, err := config.ReadModelConnection(s.root)
+	connection, err := s.configReader().ModelConnection()
 	if err != nil {
 		return err
 	}

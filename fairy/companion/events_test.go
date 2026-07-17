@@ -28,7 +28,7 @@ func TestSubmitCompiledTurnEmitsHarnessLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
 	var mu sync.Mutex
 	var emitted []HarnessEvent
 	AttachEventEmitter(service, func(event HarnessEvent) {
@@ -132,7 +132,7 @@ func TestSubmitCompiledTurnMapsObservedCacheUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
 	var emitted []HarnessEvent
 	AttachEventEmitter(service, func(event HarnessEvent) {
 		emitted = append(emitted, event)
@@ -198,7 +198,7 @@ func TestSubmitCompiledTurnInvalidReplyFailsFromPlanningWithoutAssistant(t *test
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
 	var mu sync.Mutex
 	var emitted []HarnessEvent
 	AttachEventEmitter(service, func(event HarnessEvent) {

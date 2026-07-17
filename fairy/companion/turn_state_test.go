@@ -34,7 +34,7 @@ func TestSubmitCompiledTurnRejectsConcurrentTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
 	req := SubmitCompiledTurnRequest{
 		ConversationID:        bootstrap.Conversation.ID,
 		Input:                 "第一轮",
@@ -97,7 +97,7 @@ func TestSubmitCompiledTurnStaysPlanningWhileModelRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
 	var mu sync.Mutex
 	var emitted []HarnessEvent
 	AttachEventEmitter(service, func(event HarnessEvent) {
@@ -157,7 +157,7 @@ func TestCancelTurnDuringPlanningDoesNotRespondOrPersistAssistant(t *testing.T) 
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
 	var mu sync.Mutex
 	var emitted []HarnessEvent
 	AttachEventEmitter(service, func(event HarnessEvent) {
@@ -221,7 +221,7 @@ func TestCancelTurnDuringPlanningDoesNotRespondOrPersistAssistant(t *testing.T) 
 func TestCancelTurnCancelsActiveContext(t *testing.T) {
 	root := t.TempDir()
 	memoryStore, _ := seedCompanionRuntime(t, root)
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelService(root))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelService(root, nil), nil)
 	ctx, err := service.reserveTurn("conversation-1")
 	if err != nil {
 		t.Fatalf("reserveTurn() error = %v", err)

@@ -79,7 +79,7 @@ func TestSubmitCompiledTurnMemoryToolThenReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
 	var emitted []HarnessEvent
 	AttachEventEmitter(service, func(event HarnessEvent) {
 		emitted = append(emitted, event)
@@ -148,7 +148,7 @@ func TestSubmitCompiledTurnRejectsGatherJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
 	_, err = service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 		ConversationID:        bootstrap.Conversation.ID,
 		Input:                 "你好",
@@ -193,7 +193,7 @@ func TestSubmitCompiledTurnWebSearchToolThenReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
 	service.webSearch = stubWebSearch{hits: []search.Hit{{
 		Title: "某动画更新", URL: "https://anime.example/1", Snippet: "本周新番情报",
 	}}}

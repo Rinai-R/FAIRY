@@ -3,19 +3,44 @@ package profile
 import "fairy/notify"
 
 type ProfileService struct {
-	root string
+	root  string
+	store *Store
+	emit  notify.ConfigEmitter
 }
 
 func NewProfileService(root string) *ProfileService {
-	return &ProfileService{root: root}
+	return &ProfileService{root: root, store: NewStore(root)}
+}
+
+// ProfileStore returns the process-scoped user-profile store for sharing with
+// other composition-root consumers (e.g. companion).
+func (s *ProfileService) ProfileStore() *Store {
+	if s == nil {
+		return nil
+	}
+	return s.store
+}
+
+// AttachConfigEmitter wires configuration-change delivery from main.
+func AttachConfigEmitter(s *ProfileService, emit notify.ConfigEmitter) {
+	if s == nil {
+		return
+	}
+	s.emit = emit
+}
+
+func (s *ProfileService) emitChange(change notify.ConfigurationChange) {
+	if s != nil && s.emit != nil {
+		s.emit(change)
+	}
 }
 
 func (s *ProfileService) Current() (*Snapshot, error) {
-	return NewStore(s.root).Current()
+	return s.store.Current()
 }
 
 func (s *ProfileService) SetPreferredName(preferredName *string) (Update, error) {
-	update, err := NewStore(s.root).SetPreferredName(preferredName)
+	update, err := s.store.SetPreferredName(preferredName)
 	if err != nil {
 		return Update{}, err
 	}
@@ -24,15 +49,15 @@ func (s *ProfileService) SetPreferredName(preferredName *string) (Update, error)
 		value := update.Profile.Revision
 		revision = &value
 	}
-	notify.Emit(notify.UserProfileChanged(revision))
+	s.emitChange(notify.UserProfileChanged(revision))
 	return update, nil
 }
 
 func (s *ProfileService) Clear() (Update, error) {
-	update, err := NewStore(s.root).Clear()
+	update, err := s.store.Clear()
 	if err != nil {
 		return Update{}, err
 	}
-	notify.Emit(notify.UserProfileChanged(nil))
+	s.emitChange(notify.UserProfileChanged(nil))
 	return update, nil
 }

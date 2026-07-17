@@ -1,27 +1,8 @@
 package companion
 
 import (
-	"errors"
 	"testing"
 )
-
-func TestRuntimeSubmitTurnReturnsExplicitNotMigratedError(t *testing.T) {
-	_, err := Runtime{}.SubmitTurn(SubmitTurnRequest{
-		ConversationID: "conversation-1",
-		Input:          "你好",
-		SpeechEnabled:  true,
-	})
-	if !errors.Is(err, ErrRespondRuntimeNotMigrated) {
-		t.Fatalf("SubmitTurn() error = %v, want %v", err, ErrRespondRuntimeNotMigrated)
-	}
-}
-
-func TestRuntimeSubmitTurnValidatesInputBeforeMigrationError(t *testing.T) {
-	_, err := Runtime{}.SubmitTurn(SubmitTurnRequest{ConversationID: "conversation-1"})
-	if err == nil || errors.Is(err, ErrRespondRuntimeNotMigrated) {
-		t.Fatalf("SubmitTurn() error = %v, want validation error", err)
-	}
-}
 
 func TestValidateSubmitTurnRequestRejectsInvalidInput(t *testing.T) {
 	tests := []struct {

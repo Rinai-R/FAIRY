@@ -113,7 +113,7 @@ func TestReplayFixtureHarnessCoversSuccessContinuationCacheCompactionAndNoLeak(t
 			replayTextEvents("resp_compact_1", "用户连续问候，角色持续回应在场。", nil, nil, nil),
 		},
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, transport))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, transport, nil), nil)
 
 	var emittedMu sync.Mutex
 	var emitted []HarnessEvent
@@ -222,7 +222,7 @@ func TestReplayFixtureHarnessRejectsDecisionLeak(t *testing.T) {
 			replayTextEvents("resp_leak", "{\"decision\":{\"stance\":\"bad\"},\"chains\":[{\"visualState\":\"idle\",\"text\":\"不该成功。\"}]}", intPtr(9), nil, nil),
 		},
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, transport))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, transport, nil), nil)
 	_, submitErr := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 		ConversationID:        bootstrap.Conversation.ID,
 		Input:                 "触发泄漏",

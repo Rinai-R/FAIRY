@@ -85,7 +85,7 @@ func TestCompanionServiceBackgroundExtractionCommitsCreateMutation(t *testing.T)
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
 	for index := 0; index < int(extractionThreshold); index++ {
 		outcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 			ConversationID:        bootstrap.Conversation.ID,
@@ -131,7 +131,7 @@ func TestScheduleBackgroundExtractionWaitsBelowThreshold(t *testing.T) {
 	if _, err := memoryStore.CompleteTurn(bootstrap.Conversation.ID, turn.ID, "好。"); err != nil {
 		t.Fatalf("CompleteTurn() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{}, nil), nil)
 	service.scheduleBackgroundExtraction(bootstrap.Conversation.ID)
 	time.Sleep(50 * time.Millisecond)
 	pending, err := memoryStore.PendingExtractionTurnCount(bootstrap.Conversation.ID)

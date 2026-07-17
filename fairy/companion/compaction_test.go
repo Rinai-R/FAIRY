@@ -90,7 +90,7 @@ func TestRecordContextWindowFailureIncrementsBreakerCount(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveContextWindow() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(t.TempDir(), store, nil)
+	service := NewCompanionServiceWithRuntime(t.TempDir(), store, nil, nil)
 	if err := service.recordContextWindowFailure(bootstrap.Conversation.ID); err != nil {
 		t.Fatalf("recordContextWindowFailure() error = %v", err)
 	}
@@ -254,7 +254,7 @@ func TestCompactConversationUsesRespondPromptCacheKey(t *testing.T) {
 	if _, err := memoryStore.CompleteTurn(bootstrap.Conversation.ID, turn.ID, "我在。"); err != nil {
 		t.Fatalf("CompleteTurn() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
 	if _, err := service.CompactConversation(bootstrap.Conversation.ID); err != nil {
 		t.Fatalf("CompactConversation() error = %v", err)
 	}

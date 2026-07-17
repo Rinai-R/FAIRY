@@ -17,7 +17,7 @@ func TestWebSearchSettingsDefaultEnabled(t *testing.T) {
 	if !settings.Enabled {
 		t.Fatal("enabled should default true")
 	}
-	service := NewConfigService(root)
+	service := NewConfigService(root, nil)
 	status, err := service.WebSearchStatus()
 	if err != nil {
 		t.Fatal(err)

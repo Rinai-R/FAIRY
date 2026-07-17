@@ -11,17 +11,18 @@ import (
 type ModelService struct {
 	root      string
 	transport Transport
+	secrets   *secret.Store
 }
 
-func NewModelService(root string) *ModelService {
-	return &ModelService{root: root, transport: SDKTransport{}}
+func NewModelService(root string, secrets *secret.Store) *ModelService {
+	return &ModelService{root: root, transport: SDKTransport{}, secrets: secrets}
 }
 
-func NewModelServiceWithTransport(root string, transport Transport) *ModelService {
+func NewModelServiceWithTransport(root string, transport Transport, secrets *secret.Store) *ModelService {
 	if transport == nil {
 		transport = SDKTransport{}
 	}
-	return &ModelService{root: root, transport: transport}
+	return &ModelService{root: root, transport: transport, secrets: secrets}
 }
 
 func (s *ModelService) BuildRequestDraft(request CompiledPromptRequest) (RequestDraft, error) {
@@ -106,11 +107,11 @@ func (s *ModelService) bearerCredential(connection config.ModelConnection) (stri
 	if connection.AuthMode == "no_auth" {
 		return "", nil
 	}
-	dbPath, err := secret.DatabasePath(s.root)
+	store, err := resolveSecretStore(s.root, s.secrets)
 	if err != nil {
 		return "", err
 	}
-	value, ok, err := secret.NewStore(dbPath).Load(connection.ConnectionID)
+	value, ok, err := store.Load(connection.ConnectionID)
 	if err != nil {
 		return "", fmt.Errorf("loading model bearer credential: %w", err)
 	}
@@ -118,4 +119,15 @@ func (s *ModelService) bearerCredential(connection config.ModelConnection) (stri
 		return "", fmt.Errorf("model bearer credential is not configured for connection %s", connection.ConnectionID)
 	}
 	return value.Expose(), nil
+}
+
+func resolveSecretStore(root string, secrets *secret.Store) (*secret.Store, error) {
+	if secrets != nil {
+		return secrets, nil
+	}
+	dbPath, err := secret.DatabasePath(root)
+	if err != nil {
+		return nil, err
+	}
+	return secret.NewStore(dbPath), nil
 }

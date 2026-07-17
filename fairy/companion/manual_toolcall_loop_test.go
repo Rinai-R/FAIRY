@@ -107,7 +107,7 @@ func TestManualToolCallAdvertisesMemoryAndWebTools(t *testing.T) {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
 	transport := &toolCallRecordingTransport{inner: model.SDKTransport{}}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, transport))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, transport, nil), nil)
 
 	outcome, err := service.SubmitTurn(SubmitTurnRequest{
 		ConversationID: bootstrap.Conversation.ID,
@@ -157,7 +157,7 @@ func TestManualToolCallWebSearchAgentLoop(t *testing.T) {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
 	transport := &toolCallRecordingTransport{inner: model.SDKTransport{}}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, transport))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, transport, nil), nil)
 
 	outcome, err := service.SubmitTurn(SubmitTurnRequest{
 		ConversationID: bootstrap.Conversation.ID,
@@ -224,7 +224,7 @@ func TestManualToolCallMemorySearchAgentLoop(t *testing.T) {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
 	transport := &toolCallRecordingTransport{inner: model.SDKTransport{}}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, transport))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, transport, nil), nil)
 
 	outcome, err := service.SubmitTurn(SubmitTurnRequest{
 		ConversationID: bootstrap.Conversation.ID,

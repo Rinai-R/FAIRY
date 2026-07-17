@@ -69,7 +69,7 @@ func TestSubmitCompiledTurnUsesSuffixContinuationWhenCacheRetentionSupported(t *
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
 	states := []VisualState{{ID: "idle", Description: "idle 状态说明"}}
 
 	if _, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
@@ -85,7 +85,7 @@ func TestSubmitCompiledTurnUsesSuffixContinuationWhenCacheRetentionSupported(t *
 	} else if !ok || record.PreviousResponseID != "resp_1" || record.RequestShapeHash == "" || record.InputPrefixHash == "" || record.ResponseItemHash == "" {
 		t.Fatalf("persisted continuation record = %#v ok=%t", record, ok)
 	}
-	service = NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	service = NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
 	secondOutcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 		ConversationID:        bootstrap.Conversation.ID,
 		Input:                 "第二轮",
@@ -141,7 +141,7 @@ func TestDecideContinuationFromPersistentHashesUsesDistinctReasons(t *testing.T)
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, nil)
+	service := NewCompanionServiceWithRuntime(root, memoryStore, nil, nil)
 	shape := model.ModelRequestShape{
 		Lane:            model.PromptLaneRespond,
 		Model:           "deepseek-v4-flash",

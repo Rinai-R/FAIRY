@@ -152,7 +152,7 @@ func TestSaveModelConnectionWritesConfigAndSecret(t *testing.T) {
 		Model:               "deepseek-v4-flash",
 		ContextWindowTokens: 1048576,
 		AuthMode:            "bearer_key",
-	}, &apiKey)
+	}, &apiKey, nil)
 	if err != nil {
 		t.Fatalf("SaveModelConnection() error = %v", err)
 	}
@@ -175,10 +175,10 @@ func TestSaveModelConnectionWritesConfigAndSecret(t *testing.T) {
 func TestSaveModelConnectionPreservesExistingSecretWhenKeyOmitted(t *testing.T) {
 	root := t.TempDir()
 	apiKey := "sk-test-secret"
-	if _, err := SaveModelConnection(root, ModelConnectionInput{Protocol: "chat_completions", Endpoint: "https://api.deepseek.com", Model: "deepseek-v4-flash", ContextWindowTokens: 1048576, AuthMode: "bearer_key"}, &apiKey); err != nil {
+	if _, err := SaveModelConnection(root, ModelConnectionInput{Protocol: "chat_completions", Endpoint: "https://api.deepseek.com", Model: "deepseek-v4-flash", ContextWindowTokens: 1048576, AuthMode: "bearer_key"}, &apiKey, nil); err != nil {
 		t.Fatalf("initial SaveModelConnection() error = %v", err)
 	}
-	if _, err := SaveModelConnection(root, ModelConnectionInput{Protocol: "responses", Endpoint: "https://api.deepseek.com", Model: "deepseek-v4-flash", ContextWindowTokens: 1048576, AuthMode: "bearer_key"}, nil); err != nil {
+	if _, err := SaveModelConnection(root, ModelConnectionInput{Protocol: "responses", Endpoint: "https://api.deepseek.com", Model: "deepseek-v4-flash", ContextWindowTokens: 1048576, AuthMode: "bearer_key"}, nil, nil); err != nil {
 		t.Fatalf("second SaveModelConnection() error = %v", err)
 	}
 }
@@ -186,14 +186,14 @@ func TestSaveModelConnectionPreservesExistingSecretWhenKeyOmitted(t *testing.T) 
 func TestSaveModelConnectionNoAuthDeletesExistingSecret(t *testing.T) {
 	root := t.TempDir()
 	apiKey := "sk-test-secret"
-	if _, err := SaveModelConnection(root, ModelConnectionInput{Protocol: "chat_completions", Endpoint: "https://api.deepseek.com", Model: "deepseek-v4-flash", ContextWindowTokens: 1048576, AuthMode: "bearer_key"}, &apiKey); err != nil {
+	if _, err := SaveModelConnection(root, ModelConnectionInput{Protocol: "chat_completions", Endpoint: "https://api.deepseek.com", Model: "deepseek-v4-flash", ContextWindowTokens: 1048576, AuthMode: "bearer_key"}, &apiKey, nil); err != nil {
 		t.Fatalf("initial SaveModelConnection() error = %v", err)
 	}
 	connection, err := ReadModelConnection(root)
 	if err != nil {
 		t.Fatalf("ReadModelConnection() error = %v", err)
 	}
-	if _, err := SaveModelConnection(root, ModelConnectionInput{Protocol: "chat_completions", Endpoint: "https://api.deepseek.com", Model: "deepseek-v4-flash", ContextWindowTokens: 1048576, AuthMode: "no_auth"}, nil); err != nil {
+	if _, err := SaveModelConnection(root, ModelConnectionInput{Protocol: "chat_completions", Endpoint: "https://api.deepseek.com", Model: "deepseek-v4-flash", ContextWindowTokens: 1048576, AuthMode: "no_auth"}, nil, nil); err != nil {
 		t.Fatalf("no_auth SaveModelConnection() error = %v", err)
 	}
 	_, ok, err := secret.NewStore(filepath.Join(root, secret.RelativePath)).Load(connection.ConnectionID)
@@ -208,10 +208,10 @@ func TestSaveModelConnectionNoAuthDeletesExistingSecret(t *testing.T) {
 func TestClearModelConnectionDeletesConfigAndSecret(t *testing.T) {
 	root := t.TempDir()
 	apiKey := "sk-test-secret"
-	if _, err := SaveModelConnection(root, ModelConnectionInput{Protocol: "chat_completions", Endpoint: "https://api.deepseek.com", Model: "deepseek-v4-flash", ContextWindowTokens: 1048576, AuthMode: "bearer_key"}, &apiKey); err != nil {
+	if _, err := SaveModelConnection(root, ModelConnectionInput{Protocol: "chat_completions", Endpoint: "https://api.deepseek.com", Model: "deepseek-v4-flash", ContextWindowTokens: 1048576, AuthMode: "bearer_key"}, &apiKey, nil); err != nil {
 		t.Fatalf("SaveModelConnection() error = %v", err)
 	}
-	cleared, err := ClearModelConnection(root)
+	cleared, err := ClearModelConnection(root, nil)
 	if err != nil {
 		t.Fatalf("ClearModelConnection() error = %v", err)
 	}

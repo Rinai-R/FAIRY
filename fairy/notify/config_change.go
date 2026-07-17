@@ -67,17 +67,7 @@ func (c ConfigurationChange) MarshalJSON() ([]byte, error) {
 	}
 }
 
+// ConfigEmitter delivers configuration-change events. Callers (main) inject an
+// implementation into character/config/profile services — there is no package
+// global emitter.
 type ConfigEmitter func(ConfigurationChange)
-
-var emitConfig ConfigEmitter
-
-// AttachConfigEmitter wires Wails Event.Emit from main.
-func AttachConfigEmitter(emit ConfigEmitter) {
-	emitConfig = emit
-}
-
-func Emit(change ConfigurationChange) {
-	if emitConfig != nil {
-		emitConfig(change)
-	}
-}

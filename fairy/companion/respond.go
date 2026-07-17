@@ -40,15 +40,6 @@ type TurnOutcome struct {
 	MigrationMessage string       `json:"migrationMessage"`
 }
 
-type Runtime struct{}
-
-func (Runtime) SubmitTurn(request SubmitTurnRequest) (TurnOutcome, error) {
-	if err := ValidateSubmitTurnRequest(request); err != nil {
-		return TurnOutcome{}, err
-	}
-	return TurnOutcome{}, ErrRespondRuntimeNotMigrated
-}
-
 func ValidateSubmitTurnRequest(request SubmitTurnRequest) error {
 	if strings.TrimSpace(request.ConversationID) == "" {
 		return errors.New("conversation_id is required")

@@ -136,7 +136,7 @@ func TestCompanionServiceSubmitTurnResolvesVisualStates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
 	outcome, err := service.SubmitTurn(SubmitTurnRequest{
 		ConversationID: bootstrap.Conversation.ID,
 		Input:          "你好",
@@ -233,7 +233,7 @@ func TestCompanionServiceSubmitCompiledTurnPersistsCompletedAssistant(t *testing
 		t.Fatalf("CreatePersonalMemory() error = %v", err)
 	}
 	insertKnowledgeFixtureForCompanion(t, root, bootstrap.Conversation.ID, seedTurn.ID)
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
 
 	outcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 		ConversationID:        bootstrap.Conversation.ID,
@@ -276,7 +276,7 @@ func TestCompanionServiceSubmitCompiledTurnFailureKeepsOnlyUserMessage(t *testin
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
 
 	_, err = service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 		ConversationID:        bootstrap.Conversation.ID,
@@ -331,7 +331,7 @@ func TestCompanionServiceSubmitCompiledTurnSkipsAutoRetrieve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
 	outcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 		ConversationID:        bootstrap.Conversation.ID,
 		Input:                 "你好世界",
@@ -404,7 +404,7 @@ func TestCompanionServiceCompactConversationCommitsPromptWindow(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveContextWindow() error = %v", err)
 	}
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
 	result, err := service.CompactConversation(bootstrap.Conversation.ID)
 	if err != nil {
 		t.Fatalf("CompactConversation() error = %v", err)
@@ -483,7 +483,7 @@ func TestCompanionServiceCompactConversationCommitFailureKeepsContinuationAndWin
 	t.Cleanup(server.Close)
 
 	writeModelConnectionWithEndpoint(t, root, "chat_completions", server.URL, "no_auth")
-	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}))
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
 	if _, err := service.CompactConversation(bootstrap.Conversation.ID); err == nil || !strings.Contains(err.Error(), "prompt window revision changed") {
 		t.Fatalf("CompactConversation() error = %v, want stale revision", err)
 	}

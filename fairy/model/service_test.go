@@ -60,7 +60,7 @@ func modelServiceRequest() CompiledPromptRequest {
 func TestModelServiceBuildRequestDraftUsesStoredConnection(t *testing.T) {
 	root := t.TempDir()
 	writeModelConnection(t, root, "chat_completions")
-	service := NewModelService(root)
+	service := NewModelService(root, nil)
 
 	draft, err := service.BuildRequestDraft(modelServiceRequest())
 	if err != nil {
@@ -81,7 +81,7 @@ func TestModelServiceBuildRequestDraftUsesStoredConnection(t *testing.T) {
 }
 
 func TestModelServiceBuildRequestDraftFailsWhenUnconfigured(t *testing.T) {
-	service := NewModelService(t.TempDir())
+	service := NewModelService(t.TempDir(), nil)
 	_, err := service.BuildRequestDraft(modelServiceRequest())
 	if err == nil {
 		t.Fatal("BuildRequestDraft() error = nil, want unconfigured error")
@@ -102,7 +102,7 @@ func TestModelServiceExecuteRequestUsesStoredSecretWithoutReturningIt(t *testing
 	root := t.TempDir()
 	writeModelConnectionWithEndpoint(t, root, "chat_completions", server.URL, "bearer_key")
 	saveModelSecret(t, root, "sk-service-secret")
-	service := NewModelServiceWithTransport(root, SDKTransport{HTTPClient: server.Client()})
+	service := NewModelServiceWithTransport(root, SDKTransport{HTTPClient: server.Client()}, nil)
 
 	events, err := service.ExecuteRequest(modelServiceRequest())
 	if err != nil {
@@ -125,7 +125,7 @@ func TestModelServiceExecuteRequestUsesStoredSecretWithoutReturningIt(t *testing
 func TestModelServiceExecuteRequestFailsWithoutStoredSecret(t *testing.T) {
 	root := t.TempDir()
 	writeModelConnection(t, root, "chat_completions")
-	service := NewModelService(root)
+	service := NewModelService(root, nil)
 
 	_, err := service.ExecuteRequest(modelServiceRequest())
 	if err == nil {
@@ -148,7 +148,7 @@ func TestModelServiceExecuteRequestOmitsSecretForNoAuth(t *testing.T) {
 
 	root := t.TempDir()
 	writeModelConnectionWithEndpoint(t, root, "chat_completions", server.URL, "no_auth")
-	service := NewModelServiceWithTransport(root, SDKTransport{HTTPClient: server.Client()})
+	service := NewModelServiceWithTransport(root, SDKTransport{HTTPClient: server.Client()}, nil)
 
 	events, err := service.ExecuteRequest(modelServiceRequest())
 	if err != nil {

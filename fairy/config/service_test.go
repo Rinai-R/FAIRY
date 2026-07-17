@@ -3,7 +3,7 @@ package config
 import "testing"
 
 func TestConfigServiceSaveAndClearModelConnection(t *testing.T) {
-	service := NewConfigService(t.TempDir())
+	service := NewConfigService(t.TempDir(), nil)
 	apiKey := "sk-test-secret"
 	status, err := service.SaveModelConnection(ModelConnectionInput{
 		Protocol:            "chat_completions",

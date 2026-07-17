@@ -115,7 +115,7 @@ func ReadModelConnection(root string) (ModelConnection, error) {
 	return ParseModelConnection(data)
 }
 
-func SaveModelConnection(root string, input ModelConnectionInput, apiKey *string) (ModelConnectionStatus, error) {
+func SaveModelConnection(root string, input ModelConnectionInput, apiKey *string, secrets *secret.Store) (ModelConnectionStatus, error) {
 	if root == "" {
 		return ModelConnectionStatus{}, errors.New("config root is required")
 	}
@@ -131,11 +131,10 @@ func SaveModelConnection(root string, input ModelConnectionInput, apiKey *string
 	if err != nil {
 		return ModelConnectionStatus{}, err
 	}
-	dbPath, err := secret.DatabasePath(root)
+	store, err := resolveSecretStore(root, secrets)
 	if err != nil {
 		return ModelConnectionStatus{}, err
 	}
-	store := secret.NewStore(dbPath)
 	if connection.AuthMode == "bearer_key" {
 		if apiKey != nil {
 			value, err := secret.NewValue(*apiKey)
@@ -170,7 +169,7 @@ func SaveModelConnection(root string, input ModelConnectionInput, apiKey *string
 	return statusFromConnection(connection), nil
 }
 
-func ClearModelConnection(root string) (bool, error) {
+func ClearModelConnection(root string, secrets *secret.Store) (bool, error) {
 	existing, err := ReadModelConnection(root)
 	if err != nil {
 		if err.Error() == "model connection is not configured" {
@@ -179,11 +178,11 @@ func ClearModelConnection(root string) (bool, error) {
 		return false, err
 	}
 	if existing.AuthMode == "bearer_key" {
-		dbPath, err := secret.DatabasePath(root)
+		store, err := resolveSecretStore(root, secrets)
 		if err != nil {
 			return false, err
 		}
-		if err := secret.NewStore(dbPath).Delete(existing.ConnectionID); err != nil {
+		if err := store.Delete(existing.ConnectionID); err != nil {
 			return false, err
 		}
 	}
@@ -194,6 +193,19 @@ func ClearModelConnection(root string) (bool, error) {
 		return false, fmt.Errorf("clearing model connection: %w", err)
 	}
 	return true, nil
+}
+
+// resolveSecretStore prefers an injected store from main; when nil it opens the
+// path-handle under root (test-friendly fallback).
+func resolveSecretStore(root string, secrets *secret.Store) (*secret.Store, error) {
+	if secrets != nil {
+		return secrets, nil
+	}
+	dbPath, err := secret.DatabasePath(root)
+	if err != nil {
+		return nil, err
+	}
+	return secret.NewStore(dbPath), nil
 }
 
 func ParseModelConnectionStatus(data []byte) (ModelConnectionStatus, error) {
