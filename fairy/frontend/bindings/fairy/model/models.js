@@ -334,6 +334,20 @@ export class Usage {
              */
             this["completionTokens"] = 0;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | null | undefined}
+             */
+            this["cachedInputTokens"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | null | undefined}
+             */
+            this["cacheWriteTokens"] = undefined;
+        }
 
         Object.assign(this, $$source);
     }

@@ -6,7 +6,6 @@ type BootstrapOptions struct {
 	AppName                string
 	MigrationStage         string
 	WailsVersion           string
-	LegacyTauriPreserved   bool
 	RespondRuntimeMigrated bool
 }
 
@@ -18,7 +17,6 @@ type BootstrapStatus struct {
 	AppName                string `json:"appName"`
 	MigrationStage         string `json:"migrationStage"`
 	WailsVersion           string `json:"wailsVersion"`
-	LegacyTauriPreserved   bool   `json:"legacyTauriPreserved"`
 	RespondRuntimeMigrated bool   `json:"respondRuntimeMigrated"`
 }
 
@@ -28,7 +26,6 @@ func NewBootstrapService(options BootstrapOptions) *BootstrapService {
 			AppName:                options.AppName,
 			MigrationStage:         options.MigrationStage,
 			WailsVersion:           options.WailsVersion,
-			LegacyTauriPreserved:   options.LegacyTauriPreserved,
 			RespondRuntimeMigrated: options.RespondRuntimeMigrated,
 		},
 	}

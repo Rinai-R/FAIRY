@@ -36,36 +36,8 @@ import {
   TextField,
   Tooltip,
 } from "@radix-ui/themes";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AnimatePresence, motion } from "motion/react";
 
-import {
-  activateCharacter,
-  assignLegacyRelationship,
-  clearModelConnection,
-  clearUserProfile,
-  createCharacter,
-  exportCharacterPackage,
-  createPersonalMemory,
-  importCharacterPackage,
-  confirmKnowledgeCandidate,
-  getModelConnectionStatus,
-  getIntelligenceStatus,
-  getExtractionBatchCatalog,
-  getKnowledgeCatalog,
-  getPersonalMemoryCatalog,
-  getUserProfile,
-  listCharacters,
-  listVisualPacks,
-  saveModelConnection,
-  retryExtractionBatch,
-  revisePersonalMemory,
-  setUserProfile,
-  setCharacterAppearance,
-  tombstoneKnowledge,
-  tombstonePersonalMemory,
-  updateCharacter,
-} from "../companionClient.mjs";
 import {
   selectCharacterPackageFile,
   selectCharacterPackageSavePath,
@@ -132,6 +104,11 @@ const EMPTY_CATALOG = Object.freeze({
   diagnostics: Object.freeze([]),
 });
 const EMPTY_VISUAL_CATALOG = Object.freeze({ visualPacks: Object.freeze([]) });
+const BROWSER_PREVIEW_INTELLIGENCE_ERROR = Object.freeze({
+  code: "DESKTOP_RUNTIME_UNAVAILABLE",
+  message: "浏览器预览无法读取记忆与知识状态。",
+  retryable: false,
+});
 
 const SECTION_ICONS = Object.freeze({
   character: PersonIcon,
@@ -189,15 +166,6 @@ function fileUriToPath(value) {
   } catch {
     return "";
   }
-}
-
-function pointInsideElement(element, position) {
-  if (!element || !position) return false;
-  const rect = element.getBoundingClientRect();
-  const scale = window.devicePixelRatio || 1;
-  const x = Number(position.x ?? position.X ?? 0) / scale;
-  const y = Number(position.y ?? position.Y ?? 0) / scale;
-  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
 
 function intelligenceStatusFromWailsSummary(summary, activeBackgroundJobs = 0) {
@@ -445,141 +413,121 @@ export function ControlPanelApp() {
   const disabled = pending !== null || closeRequested;
 
   async function loadActiveCharacterCatalog() {
-    if (isWailsRuntime()) return loadWailsCharacterCatalog();
-    return listCharacters();
+    if (!isWailsRuntime()) return EMPTY_CATALOG;
+    return loadWailsCharacterCatalog();
   }
 
   async function loadActiveIntelligenceStatus() {
-    if (isWailsRuntime()) {
-      try {
-        const [summary, activeBackgroundJobs] = await Promise.all([
-          loadWailsMemorySummary(),
-          loadWailsActiveBackgroundJobs(),
-        ]);
-        return intelligenceStatusFromWailsSummary(summary, activeBackgroundJobs);
-      } catch (error) {
-        return intelligenceStatusFromWailsError(error);
-      }
+    if (!isWailsRuntime()) {
+      return intelligenceStatusFromWailsError(BROWSER_PREVIEW_INTELLIGENCE_ERROR);
     }
-    return getIntelligenceStatus();
+    try {
+      const [summary, activeBackgroundJobs] = await Promise.all([
+        loadWailsMemorySummary(),
+        loadWailsActiveBackgroundJobs(),
+      ]);
+      return intelligenceStatusFromWailsSummary(summary, activeBackgroundJobs);
+    } catch (error) {
+      return intelligenceStatusFromWailsError(error);
+    }
   }
 
   async function loadActiveModelStatus() {
-    if (isWailsRuntime()) return controlPanelModelStatusFromWails(await loadWailsModelStatus());
-    return getModelConnectionStatus();
+    if (!isWailsRuntime()) {
+      return Object.freeze({ configured: false, ready: false, config: null, error: null });
+    }
+    return controlPanelModelStatusFromWails(await loadWailsModelStatus());
   }
 
   async function saveActiveModelConnection(input, key) {
-    if (isWailsRuntime()) return controlPanelModelStatusFromWails(await saveWailsModelConnection(input, key));
-    return saveModelConnection(input, key);
+    return controlPanelModelStatusFromWails(await saveWailsModelConnection(input, key));
   }
 
   async function clearActiveModelConnection() {
-    if (isWailsRuntime()) return controlPanelModelStatusFromWails(await clearWailsModelConnection());
-    return clearModelConnection();
+    return controlPanelModelStatusFromWails(await clearWailsModelConnection());
   }
 
   async function loadActiveUserProfile() {
-    if (isWailsRuntime()) return loadWailsUserProfile();
-    return getUserProfile();
+    if (!isWailsRuntime()) return null;
+    return loadWailsUserProfile();
   }
 
   async function setActiveUserProfile(name) {
-    if (isWailsRuntime()) return setWailsUserProfile(name);
-    return setUserProfile(name);
+    return setWailsUserProfile(name);
   }
 
   async function clearActiveUserProfile() {
-    if (isWailsRuntime()) return clearWailsUserProfile();
-    return clearUserProfile();
+    return clearWailsUserProfile();
   }
 
   async function createActiveCharacter(brief, packId) {
-    if (isWailsRuntime()) return createWailsCharacter(brief, packId);
-    return createCharacter(brief, packId);
+    return createWailsCharacter(brief, packId);
   }
 
   async function updateActiveCharacter(id, brief) {
-    if (isWailsRuntime()) return updateWailsCharacter(id, brief);
-    return updateCharacter(id, brief);
+    return updateWailsCharacter(id, brief);
   }
 
   async function setActiveCharacterAppearance(id, packId) {
-    if (isWailsRuntime()) return setWailsCharacterAppearance(id, packId);
-    return setCharacterAppearance(id, packId);
+    return setWailsCharacterAppearance(id, packId);
   }
 
   async function activateActiveCharacter(id, revision) {
-    if (isWailsRuntime()) {
-      await activateWailsCharacter(id, revision);
-      return createWailsCompanionSession(id);
-    }
-    return activateCharacter(id, revision);
+    await activateWailsCharacter(id, revision);
+    return createWailsCompanionSession(id);
   }
 
   async function importActiveCharacterPackage(packagePath) {
-    if (isWailsRuntime()) return importWailsCharacterPackage(packagePath);
-    return importCharacterPackage(packagePath);
+    return importWailsCharacterPackage(packagePath);
   }
 
   async function exportActiveCharacterPackage(id, outputPath) {
-    if (isWailsRuntime()) return exportWailsCharacterPackage(id, outputPath);
-    return exportCharacterPackage(id, outputPath);
+    return exportWailsCharacterPackage(id, outputPath);
   }
 
   async function loadActiveVisualCatalog() {
-    if (isWailsRuntime()) return loadWailsVisualPackCatalog();
-    return listVisualPacks();
+    if (!isWailsRuntime()) return EMPTY_VISUAL_CATALOG;
+    return loadWailsVisualPackCatalog();
   }
 
   async function loadActivePersonalMemoryCatalog(characterIdValue) {
-    if (isWailsRuntime()) return loadWailsPersonalMemoryCatalog(characterIdValue);
-    return getPersonalMemoryCatalog(characterIdValue);
+    return loadWailsPersonalMemoryCatalog(characterIdValue);
   }
 
   async function createActivePersonalMemory(input) {
-    if (isWailsRuntime()) return createWailsPersonalMemory(input);
-    return createPersonalMemory(input);
+    return createWailsPersonalMemory(input);
   }
 
   async function reviseActivePersonalMemory(id, content) {
-    if (isWailsRuntime()) return reviseWailsPersonalMemory(id, content);
-    return revisePersonalMemory(id, content);
+    return reviseWailsPersonalMemory(id, content);
   }
 
   async function tombstoneActivePersonalMemory(id) {
-    if (isWailsRuntime()) return tombstoneWailsPersonalMemory(id);
-    return tombstonePersonalMemory(id);
+    return tombstoneWailsPersonalMemory(id);
   }
 
   async function assignActiveLegacyRelationship(id, characterIdValue) {
-    if (isWailsRuntime()) return assignWailsLegacyRelationship(id, characterIdValue);
-    return assignLegacyRelationship(id, characterIdValue);
+    return assignWailsLegacyRelationship(id, characterIdValue);
   }
 
   async function loadActiveKnowledgeCatalog() {
-    if (isWailsRuntime()) return loadWailsKnowledgeCatalog();
-    return getKnowledgeCatalog();
+    return loadWailsKnowledgeCatalog();
   }
 
   async function confirmActiveKnowledgeCandidate(id) {
-    if (isWailsRuntime()) return confirmWailsKnowledgeCandidate(id);
-    return confirmKnowledgeCandidate(id);
+    return confirmWailsKnowledgeCandidate(id);
   }
 
   async function tombstoneActiveKnowledge(id) {
-    if (isWailsRuntime()) return tombstoneWailsKnowledge(id);
-    return tombstoneKnowledge(id);
+    return tombstoneWailsKnowledge(id);
   }
 
   async function loadActiveExtractionBatchCatalog(characterIdValue) {
-    if (isWailsRuntime()) return loadWailsExtractionBatchCatalog(characterIdValue);
-    return getExtractionBatchCatalog(characterIdValue);
+    return loadWailsExtractionBatchCatalog(characterIdValue);
   }
 
   async function retryActiveExtractionBatch(id) {
-    if (isWailsRuntime()) return retryWailsExtractionBatch(id);
-    return retryExtractionBatch(id);
+    return retryWailsExtractionBatch(id);
   }
 
   const refreshIntelligence = useCallback(async () => {
@@ -778,71 +726,40 @@ export function ControlPanelApp() {
   useEffect(() => {
     let cancelled = false;
     let unlisten = null;
-    let dragDropSubscription;
 
-    if (isWailsRuntime()) {
-      (async () => {
-        try {
-          const { Events } = await import("@wailsio/runtime");
-          if (cancelled || typeof Events?.On !== "function") return;
-          const off = Events.On("character-package-dropped", (event) => {
-            if (cancelled || section !== "character" || disabled) return;
-            const files = event?.data?.files ?? event?.files ?? [];
-            const packagePath =
-              files.find((path) => typeof path === "string" && (path.endsWith(".pack") || path.endsWith(".zip"))) ??
-              files[0] ??
-              "";
-            if (!packagePath) {
-              setError({
-                code: "INVALID_VISUAL_MANIFEST",
-                message: "拖入的文件不是 .pack 或 .zip 角色包。",
-                retryable: false,
-              });
-              return;
-            }
-            setCharacterPackageDragActive(false);
-            void importPackageFromPath(packagePath);
-          });
-          unlisten = typeof off === "function" ? off : () => {};
-        } catch {
-          // Browser preview has no Wails events; Finder button remains the primary path.
-        }
-      })();
-    } else {
-      try {
-        dragDropSubscription = getCurrentWebview().onDragDropEvent((event) => {
-          if (cancelled || section !== "character" || disabled) return;
-          const payload = event.payload;
-          if (payload.type === "enter" || payload.type === "over") {
-            setCharacterPackageDragActive(pointInsideElement(packageDropzoneRef.current, payload.position));
-            return;
-          }
-          if (payload.type === "leave") {
-            setCharacterPackageDragActive(false);
-            return;
-          }
-          if (payload.type === "drop") {
-            const inside = pointInsideElement(packageDropzoneRef.current, payload.position);
-            setCharacterPackageDragActive(false);
-            if (!inside) return;
-            const packagePath = payload.paths?.find((path) => path.endsWith(".pack") || path.endsWith(".zip")) ?? payload.paths?.[0] ?? "";
-            if (!packagePath) {
-              setError({ code: "INVALID_VISUAL_MANIFEST", message: "拖入的文件不是 .pack 或 .zip 角色包。", retryable: false });
-              return;
-            }
-            void importPackageFromPath(packagePath);
-          }
-        });
-      } catch {
-        dragDropSubscription = null;
-      }
-      dragDropSubscription?.then((cleanup) => {
-        if (cancelled) cleanup();
-        else unlisten = cleanup;
-      }).catch(() => {
-        // Browser preview has no Tauri webview; Finder button remains the primary path.
-      });
+    if (!isWailsRuntime()) {
+      return () => {
+        cancelled = true;
+      };
     }
+
+    (async () => {
+      try {
+        const { Events } = await import("@wailsio/runtime");
+        if (cancelled || typeof Events?.On !== "function") return;
+        const off = Events.On("character-package-dropped", (event) => {
+          if (cancelled || section !== "character" || disabled) return;
+          const files = event?.data?.files ?? event?.files ?? [];
+          const packagePath =
+            files.find((path) => typeof path === "string" && (path.endsWith(".pack") || path.endsWith(".zip"))) ??
+            files[0] ??
+            "";
+          if (!packagePath) {
+            setError({
+              code: "INVALID_VISUAL_MANIFEST",
+              message: "拖入的文件不是 .pack 或 .zip 角色包。",
+              retryable: false,
+            });
+            return;
+          }
+          setCharacterPackageDragActive(false);
+          void importPackageFromPath(packagePath);
+        });
+        unlisten = typeof off === "function" ? off : () => {};
+      } catch {
+        // Browser preview has no Wails events; Finder button remains the primary path.
+      }
+    })();
 
     return () => {
       cancelled = true;
@@ -985,7 +902,7 @@ export function ControlPanelApp() {
             exit={{ opacity: 0, y: 16, scale: 0.95 }}
           >
             <Card className="cp-shell" size="2">
-              <div className="cp-drag-region" data-tauri-drag-region aria-hidden="true" />
+              <div className="cp-drag-region" aria-hidden="true" />
               <header className="cp-header">
                 <Flex align="center" gap="3">
                   <span className="cp-brand-mark" aria-hidden="true"><MagicWandIcon /></span>

@@ -35,6 +35,16 @@ export function trackControlPanelReturn(latched, phase, visible) {
   return Object.freeze({ latched, revealPet: false });
 }
 
+export function shouldMountPixelCharacterSurface({ desktopVisible, controlPanelVisible }) {
+  if (typeof desktopVisible !== "boolean" || typeof controlPanelVisible !== "boolean") {
+    throw new TypeError("pixel character surface mount state is invalid");
+  }
+  // Creating a Pixi/WebGL Application while the companion native window is
+  // hidden (settings open) leaves a blank canvas until the next window move.
+  // Character switches during settings must wait until the window is shown again.
+  return desktopVisible && !controlPanelVisible;
+}
+
 export function resolvePixelCharacterRenderKey(character, visual) {
   if (character === null || visual === null) return null;
   if (character === undefined || visual === undefined) {

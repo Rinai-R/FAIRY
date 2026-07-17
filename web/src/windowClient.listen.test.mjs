@@ -15,10 +15,9 @@ test("Wails window drag relies on CSS drag and must not claim a native startDrag
   const appSource = readFileSync(new URL("./App.jsx", import.meta.url), "utf8");
   const companionCss = readFileSync(new URL("./styles/companion.css", import.meta.url), "utf8");
   assert.match(windowSource, /--wails-draggable/);
-  assert.match(
-    windowSource,
-    /if \(isWailsRuntime\(\)\) \{[\s\S]*?return;\s*\}\s*return getCurrentWindow\(\)\.startDragging\(\)/,
-  );
-  assert.match(appSource, /consumePointerEvent:\s*!isWailsRuntime\(\)/);
+  assert.match(windowSource, /export async function startCurrentWindowDrag\(\)/);
+  assert.doesNotMatch(windowSource, /getCurrentWindow/);
+  assert.match(appSource, /consumePointerEvent:\s*false/);
   assert.match(companionCss, /\.fairy-pet__character\s*\{[\s\S]*--wails-draggable:\s*drag/);
+  assert.doesNotMatch(companionCss, /data-tauri-drag-region/);
 });

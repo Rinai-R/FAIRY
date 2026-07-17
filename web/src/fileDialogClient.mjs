@@ -34,39 +34,16 @@ async function selectWithWailsSave(characterName) {
   return selected;
 }
 
-async function selectWithTauriOpen() {
-  const { open: openDialog } = await import("@tauri-apps/plugin-dialog");
-  const selected = await openDialog({
-    title: "导入角色包",
-    multiple: false,
-    filters: [{ name: "FAIRY 角色包", extensions: ["pack", "zip"] }],
-  });
-  if (Array.isArray(selected)) return selected[0] ?? null;
-  return typeof selected === "string" ? selected : null;
-}
-
-async function selectWithTauriSave(characterName) {
-  const { save: saveDialog } = await import("@tauri-apps/plugin-dialog");
-  const selected = await saveDialog({
-    title: "导出角色包",
-    defaultPath: `${sanitizePackageBaseName(characterName)}.pack`,
-    filters: [{ name: "FAIRY 角色包", extensions: ["pack"] }],
-  });
-  return typeof selected === "string" ? selected : null;
-}
-
-/** Prefer Wails Dialogs; keep Tauri plugin-dialog as fallback outside Wails. */
 export async function selectCharacterPackageFile() {
-  if (isWailsRuntime()) {
-    return selectWithWailsOpen();
+  if (!isWailsRuntime()) {
+    throw new Error("DESKTOP_RUNTIME_UNAVAILABLE: Wails runtime is required for file dialogs");
   }
-  return selectWithTauriOpen();
+  return selectWithWailsOpen();
 }
 
-/** Prefer Wails Dialogs; keep Tauri plugin-dialog as fallback outside Wails. */
 export async function selectCharacterPackageSavePath(characterName = "character") {
-  if (isWailsRuntime()) {
-    return selectWithWailsSave(characterName);
+  if (!isWailsRuntime()) {
+    throw new Error("DESKTOP_RUNTIME_UNAVAILABLE: Wails runtime is required for file dialogs");
   }
-  return selectWithTauriSave(characterName);
+  return selectWithWailsSave(characterName);
 }

@@ -33,13 +33,6 @@ export class BootstrapStatus {
              */
             this["wailsVersion"] = "";
         }
-        if (!("legacyTauriPreserved" in $$source)) {
-            /**
-             * @member
-             * @type {boolean}
-             */
-            this["legacyTauriPreserved"] = false;
-        }
         if (!("respondRuntimeMigrated" in $$source)) {
             /**
              * @member

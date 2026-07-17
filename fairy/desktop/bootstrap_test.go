@@ -5,10 +5,9 @@ import "testing"
 func TestBootstrapServiceStatus(t *testing.T) {
 	service := NewBootstrapService(BootstrapOptions{
 		AppName:                "FAIRY",
-		MigrationStage:         "wails3-bootstrap",
+		MigrationStage:         "wails3-only",
 		WailsVersion:           "v3.0.0-alpha2.117",
-		LegacyTauriPreserved:   true,
-		RespondRuntimeMigrated: false,
+		RespondRuntimeMigrated: true,
 	})
 
 	status, err := service.Status()
@@ -18,17 +17,14 @@ func TestBootstrapServiceStatus(t *testing.T) {
 	if status.AppName != "FAIRY" {
 		t.Fatalf("AppName = %q, want FAIRY", status.AppName)
 	}
-	if status.MigrationStage != "wails3-bootstrap" {
-		t.Fatalf("MigrationStage = %q, want wails3-bootstrap", status.MigrationStage)
+	if status.MigrationStage != "wails3-only" {
+		t.Fatalf("MigrationStage = %q, want wails3-only", status.MigrationStage)
 	}
 	if status.WailsVersion != "v3.0.0-alpha2.117" {
 		t.Fatalf("WailsVersion = %q, want v3.0.0-alpha2.117", status.WailsVersion)
 	}
-	if !status.LegacyTauriPreserved {
-		t.Fatal("LegacyTauriPreserved = false, want true")
-	}
-	if status.RespondRuntimeMigrated {
-		t.Fatal("RespondRuntimeMigrated = true, want false during bootstrap stage")
+	if !status.RespondRuntimeMigrated {
+		t.Fatal("RespondRuntimeMigrated = false, want true")
 	}
 }
 

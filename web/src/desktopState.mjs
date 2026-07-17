@@ -53,8 +53,8 @@ export function parseHealthResponse(value) {
   if (value.status !== "ok") {
     throw new TypeError("health response.status must be ok");
   }
-  if (value.architecture !== "tauri-rust" && value.architecture !== "wails-go") {
-    throw new TypeError("health response.architecture must be tauri-rust or wails-go");
+  if (value.architecture !== "wails-go") {
+    throw new TypeError("health response.architecture must be wails-go");
   }
   if (typeof value.version !== "string" || value.version.length === 0) {
     throw new TypeError("health response.version must be a non-empty string");

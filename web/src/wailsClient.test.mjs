@@ -44,16 +44,14 @@ test("parseBootstrapStatus accepts explicit migration status", () => {
   assert.deepEqual(
     parseBootstrapStatus({
       appName: "FAIRY",
-      migrationStage: "wails3-bootstrap",
+      migrationStage: "wails3-only",
       wailsVersion: "v3.0.0-alpha2.117",
-      legacyTauriPreserved: false,
       respondRuntimeMigrated: true,
     }),
     {
       appName: "FAIRY",
-      migrationStage: "wails3-bootstrap",
+      migrationStage: "wails3-only",
       wailsVersion: "v3.0.0-alpha2.117",
-      legacyTauriPreserved: false,
       respondRuntimeMigrated: true,
     },
   );
@@ -64,11 +62,28 @@ test("parseBootstrapStatus rejects missing values instead of defaulting", () => 
     () =>
       parseBootstrapStatus({
         appName: "FAIRY",
-        migrationStage: "wails3-bootstrap",
+        migrationStage: "wails3-only",
         wailsVersion: "v3.0.0-alpha2.117",
-        legacyTauriPreserved: false,
       }),
     /respondRuntimeMigrated/,
+  );
+});
+
+test("parseBootstrapStatus ignores obsolete legacyTauriPreserved field", () => {
+  assert.deepEqual(
+    parseBootstrapStatus({
+      appName: "FAIRY",
+      migrationStage: "wails3-only",
+      wailsVersion: "v3.0.0-alpha2.117",
+      legacyTauriPreserved: true,
+      respondRuntimeMigrated: true,
+    }),
+    {
+      appName: "FAIRY",
+      migrationStage: "wails3-only",
+      wailsVersion: "v3.0.0-alpha2.117",
+      respondRuntimeMigrated: true,
+    },
   );
 });
 
@@ -77,18 +92,17 @@ test("loadWailsBootstrap calls generated Wails binding loader", async () => {
     BootstrapService: {
       Status: async () => ({
         appName: "FAIRY",
-        migrationStage: "wails3-primary",
+        migrationStage: "wails3-only",
         wailsVersion: "v3.0.0-alpha2.117",
-        legacyTauriPreserved: false,
         respondRuntimeMigrated: true,
       }),
     },
   }));
 
   assert.equal(status.appName, "FAIRY");
-  assert.equal(status.migrationStage, "wails3-primary");
-  assert.equal(status.legacyTauriPreserved, false);
+  assert.equal(status.migrationStage, "wails3-only");
   assert.equal(status.respondRuntimeMigrated, true);
+  assert.equal(Object.hasOwn(status, "legacyTauriPreserved"), false);
 });
 
 test("loadWailsCharacterCatalog calls generated CharacterService binding loader", async () => {

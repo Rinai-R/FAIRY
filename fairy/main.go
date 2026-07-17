@@ -42,9 +42,8 @@ func main() {
 
 	bootstrap := desktop.NewBootstrapService(desktop.BootstrapOptions{
 		AppName:                "FAIRY",
-		MigrationStage:         "wails3-hybrid",
+		MigrationStage:         "wails3-only",
 		WailsVersion:           "v3.0.0-alpha2.117",
-		LegacyTauriPreserved:   true,
 		RespondRuntimeMigrated: true,
 	})
 	memoryPath, err := memory.DatabasePath(configRoot)

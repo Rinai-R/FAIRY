@@ -36,6 +36,7 @@ export function CompanionPanel({
   visual,
   pixelCharacter,
   assetState,
+  mountPixelSurface = true,
   onAssetReady,
   onAssetError,
   onPetDragStart,
@@ -100,10 +101,9 @@ export function CompanionPanel({
           if (definition === "hidden") onPetExitComplete();
         }}
       >
-        {visual !== null && assetState.phase !== "error" ? (
+        {visual !== null && assetState.phase !== "error" && mountPixelSurface ? (
           <motion.div
             className="fairy-pet__character"
-            data-tauri-drag-region
             data-fairy-pet-drag-region
             aria-label={`拖动${accessibleCharacterName}`}
             initial={false}
@@ -135,7 +135,6 @@ export function CompanionPanel({
             className="fairy-pet__asset-error"
             color="tomato"
             role="alert"
-            data-tauri-drag-region
             data-fairy-pet-drag-region
             aria-label={`拖动${accessibleCharacterName}`}
             onPointerDown={onPetDragStart}

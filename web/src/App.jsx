@@ -2,13 +2,6 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { useReducedMotion } from "motion/react";
 
 import {
-  cancelCompanionTurn,
-  createCompanionSession,
-  getModelConnectionStatus,
-  listCharacters,
-  submitCompanionTurn,
-} from "./companionClient.mjs";
-import {
   cancelWailsCompanionTurn,
   createWailsCompanionSession,
   listenWailsHarnessEvents,
@@ -20,6 +13,7 @@ import {
 import { ensureWailsRuntimeReady, isWailsRuntime } from "./runtimeEnv.mjs";
 import {
   isCompanionChatViewportReady,
+  shouldMountPixelCharacterSurface,
   trackControlPanelReturn,
 } from "./companionViewState.mjs";
 import {
@@ -91,10 +85,19 @@ export function App() {
     : null;
   const characterName = catalog.active?.name ?? null;
   const wailsCompanion = isWailsCompanionRuntime(wailsBootstrap);
+  // Companion window starts visible; only unmount Pixi after desktop state says
+  // the native window is hidden behind the control panel.
+  const mountPixelSurface = desktop === null
+    ? true
+    : shouldMountPixelCharacterSurface({
+      desktopVisible: desktop.visible,
+      controlPanelVisible: desktop.controlPanelVisible,
+    });
+  const mountPixelSurfaceRef = useRef(mountPixelSurface);
 
   async function loadActiveModelStatus() {
     if (!(await ensureWailsRuntimeReady())) {
-      return getModelConnectionStatus();
+      return Object.freeze({ configured: false, ready: false, config: null, error: null });
     }
     const status = await loadWailsModelStatus();
     if (!status.configured) {
@@ -116,7 +119,7 @@ export function App() {
 
   async function loadActiveCharacterCatalog() {
     if (!(await ensureWailsRuntimeReady())) {
-      return listCharacters();
+      return EMPTY_CATALOG;
     }
     return loadWailsCharacterCatalog();
   }
@@ -168,6 +171,16 @@ export function App() {
     catalog.active?.characterId,
     catalog.active?.name,
   ]);
+
+  useEffect(() => {
+    const wasMounted = mountPixelSurfaceRef.current;
+    mountPixelSurfaceRef.current = mountPixelSurface;
+    if (mountPixelSurface && !wasMounted) {
+      // Remount Pixi only after the companion window is shown again so a
+      // character switch during settings does not create a blank WebGL surface.
+      setAssetState(INITIAL_ASSET_STATE);
+    }
+  }, [mountPixelSurface]);
 
   useEffect(() => {
     dispatchPixelCharacter({
@@ -382,10 +395,8 @@ export function App() {
     }
     let cancelled = false;
     sessionCreating.current = true;
-    const createSession = wailsCompanion
-      ? () => createWailsCompanionSession(catalog.active.characterId)
-      : createCompanionSession;
-    createSession()
+    if (!wailsCompanion) return undefined;
+    createWailsCompanionSession(catalog.active.characterId)
       .then((session) => {
         if (!cancelled) dispatchCompanion({ type: "session_created", session });
       })
@@ -482,8 +493,8 @@ export function App() {
       desktopReady: desktop !== null,
       petVisualOpen,
       // Wails moves the window via --wails-draggable + mousedown; consuming
-      // pointerdown would suppress that path. Tauri still needs startDragging().
-      consumePointerEvent: !isWailsRuntime(),
+      // pointerdown would suppress that native drag path.
+      consumePointerEvent: false,
       startDragging: startCurrentWindowDrag,
       setDragging: setPetDragging,
       onError: (error) => {
@@ -500,46 +511,17 @@ export function App() {
     const input = companion.draft;
     dispatchCompanion({ type: "submit_started", text: input });
     try {
-      if (wailsCompanion) {
-        if (activeVisual === null) {
-          throw Object.freeze({
-            code: "CHARACTER_APPEARANCE_UNASSIGNED",
-            message: "当前角色尚未绑定可用外观，无法提交对话。",
-            retryable: false,
-          });
-        }
-        let stopListening = () => {};
-        stopListening = await listenWailsHarnessEvents(
-          (event) => {
-            dispatchCompanion({ type: "harness_event", event });
-            if (shouldApplyReplyVisualState(event)) {
-              dispatchPixelCharacter({
-                type: "visual_state_changed",
-                visualState: event.payload.visualState,
-              });
-            }
-          },
-          (error) => {
-            stopListening();
-            dispatchCompanion({ type: "invoke_failed", error });
-          },
-        );
-        try {
-          await submitWailsCompanionTurn({
-            conversationId: companion.conversationId,
-            input: input.trim(),
-            speechEnabled: false,
-          });
-        } finally {
-          stopListening();
-        }
-        return;
+      if (!wailsCompanion) return;
+      if (activeVisual === null) {
+        throw Object.freeze({
+          code: "CHARACTER_APPEARANCE_UNASSIGNED",
+          message: "当前角色尚未绑定可用外观，无法提交对话。",
+          retryable: false,
+        });
       }
-      await submitCompanionTurn({
-        conversationId: companion.conversationId,
-        input,
-        speechEnabled: false,
-        onEvent: (event) => {
+      let stopListening = () => {};
+      stopListening = await listenWailsHarnessEvents(
+        (event) => {
           dispatchCompanion({ type: "harness_event", event });
           if (shouldApplyReplyVisualState(event)) {
             dispatchPixelCharacter({
@@ -548,8 +530,20 @@ export function App() {
             });
           }
         },
-        onProtocolError: (error) => dispatchCompanion({ type: "invoke_failed", error }),
-      });
+        (error) => {
+          stopListening();
+          dispatchCompanion({ type: "invoke_failed", error });
+        },
+      );
+      try {
+        await submitWailsCompanionTurn({
+          conversationId: companion.conversationId,
+          input: input.trim(),
+          speechEnabled: false,
+        });
+      } finally {
+        stopListening();
+      }
     } catch (error) {
       dispatchCompanion({ type: "invoke_failed", error });
     }
@@ -558,12 +552,8 @@ export function App() {
   async function handleCancel() {
     if (!companion.activeTurnId) return;
     try {
-      if (wailsCompanion) {
-        if (!companion.conversationId) return;
-        await cancelWailsCompanionTurn(companion.conversationId, companion.activeTurnId);
-        return;
-      }
-      await cancelCompanionTurn(companion.activeTurnId);
+      if (!wailsCompanion || !companion.conversationId) return;
+      await cancelWailsCompanionTurn(companion.conversationId, companion.activeTurnId);
     } catch (error) {
       dispatchCompanion({ type: "invoke_failed", error });
     }
@@ -598,6 +588,7 @@ export function App() {
         visual={activeVisual}
         pixelCharacter={pixelCharacter}
         assetState={assetState}
+        mountPixelSurface={mountPixelSurface}
         onAssetReady={markAssetReady}
         onAssetError={markAssetFailed}
         onPetDragStart={handlePetDragStart}

@@ -90,19 +90,7 @@ test("parseDesktopState accepts only explicit lifecycle phases", () => {
   );
 });
 
-test("parseHealthResponse accepts Tauri and Wails architectures", () => {
-  assert.deepEqual(
-    parseHealthResponse({
-      status: "ok",
-      architecture: "tauri-rust",
-      version: "0.1.0",
-    }),
-    {
-      status: "ok",
-      architecture: "tauri-rust",
-      version: "0.1.0",
-    },
-  );
+test("parseHealthResponse accepts Wails architecture", () => {
   assert.deepEqual(
     parseHealthResponse({
       status: "ok",
@@ -120,10 +108,19 @@ test("parseHealthResponse accepts Tauri and Wails architectures", () => {
     () =>
       parseHealthResponse({
         status: "ok",
+        architecture: "tauri-rust",
+        version: "0.1.0",
+      }),
+    /architecture must be wails-go/,
+  );
+  assert.throws(
+    () =>
+      parseHealthResponse({
+        status: "ok",
         architecture: "electron",
         version: "0.1.0",
       }),
-    /architecture must be tauri-rust or wails-go/,
+    /architecture must be wails-go/,
   );
 });
 

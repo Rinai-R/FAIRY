@@ -312,7 +312,6 @@ export function parseBootstrapStatus(value) {
     appName: requireString(value.appName, "appName"),
     migrationStage: requireString(value.migrationStage, "migrationStage"),
     wailsVersion: requireString(value.wailsVersion, "wailsVersion"),
-    legacyTauriPreserved: requireBoolean(value.legacyTauriPreserved, "legacyTauriPreserved"),
     respondRuntimeMigrated: requireBoolean(value.respondRuntimeMigrated, "respondRuntimeMigrated"),
   };
   return Object.freeze(status);

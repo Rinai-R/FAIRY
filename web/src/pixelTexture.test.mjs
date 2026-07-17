@@ -70,7 +70,7 @@ test("texture scale maps high-resolution assets back to logical frame size", () 
 
 test("renderable texture keeps the last loaded image during state transitions", () => {
   const loaded = Object.freeze({
-    imageUrl: "tauri://localhost/characters/atri/idle.png",
+    imageUrl: "http://wails.localhost/fairy-character/fairy.atri/idle.png",
     texture: Object.freeze({ width: 512, height: 768 }),
   });
 
@@ -79,25 +79,25 @@ test("renderable texture keeps the last loaded image during state transitions", 
   assert.throws(() => resolveRenderablePixelTexture({ imageUrl: "" }), /loaded pixel texture/);
 });
 
-test("image URL keeps the Tauri localhost origin", () => {
+test("image URL resolves local character paths against the application origin", () => {
   assert.equal(
-    resolveCharacterImageUrl("/characters/atri/idle.png", "tauri://localhost"),
-    "tauri://localhost/characters/atri/idle.png",
+    resolveCharacterImageUrl("/characters/atri/idle.png", "http://wails.localhost"),
+    "http://wails.localhost/characters/atri/idle.png",
   );
   assert.equal(
     resolveCharacterImageUrl("/characters/atri/idle.png", "https://fairy.example"),
     "https://fairy.example/characters/atri/idle.png",
   );
   assert.equal(
-    resolveCharacterImageUrl("fairy-character://localhost/fairy.atri/idle.png", "tauri://localhost"),
+    resolveCharacterImageUrl("fairy-character://localhost/fairy.atri/idle.png", "http://wails.localhost"),
     "fairy-character://localhost/fairy.atri/idle.png",
   );
   assert.equal(
-    resolveCharacterImageUrl("http://fairy-character.localhost/fairy.atri/idle.png", "tauri://localhost"),
+    resolveCharacterImageUrl("http://fairy-character.localhost/fairy.atri/idle.png", "http://wails.localhost"),
     "fairy-character://localhost/fairy.atri/idle.png",
   );
   assert.throws(
-    () => resolveCharacterImageUrl("https://example.com/remote.png", "tauri://localhost"),
+    () => resolveCharacterImageUrl("https://example.com/remote.png", "http://wails.localhost"),
     /local character namespace/,
   );
 });

@@ -1,6 +1,3 @@
-import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-
 import {
   parseConfigurationChange,
   parseProductWindowLabel,
@@ -19,48 +16,30 @@ function wailsSurfaceFromLocation() {
 }
 
 export function currentProductWindowLabel() {
-  if (isWailsRuntime()) {
-    return parseProductWindowLabel(wailsSurfaceFromLocation());
-  }
-  try {
-    return parseProductWindowLabel(getCurrentWindow().label);
-  } catch {
-    return "companion";
-  }
+  return parseProductWindowLabel(wailsSurfaceFromLocation());
 }
 
 export async function startCurrentWindowDrag() {
-  if (isWailsRuntime()) {
-    // Wails v3 starts native window drag from CSS `--wails-draggable: drag`
-    // after mousedown + mousemove (runtime invoke "wails:drag"). There is no
-    // separate Window.startDragging() bridge; the companion surface must not
-    // preventDefault on pointerdown or that mousedown never arrives.
-    return;
-  }
-  return getCurrentWindow().startDragging();
+  // Wails v3 starts native window drag from CSS `--wails-draggable: drag`
+  // after mousedown + mousemove (runtime invoke "wails:drag"). There is no
+  // separate Window.startDragging() bridge; the companion surface must not
+  // preventDefault on pointerdown or that mousedown never arrives.
 }
 
 export async function listenToConfigurationChanges(onChange, onError) {
-  if (isWailsRuntime()) {
-    const { Events } = await import("@wailsio/runtime");
-    if (typeof Events?.On !== "function") {
-      throw new Error("wails events unavailable");
-    }
-    const off = Events.On("companion-configuration-changed", (event) => {
-      try {
-        onChange(parseConfigurationChange(event.data ?? event));
-      } catch (error) {
-        onError(error);
-      }
-    });
-    return typeof off === "function" ? off : () => {};
+  if (!isWailsRuntime()) {
+    return () => {};
   }
-
-  return listen("companion-configuration-changed", (event) => {
+  const { Events } = await import("@wailsio/runtime");
+  if (typeof Events?.On !== "function") {
+    throw new Error("wails events unavailable");
+  }
+  const off = Events.On("companion-configuration-changed", (event) => {
     try {
-      onChange(parseConfigurationChange(event.payload));
+      onChange(parseConfigurationChange(event.data ?? event));
     } catch (error) {
       onError(error);
     }
   });
+  return typeof off === "function" ? off : () => {};
 }

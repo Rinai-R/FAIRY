@@ -6,6 +6,7 @@ import {
   isCompanionPetDragTarget,
   resolvePixelCharacterRenderKey,
   resolveChatKeyboardAction,
+  shouldMountPixelCharacterSurface,
   trackControlPanelReturn,
 } from "./companionViewState.mjs";
 
@@ -56,6 +57,39 @@ test("control panel return survives batched desktop lifecycle events", () => {
     revealPet: false,
   });
   assert.throws(() => trackControlPanelReturn(false, null, true), /invalid/);
+});
+
+test("pixel character surface stays unmounted while companion window is hidden", () => {
+  assert.equal(
+    shouldMountPixelCharacterSurface({ desktopVisible: true, controlPanelVisible: false }),
+    true,
+  );
+  assert.equal(
+    shouldMountPixelCharacterSurface({ desktopVisible: false, controlPanelVisible: true }),
+    false,
+  );
+  assert.equal(
+    shouldMountPixelCharacterSurface({ desktopVisible: true, controlPanelVisible: true }),
+    false,
+  );
+  assert.equal(
+    shouldMountPixelCharacterSurface({ desktopVisible: false, controlPanelVisible: false }),
+    false,
+  );
+  assert.throws(
+    () => shouldMountPixelCharacterSurface({ desktopVisible: null, controlPanelVisible: false }),
+    /invalid/,
+  );
+});
+
+test("companion app remounts pixel surface only after control panel returns", async () => {
+  const { readFileSync } = await import("node:fs");
+  const appSource = readFileSync(new URL("./App.jsx", import.meta.url), "utf8");
+  const panelSource = readFileSync(new URL("./components/CompanionPanel.jsx", import.meta.url), "utf8");
+  assert.match(appSource, /shouldMountPixelCharacterSurface/);
+  assert.match(appSource, /mountPixelSurface/);
+  assert.match(panelSource, /mountPixelSurface/);
+  assert.match(panelSource, /assetState\.phase !== "error" && mountPixelSurface/);
 });
 
 test("pixel character render key changes when active character changes on the same visual pack", () => {

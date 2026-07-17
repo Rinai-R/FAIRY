@@ -90,24 +90,21 @@ test("control panel does not expose retired network search configuration", () =>
 
 test("character package import and export use local file dialogs", () => {
   const appSource = readFileSync(new URL("./apps/ControlPanelApp.jsx", import.meta.url), "utf8");
-  const clientSource = readFileSync(new URL("./companionClient.mjs", import.meta.url), "utf8");
+  const dialogSource = readFileSync(new URL("./fileDialogClient.mjs", import.meta.url), "utf8");
   const cssSource = readFileSync(new URL("./styles/control-panel.css", import.meta.url), "utf8");
-  const capability = JSON.parse(readFileSync(new URL("../../src-tauri/capabilities/control-panel-dialog.json", import.meta.url), "utf8"));
 
-  assert.match(clientSource, /@tauri-apps\/plugin-dialog/);
-  assert.match(clientSource, /extensions:\s*\["pack", "zip"\]/);
-  assert.match(clientSource, /"import_character_package"/);
-  assert.match(clientSource, /"export_character_package"/);
-  assert.match(clientSource, /selectCharacterPackageSavePath/);
-  assert.match(clientSource, /save as saveDialog/);
-  assert.deepEqual(capability.permissions, ["dialog:allow-open", "dialog:allow-save"]);
-  assert.match(appSource, /getCurrentWebview\(\)\.onDragDropEvent/);
+  assert.match(dialogSource, /@wailsio\/runtime/);
+  assert.match(dialogSource, /Pattern: "\*\.pack;?\*\.zip"/);
+  assert.match(dialogSource, /selectCharacterPackageSavePath/);
+  assert.match(dialogSource, /Dialogs\.SaveFile/);
+  assert.match(appSource, /character-package-dropped/);
   assert.match(appSource, /className=\{`cp-package-dropzone/);
   assert.match(appSource, /selectCharacterPackageFile\(\)/);
-  assert.match(appSource, /importCharacterPackage\(packagePath\)/);
+  assert.match(appSource, /importActiveCharacterPackage\(packagePath\)/);
   assert.match(appSource, /selectCharacterPackageSavePath\(selectedCharacter\.name\)/);
   assert.doesNotMatch(appSource, /character-package-path/);
   assert.doesNotMatch(appSource, /character-package-export-path/);
+  assert.doesNotMatch(appSource, /getCurrentWebview\(\)\.onDragDropEvent/);
   assert.match(appSource, /图片会复制到本地库，不进入 Git/);
   assert.match(cssSource, /\.cp-import-card\.rt-Card/);
   assert.match(cssSource, /\.cp-package-dropzone\.is-dragging/);
