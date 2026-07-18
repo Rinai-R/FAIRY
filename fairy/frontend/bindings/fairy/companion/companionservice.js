@@ -32,6 +32,9 @@ export function CancelTurn(conversationID, turnID) {
 }
 
 /**
+ * Close performs graceful shutdown cleanup: it cancels in-flight turns and
+ * pending background extraction timers, then stops the openserp sidecar. It is
+ * safe to call multiple times and safe when no model runtime is attached.
  * @returns {$CancellablePromise<void>}
  */
 export function Close() {

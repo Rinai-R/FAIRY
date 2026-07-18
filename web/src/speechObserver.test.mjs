@@ -22,6 +22,10 @@ function completed(turnId, text) {
   return { turnId, state: "completed", payload: { type: "completed", text } };
 }
 
+function speechRequested(turnId, text) {
+  return { turnId, state: "completed", payload: { type: "speech.requested", text } };
+}
+
 test("a new turn starts in the waiting state before any text arrives", () => {
   let observer = createSpeechObserver();
   observer = reduceSpeechObserver(observer, stateChanged(TURN_A, "interpreting"));
@@ -47,6 +51,15 @@ test("completion pins the full text", () => {
   observer = reduceSpeechObserver(observer, completed(TURN_A, "嗨，在的"));
   assert.equal(observer.draft, "嗨，在的");
   assert.equal(observer.active, true);
+});
+
+test("speech requested records the text without changing the visible draft", () => {
+  let observer = createSpeechObserver();
+  observer = reduceSpeechObserver(observer, completed(TURN_A, "嗨，在的"));
+  observer = reduceSpeechObserver(observer, speechRequested(TURN_A, "嗨，在的"));
+  assert.equal(observer.draft, "嗨，在的");
+  assert.deepEqual(observer.speechRequest, { turnId: TURN_A, text: "嗨，在的" });
+  assert.equal(observer.waiting, false);
 });
 
 test("a new turn resets the previous draft", () => {

@@ -22,6 +22,17 @@ export function ActivateCharacter(characterID, revision) {
 }
 
 /**
+ * CatalogStore returns the process-scoped character catalog store for sharing
+ * with other composition-root consumers (e.g. companion).
+ * @returns {$CancellablePromise<$models.Store | null>}
+ */
+export function CatalogStore() {
+    return $Call.ByID(3567387032).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType2($result);
+    }));
+}
+
+/**
  * @param {$models.Brief} brief
  * @param {string} visualPackID
  * @returns {$CancellablePromise<$models.Record>}
@@ -56,7 +67,7 @@ export function ImportCharacterPackage(packagePath) {
  */
 export function ListCharacters() {
     return $Call.ByID(3255588764).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType1($result);
+        return $$createType3($result);
     }));
 }
 
@@ -84,4 +95,6 @@ export function UpdateCharacter(characterID, brief) {
 
 // Private type creation functions
 const $$createType0 = $models.Record.createFrom;
-const $$createType1 = $models.Catalog.createFrom;
+const $$createType1 = $models.Store.createFrom;
+const $$createType2 = $Create.Nullable($$createType1);
+const $$createType3 = $models.Catalog.createFrom;

@@ -268,6 +268,27 @@ export class Record {
     }
 }
 
+export class Store {
+    /**
+     * Creates a new Store instance.
+     * @param {Partial<Store>} [$$source = {}] - The source object to create the Store.
+     */
+    constructor($$source = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Store instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {Store}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new Store(/** @type {Partial<Store>} */($$parsedSource));
+    }
+}
+
 // Private type creation functions
 const $$createType0 = visual$0.Manifest.createFrom;
 const $$createType1 = $Create.Nullable($$createType0);

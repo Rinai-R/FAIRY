@@ -9,5 +9,6 @@ export {
 
 export {
     Snapshot,
+    Store,
     Update
 } from "./models.js";

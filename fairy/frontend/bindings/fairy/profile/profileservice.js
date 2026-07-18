@@ -29,6 +29,17 @@ export function Current() {
 }
 
 /**
+ * ProfileStore returns the process-scoped user-profile store for sharing with
+ * other composition-root consumers (e.g. companion).
+ * @returns {$CancellablePromise<$models.Store | null>}
+ */
+export function ProfileStore() {
+    return $Call.ByID(212350222).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType4($result);
+    }));
+}
+
+/**
  * @param {string | null} preferredName
  * @returns {$CancellablePromise<$models.Update>}
  */
@@ -42,3 +53,5 @@ export function SetPreferredName(preferredName) {
 const $$createType0 = $models.Update.createFrom;
 const $$createType1 = $models.Snapshot.createFrom;
 const $$createType2 = $Create.Nullable($$createType1);
+const $$createType3 = $models.Store.createFrom;
+const $$createType4 = $Create.Nullable($$createType3);

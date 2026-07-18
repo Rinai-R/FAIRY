@@ -8,6 +8,7 @@ export async function loadFairyBindings() {
     memory,
     model,
     profile,
+    speech,
     visual,
   ] = await Promise.all([
     import("../../fairy/frontend/bindings/fairy/desktop/index.js"),
@@ -17,6 +18,7 @@ export async function loadFairyBindings() {
     import("../../fairy/frontend/bindings/fairy/memory/index.js"),
     import("../../fairy/frontend/bindings/fairy/model/index.js"),
     import("../../fairy/frontend/bindings/fairy/profile/index.js"),
+    import("../../fairy/frontend/bindings/fairy/speech/index.js"),
     import("../../fairy/frontend/bindings/fairy/visual/index.js"),
   ]);
 
@@ -29,6 +31,7 @@ export async function loadFairyBindings() {
     MemoryService: memory.MemoryService,
     ModelService: model.ModelService,
     ProfileService: profile.ProfileService,
+    SpeechService: speech.SpeechService,
     VisualService: visual.VisualService,
   };
 }

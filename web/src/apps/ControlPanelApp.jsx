@@ -47,6 +47,7 @@ import {
   activateWailsCharacter,
   assignWailsLegacyRelationship,
   clearWailsModelConnection,
+  clearWailsSpeechSettings,
   clearWailsUserProfile,
   confirmWailsKnowledgeCandidate,
   createWailsCharacter,
@@ -61,18 +62,23 @@ import {
   loadWailsMemorySummary,
   loadWailsModelStatus,
   loadWailsPersonalMemoryCatalog,
+  loadWailsSpeechStatus,
   loadWailsTokenUsageReport,
   loadWailsUserProfile,
   loadWailsVisualPackCatalog,
   loadWailsWebSearchStatus,
+  queryWailsVoice,
   retryWailsExtractionBatch,
   reviseWailsPersonalMemory,
   saveWailsModelConnection,
+  saveWailsSpeechSettings,
   setWailsCharacterAppearance,
   setWailsUserProfile,
   setWailsWebSearchEnabled,
   tombstoneWailsKnowledge,
   tombstoneWailsPersonalMemory,
+  trainWailsVoice,
+  upgradeWailsVoice,
   updateWailsCharacter,
 } from "../wailsClient.mjs";
 import { normalizeCompanionError } from "../companionState.mjs";
@@ -88,12 +94,21 @@ import {
 import {
   CONTROL_PANEL_SECTIONS,
   DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
+  DEFAULT_SPEECH_AUDIO_FORMAT,
+  DEFAULT_SPEECH_BASE_URL,
+  DEFAULT_SPEECH_LANGUAGE,
+  DEFAULT_SPEECH_QUERY_PATH,
+  DEFAULT_SPEECH_TRAIN_PATH,
+  DEFAULT_SPEECH_UPGRADE_PATH,
   MAX_MODEL_CONTEXT_WINDOW_TOKENS,
   MIN_MODEL_CONTEXT_WINDOW_TOKENS,
   MODEL_PROTOCOL_OPTIONS,
   assertControlPanelSection,
+  buildSpeechSpeakerInput,
+  buildSpeechTrainInput,
   buildModelConnectionInput,
   buildCharacterSaveInput,
+  buildSpeechSettingsInput,
   controlPanelCharacterPreviewUrl,
   controlPanelVisualPreviewUrl,
   selectedAppearancePackId,
@@ -127,6 +142,7 @@ const SECTION_ICONS = Object.freeze({
   character: PersonIcon,
   profile: IdCardIcon,
   model: Link2Icon,
+  speech: MagicWandIcon,
   intelligence: MagnifyingGlassIcon,
   usage: BarChartIcon,
   desktop: DesktopIcon,
@@ -466,6 +482,7 @@ export function ControlPanelApp() {
   const [visualCatalog, setVisualCatalog] = useState(EMPTY_VISUAL_CATALOG);
   const [profile, setProfile] = useState(null);
   const [modelStatus, setModelStatus] = useState(null);
+  const [speechStatus, setSpeechStatus] = useState(null);
   const [intelligenceStatus, setIntelligenceStatus] = useState(null);
   const [webSearchStatus, setWebSearchStatus] = useState(null);
   const [knowledgeCatalog, setKnowledgeCatalog] = useState(null);
@@ -495,6 +512,22 @@ export function ControlPanelApp() {
   const [contextWindowTokens, setContextWindowTokens] = useState(String(DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS));
   const [authMode, setAuthMode] = useState("bearer_key");
   const [apiKey, setApiKey] = useState("");
+  const [speechEnabled, setSpeechEnabled] = useState(false);
+  const [speechBaseUrl, setSpeechBaseUrl] = useState(DEFAULT_SPEECH_BASE_URL);
+  const [speechTrainPath, setSpeechTrainPath] = useState(DEFAULT_SPEECH_TRAIN_PATH);
+  const [speechQueryPath, setSpeechQueryPath] = useState(DEFAULT_SPEECH_QUERY_PATH);
+  const [speechUpgradePath, setSpeechUpgradePath] = useState(DEFAULT_SPEECH_UPGRADE_PATH);
+  const [speechAppId, setSpeechAppId] = useState("");
+  const [speechApiKey, setSpeechApiKey] = useState("");
+  const [speechAccessToken, setSpeechAccessToken] = useState("");
+  const [speechDefaultSpeaker, setSpeechDefaultSpeaker] = useState("");
+  const [speechDefaultLanguage, setSpeechDefaultLanguage] = useState(String(DEFAULT_SPEECH_LANGUAGE));
+  const [speechDefaultFormat, setSpeechDefaultFormat] = useState(DEFAULT_SPEECH_AUDIO_FORMAT);
+  const [speechTrainSpeaker, setSpeechTrainSpeaker] = useState("");
+  const [speechTrainAudioData, setSpeechTrainAudioData] = useState("");
+  const [speechTrainAudioFormat, setSpeechTrainAudioFormat] = useState(DEFAULT_SPEECH_AUDIO_FORMAT);
+  const [speechTrainLanguage, setSpeechTrainLanguage] = useState(String(DEFAULT_SPEECH_LANGUAGE));
+  const [speechResult, setSpeechResult] = useState(null);
   const [memoryKind, setMemoryKind] = useState("preference");
   const [memoryContent, setMemoryContent] = useState("");
   const packageDropzoneRef = useRef(null);
@@ -505,6 +538,7 @@ export function ControlPanelApp() {
       nextVisualCatalog,
       nextProfile,
       nextModelStatus,
+      nextSpeechStatus,
       nextIntelligenceStatus,
       nextWebSearchStatus,
       nextDesktop,
@@ -513,6 +547,7 @@ export function ControlPanelApp() {
       loadActiveVisualCatalog(),
       loadActiveUserProfile(),
       loadActiveModelStatus(),
+      loadActiveSpeechStatus(),
       loadActiveIntelligenceStatus(),
       loadActiveWebSearchStatus(),
       getDesktopState(),
@@ -521,6 +556,7 @@ export function ControlPanelApp() {
     setVisualCatalog(nextVisualCatalog);
     setProfile(nextProfile);
     setModelStatus(nextModelStatus);
+    setSpeechStatus(nextSpeechStatus);
     setIntelligenceStatus(nextIntelligenceStatus);
     setWebSearchStatus(nextWebSearchStatus);
     setDesktop(nextDesktop);
@@ -540,6 +576,18 @@ export function ControlPanelApp() {
         setContextWindowTokens(String(nextModelStatus.config.contextWindowTokens));
         setAuthMode(nextModelStatus.config.authMode);
       }
+      setSpeechEnabled(Boolean(nextSpeechStatus.enabled));
+      setSpeechBaseUrl(nextSpeechStatus.baseUrl);
+      setSpeechTrainPath(nextSpeechStatus.trainPath);
+      setSpeechQueryPath(nextSpeechStatus.queryPath);
+      setSpeechUpgradePath(nextSpeechStatus.upgradePath);
+      setSpeechAppId(nextSpeechStatus.appId);
+      setSpeechDefaultSpeaker(nextSpeechStatus.defaultSpeaker);
+      setSpeechDefaultLanguage(String(nextSpeechStatus.defaultLanguage));
+      setSpeechDefaultFormat(nextSpeechStatus.defaultFormat);
+      setSpeechTrainSpeaker(nextSpeechStatus.defaultSpeaker);
+      setSpeechTrainLanguage(String(nextSpeechStatus.defaultLanguage));
+      setSpeechTrainAudioFormat(nextSpeechStatus.defaultFormat);
     }
   }, []);
 
@@ -595,12 +643,53 @@ export function ControlPanelApp() {
     }
   }
 
+  async function loadActiveSpeechStatus() {
+    if (!isWailsRuntime()) {
+      return Object.freeze({
+        configured: false,
+        enabled: false,
+        baseUrl: DEFAULT_SPEECH_BASE_URL,
+        trainPath: DEFAULT_SPEECH_TRAIN_PATH,
+        queryPath: DEFAULT_SPEECH_QUERY_PATH,
+        upgradePath: DEFAULT_SPEECH_UPGRADE_PATH,
+        appId: "",
+        defaultSpeaker: "",
+        defaultLanguage: DEFAULT_SPEECH_LANGUAGE,
+        defaultFormat: DEFAULT_SPEECH_AUDIO_FORMAT,
+        hasApiKey: false,
+        hasAccessToken: false,
+        secretMigrated: true,
+      });
+    }
+    return loadWailsSpeechStatus();
+  }
+
   async function saveActiveModelConnection(input, key) {
     return controlPanelModelStatusFromWails(await saveWailsModelConnection(input, key));
   }
 
   async function clearActiveModelConnection() {
     return controlPanelModelStatusFromWails(await clearWailsModelConnection());
+  }
+
+  async function saveActiveSpeechSettings(input) {
+    return saveWailsSpeechSettings(input);
+  }
+
+  async function clearActiveSpeechSettings() {
+    return clearWailsSpeechSettings();
+  }
+
+  async function trainActiveVoice(input) {
+    return trainWailsVoice(input);
+  }
+
+  async function queryActiveVoice(input) {
+    return queryWailsVoice(input);
+  }
+
+  async function upgradeActiveVoice(input) {
+    return upgradeWailsVoice(input);
   }
 
   async function loadActiveUserProfile() {
@@ -983,6 +1072,75 @@ export function ControlPanelApp() {
     const status = await run("model", () => saveActiveModelConnection(input, apiKey || null));
     setApiKey("");
     if (status) setModelStatus(status);
+  }
+
+  async function submitSpeech(event) {
+    event.preventDefault();
+    let input;
+    try {
+      input = buildSpeechSettingsInput({
+        enabled: speechEnabled,
+        baseUrl: speechBaseUrl,
+        trainPath: speechTrainPath,
+        queryPath: speechQueryPath,
+        upgradePath: speechUpgradePath,
+        appId: speechAppId,
+        apiKey: speechApiKey,
+        accessToken: speechAccessToken,
+        defaultSpeaker: speechDefaultSpeaker,
+        defaultLanguage: speechDefaultLanguage,
+        defaultFormat: speechDefaultFormat,
+      });
+    } catch (reason) {
+      setError({ code: "INVALID_SPEECH_CONFIG", message: reason.message, retryable: false });
+      return;
+    }
+    const status = await run("speech", () => saveActiveSpeechSettings(input));
+    setSpeechApiKey("");
+    setSpeechAccessToken("");
+    if (status) setSpeechStatus(status);
+  }
+
+  async function submitSpeechTrain(event) {
+    event.preventDefault();
+    let input;
+    try {
+      input = buildSpeechTrainInput({
+        speakerId: speechTrainSpeaker,
+        audioData: speechTrainAudioData,
+        audioFormat: speechTrainAudioFormat,
+        language: speechTrainLanguage,
+      });
+    } catch (reason) {
+      setError({ code: "INVALID_SPEECH_TRAIN", message: reason.message, retryable: false });
+      return;
+    }
+    const result = await run("speech-train", () => trainActiveVoice(input));
+    if (result) setSpeechResult(result);
+  }
+
+  async function querySpeechVoice() {
+    let input;
+    try {
+      input = buildSpeechSpeakerInput({ speakerId: speechTrainSpeaker || speechDefaultSpeaker });
+    } catch (reason) {
+      setError({ code: "INVALID_SPEECH_QUERY", message: reason.message, retryable: false });
+      return;
+    }
+    const result = await run("speech-query", () => queryActiveVoice(input));
+    if (result) setSpeechResult(result);
+  }
+
+  async function upgradeSpeechVoice() {
+    let input;
+    try {
+      input = buildSpeechSpeakerInput({ speakerId: speechTrainSpeaker || speechDefaultSpeaker });
+    } catch (reason) {
+      setError({ code: "INVALID_SPEECH_UPGRADE", message: reason.message, retryable: false });
+      return;
+    }
+    const result = await run("speech-upgrade", () => upgradeActiveVoice(input));
+    if (result) setSpeechResult(result);
   }
 
   async function confirmKnowledge(id) {
@@ -1389,6 +1547,115 @@ export function ControlPanelApp() {
                               <Button type="submit" disabled={disabled}>保存连接</Button>
                             </Flex>
                           </form>
+                        </>
+                      ) : null}
+
+                      {section === "speech" ? (
+                        <>
+                          <PageHeader
+                            title="火山声音复刻"
+                            description="只使用火山声音复刻 HTTP：训练、查询、升级音色；密钥只保存在本机后端。"
+                            status={speechStatus?.configured ? "已配置" : speechStatus?.enabled ? "缺少配置" : "未启用"}
+                            ready={Boolean(speechStatus?.configured)}
+                          />
+                          <form className="cp-form cp-model-form" onSubmit={submitSpeech}>
+                            <Card className="cp-panel-card" size="2">
+                              <Flex align="center" justify="between" gap="3">
+                                <div>
+                                  <Text size="2" weight="medium">启用声音复刻 HTTP</Text>
+                                  <Text size="1" color="gray" as="p">本页只管理复刻音色，不再自动朗读 speechText。</Text>
+                                </div>
+                                <Switch checked={speechEnabled} onCheckedChange={setSpeechEnabled} disabled={disabled} aria-label="启用火山声音复刻" />
+                              </Flex>
+                            </Card>
+                            <Field id="speech-base-url" label="HTTP Base URL" hint="默认使用火山声音复刻 HTTP v3 路径。">
+                              <TextField.Root id="speech-base-url" value={speechBaseUrl} onChange={(event) => setSpeechBaseUrl(event.target.value)} required />
+                            </Field>
+                            <div className="cp-two-column">
+                              <Field id="speech-train-path" label="训练 Path">
+                                <TextField.Root id="speech-train-path" value={speechTrainPath} onChange={(event) => setSpeechTrainPath(event.target.value)} required />
+                              </Field>
+                              <Field id="speech-query-path" label="查询 Path">
+                                <TextField.Root id="speech-query-path" value={speechQueryPath} onChange={(event) => setSpeechQueryPath(event.target.value)} required />
+                              </Field>
+                            </div>
+                            <Field id="speech-upgrade-path" label="升级 Path">
+                              <TextField.Root id="speech-upgrade-path" value={speechUpgradePath} onChange={(event) => setSpeechUpgradePath(event.target.value)} required />
+                            </Field>
+                            <div className="cp-two-column">
+                              <Field id="speech-app-id" label="App ID">
+                                <TextField.Root id="speech-app-id" value={speechAppId} onChange={(event) => setSpeechAppId(event.target.value)} placeholder="火山控制台 APP ID" />
+                              </Field>
+                              <Field id="speech-api-key" label="API Key" hint={speechStatus?.hasApiKey ? "留空保留现有 API Key；不会回显。" : "优先使用 API Key 鉴权。"}>
+                                <TextField.Root id="speech-api-key" type="password" autoComplete="off" value={speechApiKey} onChange={(event) => setSpeechApiKey(event.target.value)} placeholder={speechStatus?.hasApiKey ? "留空保留现有 API Key" : "火山 API Key"}>
+                                  <TextField.Slot><LockClosedIcon /></TextField.Slot>
+                                </TextField.Root>
+                              </Field>
+                            </div>
+                            <Field id="speech-access-token" label="Access Token" hint={speechStatus?.hasAccessToken ? "留空保留现有 token；不会回显。" : "无 API Key 时可配合 App ID 使用。"}>
+                                <TextField.Root id="speech-access-token" type="password" autoComplete="off" value={speechAccessToken} onChange={(event) => setSpeechAccessToken(event.target.value)} placeholder={speechStatus?.hasAccessToken ? "留空保留现有 token" : "火山 Access Token"}>
+                                  <TextField.Slot><LockClosedIcon /></TextField.Slot>
+                                </TextField.Root>
+                            </Field>
+                            <div className="cp-two-column">
+                              <Field id="speech-default-speaker" label="默认 Speaker ID">
+                                <TextField.Root id="speech-default-speaker" value={speechDefaultSpeaker} onChange={(event) => { setSpeechDefaultSpeaker(event.target.value); setSpeechTrainSpeaker((current) => current || event.target.value); }} placeholder="S_..." />
+                              </Field>
+                              <Field id="speech-default-language" label="默认语言枚举">
+                                <TextField.Root id="speech-default-language" type="number" min="0" step="1" value={speechDefaultLanguage} onChange={(event) => setSpeechDefaultLanguage(event.target.value)} required />
+                              </Field>
+                              <Field id="speech-default-format" label="默认音频格式">
+                                <TextField.Root id="speech-default-format" value={speechDefaultFormat} onChange={(event) => setSpeechDefaultFormat(event.target.value)} required />
+                              </Field>
+                            </div>
+                            <Flex justify="between" gap="3">
+                              <Button color="tomato" variant="soft" type="button" disabled={disabled || (!speechStatus?.enabled && !speechStatus?.hasApiKey && !speechStatus?.hasAccessToken)} onClick={() => void run("speech", async () => { const status = await clearActiveSpeechSettings(); setSpeechStatus(status); setSpeechEnabled(false); setSpeechApiKey(""); setSpeechAccessToken(""); })}>
+                                <TrashIcon />清除语音配置
+                              </Button>
+                              <Button type="submit" disabled={disabled}>保存 HTTP 配置</Button>
+                            </Flex>
+                          </form>
+                          <form className="cp-form cp-model-form" onSubmit={submitSpeechTrain}>
+                            <Card className="cp-panel-card" size="2">
+                              <Flex direction="column" gap="2">
+                                <Text size="2" weight="medium">音色复刻操作</Text>
+                                <Text size="1" color="gray" as="p">训练需要粘贴 base64 音频；查询/升级只需要 Speaker ID。</Text>
+                              </Flex>
+                            </Card>
+                            <div className="cp-two-column">
+                              <Field id="speech-train-speaker" label="Speaker ID">
+                                <TextField.Root id="speech-train-speaker" value={speechTrainSpeaker} onChange={(event) => setSpeechTrainSpeaker(event.target.value)} placeholder="S_..." required />
+                              </Field>
+                              <Field id="speech-train-language" label="语言枚举">
+                                <TextField.Root id="speech-train-language" type="number" min="0" step="1" value={speechTrainLanguage} onChange={(event) => setSpeechTrainLanguage(event.target.value)} required />
+                              </Field>
+                            </div>
+                            <Field id="speech-train-format" label="训练音频格式">
+                              <TextField.Root id="speech-train-format" value={speechTrainAudioFormat} onChange={(event) => setSpeechTrainAudioFormat(event.target.value)} required />
+                            </Field>
+                            <Field id="speech-train-audio" label="训练音频 Base64" hint="仅发送给本机 Go 后端；后端再调用火山 HTTP。">
+                              <TextArea id="speech-train-audio" value={speechTrainAudioData} onChange={(event) => setSpeechTrainAudioData(event.target.value)} placeholder="粘贴 base64 音频内容" rows={5} />
+                            </Field>
+                            <Flex justify="between" gap="3" wrap="wrap">
+                              <Flex gap="2" wrap="wrap">
+                                <Button type="button" variant="soft" disabled={disabled || !speechStatus?.configured} onClick={() => void querySpeechVoice()}>
+                                  查询音色
+                                </Button>
+                                <Button type="button" variant="soft" disabled={disabled || !speechStatus?.configured} onClick={() => void upgradeSpeechVoice()}>
+                                  升级音色
+                                </Button>
+                              </Flex>
+                              <Button type="submit" disabled={disabled || !speechStatus?.configured}>训练音色</Button>
+                            </Flex>
+                          </form>
+                          {speechResult ? (
+                            <Card className="cp-panel-card" size="2">
+                              <Flex direction="column" gap="2">
+                                <Text size="2" weight="medium">最近一次火山返回</Text>
+                                <TextArea value={JSON.stringify(speechResult, null, 2)} readOnly rows={8} />
+                              </Flex>
+                            </Card>
+                          ) : null}
                         </>
                       ) : null}
 

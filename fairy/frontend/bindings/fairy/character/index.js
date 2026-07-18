@@ -12,5 +12,6 @@ export {
     Brief,
     Catalog,
     Diagnostic,
-    Record
+    Record,
+    Store
 } from "./models.js";

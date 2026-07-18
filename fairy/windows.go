@@ -7,6 +7,14 @@ import (
 	"go.uber.org/zap"
 )
 
+// macCurrentSpaceCollectionBehavior keeps FAIRY product windows attached to
+// the macOS Space where they are opened. Do not add CanJoinAllSpaces here:
+// users expect the pet, control panel, and speech bubble to stay on one Space
+// instead of following every trackpad desktop swipe.
+const macCurrentSpaceCollectionBehavior = application.MacWindowCollectionBehaviorManaged |
+	application.MacWindowCollectionBehaviorFullScreenNone |
+	application.MacWindowCollectionBehaviorTransient
+
 type companionWindowAdapter struct {
 	window application.Window
 }
@@ -88,13 +96,11 @@ func attachProductWindows(app *application.App, desktopService *desktop.DesktopS
 		BackgroundType:   application.BackgroundTypeTransparent,
 		BackgroundColour: application.NewRGBA(0, 0, 0, 0),
 		Mac: application.MacWindow{
-			Backdrop:      application.MacBackdropTransparent,
-			DisableShadow: true,
-			WindowLevel:   application.MacWindowLevelFloating,
-			CollectionBehavior: application.MacWindowCollectionBehaviorCanJoinAllSpaces |
-				application.MacWindowCollectionBehaviorFullScreenAuxiliary |
-				application.MacWindowCollectionBehaviorTransient,
-			TabbingMode: application.MacWindowTabbingModeDisallowed,
+			Backdrop:           application.MacBackdropTransparent,
+			DisableShadow:      true,
+			WindowLevel:        application.MacWindowLevelFloating,
+			CollectionBehavior: macCurrentSpaceCollectionBehavior,
+			TabbingMode:        application.MacWindowTabbingModeDisallowed,
 		},
 	})
 	controlPanelWindow := app.Window.NewWithOptions(application.WebviewWindowOptions{
@@ -111,12 +117,10 @@ func attachProductWindows(app *application.App, desktopService *desktop.DesktopS
 		BackgroundType:   application.BackgroundTypeTransparent,
 		BackgroundColour: application.NewRGBA(0, 0, 0, 0),
 		Mac: application.MacWindow{
-			Backdrop:    application.MacBackdropTransparent,
-			WindowLevel: application.MacWindowLevelFloating,
-			CollectionBehavior: application.MacWindowCollectionBehaviorCanJoinAllSpaces |
-				application.MacWindowCollectionBehaviorFullScreenAuxiliary |
-				application.MacWindowCollectionBehaviorTransient,
-			TabbingMode: application.MacWindowTabbingModeDisallowed,
+			Backdrop:           application.MacBackdropTransparent,
+			WindowLevel:        application.MacWindowLevelFloating,
+			CollectionBehavior: macCurrentSpaceCollectionBehavior,
+			TabbingMode:        application.MacWindowTabbingModeDisallowed,
 		},
 	})
 
@@ -133,13 +137,11 @@ func attachProductWindows(app *application.App, desktopService *desktop.DesktopS
 		BackgroundType:   application.BackgroundTypeTransparent,
 		BackgroundColour: application.NewRGBA(0, 0, 0, 0),
 		Mac: application.MacWindow{
-			Backdrop:      application.MacBackdropTransparent,
-			DisableShadow: true,
-			WindowLevel:   application.MacWindowLevelFloating,
-			CollectionBehavior: application.MacWindowCollectionBehaviorCanJoinAllSpaces |
-				application.MacWindowCollectionBehaviorFullScreenAuxiliary |
-				application.MacWindowCollectionBehaviorTransient,
-			TabbingMode: application.MacWindowTabbingModeDisallowed,
+			Backdrop:           application.MacBackdropTransparent,
+			DisableShadow:      true,
+			WindowLevel:        application.MacWindowLevelFloating,
+			CollectionBehavior: macCurrentSpaceCollectionBehavior,
+			TabbingMode:        application.MacWindowTabbingModeDisallowed,
 		},
 	})
 	// The bubble never receives input; it only floats above the character.

@@ -8,6 +8,7 @@ export function createSpeechObserver() {
   return Object.freeze({
     turnId: null,
     draft: "",
+    speechRequest: null,
     waiting: false,
     active: false,
   });
@@ -18,7 +19,7 @@ export function createSpeechObserver() {
 export function reduceSpeechObserver(state, event) {
   const base = event.turnId === state.turnId
     ? state
-    : { turnId: event.turnId, draft: "", waiting: true, active: true };
+    : { turnId: event.turnId, draft: "", speechRequest: null, waiting: true, active: true };
 
   const payload = event.payload;
   switch (payload.type) {
@@ -34,22 +35,33 @@ export function reduceSpeechObserver(state, event) {
       return Object.freeze({
         ...base,
         draft: payload.text,
+        speechRequest: null,
         waiting: false,
         active: true,
       });
     case "failed":
-      return Object.freeze({ ...base, draft: "", waiting: false, active: false });
+      return Object.freeze({ ...base, draft: "", speechRequest: null, waiting: false, active: false });
     case "state_changed":
       if (event.state === "interrupted") {
-        return Object.freeze({ ...base, draft: "", waiting: false, active: false });
+        return Object.freeze({ ...base, draft: "", speechRequest: null, waiting: false, active: false });
       }
       return Object.freeze({
         ...base,
         waiting: base.draft.length === 0,
         active: true,
       });
+    case "speech.requested":
+      return Object.freeze({
+        ...base,
+        speechRequest: Object.freeze({
+          turnId: event.turnId,
+          text: payload.text,
+        }),
+        waiting: false,
+        active: true,
+      });
     default:
-      // speech.requested and any other trailing events do not change the bubble.
+      // Unknown trailing events do not change the bubble.
       return base === state ? state : Object.freeze(base);
   }
 }

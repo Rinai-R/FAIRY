@@ -32,6 +32,7 @@ import (
 	"fairy/profile"
 	"fairy/search"
 	"fairy/secret"
+	"fairy/speech"
 	"fairy/visual"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"go.uber.org/zap"
@@ -78,6 +79,7 @@ func main() {
 
 	characterService := character.NewCharacterService(configRoot)
 	configService := config.NewConfigService(configRoot, secretStore)
+	speechService := speech.NewSpeechService(configRoot, secretStore)
 	profileService := profile.NewProfileService(configRoot)
 	assetHandler := visual.NewAssetHandler(configRoot)
 	configReader := config.NewReader(configRoot)
@@ -131,6 +133,7 @@ func main() {
 			application.NewService(companionService),
 			application.NewService(memory.NewMemoryServiceWithStore(configRoot, memoryStore)),
 			application.NewService(profileService),
+			application.NewService(speechService),
 			application.NewService(visual.NewVisualService(configRoot)),
 			application.NewServiceWithOptions(assetHandler, application.ServiceOptions{
 				Name:  "CharacterAssetHandler",

@@ -124,6 +124,125 @@ export async function setWailsWebSearchEnabled(enabled, loadBindings = defaultLo
   return parseWebSearchStatus(await bindings.ConfigService.SetWebSearchEnabled(Boolean(enabled)));
 }
 
+export function parseSpeechStatus(value) {
+  requireObject(value, "Wails speech status");
+  rejectSecretFields(value, "Wails speech status");
+  rejectUnexpectedKeys(
+    value,
+    new Set([
+      "configured",
+      "enabled",
+      "baseUrl",
+      "trainPath",
+      "queryPath",
+      "upgradePath",
+      "appId",
+      "defaultSpeaker",
+      "defaultLanguage",
+      "defaultFormat",
+      "hasApiKey",
+      "hasAccessToken",
+      "secretMigrated",
+    ]),
+    "Wails speech status",
+  );
+  const baseUrl = requireURL(value.baseUrl, "speech.baseUrl");
+  const status = Object.freeze({
+    configured: requireBoolean(value.configured, "speech.configured"),
+    enabled: requireBoolean(value.enabled, "speech.enabled"),
+    baseUrl,
+    trainPath: requireString(value.trainPath, "speech.trainPath"),
+    queryPath: requireString(value.queryPath, "speech.queryPath"),
+    upgradePath: requireString(value.upgradePath, "speech.upgradePath"),
+    appId: requireOptionalString(value.appId, "speech.appId"),
+    defaultSpeaker: requireOptionalString(value.defaultSpeaker, "speech.defaultSpeaker"),
+    defaultLanguage: requireNonNegativeInteger(value.defaultLanguage, "speech.defaultLanguage"),
+    defaultFormat: requireString(value.defaultFormat, "speech.defaultFormat"),
+    hasApiKey: requireBoolean(value.hasApiKey, "speech.hasApiKey"),
+    hasAccessToken: requireBoolean(value.hasAccessToken, "speech.hasAccessToken"),
+    secretMigrated: requireBoolean(value.secretMigrated, "speech.secretMigrated"),
+  });
+  if (status.configured && (!status.enabled || (!status.hasApiKey && !(status.appId && status.hasAccessToken)))) {
+    throw new Error("Configured Wails speech status is incomplete");
+  }
+  return status;
+}
+
+export function parseVoiceCloneResult(value) {
+  requireObject(value, "Wails voice clone result");
+  rejectSecretFields(value, "Wails voice clone result");
+  rejectUnexpectedKeys(
+    value,
+    new Set([
+      "httpStatus",
+      "logid",
+      "speakerId",
+      "status",
+      "availableTrainingTimes",
+      "createTime",
+      "language",
+      "speakerStatus",
+      "code",
+      "message",
+      "rawJson",
+    ]),
+    "Wails voice clone result",
+  );
+  return Object.freeze({
+    httpStatus: requirePositiveInteger(value.httpStatus, "voice.httpStatus"),
+    logid: requireOptionalString(value.logid, "voice.logid"),
+    speakerId: requireOptionalString(value.speakerId, "voice.speakerId"),
+    status: requireNonNegativeInteger(value.status, "voice.status"),
+    availableTrainingTimes: requireNonNegativeInteger(value.availableTrainingTimes, "voice.availableTrainingTimes"),
+    createTime: requireNonNegativeInteger(value.createTime, "voice.createTime"),
+    language: requireNonNegativeInteger(value.language, "voice.language"),
+    speakerStatus: Object.freeze(requireArray(value.speakerStatus, "voice.speakerStatus").map(parseVoiceModelStatus)),
+    code: requireOptionalString(value.code, "voice.code"),
+    message: requireOptionalString(value.message, "voice.message"),
+    rawJson: requireString(value.rawJson, "voice.rawJson"),
+  });
+}
+
+function parseVoiceModelStatus(value) {
+  requireObject(value, "Wails voice model status");
+  rejectSecretFields(value, "Wails voice model status");
+  rejectUnexpectedKeys(value, new Set(["modelType", "demoAudio"]), "Wails voice model status");
+  return Object.freeze({
+    modelType: requireNonNegativeInteger(value.modelType, "voice.modelType"),
+    demoAudio: requireOptionalString(value.demoAudio, "voice.demoAudio"),
+  });
+}
+
+export async function loadWailsSpeechStatus(loadBindings = defaultLoadBindings) {
+  const bindings = await loadBindings();
+  return parseSpeechStatus(await bindings.SpeechService.Status());
+}
+
+export async function saveWailsSpeechSettings(input, loadBindings = defaultLoadBindings) {
+  const bindings = await loadBindings();
+  return parseSpeechStatus(await bindings.SpeechService.SaveSettings(input));
+}
+
+export async function clearWailsSpeechSettings(loadBindings = defaultLoadBindings) {
+  const bindings = await loadBindings();
+  return parseSpeechStatus(await bindings.SpeechService.ClearSettings());
+}
+
+export async function trainWailsVoice(input, loadBindings = defaultLoadBindings) {
+  const bindings = await loadBindings();
+  return parseVoiceCloneResult(await bindings.SpeechService.TrainVoice(input));
+}
+
+export async function queryWailsVoice(input, loadBindings = defaultLoadBindings) {
+  const bindings = await loadBindings();
+  return parseVoiceCloneResult(await bindings.SpeechService.QueryVoice(input));
+}
+
+export async function upgradeWailsVoice(input, loadBindings = defaultLoadBindings) {
+  const bindings = await loadBindings();
+  return parseVoiceCloneResult(await bindings.SpeechService.UpgradeVoice(input));
+}
+
 export async function loadWailsModelRequestDraft(request, loadBindings = defaultLoadBindings) {
   const bindings = await loadBindings();
   const draft = await bindings.ModelService.BuildRequestDraft(request);
@@ -626,7 +745,7 @@ function rejectConfiguredFieldsOnUnconfiguredStatus(value) {
 }
 
 function rejectSecretFields(value, label) {
-  const forbidden = new Set(["apiKey", "api_key", "authorization", "authorizationHeader", "bearerToken"]);
+  const forbidden = new Set(["apiKey", "api_key", "accessToken", "access_token", "authorization", "authorizationHeader", "bearerToken"]);
   for (const key of Object.keys(value)) {
     if (forbidden.has(key)) {
       throw new Error(label + " must not expose " + key);
@@ -650,6 +769,13 @@ function requireObject(value, label) {
 
 function requireString(value, field) {
   if (typeof value !== "string" || value.length === 0) {
+    throw new Error("Wails status missing " + field);
+  }
+  return value;
+}
+
+function requireOptionalString(value, field) {
+  if (typeof value !== "string") {
     throw new Error("Wails status missing " + field);
   }
   return value;

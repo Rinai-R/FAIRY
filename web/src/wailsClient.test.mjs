@@ -15,19 +15,27 @@ import {
   loadWailsPersonalMemoryCatalog,
   loadWailsModelRequestDraft,
   loadWailsModelStatus,
+  loadWailsSpeechStatus,
   loadWailsUserProfile,
   parseBootstrapStatus,
   parseCompiledTurnOutcome,
   parseMemorySummary,
   parseModelConnectionStatus,
   parseModelRequestDraft,
+  parseSpeechStatus,
+  parseVoiceCloneResult,
   clearWailsModelConnection,
+  clearWailsSpeechSettings,
   compactWailsConversation,
   clearWailsUserProfile,
   saveWailsModelConnection,
+  saveWailsSpeechSettings,
   setWailsCharacterAppearance,
   setWailsUserProfile,
   submitWailsCompiledTurn,
+  trainWailsVoice,
+  queryWailsVoice,
+  upgradeWailsVoice,
   updateWailsCharacter,
   assignWailsLegacyRelationship,
   confirmWailsKnowledgeCandidate,
@@ -221,6 +229,40 @@ function configuredModelStatus() {
   };
 }
 
+function configuredSpeechStatus() {
+  return {
+    configured: true,
+    enabled: true,
+    baseUrl: "https://openspeech.bytedance.com/api/v3/tts",
+    trainPath: "/voice_clone",
+    queryPath: "/query_voice",
+    upgradePath: "/upgrade_voice",
+    appId: "9193177346",
+    defaultSpeaker: "S_voice",
+    defaultLanguage: 0,
+    defaultFormat: "wav",
+    hasApiKey: true,
+    hasAccessToken: true,
+    secretMigrated: true,
+  };
+}
+
+function voiceCloneResult() {
+  return {
+    httpStatus: 200,
+    logid: "logid",
+    speakerId: "S_voice",
+    status: 2,
+    availableTrainingTimes: 15,
+    createTime: 1772026663000,
+    language: 0,
+    speakerStatus: [{ modelType: 5, demoAudio: "https://x.bytespeech.com/S_voice" }],
+    code: "",
+    message: "",
+    rawJson: "{}",
+  };
+}
+
 test("parseModelConnectionStatus accepts configured redacted model status", () => {
   assert.deepEqual(parseModelConnectionStatus(configuredModelStatus()), configuredModelStatus());
 });
@@ -334,6 +376,88 @@ test("clearWailsModelConnection calls generated ConfigService binding loader", a
     },
   }));
   assert.equal(status.configured, false);
+});
+
+test("parseSpeechStatus accepts redacted configured status and rejects leaked token", () => {
+  assert.deepEqual(parseSpeechStatus(configuredSpeechStatus()), configuredSpeechStatus());
+  assert.throws(
+    () => parseSpeechStatus({ ...configuredSpeechStatus(), accessToken: "not-allowed" }),
+    /accessToken/,
+  );
+  assert.throws(
+    () => parseSpeechStatus({ ...configuredSpeechStatus(), apiKey: "not-allowed" }),
+    /apiKey/,
+  );
+  assert.throws(
+    () => parseSpeechStatus({ ...configuredSpeechStatus(), baseUrl: "wss://example.com" }),
+    /baseUrl/,
+  );
+});
+
+test("parseVoiceCloneResult accepts structured provider fields", () => {
+  assert.deepEqual(parseVoiceCloneResult(voiceCloneResult()), voiceCloneResult());
+  assert.throws(
+    () => parseVoiceCloneResult({ ...voiceCloneResult(), accessToken: "not-allowed" }),
+    /accessToken/,
+  );
+});
+
+test("Wails speech bindings parse status, settings, clear, train, query, and upgrade", async () => {
+  const status = await loadWailsSpeechStatus(async () => ({
+    SpeechService: { Status: async () => configuredSpeechStatus() },
+  }));
+  assert.equal(status.configured, true);
+
+  const saved = await saveWailsSpeechSettings(
+    { enabled: true, appId: "9193177346", apiKey: "api-secret", accessToken: "secret" },
+    async () => ({
+      SpeechService: {
+        SaveSettings: async (input) => {
+          assert.equal(input.apiKey, "api-secret");
+          assert.equal(input.accessToken, "secret");
+          return configuredSpeechStatus();
+        },
+      },
+    }),
+  );
+  assert.equal(saved.hasAccessToken, true);
+
+  const cleared = await clearWailsSpeechSettings(async () => ({
+    SpeechService: {
+      ClearSettings: async () => ({ ...configuredSpeechStatus(), configured: false, enabled: false, appId: "", hasApiKey: false, hasAccessToken: false }),
+    },
+  }));
+  assert.equal(cleared.configured, false);
+
+  const trained = await trainWailsVoice({ speakerId: "S_voice", audioData: "ZmFrZQ==", audioFormat: "wav", language: 0 }, async () => ({
+    SpeechService: {
+      TrainVoice: async (request) => {
+        assert.deepEqual(request, { speakerId: "S_voice", audioData: "ZmFrZQ==", audioFormat: "wav", language: 0 });
+        return voiceCloneResult();
+      },
+    },
+  }));
+  assert.equal(trained.speakerId, "S_voice");
+
+  const queried = await queryWailsVoice({ speakerId: "S_voice" }, async () => ({
+    SpeechService: {
+      QueryVoice: async (request) => {
+        assert.deepEqual(request, { speakerId: "S_voice" });
+        return voiceCloneResult();
+      },
+    },
+  }));
+  assert.equal(queried.status, 2);
+
+  const upgraded = await upgradeWailsVoice({ speakerId: "S_voice" }, async () => ({
+    SpeechService: {
+      UpgradeVoice: async (request) => {
+        assert.deepEqual(request, { speakerId: "S_voice" });
+        return voiceCloneResult();
+      },
+    },
+  }));
+  assert.equal(upgraded.availableTrainingTimes, 15);
 });
 
 test("Wails profile bindings parse current set and clear", async () => {
