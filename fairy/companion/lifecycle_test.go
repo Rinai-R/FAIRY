@@ -25,7 +25,7 @@ func TestTurnLifecycleHappyPathJSONShape(t *testing.T) {
 			t.Fatalf("state_changed payload = %#v", payload)
 		}
 	}
-	chain := ReplyChain{Text: "我在。", SpeechText: "我在。", VisualState: "idle"}
+	chain := ReplyChain{Text: "我在。", VisualState: "idle"}
 	reply, err := life.ReplyChain(0, "我在。", chain)
 	if err != nil {
 		t.Fatalf("ReplyChain() error = %v", err)
@@ -35,7 +35,6 @@ func TestTurnLifecycleHappyPathJSONShape(t *testing.T) {
 	}
 	completed, err := life.Complete(TurnCompletion{
 		Text:              "我在。",
-		SpeechText:        "我在。",
 		CharacterRevision: 2,
 		VisualState:       "idle",
 		Chains:            []ReplyChain{chain},
@@ -74,7 +73,7 @@ func TestCompletedUsageWireShapeMatchesFrontendContract(t *testing.T) {
 			t.Fatalf("Transition(%s) error = %v", state, err)
 		}
 	}
-	chain := ReplyChain{Text: "我在。", SpeechText: "我在。", VisualState: "idle"}
+	chain := ReplyChain{Text: "我在。", VisualState: "idle"}
 	if _, err := life.ReplyChain(0, "我在。", chain); err != nil {
 		t.Fatalf("ReplyChain() error = %v", err)
 	}
@@ -82,7 +81,6 @@ func TestCompletedUsageWireShapeMatchesFrontendContract(t *testing.T) {
 	output := uint64(4)
 	completed, err := life.Complete(TurnCompletion{
 		Text:              "我在。",
-		SpeechText:        "我在。",
 		CharacterRevision: 2,
 		VisualState:       "idle",
 		Chains:            []ReplyChain{chain},

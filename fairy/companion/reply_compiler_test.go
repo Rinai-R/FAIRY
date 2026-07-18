@@ -2,6 +2,7 @@ package companion
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -34,16 +35,16 @@ func visualStates(ids ...string) []VisualState {
 func TestCompileReplyStripsLeadingActionBrackets(t *testing.T) {
 	reply, err := CompileReply(testRespondEnvelope(testReplyChain{
 		VisualState: "idle",
-		Text:        "（轻轻歪头）哎呀，你先休息一会儿吧。后面不该显示。",
+		Text:        "（轻轻歪头）你先休息一下吧，我在这里。",
 	}), visualStates("idle"))
 	if err != nil {
 		t.Fatalf("CompileReply() error = %v", err)
 	}
-	if reply.DisplayText != "哎呀，你先休息一会儿吧。后面不该显示。" {
+	if reply.DisplayText != "你先休息一下吧，我在这里。" {
 		t.Fatalf("DisplayText = %q", reply.DisplayText)
 	}
-	if reply.SpeechText != "哎呀，你先休息一会儿吧。" {
-		t.Fatalf("SpeechText = %q", reply.SpeechText)
+	if reply.SpeechText != "" {
+		t.Fatalf("SpeechText = %q, want empty before translate fill", reply.SpeechText)
 	}
 }
 
@@ -58,9 +59,6 @@ func TestCompileReplyKeepsInlineBracketsAndRemovesStandaloneActions(t *testing.T
 	if reply.DisplayText != "先检查网络。\n然后确认配置（不要猜测）。" {
 		t.Fatalf("DisplayText = %q", reply.DisplayText)
 	}
-	if reply.SpeechText != "先检查网络。" {
-		t.Fatalf("SpeechText = %q", reply.SpeechText)
-	}
 }
 
 func TestCompileReplyCompilesJSONChains(t *testing.T) {
@@ -74,7 +72,7 @@ func TestCompileReplyCompilesJSONChains(t *testing.T) {
 	if len(reply.Chains) != 2 {
 		t.Fatalf("chains = %#v", reply.Chains)
 	}
-	if reply.DisplayText != "嗯，我懂。\n先这样改。" || reply.SpeechText != "嗯，我懂。" || reply.VisualState != "happy" {
+	if reply.DisplayText != "嗯，我懂。\n先这样改。" || reply.SpeechText != "" || reply.VisualState != "happy" {
 		t.Fatalf("reply = %#v", reply)
 	}
 }
@@ -87,12 +85,12 @@ func TestCompileReplyRejectsInvalidOutput(t *testing.T) {
 	}{
 		{name: "empty", draft: "", states: visualStates("idle")},
 		{name: "emoji", draft: testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "我在🙂。"}), states: visualStates("idle")},
-		{name: "url speech", draft: testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "看看 https://example.test。"}), states: visualStates("idle")},
 		{name: "pure bracketed action", draft: testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "（安静地看着你）"}), states: visualStates("idle")},
 		{name: "undeclared state", draft: testRespondEnvelope(testReplyChain{VisualState: "angry", Text: "我在。"}), states: visualStates("idle", "happy")},
 		{name: "bad visual state", draft: testRespondEnvelope(testReplyChain{VisualState: "Bad", Text: "我在。"}), states: visualStates("idle")},
 		{name: "empty chains", draft: testRespondEnvelope(), states: visualStates("idle")},
 		{name: "missing idle", draft: testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "我在。"}), states: []VisualState{{ID: "happy", Description: "happy 状态说明"}}},
+		{name: "speechText unknown field", draft: `{"chains":[{"visualState":"idle","text":"我在。","speechText":"いるよ。"}]}`, states: visualStates("idle")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -107,24 +105,65 @@ func TestCompileReplyRejectsUnknownTrailingAndLegacyOutput(t *testing.T) {
 	validChains := `[{"visualState":"idle","text":"我在。"}]`
 	valid := `{"chains":` + validChains + `}`
 	tests := []struct {
-		name  string
-		draft string
+		name       string
+		draft      string
+		wantErrSub string
 	}{
-		{name: "missing chains", draft: `{}`},
-		{name: "unknown decision field", draft: `{"decision":{"stance":"先回应"},"chains":` + validChains + `}`},
-		{name: "unknown top level field", draft: `{"chains":` + validChains + `,"reasoning":"no"}`},
-		{name: "unknown chain field", draft: `{"chains":[{"visualState":"idle","text":"我在。","gesture":"wave"}]}`},
-		{name: "second json value", draft: valid + `{}`},
-		{name: "trailing text", draft: valid + ` trailing`},
-		{name: "legacy visual header", draft: "VISUAL_STATE: idle\n我在。"},
-		{name: "legacy plain text", draft: "我在。"},
+		{name: "missing chains", draft: `{}`, wantErrSub: "chains count"},
+		{name: "unknown decision field", draft: `{"decision":{"stance":"先回应"},"chains":` + validChains + `}`, wantErrSub: "strict reply chains JSON"},
+		{name: "unknown top level field", draft: `{"chains":` + validChains + `,"reasoning":"no"}`, wantErrSub: "strict reply chains JSON"},
+		{name: "unknown chain field", draft: `{"chains":[{"visualState":"idle","text":"我在。","gesture":"wave"}]}`, wantErrSub: "strict reply chains JSON"},
+		{name: "second json value", draft: valid + `{}`, wantErrSub: "exactly one JSON object"},
+		{name: "trailing text", draft: valid + ` trailing`, wantErrSub: "exactly one JSON object"},
+		{name: "legacy visual header", draft: "VISUAL_STATE: idle\n我在。", wantErrSub: "strict reply chains JSON"},
+		{name: "legacy plain text", draft: "我在。", wantErrSub: "strict reply chains JSON"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := CompileReply(tt.draft, visualStates("idle")); err == nil {
+			_, err := CompileReply(tt.draft, visualStates("idle"))
+			if err == nil {
 				t.Fatalf("CompileReply(%q) error = nil, want error", tt.draft)
 			}
+			if !strings.Contains(err.Error(), tt.wantErrSub) {
+				t.Fatalf("CompileReply() error = %q, want substring %q", err.Error(), tt.wantErrSub)
+			}
 		})
+	}
+}
+
+func TestFillSameLanguageSpeechCopiesDisplay(t *testing.T) {
+	reply, err := CompileReply(testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "我在。"}), visualStates("idle"))
+	if err != nil {
+		t.Fatalf("CompileReply() error = %v", err)
+	}
+	filled, err := fillSameLanguageSpeech(reply)
+	if err != nil {
+		t.Fatalf("fillSameLanguageSpeech() error = %v", err)
+	}
+	if filled.SpeechText != "我在。" {
+		t.Fatalf("SpeechText = %q", filled.SpeechText)
+	}
+}
+
+func TestApplyTranslatedSpeechSetsAllChains(t *testing.T) {
+	reply, err := CompileReply(testRespondEnvelope(
+		testReplyChain{VisualState: "thinking", Text: "嗯，我懂。"},
+		testReplyChain{VisualState: "happy", Text: "先这样改。"},
+	), visualStates("idle", "thinking", "happy"))
+	if err != nil {
+		t.Fatalf("CompileReply() error = %v", err)
+	}
+	filled, err := applyTranslatedSpeech(reply, "うん、わかった。まずこう直そう。")
+	if err != nil {
+		t.Fatalf("applyTranslatedSpeech() error = %v", err)
+	}
+	if filled.SpeechText != "うん、わかった。" {
+		t.Fatalf("SpeechText = %q", filled.SpeechText)
+	}
+	for _, chain := range filled.Chains {
+		if chain.SpeechText != "うん、わかった。" {
+			t.Fatalf("chain speech = %#v", chain)
+		}
 	}
 }
 

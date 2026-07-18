@@ -125,6 +125,8 @@ test("loadWailsCharacterCatalog calls generated CharacterService binding loader"
             name: "亚托莉",
             description: "认真听用户说话。",
             dialogueStyle: null,
+            textLanguage: "zh",
+    speakingLanguage: "ja",
             appearance: { status: "unassigned" },
           },
         ],
@@ -153,6 +155,8 @@ function unassignedCharacter() {
     name: "亚托莉",
     description: "认真听用户说话。",
     dialogueStyle: null,
+    textLanguage: "zh",
+    speakingLanguage: "ja",
     appearance: { status: "unassigned" },
   };
 }
@@ -233,16 +237,18 @@ function configuredSpeechStatus() {
   return {
     configured: true,
     enabled: true,
-    baseUrl: "https://openspeech.bytedance.com/api/v3/tts",
-    trainPath: "/voice_clone",
-    queryPath: "/query_voice",
+    baseUrl: "https://openspeech.bytedance.com",
+    trainPath: "/api/v3/tts/voice_clone",
+    queryPath: "/api/v3/tts/get_voice",
     upgradePath: "/upgrade_voice",
     appId: "9193177346",
+    synthesisResourceId: "seed-icl-1.0",
+    synthesisModel: "",
     defaultSpeaker: "S_voice",
     defaultLanguage: 0,
     defaultFormat: "wav",
     hasApiKey: true,
-    hasAccessToken: true,
+    hasAccessToken: false,
     secretMigrated: true,
   };
 }
@@ -409,18 +415,17 @@ test("Wails speech bindings parse status, settings, clear, train, query, and upg
   assert.equal(status.configured, true);
 
   const saved = await saveWailsSpeechSettings(
-    { enabled: true, appId: "9193177346", apiKey: "api-secret", accessToken: "secret" },
+    { enabled: true, apiKey: "secret" },
     async () => ({
       SpeechService: {
         SaveSettings: async (input) => {
-          assert.equal(input.apiKey, "api-secret");
-          assert.equal(input.accessToken, "secret");
+          assert.equal(input.apiKey, "secret");
           return configuredSpeechStatus();
         },
       },
     }),
   );
-  assert.equal(saved.hasAccessToken, true);
+  assert.equal(saved.hasApiKey, true);
 
   const cleared = await clearWailsSpeechSettings(async () => ({
     SpeechService: {
@@ -822,10 +827,49 @@ test("parseCompiledTurnOutcome accepts strict reply chains", () => {
   assert.equal(outcome.respondMigrated, true);
 });
 
+test("parseCompiledTurnOutcome accepts joined multi-chain speechText", () => {
+  const outcome = parseCompiledTurnOutcome({
+    conversationId: "conversation-1",
+    turnId: "turn-1",
+    responseText: "嗯，我懂。\n先这样改。",
+    speechText: "うん、わかった。 まずこう直そう。",
+    speechRequested: true,
+    visualState: "happy",
+    chains: [
+      { text: "嗯，我懂。", speechText: "うん、わかった。", visualState: "thinking" },
+      { text: "先这样改。", speechText: "まずこう直そう。", visualState: "happy" },
+    ],
+    respondMigrated: true,
+    migrationMessage: "",
+  });
+  assert.equal(outcome.speechText, "うん、わかった。 まずこう直そう。");
+  assert.equal(outcome.visualState, "happy");
+});
+
+test("parseCompiledTurnOutcome accepts empty speechText when TTS is skipped", () => {
+  const outcome = parseCompiledTurnOutcome({
+    conversationId: "conversation-1",
+    turnId: "turn-1",
+    responseText: "我在。",
+    speechText: "",
+    speechRequested: true,
+    visualState: "idle",
+    chains: [{ text: "我在。", speechText: "", visualState: "idle" }],
+    respondMigrated: true,
+    migrationMessage: "",
+  });
+  assert.equal(outcome.speechText, "");
+  assert.equal(outcome.chains[0].speechText, "");
+});
+
 test("parseCompiledTurnOutcome rejects inconsistent aggregate fields", () => {
   assert.throws(
     () => parseCompiledTurnOutcome({ ...compiledTurnOutcome(), responseText: "不一致" }),
     /responseText must match chains/,
+  );
+  assert.throws(
+    () => parseCompiledTurnOutcome({ ...compiledTurnOutcome(), speechText: "不一致" }),
+    /speechText must match chains/,
   );
   assert.throws(
     () => parseCompiledTurnOutcome({ ...compiledTurnOutcome(), visualState: "idle" }),

@@ -10,6 +10,8 @@ export {
 export {
     SaveSettingsRequest,
     Status,
+    SynthesisResult,
+    SynthesizeSpeechRequest,
     TrainVoiceRequest,
     VoiceModelStatus,
     VoiceOperationRequest,

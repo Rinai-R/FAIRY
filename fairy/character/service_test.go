@@ -26,7 +26,7 @@ func writeCharacterPackageFixture(t *testing.T, dir string, packID string) {
 	if err := os.WriteFile(filepath.Join(dir, "images", "idle.png"), []byte("\x89PNG\r\n\x1a\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile(idle) error = %v", err)
 	}
-	data := `{"schemaVersion":1,"packageId":"` + packID + `","character":{"name":"亚托莉","description":"温柔、敏锐。","dialogueStyle":"短句。"},"visual":{"displayName":"亚托莉","renderer":"state_images","frame":{"width":16,"height":16},"scale":4,"anchor":{"x":8,"y":15},"states":[{"id":"idle","description":"Quiet standing pose.","file":"images/idle.png"}]}}`
+	data := `{"schemaVersion":1,"packageId":"` + packID + `","character":{"name":"亚托莉","description":"温柔、敏锐。","dialogueStyle":"短句。","speakingLanguage":"ja"},"visual":{"displayName":"亚托莉","renderer":"state_images","frame":{"width":16,"height":16},"scale":4,"anchor":{"x":8,"y":15},"states":[{"id":"idle","description":"Quiet standing pose.","file":"images/idle.png"}]}}`
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(data), 0o600); err != nil {
 		t.Fatalf("WriteFile(manifest) error = %v", err)
 	}
@@ -46,11 +46,11 @@ func TestCharacterServiceCreateUpdateAppearanceAndActivate(t *testing.T) {
 	root := t.TempDir()
 	writeVisualFixture(t, root, "fairy.atri")
 	service := NewCharacterService(root)
-	created, err := service.CreateCharacter(Brief{Name: "亚托莉", Description: "认真听用户说话。"}, "fairy.atri")
+	created, err := service.CreateCharacter(Brief{Name: "亚托莉", Description: "认真听用户说话。", SpeakingLanguage: "ja"}, "fairy.atri")
 	if err != nil {
 		t.Fatalf("CreateCharacter() error = %v", err)
 	}
-	updated, err := service.UpdateCharacter(created.CharacterID, Brief{Name: "亚托莉", Description: "会先听完再回应。"})
+	updated, err := service.UpdateCharacter(created.CharacterID, Brief{Name: "亚托莉", Description: "会先听完再回应。", SpeakingLanguage: "zh"})
 	if err != nil {
 		t.Fatalf("UpdateCharacter() error = %v", err)
 	}

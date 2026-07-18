@@ -17,14 +17,26 @@ const (
 	apiKeySecretID      = "speech.volcengine_voice_clone.api_key"
 	accessTokenSecretID = "speech.volcengine_voice_clone.access_token"
 
-	DefaultBaseURL          = "https://openspeech.bytedance.com/api/v3/tts"
-	DefaultTrainPath        = "/voice_clone"
-	DefaultQueryPath        = "/query_voice"
-	DefaultUpgradePath      = "/upgrade_voice"
-	DefaultAudioFormat      = "wav"
-	DefaultLanguage         = 0
-	DefaultExtraDenoiseID   = ""
-	DefaultMaxProviderBytes = 2 * 1024 * 1024
+	DefaultBaseURL             = "https://openspeech.bytedance.com"
+	DefaultTrainPath           = "/api/v3/tts/voice_clone"
+	DefaultQueryPath           = "/api/v3/tts/get_voice"
+	DefaultUpgradePath         = "/upgrade_voice"
+	DefaultSynthesizePath      = "/api/v3/tts/unidirectional"
+	DefaultResourceID          = "seed-icl-2.0"
+	DefaultSynthesisResourceID = "seed-icl-1.0"
+	DefaultSynthesisModel      = ""
+	DefaultTrainSource         = 2
+	DefaultTrainModelType      = 1
+	DefaultAudioFormat         = "wav"
+	DefaultSynthesisFormat     = "mp3"
+	DefaultSynthesisSampleRate = 24000
+	DefaultLanguage            = 0
+	DefaultExtraDenoiseID      = ""
+	DefaultMaxProviderBytes    = 2 * 1024 * 1024
+
+	legacyDefaultBaseURL   = "https://openspeech.bytedance.com/api/v3/tts"
+	legacyDefaultTrainPath = "/voice_clone"
+	legacyDefaultQueryPath = "/query_voice"
 )
 
 var (
@@ -36,15 +48,17 @@ var (
 )
 
 type Settings struct {
-	Enabled         bool
-	BaseURL         string
-	TrainPath       string
-	QueryPath       string
-	UpgradePath     string
-	AppID           string
-	DefaultSpeaker  string
-	DefaultLanguage int
-	DefaultFormat   string
+	Enabled             bool
+	BaseURL             string
+	TrainPath           string
+	QueryPath           string
+	UpgradePath         string
+	AppID               string
+	SynthesisResourceID string
+	SynthesisModel      string
+	DefaultSpeaker      string
+	DefaultLanguage     int
+	DefaultFormat       string
 }
 
 type Credentials struct {
@@ -55,35 +69,39 @@ type Credentials struct {
 }
 
 type Status struct {
-	Configured      bool   `json:"configured"`
-	Enabled         bool   `json:"enabled"`
-	BaseURL         string `json:"baseUrl"`
-	TrainPath       string `json:"trainPath"`
-	QueryPath       string `json:"queryPath"`
-	UpgradePath     string `json:"upgradePath"`
-	AppID           string `json:"appId"`
-	DefaultSpeaker  string `json:"defaultSpeaker"`
-	DefaultLanguage int    `json:"defaultLanguage"`
-	DefaultFormat   string `json:"defaultFormat"`
-	HasAPIKey       bool   `json:"hasApiKey"`
-	HasAccessToken  bool   `json:"hasAccessToken"`
-	SecretMigrated  bool   `json:"secretMigrated"`
+	Configured          bool   `json:"configured"`
+	Enabled             bool   `json:"enabled"`
+	BaseURL             string `json:"baseUrl"`
+	TrainPath           string `json:"trainPath"`
+	QueryPath           string `json:"queryPath"`
+	UpgradePath         string `json:"upgradePath"`
+	AppID               string `json:"appId"`
+	SynthesisResourceID string `json:"synthesisResourceId"`
+	SynthesisModel      string `json:"synthesisModel"`
+	DefaultSpeaker      string `json:"defaultSpeaker"`
+	DefaultLanguage     int    `json:"defaultLanguage"`
+	DefaultFormat       string `json:"defaultFormat"`
+	HasAPIKey           bool   `json:"hasApiKey"`
+	HasAccessToken      bool   `json:"hasAccessToken"`
+	SecretMigrated      bool   `json:"secretMigrated"`
 }
 
 type SaveSettingsRequest struct {
-	Enabled          bool   `json:"enabled"`
-	BaseURL          string `json:"baseUrl"`
-	TrainPath        string `json:"trainPath"`
-	QueryPath        string `json:"queryPath"`
-	UpgradePath      string `json:"upgradePath"`
-	AppID            string `json:"appId"`
-	APIKey           string `json:"apiKey"`
-	AccessToken      string `json:"accessToken"`
-	ClearAPIKey      bool   `json:"clearApiKey"`
-	ClearAccessToken bool   `json:"clearAccessToken"`
-	DefaultSpeaker   string `json:"defaultSpeaker"`
-	DefaultLanguage  int    `json:"defaultLanguage"`
-	DefaultFormat    string `json:"defaultFormat"`
+	Enabled             bool   `json:"enabled"`
+	BaseURL             string `json:"baseUrl"`
+	TrainPath           string `json:"trainPath"`
+	QueryPath           string `json:"queryPath"`
+	UpgradePath         string `json:"upgradePath"`
+	AppID               string `json:"appId"`
+	SynthesisResourceID string `json:"synthesisResourceId"`
+	SynthesisModel      string `json:"synthesisModel"`
+	APIKey              string `json:"apiKey"`
+	AccessToken         string `json:"accessToken"`
+	ClearAPIKey         bool   `json:"clearApiKey"`
+	ClearAccessToken    bool   `json:"clearAccessToken"`
+	DefaultSpeaker      string `json:"defaultSpeaker"`
+	DefaultLanguage     int    `json:"defaultLanguage"`
+	DefaultFormat       string `json:"defaultFormat"`
 }
 
 type settingsDocument struct {
@@ -92,26 +110,30 @@ type settingsDocument struct {
 }
 
 type storedSettings struct {
-	SchemaVersion   uint32 `json:"schema_version"`
-	Enabled         bool   `json:"enabled"`
-	BaseURL         string `json:"base_url"`
-	TrainPath       string `json:"train_path"`
-	QueryPath       string `json:"query_path"`
-	UpgradePath     string `json:"upgrade_path"`
-	AppID           string `json:"app_id"`
-	DefaultSpeaker  string `json:"default_speaker"`
-	DefaultLanguage int    `json:"default_language"`
-	DefaultFormat   string `json:"default_format"`
+	SchemaVersion       uint32 `json:"schema_version"`
+	Enabled             bool   `json:"enabled"`
+	BaseURL             string `json:"base_url"`
+	TrainPath           string `json:"train_path"`
+	QueryPath           string `json:"query_path"`
+	UpgradePath         string `json:"upgrade_path"`
+	AppID               string `json:"app_id"`
+	SynthesisResourceID string `json:"synthesis_resource_id"`
+	SynthesisModel      string `json:"synthesis_model"`
+	DefaultSpeaker      string `json:"default_speaker"`
+	DefaultLanguage     int    `json:"default_language"`
+	DefaultFormat       string `json:"default_format"`
 }
 
 func DefaultSettings() Settings {
 	return Settings{
-		BaseURL:         DefaultBaseURL,
-		TrainPath:       DefaultTrainPath,
-		QueryPath:       DefaultQueryPath,
-		UpgradePath:     DefaultUpgradePath,
-		DefaultLanguage: DefaultLanguage,
-		DefaultFormat:   DefaultAudioFormat,
+		BaseURL:             DefaultBaseURL,
+		TrainPath:           DefaultTrainPath,
+		QueryPath:           DefaultQueryPath,
+		UpgradePath:         DefaultUpgradePath,
+		SynthesisResourceID: DefaultSynthesisResourceID,
+		SynthesisModel:      DefaultSynthesisModel,
+		DefaultLanguage:     DefaultLanguage,
+		DefaultFormat:       DefaultAudioFormat,
 	}
 }
 
@@ -158,15 +180,17 @@ func ParseSettings(data []byte) (Settings, error) {
 		return Settings{}, errors.New("unsupported volcengine voice clone settings schema")
 	}
 	return withDefaults(Settings{
-		Enabled:         doc.Data.Enabled,
-		BaseURL:         doc.Data.BaseURL,
-		TrainPath:       doc.Data.TrainPath,
-		QueryPath:       doc.Data.QueryPath,
-		UpgradePath:     doc.Data.UpgradePath,
-		AppID:           doc.Data.AppID,
-		DefaultSpeaker:  doc.Data.DefaultSpeaker,
-		DefaultLanguage: doc.Data.DefaultLanguage,
-		DefaultFormat:   doc.Data.DefaultFormat,
+		Enabled:             doc.Data.Enabled,
+		BaseURL:             doc.Data.BaseURL,
+		TrainPath:           doc.Data.TrainPath,
+		QueryPath:           doc.Data.QueryPath,
+		UpgradePath:         doc.Data.UpgradePath,
+		AppID:               doc.Data.AppID,
+		SynthesisResourceID: doc.Data.SynthesisResourceID,
+		SynthesisModel:      doc.Data.SynthesisModel,
+		DefaultSpeaker:      doc.Data.DefaultSpeaker,
+		DefaultLanguage:     doc.Data.DefaultLanguage,
+		DefaultFormat:       doc.Data.DefaultFormat,
 	}), nil
 }
 
@@ -274,15 +298,17 @@ func loadReadySettings(root string, secrets *secret.Store) (Settings, Credential
 
 func compileSettings(input SaveSettingsRequest) Settings {
 	return withDefaults(Settings{
-		Enabled:         input.Enabled,
-		BaseURL:         input.BaseURL,
-		TrainPath:       input.TrainPath,
-		QueryPath:       input.QueryPath,
-		UpgradePath:     input.UpgradePath,
-		AppID:           strings.TrimSpace(input.AppID),
-		DefaultSpeaker:  input.DefaultSpeaker,
-		DefaultLanguage: input.DefaultLanguage,
-		DefaultFormat:   input.DefaultFormat,
+		Enabled:             input.Enabled,
+		BaseURL:             input.BaseURL,
+		TrainPath:           input.TrainPath,
+		QueryPath:           input.QueryPath,
+		UpgradePath:         input.UpgradePath,
+		AppID:               strings.TrimSpace(input.AppID),
+		SynthesisResourceID: strings.TrimSpace(input.SynthesisResourceID),
+		SynthesisModel:      strings.TrimSpace(input.SynthesisModel),
+		DefaultSpeaker:      input.DefaultSpeaker,
+		DefaultLanguage:     input.DefaultLanguage,
+		DefaultFormat:       input.DefaultFormat,
 	})
 }
 
@@ -291,11 +317,33 @@ func withDefaults(settings Settings) Settings {
 	settings.TrainPath = normalizePath(defaultString(settings.TrainPath, DefaultTrainPath))
 	settings.QueryPath = normalizePath(defaultString(settings.QueryPath, DefaultQueryPath))
 	settings.UpgradePath = normalizePath(defaultString(settings.UpgradePath, DefaultUpgradePath))
+	settings = migrateLegacyDefaultPaths(settings)
 	settings.AppID = strings.TrimSpace(settings.AppID)
+	settings.SynthesisResourceID = strings.TrimSpace(defaultString(settings.SynthesisResourceID, DefaultSynthesisResourceID))
+	settings.SynthesisModel = strings.TrimSpace(defaultString(settings.SynthesisModel, DefaultSynthesisModel))
 	settings.DefaultSpeaker = strings.TrimSpace(settings.DefaultSpeaker)
 	settings.DefaultFormat = normalizeFormat(defaultString(settings.DefaultFormat, DefaultAudioFormat))
 	if settings.DefaultLanguage < 0 {
 		settings.DefaultLanguage = DefaultLanguage
+	}
+	return settings
+}
+
+func migrateLegacyDefaultPaths(settings Settings) Settings {
+	if !strings.EqualFold(settings.BaseURL, legacyDefaultBaseURL) {
+		return settings
+	}
+	migrated := false
+	if settings.TrainPath == legacyDefaultTrainPath {
+		settings.TrainPath = DefaultTrainPath
+		migrated = true
+	}
+	if settings.QueryPath == legacyDefaultQueryPath {
+		settings.QueryPath = DefaultQueryPath
+		migrated = true
+	}
+	if migrated {
+		settings.BaseURL = DefaultBaseURL
 	}
 	return settings
 }
@@ -315,8 +363,8 @@ func validateReady(settings Settings, hasAPIKey bool, hasAccessToken bool) error
 	if settings.UpgradePath == "" {
 		missing = append(missing, "upgrade_path")
 	}
-	if !hasAPIKey && !(settings.AppID != "" && hasAccessToken) {
-		missing = append(missing, "api_key or app_id+access_token")
+	if !hasAPIKey {
+		missing = append(missing, "api_key")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("volcengine voice clone settings missing required fields: %s", strings.Join(missing, ", "))
@@ -328,19 +376,21 @@ func statusFromSettings(settings Settings, hasAPIKey bool, hasAccessToken bool) 
 	settings = withDefaults(settings)
 	configured := settings.Enabled && validateReady(settings, hasAPIKey, hasAccessToken) == nil
 	return Status{
-		Configured:      configured,
-		Enabled:         settings.Enabled,
-		BaseURL:         settings.BaseURL,
-		TrainPath:       settings.TrainPath,
-		QueryPath:       settings.QueryPath,
-		UpgradePath:     settings.UpgradePath,
-		AppID:           settings.AppID,
-		DefaultSpeaker:  settings.DefaultSpeaker,
-		DefaultLanguage: settings.DefaultLanguage,
-		DefaultFormat:   settings.DefaultFormat,
-		HasAPIKey:       hasAPIKey,
-		HasAccessToken:  hasAccessToken,
-		SecretMigrated:  true,
+		Configured:          configured,
+		Enabled:             settings.Enabled,
+		BaseURL:             settings.BaseURL,
+		TrainPath:           settings.TrainPath,
+		QueryPath:           settings.QueryPath,
+		UpgradePath:         settings.UpgradePath,
+		AppID:               settings.AppID,
+		SynthesisResourceID: settings.SynthesisResourceID,
+		SynthesisModel:      settings.SynthesisModel,
+		DefaultSpeaker:      settings.DefaultSpeaker,
+		DefaultLanguage:     settings.DefaultLanguage,
+		DefaultFormat:       settings.DefaultFormat,
+		HasAPIKey:           hasAPIKey,
+		HasAccessToken:      hasAccessToken,
+		SecretMigrated:      true,
 	}
 }
 
@@ -349,16 +399,18 @@ func writeSettings(root string, settings Settings) error {
 	doc := settingsDocument{
 		SchemaVersion: 1,
 		Data: storedSettings{
-			SchemaVersion:   1,
-			Enabled:         settings.Enabled,
-			BaseURL:         settings.BaseURL,
-			TrainPath:       settings.TrainPath,
-			QueryPath:       settings.QueryPath,
-			UpgradePath:     settings.UpgradePath,
-			AppID:           settings.AppID,
-			DefaultSpeaker:  settings.DefaultSpeaker,
-			DefaultLanguage: settings.DefaultLanguage,
-			DefaultFormat:   settings.DefaultFormat,
+			SchemaVersion:       1,
+			Enabled:             settings.Enabled,
+			BaseURL:             settings.BaseURL,
+			TrainPath:           settings.TrainPath,
+			QueryPath:           settings.QueryPath,
+			UpgradePath:         settings.UpgradePath,
+			AppID:               settings.AppID,
+			SynthesisResourceID: settings.SynthesisResourceID,
+			SynthesisModel:      settings.SynthesisModel,
+			DefaultSpeaker:      settings.DefaultSpeaker,
+			DefaultLanguage:     settings.DefaultLanguage,
+			DefaultFormat:       settings.DefaultFormat,
 		},
 	}
 	data, err := json.MarshalIndent(doc, "", "  ")

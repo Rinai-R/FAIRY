@@ -94,7 +94,13 @@ func (s *Store) ExportPackage(characterID string, outputPath string) error {
 	manifest := packageManifest{
 		SchemaVersion: 1,
 		PackageID:     pack.PackID,
-		Character:     Brief{Name: record.Name, Description: record.Description, DialogueStyle: record.DialogueStyle},
+		Character: Brief{
+			Name:             record.Name,
+			Description:      record.Description,
+			DialogueStyle:    record.DialogueStyle,
+			TextLanguage:     record.TextLanguage,
+			SpeakingLanguage: record.SpeakingLanguage,
+		},
 		Visual: packageVisual{
 			DisplayName: pack.DisplayName,
 			Renderer:    pack.Renderer,
@@ -184,6 +190,9 @@ func validatePackageManifest(manifest packageManifest) error {
 	}
 	if manifest.Character.Name == "" || manifest.Character.Description == "" {
 		return errors.New("package character brief is invalid")
+	}
+	if _, err := normalizeSpeakingLanguage(manifest.Character.SpeakingLanguage); err != nil {
+		return err
 	}
 	if manifest.Visual.Renderer != "state_images" || len(manifest.Visual.States) == 0 {
 		return errors.New("package visual manifest is invalid")

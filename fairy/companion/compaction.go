@@ -102,13 +102,17 @@ func normalizeCompactionSummary(summary string) (string, error) {
 }
 
 // BuildStablePrefixItems returns the respond/compact shared cacheable prefix:
-// character → profile → available_visual_states.
+// character → display_language → profile → available_visual_states.
 func BuildStablePrefixItems(
 	record character.Record,
 	userProfile *profile.Snapshot,
 	states []VisualState,
 ) ([]model.PromptItem, error) {
 	characterItem, err := encodeCharacterContext(record)
+	if err != nil {
+		return nil, err
+	}
+	displayLanguageItem, err := encodeDisplayLanguageConstraint(record)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +124,7 @@ func BuildStablePrefixItems(
 	if err != nil {
 		return nil, err
 	}
-	return []model.PromptItem{characterItem, profileItem, visualItem}, nil
+	return []model.PromptItem{characterItem, displayLanguageItem, profileItem, visualItem}, nil
 }
 
 // BuildCompactInput mirrors respond's stable prefix, then window summary/dialogue,

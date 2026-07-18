@@ -28,9 +28,10 @@ const (
 type PromptLane string
 
 const (
-	PromptLaneRespond PromptLane = "respond"
-	PromptLaneCompact PromptLane = "compact"
-	PromptLaneExtract PromptLane = "extract"
+	PromptLaneRespond   PromptLane = "respond"
+	PromptLaneCompact   PromptLane = "compact"
+	PromptLaneExtract   PromptLane = "extract"
+	PromptLaneTranslate PromptLane = "translate"
 )
 
 type PromptItemType string
@@ -185,7 +186,7 @@ func parseProtocol(value string) (Protocol, error) {
 
 func validateLane(lane PromptLane) error {
 	switch lane {
-	case PromptLaneRespond, PromptLaneCompact, PromptLaneExtract:
+	case PromptLaneRespond, PromptLaneCompact, PromptLaneExtract, PromptLaneTranslate:
 		return nil
 	default:
 		return fmt.Errorf("prompt lane %q is not supported", lane)

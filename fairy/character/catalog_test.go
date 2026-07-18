@@ -47,6 +47,12 @@ func TestStoreListReturnsActiveAssignedCharacter(t *testing.T) {
 	if catalog.Characters[0].Appearance.Visual == nil || catalog.Characters[0].Appearance.Visual.PackID != "fairy.atri" {
 		t.Fatalf("appearance = %#v", catalog.Characters[0].Appearance)
 	}
+	if catalog.Characters[0].SpeakingLanguage != DefaultSpeakingLanguage || catalog.Active.SpeakingLanguage != DefaultSpeakingLanguage {
+		t.Fatalf("speaking language = %#v active=%#v", catalog.Characters[0].SpeakingLanguage, catalog.Active.SpeakingLanguage)
+	}
+	if catalog.Characters[0].TextLanguage != DefaultTextLanguage || catalog.Active.TextLanguage != DefaultTextLanguage {
+		t.Fatalf("text language = %#v active=%#v", catalog.Characters[0].TextLanguage, catalog.Active.TextLanguage)
+	}
 }
 
 func TestStoreListMissingRootReturnsEmptyCatalog(t *testing.T) {
@@ -79,19 +85,19 @@ func TestStoreCreateUpdateAppearanceAndActivate(t *testing.T) {
 	style := "短句、自然。"
 	store := NewStore(root)
 
-	created, err := store.Create(Brief{Name: " 亚托莉 ", Description: " 认真听用户说话。 ", DialogueStyle: &style}, "fairy.atri")
+	created, err := store.Create(Brief{Name: " 亚托莉 ", Description: " 认真听用户说话。 ", DialogueStyle: &style, TextLanguage: "en", SpeakingLanguage: "zh"}, "fairy.atri")
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if created.Revision != 1 || created.Name != "亚托莉" || created.DialogueStyle == nil || *created.DialogueStyle != style || created.Appearance.Status != "assigned" {
+	if created.Revision != 1 || created.Name != "亚托莉" || created.DialogueStyle == nil || *created.DialogueStyle != style || created.TextLanguage != "en" || created.SpeakingLanguage != "zh" || created.Appearance.Status != "assigned" {
 		t.Fatalf("created = %#v", created)
 	}
 
-	updated, err := store.Update(created.CharacterID, Brief{Name: "亚托莉", Description: "会先听完再回应。"})
+	updated, err := store.Update(created.CharacterID, Brief{Name: "亚托莉", Description: "会先听完再回应。", TextLanguage: "zh", SpeakingLanguage: "en"})
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
-	if updated.Revision != 2 || updated.Description != "会先听完再回应。" {
+	if updated.Revision != 2 || updated.Description != "会先听完再回应。" || updated.TextLanguage != "zh" || updated.SpeakingLanguage != "en" {
 		t.Fatalf("updated = %#v", updated)
 	}
 
@@ -116,6 +122,24 @@ func TestStoreCreateUpdateAppearanceAndActivate(t *testing.T) {
 	}
 	if catalog.Active == nil || catalog.Active.CharacterID != created.CharacterID || catalog.Active.Revision != updated.Revision {
 		t.Fatalf("catalog active = %#v", catalog.Active)
+	}
+}
+
+func TestStoreCreateRejectsUnsupportedSpeakingLanguage(t *testing.T) {
+	root := t.TempDir()
+	writeVisual(t, root, "fairy.atri")
+	_, err := NewStore(root).Create(Brief{Name: "亚托莉", Description: "认真听用户说话。", SpeakingLanguage: "ko"}, "fairy.atri")
+	if err == nil {
+		t.Fatal("Create() error = nil, want unsupported speaking language error")
+	}
+}
+
+func TestStoreCreateRejectsUnsupportedTextLanguage(t *testing.T) {
+	root := t.TempDir()
+	writeVisual(t, root, "fairy.atri")
+	_, err := NewStore(root).Create(Brief{Name: "亚托莉", Description: "认真听用户说话。", TextLanguage: "ko", SpeakingLanguage: "ja"}, "fairy.atri")
+	if err == nil {
+		t.Fatal("Create() error = nil, want unsupported text language error")
 	}
 }
 

@@ -21,12 +21,51 @@ export const DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = 128_000;
 export const MIN_MODEL_CONTEXT_WINDOW_TOKENS = 4_096;
 export const MAX_MODEL_CONTEXT_WINDOW_TOKENS = 2_000_000;
 export const DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS = 1_048_576;
-export const DEFAULT_SPEECH_BASE_URL = "https://openspeech.bytedance.com/api/v3/tts";
-export const DEFAULT_SPEECH_TRAIN_PATH = "/voice_clone";
-export const DEFAULT_SPEECH_QUERY_PATH = "/query_voice";
+export const DEFAULT_SPEECH_BASE_URL = "https://openspeech.bytedance.com";
+export const DEFAULT_SPEECH_TRAIN_PATH = "/api/v3/tts/voice_clone";
+export const DEFAULT_SPEECH_QUERY_PATH = "/api/v3/tts/get_voice";
 export const DEFAULT_SPEECH_UPGRADE_PATH = "/upgrade_voice";
+export const DEFAULT_SPEECH_SYNTHESIS_RESOURCE_ID = "seed-icl-1.0";
+export const DEFAULT_SPEECH_SYNTHESIS_MODEL = "";
 export const DEFAULT_SPEECH_AUDIO_FORMAT = "wav";
 export const DEFAULT_SPEECH_LANGUAGE = 0;
+export const DEFAULT_CHARACTER_SPEAKING_LANGUAGE = "ja";
+export const DEFAULT_CHARACTER_TEXT_LANGUAGE = "zh";
+export const CHARACTER_SPEAKING_LANGUAGE_OPTIONS = Object.freeze([
+  Object.freeze({ value: "ja", label: "日语" }),
+  Object.freeze({ value: "zh", label: "中文" }),
+  Object.freeze({ value: "en", label: "英文" }),
+]);
+export const CHARACTER_TEXT_LANGUAGE_OPTIONS = CHARACTER_SPEAKING_LANGUAGE_OPTIONS;
+const CHARACTER_SPEAKING_LANGUAGE_VALUES = new Set(CHARACTER_SPEAKING_LANGUAGE_OPTIONS.map(({ value }) => value));
+const CHARACTER_TEXT_LANGUAGE_VALUES = CHARACTER_SPEAKING_LANGUAGE_VALUES;
+export const SPEECH_LANGUAGE_OPTIONS = Object.freeze([
+  Object.freeze({ value: 0, code: "cn", label: "中文" }),
+  Object.freeze({ value: 1, code: "en", label: "英文" }),
+  Object.freeze({ value: 2, code: "ja", label: "日语" }),
+  Object.freeze({ value: 3, code: "es", label: "西班牙语" }),
+  Object.freeze({ value: 4, code: "id", label: "印尼语" }),
+  Object.freeze({ value: 5, code: "pt", label: "葡萄牙语" }),
+  Object.freeze({ value: 6, code: "de", label: "德语" }),
+  Object.freeze({ value: 7, code: "fr", label: "法语" }),
+  Object.freeze({ value: 8, code: "ko", label: "韩语" }),
+  Object.freeze({ value: 9, code: "it", label: "意大利语" }),
+  Object.freeze({ value: 10, code: "th", label: "泰语" }),
+  Object.freeze({ value: 11, code: "vi", label: "越南语" }),
+  Object.freeze({ value: 12, code: "ru", label: "俄语" }),
+  Object.freeze({ value: 13, code: "fil", label: "菲律宾语" }),
+  Object.freeze({ value: 14, code: "ms", label: "马来语" }),
+  Object.freeze({ value: 15, code: "ar", label: "阿拉伯语" }),
+  Object.freeze({ value: 16, code: "mx", label: "墨西哥西班牙语" }),
+  Object.freeze({ value: 17, code: "pt-br", label: "巴西葡萄牙语" }),
+  Object.freeze({ value: 19, code: "pl", label: "波兰语" }),
+  Object.freeze({ value: 20, code: "tr", label: "土耳其语" }),
+  Object.freeze({ value: 21, code: "sv", label: "瑞典语" }),
+]);
+export const SPEECH_LANGUAGE_CODE_TO_VALUE = Object.freeze(Object.fromEntries(
+  SPEECH_LANGUAGE_OPTIONS.map(({ code, value }) => [code, value]),
+));
+const SPEECH_LANGUAGE_VALUES = new Set(SPEECH_LANGUAGE_OPTIONS.map(({ value }) => value));
 
 export function assertControlPanelSection(value) {
   if (!CONTROL_PANEL_SECTIONS.some((section) => section.id === value)) {
@@ -95,6 +134,8 @@ export function buildSpeechSettingsInput({
   queryPath,
   upgradePath,
   appId,
+  synthesisResourceId = DEFAULT_SPEECH_SYNTHESIS_RESOURCE_ID,
+  synthesisModel = DEFAULT_SPEECH_SYNTHESIS_MODEL,
   apiKey = "",
   accessToken = "",
   clearApiKey = false,
@@ -108,9 +149,11 @@ export function buildSpeechSettingsInput({
   const normalizedQueryPath = normalizeSpeechPath(queryPath, DEFAULT_SPEECH_QUERY_PATH);
   const normalizedUpgradePath = normalizeSpeechPath(upgradePath, DEFAULT_SPEECH_UPGRADE_PATH);
   const normalizedAppId = String(appId ?? "").trim();
+  const normalizedSynthesisResourceId = String(synthesisResourceId ?? "").trim() || DEFAULT_SPEECH_SYNTHESIS_RESOURCE_ID;
+  const normalizedSynthesisModel = String(synthesisModel ?? "").trim() || DEFAULT_SPEECH_SYNTHESIS_MODEL;
   const normalizedDefaultSpeaker = String(defaultSpeaker ?? "").trim();
   const normalizedDefaultFormat = normalizeSpeechFormat(defaultFormat || DEFAULT_SPEECH_AUDIO_FORMAT);
-  const numericDefaultLanguage = Number(String(defaultLanguage ?? DEFAULT_SPEECH_LANGUAGE).trim());
+  const numericDefaultLanguage = parseSpeechLanguage(defaultLanguage, "speech default language");
   let parsedBaseUrl;
   try {
     parsedBaseUrl = new URL(normalizedBaseUrl);
@@ -119,9 +162,6 @@ export function buildSpeechSettingsInput({
   }
   if (parsedBaseUrl.protocol !== "https:" && parsedBaseUrl.protocol !== "http:") {
     throw new TypeError("speech base URL must use http or https");
-  }
-  if (!Number.isSafeInteger(numericDefaultLanguage) || numericDefaultLanguage < 0) {
-    throw new TypeError("speech default language must be a non-negative integer");
   }
   if (normalizedDefaultFormat.length === 0) {
     throw new TypeError("speech default audio format is required");
@@ -133,6 +173,8 @@ export function buildSpeechSettingsInput({
     queryPath: normalizedQueryPath,
     upgradePath: normalizedUpgradePath,
     appId: normalizedAppId,
+    synthesisResourceId: normalizedSynthesisResourceId,
+    synthesisModel: normalizedSynthesisModel,
     apiKey: String(apiKey ?? ""),
     accessToken: String(accessToken ?? ""),
     clearApiKey: Boolean(clearApiKey),
@@ -147,7 +189,7 @@ export function buildSpeechTrainInput({ speakerId, audioData, audioFormat, langu
   const normalizedSpeaker = String(speakerId ?? "").trim();
   const normalizedAudioData = String(audioData ?? "").trim();
   const normalizedAudioFormat = normalizeSpeechFormat(audioFormat || DEFAULT_SPEECH_AUDIO_FORMAT);
-  const numericLanguage = Number(String(language ?? DEFAULT_SPEECH_LANGUAGE).trim());
+  const numericLanguage = parseSpeechLanguage(language, "speech language");
   if (normalizedSpeaker.length === 0) {
     throw new TypeError("speech speaker id is required");
   }
@@ -156,9 +198,6 @@ export function buildSpeechTrainInput({ speakerId, audioData, audioFormat, langu
   }
   if (normalizedAudioFormat.length === 0) {
     throw new TypeError("speech audio format is required");
-  }
-  if (!Number.isSafeInteger(numericLanguage) || numericLanguage < 0) {
-    throw new TypeError("speech language must be a non-negative integer");
   }
   return Object.freeze({
     speakerId: normalizedSpeaker,
@@ -185,9 +224,43 @@ function normalizeSpeechFormat(value) {
   return String(value ?? "").trim().replace(/^\./, "").toLowerCase();
 }
 
+function parseSpeechLanguage(value, fieldName) {
+  const numericLanguage = Number(String(value ?? DEFAULT_SPEECH_LANGUAGE).trim());
+  if (!Number.isSafeInteger(numericLanguage) || numericLanguage < 0) {
+    throw new TypeError(`${fieldName} must be a non-negative integer`);
+  }
+  if (!SPEECH_LANGUAGE_VALUES.has(numericLanguage)) {
+    throw new TypeError(`unsupported ${fieldName}`);
+  }
+  return numericLanguage;
+}
+
 const VISUAL_PACK_ID_PATTERN = /^[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/;
 
-export function buildCharacterSaveInput({ name, description, dialogueStyle = "", visualPackId }) {
+export function normalizeCharacterSpeakingLanguage(value) {
+  const normalized = String(value ?? "").trim() || DEFAULT_CHARACTER_SPEAKING_LANGUAGE;
+  if (!CHARACTER_SPEAKING_LANGUAGE_VALUES.has(normalized)) {
+    throw new TypeError("character speaking language is unsupported");
+  }
+  return normalized;
+}
+
+export function normalizeCharacterTextLanguage(value) {
+  const normalized = String(value ?? "").trim() || DEFAULT_CHARACTER_TEXT_LANGUAGE;
+  if (!CHARACTER_TEXT_LANGUAGE_VALUES.has(normalized)) {
+    throw new TypeError("character text language is unsupported");
+  }
+  return normalized;
+}
+
+export function buildCharacterSaveInput({
+  name,
+  description,
+  dialogueStyle = "",
+  textLanguage = DEFAULT_CHARACTER_TEXT_LANGUAGE,
+  speakingLanguage = DEFAULT_CHARACTER_SPEAKING_LANGUAGE,
+  visualPackId,
+}) {
   if (typeof name !== "string" || typeof description !== "string") {
     throw new TypeError("character name and description are required");
   }
@@ -197,13 +270,20 @@ export function buildCharacterSaveInput({ name, description, dialogueStyle = "",
   const normalizedName = name.trim();
   const normalizedDescription = description.trim();
   const normalizedDialogueStyle = dialogueStyle.trim();
+  const normalizedTextLanguage = normalizeCharacterTextLanguage(textLanguage);
+  const normalizedSpeakingLanguage = normalizeCharacterSpeakingLanguage(speakingLanguage);
   if (normalizedName.length === 0 || normalizedDescription.length === 0) {
     throw new TypeError("character name and description are required");
   }
   if (typeof visualPackId !== "string" || !VISUAL_PACK_ID_PATTERN.test(visualPackId)) {
     throw new TypeError("character visual pack must be selected");
   }
-  const brief = { name: normalizedName, description: normalizedDescription };
+  const brief = {
+    name: normalizedName,
+    description: normalizedDescription,
+    textLanguage: normalizedTextLanguage,
+    speakingLanguage: normalizedSpeakingLanguage,
+  };
   if (normalizedDialogueStyle.length > 0) {
     brief.dialogueStyle = normalizedDialogueStyle;
   }

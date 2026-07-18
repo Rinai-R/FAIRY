@@ -230,6 +230,125 @@ export class Status {
     }
 }
 
+export class SynthesisResult {
+    /**
+     * Creates a new SynthesisResult instance.
+     * @param {Partial<SynthesisResult>} [$$source = {}] - The source object to create the SynthesisResult.
+     */
+    constructor($$source = {}) {
+        if (!("httpStatus" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["httpStatus"] = 0;
+        }
+        if (!("logid" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["logid"] = "";
+        }
+        if (!("speakerId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["speakerId"] = "";
+        }
+        if (!("mimeType" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["mimeType"] = "";
+        }
+        if (!("format" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["format"] = "";
+        }
+        if (!("audioBase64" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["audioBase64"] = "";
+        }
+        if (!("dataUrl" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["dataUrl"] = "";
+        }
+        if (!("code" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["code"] = "";
+        }
+        if (!("message" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["message"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SynthesisResult instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {SynthesisResult}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SynthesisResult(/** @type {Partial<SynthesisResult>} */($$parsedSource));
+    }
+}
+
+export class SynthesizeSpeechRequest {
+    /**
+     * Creates a new SynthesizeSpeechRequest instance.
+     * @param {Partial<SynthesizeSpeechRequest>} [$$source = {}] - The source object to create the SynthesizeSpeechRequest.
+     */
+    constructor($$source = {}) {
+        if (!("text" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["text"] = "";
+        }
+        if (!("speakerId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["speakerId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SynthesizeSpeechRequest instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {SynthesizeSpeechRequest}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SynthesizeSpeechRequest(/** @type {Partial<SynthesizeSpeechRequest>} */($$parsedSource));
+    }
+}
+
 export class TrainVoiceRequest {
     /**
      * Creates a new TrainVoiceRequest instance.
@@ -264,13 +383,6 @@ export class TrainVoiceRequest {
              */
             this["language"] = 0;
         }
-        if (/** @type {any} */(false)) {
-            /**
-             * @member
-             * @type {{ [_ in string]?: string } | undefined}
-             */
-            this["extraParams"] = undefined;
-        }
 
         Object.assign(this, $$source);
     }
@@ -281,11 +393,7 @@ export class TrainVoiceRequest {
      * @returns {TrainVoiceRequest}
      */
     static createFrom($$source = {}) {
-        const $$createField4_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("extraParams" in $$parsedSource) {
-            $$parsedSource["extraParams"] = $$createField4_0($$parsedSource["extraParams"]);
-        }
         return new TrainVoiceRequest(/** @type {Partial<TrainVoiceRequest>} */($$parsedSource));
     }
 }
@@ -446,7 +554,7 @@ export class VoiceResult {
      * @returns {VoiceResult}
      */
     static createFrom($$source = {}) {
-        const $$createField7_0 = $$createType2;
+        const $$createField7_0 = $$createType1;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("speakerStatus" in $$parsedSource) {
             $$parsedSource["speakerStatus"] = $$createField7_0($$parsedSource["speakerStatus"]);
@@ -456,6 +564,5 @@ export class VoiceResult {
 }
 
 // Private type creation functions
-const $$createType0 = $Create.Map($Create.Any, $Create.Any);
-const $$createType1 = VoiceModelStatus.createFrom;
-const $$createType2 = $Create.Array($$createType1);
+const $$createType0 = VoiceModelStatus.createFrom;
+const $$createType1 = $Create.Array($$createType0);

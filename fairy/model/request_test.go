@@ -202,6 +202,9 @@ func TestBuildChatCompletionsRequestDraftMatchesDeepSeekJSONShape(t *testing.T) 
 	if body["previous_response_id"] != nil {
 		t.Fatalf("Chat body unexpectedly included previous_response_id")
 	}
+	if body["thinking"] != nil {
+		t.Fatalf("chat body must not vendor-probe thinking: %#v", body["thinking"])
+	}
 	if body["response_format"].(map[string]any)["type"] != "json_object" {
 		t.Fatalf("response_format = %#v", body["response_format"])
 	}
@@ -217,6 +220,36 @@ func TestBuildChatCompletionsRequestDraftMatchesDeepSeekJSONShape(t *testing.T) 
 	}
 	if !strings.Contains(messages[2].(map[string]any)["content"].(string), "\"chains\"") {
 		t.Fatalf("assistant message was not reply-chain JSON: %#v", messages[2])
+	}
+}
+
+func TestBuildChatCompletionsTranslateKeepsProviderNeutralBody(t *testing.T) {
+	req := CompiledPromptRequest{
+		Shape: ModelRequestShape{
+			Lane:            PromptLaneTranslate,
+			Model:           "deepseek-v4-flash",
+			Instructions:    "translate",
+			MaxOutputTokens: 1024,
+			PromptCacheKey:  "fairy:conversation:translate",
+		},
+		Input: []PromptItem{
+			{Type: PromptItemContextData, Content: `{"contextType":"character","name":"亚托莉"}`},
+			{Type: PromptItemUserMessage, Content: "Source language: Chinese (zh)\nTarget speaking language: Japanese (ja)\n\n嗯。"},
+		},
+	}
+	draft, err := BuildRequestDraft(connection(ProtocolChatCompletions), req)
+	if err != nil {
+		t.Fatalf("BuildRequestDraft() error = %v", err)
+	}
+	body := bodyMap(t, draft)
+	if body["thinking"] != nil {
+		t.Fatalf("translate body must not inject vendor thinking controls: %#v", body["thinking"])
+	}
+	if body["response_format"] != nil {
+		t.Fatalf("translate should not force json_object: %#v", body["response_format"])
+	}
+	if body["max_tokens"] != float64(1024) {
+		t.Fatalf("max_tokens = %#v", body["max_tokens"])
 	}
 }
 

@@ -40,6 +40,22 @@ type TurnOutcome struct {
 	MigrationMessage string       `json:"migrationMessage"`
 }
 
+type SpeechSynthesisRequest struct {
+	Text      string
+	SpeakerID string
+}
+
+type SpeechSynthesisResult struct {
+	SpeakerID string
+	MimeType  string
+	Format    string
+	DataURL   string
+}
+
+type SpeechSynthesizer interface {
+	SynthesizeSpeech(request SpeechSynthesisRequest) (SpeechSynthesisResult, error)
+}
+
 func ValidateSubmitTurnRequest(request SubmitTurnRequest) error {
 	if strings.TrimSpace(request.ConversationID) == "" {
 		return errors.New("conversation_id is required")
@@ -73,9 +89,6 @@ func ValidateReplyChains(chains []ReplyChain) error {
 	for i, chain := range chains {
 		if strings.TrimSpace(chain.Text) == "" {
 			return fmt.Errorf("reply chain %d text is required", i)
-		}
-		if strings.TrimSpace(chain.SpeechText) == "" {
-			return fmt.Errorf("reply chain %d speech_text is required", i)
 		}
 		if strings.TrimSpace(chain.VisualState) == "" {
 			return fmt.Errorf("reply chain %d visual_state is required", i)

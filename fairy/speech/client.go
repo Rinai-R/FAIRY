@@ -23,15 +23,31 @@ type Client struct {
 }
 
 type TrainVoiceRequest struct {
-	SpeakerID   string            `json:"speakerId"`
-	AudioData   string            `json:"audioData"`
-	AudioFormat string            `json:"audioFormat"`
-	Language    int               `json:"language"`
-	ExtraParams map[string]string `json:"extraParams,omitempty"`
+	SpeakerID   string `json:"speakerId"`
+	AudioData   string `json:"audioData"`
+	AudioFormat string `json:"audioFormat"`
+	Language    int    `json:"language"`
 }
 
 type VoiceOperationRequest struct {
 	SpeakerID string `json:"speakerId"`
+}
+
+type SynthesizeSpeechRequest struct {
+	Text      string `json:"text"`
+	SpeakerID string `json:"speakerId"`
+}
+
+type SynthesisResult struct {
+	HTTPStatus  int    `json:"httpStatus"`
+	LogID       string `json:"logid"`
+	SpeakerID   string `json:"speakerId"`
+	MimeType    string `json:"mimeType"`
+	Format      string `json:"format"`
+	AudioBase64 string `json:"audioBase64"`
+	DataURL     string `json:"dataUrl"`
+	Code        string `json:"code"`
+	Message     string `json:"message"`
 }
 
 type VoiceResult struct {
@@ -69,6 +85,32 @@ type providerSpeakerRequest struct {
 	SpeakerID string `json:"speaker_id"`
 }
 
+type providerSynthesisRequest struct {
+	ReqParams providerSynthesisParams `json:"req_params"`
+}
+
+type providerSynthesisParams struct {
+	Text        string                 `json:"text"`
+	Model       string                 `json:"model,omitempty"`
+	Speaker     string                 `json:"speaker"`
+	AudioParams providerSynthesisAudio `json:"audio_params"`
+}
+
+type providerSynthesisAudio struct {
+	Format     string `json:"format"`
+	SampleRate int    `json:"sample_rate,omitempty"`
+}
+
+type providerTTSResponse struct {
+	ReqID     string `json:"reqid,omitempty"`
+	Code      any    `json:"code,omitempty"`
+	Operation string `json:"operation,omitempty"`
+	Message   string `json:"message,omitempty"`
+	Sequence  int    `json:"sequence,omitempty"`
+	Data      string `json:"data,omitempty"`
+	LogID     string `json:"logid,omitempty"`
+}
+
 type providerVoiceResponse struct {
 	AvailableTrainingTimes int                        `json:"available_training_times"`
 	CreateTime             int64                      `json:"create_time"`
@@ -102,8 +144,7 @@ func (c *Client) TrainVoice(ctx context.Context, settings Settings, credentials 
 			Data:   request.AudioData,
 			Format: request.AudioFormat,
 		},
-		Language:    request.Language,
-		ExtraParams: request.ExtraParams,
+		Language: request.Language,
 	}
 	return c.doJSON(ctx, settings, credentials, settings.TrainPath, body)
 }
@@ -124,6 +165,75 @@ func (c *Client) UpgradeVoice(ctx context.Context, settings Settings, credential
 		return VoiceResult{}, ErrSpeakerIDRequired
 	}
 	return c.doJSON(ctx, settings, credentials, settings.UpgradePath, providerSpeakerRequest{SpeakerID: strings.TrimSpace(request.SpeakerID)})
+}
+
+func (c *Client) SynthesizeSpeech(ctx context.Context, settings Settings, credentials Credentials, request SynthesizeSpeechRequest) (SynthesisResult, error) {
+	settings = withDefaults(settings)
+	request.Text = strings.TrimSpace(request.Text)
+	request.SpeakerID = defaultString(request.SpeakerID, settings.DefaultSpeaker)
+	if request.Text == "" {
+		return SynthesisResult{}, errors.New("speech text is required")
+	}
+	if strings.TrimSpace(request.SpeakerID) == "" {
+		return SynthesisResult{}, ErrSpeakerIDRequired
+	}
+	if err := validateReady(settings, credentials.HasAPIKey, credentials.HasAccessToken); err != nil {
+		return SynthesisResult{}, err
+	}
+	body := providerSynthesisRequest{
+		ReqParams: providerSynthesisParams{
+			Text:    request.Text,
+			Model:   settings.SynthesisModel,
+			Speaker: strings.TrimSpace(request.SpeakerID),
+			AudioParams: providerSynthesisAudio{
+				Format:     DefaultSynthesisFormat,
+				SampleRate: DefaultSynthesisSampleRate,
+			},
+		},
+	}
+	return c.doSynthesis(ctx, settings, credentials, body, request.SpeakerID)
+}
+
+func (c *Client) doSynthesis(ctx context.Context, settings Settings, credentials Credentials, payload providerSynthesisRequest, speakerID string) (SynthesisResult, error) {
+	endpoint, err := joinEndpoint(settings.BaseURL, DefaultSynthesizePath)
+	if err != nil {
+		return SynthesisResult{}, err
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return SynthesisResult{}, fmt.Errorf("encoding volcengine tts request: %w", err)
+	}
+	reqCtx := ctx
+	if c.timeout() > 0 {
+		var cancel context.CancelFunc
+		reqCtx, cancel = context.WithTimeout(ctx, c.timeout())
+		defer cancel()
+	}
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(encoded))
+	if err != nil {
+		return SynthesisResult{}, fmt.Errorf("creating volcengine tts request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	requestID := newRequestID()
+	apiKey := credentials.APIKey.Expose()
+	req.Header.Set("X-Api-Key", apiKey)
+	req.Header.Set("X-Api-Resource-Id", settings.SynthesisResourceID)
+	req.Header.Set("X-Api-Request-Id", requestID)
+	secrets := []string{apiKey}
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return SynthesisResult{}, sanitizeProviderError("sending volcengine tts request", err, secrets, "")
+	}
+	defer resp.Body.Close()
+	data, err := readLimited(resp.Body, c.maxResponseBytes())
+	if err != nil {
+		return SynthesisResult{}, sanitizeProviderError("reading volcengine tts response", err, secrets, resp.Header.Get("X-Tt-Logid"))
+	}
+	logID := resp.Header.Get("X-Tt-Logid")
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return SynthesisResult{}, providerHTTPError(resp.StatusCode, logID, data, secrets)
+	}
+	return parseSynthesisResult(resp.StatusCode, logID, speakerID, data, secrets)
 }
 
 func (c *Client) doJSON(ctx context.Context, settings Settings, credentials Credentials, path string, payload any) (VoiceResult, error) {
@@ -211,12 +321,6 @@ func applyCredentialHeaders(header http.Header, settings Settings, credentials C
 		secrets = append(secrets, apiKey)
 		return secrets
 	}
-	header.Set("X-Api-App-Key", settings.AppID)
-	if credentials.HasAccessToken {
-		accessToken := credentials.AccessToken.Expose()
-		header.Set("X-Api-Access-Key", accessToken)
-		secrets = append(secrets, accessToken)
-	}
 	return secrets
 }
 
@@ -268,6 +372,58 @@ func providerError(prefix string, payload []byte, secrets []string) error {
 	return fmt.Errorf("%s: %s", prefix, summary)
 }
 
+func parseSynthesisResult(httpStatus int, logID string, speakerID string, data []byte, secrets []string) (SynthesisResult, error) {
+	audioBase64, providerLogID, err := decodeSynthesisFrames(data, secrets)
+	if err != nil {
+		return SynthesisResult{}, err
+	}
+	mime := "audio/mpeg"
+	return SynthesisResult{
+		HTTPStatus:  httpStatus,
+		LogID:       firstNonEmpty(logID, providerLogID),
+		SpeakerID:   speakerID,
+		MimeType:    mime,
+		Format:      DefaultSynthesisFormat,
+		AudioBase64: audioBase64,
+		DataURL:     "data:" + mime + ";base64," + audioBase64,
+	}, nil
+}
+
+func decodeSynthesisFrames(data []byte, secrets []string) (string, string, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	audio := make([]byte, 0)
+	logID := ""
+	frames := 0
+	for {
+		var frame providerTTSResponse
+		err := decoder.Decode(&frame)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return "", logID, providerError("volcengine tts malformed provider response", data, secrets)
+		}
+		frames++
+		logID = firstNonEmpty(logID, frame.LogID)
+		if !isProviderSuccessCode(frame.Code) {
+			code := codeToString(frame.Code)
+			return "", logID, fmt.Errorf("volcengine tts failed: code=%s message=%s logid=%s", code, sanitizeText(frame.Message, secrets), logID)
+		}
+		if strings.TrimSpace(frame.Data) == "" {
+			continue
+		}
+		chunk, err := base64.StdEncoding.DecodeString(frame.Data)
+		if err != nil {
+			return "", logID, fmt.Errorf("volcengine tts response audio is not base64: %w", err)
+		}
+		audio = append(audio, chunk...)
+	}
+	if frames == 0 || len(audio) == 0 {
+		return "", logID, providerError("volcengine tts response missing audio data", data, secrets)
+	}
+	return base64.StdEncoding.EncodeToString(audio), logID, nil
+}
+
 func sanitizeProviderError(action string, err error, secrets []string, logID string) error {
 	if err == nil {
 		return nil
@@ -281,8 +437,11 @@ func sanitizeProviderError(action string, err error, secrets []string, logID str
 
 func sanitizeText(value string, secrets []string) string {
 	value = strings.ReplaceAll(value, "Authorization", "[REDACTED_HEADER]")
+	value = strings.ReplaceAll(value, "Resource-Id", "[REDACTED_HEADER]")
 	value = strings.ReplaceAll(value, "X-Api-Key", "[REDACTED_HEADER]")
+	value = strings.ReplaceAll(value, "X-Api-App-Key", "[REDACTED_HEADER]")
 	value = strings.ReplaceAll(value, "X-Api-Access-Key", "[REDACTED_HEADER]")
+	value = strings.ReplaceAll(value, "X-Api-Resource-Id", "[REDACTED_HEADER]")
 	value = strings.ReplaceAll(value, "Bearer;", "Bearer;[REDACTED]")
 	for _, secretValue := range secrets {
 		if secretValue != "" {
@@ -347,6 +506,27 @@ func codeToString(value any) string {
 		return ""
 	}
 	return fmt.Sprint(value)
+}
+
+func isProviderSuccessCode(value any) bool {
+	switch code := value.(type) {
+	case nil:
+		return true
+	case float64:
+		return code == 0 || code == 20000000
+	case int:
+		return code == 0 || code == 20000000
+	case int64:
+		return code == 0 || code == 20000000
+	case json.Number:
+		parsed, err := code.Int64()
+		return err == nil && (parsed == 0 || parsed == 20000000)
+	case string:
+		trimmed := strings.TrimSpace(code)
+		return trimmed == "" || trimmed == "0" || trimmed == "20000000"
+	default:
+		return false
+	}
 }
 
 func firstNonEmpty(values ...string) string {

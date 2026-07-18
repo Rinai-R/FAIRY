@@ -105,6 +105,27 @@ type failedPayload struct {
 	Error WireError `json:"error"`
 }
 
+type speechRequestedPayload struct {
+	Type                string  `json:"type"`
+	Text                string  `json:"text"`
+	CharacterRevision   uint64  `json:"characterRevision"`
+	UserProfileRevision *uint64 `json:"userProfileRevision"`
+}
+
+type speechSynthesizedPayload struct {
+	Type      string `json:"type"`
+	Text      string `json:"text"`
+	SpeakerID string `json:"speakerId"`
+	MimeType  string `json:"mimeType"`
+	Format    string `json:"format"`
+	DataURL   string `json:"dataUrl"`
+}
+
+type speechFailedPayload struct {
+	Type  string    `json:"type"`
+	Error WireError `json:"error"`
+}
+
 type HarnessEvent struct {
 	ConversationID string    `json:"conversationId"`
 	TurnID         string    `json:"turnId"`
@@ -122,6 +143,11 @@ type TurnCompletion struct {
 	Usage               []LaneModelUsage
 	VisualState         string
 	Chains              []ReplyChain
+}
+
+type SpeechSynthesisCompletion struct {
+	Text   string
+	Result SpeechSynthesisResult
 }
 
 type EventEmitter func(HarnessEvent)
@@ -210,6 +236,39 @@ func (l *TurnLifecycle) Complete(completion TurnCompletion) (HarnessEvent, error
 		VisualState:         completion.VisualState,
 		Chains:              completion.Chains,
 	}), nil
+}
+
+func (l *TurnLifecycle) SpeechRequested(completion TurnCompletion) (HarnessEvent, error) {
+	if l.state != TurnStateCompleted {
+		return HarnessEvent{}, errors.New("只有 Completed 状态可以请求语音")
+	}
+	return l.event(speechRequestedPayload{
+		Type:                "speech.requested",
+		Text:                completion.SpeechText,
+		CharacterRevision:   completion.CharacterRevision,
+		UserProfileRevision: completion.UserProfileRevision,
+	}), nil
+}
+
+func (l *TurnLifecycle) SpeechSynthesized(completion SpeechSynthesisCompletion) (HarnessEvent, error) {
+	if l.state != TurnStateCompleted {
+		return HarnessEvent{}, errors.New("只有 Completed 状态可以完成语音合成")
+	}
+	return l.event(speechSynthesizedPayload{
+		Type:      "speech.synthesized",
+		Text:      completion.Text,
+		SpeakerID: completion.Result.SpeakerID,
+		MimeType:  completion.Result.MimeType,
+		Format:    completion.Result.Format,
+		DataURL:   completion.Result.DataURL,
+	}), nil
+}
+
+func (l *TurnLifecycle) SpeechFailed(code string, message string, retryable bool) (HarnessEvent, error) {
+	if l.state != TurnStateCompleted {
+		return HarnessEvent{}, errors.New("只有 Completed 状态可以发送语音失败事件")
+	}
+	return l.event(speechFailedPayload{Type: "speech.failed", Error: WireError{Code: code, Message: message, Retryable: retryable}}), nil
 }
 
 func (l *TurnLifecycle) Interrupt() (HarnessEvent, error) {

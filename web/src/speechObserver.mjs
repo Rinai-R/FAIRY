@@ -60,6 +60,9 @@ export function reduceSpeechObserver(state, event) {
         waiting: false,
         active: true,
       });
+    case "speech.synthesized":
+    case "speech.failed":
+      return base === state ? state : Object.freeze(base);
     default:
       // Unknown trailing events do not change the bubble.
       return base === state ? state : Object.freeze(base);

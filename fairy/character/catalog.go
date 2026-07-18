@@ -21,12 +21,14 @@ type Catalog struct {
 }
 
 type Record struct {
-	CharacterID   string     `json:"characterId"`
-	Revision      uint64     `json:"revision"`
-	Name          string     `json:"name"`
-	Description   string     `json:"description"`
-	DialogueStyle *string    `json:"dialogueStyle"`
-	Appearance    Appearance `json:"appearance"`
+	CharacterID      string     `json:"characterId"`
+	Revision         uint64     `json:"revision"`
+	Name             string     `json:"name"`
+	Description      string     `json:"description"`
+	DialogueStyle    *string    `json:"dialogueStyle"`
+	TextLanguage     string     `json:"textLanguage"`
+	SpeakingLanguage string     `json:"speakingLanguage"`
+	Appearance       Appearance `json:"appearance"`
 }
 
 type Appearance struct {
@@ -47,10 +49,15 @@ type Store struct {
 }
 
 type Brief struct {
-	Name          string  `json:"name"`
-	Description   string  `json:"description"`
-	DialogueStyle *string `json:"dialogueStyle,omitempty"`
+	Name             string  `json:"name"`
+	Description      string  `json:"description"`
+	DialogueStyle    *string `json:"dialogueStyle,omitempty"`
+	TextLanguage     string  `json:"textLanguage"`
+	SpeakingLanguage string  `json:"speakingLanguage"`
 }
+
+const DefaultSpeakingLanguage = "ja"
+const DefaultTextLanguage = "zh"
 
 func NewStore(root string) *Store {
 	return &Store{root: root}
@@ -215,12 +222,14 @@ func (s *Store) latestValid(characterID string) (Record, bool, []Diagnostic, err
 			diagnostics = append(diagnostics, *appearanceDiagnostic)
 		}
 		return Record{
-			CharacterID:   snapshot.CharacterID,
-			Revision:      snapshot.Revision,
-			Name:          snapshot.Identity.Name,
-			Description:   snapshot.Identity.Description,
-			DialogueStyle: snapshot.Identity.DialogueStyle,
-			Appearance:    appearance,
+			CharacterID:      snapshot.CharacterID,
+			Revision:         snapshot.Revision,
+			Name:             snapshot.Identity.Name,
+			Description:      snapshot.Identity.Description,
+			DialogueStyle:    snapshot.Identity.DialogueStyle,
+			TextLanguage:     textLanguageOrDefault(snapshot.Identity.TextLanguage),
+			SpeakingLanguage: speakingLanguageOrDefault(snapshot.Identity.SpeakingLanguage),
+			Appearance:       appearance,
 		}, true, diagnostics, nil
 	}
 	return Record{}, false, diagnostics, nil
@@ -298,9 +307,11 @@ type characterSnapshot struct {
 }
 
 type characterIdentity struct {
-	Name          string  `json:"name"`
-	Description   string  `json:"description"`
-	DialogueStyle *string `json:"dialogueStyle,omitempty"`
+	Name             string  `json:"name"`
+	Description      string  `json:"description"`
+	DialogueStyle    *string `json:"dialogueStyle,omitempty"`
+	TextLanguage     string  `json:"textLanguage,omitempty"`
+	SpeakingLanguage string  `json:"speakingLanguage,omitempty"`
 }
 
 type speechStyle struct {
@@ -389,12 +400,20 @@ func compileSnapshot(characterID string, revision uint64, brief Brief) (characte
 	if err != nil {
 		return characterSnapshot{}, err
 	}
+	speakingLanguage, err := normalizeSpeakingLanguage(brief.SpeakingLanguage)
+	if err != nil {
+		return characterSnapshot{}, err
+	}
+	textLanguage, err := normalizeTextLanguage(brief.TextLanguage)
+	if err != nil {
+		return characterSnapshot{}, err
+	}
 	canonical := canonicalCharacterSnapshot{
 		SchemaVersion:       1,
 		CompilerVersion:     "fairy-character-v1",
 		CharacterID:         characterID,
 		Revision:            revision,
-		Identity:            characterIdentity{Name: name, Description: description, DialogueStyle: dialogueStyle},
+		Identity:            characterIdentity{Name: name, Description: description, DialogueStyle: dialogueStyle, TextLanguage: textLanguage, SpeakingLanguage: speakingLanguage},
 		Worldview:           "not_specified",
 		AttentionBiases:     []string{"user_explicit_content", "interaction_goal_signals", "evidence_before_inference"},
 		RelationshipStance:  "warm_respectful_non_possessive",
@@ -496,6 +515,40 @@ func normalizeOptionalText(raw *string, max int, label string) (*string, error) 
 		return nil, fmt.Errorf("%s is invalid", label)
 	}
 	return &value, nil
+}
+
+func normalizeSpeakingLanguage(raw string) (string, error) {
+	value := speakingLanguageOrDefault(strings.TrimSpace(raw))
+	switch value {
+	case "ja", "zh", "en":
+		return value, nil
+	default:
+		return "", errors.New("character speaking language is invalid")
+	}
+}
+
+func speakingLanguageOrDefault(value string) string {
+	if value == "" {
+		return DefaultSpeakingLanguage
+	}
+	return value
+}
+
+func normalizeTextLanguage(raw string) (string, error) {
+	value := textLanguageOrDefault(strings.TrimSpace(raw))
+	switch value {
+	case "ja", "zh", "en":
+		return value, nil
+	default:
+		return "", errors.New("character text language is invalid")
+	}
+}
+
+func textLanguageOrDefault(value string) string {
+	if value == "" {
+		return DefaultTextLanguage
+	}
+	return value
 }
 
 func validateVisualPackID(value string) error {

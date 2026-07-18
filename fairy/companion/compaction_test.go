@@ -185,10 +185,10 @@ func TestBuildCompactInputSharesRespondStablePrefixBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCompactInput() error = %v", err)
 	}
-	if len(compactItems) < 3 {
+	if len(compactItems) < 4 {
 		t.Fatalf("compact items = %#v", compactItems)
 	}
-	for i, slotID := range []string{"character", "profile", "available_visual_states"} {
+	for i, slotID := range []string{"character", "display_language", "profile", "available_visual_states"} {
 		if !respondSlots[i].Present || len(respondSlots[i].Items) != 1 {
 			t.Fatalf("respond slot %s = %#v", slotID, respondSlots[i])
 		}
@@ -196,8 +196,8 @@ func TestBuildCompactInputSharesRespondStablePrefixBytes(t *testing.T) {
 			t.Fatalf("stable prefix mismatch at %s\ncompact=%#v\nrespond=%#v", slotID, compactItems[i], respondSlots[i].Items[0])
 		}
 	}
-	if respondSlots[5].ID != "retrieved_context" || respondSlots[5].CachePolicy != "tail" {
-		t.Fatalf("retrieval must stay in tail: %#v", respondSlots[5])
+	if respondSlots[6].ID != "retrieved_context" || respondSlots[6].CachePolicy != "tail" {
+		t.Fatalf("retrieval must stay in tail: %#v", respondSlots[6])
 	}
 }
 
@@ -212,7 +212,7 @@ func TestBuildStablePrefixItemsIsDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second BuildStablePrefixItems() error = %v", err)
 	}
-	if len(first) != 3 || len(second) != 3 {
+	if len(first) != 4 || len(second) != 4 {
 		t.Fatalf("prefix lens = %d,%d", len(first), len(second))
 	}
 	for i := range first {
@@ -275,7 +275,7 @@ func TestCompactConversationUsesRespondPromptCacheKey(t *testing.T) {
 		t.Fatal("respond and compact lane keys must differ; test would be inconclusive")
 	}
 	input, ok := bodies[0]["input"].([]any)
-	if !ok || len(input) < 4 {
+	if !ok || len(input) < 5 {
 		t.Fatalf("compact input = %#v", bodies[0]["input"])
 	}
 	last, _ := input[len(input)-1].(map[string]any)

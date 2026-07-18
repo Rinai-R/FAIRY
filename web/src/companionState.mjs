@@ -10,6 +10,8 @@ const TURN_STATES = new Set([
   "failed",
 ]);
 const LANES = new Set(["respond", "compact", "extract"]);
+const CHARACTER_SPEAKING_LANGUAGES = new Set(["ja", "zh", "en"]);
+const AUDIO_DATA_URL_PATTERN = /^data:audio\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+$/i;
 const MIN_MODEL_CONTEXT_WINDOW_TOKENS = 4_096;
 const MAX_MODEL_CONTEXT_WINDOW_TOKENS = 2_000_000;
 
@@ -63,8 +65,22 @@ function parseNonEmptyString(value, label) {
   return value;
 }
 
+function parseString(value, label) {
+  if (typeof value !== "string") {
+    throw new TypeError(`${label} must be a string`);
+  }
+  return value;
+}
+
 function parseOptionalNonEmptyString(value, label) {
   return value === null ? null : parseNonEmptyString(value, label);
+}
+
+function parseCharacterSpeakingLanguage(value, label) {
+  if (!CHARACTER_SPEAKING_LANGUAGES.has(value)) {
+    throw new TypeError(`${label} is unsupported`);
+  }
+  return value;
 }
 
 function parseOptionalTokenCount(value, label) {
@@ -206,7 +222,7 @@ function parseReplyChain(value, index, label = `reply chain[${index}]`) {
   assertExactKeys(value, ["text", "speechText", "visualState"], label);
   return Object.freeze({
     text: parseNonEmptyString(value.text, `${label}.text`),
-    speechText: parseNonEmptyString(value.speechText, `${label}.speechText`),
+    speechText: parseString(value.speechText, `${label}.speechText`),
     visualState: parseVisualStateId(value.visualState, `${label}.visualState`),
   });
 }
@@ -277,10 +293,7 @@ function parseEventPayload(value) {
         index: value.index,
         delta: parseNonEmptyString(value.delta, "event.payload.delta"),
         text: parseNonEmptyString(value.text, "event.payload.text"),
-        speechText: parseNonEmptyString(
-          value.speechText,
-          "event.payload.speechText",
-        ),
+        speechText: parseString(value.speechText, "event.payload.speechText"),
         visualState: parseVisualStateId(value.visualState, "event.payload.visualState"),
       });
     case "completed":
@@ -302,10 +315,7 @@ function parseEventPayload(value) {
       return Object.freeze({
         type: value.type,
         text: parseNonEmptyString(value.text, "event.payload.text"),
-        speechText: parseNonEmptyString(
-          value.speechText,
-          "event.payload.speechText",
-        ),
+        speechText: parseString(value.speechText, "event.payload.speechText"),
         sources: parseAssistantSources(value.sources),
         characterRevision: parseRevision(
           value.characterRevision,
@@ -336,6 +346,29 @@ function parseEventPayload(value) {
           value.userProfileRevision,
           "event.payload.userProfileRevision",
         ),
+      });
+    case "speech.synthesized":
+      assertExactKeys(
+        value,
+        ["type", "text", "speakerId", "mimeType", "format", "dataUrl"],
+        "event.payload",
+      );
+      if (typeof value.dataUrl !== "string" || !AUDIO_DATA_URL_PATTERN.test(value.dataUrl)) {
+        throw new TypeError("event.payload.dataUrl must be an audio data URL");
+      }
+      return Object.freeze({
+        type: value.type,
+        text: parseNonEmptyString(value.text, "event.payload.text"),
+        speakerId: parseNonEmptyString(value.speakerId, "event.payload.speakerId"),
+        mimeType: parseNonEmptyString(value.mimeType, "event.payload.mimeType"),
+        format: parseNonEmptyString(value.format, "event.payload.format"),
+        dataUrl: value.dataUrl,
+      });
+    case "speech.failed":
+      assertExactKeys(value, ["type", "error"], "event.payload");
+      return Object.freeze({
+        type: value.type,
+        error: parseWireError(value.error, "event.payload.error"),
       });
     case "failed":
       assertExactKeys(value, ["type", "error"], "event.payload");
@@ -498,10 +531,7 @@ export function parseTurnOutcome(value) {
       value.responseText,
       "turn outcome.responseText",
     ),
-    speechText: parseNonEmptyString(
-      value.speechText,
-      "turn outcome.speechText",
-    ),
+    speechText: parseString(value.speechText, "turn outcome.speechText"),
     sources: parseAssistantSources(value.sources),
     characterRevision: parseRevision(
       value.characterRevision,
@@ -544,7 +574,7 @@ export function parseCompactionResult(value) {
 export function parseCharacter(value) {
   assertExactKeys(
     value,
-    ["characterId", "revision", "name", "description", "dialogueStyle", "appearance"],
+    ["characterId", "revision", "name", "description", "dialogueStyle", "textLanguage", "speakingLanguage", "appearance"],
     "character",
   );
   return Object.freeze({
@@ -553,6 +583,8 @@ export function parseCharacter(value) {
     name: parseNonEmptyString(value.name, "character.name"),
     description: parseNonEmptyString(value.description, "character.description"),
     dialogueStyle: parseOptionalNonEmptyString(value.dialogueStyle, "character.dialogueStyle"),
+    textLanguage: parseCharacterSpeakingLanguage(value.textLanguage, "character.textLanguage"),
+    speakingLanguage: parseCharacterSpeakingLanguage(value.speakingLanguage, "character.speakingLanguage"),
     appearance: parseCharacterAppearance(value.appearance),
   });
 }
@@ -1121,14 +1153,22 @@ function reduceHarnessEvent(state, event) {
   }
 
   if (state.terminalTurn !== null) {
-    const speech = event.payload.type === "speech.requested";
+    const speech = event.payload.type === "speech.requested" || event.payload.type === "speech.synthesized" || event.payload.type === "speech.failed";
     if (
       !speech ||
       state.terminalTurn.state !== "completed" ||
-      state.speechRequest !== null ||
       event.turnId !== state.terminalTurn.turnId ||
       event.state !== "completed"
     ) {
+      protocolError("terminal turn cannot accept this event");
+    }
+    if (event.payload.type === "speech.synthesized" || event.payload.type === "speech.failed") {
+      return Object.freeze({
+        ...state,
+        lastSequence: event.sequence,
+      });
+    }
+    if (state.speechRequest !== null) {
       protocolError("terminal turn cannot accept this event");
     }
     const completed = state.terminalTurn;
@@ -1371,7 +1411,7 @@ export function reduceCompanionState(state, action) {
         transcript: Object.freeze(transcript),
         error: null,
         usage: outcome.usage,
-        speechRequest: outcome.speechRequested
+        speechRequest: outcome.speechRequested && outcome.speechText.length > 0
           ? Object.freeze({ text: outcome.speechText, turnId: outcome.turnId })
           : null,
         submitting: false,

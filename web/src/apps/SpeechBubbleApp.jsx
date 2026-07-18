@@ -11,6 +11,11 @@ import {
   reduceSpeechObserver,
   speechBubbleVisible,
 } from "../speechObserver.mjs";
+import {
+  createSpeechPlaybackState,
+  playSpeechDataUrl,
+  reduceSpeechPlayback,
+} from "../speechPlayback.mjs";
 
 /**
  * Standalone transparent, click-through window that floats the character's
@@ -20,6 +25,7 @@ import {
  */
 export function SpeechBubbleApp() {
   const [observer, setObserver] = useState(createSpeechObserver);
+  const [playback, setPlayback] = useState(createSpeechPlaybackState);
   const [dismissed, setDismissed] = useState(true);
   const shownRef = useRef(false);
 
@@ -32,6 +38,7 @@ export function SpeechBubbleApp() {
           if (event.turnId !== prev.turnId) setDismissed(false);
           return reduceSpeechObserver(prev, event);
         });
+        setPlayback((prev) => reduceSpeechPlayback(prev, event));
       },
       () => {},
     )
@@ -57,6 +64,19 @@ export function SpeechBubbleApp() {
     const operation = visible ? expandCompanionForSpeech : restoreCompanionAfterSpeech;
     operation().catch(() => {});
   }, [visible]);
+
+  useEffect(() => {
+    if (!playback.dataUrl || playback.played) return;
+    let cancelled = false;
+    playSpeechDataUrl(playback.dataUrl)
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setPlayback((prev) => prev.dataUrl === playback.dataUrl ? Object.freeze({ ...prev, played: true }) : prev);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [playback.dataUrl, playback.played]);
 
   const handleFaded = useCallback(() => {
     setDismissed(true);

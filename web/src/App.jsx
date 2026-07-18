@@ -572,7 +572,7 @@ export function App() {
         await submitWailsCompanionTurn({
           conversationId: companion.conversationId,
           input: input.trim(),
-          speechEnabled: false,
+          speechEnabled: true,
         });
       } finally {
         stopListening();

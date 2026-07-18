@@ -17,6 +17,8 @@ import {
   DEFAULT_SPEECH_QUERY_PATH,
   DEFAULT_SPEECH_TRAIN_PATH,
   DEFAULT_SPEECH_UPGRADE_PATH,
+  SPEECH_LANGUAGE_CODE_TO_VALUE,
+  SPEECH_LANGUAGE_OPTIONS,
   controlPanelCharacterPreviewUrl,
   controlPanelVisualPreviewUrl,
   selectedAppearancePackId,
@@ -86,13 +88,15 @@ test("model form produces the exact public input without cache switches", () => 
 test("speech settings form produces exact voice clone HTTP input without leaking stored secrets", () => {
   const input = buildSpeechSettingsInput({
     enabled: true,
-    baseUrl: " https://openspeech.bytedance.com/api/v3/tts ",
-    trainPath: " voice_clone ",
-    queryPath: " /query_voice ",
+    baseUrl: " https://openspeech.bytedance.com ",
+    trainPath: " api/v3/tts/voice_clone ",
+    queryPath: " /api/v3/tts/get_voice ",
     upgradePath: " upgrade_voice ",
     appId: " 9193177346 ",
-    apiKey: "new-api-key",
+    synthesisResourceId: " seed-icl-1.0 ",
+    synthesisModel: " ",
     accessToken: "new-token",
+    clearApiKey: true,
     defaultSpeaker: " S_voice ",
     defaultLanguage: " 1 ",
     defaultFormat: " .wav ",
@@ -104,9 +108,11 @@ test("speech settings form produces exact voice clone HTTP input without leaking
     queryPath: DEFAULT_SPEECH_QUERY_PATH,
     upgradePath: DEFAULT_SPEECH_UPGRADE_PATH,
     appId: "9193177346",
-    apiKey: "new-api-key",
+    synthesisResourceId: "seed-icl-1.0",
+    synthesisModel: "",
+    apiKey: "",
     accessToken: "new-token",
-    clearApiKey: false,
+    clearApiKey: true,
     clearAccessToken: false,
     defaultSpeaker: "S_voice",
     defaultLanguage: 1,
@@ -120,6 +126,39 @@ test("speech settings form produces exact voice clone HTTP input without leaking
     () => buildSpeechSettingsInput({ enabled: true, baseUrl: DEFAULT_SPEECH_BASE_URL, defaultLanguage: -1, defaultFormat: "wav" }),
     /non-negative/,
   );
+  assert.throws(
+    () => buildSpeechSettingsInput({ enabled: true, baseUrl: DEFAULT_SPEECH_BASE_URL, defaultLanguage: 18, defaultFormat: "wav" }),
+    /unsupported speech default language/,
+  );
+});
+
+test("speech language options map Volcengine codes to backend integer values", () => {
+  assert.deepEqual(SPEECH_LANGUAGE_OPTIONS.map(({ code, value }) => [code, value]), [
+    ["cn", 0],
+    ["en", 1],
+    ["ja", 2],
+    ["es", 3],
+    ["id", 4],
+    ["pt", 5],
+    ["de", 6],
+    ["fr", 7],
+    ["ko", 8],
+    ["it", 9],
+    ["th", 10],
+    ["vi", 11],
+    ["ru", 12],
+    ["fil", 13],
+    ["ms", 14],
+    ["ar", 15],
+    ["mx", 16],
+    ["pt-br", 17],
+    ["pl", 19],
+    ["tr", 20],
+    ["sv", 21],
+  ]);
+  assert.equal(SPEECH_LANGUAGE_CODE_TO_VALUE.cn, DEFAULT_SPEECH_LANGUAGE);
+  assert.equal(SPEECH_LANGUAGE_CODE_TO_VALUE["pt-br"], 17);
+  assert.equal(SPEECH_LANGUAGE_OPTIONS.find((option) => option.code === "cn")?.label, "中文");
 });
 
 test("speech voice clone operation inputs normalize speaker and audio fields", () => {
@@ -137,6 +176,7 @@ test("speech voice clone operation inputs normalize speaker and audio fields", (
   assert.deepEqual(buildSpeechSpeakerInput({ speakerId: " S_voice " }), { speakerId: "S_voice" });
   assert.throws(() => buildSpeechTrainInput({ speakerId: "", audioData: "ZmFrZQ==", audioFormat: "wav", language: 0 }), /speaker id/);
   assert.throws(() => buildSpeechTrainInput({ speakerId: "S", audioData: "", audioFormat: "wav", language: 0 }), /audio data/);
+  assert.throws(() => buildSpeechTrainInput({ speakerId: "S", audioData: "ZmFrZQ==", audioFormat: "wav", language: 18 }), /unsupported speech language/);
   assert.throws(() => buildSpeechSpeakerInput({ speakerId: "" }), /speaker id/);
 });
 
@@ -258,7 +298,7 @@ test("character form requires an explicit visual pack without inventing a defaul
       visualPackId: "fairy.atri",
     }),
     {
-      brief: { name: "亚托莉", description: "会认真听用户说话。" },
+      brief: { name: "亚托莉", description: "会认真听用户说话。", textLanguage: "zh", speakingLanguage: "ja" },
       visualPackId: "fairy.atri",
     },
   );
@@ -271,6 +311,8 @@ test("character form requires an explicit visual pack without inventing a defaul
       name: " 亚托莉 ",
       description: " 来自海边的仿生少女。 ",
       dialogueStyle: "  短句，先接住用户当下的话。  ",
+      textLanguage: "zh",
+      speakingLanguage: "zh",
       visualPackId: "fairy.atri",
     }),
     {
@@ -278,6 +320,8 @@ test("character form requires an explicit visual pack without inventing a defaul
         name: "亚托莉",
         description: "来自海边的仿生少女。",
         dialogueStyle: "短句，先接住用户当下的话。",
+        textLanguage: "zh",
+        speakingLanguage: "zh",
       },
       visualPackId: "fairy.atri",
     },
@@ -290,6 +334,14 @@ test("character form requires an explicit visual pack without inventing a defaul
       visualPackId: "fairy.atri",
     }).brief,
     false,
+  );
+  assert.throws(
+    () => buildCharacterSaveInput({ name: "亚托莉", description: "保留历史", speakingLanguage: "ko", visualPackId: "fairy.atri" }),
+    /speaking language/,
+  );
+  assert.throws(
+    () => buildCharacterSaveInput({ name: "亚托莉", description: "保留历史", textLanguage: "ko", visualPackId: "fairy.atri" }),
+    /text language/,
   );
   assert.equal(selectedAppearancePackId(null), "");
   assert.equal(

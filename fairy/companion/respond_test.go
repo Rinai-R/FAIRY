@@ -39,10 +39,16 @@ func TestValidateSubmitCompiledTurnRequestRequiresVisualStates(t *testing.T) {
 	}
 }
 
+func TestValidateReplyChainsAcceptsMissingSpeechText(t *testing.T) {
+	if err := ValidateReplyChains([]ReplyChain{{Text: "我在。", VisualState: "idle"}}); err != nil {
+		t.Fatalf("ValidateReplyChains() error = %v", err)
+	}
+}
+
 func TestValidateReplyChainsAcceptsStructuredChains(t *testing.T) {
 	err := ValidateReplyChains([]ReplyChain{
-		{Text: "你好", SpeechText: "你好", VisualState: "happy"},
-		{Text: "我在这里。", SpeechText: "我在这里。", VisualState: "idle"},
+		{Text: "你好", VisualState: "happy"},
+		{Text: "我在这里。", VisualState: "idle"},
 	})
 	if err != nil {
 		t.Fatalf("ValidateReplyChains() error = %v", err)
@@ -56,16 +62,15 @@ func TestValidateReplyChainsRejectsInvalidChains(t *testing.T) {
 	}{
 		{name: "empty", chains: nil},
 		{name: "too many", chains: []ReplyChain{
-			{Text: "1", SpeechText: "1", VisualState: "idle"},
-			{Text: "2", SpeechText: "2", VisualState: "idle"},
-			{Text: "3", SpeechText: "3", VisualState: "idle"},
-			{Text: "4", SpeechText: "4", VisualState: "idle"},
-			{Text: "5", SpeechText: "5", VisualState: "idle"},
-			{Text: "6", SpeechText: "6", VisualState: "idle"},
+			{Text: "1", VisualState: "idle"},
+			{Text: "2", VisualState: "idle"},
+			{Text: "3", VisualState: "idle"},
+			{Text: "4", VisualState: "idle"},
+			{Text: "5", VisualState: "idle"},
+			{Text: "6", VisualState: "idle"},
 		}},
-		{name: "missing text", chains: []ReplyChain{{SpeechText: "x", VisualState: "idle"}}},
-		{name: "missing speech", chains: []ReplyChain{{Text: "x", VisualState: "idle"}}},
-		{name: "missing visual", chains: []ReplyChain{{Text: "x", SpeechText: "x"}}},
+		{name: "missing text", chains: []ReplyChain{{VisualState: "idle"}}},
+		{name: "missing visual", chains: []ReplyChain{{Text: "x"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

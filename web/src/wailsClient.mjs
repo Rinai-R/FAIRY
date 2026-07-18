@@ -137,6 +137,8 @@ export function parseSpeechStatus(value) {
       "queryPath",
       "upgradePath",
       "appId",
+      "synthesisResourceId",
+      "synthesisModel",
       "defaultSpeaker",
       "defaultLanguage",
       "defaultFormat",
@@ -155,6 +157,8 @@ export function parseSpeechStatus(value) {
     queryPath: requireString(value.queryPath, "speech.queryPath"),
     upgradePath: requireString(value.upgradePath, "speech.upgradePath"),
     appId: requireOptionalString(value.appId, "speech.appId"),
+    synthesisResourceId: requireOptionalString(value.synthesisResourceId, "speech.synthesisResourceId"),
+    synthesisModel: requireOptionalString(value.synthesisModel, "speech.synthesisModel"),
     defaultSpeaker: requireOptionalString(value.defaultSpeaker, "speech.defaultSpeaker"),
     defaultLanguage: requireNonNegativeInteger(value.defaultLanguage, "speech.defaultLanguage"),
     defaultFormat: requireString(value.defaultFormat, "speech.defaultFormat"),
@@ -162,7 +166,7 @@ export function parseSpeechStatus(value) {
     hasAccessToken: requireBoolean(value.hasAccessToken, "speech.hasAccessToken"),
     secretMigrated: requireBoolean(value.secretMigrated, "speech.secretMigrated"),
   });
-  if (status.configured && (!status.enabled || (!status.hasApiKey && !(status.appId && status.hasAccessToken)))) {
+  if (status.configured && (!status.enabled || !status.hasApiKey)) {
     throw new Error("Configured Wails speech status is incomplete");
   }
   return status;
@@ -595,7 +599,7 @@ export function parseCompiledTurnOutcome(value) {
     conversationId: requireString(value.conversationId, "conversationId"),
     turnId: requireString(value.turnId, "turnId"),
     responseText: requireString(value.responseText, "responseText"),
-    speechText: requireString(value.speechText, "speechText"),
+    speechText: requireOptionalString(value.speechText, "speechText"),
     sources: Object.freeze([]),
     usage: Object.freeze([]),
     characterRevision: 1,
@@ -608,8 +612,14 @@ export function parseCompiledTurnOutcome(value) {
   if (outcome.responseText !== chains.map((chain) => chain.text).join("\n")) {
     throw new Error("Wails compiled turn outcome responseText must match chains");
   }
-  if (outcome.speechText !== chains[0].speechText) {
-    throw new Error("Wails compiled turn outcome speechText must match first chain");
+  const speechParts = chains.map((chain) => chain.speechText).filter(Boolean);
+  const joinedSpeech = speechParts.join(" ");
+  const uniformSpeech = speechParts.length > 0 && speechParts.every((part) => part === speechParts[0]);
+  if (
+    outcome.speechText !== joinedSpeech &&
+    !(uniformSpeech && outcome.speechText === speechParts[0])
+  ) {
+    throw new Error("Wails compiled turn outcome speechText must match chains");
   }
   if (outcome.visualState !== chains[chains.length - 1].visualState) {
     throw new Error("Wails compiled turn outcome visualState must match final chain");
@@ -630,7 +640,7 @@ function parseReplyChain(value) {
   rejectUnexpectedKeys(value, new Set(["text", "speechText", "visualState"]), "reply chain");
   return Object.freeze({
     text: requireString(value.text, "chain.text"),
-    speechText: requireString(value.speechText, "chain.speechText"),
+    speechText: requireOptionalString(value.speechText, "chain.speechText"),
     visualState: requireString(value.visualState, "chain.visualState"),
   });
 }

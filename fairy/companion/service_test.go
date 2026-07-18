@@ -20,6 +20,22 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+type fakeSpeechSynthesizer struct {
+	request SpeechSynthesisRequest
+	result  SpeechSynthesisResult
+	err     error
+	calls   atomic.Int32
+}
+
+func (f *fakeSpeechSynthesizer) SynthesizeSpeech(request SpeechSynthesisRequest) (SpeechSynthesisResult, error) {
+	f.calls.Add(1)
+	f.request = request
+	if f.err != nil {
+		return SpeechSynthesisResult{}, f.err
+	}
+	return f.result, nil
+}
+
 func writeVisualFixture(t *testing.T, root string, packID string) {
 	t.Helper()
 	path := filepath.Join(root, "visual-packs", packID, "manifest.json")
@@ -69,7 +85,7 @@ func seedCompanionRuntime(t *testing.T, root string) (*memory.Store, string) {
 }
 
 func characterBrief(name string, description string) character.Brief {
-	return character.Brief{Name: name, Description: description}
+	return character.Brief{Name: name, Description: description, TextLanguage: "zh", SpeakingLanguage: "zh"}
 }
 
 func insertKnowledgeFixtureForCompanion(t *testing.T, root string, conversationID string, turnID string) {
@@ -294,6 +310,186 @@ func TestCompanionServiceSubmitCompiledTurnFailureKeepsOnlyUserMessage(t *testin
 	}
 	if len(reloaded.Messages) != 1 || reloaded.Messages[0].Role != "user" {
 		t.Fatalf("messages = %#v", reloaded.Messages)
+	}
+}
+
+func TestCompanionServiceTriggersSpeechAfterCompletedText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChatTextDelta(w, testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "こんにちは。"}))
+		writeChatStop(w)
+	}))
+	t.Cleanup(server.Close)
+
+	root := t.TempDir()
+	writeModelConnectionWithEndpoint(t, root, "chat_completions", server.URL, "no_auth")
+	memoryStore, characterID := seedCompanionRuntime(t, root)
+	bootstrap, err := memoryStore.OpenOrCreateCharacterConversation(characterID)
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
+	}
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
+	speech := &fakeSpeechSynthesizer{result: SpeechSynthesisResult{SpeakerID: "S_voice", MimeType: "audio/mpeg", Format: "mp3", DataURL: "data:audio/mpeg;base64,ZmFrZQ=="}}
+	AttachSpeechSynthesizer(service, speech)
+	var emitted []HarnessEvent
+	AttachEventEmitter(service, func(event HarnessEvent) { emitted = append(emitted, event) })
+
+	outcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+		ConversationID:        bootstrap.Conversation.ID,
+		Input:                 "こんにちは",
+		SpeechEnabled:         true,
+		MaxOutputTokens:       160,
+		AvailableVisualStates: []VisualState{{ID: "idle", Description: "idle 状态说明"}},
+	})
+	if err != nil {
+		t.Fatalf("SubmitCompiledTurn() error = %v", err)
+	}
+	if outcome.ResponseText != "こんにちは。" || outcome.SpeechText != "こんにちは。" {
+		t.Fatalf("outcome = %#v", outcome)
+	}
+	if speech.calls.Load() != 1 || speech.request.Text != "こんにちは。" {
+		t.Fatalf("speech = %#v calls=%d", speech, speech.calls.Load())
+	}
+	foundRequested := false
+	foundSynthesized := false
+	for _, event := range emitted {
+		switch payload := event.Payload.(type) {
+		case speechRequestedPayload:
+			foundRequested = payload.Text == "こんにちは。"
+		case speechSynthesizedPayload:
+			foundSynthesized = payload.DataURL == "data:audio/mpeg;base64,ZmFrZQ=="
+		}
+	}
+	if !foundRequested || !foundSynthesized {
+		t.Fatalf("speech events missing: %#v", emitted)
+	}
+	reloaded, err := memoryStore.LoadConversation(bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatalf("LoadConversation() error = %v", err)
+	}
+	if got := reloaded.Messages[len(reloaded.Messages)-1].Content; got != "こんにちは。" {
+		t.Fatalf("assistant message = %q", got)
+	}
+}
+
+func TestCompanionServiceFillsSpeechFromDisplayWhenLanguagesMatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChatTextDelta(w, `{"chains":[{"visualState":"idle","text":"我在。"}]}`)
+		writeChatStop(w)
+	}))
+	t.Cleanup(server.Close)
+
+	root := t.TempDir()
+	writeModelConnectionWithEndpoint(t, root, "chat_completions", server.URL, "no_auth")
+	memoryStore, characterID := seedCompanionRuntime(t, root)
+	bootstrap, err := memoryStore.OpenOrCreateCharacterConversation(characterID)
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
+	}
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
+	speech := &fakeSpeechSynthesizer{result: SpeechSynthesisResult{SpeakerID: "S_voice", MimeType: "audio/mpeg", Format: "mp3", DataURL: "data:audio/mpeg;base64,ZmFrZQ=="}}
+	AttachSpeechSynthesizer(service, speech)
+
+	outcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+		ConversationID:        bootstrap.Conversation.ID,
+		Input:                 "你好",
+		SpeechEnabled:         true,
+		MaxOutputTokens:       160,
+		AvailableVisualStates: []VisualState{{ID: "idle", Description: "idle 状态说明"}},
+	})
+	if err != nil {
+		t.Fatalf("SubmitCompiledTurn() error = %v", err)
+	}
+	if outcome.ResponseText != "我在。" || outcome.SpeechText != "我在。" {
+		t.Fatalf("outcome = %#v", outcome)
+	}
+	if speech.calls.Load() != 1 || speech.request.Text != "我在。" {
+		t.Fatalf("speech = %#v calls=%d", speech, speech.calls.Load())
+	}
+}
+
+func TestCompanionServiceSkipsTTSWhenSpeechDisabled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChatTextDelta(w, `{"chains":[{"visualState":"idle","text":"我在。"}]}`)
+		writeChatStop(w)
+	}))
+	t.Cleanup(server.Close)
+
+	root := t.TempDir()
+	writeModelConnectionWithEndpoint(t, root, "chat_completions", server.URL, "no_auth")
+	memoryStore, characterID := seedCompanionRuntime(t, root)
+	bootstrap, err := memoryStore.OpenOrCreateCharacterConversation(characterID)
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
+	}
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
+	speech := &fakeSpeechSynthesizer{result: SpeechSynthesisResult{SpeakerID: "S_voice", MimeType: "audio/mpeg", Format: "mp3", DataURL: "data:audio/mpeg;base64,ZmFrZQ=="}}
+	AttachSpeechSynthesizer(service, speech)
+
+	outcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+		ConversationID:        bootstrap.Conversation.ID,
+		Input:                 "你好",
+		SpeechEnabled:         false,
+		MaxOutputTokens:       160,
+		AvailableVisualStates: []VisualState{{ID: "idle", Description: "idle 状态说明"}},
+	})
+	if err != nil {
+		t.Fatalf("SubmitCompiledTurn() error = %v", err)
+	}
+	if outcome.ResponseText != "我在。" || outcome.SpeechText != "" {
+		t.Fatalf("outcome = %#v", outcome)
+	}
+	if speech.calls.Load() != 0 {
+		t.Fatalf("speech synthesizer called %d times, want 0", speech.calls.Load())
+	}
+}
+
+func TestCompanionServiceSpeechFailureDoesNotRollbackCompletedText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChatTextDelta(w, testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "こんにちは。"}))
+		writeChatStop(w)
+	}))
+	t.Cleanup(server.Close)
+
+	root := t.TempDir()
+	writeModelConnectionWithEndpoint(t, root, "chat_completions", server.URL, "no_auth")
+	memoryStore, characterID := seedCompanionRuntime(t, root)
+	bootstrap, err := memoryStore.OpenOrCreateCharacterConversation(characterID)
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
+	}
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
+	AttachSpeechSynthesizer(service, &fakeSpeechSynthesizer{err: errors.New("provider failed Authorization access-token")})
+	var emitted []HarnessEvent
+	AttachEventEmitter(service, func(event HarnessEvent) { emitted = append(emitted, event) })
+
+	outcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+		ConversationID:        bootstrap.Conversation.ID,
+		Input:                 "こんにちは",
+		SpeechEnabled:         true,
+		MaxOutputTokens:       160,
+		AvailableVisualStates: []VisualState{{ID: "idle", Description: "idle 状态说明"}},
+	})
+	if err != nil {
+		t.Fatalf("SubmitCompiledTurn() error = %v", err)
+	}
+	if outcome.ResponseText != "こんにちは。" {
+		t.Fatalf("outcome = %#v", outcome)
+	}
+	foundFailure := false
+	for _, event := range emitted {
+		if payload, ok := event.Payload.(speechFailedPayload); ok {
+			foundFailure = payload.Error.Code == "TTS_FAILED"
+		}
+	}
+	if !foundFailure {
+		t.Fatalf("speech failure event missing: %#v", emitted)
+	}
+	reloaded, err := memoryStore.LoadConversation(bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatalf("LoadConversation() error = %v", err)
+	}
+	if got := reloaded.Messages[len(reloaded.Messages)-1].Content; got != "こんにちは。" {
+		t.Fatalf("assistant message = %q", got)
 	}
 }
 

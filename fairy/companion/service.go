@@ -24,6 +24,7 @@ type CompanionService struct {
 	memoryStore       *memory.Store
 	modelService      *model.ModelService
 	webSearch         WebSearchBackend
+	speech            SpeechSynthesizer
 	characters        *character.Store
 	profiles          *profile.Store
 	cfg               *config.Reader
@@ -116,6 +117,14 @@ func AttachConfigReader(s *CompanionService, reader *config.Reader) {
 		return
 	}
 	s.cfg = reader
+}
+
+// AttachSpeechSynthesizer injects the optional speech backend from main.
+func AttachSpeechSynthesizer(s *CompanionService, synthesizer SpeechSynthesizer) {
+	if s == nil || synthesizer == nil {
+		return
+	}
+	s.speech = synthesizer
 }
 
 func (s *CompanionService) characterStore() *character.Store {
@@ -309,11 +318,11 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	}
 
 	var (
-		reply             CompiledReply
-		events            []model.StreamEvent
-		fullRequest       model.CompiledPromptRequest
-		modelDrivenTools  int
-		finalUsage        []LaneModelUsage
+		reply            CompiledReply
+		events           []model.StreamEvent
+		fullRequest      model.CompiledPromptRequest
+		modelDrivenTools int
+		finalUsage       []LaneModelUsage
 	)
 	webSearchEnabled := false
 	if settings, err := s.configReader().WebSearchSettings(); err == nil {
@@ -358,9 +367,9 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 			}
 			continuationMode = "full_post_tool"
 			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContinuation, TurnStatePlanning, "", map[string]any{
-				"incremental":        false,
-				"fullReason":         "cognition_post_tool",
-				"modelDrivenTools":   modelDrivenTools,
+				"incremental":         false,
+				"fullReason":          "cognition_post_tool",
+				"modelDrivenTools":    modelDrivenTools,
 				"previousStateSource": "none",
 			})
 		} else {
@@ -556,22 +565,48 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		}
 		reply, err = CompileReply(draft, request.AvailableVisualStates)
 		if err != nil {
-			lg.Error("cognition loop", zap.String("phase", "compile_failed"), zap.Int("attempt", attempt), zap.Error(err))
+			lg.Error("cognition loop",
+				zap.String("phase", "compile_failed"),
+				zap.Int("attempt", attempt),
+				zap.Int("draftRunes", utf8.RuneCountInString(draft)),
+				zap.Bool("draftHasSpeechTextKey", strings.Contains(draft, `"speechText"`)),
+				zap.Error(err),
+			)
 			return fail("MODEL_RESPONSE_INVALID", err)
 		}
+		filled, skipReason, fillErr := s.fillSpeechForTTS(turnCtx, lg, reply, characterRecord, request.SpeechEnabled, request.ConversationID, connectionConfig.Model)
+		if fillErr != nil {
+			lg.Warn("cognition loop", zap.String("phase", "speech_translate_skip"), zap.String("reason", skipReason), zap.Error(fillErr))
+			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventSpeech, TurnStatePlanning, "TTS_SKIPPED", map[string]any{"status": "skipped", "reason": skipReason})
+		} else if skipReason != "" {
+			lg.Info("cognition loop", zap.String("phase", "speech_translate_skip"), zap.String("reason", skipReason))
+		} else {
+			reply = filled
+		}
 		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventCompile, TurnStatePlanning, "", map[string]any{
-			"status":             "succeeded",
-			"visualState":        reply.VisualState,
-			"chainCount":         len(reply.Chains),
-			"displayTextHash":    runtimeHash(reply.DisplayText),
-			"speechTextHash":     runtimeHash(reply.SpeechText),
-			"modelDrivenTools":   modelDrivenTools,
+			"status":           "succeeded",
+			"visualState":      reply.VisualState,
+			"chainCount":       len(reply.Chains),
+			"displayTextHash":  runtimeHash(reply.DisplayText),
+			"speechTextHash":   runtimeHash(reply.SpeechText),
+			"modelDrivenTools": modelDrivenTools,
 		})
+		textLang := characterRecord.TextLanguage
+		if textLang == "" {
+			textLang = character.DefaultTextLanguage
+		}
+		speakLang := characterRecord.SpeakingLanguage
+		if speakLang == "" {
+			speakLang = character.DefaultSpeakingLanguage
+		}
 		lg.Info("cognition loop",
 			zap.String("phase", "reply_ready"),
 			zap.Int("chains", len(reply.Chains)),
 			zap.String("visual", reply.VisualState),
 			zap.Int("modelDrivenTools", modelDrivenTools),
+			zap.String("textLanguage", textLang),
+			zap.String("speakingLanguage", speakLang),
+			zap.String("displayText", reply.DisplayText),
 		)
 		break
 	}
@@ -611,6 +646,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	}
 	s.emitEvent(completed)
 	s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTerminal, TurnStateCompleted, "", runtimeTerminalLedgerMetadata("completed", reply, finalUsage))
+	s.handleCompletedSpeech(request, life, persisted.ID, characterRecord, userProfile, reply)
 	contextWindow, err := s.recordObservedContextWindow(request.ConversationID, bootstrap.PromptWindow.Revision, finalUsage)
 	if err != nil {
 		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContextWindow, TurnStateCompleted, "CONTEXT_WINDOW_STATE_FAILED", runtimeFailureLedgerMetadata("CONTEXT_WINDOW_STATE_FAILED", err, false))
@@ -671,6 +707,57 @@ func cacheObservationFromProvider(tokens *uint64) CachedTokenObservation {
 		return CacheMissing()
 	}
 	return CacheObserved(*tokens)
+}
+
+func (s *CompanionService) handleCompletedSpeech(request SubmitCompiledTurnRequest, life *TurnLifecycle, turnID string, characterRecord character.Record, userProfile *profile.Snapshot, reply CompiledReply) {
+	if !request.SpeechEnabled {
+		return
+	}
+	if strings.TrimSpace(reply.SpeechText) == "" {
+		s.appendRuntimeLedger(request.ConversationID, turnID, runtimeLedgerEventSpeech, TurnStateCompleted, "TTS_SKIPPED", map[string]any{"status": "skipped", "reason": "speech_text_missing"})
+		s.logger.Info("tts skipped", zap.String("reason", "speech_text_missing"), zap.String("turn", turnID))
+		return
+	}
+	profileRevision := (*uint64)(nil)
+	if userProfile != nil {
+		value := userProfile.Revision
+		profileRevision = &value
+	}
+	requested, err := life.SpeechRequested(TurnCompletion{
+		Text:                reply.DisplayText,
+		SpeechText:          reply.SpeechText,
+		CharacterRevision:   characterRecord.Revision,
+		UserProfileRevision: profileRevision,
+	})
+	if err == nil {
+		s.emitEvent(requested)
+	}
+	if s.speech == nil {
+		s.appendRuntimeLedger(request.ConversationID, turnID, runtimeLedgerEventSpeech, TurnStateCompleted, "TTS_SKIPPED", map[string]any{"status": "skipped", "reason": "speech_synthesizer_unavailable", "speechTextHash": runtimeHash(reply.SpeechText)})
+		s.emitSpeechFailure(life, request.ConversationID, turnID, "TTS_SKIPPED", "语音服务未接入", false)
+		s.logger.Info("tts skipped", zap.String("reason", "speech_synthesizer_unavailable"), zap.String("turn", turnID))
+		return
+	}
+	result, err := s.speech.SynthesizeSpeech(SpeechSynthesisRequest{Text: reply.SpeechText})
+	if err != nil {
+		s.appendRuntimeLedger(request.ConversationID, turnID, runtimeLedgerEventSpeech, TurnStateCompleted, "TTS_FAILED", runtimeFailureLedgerMetadata("TTS_FAILED", err, false))
+		s.emitSpeechFailure(life, request.ConversationID, turnID, "TTS_FAILED", err.Error(), false)
+		s.logger.Warn("tts failed", zap.String("turn", turnID), zap.Error(err))
+		return
+	}
+	s.appendRuntimeLedger(request.ConversationID, turnID, runtimeLedgerEventSpeech, TurnStateCompleted, "", map[string]any{"status": "synthesized", "speakerIDHash": runtimeHash(result.SpeakerID), "mimeType": result.MimeType, "format": result.Format, "speechTextHash": runtimeHash(reply.SpeechText)})
+	if event, err := life.SpeechSynthesized(SpeechSynthesisCompletion{Text: reply.SpeechText, Result: result}); err == nil {
+		s.emitEvent(event)
+	}
+	s.logger.Info("tts synthesized", zap.String("turn", turnID), zap.String("mimeType", result.MimeType), zap.String("format", result.Format))
+}
+
+func (s *CompanionService) emitSpeechFailure(life *TurnLifecycle, conversationID string, turnID string, code string, message string, retryable bool) {
+	event, err := life.SpeechFailed(code, message, retryable)
+	if err != nil {
+		return
+	}
+	s.emitEvent(event)
 }
 
 func (s *CompanionService) CompactConversation(conversationID string) (memory.CompactionResult, error) {

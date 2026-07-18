@@ -49,6 +49,16 @@ export function Status() {
 }
 
 /**
+ * @param {$models.SynthesizeSpeechRequest} request
+ * @returns {$CancellablePromise<$models.SynthesisResult>}
+ */
+export function SynthesizeSpeech(request) {
+    return $Call.ByID(4192928718, request).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType2($result);
+    }));
+}
+
+/**
  * @param {$models.TrainVoiceRequest} request
  * @returns {$CancellablePromise<$models.VoiceResult>}
  */
@@ -71,3 +81,4 @@ export function UpgradeVoice(request) {
 // Private type creation functions
 const $$createType0 = $models.Status.createFrom;
 const $$createType1 = $models.VoiceResult.createFrom;
+const $$createType2 = $models.SynthesisResult.createFrom;

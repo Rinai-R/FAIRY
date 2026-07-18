@@ -42,7 +42,7 @@ func TestSaveSettingsStoresAPIKeyAndReturnsRedactedStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal(status) error = %v", err)
 	}
-	if strings.Contains(string(wire), "test-api-key") || strings.Contains(string(wire), "Authorization") {
+	if strings.Contains(string(wire), "test-api-key") || strings.Contains(string(wire), "X-Api-Key") {
 		t.Fatalf("status leaked secret: %s", wire)
 	}
 
@@ -65,31 +65,53 @@ func TestSaveSettingsRequiresCredentialWhenEnabled(t *testing.T) {
 	if err == nil {
 		t.Fatal("SaveSettings() error = nil, want missing credential")
 	}
-	if !strings.Contains(err.Error(), "api_key") || !strings.Contains(err.Error(), "access_token") {
+	if !strings.Contains(err.Error(), "api_key") {
 		t.Fatalf("error = %q, want credential summary", err.Error())
 	}
 }
 
-func TestSaveSettingsCanUseAppIDAndExistingAccessToken(t *testing.T) {
+func TestSaveSettingsCanUseAPIKeyOnlyWhenEnabled(t *testing.T) {
+	root := t.TempDir()
+	status, err := SaveSettings(root, SaveSettingsRequest{Enabled: true, APIKey: "test-api-key"}, nil)
+	if err != nil {
+		t.Fatalf("SaveSettings() error = %v", err)
+	}
+	if !status.Configured || !status.HasAPIKey || status.HasAccessToken {
+		t.Fatalf("status = %#v, want configured with API key only", status)
+	}
+}
+
+func TestSaveSettingsCanUseExistingAPIKey(t *testing.T) {
 	root := t.TempDir()
 	dbPath, err := secret.DatabasePath(root)
 	if err != nil {
 		t.Fatalf("DatabasePath() error = %v", err)
 	}
 	store := secret.NewStore(dbPath)
-	value, err := secret.NewValue("existing-token")
+	value, err := secret.NewValue("existing-key")
 	if err != nil {
 		t.Fatalf("NewValue() error = %v", err)
 	}
-	if err := store.Save(accessTokenSecretID, value); err != nil {
-		t.Fatalf("Save(access token) error = %v", err)
+	if err := store.Save(apiKeySecretID, value); err != nil {
+		t.Fatalf("Save(api key) error = %v", err)
 	}
-	status, err := SaveSettings(root, SaveSettingsRequest{Enabled: true, AppID: "9193177346"}, store)
+	status, err := SaveSettings(root, SaveSettingsRequest{Enabled: true}, store)
 	if err != nil {
 		t.Fatalf("SaveSettings() error = %v", err)
 	}
-	if !status.Configured || !status.HasAccessToken || status.HasAPIKey {
-		t.Fatalf("status = %#v, want configured with existing access token", status)
+	if !status.Configured || !status.HasAPIKey || status.HasAccessToken {
+		t.Fatalf("status = %#v, want configured with existing api key", status)
+	}
+}
+
+func TestParseSettingsMigratesLegacyVoiceCloneDefaultPaths(t *testing.T) {
+	legacy := []byte("{\"schema_version\":1,\"data\":{\"schema_version\":1,\"enabled\":true,\"base_url\":\"https://openspeech.bytedance.com/api/v3/tts\",\"train_path\":\"/voice_clone\",\"query_path\":\"/query_voice\",\"upgrade_path\":\"/upgrade_voice\",\"app_id\":\"appid\",\"default_speaker\":\"S_voice\",\"default_language\":0,\"default_format\":\"wav\"}}")
+	settings, err := ParseSettings(legacy)
+	if err != nil {
+		t.Fatalf("ParseSettings() error = %v", err)
+	}
+	if settings.BaseURL != DefaultBaseURL || settings.TrainPath != DefaultTrainPath || settings.QueryPath != DefaultQueryPath {
+		t.Fatalf("legacy paths not migrated: %#v", settings)
 	}
 }
 

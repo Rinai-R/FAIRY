@@ -35,14 +35,14 @@ func TestClientTrainVoiceUsesHTTPHeadersAndBody(t *testing.T) {
 	audio := base64.StdEncoding.EncodeToString([]byte("fake wav"))
 	result, err := (&Client{HTTPClient: server.Client(), Timeout: time.Second}).TrainVoice(context.Background(), Settings{
 		Enabled:   true,
-		BaseURL:   server.URL + "/api/v3/tts",
-		TrainPath: "/voice_clone",
+		BaseURL:   server.URL,
+		TrainPath: DefaultTrainPath,
+		AppID:     "appid",
 	}, Credentials{APIKey: apiKey, HasAPIKey: true}, TrainVoiceRequest{
 		SpeakerID:   "S_voice",
 		AudioData:   audio,
 		AudioFormat: "wav",
 		Language:    0,
-		ExtraParams: map[string]string{"voice_clone_denoise_model_id": ""},
 	})
 	if err != nil {
 		t.Fatalf("TrainVoice() error = %v", err)
@@ -50,7 +50,7 @@ func TestClientTrainVoiceUsesHTTPHeadersAndBody(t *testing.T) {
 	if gotPath != "/api/v3/tts/voice_clone" {
 		t.Fatalf("path = %q", gotPath)
 	}
-	if gotHeaders.Get("X-Api-Key") != "test-api-key" || gotHeaders.Get("X-Api-Request-Id") == "" {
+	if gotHeaders.Get("X-Api-Key") != "test-api-key" || gotHeaders.Get("X-Api-Request-Id") == "" || gotHeaders.Get("Authorization") != "" || gotHeaders.Get("Resource-Id") != "" {
 		t.Fatalf("headers = %#v", gotHeaders)
 	}
 	if gotBody.SpeakerID != "S_voice" || gotBody.Audio.Data != audio || gotBody.Audio.Format != "wav" || gotBody.Language != 0 {
@@ -68,7 +68,7 @@ func TestClientQueryAndUpgradeUseAppAccessTokenHeaders(t *testing.T) {
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
-		if r.Header.Get("X-Api-App-Key") != "appid" || r.Header.Get("X-Api-Access-Key") != "access-token" {
+		if r.Header.Get("X-Api-Key") != "test-api-key" || r.Header.Get("X-Api-Request-Id") == "" {
 			t.Fatalf("headers = %#v", r.Header)
 		}
 		var body providerSpeakerRequest
@@ -82,12 +82,12 @@ func TestClientQueryAndUpgradeUseAppAccessTokenHeaders(t *testing.T) {
 	}))
 	defer server.Close()
 
-	token, err := secret.NewValue("access-token")
+	apiKey, err := secret.NewValue("test-api-key")
 	if err != nil {
 		t.Fatalf("NewValue() error = %v", err)
 	}
-	settings := Settings{Enabled: true, BaseURL: server.URL + "/api/v3/tts", AppID: "appid"}
-	credentials := Credentials{AccessToken: token, HasAccessToken: true}
+	settings := Settings{Enabled: true, BaseURL: server.URL, AppID: "appid"}
+	credentials := Credentials{APIKey: apiKey, HasAPIKey: true}
 	client := &Client{HTTPClient: server.Client(), Timeout: time.Second}
 	if _, err := client.QueryVoice(context.Background(), settings, credentials, VoiceOperationRequest{SpeakerID: "S_voice"}); err != nil {
 		t.Fatalf("QueryVoice() error = %v", err)
@@ -95,9 +95,65 @@ func TestClientQueryAndUpgradeUseAppAccessTokenHeaders(t *testing.T) {
 	if _, err := client.UpgradeVoice(context.Background(), settings, credentials, VoiceOperationRequest{SpeakerID: "S_voice"}); err != nil {
 		t.Fatalf("UpgradeVoice() error = %v", err)
 	}
-	want := []string{"/api/v3/tts/query_voice", "/api/v3/tts/upgrade_voice"}
+	want := []string{"/api/v3/tts/get_voice", "/upgrade_voice"}
 	if strings.Join(paths, ",") != strings.Join(want, ",") {
 		t.Fatalf("paths = %#v, want %#v", paths, want)
+	}
+}
+
+func TestClientSynthesizeUsesHTTPBodyAndReturnsDataURL(t *testing.T) {
+	var gotPath string
+	var gotHeaders http.Header
+	var gotBody providerSynthesisRequest
+	audio1 := base64.StdEncoding.EncodeToString([]byte("fake "))
+	audio2 := base64.StdEncoding.EncodeToString([]byte("mp3"))
+	wantAudio := base64.StdEncoding.EncodeToString([]byte("fake mp3"))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotHeaders = r.Header.Clone()
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("Decode(body) error = %v", err)
+		}
+		w.Header().Set("X-Tt-Logid", "log-tts")
+		_, _ = w.Write([]byte(`{"code":20000000,"message":"OK","data":"` + audio1 + `"}` + "\n" + `{"code":20000000,"message":"OK","data":"` + audio2 + `"}`))
+	}))
+	defer server.Close()
+	token, err := secret.NewValue("access-token")
+	if err != nil {
+		t.Fatalf("NewValue() error = %v", err)
+	}
+	result, err := (&Client{HTTPClient: server.Client(), Timeout: time.Second}).SynthesizeSpeech(context.Background(), Settings{Enabled: true, BaseURL: server.URL, SynthesisResourceID: "seed-icl-1.0", DefaultSpeaker: "S_voice"}, Credentials{APIKey: token, HasAPIKey: true}, SynthesizeSpeechRequest{Text: "こんにちは。"})
+	if err != nil {
+		t.Fatalf("SynthesizeSpeech() error = %v", err)
+	}
+	if gotPath != DefaultSynthesizePath {
+		t.Fatalf("path = %q", gotPath)
+	}
+	if gotHeaders.Get("X-Api-Key") != "access-token" || gotHeaders.Get("X-Api-App-Key") != "" || gotHeaders.Get("X-Api-Access-Key") != "" || gotHeaders.Get("X-Api-Resource-Id") != "seed-icl-1.0" || gotHeaders.Get("X-Api-Request-Id") == "" {
+		t.Fatalf("headers = %#v", gotHeaders)
+	}
+	if gotBody.ReqParams.Speaker != "S_voice" || gotBody.ReqParams.Model != "" || gotBody.ReqParams.Text != "こんにちは。" || gotBody.ReqParams.AudioParams.Format != DefaultSynthesisFormat || gotBody.ReqParams.AudioParams.SampleRate != DefaultSynthesisSampleRate {
+		t.Fatalf("body = %#v", gotBody)
+	}
+	if result.LogID != "log-tts" || result.SpeakerID != "S_voice" || result.MimeType != "audio/mpeg" || result.AudioBase64 != wantAudio || !strings.HasPrefix(result.DataURL, "data:audio/mpeg;base64,") {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestClientSynthesizeRedactsProviderErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"code":"Forbidden","message":"bad key test-api-key X-Api-Key X-Api-Resource-Id"}`))
+	}))
+	defer server.Close()
+	apiKey, _ := secret.NewValue("test-api-key")
+	_, err := (&Client{HTTPClient: server.Client(), Timeout: time.Second}).SynthesizeSpeech(context.Background(), Settings{Enabled: true, BaseURL: server.URL, DefaultSpeaker: "S_voice"}, Credentials{APIKey: apiKey, HasAPIKey: true}, SynthesizeSpeechRequest{Text: "こんにちは。"})
+	if err == nil {
+		t.Fatal("SynthesizeSpeech() error = nil, want provider error")
+	}
+	message := err.Error()
+	if strings.Contains(message, "test-api-key") || strings.Contains(message, "X-Api-Key") || strings.Contains(message, "X-Api-Resource-Id") {
+		t.Fatalf("error leaked secret/header: %q", message)
 	}
 }
 
@@ -124,7 +180,7 @@ func TestClientTrainVoiceRejectsInvalidInputBeforeProvider(t *testing.T) {
 func TestClientRedactsProviderErrors(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte(`{"code":"Forbidden","message":"bad key test-api-key Authorization X-Api-Key"}`))
+		_, _ = w.Write([]byte(`{"code":"Forbidden","message":"bad key test-api-key X-Api-Key"}`))
 	}))
 	defer server.Close()
 	apiKey, _ := secret.NewValue("test-api-key")
@@ -133,7 +189,7 @@ func TestClientRedactsProviderErrors(t *testing.T) {
 		t.Fatal("QueryVoice() error = nil, want provider error")
 	}
 	message := err.Error()
-	if strings.Contains(message, "test-api-key") || strings.Contains(message, "Authorization") || strings.Contains(message, "X-Api-Key") {
+	if strings.Contains(message, "test-api-key") || strings.Contains(message, "X-Api-Key") {
 		t.Fatalf("error leaked secret/header: %q", message)
 	}
 	if !strings.Contains(message, "[REDACTED]") || !strings.Contains(message, "[REDACTED_HEADER]") {

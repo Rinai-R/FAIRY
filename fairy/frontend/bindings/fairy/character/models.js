@@ -83,6 +83,20 @@ export class Brief {
              */
             this["dialogueStyle"] = undefined;
         }
+        if (!("textLanguage" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["textLanguage"] = "";
+        }
+        if (!("speakingLanguage" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["speakingLanguage"] = "";
+        }
 
         Object.assign(this, $$source);
     }
@@ -242,6 +256,20 @@ export class Record {
              */
             this["dialogueStyle"] = null;
         }
+        if (!("textLanguage" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["textLanguage"] = "";
+        }
+        if (!("speakingLanguage" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["speakingLanguage"] = "";
+        }
         if (!("appearance" in $$source)) {
             /**
              * @member
@@ -259,10 +287,10 @@ export class Record {
      * @returns {Record}
      */
     static createFrom($$source = {}) {
-        const $$createField5_0 = $$createType7;
+        const $$createField6_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("appearance" in $$parsedSource) {
-            $$parsedSource["appearance"] = $$createField5_0($$parsedSource["appearance"]);
+            $$parsedSource["appearance"] = $$createField6_0($$parsedSource["appearance"]);
         }
         return new Record(/** @type {Partial<Record>} */($$parsedSource));
     }

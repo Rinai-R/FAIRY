@@ -101,6 +101,7 @@ func Run(options Options) error {
 	companion.AttachCharacterStore(companionService, characterService.CatalogStore())
 	companion.AttachProfileStore(companionService, profileService.ProfileStore())
 	companion.AttachConfigReader(companionService, configReader)
+	companion.AttachSpeechSynthesizer(companionService, companionSpeechAdapter{service: speechService})
 	character.AttachLogger(characterService, logger.Named("character"))
 	visual.AttachLogger(assetHandler, logger.Named("visual"))
 	search.AttachLogger(webSearch, logger.Named("openserp"))

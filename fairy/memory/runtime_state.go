@@ -10,9 +10,10 @@ import (
 )
 
 const (
-	PromptLaneRespond = "respond"
-	PromptLaneCompact = "compact"
-	PromptLaneExtract = "extract"
+	PromptLaneRespond   = "respond"
+	PromptLaneCompact   = "compact"
+	PromptLaneExtract   = "extract"
+	PromptLaneTranslate = "translate"
 
 	maxRuntimeMetadataBytes = 32 * 1024
 	maxRuntimeTokenRunes    = 128
@@ -414,7 +415,7 @@ func validatePromptLane(lane string) error {
 		return errors.New("lane is invalid")
 	}
 	switch lane {
-	case PromptLaneRespond, PromptLaneCompact, PromptLaneExtract:
+	case PromptLaneRespond, PromptLaneCompact, PromptLaneExtract, PromptLaneTranslate:
 		return nil
 	default:
 		return fmt.Errorf("unsupported prompt lane: %q", lane)

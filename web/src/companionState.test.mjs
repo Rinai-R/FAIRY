@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   createCompanionState,
@@ -580,6 +581,12 @@ test("completed reply keeps one assistant message with speech text and sources",
   );
 });
 
+test("companion app submits turns with speech enabled", () => {
+  const source = readFileSync(new URL("./App.jsx", import.meta.url), "utf8");
+  assert.match(source, /speechEnabled:\s*true/);
+  assert.doesNotMatch(source, /speechEnabled:\s*false/);
+});
+
 test("intelligence status parser accepts public status only", () => {
   const intelligence = parseIntelligenceStatus({
     ready: true,
@@ -750,6 +757,8 @@ test("character catalog exposes the active revision and session can be cleared",
     name: "亚托莉",
     description: "来自海边的仿生少女。",
     dialogueStyle: "短句，先接住用户当下的话。",
+    textLanguage: "zh",
+    speakingLanguage: "ja",
     appearance: assignedAppearance(),
   };
   const catalog = parseCharacterCatalog({
@@ -762,6 +771,7 @@ test("character catalog exposes the active revision and session can be cleared",
 
   assert.deepEqual(catalog.active, character);
   assert.equal(catalog.active.dialogueStyle, "短句，先接住用户当下的话。");
+  assert.equal(catalog.active.speakingLanguage, "ja");
   assert.equal(state.conversationId, null);
   assert.equal(state.transcript.length, 0);
 });
@@ -788,6 +798,8 @@ test("conversation bootstrap restores ordered transcript and character activatio
       name: "亚托莉",
       description: "自然回应用户。",
       dialogueStyle: null,
+      textLanguage: "zh",
+    speakingLanguage: "zh",
       appearance: assignedAppearance(),
     },
     session: restored,
@@ -867,6 +879,8 @@ test("character appearance keeps unassigned and unavailable distinct", () => {
     name: "旧角色",
     description: "保留原有角色身份。",
     dialogueStyle: null,
+    textLanguage: "zh",
+    speakingLanguage: "ja",
   };
   const catalog = parseCharacterCatalog({
     characters: [

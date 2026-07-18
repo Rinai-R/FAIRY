@@ -94,8 +94,12 @@ import {
 import {
   CONTROL_PANEL_SECTIONS,
   DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
+  DEFAULT_CHARACTER_SPEAKING_LANGUAGE,
+  DEFAULT_CHARACTER_TEXT_LANGUAGE,
   DEFAULT_SPEECH_AUDIO_FORMAT,
   DEFAULT_SPEECH_BASE_URL,
+  DEFAULT_SPEECH_SYNTHESIS_MODEL,
+  DEFAULT_SPEECH_SYNTHESIS_RESOURCE_ID,
   DEFAULT_SPEECH_LANGUAGE,
   DEFAULT_SPEECH_QUERY_PATH,
   DEFAULT_SPEECH_TRAIN_PATH,
@@ -103,6 +107,9 @@ import {
   MAX_MODEL_CONTEXT_WINDOW_TOKENS,
   MIN_MODEL_CONTEXT_WINDOW_TOKENS,
   MODEL_PROTOCOL_OPTIONS,
+  CHARACTER_SPEAKING_LANGUAGE_OPTIONS,
+  CHARACTER_TEXT_LANGUAGE_OPTIONS,
+  SPEECH_LANGUAGE_OPTIONS,
   assertControlPanelSection,
   buildSpeechSpeakerInput,
   buildSpeechTrainInput,
@@ -210,6 +217,51 @@ function fileUriToPath(value) {
   } catch {
     return "";
   }
+}
+
+function audioFileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("无法读取音频文件"));
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      const comma = result.indexOf(",");
+      const base64 = comma >= 0 ? result.slice(comma + 1) : result;
+      if (base64.trim().length === 0) {
+        reject(new Error("音频文件内容为空"));
+        return;
+      }
+      resolve(base64);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function audioFormatFromFileName(name, fallback = DEFAULT_SPEECH_AUDIO_FORMAT) {
+  const match = String(name ?? "").toLowerCase().match(/\.([a-z0-9]+)$/);
+  return match ? match[1] : fallback;
+}
+
+function speechLanguageSelectValue(value) {
+  const normalized = String(value ?? DEFAULT_SPEECH_LANGUAGE).trim();
+  return SPEECH_LANGUAGE_OPTIONS.some((option) => String(option.value) === normalized)
+    ? normalized
+    : String(DEFAULT_SPEECH_LANGUAGE);
+}
+
+function SpeechLanguageSelect({ id, value, onValueChange, disabled, ariaLabel }) {
+  return (
+    <Select.Root value={value} onValueChange={onValueChange} disabled={disabled}>
+      <Select.Trigger id={id} aria-label={ariaLabel} />
+      <Select.Content>
+        {SPEECH_LANGUAGE_OPTIONS.map((option) => (
+          <Select.Item key={option.code} value={String(option.value)}>
+            {option.label}（{option.code}）
+          </Select.Item>
+        ))}
+      </Select.Content>
+    </Select.Root>
+  );
 }
 
 function intelligenceStatusFromWailsSummary(summary, activeBackgroundJobs = 0) {
@@ -502,6 +554,8 @@ export function ControlPanelApp() {
   const [characterName, setCharacterName] = useState("");
   const [characterDescription, setCharacterDescription] = useState("");
   const [characterDialogueStyle, setCharacterDialogueStyle] = useState("");
+  const [characterSpeakingLanguage, setCharacterSpeakingLanguage] = useState(DEFAULT_CHARACTER_SPEAKING_LANGUAGE);
+  const [characterTextLanguage, setCharacterTextLanguage] = useState(DEFAULT_CHARACTER_TEXT_LANGUAGE);
   const [visualPackId, setVisualPackId] = useState("");
   const [characterPackageDragActive, setCharacterPackageDragActive] = useState(false);
   const [characterPackageStatus, setCharacterPackageStatus] = useState("");
@@ -513,19 +567,17 @@ export function ControlPanelApp() {
   const [authMode, setAuthMode] = useState("bearer_key");
   const [apiKey, setApiKey] = useState("");
   const [speechEnabled, setSpeechEnabled] = useState(false);
-  const [speechBaseUrl, setSpeechBaseUrl] = useState(DEFAULT_SPEECH_BASE_URL);
-  const [speechTrainPath, setSpeechTrainPath] = useState(DEFAULT_SPEECH_TRAIN_PATH);
-  const [speechQueryPath, setSpeechQueryPath] = useState(DEFAULT_SPEECH_QUERY_PATH);
-  const [speechUpgradePath, setSpeechUpgradePath] = useState(DEFAULT_SPEECH_UPGRADE_PATH);
   const [speechAppId, setSpeechAppId] = useState("");
+  const [speechSynthesisResourceId, setSpeechSynthesisResourceId] = useState(DEFAULT_SPEECH_SYNTHESIS_RESOURCE_ID);
+  const [speechSynthesisModel, setSpeechSynthesisModel] = useState(DEFAULT_SPEECH_SYNTHESIS_MODEL);
   const [speechApiKey, setSpeechApiKey] = useState("");
   const [speechAccessToken, setSpeechAccessToken] = useState("");
   const [speechDefaultSpeaker, setSpeechDefaultSpeaker] = useState("");
   const [speechDefaultLanguage, setSpeechDefaultLanguage] = useState(String(DEFAULT_SPEECH_LANGUAGE));
-  const [speechDefaultFormat, setSpeechDefaultFormat] = useState(DEFAULT_SPEECH_AUDIO_FORMAT);
   const [speechTrainSpeaker, setSpeechTrainSpeaker] = useState("");
-  const [speechTrainAudioData, setSpeechTrainAudioData] = useState("");
+  const [speechTrainAudioFile, setSpeechTrainAudioFile] = useState(null);
   const [speechTrainAudioFormat, setSpeechTrainAudioFormat] = useState(DEFAULT_SPEECH_AUDIO_FORMAT);
+  const [speechTrainAudioFileName, setSpeechTrainAudioFileName] = useState("");
   const [speechTrainLanguage, setSpeechTrainLanguage] = useState(String(DEFAULT_SPEECH_LANGUAGE));
   const [speechResult, setSpeechResult] = useState(null);
   const [memoryKind, setMemoryKind] = useState("preference");
@@ -566,6 +618,8 @@ export function ControlPanelApp() {
         setCharacterName(nextCatalog.active.name);
         setCharacterDescription(nextCatalog.active.description);
         setCharacterDialogueStyle(nextCatalog.active.dialogueStyle ?? "");
+        setCharacterSpeakingLanguage(nextCatalog.active.speakingLanguage);
+        setCharacterTextLanguage(nextCatalog.active.textLanguage);
         setVisualPackId(selectedAppearancePackId(nextCatalog.active));
       }
       setPreferredName(nextProfile?.preferredName ?? "");
@@ -577,16 +631,13 @@ export function ControlPanelApp() {
         setAuthMode(nextModelStatus.config.authMode);
       }
       setSpeechEnabled(Boolean(nextSpeechStatus.enabled));
-      setSpeechBaseUrl(nextSpeechStatus.baseUrl);
-      setSpeechTrainPath(nextSpeechStatus.trainPath);
-      setSpeechQueryPath(nextSpeechStatus.queryPath);
-      setSpeechUpgradePath(nextSpeechStatus.upgradePath);
       setSpeechAppId(nextSpeechStatus.appId);
+      setSpeechSynthesisResourceId(nextSpeechStatus.synthesisResourceId || DEFAULT_SPEECH_SYNTHESIS_RESOURCE_ID);
+      setSpeechSynthesisModel(nextSpeechStatus.synthesisModel || DEFAULT_SPEECH_SYNTHESIS_MODEL);
       setSpeechDefaultSpeaker(nextSpeechStatus.defaultSpeaker);
-      setSpeechDefaultLanguage(String(nextSpeechStatus.defaultLanguage));
-      setSpeechDefaultFormat(nextSpeechStatus.defaultFormat);
+      setSpeechDefaultLanguage(speechLanguageSelectValue(nextSpeechStatus.defaultLanguage));
       setSpeechTrainSpeaker(nextSpeechStatus.defaultSpeaker);
-      setSpeechTrainLanguage(String(nextSpeechStatus.defaultLanguage));
+      setSpeechTrainLanguage(speechLanguageSelectValue(nextSpeechStatus.defaultLanguage));
       setSpeechTrainAudioFormat(nextSpeechStatus.defaultFormat);
     }
   }, []);
@@ -907,6 +958,8 @@ export function ControlPanelApp() {
         name: characterName,
         description: characterDescription,
         dialogueStyle: characterDialogueStyle,
+        speakingLanguage: characterSpeakingLanguage,
+        textLanguage: characterTextLanguage,
         visualPackId,
       });
     } catch (reason) {
@@ -925,7 +978,9 @@ export function ControlPanelApp() {
         const nextDialogueStyle = input.brief.dialogueStyle ?? "";
         const briefChanged = existing.name !== input.brief.name ||
           existing.description !== input.brief.description ||
-          existingDialogueStyle !== nextDialogueStyle;
+          existingDialogueStyle !== nextDialogueStyle ||
+          existing.textLanguage !== input.brief.textLanguage ||
+          existing.speakingLanguage !== input.brief.speakingLanguage;
         saved = briefChanged
           ? await updateActiveCharacter(characterId, input.brief)
           : existing;
@@ -1035,6 +1090,8 @@ export function ControlPanelApp() {
     setCharacterName(character.name);
     setCharacterDescription(character.description);
     setCharacterDialogueStyle(character.dialogueStyle ?? "");
+    setCharacterSpeakingLanguage(character.speakingLanguage);
+    setCharacterTextLanguage(character.textLanguage);
     setVisualPackId(selectedAppearancePackId(character));
     if (character.appearance.status !== "assigned") {
       setError({
@@ -1080,16 +1137,18 @@ export function ControlPanelApp() {
     try {
       input = buildSpeechSettingsInput({
         enabled: speechEnabled,
-        baseUrl: speechBaseUrl,
-        trainPath: speechTrainPath,
-        queryPath: speechQueryPath,
-        upgradePath: speechUpgradePath,
+        baseUrl: DEFAULT_SPEECH_BASE_URL,
+        trainPath: DEFAULT_SPEECH_TRAIN_PATH,
+        queryPath: DEFAULT_SPEECH_QUERY_PATH,
+        upgradePath: DEFAULT_SPEECH_UPGRADE_PATH,
         appId: speechAppId,
+        synthesisResourceId: speechSynthesisResourceId,
+        synthesisModel: speechSynthesisModel,
         apiKey: speechApiKey,
         accessToken: speechAccessToken,
         defaultSpeaker: speechDefaultSpeaker,
         defaultLanguage: speechDefaultLanguage,
-        defaultFormat: speechDefaultFormat,
+        defaultFormat: DEFAULT_SPEECH_AUDIO_FORMAT,
       });
     } catch (reason) {
       setError({ code: "INVALID_SPEECH_CONFIG", message: reason.message, retryable: false });
@@ -1103,11 +1162,17 @@ export function ControlPanelApp() {
 
   async function submitSpeechTrain(event) {
     event.preventDefault();
+    const audioFile = speechTrainAudioFile;
+    if (!audioFile) {
+      setError({ code: "INVALID_SPEECH_AUDIO_FILE", message: "请选择训练音频文件", retryable: false });
+      return;
+    }
     let input;
     try {
+      const audioData = await audioFileToBase64(audioFile);
       input = buildSpeechTrainInput({
         speakerId: speechTrainSpeaker,
-        audioData: speechTrainAudioData,
+        audioData,
         audioFormat: speechTrainAudioFormat,
         language: speechTrainLanguage,
       });
@@ -1117,6 +1182,19 @@ export function ControlPanelApp() {
     }
     const result = await run("speech-train", () => trainActiveVoice(input));
     if (result) setSpeechResult(result);
+  }
+
+  function selectSpeechTrainAudioFile(event) {
+    const file = event.target.files?.[0] ?? null;
+    if (!file) {
+      setSpeechTrainAudioFile(null);
+      setSpeechTrainAudioFileName("");
+      return;
+    }
+    setSpeechTrainAudioFile(file);
+    setSpeechTrainAudioFileName(file.name);
+    setSpeechTrainAudioFormat(audioFormatFromFileName(file.name, DEFAULT_SPEECH_AUDIO_FORMAT));
+    setError(null);
   }
 
   async function querySpeechVoice() {
@@ -1320,7 +1398,7 @@ export function ControlPanelApp() {
                                   <button
                                     className="cp-character-film-card cp-character-film-card--new"
                                     type="button"
-                                    onClick={() => { setCharacterId(null); setCharacterName(""); setCharacterDescription(""); setCharacterDialogueStyle(""); setVisualPackId(""); setCharacterPackageDragActive(false); setCharacterPackageStatus(""); setError(null); }}
+                                    onClick={() => { setCharacterId(null); setCharacterName(""); setCharacterDescription(""); setCharacterDialogueStyle(""); setCharacterTextLanguage(DEFAULT_CHARACTER_TEXT_LANGUAGE); setCharacterSpeakingLanguage(DEFAULT_CHARACTER_SPEAKING_LANGUAGE); setVisualPackId(""); setCharacterPackageDragActive(false); setCharacterPackageStatus(""); setError(null); }}
                                     disabled={disabled}
                                   >
                                     <span><PlusIcon aria-hidden="true" /></span>
@@ -1375,6 +1453,26 @@ export function ControlPanelApp() {
                                   </Field>
                                   <Field id="character-dialogue-style" label="日常说话方式" hint="写日常语气、节奏、称呼习惯或几句例句；系统仍保留上面的角色描述。">
                                     <TextArea id="character-dialogue-style" className="cp-character-description cp-character-description--short" value={characterDialogueStyle} onChange={(event) => setCharacterDialogueStyle(event.target.value)} maxLength="1200" resize="none" />
+                                  </Field>
+                                  <Field id="character-text-language" label="文本语言" hint="气泡和聊天记录用的展示语言；旧角色缺字段时显示中文。">
+                                    <Select.Root value={characterTextLanguage} onValueChange={setCharacterTextLanguage}>
+                                      <Select.Trigger id="character-text-language" aria-label="角色文本语言" />
+                                      <Select.Content position="popper" side="bottom" align="start" collisionPadding={14}>
+                                        {CHARACTER_TEXT_LANGUAGE_OPTIONS.map((option) => (
+                                          <Select.Item key={option.value} value={option.value}>{option.label}</Select.Item>
+                                        ))}
+                                      </Select.Content>
+                                    </Select.Root>
+                                  </Field>
+                                  <Field id="character-speaking-language" label="语音语言" hint="TTS 朗读语言；与文本语言不同时会走翻译节点。旧角色缺字段时显示日语。">
+                                    <Select.Root value={characterSpeakingLanguage} onValueChange={setCharacterSpeakingLanguage}>
+                                      <Select.Trigger id="character-speaking-language" aria-label="角色语音语言" />
+                                      <Select.Content position="popper" side="bottom" align="start" collisionPadding={14}>
+                                        {CHARACTER_SPEAKING_LANGUAGE_OPTIONS.map((option) => (
+                                          <Select.Item key={option.value} value={option.value}>{option.label}</Select.Item>
+                                        ))}
+                                      </Select.Content>
+                                    </Select.Root>
                                   </Field>
                                   <Field id="character-appearance" label="角色外观" hint="外观只影响桌宠画面，不会修改角色描述、关系记忆或聊天记录。">
                                     <div className="cp-appearance-picker">
@@ -1554,7 +1652,7 @@ export function ControlPanelApp() {
                         <>
                           <PageHeader
                             title="火山声音复刻"
-                            description="只使用火山声音复刻 HTTP：训练、查询、升级音色；密钥只保存在本机后端。"
+                            description="上传音频样本训练复刻音色，查询和升级只需要 Speaker ID；密钥只保存在本机后端。"
                             status={speechStatus?.configured ? "已配置" : speechStatus?.enabled ? "缺少配置" : "未启用"}
                             ready={Boolean(speechStatus?.configured)}
                           />
@@ -1562,91 +1660,100 @@ export function ControlPanelApp() {
                             <Card className="cp-panel-card" size="2">
                               <Flex align="center" justify="between" gap="3">
                                 <div>
-                                  <Text size="2" weight="medium">启用声音复刻 HTTP</Text>
+                                  <Text size="2" weight="medium">启用声音复刻</Text>
                                   <Text size="1" color="gray" as="p">本页只管理复刻音色，不再自动朗读 speechText。</Text>
                                 </div>
                                 <Switch checked={speechEnabled} onCheckedChange={setSpeechEnabled} disabled={disabled} aria-label="启用火山声音复刻" />
                               </Flex>
                             </Card>
-                            <Field id="speech-base-url" label="HTTP Base URL" hint="默认使用火山声音复刻 HTTP v3 路径。">
-                              <TextField.Root id="speech-base-url" value={speechBaseUrl} onChange={(event) => setSpeechBaseUrl(event.target.value)} required />
-                            </Field>
-                            <div className="cp-two-column">
-                              <Field id="speech-train-path" label="训练 Path">
-                                <TextField.Root id="speech-train-path" value={speechTrainPath} onChange={(event) => setSpeechTrainPath(event.target.value)} required />
-                              </Field>
-                              <Field id="speech-query-path" label="查询 Path">
-                                <TextField.Root id="speech-query-path" value={speechQueryPath} onChange={(event) => setSpeechQueryPath(event.target.value)} required />
-                              </Field>
-                            </div>
-                            <Field id="speech-upgrade-path" label="升级 Path">
-                              <TextField.Root id="speech-upgrade-path" value={speechUpgradePath} onChange={(event) => setSpeechUpgradePath(event.target.value)} required />
-                            </Field>
                             <div className="cp-two-column">
                               <Field id="speech-app-id" label="App ID">
                                 <TextField.Root id="speech-app-id" value={speechAppId} onChange={(event) => setSpeechAppId(event.target.value)} placeholder="火山控制台 APP ID" />
                               </Field>
-                              <Field id="speech-api-key" label="API Key" hint={speechStatus?.hasApiKey ? "留空保留现有 API Key；不会回显。" : "优先使用 API Key 鉴权。"}>
-                                <TextField.Root id="speech-api-key" type="password" autoComplete="off" value={speechApiKey} onChange={(event) => setSpeechApiKey(event.target.value)} placeholder={speechStatus?.hasApiKey ? "留空保留现有 API Key" : "火山 API Key"}>
+                              <Field id="speech-access-token" label="Access Token" hint={speechStatus?.hasAccessToken ? "留空保留现有 token；不会回显。" : "与 App ID 一起用于 MegaTTS 鉴权。"}>
+                                <TextField.Root id="speech-access-token" type="password" autoComplete="off" value={speechAccessToken} onChange={(event) => setSpeechAccessToken(event.target.value)} placeholder={speechStatus?.hasAccessToken ? "留空保留现有 token" : "火山 Access Token"}>
                                   <TextField.Slot><LockClosedIcon /></TextField.Slot>
                                 </TextField.Root>
                               </Field>
                             </div>
-                            <Field id="speech-access-token" label="Access Token" hint={speechStatus?.hasAccessToken ? "留空保留现有 token；不会回显。" : "无 API Key 时可配合 App ID 使用。"}>
-                                <TextField.Root id="speech-access-token" type="password" autoComplete="off" value={speechAccessToken} onChange={(event) => setSpeechAccessToken(event.target.value)} placeholder={speechStatus?.hasAccessToken ? "留空保留现有 token" : "火山 Access Token"}>
-                                  <TextField.Slot><LockClosedIcon /></TextField.Slot>
-                                </TextField.Root>
+                            <Field id="speech-api-key" label="API Key" hint={speechStatus?.hasApiKey ? "新版控制台推荐；留空保留现有 API Key。" : "新版控制台：控制台 > API Key 管理。"}>
+                              <TextField.Root id="speech-api-key" type="password" autoComplete="off" value={speechApiKey} onChange={(event) => setSpeechApiKey(event.target.value)} placeholder={speechStatus?.hasApiKey ? "留空保留现有 API Key" : "火山 API Key"}>
+                                <TextField.Slot><LockClosedIcon /></TextField.Slot>
+                              </TextField.Root>
+                            </Field>
+                            <Field id="speech-synthesis-resource-id" label="TTS 资源 ID" hint="用于合成接口的 X-Api-Resource-Id；当前音色 S_lc8BlSh92 实测应使用 seed-icl-1.0。">
+                              <TextField.Root id="speech-synthesis-resource-id" value={speechSynthesisResourceId} onChange={(event) => setSpeechSynthesisResourceId(event.target.value)} placeholder={DEFAULT_SPEECH_SYNTHESIS_RESOURCE_ID} />
+                            </Field>
+                            <Field id="speech-synthesis-model" label="TTS 模型" hint="req_params.model；当前 seed-icl-1.0 复刻音色应留空，不发送 model。">
+                              <TextField.Root id="speech-synthesis-model" value={speechSynthesisModel} onChange={(event) => setSpeechSynthesisModel(event.target.value)} placeholder={DEFAULT_SPEECH_SYNTHESIS_MODEL} />
                             </Field>
                             <div className="cp-two-column">
                               <Field id="speech-default-speaker" label="默认 Speaker ID">
                                 <TextField.Root id="speech-default-speaker" value={speechDefaultSpeaker} onChange={(event) => { setSpeechDefaultSpeaker(event.target.value); setSpeechTrainSpeaker((current) => current || event.target.value); }} placeholder="S_..." />
                               </Field>
-                              <Field id="speech-default-language" label="默认语言枚举">
-                                <TextField.Root id="speech-default-language" type="number" min="0" step="1" value={speechDefaultLanguage} onChange={(event) => setSpeechDefaultLanguage(event.target.value)} required />
-                              </Field>
-                              <Field id="speech-default-format" label="默认音频格式">
-                                <TextField.Root id="speech-default-format" value={speechDefaultFormat} onChange={(event) => setSpeechDefaultFormat(event.target.value)} required />
+                              <Field id="speech-default-language" label="默认语种">
+                                <SpeechLanguageSelect
+                                  id="speech-default-language"
+                                  value={speechDefaultLanguage}
+                                  onValueChange={setSpeechDefaultLanguage}
+                                  disabled={disabled}
+                                  ariaLabel="默认语种"
+                                />
                               </Field>
                             </div>
                             <Flex justify="between" gap="3">
-                              <Button color="tomato" variant="soft" type="button" disabled={disabled || (!speechStatus?.enabled && !speechStatus?.hasApiKey && !speechStatus?.hasAccessToken)} onClick={() => void run("speech", async () => { const status = await clearActiveSpeechSettings(); setSpeechStatus(status); setSpeechEnabled(false); setSpeechApiKey(""); setSpeechAccessToken(""); })}>
+                              <Button color="tomato" variant="soft" type="button" disabled={disabled || (!speechStatus?.enabled && !speechStatus?.hasAccessToken)} onClick={() => void run("speech", async () => { const status = await clearActiveSpeechSettings(); setSpeechStatus(status); setSpeechEnabled(false); setSpeechAccessToken(""); })}>
                                 <TrashIcon />清除语音配置
                               </Button>
-                              <Button type="submit" disabled={disabled}>保存 HTTP 配置</Button>
+                              <Button type="submit" disabled={disabled}>保存语音配置</Button>
                             </Flex>
                           </form>
                           <form className="cp-form cp-model-form" onSubmit={submitSpeechTrain}>
                             <Card className="cp-panel-card" size="2">
                               <Flex direction="column" gap="2">
                                 <Text size="2" weight="medium">音色复刻操作</Text>
-                                <Text size="1" color="gray" as="p">训练需要粘贴 base64 音频；查询/升级只需要 Speaker ID。</Text>
+                                <Text size="1" color="gray" as="p">训练时选择本地音频文件；查询/升级只需要 Speaker ID。</Text>
                               </Flex>
                             </Card>
                             <div className="cp-two-column">
                               <Field id="speech-train-speaker" label="Speaker ID">
                                 <TextField.Root id="speech-train-speaker" value={speechTrainSpeaker} onChange={(event) => setSpeechTrainSpeaker(event.target.value)} placeholder="S_..." required />
                               </Field>
-                              <Field id="speech-train-language" label="语言枚举">
-                                <TextField.Root id="speech-train-language" type="number" min="0" step="1" value={speechTrainLanguage} onChange={(event) => setSpeechTrainLanguage(event.target.value)} required />
+                              <Field id="speech-train-language" label="训练语种">
+                                <SpeechLanguageSelect
+                                  id="speech-train-language"
+                                  value={speechTrainLanguage}
+                                  onValueChange={setSpeechTrainLanguage}
+                                  disabled={disabled}
+                                  ariaLabel="训练语种"
+                                />
                               </Field>
                             </div>
-                            <Field id="speech-train-format" label="训练音频格式">
-                              <TextField.Root id="speech-train-format" value={speechTrainAudioFormat} onChange={(event) => setSpeechTrainAudioFormat(event.target.value)} required />
-                            </Field>
-                            <Field id="speech-train-audio" label="训练音频 Base64" hint="仅发送给本机 Go 后端；后端再调用火山 HTTP。">
-                              <TextArea id="speech-train-audio" value={speechTrainAudioData} onChange={(event) => setSpeechTrainAudioData(event.target.value)} placeholder="粘贴 base64 音频内容" rows={5} />
+                            <Field id="speech-train-audio-file" label="训练音频文件" hint="支持 wav、mp3、m4a、aac、flac、ogg 等常见音频；文件只读取到本机 Go 后端，再由后端调用火山 HTTP。">
+                              <input
+                                id="speech-train-audio-file"
+                                type="file"
+                                accept="audio/*,.wav,.mp3,.m4a,.aac,.flac,.ogg"
+                                disabled={disabled}
+                                required
+                                onChange={selectSpeechTrainAudioFile}
+                              />
+                              {speechTrainAudioFileName ? (
+                                <Text as="p" size="1" color="gray">已选择：{speechTrainAudioFileName}（{speechTrainAudioFormat}）</Text>
+                              ) : null}
                             </Field>
                             <Flex justify="between" gap="3" wrap="wrap">
                               <Flex gap="2" wrap="wrap">
                                 <Button type="button" variant="soft" disabled={disabled || !speechStatus?.configured} onClick={() => void querySpeechVoice()}>
                                   查询音色
                                 </Button>
-                                <Button type="button" variant="soft" disabled={disabled || !speechStatus?.configured} onClick={() => void upgradeSpeechVoice()}>
+                                <Button type="button" variant="soft" disabled>
                                   升级音色
                                 </Button>
                               </Flex>
-                              <Button type="submit" disabled={disabled || !speechStatus?.configured}>训练音色</Button>
+                              <Button type="submit" disabled={disabled || !speechStatus?.configured || !speechTrainAudioFile}>训练音色</Button>
                             </Flex>
+                            <Text as="p" size="1" color="gray">升级接口待按火山文档确认。</Text>
                           </form>
                           {speechResult ? (
                             <Card className="cp-panel-card" size="2">

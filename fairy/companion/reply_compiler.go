@@ -72,12 +72,16 @@ func compiledReplyFromChains(chains []ReplyChain) (CompiledReply, error) {
 		return CompiledReply{}, err
 	}
 	parts := make([]string, 0, len(chains))
+	speechParts := make([]string, 0, len(chains))
 	for _, chain := range chains {
 		parts = append(parts, chain.Text)
+		if chain.SpeechText != "" {
+			speechParts = append(speechParts, chain.SpeechText)
+		}
 	}
 	return CompiledReply{
 		DisplayText: strings.Join(parts, "\n"),
-		SpeechText:  chains[0].SpeechText,
+		SpeechText:  strings.Join(speechParts, " "),
 		VisualState: chains[len(chains)-1].VisualState,
 		Chains:      chains,
 	}, nil
@@ -91,11 +95,18 @@ func compileChain(visualState string, rawText string, availableVisualStates []Vi
 	if display == "" {
 		return ReplyChain{}, errors.New("model did not return usable reply text")
 	}
-	speech := firstSemanticSentence(display)
-	if err := validateSpeech(speech); err != nil {
-		return ReplyChain{}, err
+	return ReplyChain{Text: display, SpeechText: "", VisualState: visualState}, nil
+}
+
+func sanitizeSpeechText(value string) string {
+	cleaned := sanitizeDisplayText(value)
+	if cleaned == "" {
+		return ""
 	}
-	return ReplyChain{Text: display, SpeechText: speech, VisualState: visualState}, nil
+	collapsed := strings.Join(strings.FieldsFunc(cleaned, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	}), " ")
+	return firstSemanticSentence(strings.TrimSpace(collapsed))
 }
 
 func sanitizeDisplayText(value string) string {
@@ -174,7 +185,7 @@ func firstSemanticSentence(value string) string {
 
 func validateSpeech(value string) error {
 	if value == "" {
-		return errors.New("model reply has no speakable text")
+		return errors.New("model reply chain speechText is required")
 	}
 	if len([]rune(value)) > maxSpeechChars {
 		return errors.New("model reply first sentence exceeds speech length limit")
@@ -188,6 +199,9 @@ func validateSpeech(value string) error {
 	}
 	if strings.Contains(value, "`") || strings.HasPrefix(value, "#") || strings.HasPrefix(value, "- ") || strings.HasPrefix(value, "*") || strings.HasPrefix(value, "> ") {
 		return errors.New("speech text must not contain Markdown or list markers")
+	}
+	if strings.HasPrefix(value, "{") || strings.HasPrefix(value, "[") {
+		return errors.New("speech text must not contain JSON artifacts")
 	}
 	return nil
 }
@@ -206,11 +220,11 @@ func validateAvailableVisualStates(states []VisualState) error {
 			return errors.New("available visual states contain duplicate state")
 		}
 		seen[state.ID] = struct{}{}
+		if state.Description == "" || len([]rune(state.Description)) > 96 || strings.TrimSpace(state.Description) != state.Description || containsDisallowedControl(state.Description) {
+			return fmt.Errorf("available visual state %q description is invalid", state.ID)
+		}
 		if state.ID == "idle" {
 			hasIdle = true
-		}
-		if state.Description == "" || len([]rune(state.Description)) > 96 || strings.TrimSpace(state.Description) != state.Description || containsDisallowedControl(state.Description) {
-			return errors.New("available visual state description is invalid")
 		}
 	}
 	if !hasIdle {
@@ -267,4 +281,36 @@ func containsDisallowedControl(value string) bool {
 
 func isEmoji(character rune) bool {
 	return character >= 0x1F000 && character <= 0x1FAFF || character >= 0x2600 && character <= 0x26FF || character >= 0x2700 && character <= 0x27BF || character >= 0xFE00 && character <= 0xFE0F
+}
+
+func fillSameLanguageSpeech(reply CompiledReply) (CompiledReply, error) {
+	chains := make([]ReplyChain, len(reply.Chains))
+	copy(chains, reply.Chains)
+	for index := range chains {
+		candidate := sanitizeSpeechText(chains[index].Text)
+		if candidate == "" || validateSpeech(candidate) != nil {
+			chains[index].SpeechText = ""
+			continue
+		}
+		chains[index].SpeechText = candidate
+	}
+	return compiledReplyFromChains(chains)
+}
+
+func applyTranslatedSpeech(reply CompiledReply, rawSpeech string) (CompiledReply, error) {
+	speech := sanitizeSpeechText(rawSpeech)
+	if speech == "" || validateSpeech(speech) != nil {
+		return reply, errors.New("translated speech text is unusable")
+	}
+	chains := make([]ReplyChain, len(reply.Chains))
+	copy(chains, reply.Chains)
+	for index := range chains {
+		chains[index].SpeechText = speech
+	}
+	compiled, err := compiledReplyFromChains(chains)
+	if err != nil {
+		return reply, err
+	}
+	compiled.SpeechText = speech
+	return compiled, nil
 }

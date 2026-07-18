@@ -14,6 +14,7 @@ const (
 	runtimeLedgerEventModel         = "model"
 	runtimeLedgerEventContextWindow = "context_window"
 	runtimeLedgerEventCompile       = "compile"
+	runtimeLedgerEventSpeech        = "speech"
 	runtimeLedgerEventTerminal      = "terminal"
 )
 

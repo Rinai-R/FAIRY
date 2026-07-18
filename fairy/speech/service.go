@@ -3,6 +3,7 @@ package speech
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"fairy/secret"
 )
@@ -11,6 +12,7 @@ type VoiceCloneClient interface {
 	TrainVoice(ctx context.Context, settings Settings, credentials Credentials, request TrainVoiceRequest) (VoiceResult, error)
 	QueryVoice(ctx context.Context, settings Settings, credentials Credentials, request VoiceOperationRequest) (VoiceResult, error)
 	UpgradeVoice(ctx context.Context, settings Settings, credentials Credentials, request VoiceOperationRequest) (VoiceResult, error)
+	SynthesizeSpeech(ctx context.Context, settings Settings, credentials Credentials, request SynthesizeSpeechRequest) (SynthesisResult, error)
 }
 
 type SpeechService struct {
@@ -95,6 +97,25 @@ func (s *SpeechService) UpgradeVoice(request VoiceOperationRequest) (VoiceResult
 	result, err := s.client.UpgradeVoice(context.Background(), settings, credentials, request)
 	if err != nil {
 		return VoiceResult{}, fmt.Errorf("upgrading volcengine voice clone: %w", err)
+	}
+	return result, nil
+}
+
+func (s *SpeechService) SynthesizeSpeech(request SynthesizeSpeechRequest) (SynthesisResult, error) {
+	settings, credentials, err := s.readySettings()
+	if err != nil {
+		return SynthesisResult{}, err
+	}
+	request.SpeakerID = defaultString(request.SpeakerID, settings.DefaultSpeaker)
+	if strings.TrimSpace(request.Text) == "" {
+		return SynthesisResult{}, fmt.Errorf("speech text is required")
+	}
+	if request.SpeakerID == "" {
+		return SynthesisResult{}, ErrSpeakerIDRequired
+	}
+	result, err := s.client.SynthesizeSpeech(context.Background(), settings, credentials, request)
+	if err != nil {
+		return SynthesisResult{}, fmt.Errorf("synthesizing volcengine tts: %w", err)
 	}
 	return result, nil
 }
