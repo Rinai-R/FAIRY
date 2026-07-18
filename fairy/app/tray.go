@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"fairy/desktop"
@@ -6,7 +6,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func setupSystemTray(app *application.App, service *desktop.DesktopService, logger *zap.Logger) {
+func setupSystemTray(app *application.App, service *desktop.DesktopService, logger *zap.Logger, trayTemplateIcon []byte) {
 	tray := app.SystemTray.New()
 	// macOS menu bar requires a template (black + alpha) icon; a full-color
 	// 512px app icon is effectively invisible on the status bar.
