@@ -629,8 +629,8 @@ export function parseCompiledTurnOutcome(value) {
 
 function parseReplyChains(value) {
   const chains = requireArray(value, "chains");
-  if (chains.length === 0 || chains.length > 5) {
-    throw new Error("Wails compiled turn outcome chains must contain 1-5 items");
+  if (chains.length === 0 || chains.length > 12) {
+    throw new Error("Wails compiled turn outcome chains must contain 1-12 items");
   }
   return Object.freeze(chains.map(parseReplyChain));
 }

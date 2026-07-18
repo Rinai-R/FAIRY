@@ -19,11 +19,14 @@ const TYPEWRITER_TICK_MS = 20;
 /**
  * Assistant-only light speech bubble beside the character.
  * Waiting state stays until reply text arrives; then typewriter + dwell fade.
+ * When mayFade is false (TTS still playing or failed), the bubble stays up.
  */
 export function CharacterSpeechBubble({
   targetText,
   waiting,
   characterName,
+  mayFade = true,
+  fadeAfterMs = SPEECH_BUBBLE_FADE_AFTER_MS,
   onFaded,
 }) {
   const bubbleRef = useRef(null);
@@ -58,12 +61,15 @@ export function CharacterSpeechBubble({
   }, [hasTarget, bubble.fading, typewriter.target, typewriter.visible]);
 
   useEffect(() => {
-    if (!hasTarget || waiting || bubble.fading || !caughtUp) return undefined;
+    if (!hasTarget || waiting || bubble.fading || !caughtUp || !mayFade) return undefined;
+    const dwellMs = typeof fadeAfterMs === "number" && fadeAfterMs >= 0
+      ? fadeAfterMs
+      : SPEECH_BUBBLE_FADE_AFTER_MS;
     const dwell = setTimeout(() => {
       setBubble((prev) => reduceSpeechBubbleState(prev, { type: "start_fade", at: Date.now() }));
-    }, SPEECH_BUBBLE_FADE_AFTER_MS);
+    }, dwellMs);
     return () => clearTimeout(dwell);
-  }, [hasTarget, waiting, bubble.fading, caughtUp]);
+  }, [hasTarget, waiting, bubble.fading, caughtUp, mayFade, fadeAfterMs]);
 
   useLayoutEffect(() => {
     const el = bubbleRef.current;

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   createSpeechObserver,
   reduceSpeechObserver,
+  revealSpeechObserverThrough,
   speechBubbleVisible,
 } from "./speechObserver.mjs";
 
@@ -14,12 +15,31 @@ function stateChanged(turnId, state) {
   return { turnId, state, payload: { type: "state_changed" } };
 }
 
-function replyChain(turnId, delta) {
-  return { turnId, state: "responding", payload: { type: "reply_chain", delta } };
+function replyChain(turnId, index, text, visualState = "idle") {
+  return {
+    turnId,
+    state: "responding",
+    payload: {
+      type: "reply_chain",
+      index,
+      delta: index === 0 ? text : `\n${text}`,
+      text,
+      speechText: text,
+      visualState,
+    },
+  };
 }
 
-function completed(turnId, text) {
-  return { turnId, state: "completed", payload: { type: "completed", text } };
+function completed(turnId, text, chains) {
+  return {
+    turnId,
+    state: "completed",
+    payload: {
+      type: "completed",
+      text,
+      chains: chains ?? [{ text, visualState: "idle" }],
+    },
+  };
 }
 
 function speechRequested(turnId, text) {
@@ -27,7 +47,7 @@ function speechRequested(turnId, text) {
 }
 
 function speechSynthesized(turnId, dataUrl) {
-  return { turnId, state: "completed", payload: { type: "speech.synthesized", text: "嗨，在的", dataUrl } };
+  return { turnId, state: "completed", payload: { type: "speech.synthesized", index: 0, text: "嗨，在的", dataUrl } };
 }
 
 test("a new turn starts in the waiting state before any text arrives", () => {
@@ -39,22 +59,40 @@ test("a new turn starts in the waiting state before any text arrives", () => {
   assert.equal(speechBubbleVisible(observer), true);
 });
 
-test("streamed reply chains accumulate the draft and clear waiting", () => {
+test("each reply chain is its own bubble, revealed one at a time", () => {
   let observer = createSpeechObserver();
   observer = reduceSpeechObserver(observer, stateChanged(TURN_A, "interpreting"));
-  observer = reduceSpeechObserver(observer, replyChain(TURN_A, "你好"));
-  observer = reduceSpeechObserver(observer, replyChain(TURN_A, "呀"));
-  assert.equal(observer.draft, "你好呀");
+  observer = reduceSpeechObserver(observer, replyChain(TURN_A, 0, "你好"));
+  assert.equal(observer.draft, "你好");
+  // Backend emitting the next beat must not stack it into the current bubble nor
+  // jump ahead; the bubble still shows only the first beat.
+  observer = reduceSpeechObserver(observer, replyChain(TURN_A, 1, "呀"));
+  assert.equal(observer.draft, "你好");
+  assert.equal(observer.chains.length, 2);
   assert.equal(observer.waiting, false);
   assert.equal(speechBubbleVisible(observer), true);
+  // Playback (or the no-TTS timer) advances the reveal to the next single beat.
+  observer = revealSpeechObserverThrough(observer, 1);
+  assert.equal(observer.draft, "呀");
 });
 
-test("completion pins the full text", () => {
+test("completion shows only the currently revealed beat", () => {
   let observer = createSpeechObserver();
-  observer = reduceSpeechObserver(observer, replyChain(TURN_A, "嗨"));
-  observer = reduceSpeechObserver(observer, completed(TURN_A, "嗨，在的"));
-  assert.equal(observer.draft, "嗨，在的");
+  observer = reduceSpeechObserver(observer, replyChain(TURN_A, 0, "嗨"));
+  observer = reduceSpeechObserver(observer, replyChain(TURN_A, 1, "在的"));
+  observer = reduceSpeechObserver(
+    observer,
+    completed(TURN_A, "嗨\n在的", [
+      { text: "嗨", visualState: "idle" },
+      { text: "在的", visualState: "happy" },
+    ]),
+  );
+  // The reveal position is unchanged, so the bubble still shows the first beat.
+  assert.equal(observer.draft, "嗨");
+  assert.equal(observer.chains.length, 2);
   assert.equal(observer.active, true);
+  observer = revealSpeechObserverThrough(observer, 1);
+  assert.equal(observer.draft, "在的");
 });
 
 test("speech requested records the text without changing the visible draft", () => {
@@ -84,7 +122,7 @@ test("a new turn resets the previous draft", () => {
 });
 
 test("interrupt and failure clear the bubble", () => {
-  let waiting = reduceSpeechObserver(createSpeechObserver(), replyChain(TURN_A, "写到一半"));
+  let waiting = reduceSpeechObserver(createSpeechObserver(), replyChain(TURN_A, 0, "写到一半"));
   const interrupted = reduceSpeechObserver(waiting, stateChanged(TURN_A, "interrupted"));
   assert.equal(interrupted.active, false);
   assert.equal(speechBubbleVisible(interrupted), false);

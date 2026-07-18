@@ -134,14 +134,34 @@ test("completed visual state routes only when declared", () => {
   assert.equal(state.visualState, "happy");
 });
 
-test("reply visual state is applied only after completion", () => {
+test("reply visual state applies first chain immediately and defers completed while speech holds", () => {
   assert.equal(
     shouldApplyReplyVisualState({
       payload: {
         type: "reply_chain",
+        index: 0,
         visualState: "thinking",
       },
     }),
+    true,
+  );
+  assert.equal(
+    shouldApplyReplyVisualState({
+      payload: {
+        type: "reply_chain",
+        index: 1,
+        visualState: "happy",
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    shouldApplyReplyVisualState({
+      payload: {
+        type: "completed",
+        visualState: "happy",
+      },
+    }, { speechHold: true }),
     false,
   );
   assert.equal(

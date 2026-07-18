@@ -9,12 +9,20 @@ import {
 import {
   createSpeechObserver,
   reduceSpeechObserver,
+  revealSpeechObserverThrough,
   speechBubbleVisible,
 } from "../speechObserver.mjs";
 import {
+  SPEECH_BUBBLE_FADE_AFTER_MS,
+  SPEECH_BUBBLE_POST_AUDIO_FADE_MS,
+} from "../speechBubbleState.mjs";
+import {
+  advanceSpeechPlayback,
   createSpeechPlaybackState,
+  currentSpeechSegment,
   playSpeechDataUrl,
   reduceSpeechPlayback,
+  speechBubbleMayFade,
 } from "../speechPlayback.mjs";
 
 /**
@@ -38,7 +46,10 @@ export function SpeechBubbleApp() {
           if (event.turnId !== prev.turnId) setDismissed(false);
           return reduceSpeechObserver(prev, event);
         });
-        setPlayback((prev) => reduceSpeechPlayback(prev, event));
+        setPlayback((prev) => {
+          const base = event.turnId !== prev.turnId ? createSpeechPlaybackState() : prev;
+          return reduceSpeechPlayback(base, event);
+        });
       },
       () => {},
     )
@@ -56,7 +67,16 @@ export function SpeechBubbleApp() {
     };
   }, []);
 
+  // Late TTS beats after a premature fade must bring the bubble back.
+  useEffect(() => {
+    if (playback.dataUrl) setDismissed(false);
+  }, [playback.dataUrl]);
+
   const visible = !dismissed && speechBubbleVisible(observer);
+  const mayFade = speechBubbleMayFade(playback);
+  const fadeAfterMs = playback.played
+    ? SPEECH_BUBBLE_POST_AUDIO_FADE_MS
+    : SPEECH_BUBBLE_FADE_AFTER_MS;
 
   useEffect(() => {
     if (visible === shownRef.current) return;
@@ -68,15 +88,46 @@ export function SpeechBubbleApp() {
   useEffect(() => {
     if (!playback.dataUrl || playback.played) return;
     let cancelled = false;
-    playSpeechDataUrl(playback.dataUrl)
+    const activeUrl = playback.dataUrl;
+    const segment = currentSpeechSegment(playback);
+    // Reveal the bubble for the reply chain this audio belongs to. Mid-ReAct
+    // utterance audio (chainIndex < 0) is its own line and must not advance the
+    // reply-chain reveal.
+    const chainIndex = segment && Number.isSafeInteger(segment.chainIndex)
+      ? segment.chainIndex
+      : null;
+    if (chainIndex !== null && chainIndex >= 0) {
+      setObserver((prev) => revealSpeechObserverThrough(prev, chainIndex));
+    }
+    const playing = playSpeechDataUrl(activeUrl);
+    playing
       .catch(() => {})
       .finally(() => {
-        if (!cancelled) setPlayback((prev) => prev.dataUrl === playback.dataUrl ? Object.freeze({ ...prev, played: true }) : prev);
+        if (!cancelled) {
+          setPlayback((prev) => (prev.dataUrl === activeUrl ? advanceSpeechPlayback(prev) : prev));
+        }
       });
     return () => {
       cancelled = true;
+      playing.stop?.();
     };
-  }, [playback.dataUrl, playback.played]);
+  }, [playback.dataUrl, playback.played, playback.playIndex]);
+
+  // Without TTS, still reveal chains one beat at a time instead of dumping all text.
+  useEffect(() => {
+    if (playback.hold || playback.played) return undefined;
+    if (!observer.chains.length) return undefined;
+    if (observer.revealThrough >= observer.chains.length - 1) return undefined;
+    const id = setTimeout(() => {
+      setObserver((prev) => revealSpeechObserverThrough(prev, prev.revealThrough + 1));
+    }, 1600);
+    return () => clearTimeout(id);
+  }, [
+    playback.hold,
+    playback.played,
+    observer.chains.length,
+    observer.revealThrough,
+  ]);
 
   const handleFaded = useCallback(() => {
     setDismissed(true);
@@ -89,6 +140,8 @@ export function SpeechBubbleApp() {
       <CharacterSpeechBubble
         targetText={observer.draft}
         waiting={observer.waiting}
+        mayFade={mayFade}
+        fadeAfterMs={fadeAfterMs}
         onFaded={handleFaded}
       />
     </div>

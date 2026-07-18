@@ -83,8 +83,8 @@ func ValidateReplyChains(chains []ReplyChain) error {
 	if len(chains) == 0 {
 		return errors.New("reply chains must contain at least one chain")
 	}
-	if len(chains) > 5 {
-		return errors.New("reply chains must contain at most five chains")
+	if len(chains) > maxReplyChains {
+		return fmt.Errorf("reply chains must contain at most %d chains", maxReplyChains)
 	}
 	for i, chain := range chains {
 		if strings.TrimSpace(chain.Text) == "" {

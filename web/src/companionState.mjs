@@ -228,8 +228,8 @@ function parseReplyChain(value, index, label = `reply chain[${index}]`) {
 }
 
 function parseReplyChains(value, label = "reply chains") {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 5) {
-    throw new TypeError(`${label} must contain 1-5 entries`);
+  if (!Array.isArray(value) || value.length < 1 || value.length > 12) {
+    throw new TypeError(`${label} must contain 1-12 entries`);
   }
   return Object.freeze(value.map((chain, index) => parseReplyChain(chain, index, `${label}[${index}]`)));
 }
@@ -285,8 +285,8 @@ function parseEventPayload(value) {
         ["type", "index", "delta", "text", "speechText", "visualState"],
         "event.payload",
       );
-      if (!Number.isSafeInteger(value.index) || value.index < 0 || value.index > 4) {
-        throw new TypeError("event.payload.index must be between 0 and 4");
+      if (!Number.isSafeInteger(value.index) || value.index < 0 || value.index > 11) {
+        throw new TypeError("event.payload.index must be between 0 and 11");
       }
       return Object.freeze({
         type: value.type,
@@ -295,6 +295,22 @@ function parseEventPayload(value) {
         text: parseNonEmptyString(value.text, "event.payload.text"),
         speechText: parseString(value.speechText, "event.payload.speechText"),
         visualState: parseVisualStateId(value.visualState, "event.payload.visualState"),
+      });
+    case "utterance":
+      assertExactKeys(
+        value,
+        ["type", "seq", "text", "visualState", "reason"],
+        "event.payload",
+      );
+      if (!Number.isSafeInteger(value.seq) || value.seq < 0 || value.seq > 255) {
+        throw new TypeError("event.payload.seq must be between 0 and 255");
+      }
+      return Object.freeze({
+        type: value.type,
+        seq: value.seq,
+        text: parseNonEmptyString(value.text, "event.payload.text"),
+        visualState: parseVisualStateId(value.visualState, "event.payload.visualState"),
+        reason: parseNonEmptyString(value.reason, "event.payload.reason"),
       });
     case "completed":
       assertExactKeys(
@@ -350,14 +366,24 @@ function parseEventPayload(value) {
     case "speech.synthesized":
       assertExactKeys(
         value,
-        ["type", "text", "speakerId", "mimeType", "format", "dataUrl"],
+        ["type", "index", "chainIndex", "text", "speakerId", "mimeType", "format", "dataUrl"],
         "event.payload",
       );
+      // index is playback order (monotonic across the turn, utterance audio first).
+      if (!Number.isSafeInteger(value.index) || value.index < 0 || value.index > 31) {
+        throw new TypeError("event.payload.index must be between 0 and 31");
+      }
+      // chainIndex is the reply-chain index, or -1 for mid-ReAct utterance audio.
+      if (!Number.isSafeInteger(value.chainIndex) || value.chainIndex < -1) {
+        throw new TypeError("event.payload.chainIndex must be an integer >= -1");
+      }
       if (typeof value.dataUrl !== "string" || !AUDIO_DATA_URL_PATTERN.test(value.dataUrl)) {
         throw new TypeError("event.payload.dataUrl must be an audio data URL");
       }
       return Object.freeze({
         type: value.type,
+        index: value.index,
+        chainIndex: value.chainIndex,
         text: parseNonEmptyString(value.text, "event.payload.text"),
         speakerId: parseNonEmptyString(value.speakerId, "event.payload.speakerId"),
         mimeType: parseNonEmptyString(value.mimeType, "event.payload.mimeType"),
@@ -1131,6 +1157,7 @@ export function createCompanionState() {
     lastSequence: 0,
     draft: "",
     responseDraft: "",
+    progressiveDraft: "",
     transcript: Object.freeze([]),
     error: null,
     usage: Object.freeze([]),
@@ -1148,7 +1175,25 @@ function reduceHarnessEvent(state, event) {
   if (state.conversationId !== event.conversationId) {
     protocolError("conversation id does not match the active session");
   }
+
   if (event.sequence !== state.lastSequence + 1) {
+    // After submit_started, lastSequence resets to 0 while late events from the
+    // previous turn may still arrive on the permanent harness listener. Drop them.
+    if (state.submitting && state.activeTurnId === null && event.sequence !== 1) {
+      return state;
+    }
+    // Late events from another turn after this turn already started.
+    if (state.activeTurnId !== null && event.turnId !== state.activeTurnId) {
+      return state;
+    }
+    // Duplicate delivery (e.g. overlapping listeners): ignore already-applied seq.
+    if (
+      state.activeTurnId !== null &&
+      event.turnId === state.activeTurnId &&
+      event.sequence <= state.lastSequence
+    ) {
+      return state;
+    }
     protocolError("event sequence is duplicated or out of order");
   }
 
@@ -1188,7 +1233,8 @@ function reduceHarnessEvent(state, event) {
 
   const activeTurnId = state.activeTurnId ?? event.turnId;
   if (event.turnId !== activeTurnId) {
-    protocolError("turn id changed before a terminal event");
+    // Ignore leftover events from a previous turn instead of crashing the UI.
+    return state;
   }
 
   if (event.payload.type === "state_changed") {
@@ -1228,6 +1274,20 @@ function reduceHarnessEvent(state, event) {
     });
   }
 
+  if (event.payload.type === "utterance") {
+    if (event.state !== "planning" && event.state !== "gathering") {
+      protocolError("utterance must be in gathering or planning state");
+    }
+    const prefix = state.progressiveDraft.length > 0 ? `${state.progressiveDraft}\n` : "";
+    return Object.freeze({
+      ...state,
+      sessionState: event.state,
+      activeTurnId,
+      lastSequence: event.sequence,
+      progressiveDraft: prefix + event.payload.text,
+    });
+  }
+
   if (event.payload.type === "text_delta") {
     if (event.state !== "responding") {
       protocolError("text delta must be in responding state");
@@ -1245,11 +1305,20 @@ function reduceHarnessEvent(state, event) {
     if (event.state !== "responding") {
       protocolError("reply chain must be in responding state");
     }
+    let progressiveDraft = state.progressiveDraft;
+    if (
+      progressiveDraft.length > 0 &&
+      progressiveDraft.split("\n").at(-1) === event.payload.text
+    ) {
+      // Final line duplicates last utterance — keep progressive as-is for bubble continuity.
+      progressiveDraft = state.progressiveDraft;
+    }
     return Object.freeze({
       ...state,
       sessionState: event.state,
       activeTurnId,
       lastSequence: event.sequence,
+      progressiveDraft,
       responseDraft: state.responseDraft + event.payload.delta,
     });
   }
@@ -1292,6 +1361,8 @@ function reduceHarnessEvent(state, event) {
       }),
       lastSequence: event.sequence,
       responseDraft: "",
+      progressiveDraft: "",
+      speechRequest: null,
       transcript: Object.freeze([...state.transcript, assistant]),
       usage: event.payload.usage,
       submitting: false,
@@ -1319,7 +1390,22 @@ function reduceHarnessEvent(state, event) {
     });
   }
 
-  protocolError("speech request cannot precede completion");
+  if (
+    event.payload.type === "speech.requested" ||
+    event.payload.type === "speech.synthesized" ||
+    event.payload.type === "speech.failed"
+  ) {
+    if (event.state !== "planning" && event.state !== "responding") {
+      protocolError("in-flight speech events outside planning/responding require a completed terminal turn");
+    }
+    return Object.freeze({
+      ...state,
+      lastSequence: event.sequence,
+      speechRequest: event.payload.type === "speech.requested" ? event.payload : state.speechRequest,
+    });
+  }
+
+  protocolError("unsupported harness payload for active turn");
 }
 
 export function reduceCompanionState(state, action) {
@@ -1379,8 +1465,24 @@ export function reduceCompanionState(state, action) {
         submitting: true,
       });
     }
-    case "harness_event":
-      return reduceHarnessEvent(state, parseHarnessEvent(action.event));
+    case "harness_event": {
+      // Harness events flow through React's reducer, so any throw here escapes to
+      // the RootErrorBoundary and takes the whole window down. Ordering, duplicate,
+      // and stale-turn anomalies are recoverable: log and drop the offending event
+      // instead of crashing the UI.
+      try {
+        // listenWailsHarnessEvents already parses; accept either wire or parsed shapes.
+        const event = action.event?.payload && typeof action.event.sequence === "number"
+          ? action.event
+          : parseHarnessEvent(action.event);
+        return reduceHarnessEvent(state, event);
+      } catch (error) {
+        if (typeof console !== "undefined" && typeof console.warn === "function") {
+          console.warn("dropped malformed companion harness event", error);
+        }
+        return state;
+      }
+    }
     case "compiled_turn_completed": {
       const outcome = parseTurnOutcome(action.outcome);
       if (state.conversationId !== outcome.conversationId) {

@@ -33,10 +33,16 @@ func TestRespondInstructionsStayStable(t *testing.T) {
 		"Never output decision", "reasoning", "analysis", "rationale", "Explicit user requests", "untrusted data", `"chains"`,
 		"display line for the user", "Do not output speechText", "textLanguage", "speakingLanguage",
 		"HARD RULE for chains.text language", "Never write chains.text in speakingLanguage",
+		"chains length is 1-12", "short performance beat", "about 20 characters", "semantic completeness outranks", "split across multiple chains",
 		"Do not pretend to perform real-world or code actions",
 	} {
 		if !strings.Contains(RespondInstructions, required) {
 			t.Fatalf("RespondInstructions missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"嗯", "稍等", "wait-filler", "thinking beat", "surprised beat"} {
+		if strings.Contains(RespondInstructions, forbidden) {
+			t.Fatalf("RespondInstructions must not prime filler dialogue with %q", forbidden)
 		}
 	}
 	if strings.Contains(RespondInstructions, `"decision":`) {

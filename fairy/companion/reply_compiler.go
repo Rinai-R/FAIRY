@@ -9,7 +9,20 @@ import (
 	"unicode/utf8"
 )
 
-const maxSpeechChars = 96
+const (
+	maxReplyChains = 12
+	// maxSpeechChars is a SOFT warning threshold, not a hard cap. A chain's speech
+	// is always synthesized as one request (stable timbre per semantic unit); when
+	// it exceeds this many runes the runtime only logs a warning. 20 runes is the
+	// soft target, 40 is the tolerance before warning.
+	maxSpeechChars = 40
+)
+
+// speechExceedsSoftLimit reports whether a speech line is longer than the soft
+// warning threshold. It never rejects — callers only log a warning.
+func speechExceedsSoftLimit(value string) bool {
+	return len([]rune(value)) > maxSpeechChars
+}
 
 type VisualState struct {
 	ID          string `json:"id"`
@@ -53,8 +66,8 @@ func compileJSONReplyChains(draft string, availableVisualStates []VisualState) (
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return CompiledReply{}, errors.New("model reply must contain exactly one JSON object")
 	}
-	if len(parsed.Chains) == 0 || len(parsed.Chains) > 5 {
-		return CompiledReply{}, errors.New("model reply chains count must be 1-5")
+	if len(parsed.Chains) == 0 || len(parsed.Chains) > maxReplyChains {
+		return CompiledReply{}, fmt.Errorf("model reply chains count must be 1-%d", maxReplyChains)
 	}
 	chains := make([]ReplyChain, 0, len(parsed.Chains))
 	for _, chain := range parsed.Chains {
@@ -103,10 +116,12 @@ func sanitizeSpeechText(value string) string {
 	if cleaned == "" {
 		return ""
 	}
+	// Keep the full speakable line. Do not truncate to the first sentence —
+	// companion replies are often multi-clause and TTS should match speechText.
 	collapsed := strings.Join(strings.FieldsFunc(cleaned, func(r rune) bool {
 		return r == '\n' || r == '\r'
 	}), " ")
-	return firstSemanticSentence(strings.TrimSpace(collapsed))
+	return strings.TrimSpace(collapsed)
 }
 
 func sanitizeDisplayText(value string) string {
@@ -171,25 +186,12 @@ func matchingCloseBracket(open rune) (rune, bool) {
 	}
 }
 
-func firstSemanticSentence(value string) string {
-	for index, character := range value {
-		if strings.ContainsRune("。！？!?", character) {
-			return strings.TrimSpace(value[:index+utf8.RuneLen(character)])
-		}
-		if character == '\n' || character == '\r' {
-			return strings.TrimSpace(value[:index])
-		}
-	}
-	return strings.TrimSpace(value)
-}
-
 func validateSpeech(value string) error {
 	if value == "" {
 		return errors.New("model reply chain speechText is required")
 	}
-	if len([]rune(value)) > maxSpeechChars {
-		return errors.New("model reply first sentence exceeds speech length limit")
-	}
+	// Length is NOT validated here: an over-length line is still a single valid
+	// TTS unit. Callers warn on speechExceedsSoftLimit but never reject.
 	if strings.ContainsAny(value, "\r\n") {
 		return errors.New("speech text must not contain line breaks")
 	}

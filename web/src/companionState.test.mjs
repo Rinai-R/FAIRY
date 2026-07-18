@@ -278,28 +278,40 @@ test("reply chain events append draft and carry segment visual states", () => {
   assert.equal(state.terminalTurn.chains[0].visualState, "thinking");
 });
 
-test("out-of-order and invalid state events are rejected", () => {
-  const state = stateWithSubmission();
+test("out-of-order and invalid state events are dropped without crashing", () => {
+  let state = stateWithSubmission();
+  // Seq 2 before the turn's seq 1 is treated as a stale late event and ignored.
+  state = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(2, "interpreting", { type: "state_changed" }),
+  });
+  assert.equal(state.lastSequence, 0);
 
-  assert.throws(
-    () =>
-      reduceCompanionState(state, {
-        type: "harness_event",
-        event: event(2, "interpreting", { type: "state_changed" }),
-      }),
-    /duplicated or out of order/,
-  );
-  assert.throws(
-    () =>
-      reduceCompanionState(state, {
-        type: "harness_event",
-        event: event(1, "responding", { type: "state_changed" }),
-      }),
-    /state transition is invalid/,
-  );
+  state = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(1, "interpreting", { type: "state_changed" }),
+  });
+  assert.equal(state.lastSequence, 1);
+
+  // A sequence gap must never crash the window; the bad event is dropped and the
+  // last applied sequence stays put.
+  const gap = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(3, "gathering", { type: "state_changed" }),
+  });
+  assert.equal(gap.lastSequence, 1);
+  assert.equal(gap.sessionState, state.sessionState);
+
+  // An invalid state transition is likewise dropped rather than thrown.
+  const invalid = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(2, "responding", { type: "state_changed" }),
+  });
+  assert.equal(invalid.lastSequence, 1);
+  assert.equal(invalid.sessionState, state.sessionState);
 });
 
-test("new submitted turn accepts sequence restart from backend", () => {
+test("new submitted turn ignores stale late events from the previous turn", () => {
   let state = advanceToResponding();
   state = reduceCompanionState(state, {
     type: "harness_event",
@@ -319,14 +331,47 @@ test("new submitted turn accepts sequence restart from backend", () => {
 
   state = reduceCompanionState(state, { type: "draft_changed", value: "第二轮" });
   state = reduceCompanionState(state, { type: "submit_started", text: "第二轮" });
+  // Late speech event from turn A still arrives after reset.
+  state = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(7, "completed", {
+      type: "speech.synthesized",
+      index: 0,
+      chainIndex: 0,
+      text: "第一轮回复",
+      speakerId: "S_voice",
+      mimeType: "audio/mpeg",
+      format: "mp3",
+      dataUrl: "data:audio/mpeg;base64,ZmFrZQ==",
+    }),
+  });
+  assert.equal(state.lastSequence, 0);
+  assert.equal(state.submitting, true);
+
   state = reduceCompanionState(state, {
     type: "harness_event",
     event: turnEvent("55555555-5555-4555-8555-555555555555", 1, "interpreting", { type: "state_changed" }),
   });
-
   assert.equal(state.lastSequence, 1);
   assert.equal(state.activeTurnId, "55555555-5555-4555-8555-555555555555");
-  assert.equal(state.sessionState, "interpreting");
+});
+
+test("duplicate harness sequence for the active turn is ignored", () => {
+  let state = stateWithSubmission();
+  state = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(1, "interpreting", { type: "state_changed" }),
+  });
+  const once = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(2, "gathering", { type: "state_changed" }),
+  });
+  const twice = reduceCompanionState(once, {
+    type: "harness_event",
+    event: event(2, "gathering", { type: "state_changed" }),
+  });
+  assert.equal(twice.lastSequence, 2);
+  assert.equal(twice.sessionState, "gathering");
 });
 
 test("interrupted partial text is retained but never marked complete", () => {
@@ -379,45 +424,42 @@ test("failed stream preserves diagnostics without promoting partial text", () =>
   });
 });
 
-test("terminal turn rejects deltas, duplicate completion, and mismatched speech", () => {
+test("terminal turn drops deltas, duplicate completion, and mismatched speech without crashing", () => {
   let state = advanceToResponding();
   state = reduceCompanionState(state, {
     type: "harness_event",
     event: event(5, "completed", completedPayload("完成文本")),
   });
+  const terminal = state;
 
-  assert.throws(
-    () =>
-      reduceCompanionState(state, {
-        type: "harness_event",
-        event: event(6, "responding", {
-          type: "text_delta",
-          delta: "越界增量",
-        }),
-      }),
-    /terminal turn cannot accept/,
-  );
-  assert.throws(
-    () =>
-      reduceCompanionState(state, {
-        type: "harness_event",
-        event: event(6, "completed", completedPayload("完成文本")),
-      }),
-    /terminal turn cannot accept/,
-  );
-  assert.throws(
-    () =>
-      reduceCompanionState(state, {
-        type: "harness_event",
-        event: event(6, "completed", {
-          type: "speech.requested",
-          text: "不同文本",
-          characterRevision: 3,
-          userProfileRevision: 2,
-        }),
-      }),
-    /does not match/,
-  );
+  const afterDelta = reduceCompanionState(terminal, {
+    type: "harness_event",
+    event: event(6, "responding", {
+      type: "text_delta",
+      delta: "越界增量",
+    }),
+  });
+  assert.equal(afterDelta.lastSequence, terminal.lastSequence);
+  assert.equal(afterDelta.responseDraft, terminal.responseDraft);
+
+  const afterDup = reduceCompanionState(terminal, {
+    type: "harness_event",
+    event: event(6, "completed", completedPayload("完成文本")),
+  });
+  assert.equal(afterDup.lastSequence, terminal.lastSequence);
+  assert.equal(afterDup.transcript.length, terminal.transcript.length);
+
+  const afterMismatch = reduceCompanionState(terminal, {
+    type: "harness_event",
+    event: event(6, "completed", {
+      type: "speech.requested",
+      text: "不同文本",
+      characterRevision: 3,
+      userProfileRevision: 2,
+    }),
+  });
+  assert.equal(afterMismatch.lastSequence, terminal.lastSequence);
+  assert.equal(afterMismatch.speechRequest, terminal.speechRequest);
 });
 
 test("blank submission is rejected before a turn is created", () => {

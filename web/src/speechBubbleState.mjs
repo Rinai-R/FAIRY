@@ -3,6 +3,7 @@
  */
 
 export const SPEECH_BUBBLE_FADE_AFTER_MS = 4000;
+export const SPEECH_BUBBLE_POST_AUDIO_FADE_MS = 800;
 
 export function createSpeechBubbleState() {
   return Object.freeze({

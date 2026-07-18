@@ -44,30 +44,87 @@ func (s *CompanionService) fillSpeechForTTS(
 		}
 		return filled, "", nil
 	}
-	translated, err := s.translateDisplayText(ctx, record, reply.DisplayText, textLang, speakLang, conversationID, connectionModel)
-	if err != nil {
-		lg.Warn("cognition loop",
+	translatedChains := make([]ReplyChain, len(reply.Chains))
+	copy(translatedChains, reply.Chains)
+	for index := range translatedChains {
+		source := translatedChains[index].Text
+		translated, err := s.translateDisplayText(ctx, record, source, textLang, speakLang, conversationID, connectionModel)
+		if err != nil {
+			lg.Warn("cognition loop",
+				zap.String("phase", "speech_translate_raw"),
+				zap.String("from", textLang),
+				zap.String("to", speakLang),
+				zap.Int("chain", index),
+				zap.String("displayText", source),
+				zap.String("speechText", ""),
+				zap.Error(err),
+			)
+			return reply, "translate_failed", err
+		}
+		lg.Info("cognition loop",
 			zap.String("phase", "speech_translate_raw"),
 			zap.String("from", textLang),
 			zap.String("to", speakLang),
-			zap.String("displayText", reply.DisplayText),
-			zap.String("speechText", ""),
-			zap.Error(err),
+			zap.Int("chain", index),
+			zap.String("displayText", source),
+			zap.String("speechText", translated),
 		)
-		return reply, "translate_failed", err
+		speech := sanitizeSpeechText(translated)
+		if speech == "" || validateSpeech(speech) != nil {
+			return reply, "translate_unusable", fmt.Errorf("translated speech text is unusable for chain %d", index)
+		}
+		translatedChains[index].SpeechText = speech
 	}
-	lg.Info("cognition loop",
-		zap.String("phase", "speech_translate_raw"),
-		zap.String("from", textLang),
-		zap.String("to", speakLang),
-		zap.String("displayText", reply.DisplayText),
-		zap.String("speechText", translated),
-	)
-	filled, err := applyTranslatedSpeech(reply, translated)
+	filled, err := compiledReplyFromChains(translatedChains)
 	if err != nil {
 		return reply, "translate_unusable", err
 	}
 	return filled, "", nil
+}
+
+// resolveUtteranceSpeech turns a mid-ReAct display line into speakable text.
+// It runs on the TTS pipeline worker, so the translate model call here never
+// blocks the ReAct loop. Returning ("", nil) means "skip this utterance's audio
+// silently" — a translate/validation miss must not fail the turn.
+func (s *CompanionService) resolveUtteranceSpeech(
+	ctx context.Context,
+	lg *zap.Logger,
+	record character.Record,
+	line string,
+	conversationID string,
+	connectionModel string,
+) (string, error) {
+	if lg == nil {
+		lg = zap.NewNop()
+	}
+	textLang := character.DefaultTextLanguage
+	if record.TextLanguage != "" {
+		textLang = record.TextLanguage
+	}
+	speakLang := character.DefaultSpeakingLanguage
+	if record.SpeakingLanguage != "" {
+		speakLang = record.SpeakingLanguage
+	}
+	source := line
+	if textLang != speakLang {
+		translated, err := s.translateDisplayText(ctx, record, line, textLang, speakLang, conversationID, connectionModel)
+		if err != nil {
+			lg.Warn("cognition loop",
+				zap.String("phase", "utterance_translate_skip"),
+				zap.String("from", textLang),
+				zap.String("to", speakLang),
+				zap.Error(err),
+			)
+			return "", nil
+		}
+		source = translated
+	}
+	speech := sanitizeSpeechText(source)
+	if speech == "" || validateSpeech(speech) != nil {
+		lg.Info("cognition loop", zap.String("phase", "utterance_speech_unusable"))
+		return "", nil
+	}
+	return speech, nil
 }
 
 func (s *CompanionService) translateDisplayText(

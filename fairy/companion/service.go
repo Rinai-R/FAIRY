@@ -65,6 +65,22 @@ func (s *CompanionService) emitEvent(event HarnessEvent) {
 	}
 }
 
+// publishLife allocates the next harness sequence and emits under one lock so
+// concurrent utterance TTS cannot deliver duplicated or out-of-order sequences.
+func (s *CompanionService) publishLife(life *TurnLifecycle, produce func() (HarnessEvent, error)) (HarnessEvent, error) {
+	if life == nil {
+		return HarnessEvent{}, errors.New("nil turn lifecycle")
+	}
+	life.mu.Lock()
+	defer life.mu.Unlock()
+	event, err := produce()
+	if err != nil {
+		return HarnessEvent{}, err
+	}
+	s.emitEvent(event)
+	return event, nil
+}
+
 func NewCompanionService() *CompanionService {
 	return &CompanionService{
 		logger:         zap.NewNop(),
@@ -252,12 +268,14 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	fail := func(code string, cause error) (TurnOutcome, error) {
 		_ = s.memoryStore.FailTurn(request.ConversationID, persisted.ID, code, cause.Error(), false)
 		if errors.Is(cause, ErrTurnInterrupted) {
-			if event, err := life.Interrupt(); err == nil {
-				s.emitEvent(event)
+			if _, err := s.publishLife(life, life.Interrupt); err == nil {
+				s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTerminal, TurnStateInterrupted, code, runtimeFailureLedgerMetadata(code, cause, false))
+			} else {
+				s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTerminal, TurnStateInterrupted, code, runtimeFailureLedgerMetadata(code, cause, false))
 			}
-			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTerminal, TurnStateInterrupted, code, runtimeFailureLedgerMetadata(code, cause, false))
-		} else if event, err := life.Fail(code, cause.Error(), false); err == nil {
-			s.emitEvent(event)
+		} else if _, err := s.publishLife(life, func() (HarnessEvent, error) {
+			return life.Fail(code, cause.Error(), false)
+		}); err == nil {
 			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTerminal, TurnStateFailed, code, runtimeFailureLedgerMetadata(code, cause, false))
 		} else {
 			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTerminal, TurnStateFailed, code, runtimeFailureLedgerMetadata(code, cause, false))
@@ -265,11 +283,11 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		return TurnOutcome{}, cause
 	}
 	transition := func(state TurnState) error {
-		event, err := life.Transition(state)
-		if err != nil {
+		if _, err := s.publishLife(life, func() (HarnessEvent, error) {
+			return life.Transition(state)
+		}); err != nil {
 			return err
 		}
-		s.emitEvent(event)
 		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTransition, state, "", map[string]any{
 			"source": "turn_lifecycle",
 		})
@@ -324,6 +342,23 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		modelDrivenTools int
 		finalUsage       []LaneModelUsage
 	)
+	// Single-consumer TTS pipeline for the whole turn: mid-ReAct utterance audio
+	// and reply-chain audio are enqueued in order and synthesized one request per
+	// semantic unit (stable timbre). Emission stays serial via publishLife.
+	var (
+		speechFlow      *speechPipeline
+		speechPlayIndex int
+		speechRequested bool
+		utteranceSeq    int
+	)
+	if request.SpeechEnabled && s.speech != nil {
+		capacity := maxReplyChains + maxModelDrivenToolCalls + 2
+		speechFlow = newSpeechPipeline(turnCtx, s.speech, capacity, func(res speechPipelineResult) {
+			s.handleSpeechResult(life, request.ConversationID, persisted.ID, res)
+		})
+		// Drain (and thus finish emitting speech.synthesized) before turn teardown.
+		defer speechFlow.Close()
+	}
 	webSearchEnabled := false
 	if settings, err := s.configReader().WebSearchSettings(); err == nil {
 		webSearchEnabled = settings.Enabled
@@ -429,6 +464,39 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 			if !allowTools {
 				lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("reason", "budget_exhausted"), zap.Int("count", len(toolCalls)))
 				return fail("MODEL_RESPONSE_INVALID", errors.New("tool budget exhausted"))
+			}
+			// Mid-ReAct in-character line: if the model returned user-facing content
+			// alongside its tool calls, surface it now and (when speech is on) queue
+			// its TTS. This never blocks tool execution or the next ReAct step. No
+			// content → no utterance, and never invent filler.
+			if line := sanitizeUtteranceText(draft); line != "" {
+				reason := toolUtteranceReason(toolCalls[0].Name)
+				seq := utteranceSeq
+				utteranceSeq++
+				if _, uttErr := s.publishLife(life, func() (HarnessEvent, error) {
+					return life.Utterance(uint8(seq), line, "", reason)
+				}); uttErr != nil {
+					lg.Warn("cognition loop", zap.String("phase", "utterance_skipped"), zap.Int("seq", seq), zap.Error(uttErr))
+				} else {
+					lg.Info("cognition loop", zap.String("phase", "utterance"), zap.Int("seq", seq), zap.String("reason", reason))
+					if speechFlow != nil {
+						play := speechPlayIndex
+						speechPlayIndex++
+						uttLine := line
+						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventSpeech, TurnStatePlanning, "", map[string]any{
+							"status":    "queued",
+							"kind":      "utterance",
+							"playIndex": play,
+						})
+						speechFlow.Enqueue(speechPipelineJob{
+							PlayIndex:  play,
+							ChainIndex: chainIndexUtterance,
+							Resolve: func() (string, error) {
+								return s.resolveUtteranceSpeech(turnCtx, lg, characterRecord, uttLine, request.ConversationID, connectionConfig.Model)
+							},
+						})
+					}
+				}
 			}
 			for _, call := range toolCalls {
 				if modelDrivenTools >= maxModelDrivenToolCalls {
@@ -574,21 +642,12 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 			)
 			return fail("MODEL_RESPONSE_INVALID", err)
 		}
-		filled, skipReason, fillErr := s.fillSpeechForTTS(turnCtx, lg, reply, characterRecord, request.SpeechEnabled, request.ConversationID, connectionConfig.Model)
-		if fillErr != nil {
-			lg.Warn("cognition loop", zap.String("phase", "speech_translate_skip"), zap.String("reason", skipReason), zap.Error(fillErr))
-			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventSpeech, TurnStatePlanning, "TTS_SKIPPED", map[string]any{"status": "skipped", "reason": skipReason})
-		} else if skipReason != "" {
-			lg.Info("cognition loop", zap.String("phase", "speech_translate_skip"), zap.String("reason", skipReason))
-		} else {
-			reply = filled
-		}
+		// chain = semantic unit = one TTS request: never split a chain further.
 		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventCompile, TurnStatePlanning, "", map[string]any{
 			"status":           "succeeded",
 			"visualState":      reply.VisualState,
 			"chainCount":       len(reply.Chains),
 			"displayTextHash":  runtimeHash(reply.DisplayText),
-			"speechTextHash":   runtimeHash(reply.SpeechText),
 			"modelDrivenTools": modelDrivenTools,
 		})
 		textLang := characterRecord.TextLanguage
@@ -613,40 +672,121 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	if err := transition(TurnStateResponding); err != nil {
 		return fail("INVALID_STATE_TRANSITION", err)
 	}
-	for index, chain := range reply.Chains {
-		delta := chain.Text
-		if index > 0 {
-			delta = "\n" + chain.Text
-		}
-		event, err := life.ReplyChain(uint8(index), delta, chain)
-		if err != nil {
-			return fail("MODEL_RESPONSE_INVALID", err)
-		}
-		s.emitEvent(event)
-	}
-	if _, err := s.memoryStore.CompleteTurn(request.ConversationID, persisted.ID, reply.DisplayText); err != nil {
-		return TurnOutcome{}, err
-	}
 	var profileRevision *uint64
 	if userProfile != nil {
 		value := userProfile.Revision
 		profileRevision = &value
 	}
-	completed, err := life.Complete(TurnCompletion{
-		Text:                reply.DisplayText,
-		SpeechText:          reply.SpeechText,
-		CharacterRevision:   characterRecord.Revision,
-		UserProfileRevision: profileRevision,
-		Usage:               finalUsage,
-		VisualState:         reply.VisualState,
-		Chains:              reply.Chains,
-	})
-	if err != nil {
+	filledChains := make([]ReplyChain, 0, len(reply.Chains))
+	for index, chain := range reply.Chains {
+		partial := CompiledReply{
+			DisplayText: chain.Text,
+			VisualState: chain.VisualState,
+			Chains:      []ReplyChain{chain},
+		}
+		filled, skipReason, fillErr := s.fillSpeechForTTS(turnCtx, lg, partial, characterRecord, request.SpeechEnabled, request.ConversationID, connectionConfig.Model)
+		if fillErr != nil {
+			lg.Warn("cognition loop", zap.String("phase", "speech_translate_skip"), zap.String("reason", skipReason), zap.Int("chain", index), zap.Error(fillErr))
+			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventSpeech, TurnStateResponding, "TTS_SKIPPED", map[string]any{"status": "skipped", "reason": skipReason, "index": index})
+			filledChains = append(filledChains, chain)
+		} else if skipReason != "" {
+			lg.Info("cognition loop", zap.String("phase", "speech_translate_skip"), zap.String("reason", skipReason), zap.Int("chain", index))
+			filledChains = append(filledChains, chain)
+		} else {
+			chain = filled.Chains[0]
+			filledChains = append(filledChains, chain)
+		}
+		delta := chain.Text
+		if index > 0 {
+			delta = "\n" + chain.Text
+		}
+		if _, err := s.publishLife(life, func() (HarnessEvent, error) {
+			return life.ReplyChain(uint8(index), delta, chain)
+		}); err != nil {
+			return fail("MODEL_RESPONSE_INVALID", err)
+		}
+		if !request.SpeechEnabled {
+			continue
+		}
+		speechText := strings.TrimSpace(chain.SpeechText)
+		if speechText == "" {
+			continue
+		}
+		if speechExceedsSoftLimit(speechText) {
+			// Soft warning only: still synthesized as ONE request (stable timbre).
+			lg.Warn("cognition loop",
+				zap.String("phase", "speech_over_soft_limit"),
+				zap.Int("chain", index),
+				zap.Int("runes", utf8.RuneCountInString(speechText)),
+				zap.Int("softLimit", maxSpeechChars),
+			)
+		}
+		if speechFlow == nil {
+			// No synthesizer: never emit speech.requested, so the bubble is not put
+			// on hold waiting for audio that will never arrive.
+			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventSpeech, TurnStateResponding, "TTS_SKIPPED", map[string]any{"status": "skipped", "reason": "speech_synthesizer_unavailable", "index": index})
+			continue
+		}
+		if !speechRequested {
+			if _, err := s.publishLife(life, func() (HarnessEvent, error) {
+				return life.SpeechRequested(TurnCompletion{
+					Text:                chain.Text,
+					SpeechText:          speechText,
+					CharacterRevision:   characterRecord.Revision,
+					UserProfileRevision: profileRevision,
+				})
+			}); err != nil {
+				lg.Warn("tts request skipped", zap.String("turn", persisted.ID), zap.Error(err))
+			} else {
+				speechRequested = true
+			}
+		}
+		play := speechPlayIndex
+		speechPlayIndex++
+		chainSpeech := speechText
+		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventSpeech, TurnStateResponding, "", map[string]any{
+			"status":         "queued",
+			"index":          index,
+			"playIndex":      play,
+			"speechTextHash": runtimeHash(chainSpeech),
+		})
+		speechFlow.Enqueue(speechPipelineJob{
+			PlayIndex:  play,
+			ChainIndex: index,
+			Resolve:    func() (string, error) { return chainSpeech, nil },
+		})
+	}
+	rebuilt, rebuildErr := compiledReplyFromChains(filledChains)
+	if rebuildErr != nil {
+		return fail("MODEL_RESPONSE_INVALID", rebuildErr)
+	}
+	reply = rebuilt
+	if _, err := s.memoryStore.CompleteTurn(request.ConversationID, persisted.ID, reply.DisplayText); err != nil {
+		return TurnOutcome{}, err
+	}
+	// Drain all queued TTS before completing so every speech.synthesized is emitted
+	// BEFORE completed. The frontend uses completed as "no more audio coming" to
+	// decide when the bubble may fade; emitting it before audio arrives would
+	// release the hold and flash the bubble away prematurely. Chain audio still
+	// streams to the UI as each job finishes during this drain (idempotent Close;
+	// the deferred Close remains a safety net for fail paths).
+	if speechFlow != nil {
+		speechFlow.Close()
+	}
+	if _, err := s.publishLife(life, func() (HarnessEvent, error) {
+		return life.Complete(TurnCompletion{
+			Text:                reply.DisplayText,
+			SpeechText:          reply.SpeechText,
+			CharacterRevision:   characterRecord.Revision,
+			UserProfileRevision: profileRevision,
+			Usage:               finalUsage,
+			VisualState:         reply.VisualState,
+			Chains:              reply.Chains,
+		})
+	}); err != nil {
 		return fail("INVALID_STATE_TRANSITION", err)
 	}
-	s.emitEvent(completed)
 	s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTerminal, TurnStateCompleted, "", runtimeTerminalLedgerMetadata("completed", reply, finalUsage))
-	s.handleCompletedSpeech(request, life, persisted.ID, characterRecord, userProfile, reply)
 	contextWindow, err := s.recordObservedContextWindow(request.ConversationID, bootstrap.PromptWindow.Revision, finalUsage)
 	if err != nil {
 		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContextWindow, TurnStateCompleted, "CONTEXT_WINDOW_STATE_FAILED", runtimeFailureLedgerMetadata("CONTEXT_WINDOW_STATE_FAILED", err, false))
@@ -709,55 +849,51 @@ func cacheObservationFromProvider(tokens *uint64) CachedTokenObservation {
 	return CacheObserved(*tokens)
 }
 
-func (s *CompanionService) handleCompletedSpeech(request SubmitCompiledTurnRequest, life *TurnLifecycle, turnID string, characterRecord character.Record, userProfile *profile.Snapshot, reply CompiledReply) {
-	if !request.SpeechEnabled {
-		return
-	}
-	if strings.TrimSpace(reply.SpeechText) == "" {
-		s.appendRuntimeLedger(request.ConversationID, turnID, runtimeLedgerEventSpeech, TurnStateCompleted, "TTS_SKIPPED", map[string]any{"status": "skipped", "reason": "speech_text_missing"})
-		s.logger.Info("tts skipped", zap.String("reason", "speech_text_missing"), zap.String("turn", turnID))
-		return
-	}
-	profileRevision := (*uint64)(nil)
-	if userProfile != nil {
-		value := userProfile.Revision
-		profileRevision = &value
-	}
-	requested, err := life.SpeechRequested(TurnCompletion{
-		Text:                reply.DisplayText,
-		SpeechText:          reply.SpeechText,
-		CharacterRevision:   characterRecord.Revision,
-		UserProfileRevision: profileRevision,
+func (s *CompanionService) emitSpeechFailure(life *TurnLifecycle, conversationID string, turnID string, code string, message string, retryable bool) {
+	_, _ = s.publishLife(life, func() (HarnessEvent, error) {
+		return life.SpeechFailed(code, message, retryable)
 	})
-	if err == nil {
-		s.emitEvent(requested)
-	}
-	if s.speech == nil {
-		s.appendRuntimeLedger(request.ConversationID, turnID, runtimeLedgerEventSpeech, TurnStateCompleted, "TTS_SKIPPED", map[string]any{"status": "skipped", "reason": "speech_synthesizer_unavailable", "speechTextHash": runtimeHash(reply.SpeechText)})
-		s.emitSpeechFailure(life, request.ConversationID, turnID, "TTS_SKIPPED", "语音服务未接入", false)
-		s.logger.Info("tts skipped", zap.String("reason", "speech_synthesizer_unavailable"), zap.String("turn", turnID))
-		return
-	}
-	result, err := s.speech.SynthesizeSpeech(SpeechSynthesisRequest{Text: reply.SpeechText})
-	if err != nil {
-		s.appendRuntimeLedger(request.ConversationID, turnID, runtimeLedgerEventSpeech, TurnStateCompleted, "TTS_FAILED", runtimeFailureLedgerMetadata("TTS_FAILED", err, false))
-		s.emitSpeechFailure(life, request.ConversationID, turnID, "TTS_FAILED", err.Error(), false)
-		s.logger.Warn("tts failed", zap.String("turn", turnID), zap.Error(err))
-		return
-	}
-	s.appendRuntimeLedger(request.ConversationID, turnID, runtimeLedgerEventSpeech, TurnStateCompleted, "", map[string]any{"status": "synthesized", "speakerIDHash": runtimeHash(result.SpeakerID), "mimeType": result.MimeType, "format": result.Format, "speechTextHash": runtimeHash(reply.SpeechText)})
-	if event, err := life.SpeechSynthesized(SpeechSynthesisCompletion{Text: reply.SpeechText, Result: result}); err == nil {
-		s.emitEvent(event)
-	}
-	s.logger.Info("tts synthesized", zap.String("turn", turnID), zap.String("mimeType", result.MimeType), zap.String("format", result.Format))
 }
 
-func (s *CompanionService) emitSpeechFailure(life *TurnLifecycle, conversationID string, turnID string, code string, message string, retryable bool) {
-	event, err := life.SpeechFailed(code, message, retryable)
-	if err != nil {
+// handleSpeechResult runs on the pipeline worker goroutine. publishLife holds the
+// lifecycle lock, so emitting from here stays serialized with the main goroutine
+// and preserves monotonic sequence numbers.
+func (s *CompanionService) handleSpeechResult(life *TurnLifecycle, conversationID string, turnID string, res speechPipelineResult) {
+	if res.Skipped {
 		return
 	}
-	s.emitEvent(event)
+	if res.Err != nil {
+		s.logger.Warn("tts failed",
+			zap.String("turn", turnID),
+			zap.Int("playIndex", res.PlayIndex),
+			zap.Int("chainIndex", res.ChainIndex),
+			zap.Error(res.Err),
+		)
+		s.emitSpeechFailure(life, conversationID, turnID, "TTS_FAILED", res.Err.Error(), false)
+		return
+	}
+	if _, err := s.publishLife(life, func() (HarnessEvent, error) {
+		return life.SpeechSynthesized(SpeechSynthesisCompletion{
+			Index:      uint8(res.PlayIndex),
+			ChainIndex: res.ChainIndex,
+			Text:       res.Text,
+			Result:     res.Result,
+		})
+	}); err != nil {
+		s.logger.Warn("tts event skipped",
+			zap.String("turn", turnID),
+			zap.Int("playIndex", res.PlayIndex),
+			zap.Error(err),
+		)
+		return
+	}
+	s.logger.Info("tts synthesized",
+		zap.String("turn", turnID),
+		zap.Int("playIndex", res.PlayIndex),
+		zap.Int("chainIndex", res.ChainIndex),
+		zap.String("mimeType", res.Result.MimeType),
+		zap.String("format", res.Result.Format),
+	)
 }
 
 func (s *CompanionService) CompactConversation(conversationID string) (memory.CompactionResult, error) {

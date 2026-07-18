@@ -22,7 +22,7 @@ const (
 )
 
 // RespondInstructionsAllowTools extends reply rules with native function tools.
-const RespondInstructionsAllowTools = RespondInstructions + ` When personal memories or public facts in context are insufficient, call function tools instead of guessing. Available tools: memory_search for personal/relationship facts; web_search (when provided) for timely public topics such as anime, games, versions, or news. After tool results appear in retrieved context, output chains only. Never narrate tools, search, or system settings to the user. Never output a gather JSON object.`
+const RespondInstructionsAllowTools = RespondInstructions + ` When personal memories or public facts in context are insufficient, call function tools instead of guessing. Available tools: memory_search for personal/relationship facts; web_search (when provided) for timely public topics such as anime, games, versions, or news. When you call a tool, you MAY put one short in-character line for the user in the assistant content (plain text in textLanguage, not JSON) so you stay present while the tool runs—keep it to a single natural sentence in this character's voice, and never mention tool names, searches, retrieval, reasoning, or system internals. If you have nothing natural to say, leave content empty; never invent filler. After tool results appear in retrieved context, output chains only. Never output a gather JSON object.`
 
 type toolQueryArgs struct {
 	Query string `json:"query"`

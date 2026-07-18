@@ -7,6 +7,8 @@
 export function createSpeechObserver() {
   return Object.freeze({
     turnId: null,
+    chains: Object.freeze([]),
+    revealThrough: -1,
     draft: "",
     speechRequest: null,
     waiting: false,
@@ -14,40 +16,138 @@ export function createSpeechObserver() {
   });
 }
 
+function draftFromChains(chains, revealThrough) {
+  // Each reply chain is its own bubble: show only the beat currently being
+  // spoken, not the accumulation of every revealed beat.
+  if (!Array.isArray(chains) || revealThrough < 0 || revealThrough >= chains.length) {
+    return "";
+  }
+  const chain = chains[revealThrough];
+  return chain && typeof chain.text === "string" ? chain.text : "";
+}
+
+function upsertChain(chains, index, text, visualState) {
+  const next = chains.map((chain) => ({ ...chain }));
+  while (next.length <= index) {
+    next.push({ index: next.length, text: "", visualState: "idle" });
+  }
+  next[index] = Object.freeze({
+    index,
+    text: typeof text === "string" ? text : "",
+    visualState: typeof visualState === "string" && visualState ? visualState : "idle",
+  });
+  return Object.freeze(next);
+}
+
+function withRevealedDraft(state, chains, revealThrough) {
+  const clamped = Math.min(Math.max(revealThrough, -1), Math.max(chains.length - 1, -1));
+  return Object.freeze({
+    ...state,
+    chains,
+    revealThrough: clamped,
+    draft: draftFromChains(chains, clamped),
+  });
+}
+
+/** Advance which reply chains are visible in the bubble (TTS / timed reveal). */
+export function revealSpeechObserverThrough(state, index) {
+  if (!state || typeof state !== "object") return createSpeechObserver();
+  const target = Number.isSafeInteger(index) ? index : -1;
+  if (target <= state.revealThrough) return state;
+  return withRevealedDraft(state, state.chains, target);
+}
+
 // reduceSpeechObserver consumes an already-parsed harness event (the shape
 // returned by parseHarnessEvent).
 export function reduceSpeechObserver(state, event) {
   const base = event.turnId === state.turnId
     ? state
-    : { turnId: event.turnId, draft: "", speechRequest: null, waiting: true, active: true };
+    : {
+      turnId: event.turnId,
+      chains: Object.freeze([]),
+      revealThrough: -1,
+      draft: "",
+      speechRequest: null,
+      waiting: true,
+      active: true,
+    };
 
   const payload = event.payload;
   switch (payload.type) {
-    case "text_delta":
-    case "reply_chain":
+    case "utterance": {
+      // Progressive tool-wait lines (if any) still append as plain draft.
+      const prefix = base.draft.length > 0 ? `${base.draft}\n` : "";
       return Object.freeze({
         ...base,
-        draft: base.draft + payload.delta,
+        draft: prefix + payload.text,
         waiting: false,
         active: true,
       });
-    case "completed":
+    }
+    case "reply_chain": {
+      const chains = upsertChain(base.chains, payload.index, payload.text, payload.visualState);
+      // Only surface the first beat here; later beats replace the bubble one at a
+      // time, driven by TTS playback (playIndex) or the no-TTS reveal timer. The
+      // backend may emit every chain up front, so never jump the bubble ahead.
+      const revealThrough = base.revealThrough < 0 ? 0 : base.revealThrough;
+      return Object.freeze({
+        ...withRevealedDraft(base, chains, revealThrough),
+        waiting: false,
+        active: true,
+      });
+    }
+    case "text_delta": {
       return Object.freeze({
         ...base,
-        draft: payload.text,
+        draft: base.draft + (payload.delta ?? ""),
+        waiting: false,
+        active: true,
+      });
+    }
+    case "completed": {
+      let chains = base.chains;
+      if (Array.isArray(payload.chains) && payload.chains.length > 0) {
+        chains = Object.freeze(payload.chains.map((chain, index) => Object.freeze({
+          index,
+          text: chain.text,
+          visualState: chain.visualState || "idle",
+        })));
+      }
+      const revealThrough = base.revealThrough >= 0
+        ? base.revealThrough
+        : (chains.length > 0 ? 0 : -1);
+      return Object.freeze({
+        ...withRevealedDraft(base, chains, revealThrough),
         speechRequest: null,
         waiting: false,
         active: true,
       });
+    }
     case "failed":
-      return Object.freeze({ ...base, draft: "", speechRequest: null, waiting: false, active: false });
+      return Object.freeze({
+        ...base,
+        chains: Object.freeze([]),
+        revealThrough: -1,
+        draft: "",
+        speechRequest: null,
+        waiting: false,
+        active: false,
+      });
     case "state_changed":
       if (event.state === "interrupted") {
-        return Object.freeze({ ...base, draft: "", speechRequest: null, waiting: false, active: false });
+        return Object.freeze({
+          ...base,
+          chains: Object.freeze([]),
+          revealThrough: -1,
+          draft: "",
+          speechRequest: null,
+          waiting: false,
+          active: false,
+        });
       }
       return Object.freeze({
         ...base,
-        waiting: base.draft.length === 0,
+        waiting: base.draft.length === 0 && base.revealThrough < 0,
         active: true,
       });
     case "speech.requested":
@@ -64,13 +164,10 @@ export function reduceSpeechObserver(state, event) {
     case "speech.failed":
       return base === state ? state : Object.freeze(base);
     default:
-      // Unknown trailing events do not change the bubble.
       return base === state ? state : Object.freeze(base);
   }
 }
 
-// speechBubbleVisible reports whether the bubble currently has something to show
-// (streaming text or a waiting indicator for the active turn).
 export function speechBubbleVisible(state) {
   return state.active && (state.draft.length > 0 || state.waiting);
 }

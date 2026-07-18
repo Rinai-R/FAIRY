@@ -36,6 +36,13 @@ import {
   reducePixelCharacterState,
   shouldApplyReplyVisualState,
 } from "./pixelCharacterState.mjs";
+import {
+  advanceSpeechPlayback,
+  createSpeechPlaybackState,
+  currentSpeechSegment,
+  playSpeechDataUrl,
+  reduceSpeechPlayback,
+} from "./speechPlayback.mjs";
 import { startPetWindowDrag } from "./petDragState.mjs";
 import {
   listenToConfigurationChanges,
@@ -80,6 +87,12 @@ export function App() {
     undefined,
     createPixelCharacterState,
   );
+  const [speechPlayback, setSpeechPlayback] = useState(createSpeechPlaybackState);
+  const speechChainsRef = useRef([]);
+  const speechHoldRef = useRef(false);
+  const speechPlaybackRef = useRef(speechPlayback);
+  speechPlaybackRef.current = speechPlayback;
+  speechHoldRef.current = speechPlayback.hold === true;
   const activeAppearance = catalog.active?.appearance ?? null;
   const activeVisual = activeAppearance?.status === "assigned"
     ? activeAppearance.visual
@@ -536,6 +549,108 @@ export function App() {
     });
   }
 
+  useEffect(() => {
+    if (!wailsCompanion) return undefined;
+    let cancelled = false;
+    let unlisten = () => {};
+    listenWailsHarnessEvents(
+      (event) => {
+        try {
+          dispatchCompanion({ type: "harness_event", event });
+          const payload = event?.payload;
+          if (payload?.type === "reply_chain" && Number.isSafeInteger(payload.index)) {
+            const next = speechChainsRef.current.slice();
+            next[payload.index] = Object.freeze({
+              visualState: payload.visualState,
+            });
+            speechChainsRef.current = next;
+          } else if (payload?.type === "completed" && Array.isArray(payload.chains)) {
+            speechChainsRef.current = payload.chains.map((chain) => Object.freeze({
+              visualState: chain.visualState,
+            }));
+          } else if (event.turnId && payload?.type === "state_changed" && event.state === "interpreting") {
+            speechChainsRef.current = [];
+          }
+          const prevPlayback = speechPlaybackRef.current;
+          const playbackBase = event.turnId !== prevPlayback.turnId
+            ? createSpeechPlaybackState()
+            : prevPlayback;
+          const nextPlayback = reduceSpeechPlayback(playbackBase, event);
+          speechPlaybackRef.current = nextPlayback;
+          speechHoldRef.current = nextPlayback.hold === true;
+          setSpeechPlayback(nextPlayback);
+          if (shouldApplyReplyVisualState(event, { speechHold: nextPlayback.hold === true })) {
+            dispatchPixelCharacter({
+              type: "visual_state_changed",
+              visualState: event.payload.visualState,
+            });
+          }
+        } catch (error) {
+          dispatchCompanion({
+            type: "invoke_failed",
+            error: Object.freeze({
+              code: "HARNESS_PROTOCOL_ERROR",
+              message: error instanceof Error ? error.message : "companion event protocol error",
+              retryable: false,
+            }),
+          });
+        }
+      },
+      (error) => {
+        dispatchCompanion({ type: "invoke_failed", error });
+      },
+    )
+      .then((off) => {
+        if (cancelled) {
+          off();
+          return;
+        }
+        unlisten = off;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      unlisten();
+    };
+  }, [wailsCompanion]);
+
+  // Mirror speech playback (muted) so character expression tracks the spoken beat
+  // instead of jumping to the final chain visual while earlier audio still plays.
+  useEffect(() => {
+    if (!speechPlayback.dataUrl || speechPlayback.played) return undefined;
+    let cancelled = false;
+    const activeUrl = speechPlayback.dataUrl;
+    const segment = currentSpeechSegment(speechPlayback);
+    // Track the reply chain's expression for chain audio; utterance audio
+    // (chainIndex < 0) keeps whatever the utterance event already set.
+    const chainIndex = segment && Number.isSafeInteger(segment.chainIndex)
+      ? segment.chainIndex
+      : -1;
+    const visualState = chainIndex >= 0
+      ? speechChainsRef.current[chainIndex]?.visualState
+      : null;
+    if (typeof visualState === "string" && visualState.length > 0) {
+      dispatchPixelCharacter({
+        type: "visual_state_changed",
+        visualState,
+      });
+    }
+    const playing = playSpeechDataUrl(activeUrl, globalThis.Audio, { muted: true });
+    playing
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) {
+          setSpeechPlayback((prev) => (
+            prev.dataUrl === activeUrl ? advanceSpeechPlayback(prev) : prev
+          ));
+        }
+      });
+    return () => {
+      cancelled = true;
+      playing.stop?.();
+    };
+  }, [speechPlayback.dataUrl, speechPlayback.played, speechPlayback.playIndex]);
+
   async function handleSubmit() {
     if (!catalog.active || !modelStatus?.ready || !companion.conversationId) {
       handleRequestControlPanel();
@@ -552,31 +667,11 @@ export function App() {
           retryable: false,
         });
       }
-      let stopListening = () => {};
-      stopListening = await listenWailsHarnessEvents(
-        (event) => {
-          dispatchCompanion({ type: "harness_event", event });
-          if (shouldApplyReplyVisualState(event)) {
-            dispatchPixelCharacter({
-              type: "visual_state_changed",
-              visualState: event.payload.visualState,
-            });
-          }
-        },
-        (error) => {
-          stopListening();
-          dispatchCompanion({ type: "invoke_failed", error });
-        },
-      );
-      try {
-        await submitWailsCompanionTurn({
-          conversationId: companion.conversationId,
-          input: input.trim(),
-          speechEnabled: true,
-        });
-      } finally {
-        stopListening();
-      }
+      await submitWailsCompanionTurn({
+        conversationId: companion.conversationId,
+        input: input.trim(),
+        speechEnabled: true,
+      });
     } catch (error) {
       dispatchCompanion({ type: "invoke_failed", error });
     }

@@ -3,6 +3,8 @@ package companion
 import (
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 )
 
 // Turn lifecycle and harness events mirror crates/fairy-domain/src/conversation.rs.
@@ -88,6 +90,14 @@ type replyChainPayload struct {
 	VisualState string `json:"visualState"`
 }
 
+type utterancePayload struct {
+	Type        string `json:"type"`
+	Seq         uint8  `json:"seq"`
+	Text        string `json:"text"`
+	VisualState string `json:"visualState"`
+	Reason      string `json:"reason"`
+}
+
 type completedPayload struct {
 	Type                string           `json:"type"`
 	Text                string           `json:"text"`
@@ -113,12 +123,18 @@ type speechRequestedPayload struct {
 }
 
 type speechSynthesizedPayload struct {
-	Type      string `json:"type"`
-	Text      string `json:"text"`
-	SpeakerID string `json:"speakerId"`
-	MimeType  string `json:"mimeType"`
-	Format    string `json:"format"`
-	DataURL   string `json:"dataUrl"`
+	Type string `json:"type"`
+	// Index is the monotonic playback order across the whole turn (utterance audio
+	// first, then reply chains), used by the frontend to order playback.
+	Index uint8 `json:"index"`
+	// ChainIndex is the reply-chain index this audio belongs to, or -1 for
+	// mid-ReAct utterance audio (which must not drive reply-chain bubble reveal).
+	ChainIndex int    `json:"chainIndex"`
+	Text       string `json:"text"`
+	SpeakerID  string `json:"speakerId"`
+	MimeType   string `json:"mimeType"`
+	Format     string `json:"format"`
+	DataURL    string `json:"dataUrl"`
 }
 
 type speechFailedPayload struct {
@@ -146,13 +162,18 @@ type TurnCompletion struct {
 }
 
 type SpeechSynthesisCompletion struct {
-	Text   string
-	Result SpeechSynthesisResult
+	// Index is the monotonic playback order across the turn.
+	Index uint8
+	// ChainIndex is the reply-chain index, or -1 for mid-ReAct utterance audio.
+	ChainIndex int
+	Text       string
+	Result     SpeechSynthesisResult
 }
 
 type EventEmitter func(HarnessEvent)
 
 type TurnLifecycle struct {
+	mu             sync.Mutex
 	conversationID string
 	turnID         string
 	state          TurnState
@@ -194,6 +215,30 @@ func (l *TurnLifecycle) ReplyChain(index uint8, delta string, chain ReplyChain) 
 		Text:        chain.Text,
 		SpeechText:  chain.SpeechText,
 		VisualState: chain.VisualState,
+	}), nil
+}
+
+// Utterance emits a progressive in-character line during gathering/planning.
+// It does not enter transcript; final reply_chain remains the persisted answer.
+func (l *TurnLifecycle) Utterance(seq uint8, text string, visualState string, reason string) (HarnessEvent, error) {
+	if l.state != TurnStatePlanning && l.state != TurnStateGathering {
+		return HarnessEvent{}, errors.New("只有 Gathering/Planning 状态可以发送 progressive utterance")
+	}
+	if strings.TrimSpace(text) == "" {
+		return HarnessEvent{}, errors.New("utterance text cannot be empty")
+	}
+	if reason == "" {
+		reason = "thinking"
+	}
+	if visualState == "" {
+		visualState = "idle"
+	}
+	return l.event(utterancePayload{
+		Type:        "utterance",
+		Seq:         seq,
+		Text:        text,
+		VisualState: visualState,
+		Reason:      reason,
 	}), nil
 }
 
@@ -239,8 +284,8 @@ func (l *TurnLifecycle) Complete(completion TurnCompletion) (HarnessEvent, error
 }
 
 func (l *TurnLifecycle) SpeechRequested(completion TurnCompletion) (HarnessEvent, error) {
-	if l.state != TurnStateCompleted {
-		return HarnessEvent{}, errors.New("只有 Completed 状态可以请求语音")
+	if l.state != TurnStateCompleted && l.state != TurnStatePlanning && l.state != TurnStateResponding {
+		return HarnessEvent{}, errors.New("只有 Planning/Responding/Completed 状态可以请求语音")
 	}
 	return l.event(speechRequestedPayload{
 		Type:                "speech.requested",
@@ -251,22 +296,24 @@ func (l *TurnLifecycle) SpeechRequested(completion TurnCompletion) (HarnessEvent
 }
 
 func (l *TurnLifecycle) SpeechSynthesized(completion SpeechSynthesisCompletion) (HarnessEvent, error) {
-	if l.state != TurnStateCompleted {
-		return HarnessEvent{}, errors.New("只有 Completed 状态可以完成语音合成")
+	if l.state != TurnStateCompleted && l.state != TurnStatePlanning && l.state != TurnStateResponding {
+		return HarnessEvent{}, errors.New("只有 Planning/Responding/Completed 状态可以完成语音合成")
 	}
 	return l.event(speechSynthesizedPayload{
-		Type:      "speech.synthesized",
-		Text:      completion.Text,
-		SpeakerID: completion.Result.SpeakerID,
-		MimeType:  completion.Result.MimeType,
-		Format:    completion.Result.Format,
-		DataURL:   completion.Result.DataURL,
+		Type:       "speech.synthesized",
+		Index:      completion.Index,
+		ChainIndex: completion.ChainIndex,
+		Text:       completion.Text,
+		SpeakerID:  completion.Result.SpeakerID,
+		MimeType:   completion.Result.MimeType,
+		Format:     completion.Result.Format,
+		DataURL:    completion.Result.DataURL,
 	}), nil
 }
 
 func (l *TurnLifecycle) SpeechFailed(code string, message string, retryable bool) (HarnessEvent, error) {
-	if l.state != TurnStateCompleted {
-		return HarnessEvent{}, errors.New("只有 Completed 状态可以发送语音失败事件")
+	if l.state != TurnStateCompleted && l.state != TurnStatePlanning && l.state != TurnStateResponding {
+		return HarnessEvent{}, errors.New("只有 Planning/Responding/Completed 状态可以发送语音失败事件")
 	}
 	return l.event(speechFailedPayload{Type: "speech.failed", Error: WireError{Code: code, Message: message, Retryable: retryable}}), nil
 }

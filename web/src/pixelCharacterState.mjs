@@ -100,8 +100,19 @@ export function selectPixelVisualState(state) {
   return "idle";
 }
 
-export function shouldApplyReplyVisualState(event) {
-  return event?.payload?.type === "completed";
+/**
+ * When to apply a reply visualState onto the character sprite.
+ * - First reply_chain beat: apply immediately so expression matches the opening line.
+ * - completed: only when speech is not holding the turn (no TTS / already finished),
+ *   so multi-chain TTS does not jump to the final expression mid-sentence.
+ * Later beats are applied by the speech-playback visual sync in App.
+ */
+export function shouldApplyReplyVisualState(event, options = {}) {
+  const payload = event?.payload;
+  if (!payload || typeof payload !== "object") return false;
+  if (payload.type === "reply_chain" && payload.index === 0) return true;
+  if (payload.type === "completed" && options.speechHold !== true) return true;
+  return false;
 }
 
 function finalize(state) {

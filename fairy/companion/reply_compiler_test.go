@@ -157,13 +157,37 @@ func TestApplyTranslatedSpeechSetsAllChains(t *testing.T) {
 	if err != nil {
 		t.Fatalf("applyTranslatedSpeech() error = %v", err)
 	}
-	if filled.SpeechText != "うん、わかった。" {
+	if filled.SpeechText != "うん、わかった。まずこう直そう。" {
 		t.Fatalf("SpeechText = %q", filled.SpeechText)
 	}
 	for _, chain := range filled.Chains {
-		if chain.SpeechText != "うん、わかった。" {
+		if chain.SpeechText != "うん、わかった。まずこう直そう。" {
 			t.Fatalf("chain speech = %#v", chain)
 		}
+	}
+}
+
+func TestSanitizeSpeechTextKeepsMultiClauseUnderLimit(t *testing.T) {
+	raw := "うん、わかったよ。まずこう直そう。"
+	got := sanitizeSpeechText(raw)
+	if got != raw {
+		t.Fatalf("sanitizeSpeechText truncated: %q", got)
+	}
+	if err := validateSpeech(got); err != nil {
+		t.Fatalf("validateSpeech() error = %v", err)
+	}
+	// Length is a SOFT limit now: overlong speech is still a valid single TTS
+	// unit (stable timbre). validateSpeech must NOT reject it; only the soft-limit
+	// helper flags it so callers can warn.
+	long := strings.Repeat("あ", maxSpeechChars+1)
+	if err := validateSpeech(long); err != nil {
+		t.Fatalf("validateSpeech() error = %v for overlong speech, want nil (soft limit)", err)
+	}
+	if !speechExceedsSoftLimit(long) {
+		t.Fatal("speechExceedsSoftLimit() = false for overlong speech, want true")
+	}
+	if speechExceedsSoftLimit(strings.Repeat("あ", maxSpeechChars)) {
+		t.Fatal("speechExceedsSoftLimit() = true at threshold, want false")
 	}
 }
 
