@@ -136,6 +136,32 @@ func TestRetrieveWithSemanticUsesVectorRowsForShortQuery(t *testing.T) {
 	}
 }
 
+func TestRetrieveWithLocalBGEEmbedderUsesVectorRowsForShortQuery(t *testing.T) {
+	store, _, characterID, _ := seededKnowledgeStore(t)
+	memoryRecord, err := store.CreatePersonalMemory("preference", MemoryScope{Type: "global"}, "用户喜欢拿铁咖啡", 9000)
+	if err != nil {
+		t.Fatalf("CreatePersonalMemory() error = %v", err)
+	}
+	embedder, err := NewLocalBGEEmbedder(&fakeLocalEmbeddingRunner{ready: true, dims: SemanticEmbeddingDimensions})
+	if err != nil {
+		t.Fatalf("NewLocalBGEEmbedder() error = %v", err)
+	}
+	if result, err := store.ProcessEmbeddingJobs(embedder, 10); err != nil || result.Succeeded != 1 {
+		t.Fatalf("ProcessEmbeddingJobs(local) = %#v, %v", result, err)
+	}
+
+	ctx, err := store.RetrieveWithSemantic(characterID, "咖啡", embedder)
+	if err != nil {
+		t.Fatalf("RetrieveWithSemantic(local) error = %v", err)
+	}
+	if ctx.SemanticStatus != string(semantic.StatusUsed) {
+		t.Fatalf("semantic status = %q, want used", ctx.SemanticStatus)
+	}
+	if len(ctx.PersonalMemories) != 1 || ctx.PersonalMemories[0].ID != memoryRecord.ID {
+		t.Fatalf("local semantic memories = %#v", ctx.PersonalMemories)
+	}
+}
+
 func TestRetrieveWithSemanticKeepsRelationshipScope(t *testing.T) {
 	store, _, characterID, _ := seededKnowledgeStore(t)
 	otherCharacterID := "11111111-1111-4111-8111-111111111111"

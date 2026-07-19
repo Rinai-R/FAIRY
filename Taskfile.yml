@@ -23,6 +23,11 @@ tasks:
       - cp build/icon.png fairy/assets/icon.png
       - cp build/tray-template.png fairy/assets/tray-template.png
 
+  embeddings:assets:
+    desc: Download pinned local BGE ONNX assets for release embedding.
+    cmds:
+      - scripts/prepare-local-bge-assets.sh
+
   go:test:
     desc: Run Go unit tests for the Wails migration path.
     deps:
@@ -50,6 +55,7 @@ tasks:
     desc: Build only the Wails Go application binary.
     deps:
       - sync:assets
+      - embeddings:assets
     dir: fairy
     cmds:
       - go build -gcflags=all="-N -l" -o ../bin/FAIRY

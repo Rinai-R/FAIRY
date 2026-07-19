@@ -4,7 +4,7 @@ import "embed"
 
 // assets/ is populated by Taskfile sync:assets (go:embed cannot use ..).
 //
-//go:embed all:assets/dist
+//go:embed all:assets/dist all:assets/embeddings
 var embeddedAssets embed.FS
 
 //go:embed assets/icon.png

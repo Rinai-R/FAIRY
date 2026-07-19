@@ -10,18 +10,24 @@ import (
 )
 
 const (
-	semanticEmbeddingSettingsFile = "settings.json"
-	SemanticEmbeddingDimensions   = 512
+	semanticEmbeddingSettingsFile             = "settings.json"
+	SemanticEmbeddingDimensions               = 512
+	SemanticEmbeddingProviderLocalBGE         = "local_bge_small_zh"
+	SemanticEmbeddingProviderOpenAICompatible = "openai_compatible_api"
 )
 
 type SemanticEmbeddingSettings struct {
 	SchemaVersion uint32 `json:"schema_version"`
-	Enabled       bool   `json:"enabled"`
-	Model         string `json:"model,omitempty"`
-	Dimensions    int    `json:"dimensions"`
+	Provider      string `json:"provider,omitempty"`
+	// Enabled is retained for backward compatibility with the first API-only
+	// semantic settings shape. New code should use Provider.
+	Enabled    bool   `json:"enabled"`
+	Model      string `json:"model,omitempty"`
+	Dimensions int    `json:"dimensions"`
 }
 
 type SemanticEmbeddingStatus struct {
+	Provider   string `json:"provider"`
 	Enabled    bool   `json:"enabled"`
 	Model      string `json:"model,omitempty"`
 	Dimensions int    `json:"dimensions"`
@@ -40,7 +46,8 @@ func semanticEmbeddingDir(root string) string {
 func defaultSemanticEmbeddingSettings() SemanticEmbeddingSettings {
 	return SemanticEmbeddingSettings{
 		SchemaVersion: 1,
-		Enabled:       false,
+		Provider:      SemanticEmbeddingProviderLocalBGE,
+		Enabled:       true,
 		Dimensions:    SemanticEmbeddingDimensions,
 	}
 }
@@ -96,10 +103,11 @@ func SemanticEmbeddingStatusFromSettings(settings SemanticEmbeddingSettings) Sem
 		return SemanticEmbeddingStatus{Enabled: false, Dimensions: SemanticEmbeddingDimensions, Configured: false}
 	}
 	return SemanticEmbeddingStatus{
+		Provider:   settings.Provider,
 		Enabled:    settings.Enabled,
 		Model:      settings.Model,
 		Dimensions: settings.Dimensions,
-		Configured: settings.Enabled && settings.Model != "",
+		Configured: settings.Provider == SemanticEmbeddingProviderLocalBGE || (settings.Provider == SemanticEmbeddingProviderOpenAICompatible && settings.Model != ""),
 	}
 }
 
@@ -110,6 +118,17 @@ func normalizeSemanticEmbeddingSettings(settings SemanticEmbeddingSettings) (Sem
 	if settings.SchemaVersion != 1 {
 		return SemanticEmbeddingSettings{}, fmt.Errorf("semantic embedding settings schema_version = %d, want 1", settings.SchemaVersion)
 	}
+	settings.Provider = strings.TrimSpace(settings.Provider)
+	if settings.Provider == "" {
+		if settings.Enabled {
+			settings.Provider = SemanticEmbeddingProviderOpenAICompatible
+		} else {
+			settings.Provider = SemanticEmbeddingProviderLocalBGE
+		}
+	}
+	if settings.Provider != SemanticEmbeddingProviderLocalBGE && settings.Provider != SemanticEmbeddingProviderOpenAICompatible {
+		return SemanticEmbeddingSettings{}, fmt.Errorf("semantic embedding provider %q is not supported", settings.Provider)
+	}
 	settings.Model = strings.TrimSpace(settings.Model)
 	if settings.Dimensions == 0 {
 		settings.Dimensions = SemanticEmbeddingDimensions
@@ -117,10 +136,11 @@ func normalizeSemanticEmbeddingSettings(settings SemanticEmbeddingSettings) (Sem
 	if settings.Dimensions != SemanticEmbeddingDimensions {
 		return SemanticEmbeddingSettings{}, fmt.Errorf("semantic embedding dimensions = %d, want %d", settings.Dimensions, SemanticEmbeddingDimensions)
 	}
-	if settings.Enabled && settings.Model == "" {
+	settings.Enabled = true
+	if settings.Provider == SemanticEmbeddingProviderOpenAICompatible && settings.Model == "" {
 		return SemanticEmbeddingSettings{}, errors.New("semantic embedding model is required when enabled")
 	}
-	if !settings.Enabled {
+	if settings.Provider == SemanticEmbeddingProviderLocalBGE {
 		settings.Model = ""
 	}
 	return settings, nil

@@ -838,12 +838,40 @@ export class SemanticEmbeddingReadiness {
              */
             this["modelPath"] = "";
         }
+        if (!("modelDataPath" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["modelDataPath"] = "";
+        }
+        if (!("tokenizerPath" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["tokenizerPath"] = "";
+        }
         if (!("modelStatus" in $$source)) {
             /**
              * @member
              * @type {string}
              */
             this["modelStatus"] = "";
+        }
+        if (!("modelDataStatus" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["modelDataStatus"] = "";
+        }
+        if (!("tokenizerStatus" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["tokenizerStatus"] = "";
         }
         if (!("runtimeStatus" in $$source)) {
             /**

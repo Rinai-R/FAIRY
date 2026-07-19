@@ -81,8 +81,8 @@ func NewAPIEmbedder(options APIEmbeddingOptions) (*APIEmbedder, error) {
 }
 
 func (s *ModelService) SemanticAPIEmbedder(settings config.SemanticEmbeddingSettings) (*APIEmbedder, error) {
-	if !settings.Enabled {
-		return nil, errors.New("semantic embedding settings are disabled")
+	if settings.Provider != config.SemanticEmbeddingProviderOpenAICompatible {
+		return nil, errors.New("semantic embedding API provider is not selected")
 	}
 	connection, err := config.ReadModelConnection(s.root)
 	if err != nil {

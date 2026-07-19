@@ -2,6 +2,7 @@
 /bin/
 /dist/
 /fairy/assets/dist/
+/fairy/assets/embeddings/bge-small-zh-v1.5/
 /tmp/
 /data/*.jsonl
 /data/*.json

@@ -22,6 +22,60 @@ func TestSemanticEmbeddingModelPath(t *testing.T) {
 	}
 }
 
+func TestSemanticEmbeddingModelDataPath(t *testing.T) {
+	_, err := SemanticEmbeddingModelDataPath("")
+	if !errors.Is(err, ErrRootRequired) {
+		t.Fatalf("SemanticEmbeddingModelDataPath(empty) error = %v, want %v", err, ErrRootRequired)
+	}
+	got, err := SemanticEmbeddingModelDataPath("/tmp/fairy")
+	if err != nil {
+		t.Fatalf("SemanticEmbeddingModelDataPath() error = %v", err)
+	}
+	want := filepath.Join("/tmp/fairy", "intelligence", "embeddings", "bge-small-zh-v1.5", "model_quantized.onnx_data")
+	if got != want {
+		t.Fatalf("SemanticEmbeddingModelDataPath() = %q, want %q", got, want)
+	}
+}
+
+func TestSemanticEmbeddingTokenizerPath(t *testing.T) {
+	_, err := SemanticEmbeddingTokenizerPath("")
+	if !errors.Is(err, ErrRootRequired) {
+		t.Fatalf("SemanticEmbeddingTokenizerPath(empty) error = %v, want %v", err, ErrRootRequired)
+	}
+	got, err := SemanticEmbeddingTokenizerPath("/tmp/fairy")
+	if err != nil {
+		t.Fatalf("SemanticEmbeddingTokenizerPath() error = %v", err)
+	}
+	want := filepath.Join("/tmp/fairy", "intelligence", "embeddings", "bge-small-zh-v1.5", "tokenizer.json")
+	if got != want {
+		t.Fatalf("SemanticEmbeddingTokenizerPath() = %q, want %q", got, want)
+	}
+}
+
+func TestSemanticEmbeddingRuntimeLibraryPath(t *testing.T) {
+	t.Setenv(LocalONNXRuntimeEnvVar, "")
+	_, err := SemanticEmbeddingRuntimeLibraryPath("")
+	if !errors.Is(err, ErrRootRequired) {
+		t.Fatalf("SemanticEmbeddingRuntimeLibraryPath(empty) error = %v, want %v", err, ErrRootRequired)
+	}
+	got, err := SemanticEmbeddingRuntimeLibraryPath("/tmp/fairy")
+	if err != nil {
+		t.Fatalf("SemanticEmbeddingRuntimeLibraryPath() error = %v", err)
+	}
+	want := filepath.Join("/tmp/fairy", "intelligence", "embeddings", "bge-small-zh-v1.5", localONNXRuntimeLibraryFilename())
+	if got != want {
+		t.Fatalf("SemanticEmbeddingRuntimeLibraryPath() = %q, want %q", got, want)
+	}
+	t.Setenv(LocalONNXRuntimeEnvVar, "/tmp/custom/onnxruntime")
+	got, err = SemanticEmbeddingRuntimeLibraryPath("/tmp/fairy")
+	if err != nil {
+		t.Fatalf("SemanticEmbeddingRuntimeLibraryPath(env) error = %v", err)
+	}
+	if got != "/tmp/custom/onnxruntime" {
+		t.Fatalf("SemanticEmbeddingRuntimeLibraryPath(env) = %q", got)
+	}
+}
+
 func TestLocalSemanticEmbeddingStatusMissingModel(t *testing.T) {
 	root := t.TempDir()
 	status, err := LocalSemanticEmbeddingStatus(root)
@@ -31,7 +85,7 @@ func TestLocalSemanticEmbeddingStatusMissingModel(t *testing.T) {
 	if status.ModelID != SemanticEmbeddingModelID || status.Dimensions != SemanticEmbeddingDimensions {
 		t.Fatalf("model metadata = %#v", status)
 	}
-	if status.ModelStatus != SemanticModelStatusMissing || status.RuntimeStatus != SemanticRuntimeStatusUnavailable || status.SemanticStatus != "unavailable" || status.Reason != SemanticEmbeddingReasonModelMissing {
+	if status.ModelStatus != SemanticModelStatusMissing || status.TokenizerStatus != "" || status.RuntimeStatus != SemanticRuntimeStatusUnavailable || status.SemanticStatus != "unavailable" || status.Reason != SemanticEmbeddingReasonModelMissing {
 		t.Fatalf("missing model status = %#v", status)
 	}
 	if status.DatabaseStatus != SemanticDatabaseStatusMissing || status.PendingJobs != 0 || status.RunningJobs != 0 || status.FailedJobs != 0 || status.EmbeddedItems != 0 || status.VectorRows != 0 {
@@ -60,7 +114,35 @@ func TestLocalSemanticEmbeddingStatusDirectoryIsInvalid(t *testing.T) {
 	}
 }
 
-func TestLocalSemanticEmbeddingStatusPresentModelStillUnavailableWithoutRuntime(t *testing.T) {
+func TestLocalSemanticEmbeddingStatusMissingTokenizer(t *testing.T) {
+	root := t.TempDir()
+	modelPath, err := SemanticEmbeddingModelPath(root)
+	if err != nil {
+		t.Fatalf("SemanticEmbeddingModelPath() error = %v", err)
+	}
+	modelDataPath, err := SemanticEmbeddingModelDataPath(root)
+	if err != nil {
+		t.Fatalf("SemanticEmbeddingModelDataPath() error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(modelPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll(model dir) error = %v", err)
+	}
+	if err := os.WriteFile(modelPath, []byte("placeholder"), 0o600); err != nil {
+		t.Fatalf("WriteFile(model) error = %v", err)
+	}
+	if err := os.WriteFile(modelDataPath, []byte("placeholder-data"), 0o600); err != nil {
+		t.Fatalf("WriteFile(model data) error = %v", err)
+	}
+	status, err := NewMemoryService(root).SemanticEmbeddingStatus()
+	if err != nil {
+		t.Fatalf("SemanticEmbeddingStatus() error = %v", err)
+	}
+	if status.ModelStatus != SemanticModelStatusPresent || status.ModelDataStatus != SemanticModelDataStatusPresent || status.TokenizerStatus != SemanticTokenizerStatusMissing || status.RuntimeStatus != SemanticRuntimeStatusUnavailable || status.SemanticStatus != "unavailable" || status.Reason != SemanticEmbeddingReasonTokenizerMissing {
+		t.Fatalf("missing tokenizer status = %#v", status)
+	}
+}
+
+func TestLocalSemanticEmbeddingStatusMissingModelData(t *testing.T) {
 	root := t.TempDir()
 	modelPath, err := SemanticEmbeddingModelPath(root)
 	if err != nil {
@@ -76,8 +158,83 @@ func TestLocalSemanticEmbeddingStatusPresentModelStillUnavailableWithoutRuntime(
 	if err != nil {
 		t.Fatalf("SemanticEmbeddingStatus() error = %v", err)
 	}
-	if status.ModelStatus != SemanticModelStatusPresent || status.RuntimeStatus != SemanticRuntimeStatusUnavailable || status.SemanticStatus != "unavailable" || status.Reason != SemanticEmbeddingReasonRuntimeUnavailable {
-		t.Fatalf("present model status = %#v", status)
+	if status.ModelStatus != SemanticModelStatusPresent || status.ModelDataStatus != SemanticModelDataStatusMissing || status.TokenizerStatus != "" || status.RuntimeStatus != SemanticRuntimeStatusUnavailable || status.SemanticStatus != "unavailable" || status.Reason != SemanticEmbeddingReasonModelDataMissing {
+		t.Fatalf("missing model data status = %#v", status)
+	}
+}
+
+func TestLocalSemanticEmbeddingStatusPresentResourcesMissingRuntime(t *testing.T) {
+	root := t.TempDir()
+	modelPath, err := SemanticEmbeddingModelPath(root)
+	if err != nil {
+		t.Fatalf("SemanticEmbeddingModelPath() error = %v", err)
+	}
+	modelDataPath, err := SemanticEmbeddingModelDataPath(root)
+	if err != nil {
+		t.Fatalf("SemanticEmbeddingModelDataPath() error = %v", err)
+	}
+	tokenizerPath, err := SemanticEmbeddingTokenizerPath(root)
+	if err != nil {
+		t.Fatalf("SemanticEmbeddingTokenizerPath() error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(modelPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll(model dir) error = %v", err)
+	}
+	if err := os.WriteFile(modelPath, []byte("placeholder"), 0o600); err != nil {
+		t.Fatalf("WriteFile(model) error = %v", err)
+	}
+	if err := os.WriteFile(modelDataPath, []byte("placeholder-data"), 0o600); err != nil {
+		t.Fatalf("WriteFile(model data) error = %v", err)
+	}
+	if err := os.WriteFile(tokenizerPath, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("WriteFile(tokenizer) error = %v", err)
+	}
+	status, err := NewMemoryService(root).SemanticEmbeddingStatus()
+	if err != nil {
+		t.Fatalf("SemanticEmbeddingStatus() error = %v", err)
+	}
+	if status.ModelStatus != SemanticModelStatusPresent || status.ModelDataStatus != SemanticModelDataStatusPresent || status.TokenizerStatus != SemanticTokenizerStatusPresent || status.RuntimeStatus != SemanticRuntimeStatusMissing || status.SemanticStatus != "unavailable" || status.Reason != SemanticEmbeddingReasonRuntimeMissing {
+		t.Fatalf("present resource status = %#v", status)
+	}
+}
+
+func TestLocalSemanticEmbeddingStatusPresentResourcesAndRuntimeReady(t *testing.T) {
+	root := t.TempDir()
+	modelPath, err := SemanticEmbeddingModelPath(root)
+	if err != nil {
+		t.Fatalf("SemanticEmbeddingModelPath() error = %v", err)
+	}
+	modelDataPath, err := SemanticEmbeddingModelDataPath(root)
+	if err != nil {
+		t.Fatalf("SemanticEmbeddingModelDataPath() error = %v", err)
+	}
+	tokenizerPath, err := SemanticEmbeddingTokenizerPath(root)
+	if err != nil {
+		t.Fatalf("SemanticEmbeddingTokenizerPath() error = %v", err)
+	}
+	runtimePath, err := SemanticEmbeddingRuntimeLibraryPath(root)
+	if err != nil {
+		t.Fatalf("SemanticEmbeddingRuntimeLibraryPath() error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(modelPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll(model dir) error = %v", err)
+	}
+	for path, content := range map[string]string{
+		modelPath:     "model",
+		modelDataPath: "model-data",
+		tokenizerPath: "{}",
+		runtimePath:   "runtime",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", path, err)
+		}
+	}
+	status, err := NewMemoryService(root).SemanticEmbeddingStatus()
+	if err != nil {
+		t.Fatalf("SemanticEmbeddingStatus() error = %v", err)
+	}
+	if status.ModelStatus != SemanticModelStatusPresent || status.ModelDataStatus != SemanticModelDataStatusPresent || status.TokenizerStatus != SemanticTokenizerStatusPresent || status.RuntimeStatus != SemanticRuntimeStatusReady || status.SemanticStatus != "ready" || status.Reason != "" {
+		t.Fatalf("ready resource status = %#v", status)
 	}
 }
 
