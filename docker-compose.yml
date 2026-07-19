@@ -1,0 +1,7 @@
+services:
+  openserp:
+    image: karust/openserp:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:7000:7000"
+    command: ["serve", "-a", "0.0.0.0", "-p", "7000"]

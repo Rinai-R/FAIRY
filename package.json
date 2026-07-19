@@ -1,21 +1,8 @@
 {
   "name": "fairy",
   "private": true,
-  "version": "0.1.0",
-  "packageManager": "pnpm@11.7.0",
-  "engines": {
-    "node": "24.14.0",
-    "pnpm": "11.7.0"
-  },
   "scripts": {
-    "dev": "pnpm --dir web dev",
-    "build": "pnpm --dir web build",
-    "test": "pnpm --dir web test",
-    "wails:doctor": "wails3 doctor",
-    "wails:bindings": "pnpm --dir web build && mkdir -p fairy/assets && rm -rf fairy/assets/dist && cp -R web/dist fairy/assets/dist && cp build/icon.png fairy/assets/icon.png && go test -C fairy ./... && (cd fairy && wails3 generate bindings)",
-    "wails:build": "wails3 build"
-  },
-  "dependencies": {
-    "@wailsio/runtime": "3.0.0-alpha.97"
+    "test:go": "go test -C fairy ./...",
+    "build": "mkdir -p bin && go build -C fairy -o ../bin/fairy ."
   }
 }

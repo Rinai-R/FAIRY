@@ -138,8 +138,9 @@ func TestManualToolCallWebSearchAgentLoop(t *testing.T) {
 	if err := config.WriteWebSearchSettings(root, config.WebSearchSettings{SchemaVersion: 1, Enabled: true}); err != nil {
 		t.Fatalf("WriteWebSearchSettings() error = %v", err)
 	}
-	if _, found := search.ResolveBinary(root); !found {
-		t.Skip("openserp binary not found under config bin/ or FAIRY_OPENSERP_PATH")
+	client := search.NewServiceFromEnv("")
+	if err := client.EnsureReady(t.Context()); err != nil {
+		t.Skipf("openserp not reachable at %s: %v", client.BaseURL(), err)
 	}
 	catalog, err := character.NewStore(root).List()
 	if err != nil {

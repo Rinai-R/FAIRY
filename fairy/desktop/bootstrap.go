@@ -5,7 +5,7 @@ import "errors"
 type BootstrapOptions struct {
 	AppName                string
 	MigrationStage         string
-	WailsVersion           string
+	CoreVersion            string
 	RespondRuntimeMigrated bool
 }
 
@@ -16,7 +16,7 @@ type BootstrapService struct {
 type BootstrapStatus struct {
 	AppName                string `json:"appName"`
 	MigrationStage         string `json:"migrationStage"`
-	WailsVersion           string `json:"wailsVersion"`
+	CoreVersion            string `json:"coreVersion"`
 	RespondRuntimeMigrated bool   `json:"respondRuntimeMigrated"`
 }
 
@@ -25,7 +25,7 @@ func NewBootstrapService(options BootstrapOptions) *BootstrapService {
 		status: BootstrapStatus{
 			AppName:                options.AppName,
 			MigrationStage:         options.MigrationStage,
-			WailsVersion:           options.WailsVersion,
+			CoreVersion:            options.CoreVersion,
 			RespondRuntimeMigrated: options.RespondRuntimeMigrated,
 		},
 	}
@@ -41,8 +41,8 @@ func (s *BootstrapService) Status() (BootstrapStatus, error) {
 	if s.status.MigrationStage == "" {
 		return BootstrapStatus{}, errors.New("bootstrap status missing migration stage")
 	}
-	if s.status.WailsVersion == "" {
-		return BootstrapStatus{}, errors.New("bootstrap status missing Wails version")
+	if s.status.CoreVersion == "" {
+		return BootstrapStatus{}, errors.New("bootstrap status missing core version")
 	}
 	return s.status, nil
 }

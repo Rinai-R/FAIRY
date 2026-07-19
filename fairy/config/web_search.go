@@ -1,10 +1,12 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"fairy/search"
 )
@@ -14,12 +16,14 @@ const webSearchSettingsFile = "settings.json"
 type WebSearchSettings struct {
 	SchemaVersion uint32 `json:"schema_version"`
 	Enabled       bool   `json:"enabled"`
+	// BaseURL is the OpenSERP HTTP origin (docker compose). Empty uses FAIRY_OPENSERP_URL or http://127.0.0.1:7000.
+	BaseURL string `json:"base_url,omitempty"`
 }
 
 type WebSearchStatus struct {
-	Enabled     bool   `json:"enabled"`
-	BinaryPath  string `json:"binaryPath"`
-	BinaryFound bool   `json:"binaryFound"`
+	Enabled bool   `json:"enabled"`
+	BaseURL string `json:"baseUrl"`
+	Ready   bool   `json:"ready"`
 }
 
 type webSearchDocument struct {
@@ -50,6 +54,7 @@ func ReadWebSearchSettings(root string) (WebSearchSettings, error) {
 	if doc.Data.SchemaVersion == 0 {
 		doc.Data.SchemaVersion = 1
 	}
+	doc.Data.BaseURL = strings.TrimSpace(doc.Data.BaseURL)
 	return doc.Data, nil
 }
 
@@ -57,6 +62,7 @@ func WriteWebSearchSettings(root string, settings WebSearchSettings) error {
 	if settings.SchemaVersion == 0 {
 		settings.SchemaVersion = 1
 	}
+	settings.BaseURL = strings.TrimSpace(settings.BaseURL)
 	if err := os.MkdirAll(webSearchDir(root), 0o755); err != nil {
 		return err
 	}
@@ -73,11 +79,15 @@ func (s *ConfigService) WebSearchStatus() (WebSearchStatus, error) {
 	if err != nil {
 		return WebSearchStatus{}, err
 	}
-	binaryPath, found := search.ResolveBinary(s.root)
+	client := search.NewServiceFromEnv(settings.BaseURL)
+	ready := false
+	if settings.Enabled {
+		ready = client.EnsureReady(context.Background()) == nil
+	}
 	return WebSearchStatus{
-		Enabled:     settings.Enabled,
-		BinaryPath:  binaryPath,
-		BinaryFound: found,
+		Enabled: settings.Enabled,
+		BaseURL: client.BaseURL(),
+		Ready:   ready,
 	}, nil
 }
 

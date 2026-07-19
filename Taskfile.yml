@@ -1,99 +1,25 @@
 version: "3"
 
 tasks:
-  pre-build:
-    desc: Wails pre-build hook.
-
-  post-build:
-    desc: Wails post-build hook.
-
-  web:build:
-    desc: Build the existing React/Vite frontend for Wails embedding.
-    cmds:
-      - pnpm --dir web build
-
-  sync:assets:
-    desc: Copy web/dist and icons into fairy/assets for go:embed.
-    deps:
-      - web:build
-    cmds:
-      - mkdir -p fairy/assets
-      - rm -rf fairy/assets/dist
-      - cp -R web/dist fairy/assets/dist
-      - cp build/icon.png fairy/assets/icon.png
-      - cp build/tray-template.png fairy/assets/tray-template.png
-
-  embeddings:assets:
-    desc: Download pinned local BGE ONNX assets for release embedding.
-    cmds:
-      - scripts/prepare-local-bge-assets.sh
-
   go:test:
-    desc: Run Go unit tests for the Wails migration path.
-    deps:
-      - sync:assets
+    desc: Run Session Core Go unit tests.
     dir: fairy
     cmds:
       - go test ./...
 
-  wails:bindings:
-    desc: Generate Wails v3 frontend bindings into fairy/frontend/bindings.
-    deps:
-      - go:test
-    dir: fairy
-    cmds:
-      - wails3 generate bindings
-
-  wails:build:
-    desc: Build the Wails migration app.
-    deps:
-      - go:test
-    cmds:
-      - wails3 build
-
-  build:fairy:
-    desc: Build only the Wails Go application binary.
-    deps:
-      - sync:assets
-      - embeddings:assets
-    dir: fairy
-    cmds:
-      - go build -gcflags=all="-N -l" -o ../bin/FAIRY
-    env:
-      CGO_CFLAGS: "-mmacosx-version-min=10.13"
-      CGO_LDFLAGS: "-mmacosx-version-min=10.13"
-      MACOSX_DEPLOYMENT_TARGET: "10.13"
-
-  package:macos:
-    desc: Package FAIRY.app with Dock icon (required for a proper Dock glyph).
-    deps:
-      - build:fairy
-    cmds:
-      - |
-        set -euo pipefail
-        APP="bin/FAIRY.app"
-        rm -rf "$APP"
-        mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-        cp bin/FAIRY "$APP/Contents/MacOS/FAIRY"
-        cp build/icon.icns "$APP/Contents/Resources/icon.icns"
-        cp build/Info.plist "$APP/Contents/Info.plist"
-        chmod +x "$APP/Contents/MacOS/FAIRY"
-        echo "packed $APP"
-
   build:
-    desc: Build binary and macOS .app bundle.
+    desc: Build the fairy CLI binary.
     deps:
       - go:test
+    dir: fairy
     cmds:
-      - task: pre-build
-      - mkdir -p bin
-      - task: build:fairy
-      - task: package:macos
-      - task: post-build
+      - mkdir -p ../bin
+      - go build -o ../bin/fairy .
 
   verify:
-    desc: Verify the first-stage Go/Wails migration path.
+    desc: Verify Session Core.
     deps:
       - go:test
     cmds:
       - git diff --check
+      - ./bin/fairy --help || (task build && ./bin/fairy --help)

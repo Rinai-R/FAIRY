@@ -2,47 +2,45 @@ package desktop
 
 import "testing"
 
-func TestBootstrapServiceStatus(t *testing.T) {
+func TestBootstrapStatus(t *testing.T) {
 	service := NewBootstrapService(BootstrapOptions{
 		AppName:                "FAIRY",
-		MigrationStage:         "wails3-only",
-		WailsVersion:           "v3.0.0-alpha2.117",
+		MigrationStage:         "session-core",
+		CoreVersion:            "0.1.0",
 		RespondRuntimeMigrated: true,
 	})
-
 	status, err := service.Status()
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
 	if status.AppName != "FAIRY" {
-		t.Fatalf("AppName = %q, want FAIRY", status.AppName)
+		t.Fatalf("AppName = %q", status.AppName)
 	}
-	if status.MigrationStage != "wails3-only" {
-		t.Fatalf("MigrationStage = %q, want wails3-only", status.MigrationStage)
+	if status.MigrationStage != "session-core" {
+		t.Fatalf("MigrationStage = %q, want session-core", status.MigrationStage)
 	}
-	if status.WailsVersion != "v3.0.0-alpha2.117" {
-		t.Fatalf("WailsVersion = %q, want v3.0.0-alpha2.117", status.WailsVersion)
+	if status.CoreVersion != "0.1.0" {
+		t.Fatalf("CoreVersion = %q", status.CoreVersion)
 	}
 	if !status.RespondRuntimeMigrated {
-		t.Fatal("RespondRuntimeMigrated = false, want true")
+		t.Fatal("RespondRuntimeMigrated = false")
 	}
 }
 
-func TestBootstrapServiceRejectsIncompleteStatus(t *testing.T) {
-	tests := []struct {
+func TestBootstrapStatusRequiresFields(t *testing.T) {
+	cases := []struct {
 		name    string
 		options BootstrapOptions
 	}{
-		{name: "missing app name", options: BootstrapOptions{MigrationStage: "stage", WailsVersion: "v3"}},
-		{name: "missing migration stage", options: BootstrapOptions{AppName: "FAIRY", WailsVersion: "v3"}},
-		{name: "missing wails version", options: BootstrapOptions{AppName: "FAIRY", MigrationStage: "stage"}},
+		{name: "missing app name", options: BootstrapOptions{MigrationStage: "stage", CoreVersion: "0.1.0"}},
+		{name: "missing migration stage", options: BootstrapOptions{AppName: "FAIRY", CoreVersion: "0.1.0"}},
+		{name: "missing core version", options: BootstrapOptions{AppName: "FAIRY", MigrationStage: "stage"}},
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			service := NewBootstrapService(tt.options)
-			if _, err := service.Status(); err == nil {
-				t.Fatal("Status() error = nil, want validation error")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewBootstrapService(tc.options).Status()
+			if err == nil {
+				t.Fatal("expected error")
 			}
 		})
 	}

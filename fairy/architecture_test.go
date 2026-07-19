@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestWailsImportsStayInCompositionPackages(t *testing.T) {
+func TestNoPackageImportsWails(t *testing.T) {
 	cmd := exec.Command("go", "list", "-json", "./...")
 	out, err := cmd.Output()
 	if err != nil {
@@ -30,22 +30,10 @@ func TestWailsImportsStayInCompositionPackages(t *testing.T) {
 			}
 			t.Fatalf("decode go list package: %v", err)
 		}
-		if allowsWailsImports(pkg.ImportPath) {
-			continue
-		}
 		for _, imported := range pkg.Imports {
-			if strings.HasPrefix(imported, "github.com/wailsapp/wails/v3/") {
-				t.Fatalf("%s imports Wails package %s; Wails dependencies belong in fairy/app", pkg.ImportPath, imported)
+			if strings.HasPrefix(imported, "github.com/wailsapp/wails") {
+				t.Fatalf("%s imports Wails package %s; Session Core forbids Wails", pkg.ImportPath, imported)
 			}
 		}
-	}
-}
-
-func allowsWailsImports(importPath string) bool {
-	switch importPath {
-	case "fairy/app":
-		return true
-	default:
-		return strings.HasPrefix(importPath, "fairy/frontend/bindings/")
 	}
 }

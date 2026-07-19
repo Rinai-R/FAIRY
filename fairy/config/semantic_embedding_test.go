@@ -8,20 +8,14 @@ import (
 	"testing"
 )
 
-func TestReadSemanticEmbeddingSettingsMissingDefaultsLocal(t *testing.T) {
+func TestReadSemanticEmbeddingSettingsMissingDefaultsNone(t *testing.T) {
 	root := t.TempDir()
 	settings, err := ReadSemanticEmbeddingSettings(root)
 	if err != nil {
 		t.Fatalf("ReadSemanticEmbeddingSettings() error = %v", err)
 	}
-	if !settings.Enabled {
-		t.Fatal("Enabled = false, want true for local default")
-	}
-	if settings.Provider != SemanticEmbeddingProviderLocalBGE {
-		t.Fatalf("Provider = %q, want %q", settings.Provider, SemanticEmbeddingProviderLocalBGE)
-	}
-	if settings.Model != "" {
-		t.Fatalf("Model = %q, want empty", settings.Model)
+	if settings.Enabled || settings.Provider != SemanticEmbeddingProviderNone {
+		t.Fatalf("settings = %#v, want disabled none provider", settings)
 	}
 	if settings.Dimensions != SemanticEmbeddingDimensions {
 		t.Fatalf("Dimensions = %d, want %d", settings.Dimensions, SemanticEmbeddingDimensions)
@@ -31,7 +25,7 @@ func TestReadSemanticEmbeddingSettingsMissingDefaultsLocal(t *testing.T) {
 	}
 }
 
-func TestWriteSemanticEmbeddingSettingsRequiresModelWhenEnabled(t *testing.T) {
+func TestWriteSemanticEmbeddingSettingsRequiresModelWhenAPI(t *testing.T) {
 	err := WriteSemanticEmbeddingSettings(t.TempDir(), SemanticEmbeddingSettings{Provider: SemanticEmbeddingProviderOpenAICompatible, Dimensions: SemanticEmbeddingDimensions})
 	if err == nil || !strings.Contains(err.Error(), "model is required") {
 		t.Fatalf("WriteSemanticEmbeddingSettings() error = %v, want model required", err)
@@ -67,6 +61,21 @@ func TestWriteReadSemanticEmbeddingAPISettings(t *testing.T) {
 	}
 }
 
+func TestLegacyLocalBGENormalizesToNone(t *testing.T) {
+	settings, err := normalizeSemanticEmbeddingSettings(SemanticEmbeddingSettings{
+		SchemaVersion: 1,
+		Provider:      SemanticEmbeddingProviderLocalBGE,
+		Enabled:       true,
+		Dimensions:    SemanticEmbeddingDimensions,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.Provider != SemanticEmbeddingProviderNone || settings.Enabled {
+		t.Fatalf("settings = %#v", settings)
+	}
+}
+
 func TestReadLegacyEnabledSemanticEmbeddingSettingsAsAPIProvider(t *testing.T) {
 	root := t.TempDir()
 	err := WriteSemanticEmbeddingSettings(root, SemanticEmbeddingSettings{
@@ -91,7 +100,7 @@ func TestConfigServiceSemanticEmbeddingStatusAndSave(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SemanticEmbeddingStatus() error = %v", err)
 	}
-	if !status.Enabled || !status.Configured || status.Provider != SemanticEmbeddingProviderLocalBGE || status.Dimensions != SemanticEmbeddingDimensions {
+	if status.Enabled || status.Configured || status.Provider != SemanticEmbeddingProviderNone {
 		t.Fatalf("default status = %#v", status)
 	}
 	status, err = service.SaveSemanticEmbeddingSettings(SemanticEmbeddingSettings{

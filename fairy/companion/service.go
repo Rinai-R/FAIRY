@@ -187,8 +187,8 @@ func (s *CompanionService) configReader() *config.Reader {
 }
 
 // Close performs graceful shutdown cleanup: it cancels in-flight turns and
-// pending background extraction timers, then stops the openserp sidecar. It is
-// safe to call multiple times and safe when no model runtime is attached.
+// pending background extraction timers, then closes the web search client.
+// It is safe to call multiple times and safe when no model runtime is attached.
 func (s *CompanionService) Close() error {
 	if s == nil {
 		return nil
@@ -603,12 +603,12 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 							"modelDrivenIndex": modelDrivenTools + 1,
 						})
 					} else if s.webSearch == nil {
-						lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("tool", call.Name), zap.String("reason", "binary_missing"))
-						retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, search.ErrBinaryNotFound))
+						lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("tool", call.Name), zap.String("reason", "endpoint_missing"))
+						retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, search.ErrEndpointNotConfigured))
 						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
 							"tool":             call.Name,
 							"phase":            "model_driven",
-							"status":           "binary_missing",
+							"status":           "endpoint_missing",
 							"queryHash":        runtimeHash(query),
 							"modelDrivenIndex": modelDrivenTools + 1,
 						})

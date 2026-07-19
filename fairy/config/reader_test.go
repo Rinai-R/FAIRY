@@ -33,7 +33,7 @@ func TestReaderModelConnectionAndWebSearch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SemanticEmbeddingSettings() error = %v", err)
 	}
-	if !semanticSettings.Enabled || semanticSettings.Provider != SemanticEmbeddingProviderLocalBGE || semanticSettings.Dimensions != SemanticEmbeddingDimensions {
+	if semanticSettings.Enabled || semanticSettings.Provider != SemanticEmbeddingProviderNone || semanticSettings.Dimensions != SemanticEmbeddingDimensions {
 		t.Fatalf("SemanticEmbeddingSettings() = %#v", semanticSettings)
 	}
 }
