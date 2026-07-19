@@ -10,8 +10,9 @@ const eventHubBuffer = 64
 
 // EventHub fans harness events out to per-conversation SSE subscribers.
 type EventHub struct {
-	mu   sync.Mutex
-	subs map[string]map[chan companion.HarnessEvent]struct{}
+	mu     sync.Mutex
+	subs   map[string]map[chan companion.HarnessEvent]struct{}
+	closed bool
 }
 
 func NewEventHub() *EventHub {
@@ -27,6 +28,11 @@ func (h *EventHub) Subscribe(conversationID string) (<-chan companion.HarnessEve
 	}
 	ch := make(chan companion.HarnessEvent, eventHubBuffer)
 	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		close(ch)
+		return ch, func() {}
+	}
 	if h.subs[conversationID] == nil {
 		h.subs[conversationID] = make(map[chan companion.HarnessEvent]struct{})
 	}
@@ -38,12 +44,12 @@ func (h *EventHub) Subscribe(conversationID string) (<-chan companion.HarnessEve
 			h.mu.Lock()
 			if set, ok := h.subs[conversationID]; ok {
 				delete(set, ch)
+				close(ch)
 				if len(set) == 0 {
 					delete(h.subs, conversationID)
 				}
 			}
 			h.mu.Unlock()
-			close(ch)
 		})
 	}
 	return ch, unsub
@@ -55,17 +61,44 @@ func (h *EventHub) Publish(event companion.HarnessEvent) {
 		return
 	}
 	h.mu.Lock()
-	set := h.subs[event.ConversationID]
-	subs := make([]chan companion.HarnessEvent, 0, len(set))
-	for ch := range set {
-		subs = append(subs, ch)
-	}
-	h.mu.Unlock()
-	for _, ch := range subs {
+	defer h.mu.Unlock()
+	for ch := range h.subs[event.ConversationID] {
 		select {
 		case ch <- event:
 		default:
 			// Drop if subscriber is slow; SSE client can reconnect.
 		}
+	}
+}
+
+func (h *EventHub) SubscriberCount() uint64 {
+	if h == nil {
+		return 0
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var count uint64
+	for _, subscribers := range h.subs {
+		count += uint64(len(subscribers))
+	}
+	return count
+}
+
+func (h *EventHub) Close() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return
+	}
+	h.closed = true
+	for conversationID, subscribers := range h.subs {
+		for ch := range subscribers {
+			delete(subscribers, ch)
+			close(ch)
+		}
+		delete(h.subs, conversationID)
 	}
 }

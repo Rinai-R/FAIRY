@@ -8,17 +8,17 @@ import (
 
 func TestLevelFromEnv(t *testing.T) {
 	cases := map[string]zapcore.Level{
-		"":        zapcore.InfoLevel,
-		"debug":   zapcore.DebugLevel,
-		"DEBUG":   zapcore.DebugLevel,
-		"warn":    zapcore.WarnLevel,
-		"warning": zapcore.WarnLevel,
-		"error":   zapcore.ErrorLevel,
+		"":         zapcore.InfoLevel,
+		"debug":    zapcore.DebugLevel,
+		"DEBUG":    zapcore.DebugLevel,
+		"warn":     zapcore.WarnLevel,
+		"warning":  zapcore.WarnLevel,
+		"error":    zapcore.ErrorLevel,
 		"nonsense": zapcore.InfoLevel,
 	}
 	for value, want := range cases {
 		t.Setenv("FAIRY_LOG_LEVEL", value)
-		if got := levelFromEnv(); got != want {
+		if got := LevelFromEnv(); got != want {
 			t.Fatalf("levelFromEnv(%q) = %v, want %v", value, got, want)
 		}
 	}

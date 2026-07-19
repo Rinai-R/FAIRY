@@ -26,3 +26,4 @@ ENV FAIRY_LISTEN_ADDR=0.0.0.0:8787
 COPY --from=build /out/fairy /usr/local/bin/fairy
 EXPOSE 8787
 ENTRYPOINT ["/usr/local/bin/fairy"]
+CMD ["serve"]

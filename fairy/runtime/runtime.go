@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"fairy/character"
 	"fairy/companion"
@@ -13,26 +14,33 @@ import (
 	"fairy/logx"
 	"fairy/memory"
 	"fairy/model"
+	"fairy/observability"
 	"fairy/profile"
 	"fairy/search"
 	"fairy/secret"
 	"fairy/speech"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // Options configures a Session Core process.
 type Options struct {
-	ConfigRoot string
-	Logger     *zap.Logger
+	ConfigRoot  string
+	Logger      *zap.Logger
+	LogStore    *observability.LogStore
+	HTTPMetrics *observability.HTTPMetrics
 	// LogEventsJSONL prints harness events to stdout (optional local debugging).
 	LogEventsJSONL bool
 }
 
 // Runtime owns long-lived Core services for the HTTP/SSE Session Core.
 type Runtime struct {
-	ConfigRoot string
-	Logger     *zap.Logger
-	Events     *EventHub
+	ConfigRoot  string
+	Logger      *zap.Logger
+	Events      *EventHub
+	Logs        *observability.LogStore
+	HTTPMetrics *observability.HTTPMetrics
+	StartedAt   time.Time
 
 	MemoryStore  *memory.Store
 	Memory       *memory.MemoryService
@@ -51,9 +59,21 @@ type Runtime struct {
 }
 
 func Open(options Options) (*Runtime, error) {
+	logStore := options.LogStore
+	if logStore == nil {
+		logStore = observability.NewLogStore(observability.DefaultLogCapacity)
+	}
 	logger := options.Logger
 	if logger == nil {
-		logger = logx.New()
+		logger = logx.New(observability.NewLogCore(logStore, logx.LevelFromEnv()))
+	} else {
+		logger = logger.WithOptions(zap.WrapCore(func(core zapcore.Core) zapcore.Core {
+			return zapcore.NewTee(core, observability.NewLogCore(logStore, logx.LevelFromEnv()))
+		}))
+	}
+	httpMetrics := options.HTTPMetrics
+	if httpMetrics == nil {
+		httpMetrics = observability.NewHTTPMetrics()
 	}
 	configRoot := options.ConfigRoot
 	if configRoot == "" {
@@ -94,6 +114,9 @@ func Open(options Options) (*Runtime, error) {
 		ConfigRoot:   configRoot,
 		Logger:       logger,
 		Events:       NewEventHub(),
+		Logs:         logStore,
+		HTTPMetrics:  httpMetrics,
+		StartedAt:    time.Now(),
 		MemoryStore:  memoryStore,
 		Memory:       memory.NewMemoryServiceWithStore(configRoot, memoryStore),
 		Secret:       secretStore,
@@ -144,7 +167,10 @@ func (rt *Runtime) Close() error {
 	if rt == nil {
 		return nil
 	}
-	return rt.Companion.Close()
+	err := rt.Companion.Close()
+	rt.Events.Close()
+	rt.Logs.Close()
+	return err
 }
 
 func (rt *Runtime) DrainEvents() []companion.HarnessEvent {

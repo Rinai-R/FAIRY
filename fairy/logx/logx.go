@@ -17,7 +17,7 @@ import (
 // New builds the application's zap logger, writing human-readable console output
 // to stderr. The level defaults to info and may be overridden by FAIRY_LOG_LEVEL
 // (debug/info/warn/error).
-func New() *zap.Logger {
+func New(extraCores ...zapcore.Core) *zap.Logger {
 	encoderConfig := zapcore.EncoderConfig{
 		TimeKey:        "time",
 		LevelKey:       "level",
@@ -33,9 +33,10 @@ func New() *zap.Logger {
 	core := zapcore.NewCore(
 		zapcore.NewConsoleEncoder(encoderConfig),
 		zapcore.Lock(os.Stderr),
-		levelFromEnv(),
+		LevelFromEnv(),
 	)
-	return zap.New(core)
+	cores := append([]zapcore.Core{core}, extraCores...)
+	return zap.New(zapcore.NewTee(cores...))
 }
 
 // NewSlog bridges a zap logger to *slog.Logger for consumers that require slog
@@ -44,7 +45,7 @@ func NewSlog(logger *zap.Logger) *slog.Logger {
 	return slog.New(zapslog.NewHandler(logger.Core()))
 }
 
-func levelFromEnv() zapcore.Level {
+func LevelFromEnv() zapcore.Level {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("FAIRY_LOG_LEVEL"))) {
 	case "debug":
 		return zapcore.DebugLevel

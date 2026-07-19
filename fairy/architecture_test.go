@@ -38,6 +38,9 @@ func TestNoPackageImportsWails(t *testing.T) {
 			if imported == "fairy/desktop" {
 				t.Fatalf("%s imports removed desktop shell package", pkg.ImportPath)
 			}
+			if (imported == "github.com/spf13/cobra" || imported == "github.com/spf13/viper") && pkg.ImportPath != "fairy/cmd" {
+				t.Fatalf("%s imports CLI framework package %s; only fairy/cmd may import Cobra/Viper", pkg.ImportPath, imported)
+			}
 		}
 	}
 }

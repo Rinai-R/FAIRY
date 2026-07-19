@@ -44,8 +44,12 @@ func NewServer(rt *fairyruntime.Runtime, options Options) (*Server, error) {
 	if logger == nil {
 		logger = rt.Logger
 	}
+	if options.Token != strings.TrimSpace(options.Token) {
+		return nil, errors.New("API token must not contain leading or trailing whitespace")
+	}
 	engine := server.Default(server.WithHostPorts(addr), server.WithSenseClientDisconnection(true))
-	s := &Server{rt: rt, engine: engine, token: strings.TrimSpace(options.Token), logger: logger}
+	s := &Server{rt: rt, engine: engine, token: options.Token, logger: logger}
+	engine.Use(s.metricsMiddleware)
 	s.routes()
 	return s, nil
 }
@@ -73,6 +77,7 @@ func (s *Server) routes() {
 	s.registerProfileRoutes()
 	s.registerIntelligenceRoutes()
 	s.registerUsageRoutes()
+	s.registerObservabilityRoutes()
 	s.registerConsoleRoutes()
 }
 
@@ -82,8 +87,7 @@ func (s *Server) authMiddleware(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	header := string(c.GetHeader("Authorization"))
-	const prefix = "Bearer "
-	if !strings.HasPrefix(header, prefix) || strings.TrimSpace(strings.TrimPrefix(header, prefix)) != s.token {
+	if header != "Bearer "+s.token {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
 	}
