@@ -79,11 +79,12 @@ func TestBuildRespondContextSlotsKeepsStableOrderAndOmissionMetadata(t *testing.
 		[]memory.MessageRecord{{Role: "user", Content: "你好", Sequence: 1}},
 		[]VisualState{{ID: "idle", Description: "待机"}},
 		memory.RetrievalContext{},
+		SurfaceDesktop,
 	)
 	if err != nil {
 		t.Fatalf("BuildRespondContextSlots() error = %v", err)
 	}
-	wantIDs := []string{"character", "display_language", "profile", "available_visual_states", "compaction_summary", "dialogue", "retrieved_context"}
+	wantIDs := []string{"character", "display_language", "profile", "available_visual_states", "surface", "compaction_summary", "dialogue", "retrieved_context"}
 	if len(slots) != len(wantIDs) {
 		t.Fatalf("slots len = %d, want %d: %#v", len(slots), len(wantIDs), slots)
 	}
@@ -95,15 +96,18 @@ func TestBuildRespondContextSlotsKeepsStableOrderAndOmissionMetadata(t *testing.
 			t.Fatalf("present slot %q missing revision hash: %#v", slots[i].ID, slots[i])
 		}
 	}
-	if slots[4].Present || slots[4].OmitReason != "empty" {
-		t.Fatalf("compaction_summary slot = %#v, want omitted empty", slots[4])
+	if slots[5].Present || slots[5].OmitReason != "empty" {
+		t.Fatalf("compaction_summary slot = %#v, want omitted empty", slots[5])
 	}
-	if slots[6].Present || slots[6].OmitReason != "empty" {
-		t.Fatalf("retrieved_context slot = %#v, want omitted empty", slots[6])
+	if slots[7].Present || slots[7].OmitReason != "empty" {
+		t.Fatalf("retrieved_context slot = %#v, want omitted empty", slots[7])
 	}
 	items := PromptItemsFromContextSlots(slots)
-	if len(items) != 5 {
-		t.Fatalf("items len = %d, want 5: %#v", len(items), items)
+	if len(items) != 6 {
+		t.Fatalf("items len = %d, want 6: %#v", len(items), items)
+	}
+	if !strings.Contains(items[4].Content, `"kind":"desktop"`) {
+		t.Fatalf("surface item = %q, want desktop kind", items[4].Content)
 	}
 }
 
@@ -136,12 +140,13 @@ func TestBuildRespondInputKeepsPersonaOutOfInstructions(t *testing.T) {
 				ConfidenceBasisPoints: 9000,
 			}},
 		},
+		SurfaceDesktop,
 	)
 	if err != nil {
 		t.Fatalf("BuildRespondInput() error = %v", err)
 	}
-	if len(items) != 7 {
-		t.Fatalf("items len = %d, want 7", len(items))
+	if len(items) != 8 {
+		t.Fatalf("items len = %d, want 8", len(items))
 	}
 	if items[0].Type != model.PromptItemContextData || !strings.Contains(items[0].Content, `"contextType":"character"`) || !strings.Contains(items[0].Content, "亚托莉") {
 		t.Fatalf("character context = %#v", items[0])
@@ -158,11 +163,14 @@ func TestBuildRespondInputKeepsPersonaOutOfInstructions(t *testing.T) {
 	if !strings.Contains(items[3].Content, "available_visual_states") || !strings.Contains(items[3].Content, "fairy_context_data") {
 		t.Fatalf("visual states = %#v", items[3])
 	}
-	if items[4].Type != model.PromptItemUserMessage || items[5].Type != model.PromptItemAssistantMessage {
-		t.Fatalf("dialogue items = %#v %#v", items[4], items[5])
+	if items[4].Type != model.PromptItemContextData || !strings.Contains(items[4].Content, `"contextType":"surface"`) || !strings.Contains(items[4].Content, `"kind":"desktop"`) {
+		t.Fatalf("surface context = %#v", items[4])
 	}
-	if !strings.Contains(items[6].Content, "retrieved_context") || !strings.Contains(items[6].Content, "喜欢安静") {
-		t.Fatalf("retrieval context = %#v", items[6])
+	if items[5].Type != model.PromptItemUserMessage || items[6].Type != model.PromptItemAssistantMessage {
+		t.Fatalf("dialogue items = %#v %#v", items[5], items[6])
+	}
+	if !strings.Contains(items[7].Content, "retrieved_context") || !strings.Contains(items[7].Content, "喜欢安静") {
+		t.Fatalf("retrieval context = %#v", items[7])
 	}
 	for _, forbidden := range []string{"You are FAIRY", "Stay in character", "Character name:"} {
 		for _, item := range items {
@@ -186,6 +194,7 @@ func TestBuildRespondInputAppliesPromptWindowSummaryAndCutoff(t *testing.T) {
 		},
 		[]VisualState{{ID: "idle", Description: "待机"}},
 		memory.RetrievalContext{},
+		SurfaceDesktop,
 	)
 	if err != nil {
 		t.Fatalf("BuildRespondInput() error = %v", err)

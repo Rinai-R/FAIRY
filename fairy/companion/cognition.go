@@ -73,13 +73,13 @@ func parseToolQuery(arguments string) (string, error) {
 }
 
 func (s *CompanionService) retrieveMemoryForTool(characterID string, query string) (memory.RetrievalContext, error) {
-	if s == nil || s.memoryStore == nil {
+	if s == nil || s.memory == nil {
 		return memory.RetrievalContext{}, errors.New("memory store is unavailable")
 	}
 	if s.semanticEmbedder != nil && s.semanticEmbedder.Ready() {
-		return s.memoryStore.RetrieveWithSemantic(characterID, query, s.semanticEmbedder)
+		return s.memory.RetrieveWithSemantic(characterID, query, s.semanticEmbedder)
 	}
-	return s.memoryStore.Retrieve(characterID, query)
+	return s.memory.Retrieve(characterID, query)
 }
 
 func mergeRetrievalContext(base memory.RetrievalContext, extra memory.RetrievalContext) memory.RetrievalContext {

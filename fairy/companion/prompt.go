@@ -86,8 +86,9 @@ func BuildRespondInput(
 	messages []memory.MessageRecord,
 	states []VisualState,
 	retrieval memory.RetrievalContext,
+	surface SurfaceKind,
 ) ([]model.PromptItem, error) {
-	slots, err := BuildRespondContextSlots(record, userProfile, promptWindow, messages, states, retrieval)
+	slots, err := BuildRespondContextSlots(record, userProfile, promptWindow, messages, states, retrieval, surface)
 	if err != nil {
 		return nil, err
 	}
@@ -101,9 +102,14 @@ func BuildRespondContextSlots(
 	messages []memory.MessageRecord,
 	states []VisualState,
 	retrieval memory.RetrievalContext,
+	surface SurfaceKind,
 ) ([]ContextSlot, error) {
+	normalizedSurface, err := NormalizeSurface(string(surface))
+	if err != nil {
+		return nil, err
+	}
 	windowed := messagesAfterCutoff(messages, promptWindow.CutoffMessageSequence)
-	slots := make([]ContextSlot, 0, 7)
+	slots := make([]ContextSlot, 0, 8)
 	prefix, err := BuildStablePrefixItems(record, userProfile, states)
 	if err != nil {
 		return nil, err
@@ -115,6 +121,11 @@ func BuildRespondContextSlots(
 	slots = append(slots, presentContextSlot("display_language", true, "local_trusted", "stable", []model.PromptItem{prefix[1]}, map[string]any{"textLanguage": record.TextLanguage}))
 	slots = append(slots, presentContextSlot("profile", true, "local_trusted", "stable", []model.PromptItem{prefix[2]}, map[string]any{"profile": userProfile}))
 	slots = append(slots, presentContextSlot("available_visual_states", true, "local_trusted", "stable", []model.PromptItem{prefix[3]}, states))
+	surfaceItem, err := encodeSurfaceContext(normalizedSurface)
+	if err != nil {
+		return nil, err
+	}
+	slots = append(slots, presentContextSlot("surface", true, "local_trusted", "window", []model.PromptItem{surfaceItem}, map[string]any{"kind": normalizedSurface}))
 	if promptWindow.Summary != nil && *promptWindow.Summary != "" {
 		summaryItem, err := encodeCompactionSummary(*promptWindow.Summary)
 		if err != nil {

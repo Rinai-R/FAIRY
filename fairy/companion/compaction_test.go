@@ -171,6 +171,7 @@ func TestBuildCompactInputSharesRespondStablePrefixBytes(t *testing.T) {
 			Content:               "不该进稳定前缀",
 			ConfidenceBasisPoints: 9000,
 		}}},
+		SurfaceIMGroup,
 	)
 	if err != nil {
 		t.Fatalf("BuildRespondContextSlots() error = %v", err)
@@ -196,8 +197,8 @@ func TestBuildCompactInputSharesRespondStablePrefixBytes(t *testing.T) {
 			t.Fatalf("stable prefix mismatch at %s\ncompact=%#v\nrespond=%#v", slotID, compactItems[i], respondSlots[i].Items[0])
 		}
 	}
-	if respondSlots[6].ID != "retrieved_context" || respondSlots[6].CachePolicy != "tail" {
-		t.Fatalf("retrieval must stay in tail: %#v", respondSlots[6])
+	if respondSlots[7].ID != "retrieved_context" || respondSlots[7].CachePolicy != "tail" {
+		t.Fatalf("retrieval must stay in tail: %#v", respondSlots[7])
 	}
 }
 

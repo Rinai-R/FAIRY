@@ -20,19 +20,19 @@ func (s *CompanionService) recordObservedContextWindow(
 	promptWindowRevision uint64,
 	usage []LaneModelUsage,
 ) (*memory.ContextWindowRecord, error) {
-	if s == nil || s.memoryStore == nil || promptWindowRevision == 0 {
+	if s == nil || s.memory == nil || promptWindowRevision == 0 {
 		return nil, nil
 	}
 	prefill, ok := respondInputTokens(usage)
 	if !ok {
 		return nil, nil
 	}
-	existing, found, err := s.memoryStore.LoadContextWindow(conversationID, string(model.PromptLaneRespond))
+	existing, found, err := s.memory.LoadContextWindow(conversationID, string(model.PromptLaneRespond))
 	if err != nil {
 		return nil, err
 	}
 	record := nextObservedContextWindowRecord(conversationID, promptWindowRevision, prefill, existing, found)
-	saved, err := s.memoryStore.SaveContextWindow(record)
+	saved, err := s.memory.SaveContextWindow(record)
 	if err != nil {
 		return nil, err
 	}
@@ -54,15 +54,15 @@ func (s *CompanionService) recordEstimatedContextWindow(
 	promptWindowRevision uint64,
 	estimated uint64,
 ) (*memory.ContextWindowRecord, error) {
-	if s == nil || s.memoryStore == nil || promptWindowRevision == 0 || estimated == 0 {
+	if s == nil || s.memory == nil || promptWindowRevision == 0 || estimated == 0 {
 		return nil, nil
 	}
-	existing, found, err := s.memoryStore.LoadContextWindow(conversationID, string(model.PromptLaneRespond))
+	existing, found, err := s.memory.LoadContextWindow(conversationID, string(model.PromptLaneRespond))
 	if err != nil {
 		return nil, err
 	}
 	record := nextEstimatedContextWindowRecord(conversationID, promptWindowRevision, estimated, existing, found)
-	saved, err := s.memoryStore.SaveContextWindow(record)
+	saved, err := s.memory.SaveContextWindow(record)
 	if err != nil {
 		return nil, err
 	}
@@ -70,10 +70,10 @@ func (s *CompanionService) recordEstimatedContextWindow(
 }
 
 func (s *CompanionService) recordContextWindowFailure(conversationID string) error {
-	if s == nil || s.memoryStore == nil {
+	if s == nil || s.memory == nil {
 		return nil
 	}
-	existing, found, err := s.memoryStore.LoadContextWindow(conversationID, string(model.PromptLaneRespond))
+	existing, found, err := s.memory.LoadContextWindow(conversationID, string(model.PromptLaneRespond))
 	if err != nil {
 		return err
 	}
@@ -82,20 +82,20 @@ func (s *CompanionService) recordContextWindowFailure(conversationID string) err
 	}
 	existing.FailureCount++
 	existing.LastTrigger = contextWindowTriggerCompactionFailed
-	_, err = s.memoryStore.SaveContextWindow(existing)
+	_, err = s.memory.SaveContextWindow(existing)
 	return err
 }
 
 func (s *CompanionService) advanceContextWindowAfterCompaction(conversationID string, promptWindowRevision uint64) (*memory.ContextWindowRecord, error) {
-	if s == nil || s.memoryStore == nil || promptWindowRevision == 0 {
+	if s == nil || s.memory == nil || promptWindowRevision == 0 {
 		return nil, nil
 	}
-	existing, found, err := s.memoryStore.LoadContextWindow(conversationID, string(model.PromptLaneRespond))
+	existing, found, err := s.memory.LoadContextWindow(conversationID, string(model.PromptLaneRespond))
 	if err != nil {
 		return nil, err
 	}
 	record := nextCompactionCommittedContextWindowRecord(conversationID, promptWindowRevision, existing, found)
-	saved, err := s.memoryStore.SaveContextWindow(record)
+	saved, err := s.memory.SaveContextWindow(record)
 	if err != nil {
 		return nil, err
 	}

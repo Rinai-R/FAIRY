@@ -13,11 +13,11 @@ func (s *CompanionService) scheduleKnowledgeIngest(snapshots []memory.KnowledgeI
 	s.backgroundJobs.Add(1)
 	go func() {
 		defer s.backgroundJobs.Add(-1)
-		if err := s.memoryStore.EnqueueKnowledgeIngestSnapshots(snapshots); err != nil {
+		if err := s.memory.EnqueueKnowledgeIngestSnapshots(snapshots); err != nil {
 			s.setBackgroundError(err)
 			return
 		}
-		if _, err := s.memoryStore.ProcessKnowledgeIngestJobs(8); err != nil {
+		if _, err := s.memory.ProcessKnowledgeIngestJobs(8); err != nil {
 			s.setBackgroundError(err)
 		}
 	}()

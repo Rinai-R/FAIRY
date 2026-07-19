@@ -150,7 +150,7 @@ func (s *CompanionService) translateDisplayText(
 		},
 		Input: input,
 	}
-	events, err := s.modelService.ExecuteRequestContext(ctx, request)
+	events, err := s.model.ExecuteRequestContext(ctx, request)
 	if err != nil {
 		return "", err
 	}

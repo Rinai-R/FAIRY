@@ -1,0 +1,9 @@
+.git
+**/bin/
+**/*_test.go
+web/
+docs/
+openspec/
+*.md
+.DS_Store
+data/

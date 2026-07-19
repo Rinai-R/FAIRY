@@ -110,6 +110,13 @@ func (s *Server) handleStatus(ctx context.Context, c *app.RequestContext) {
 }
 
 func (s *Server) handleOpenSession(ctx context.Context, c *app.RequestContext) {
+	var body openSessionBody
+	_ = c.Bind(&body) // empty body is allowed; invalid JSON still yields zero surface → desktop
+	surface, err := companion.NormalizeSurface(body.Surface)
+	if err != nil {
+		writeErr(c, http.StatusBadRequest, err)
+		return
+	}
 	catalog, err := s.rt.Character.ListCharacters()
 	if err != nil {
 		writeErr(c, http.StatusInternalServerError, err)
@@ -124,16 +131,26 @@ func (s *Server) handleOpenSession(ctx context.Context, c *app.RequestContext) {
 		writeErr(c, http.StatusInternalServerError, err)
 		return
 	}
+	if err := s.rt.Companion.BindSurface(bootstrap.Conversation.ID, surface); err != nil {
+		writeErr(c, http.StatusBadRequest, err)
+		return
+	}
 	c.JSON(http.StatusOK, map[string]any{
 		"conversationId": bootstrap.Conversation.ID,
 		"characterId":    bootstrap.Conversation.CharacterID,
 		"messageCount":   len(bootstrap.Messages),
+		"surface":        surface,
 	})
+}
+
+type openSessionBody struct {
+	Surface string `json:"surface"`
 }
 
 type submitTurnBody struct {
 	Input         string `json:"input"`
 	SpeechEnabled bool   `json:"speechEnabled"`
+	Surface       string `json:"surface"`
 }
 
 func (s *Server) handleSubmitTurn(ctx context.Context, c *app.RequestContext) {
@@ -147,16 +164,28 @@ func (s *Server) handleSubmitTurn(ctx context.Context, c *app.RequestContext) {
 		writeErr(c, http.StatusBadRequest, errors.New("input is required"))
 		return
 	}
+	surface, err := companion.NormalizeSurface(body.Surface)
+	if err != nil {
+		writeErr(c, http.StatusBadRequest, err)
+		return
+	}
+	// Empty surface on turn means "use session binding / desktop" — pass "" so ResolveSurface can fall back.
+	var turnSurface companion.SurfaceKind
+	if strings.TrimSpace(body.Surface) != "" {
+		turnSurface = surface
+	}
 	outcome, err := s.rt.Companion.SubmitTurn(companion.SubmitTurnRequest{
 		ConversationID: conversationID,
 		Input:          body.Input,
 		SpeechEnabled:  body.SpeechEnabled,
+		Surface:        turnSurface,
 	})
 	if err != nil {
 		writeErr(c, http.StatusBadRequest, err)
 		return
 	}
-	c.JSON(http.StatusOK, map[string]any{"outcome": outcome})
+	resolved, _ := s.rt.Companion.ResolveSurface(conversationID, turnSurface)
+	c.JSON(http.StatusOK, map[string]any{"outcome": outcome, "surface": resolved})
 }
 
 func (s *Server) handleCancelTurn(ctx context.Context, c *app.RequestContext) {

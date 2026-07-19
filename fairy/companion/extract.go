@@ -37,7 +37,7 @@ func (s *CompanionService) scheduleBackgroundExtraction(conversationID string) {
 	}
 	s.extractionMu.Unlock()
 
-	pending, err := s.memoryStore.PendingExtractionTurnCount(conversationID)
+	pending, err := s.memory.PendingExtractionTurnCount(conversationID)
 	if err != nil {
 		s.setBackgroundError(err)
 		return
@@ -74,7 +74,7 @@ func (s *CompanionService) scheduleBackgroundExtraction(conversationID string) {
 func (s *CompanionService) claimAndRunExtraction(conversationID string) {
 	s.backgroundJobs.Add(1)
 	defer s.backgroundJobs.Add(-1)
-	batch, err := s.memoryStore.ClaimExtractionBatch(conversationID, extractionBatchLimit)
+	batch, err := s.memory.ClaimExtractionBatch(conversationID, extractionBatchLimit)
 	if err != nil {
 		s.setBackgroundError(err)
 		return
@@ -83,7 +83,7 @@ func (s *CompanionService) claimAndRunExtraction(conversationID string) {
 		return
 	}
 	if err := s.executeExtractionBatch(batch); err != nil {
-		if failErr := s.memoryStore.FailExtractionBatch(batch.BatchID, "EXTRACTION_BATCH_FAILED", err.Error(), false); failErr != nil {
+		if failErr := s.memory.FailExtractionBatch(batch.BatchID, "EXTRACTION_BATCH_FAILED", err.Error(), false); failErr != nil {
 			s.setBackgroundError(failErr)
 			return
 		}
@@ -104,7 +104,7 @@ func (s *CompanionService) executeExtractionBatch(batch *memory.ExtractionBatchI
 	if err != nil {
 		return err
 	}
-	events, err := s.modelService.ExecutePrompt(
+	events, err := s.model.ExecutePrompt(
 		model.PromptLaneExtract,
 		ExtractInstructions,
 		ExtractMaxOutputTokens,
@@ -122,15 +122,15 @@ func (s *CompanionService) executeExtractionBatch(batch *memory.ExtractionBatchI
 	for _, item := range batch.ExistingMemories {
 		allowed = append(allowed, item.ID)
 	}
-	_, err = s.memoryStore.CommitMemoryMutations(batch.BatchID, batch.CharacterID, allowed, output.Mutations)
+	_, err = s.memory.CommitMemoryMutations(batch.BatchID, batch.CharacterID, allowed, output.Mutations)
 	return err
 }
 
 func (s *CompanionService) processEmbeddingJobPass(limit int) (memory.EmbeddingJobResult, error) {
-	if s == nil || s.memoryStore == nil || limit <= 0 {
+	if s == nil || s.memory == nil || limit <= 0 {
 		return memory.EmbeddingJobResult{SemanticStatus: "unavailable"}, nil
 	}
-	return s.memoryStore.ProcessEmbeddingJobs(s.semanticEmbedder, limit)
+	return s.memory.ProcessEmbeddingJobs(s.semanticEmbedder, limit)
 }
 
 func (s *CompanionService) ActiveBackgroundJobs() int64 {

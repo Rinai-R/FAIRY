@@ -10,7 +10,6 @@ import (
 	"fairy/character"
 	"fairy/companion"
 	"fairy/config"
-	"fairy/desktop"
 	"fairy/logx"
 	"fairy/memory"
 	"fairy/model"
@@ -25,11 +24,11 @@ import (
 type Options struct {
 	ConfigRoot string
 	Logger     *zap.Logger
-	// LogEventsJSONL prints harness events to stdout (CLI turn debugging).
+	// LogEventsJSONL prints harness events to stdout (optional local debugging).
 	LogEventsJSONL bool
 }
 
-// Runtime owns long-lived Core services for CLI and HTTP surfaces.
+// Runtime owns long-lived Core services for the HTTP/SSE Session Core.
 type Runtime struct {
 	ConfigRoot string
 	Logger     *zap.Logger
@@ -46,10 +45,9 @@ type Runtime struct {
 	Speech       *speech.SpeechService
 	Profile      *profile.ProfileService
 	WebSearch    *search.Service
-	Bootstrap    *desktop.BootstrapService
-
-	eventMu sync.Mutex
-	events  []companion.HarnessEvent
+	Bootstrap    *BootstrapService
+	eventMu      sync.Mutex
+	events       []companion.HarnessEvent
 }
 
 func Open(options Options) (*Runtime, error) {
@@ -107,7 +105,7 @@ func Open(options Options) (*Runtime, error) {
 		Speech:       speechService,
 		Profile:      profileService,
 		WebSearch:    webSearch,
-		Bootstrap: desktop.NewBootstrapService(desktop.BootstrapOptions{
+		Bootstrap: NewBootstrapService(BootstrapOptions{
 			AppName:                "FAIRY",
 			MigrationStage:         "session-core",
 			CoreVersion:            "0.1.0",

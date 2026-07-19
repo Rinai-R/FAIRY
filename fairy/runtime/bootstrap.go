@@ -1,7 +1,8 @@
-package desktop
+package runtime
 
 import "errors"
 
+// BootstrapOptions configures the Core process identity reported by /v1/status.
 type BootstrapOptions struct {
 	AppName                string
 	MigrationStage         string
@@ -9,10 +10,12 @@ type BootstrapOptions struct {
 	RespondRuntimeMigrated bool
 }
 
+// BootstrapService exposes immutable Core bootstrap status.
 type BootstrapService struct {
 	status BootstrapStatus
 }
 
+// BootstrapStatus is returned by GET /v1/status.
 type BootstrapStatus struct {
 	AppName                string `json:"appName"`
 	MigrationStage         string `json:"migrationStage"`

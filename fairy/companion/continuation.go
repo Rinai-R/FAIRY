@@ -14,7 +14,7 @@ func (s *CompanionService) decideContinuation(
 	if !cacheRetention {
 		return model.ContinuationDecision{FullReason: model.ContinuationCapabilityUnsupported}, nil, nil
 	}
-	record, ok, err := s.memoryStore.LoadLaneContinuation(conversationID, string(model.PromptLaneRespond))
+	record, ok, err := s.memory.LoadLaneContinuation(conversationID, string(model.PromptLaneRespond))
 	if err != nil {
 		return model.ContinuationDecision{}, nil, err
 	}
@@ -63,10 +63,10 @@ func continuationSuffixFromHashes(record memory.LaneContinuationRecord, input []
 }
 
 func (s *CompanionService) clearContinuationState(conversationID string) error {
-	if s == nil || s.memoryStore == nil {
+	if s == nil || s.memory == nil {
 		return nil
 	}
-	return s.memoryStore.ClearLaneContinuation(conversationID, string(model.PromptLaneRespond))
+	return s.memory.ClearLaneContinuation(conversationID, string(model.PromptLaneRespond))
 }
 
 func (s *CompanionService) updateContinuationState(
@@ -77,7 +77,7 @@ func (s *CompanionService) updateContinuationState(
 	displayText string,
 	events []model.StreamEvent,
 ) error {
-	if s == nil || s.memoryStore == nil {
+	if s == nil || s.memory == nil {
 		return nil
 	}
 	if !cacheRetention {
@@ -91,7 +91,7 @@ func (s *CompanionService) updateContinuationState(
 		Type:    model.PromptItemAssistantMessage,
 		Content: displayText,
 	}}
-	_, err := s.memoryStore.SaveLaneContinuation(memory.LaneContinuationRecord{
+	_, err := s.memory.SaveLaneContinuation(memory.LaneContinuationRecord{
 		ConversationID:     conversationID,
 		Lane:               string(model.PromptLaneRespond),
 		PreviousResponseID: responseID,

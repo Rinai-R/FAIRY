@@ -22,25 +22,27 @@ import (
 )
 
 type CompanionService struct {
-	root              string
-	memoryStore       *memory.Store
-	semanticEmbedder  semantic.Embedder
-	modelService      *model.ModelService
-	webSearch         WebSearchBackend
-	speech            SpeechSynthesizer
-	characters        *character.Store
-	profiles          *profile.Store
-	cfg               *config.Reader
-	logger            *zap.Logger
-	backgroundJobs    atomic.Int64
-	extractionMu      sync.Mutex
-	extractionIdle    map[string]context.CancelFunc
+	root             string
+	memory           MemoryPort
+	semanticEmbedder semantic.Embedder
+	model            ModelPort
+	webSearch        WebSearchBackend
+	speech           SpeechSynthesizer
+	characters       CharacterCatalog
+	profiles         ProfileSource
+	cfg              ConfigSource
+	logger           *zap.Logger
+	backgroundJobs   atomic.Int64
+	extractionMu     sync.Mutex
+	extractionIdle   map[string]context.CancelFunc
 	backgroundErrorMu sync.Mutex
-	backgroundError   error
-	gateMu            sync.Mutex
-	gates             map[string]*conversationGate
-	emitMu            sync.Mutex
-	emit              EventEmitter
+	backgroundError  error
+	gateMu           sync.Mutex
+	gates            map[string]*conversationGate
+	surfaceMu        sync.RWMutex
+	surfaces         map[string]SurfaceKind
+	emitMu           sync.Mutex
+	emit             EventEmitter
 }
 
 // WebSearchBackend is the optional OpenSERP sidecar search surface.
@@ -89,21 +91,31 @@ func NewCompanionService() *CompanionService {
 		logger:         zap.NewNop(),
 		extractionIdle: make(map[string]context.CancelFunc),
 		gates:          make(map[string]*conversationGate),
+		surfaces:       make(map[string]SurfaceKind),
 	}
 }
 
 // NewCompanionServiceWithRuntime wires the companion runtime. webSearch is owned
-// by the composition root (main); pass nil when the sidecar is unavailable.
-func NewCompanionServiceWithRuntime(root string, memoryStore *memory.Store, modelService *model.ModelService, webSearch WebSearchBackend) *CompanionService {
-	return &CompanionService{
+// by the composition root; pass nil when search is unavailable.
+// When root is non-empty, character/profile/config ports are bound to that root;
+// runtime Open may still replace them via Attach* with shared store handles.
+func NewCompanionServiceWithRuntime(root string, memory MemoryPort, model ModelPort, webSearch WebSearchBackend) *CompanionService {
+	service := &CompanionService{
 		root:           root,
-		memoryStore:    memoryStore,
-		modelService:   modelService,
+		memory:         memory,
+		model:          model,
 		webSearch:      webSearch,
 		logger:         zap.NewNop(),
 		extractionIdle: make(map[string]context.CancelFunc),
 		gates:          make(map[string]*conversationGate),
+		surfaces:       make(map[string]SurfaceKind),
 	}
+	if strings.TrimSpace(root) != "" {
+		service.characters = character.NewStore(root)
+		service.profiles = profile.NewStore(root)
+		service.cfg = config.NewReader(root)
+	}
+	return service
 }
 
 // AttachLogger injects the process logger (dependency injection, no global).
@@ -114,28 +126,43 @@ func AttachLogger(s *CompanionService, logger *zap.Logger) {
 	s.logger = logger
 }
 
-// AttachCharacterStore injects the character catalog store from main.
+// AttachCharacterCatalog injects the character catalog from the composition root.
+func AttachCharacterCatalog(s *CompanionService, catalog CharacterCatalog) {
+	if s == nil || catalog == nil {
+		return
+	}
+	s.characters = catalog
+}
+
+// AttachCharacterStore is retained for call-site compatibility; prefer AttachCharacterCatalog.
 func AttachCharacterStore(s *CompanionService, store *character.Store) {
-	if s == nil || store == nil {
-		return
-	}
-	s.characters = store
+	AttachCharacterCatalog(s, store)
 }
 
-// AttachProfileStore injects the user-profile store from main.
+// AttachProfileSource injects the user-profile source from the composition root.
+func AttachProfileSource(s *CompanionService, source ProfileSource) {
+	if s == nil || source == nil {
+		return
+	}
+	s.profiles = source
+}
+
+// AttachProfileStore is retained for call-site compatibility; prefer AttachProfileSource.
 func AttachProfileStore(s *CompanionService, store *profile.Store) {
-	if s == nil || store == nil {
-		return
-	}
-	s.profiles = store
+	AttachProfileSource(s, store)
 }
 
-// AttachConfigReader injects the durable config reader from main.
-func AttachConfigReader(s *CompanionService, reader *config.Reader) {
-	if s == nil || reader == nil {
+// AttachConfigSource injects durable config reads from the composition root.
+func AttachConfigSource(s *CompanionService, source ConfigSource) {
+	if s == nil || source == nil {
 		return
 	}
-	s.cfg = reader
+	s.cfg = source
+}
+
+// AttachConfigReader is retained for call-site compatibility; prefer AttachConfigSource.
+func AttachConfigReader(s *CompanionService, reader *config.Reader) {
+	AttachConfigSource(s, reader)
 }
 
 // AttachSpeechSynthesizer injects the optional speech backend from main.
@@ -156,34 +183,39 @@ func AttachSemanticEmbedder(s *CompanionService, embedder semantic.Embedder) {
 	s.semanticEmbedder = embedder
 }
 
-func (s *CompanionService) characterStore() *character.Store {
-	if s != nil && s.characters != nil {
+func (s *CompanionService) characterCatalog() CharacterCatalog {
+	if s != nil {
 		return s.characters
 	}
-	if s == nil {
-		return character.NewStore("")
-	}
-	return character.NewStore(s.root)
+	return nil
 }
 
-func (s *CompanionService) profileStore() *profile.Store {
-	if s != nil && s.profiles != nil {
+func (s *CompanionService) profileSource() ProfileSource {
+	if s != nil {
 		return s.profiles
 	}
-	if s == nil {
-		return profile.NewStore("")
-	}
-	return profile.NewStore(s.root)
+	return nil
 }
 
-func (s *CompanionService) configReader() *config.Reader {
-	if s != nil && s.cfg != nil {
+func (s *CompanionService) configSource() ConfigSource {
+	if s != nil {
 		return s.cfg
 	}
-	if s == nil {
-		return config.NewReader("")
+	return nil
+}
+
+func (s *CompanionService) memoryPort() MemoryPort {
+	if s != nil {
+		return s.memory
 	}
-	return config.NewReader(s.root)
+	return nil
+}
+
+func (s *CompanionService) modelPort() ModelPort {
+	if s != nil {
+		return s.model
+	}
+	return nil
 }
 
 // Close performs graceful shutdown cleanup: it cancels in-flight turns and
@@ -241,23 +273,38 @@ func (s *CompanionService) SubmitTurn(request SubmitTurnRequest) (TurnOutcome, e
 	if err != nil {
 		return TurnOutcome{}, err
 	}
+	surface, err := s.ResolveSurface(request.ConversationID, request.Surface)
+	if err != nil {
+		return TurnOutcome{}, err
+	}
 	return s.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 		ConversationID:        request.ConversationID,
 		Input:                 request.Input,
 		SpeechEnabled:         request.SpeechEnabled,
 		MaxOutputTokens:       RespondMaxOutputTokens,
 		AvailableVisualStates: states,
+		Surface:               surface,
 	})
 }
 
 func (s *CompanionService) RespondRuntimeMigrated() bool {
-	return s != nil && s.memoryStore != nil && s.modelService != nil
+	return s != nil &&
+		s.memory != nil &&
+		s.model != nil &&
+		s.characters != nil &&
+		s.profiles != nil &&
+		s.cfg != nil
 }
 
 func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (TurnOutcome, error) {
 	if err := ValidateSubmitCompiledTurnRequest(request); err != nil {
 		return TurnOutcome{}, err
 	}
+	surface, err := s.ResolveSurface(request.ConversationID, request.Surface)
+	if err != nil {
+		return TurnOutcome{}, err
+	}
+	request.Surface = surface
 	if !s.RespondRuntimeMigrated() {
 		return TurnOutcome{}, ErrRespondRuntimeNotMigrated
 	}
@@ -268,7 +315,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	if err != nil {
 		return TurnOutcome{}, err
 	}
-	persisted, err := s.memoryStore.BeginTurn(request.ConversationID, request.Input)
+	persisted, err := s.memory.BeginTurn(request.ConversationID, request.Input)
 	if err != nil {
 		s.endTurn(request.ConversationID, "")
 		return TurnOutcome{}, err
@@ -279,7 +326,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	lg := s.logger.With(zap.String("turn", persisted.ID))
 	life := NewTurnLifecycle(request.ConversationID, persisted.ID)
 	fail := func(code string, cause error) (TurnOutcome, error) {
-		_ = s.memoryStore.FailTurn(request.ConversationID, persisted.ID, code, cause.Error(), false)
+		_ = s.memory.FailTurn(request.ConversationID, persisted.ID, code, cause.Error(), false)
 		if errors.Is(cause, ErrTurnInterrupted) {
 			if _, err := s.publishLife(life, life.Interrupt); err == nil {
 				s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTerminal, TurnStateInterrupted, code, runtimeFailureLedgerMetadata(code, cause, false))
@@ -310,7 +357,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	if err := transition(TurnStateInterpreting); err != nil {
 		return fail("INVALID_STATE_TRANSITION", err)
 	}
-	bootstrap, err := s.memoryStore.LoadConversation(request.ConversationID)
+	bootstrap, err := s.memory.LoadConversation(request.ConversationID)
 	if err != nil {
 		return fail("CONVERSATION_FAILED", err)
 	}
@@ -318,7 +365,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	if err != nil {
 		return fail("CHARACTER_NOT_AVAILABLE", err)
 	}
-	userProfile, err := s.profileStore().Current()
+	userProfile, err := s.profileSource().Current()
 	if err != nil {
 		return fail("USER_PROFILE_UNAVAILABLE", err)
 	}
@@ -339,7 +386,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	if err := transition(TurnStatePlanning); err != nil {
 		return fail("INVALID_STATE_TRANSITION", err)
 	}
-	connectionConfig, err := s.configReader().ModelConnection()
+	connectionConfig, err := s.configSource().ModelConnection()
 	if err != nil {
 		return fail("MODEL_FAILED", err)
 	}
@@ -374,7 +421,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		defer speechFlow.Close()
 	}
 	webSearchEnabled := false
-	if settings, err := s.configReader().WebSearchSettings(); err == nil {
+	if settings, err := s.configSource().WebSearchSettings(); err == nil {
 		webSearchEnabled = settings.Enabled
 	}
 	for {
@@ -385,7 +432,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		}
 		instructions := RespondInstructionsForTools(allowTools)
 		attempt := modelDrivenTools + 1
-		slots, err := BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval)
+		slots, err := BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval, request.Surface)
 		if err != nil {
 			return fail("PROMPT_BUILD_FAILED", err)
 		}
@@ -451,7 +498,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		if err := turnCtx.Err(); err != nil {
 			return fail("TURN_INTERRUPTED", ErrTurnInterrupted)
 		}
-		events, err = s.modelService.ExecuteRequestContext(turnCtx, executeRequest)
+		events, err = s.model.ExecuteRequestContext(turnCtx, executeRequest)
 		if err != nil {
 			err = mapModelCancelError(err)
 			code := "MODEL_FAILED"
@@ -853,7 +900,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		return fail("MODEL_RESPONSE_INVALID", rebuildErr)
 	}
 	reply = rebuilt
-	if _, err := s.memoryStore.CompleteTurn(request.ConversationID, persisted.ID, reply.DisplayText); err != nil {
+	if _, err := s.memory.CompleteTurn(request.ConversationID, persisted.ID, reply.DisplayText); err != nil {
 		return TurnOutcome{}, err
 	}
 	// Drain all queued TTS before completing so every speech.synthesized is emitted
@@ -1025,7 +1072,7 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 	}
 	defer s.endCompaction(conversationID)
 
-	bootstrap, err := s.memoryStore.LoadConversation(conversationID)
+	bootstrap, err := s.memory.LoadConversation(conversationID)
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
@@ -1033,7 +1080,7 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
-	userProfile, err := s.profileStore().Current()
+	userProfile, err := s.profileSource().Current()
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
@@ -1050,14 +1097,14 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 		return memory.CompactionResult{}, err
 	}
 	cacheKey := ""
-	connectionConfig, err := s.configReader().ModelConnection()
+	connectionConfig, err := s.configSource().ModelConnection()
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
 	if connectionConfig.Capabilities.PromptCacheKey {
 		cacheKey = model.LaneCacheKey(conversationID, model.PromptLaneRespond)
 	}
-	events, err := s.modelService.ExecutePrompt(
+	events, err := s.model.ExecutePrompt(
 		model.PromptLaneCompact,
 		CompactInstructions,
 		CompactMaxOutputTokens,
@@ -1071,7 +1118,7 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
-	result, err := s.memoryStore.CommitPromptWindow(conversationID, bootstrap.PromptWindow.Revision, summary)
+	result, err := s.memory.CommitPromptWindow(conversationID, bootstrap.PromptWindow.Revision, summary)
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
@@ -1086,7 +1133,11 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 }
 
 func (s *CompanionService) activeCharacter(characterID string) (character.Record, error) {
-	catalog, err := s.characterStore().List()
+	catalogPort := s.characterCatalog()
+	if catalogPort == nil {
+		return character.Record{}, errors.New("character catalog is not configured")
+	}
+	catalog, err := catalogPort.List()
 	if err != nil {
 		return character.Record{}, err
 	}
@@ -1101,7 +1152,7 @@ func (s *CompanionService) activeCharacter(characterID string) (character.Record
 // availableVisualStatesForConversation mirrors Tauri IPC active_visual_states:
 // load the conversation character appearance and expose prompt-safe state entries.
 func (s *CompanionService) availableVisualStatesForConversation(conversationID string) ([]VisualState, error) {
-	bootstrap, err := s.memoryStore.LoadConversation(conversationID)
+	bootstrap, err := s.memory.LoadConversation(conversationID)
 	if err != nil {
 		return nil, err
 	}

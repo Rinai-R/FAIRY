@@ -1,7 +1,26 @@
 services:
+  fairy:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      FAIRY_CONFIG_ROOT: /data
+      FAIRY_LISTEN_ADDR: 0.0.0.0:8787
+      FAIRY_OPENSERP_URL: http://openserp:7000
+      # FAIRY_API_TOKEN: change-me
+    volumes:
+      - fairy-data:/data
+    depends_on:
+      - openserp
+
   openserp:
     image: karust/openserp:latest
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:7000:7000"
+    # Internal-only by default; fairy reaches it on the compose network.
+    expose:
+      - "7000"
     command: ["serve", "-a", "0.0.0.0", "-p", "7000"]
+
+volumes:
+  fairy-data:

@@ -166,12 +166,12 @@ func (s *CompanionService) scheduleAutoCompaction(conversationID string, events 
 	if !known {
 		return
 	}
-	connection, err := s.configReader().ModelConnection()
+	connection, err := s.configSource().ModelConnection()
 	if err != nil {
 		return
 	}
 	policy := CompactionPolicyFromContextWindow(connection.ContextWindowTokens)
-	window, found, err := s.memoryStore.LoadContextWindow(conversationID, string(model.PromptLaneRespond))
+	window, found, err := s.memory.LoadContextWindow(conversationID, string(model.PromptLaneRespond))
 	if err != nil {
 		s.setBackgroundError(err)
 		return
@@ -202,7 +202,7 @@ func (s *CompanionService) maybeCompactBeforeTurn(request SubmitCompiledTurnRequ
 	if s == nil || !s.RespondRuntimeMigrated() {
 		return nil
 	}
-	bootstrap, err := s.memoryStore.LoadConversation(request.ConversationID)
+	bootstrap, err := s.memory.LoadConversation(request.ConversationID)
 	if err != nil {
 		return err
 	}
@@ -213,7 +213,7 @@ func (s *CompanionService) maybeCompactBeforeTurn(request SubmitCompiledTurnRequ
 	if err != nil {
 		return err
 	}
-	userProfile, err := s.profileStore().Current()
+	userProfile, err := s.profileSource().Current()
 	if err != nil {
 		return err
 	}
@@ -223,7 +223,7 @@ func (s *CompanionService) maybeCompactBeforeTurn(request SubmitCompiledTurnRequ
 		Content:  request.Input,
 		Sequence: uint64(len(estimatedMessages) + 1),
 	})
-	slots, err := BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, estimatedMessages, request.AvailableVisualStates, memory.RetrievalContext{})
+	slots, err := BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, estimatedMessages, request.AvailableVisualStates, memory.RetrievalContext{}, request.Surface)
 	if err != nil {
 		return err
 	}
@@ -232,7 +232,7 @@ func (s *CompanionService) maybeCompactBeforeTurn(request SubmitCompiledTurnRequ
 	if err != nil {
 		return err
 	}
-	connection, err := s.configReader().ModelConnection()
+	connection, err := s.configSource().ModelConnection()
 	if err != nil {
 		return err
 	}

@@ -15,9 +15,10 @@ type ReplyChain struct {
 }
 
 type SubmitTurnRequest struct {
-	ConversationID string `json:"conversationId"`
-	Input          string `json:"input"`
-	SpeechEnabled  bool   `json:"speechEnabled"`
+	ConversationID string      `json:"conversationId"`
+	Input          string      `json:"input"`
+	SpeechEnabled  bool        `json:"speechEnabled"`
+	Surface        SurfaceKind `json:"surface,omitempty"`
 }
 
 type SubmitCompiledTurnRequest struct {
@@ -26,6 +27,7 @@ type SubmitCompiledTurnRequest struct {
 	SpeechEnabled         bool          `json:"speechEnabled"`
 	MaxOutputTokens       uint32        `json:"maxOutputTokens"`
 	AvailableVisualStates []VisualState `json:"availableVisualStates"`
+	Surface               SurfaceKind   `json:"surface,omitempty"`
 }
 
 type TurnOutcome struct {
@@ -63,6 +65,9 @@ func ValidateSubmitTurnRequest(request SubmitTurnRequest) error {
 	if strings.TrimSpace(request.Input) == "" {
 		return errors.New("companion input is required")
 	}
+	if _, err := NormalizeSurface(string(request.Surface)); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -75,6 +80,9 @@ func ValidateSubmitCompiledTurnRequest(request SubmitCompiledTurnRequest) error 
 	}
 	if request.MaxOutputTokens == 0 {
 		return errors.New("max_output_tokens is required")
+	}
+	if _, err := NormalizeSurface(string(request.Surface)); err != nil {
+		return err
 	}
 	return validateAvailableVisualStates(request.AvailableVisualStates)
 }

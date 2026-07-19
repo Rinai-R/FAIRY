@@ -8,7 +8,7 @@ tasks:
       - go test ./...
 
   build:
-    desc: Build the fairy CLI binary.
+    desc: Build the fairy Session Core binary.
     deps:
       - go:test
     dir: fairy
@@ -22,4 +22,4 @@ tasks:
       - go:test
     cmds:
       - git diff --check
-      - ./bin/fairy --help || (task build && ./bin/fairy --help)
+      - task build

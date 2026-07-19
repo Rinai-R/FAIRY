@@ -19,7 +19,7 @@ const (
 )
 
 func (s *CompanionService) appendRuntimeLedger(conversationID string, turnID string, eventType string, state TurnState, code string, metadata map[string]any) {
-	if s == nil || s.memoryStore == nil {
+	if s == nil || s.memory == nil {
 		return
 	}
 	if metadata == nil {
@@ -38,7 +38,7 @@ func (s *CompanionService) appendRuntimeLedger(conversationID string, turnID str
 	if code != "" {
 		codeValue = &code
 	}
-	_, _ = s.memoryStore.AppendTurnRuntimeEvent(memory.TurnRuntimeEventInput{
+	_, _ = s.memory.AppendTurnRuntimeEvent(memory.TurnRuntimeEventInput{
 		ConversationID: conversationID,
 		TurnID:         turnID,
 		EventType:      eventType,

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -34,6 +35,17 @@ func TestNoPackageImportsWails(t *testing.T) {
 			if strings.HasPrefix(imported, "github.com/wailsapp/wails") {
 				t.Fatalf("%s imports Wails package %s; Session Core forbids Wails", pkg.ImportPath, imported)
 			}
+			if imported == "fairy/desktop" {
+				t.Fatalf("%s imports removed desktop shell package", pkg.ImportPath)
+			}
 		}
+	}
+}
+
+func TestSessionCoreHasNoDesktopPackage(t *testing.T) {
+	if _, err := os.Stat("desktop"); err == nil {
+		t.Fatal("fairy/desktop must not exist; desktop shell is not part of Session Core")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat desktop: %v", err)
 	}
 }
