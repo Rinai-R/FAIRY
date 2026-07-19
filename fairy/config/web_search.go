@@ -105,3 +105,15 @@ func (s *ConfigService) SetWebSearchEnabled(enabled bool) (WebSearchStatus, erro
 	}
 	return s.WebSearchStatus()
 }
+
+// SaveWebSearchSettings persists enabled + optional OpenSERP base URL.
+func (s *ConfigService) SaveWebSearchSettings(settings WebSearchSettings) (WebSearchStatus, error) {
+	if settings.SchemaVersion == 0 {
+		settings.SchemaVersion = 1
+	}
+	settings.BaseURL = strings.TrimSpace(settings.BaseURL)
+	if err := WriteWebSearchSettings(s.root, settings); err != nil {
+		return WebSearchStatus{}, err
+	}
+	return s.WebSearchStatus()
+}

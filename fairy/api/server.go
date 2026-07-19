@@ -68,6 +68,8 @@ func (s *Server) routes() {
 	v1.POST("/sessions/:conversationId/turns", s.handleSubmitTurn)
 	v1.GET("/sessions/:conversationId/events", s.handleSessionEvents)
 	v1.POST("/sessions/:conversationId/turns/:turnId/cancel", s.handleCancelTurn)
+	s.registerConfigRoutes()
+	s.registerConsoleRoutes()
 }
 
 func (s *Server) authMiddleware(ctx context.Context, c *app.RequestContext) {
@@ -100,13 +102,15 @@ func (s *Server) handleStatus(ctx context.Context, c *app.RequestContext) {
 		writeErr(c, http.StatusInternalServerError, err)
 		return
 	}
-	c.JSON(http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"bootstrap":            bootstrap,
 		"configRoot":           s.rt.ConfigRoot,
 		"webSearch":            web,
 		"semanticEmbedding":    semantic,
 		"activeBackgroundJobs": s.rt.Companion.ActiveBackgroundJobs(),
-	})
+	}
+	s.enrichStatusPayload(payload)
+	c.JSON(http.StatusOK, payload)
 }
 
 func (s *Server) handleOpenSession(ctx context.Context, c *app.RequestContext) {

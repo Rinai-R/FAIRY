@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FAIRY 控制台</title>
+  <link rel="stylesheet" href="/console/styles.css" />
+</head>
+<body>
+  <header class="top">
+    <div>
+      <p class="brand">FAIRY</p>
+      <h1>控制台</h1>
+    </div>
+    <label class="token">
+      API Token
+      <input id="apiToken" type="password" placeholder="可选 Bearer" autocomplete="off" />
+    </label>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button type="button" data-tab="overview" class="active">概览</button>
+    <button type="button" data-tab="model">模型</button>
+    <button type="button" data-tab="speech">语音 TTS</button>
+    <button type="button" data-tab="search">公开检索</button>
+  </nav>
+
+  <main>
+    <p id="flash" class="flash" hidden></p>
+
+    <section id="tab-overview" class="panel active">
+      <h2>运行状态</h2>
+      <pre id="statusOut" class="code">加载中…</pre>
+      <button type="button" id="refreshStatus">刷新</button>
+    </section>
+
+    <section id="tab-model" class="panel">
+      <h2>模型连接</h2>
+      <form id="modelForm" class="form">
+        <label>协议
+          <select name="protocol">
+            <option value="responses">responses</option>
+            <option value="chat_completions">chat_completions</option>
+          </select>
+        </label>
+        <label>Endpoint
+          <input name="endpoint" required placeholder="https://api.deepseek.com" />
+        </label>
+        <label>Model
+          <input name="model" required placeholder="deepseek-chat" />
+        </label>
+        <label>Context window tokens
+          <input name="contextWindowTokens" type="number" min="1" value="1048576" />
+        </label>
+        <label>Auth
+          <select name="authMode">
+            <option value="bearer_key">bearer_key</option>
+            <option value="no_auth">no_auth</option>
+          </select>
+        </label>
+        <label>API Key（留空保留原密钥）
+          <input name="apiKey" type="password" autocomplete="off" />
+        </label>
+        <div class="actions">
+          <button type="submit">保存</button>
+          <button type="button" id="clearModel" class="danger">清除</button>
+        </div>
+      </form>
+      <pre id="modelStatus" class="code"></pre>
+    </section>
+
+    <section id="tab-speech" class="panel">
+      <h2>火山语音克隆 HTTP</h2>
+      <form id="speechForm" class="form">
+        <label class="check"><input name="enabled" type="checkbox" /> 启用</label>
+        <label>Base URL <input name="baseUrl" /></label>
+        <label>App ID <input name="appId" /></label>
+        <label>Synthesis resource ID <input name="synthesisResourceId" /></label>
+        <label>Synthesis model <input name="synthesisModel" /></label>
+        <label>Default speaker <input name="defaultSpeaker" /></label>
+        <label>Default format <input name="defaultFormat" value="mp3" /></label>
+        <label>API Key（留空保留） <input name="apiKey" type="password" autocomplete="off" /></label>
+        <label>Access Token（留空保留） <input name="accessToken" type="password" autocomplete="off" /></label>
+        <label class="check"><input name="clearApiKey" type="checkbox" /> 清除 API Key</label>
+        <label class="check"><input name="clearAccessToken" type="checkbox" /> 清除 Access Token</label>
+        <div class="actions">
+          <button type="submit">保存</button>
+          <button type="button" id="clearSpeech" class="danger">清除全部</button>
+        </div>
+      </form>
+      <pre id="speechStatus" class="code"></pre>
+    </section>
+
+    <section id="tab-search" class="panel">
+      <h2>公开检索（OpenSERP）</h2>
+      <form id="searchForm" class="form">
+        <label class="check"><input name="enabled" type="checkbox" /> 允许检索公开资料</label>
+        <label>Base URL（空则用环境变量 / 默认）
+          <input name="baseUrl" placeholder="http://openserp:7000" />
+        </label>
+        <div class="actions">
+          <button type="submit">保存</button>
+        </div>
+      </form>
+      <pre id="searchStatus" class="code"></pre>
+
+      <h2>语义嵌入</h2>
+      <form id="semanticForm" class="form">
+        <label>Provider
+          <select name="provider">
+            <option value="none">none（FTS-only）</option>
+            <option value="openai_compatible_api">openai_compatible_api</option>
+          </select>
+        </label>
+        <label class="check"><input name="enabled" type="checkbox" /> Enabled</label>
+        <label>Model <input name="model" placeholder="text-embedding-3-small" /></label>
+        <div class="actions">
+          <button type="submit">保存</button>
+        </div>
+      </form>
+      <pre id="semanticStatus" class="code"></pre>
+    </section>
+  </main>
+
+  <script src="/console/app.js"></script>
+</body>
+</html>
