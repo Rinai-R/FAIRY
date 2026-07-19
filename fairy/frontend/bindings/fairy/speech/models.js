@@ -54,6 +54,20 @@ export class SaveSettingsRequest {
              */
             this["appId"] = "";
         }
+        if (!("synthesisResourceId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["synthesisResourceId"] = "";
+        }
+        if (!("synthesisModel" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["synthesisModel"] = "";
+        }
         if (!("apiKey" in $$source)) {
             /**
              * @member
@@ -172,6 +186,20 @@ export class Status {
              * @type {string}
              */
             this["appId"] = "";
+        }
+        if (!("synthesisResourceId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["synthesisResourceId"] = "";
+        }
+        if (!("synthesisModel" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["synthesisModel"] = "";
         }
         if (!("defaultSpeaker" in $$source)) {
             /**

@@ -263,7 +263,7 @@ func (s *Store) openWrite() (*sql.DB, error) {
 func initializeSchema(db *sql.DB) error {
 	_, err := db.Exec(`
 CREATE TABLE IF NOT EXISTS schema_meta(singleton INTEGER PRIMARY KEY CHECK(singleton = 1), version INTEGER NOT NULL);
-INSERT OR IGNORE INTO schema_meta(singleton, version) VALUES (1, 5);
+INSERT OR IGNORE INTO schema_meta(singleton, version) VALUES (1, 6);
 CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY, character_id TEXT NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS conversations_character_updated ON conversations(character_id, updated_at_ms DESC, id ASC);
 CREATE TABLE IF NOT EXISTS conversation_turns(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), sequence INTEGER NOT NULL CHECK(sequence > 0), status TEXT NOT NULL CHECK(status IN ('interpreting', 'planning', 'responding', 'completed', 'interrupted', 'failed')), error_code TEXT, error_message TEXT, error_retryable INTEGER, extraction_state TEXT NOT NULL DEFAULT 'ineligible' CHECK(extraction_state IN ('ineligible', 'pending', 'claimed', 'processed')), created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL, UNIQUE(conversation_id, sequence));
@@ -276,6 +276,10 @@ CREATE TABLE IF NOT EXISTS context_windows(conversation_id TEXT NOT NULL REFEREN
 CREATE TABLE IF NOT EXISTS personal_memories(id TEXT PRIMARY KEY, kind TEXT NOT NULL, scope_kind TEXT NOT NULL, character_id TEXT, review_status TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL, confidence_basis_points INTEGER NOT NULL, source_conversation_id TEXT NOT NULL, source_turn_id TEXT NOT NULL, supersedes_id TEXT REFERENCES personal_memories(id), created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS knowledge_entries(id TEXT PRIMARY KEY, topic TEXT NOT NULL, statement TEXT NOT NULL, status TEXT NOT NULL, verification_basis TEXT NOT NULL, confidence_basis_points INTEGER NOT NULL, source_conversation_id TEXT NOT NULL, source_turn_id TEXT NOT NULL, supersedes_id TEXT REFERENCES knowledge_entries(id), created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS knowledge_sources(knowledge_id TEXT NOT NULL REFERENCES knowledge_entries(id), source_id TEXT NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL, snippet TEXT NOT NULL, rank INTEGER NOT NULL, fetched_at_ms INTEGER NOT NULL, PRIMARY KEY(knowledge_id, source_id));
+CREATE TABLE IF NOT EXISTS memory_embedding_items(vector_rowid INTEGER PRIMARY KEY, item_kind TEXT NOT NULL CHECK(item_kind IN ('personal_memory', 'knowledge')), item_id TEXT NOT NULL, model_id TEXT NOT NULL, dimensions INTEGER NOT NULL CHECK(dimensions > 0), content_hash TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending', 'embedded', 'failed')), error_code TEXT, error_message TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL, UNIQUE(item_kind, item_id, model_id));
+CREATE INDEX IF NOT EXISTS memory_embedding_items_item ON memory_embedding_items(item_kind, item_id, model_id);
+CREATE TABLE IF NOT EXISTS memory_embedding_jobs(id TEXT PRIMARY KEY, item_kind TEXT NOT NULL CHECK(item_kind IN ('personal_memory', 'knowledge')), item_id TEXT NOT NULL, model_id TEXT NOT NULL, dimensions INTEGER NOT NULL CHECK(dimensions > 0), content_hash TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'succeeded', 'failed')), error_code TEXT, error_message TEXT, retryable INTEGER NOT NULL DEFAULT 0, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL, UNIQUE(item_kind, item_id, model_id, content_hash));
+CREATE INDEX IF NOT EXISTS memory_embedding_jobs_status ON memory_embedding_jobs(status, updated_at_ms ASC, id ASC);
 CREATE TABLE IF NOT EXISTS extraction_batches(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), character_id TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')), first_turn_sequence INTEGER NOT NULL CHECK(first_turn_sequence > 0), last_turn_sequence INTEGER NOT NULL CHECK(last_turn_sequence >= first_turn_sequence), error_code TEXT, error_message TEXT, error_retryable INTEGER, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS extraction_batch_turns(batch_id TEXT NOT NULL REFERENCES extraction_batches(id), turn_id TEXT NOT NULL REFERENCES conversation_turns(id), turn_sequence INTEGER NOT NULL CHECK(turn_sequence > 0), PRIMARY KEY(batch_id, turn_id), UNIQUE(batch_id, turn_sequence));
 CREATE UNIQUE INDEX IF NOT EXISTS extraction_batches_one_running ON extraction_batches(conversation_id) WHERE status = 'running';
@@ -318,7 +322,8 @@ CREATE TRIGGER IF NOT EXISTS knowledge_entries_au AFTER UPDATE OF topic, stateme
   INSERT INTO knowledge_entries_fts(rowid, topic, statement)
   VALUES (new.rowid, new.topic, new.statement);
 END;
-UPDATE schema_meta SET version = 5 WHERE singleton = 1 AND version < 5;
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_embedding_vec USING vec0(embedding float[512]);
+UPDATE schema_meta SET version = 6 WHERE singleton = 1 AND version < 6;
 `)
 	if err != nil {
 		return fmt.Errorf("initializing memory schema: %w", err)

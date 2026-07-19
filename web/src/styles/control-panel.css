@@ -612,7 +612,7 @@
 
 .cp-intelligence-track {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   margin: 4px 0 14px;
   overflow: hidden;
   border: 1px solid var(--fairy-border-soft);
@@ -668,7 +668,7 @@
 
 .cp-intelligence-metrics {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
   gap: 8px;
   margin-bottom: 12px;
 }
@@ -685,6 +685,14 @@
 .cp-intelligence-metrics .rt-Text:last-child {
   color: var(--fairy-accent-strong);
   font-variant-numeric: tabular-nums;
+}
+
+.cp-semantic-status-card.rt-Card {
+  margin-bottom: 12px;
+}
+
+.cp-semantic-status-card p {
+  margin: 2px 0 0;
 }
 
 .cp-knowledge-ledger {

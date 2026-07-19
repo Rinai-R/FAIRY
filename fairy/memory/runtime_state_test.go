@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite/vec"
 )
 
 func TestRuntimeStateSchemaMigratesV3Database(t *testing.T) {
@@ -39,8 +40,8 @@ func TestRuntimeStateSchemaMigratesV3Database(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Summary() error = %v", err)
 	}
-	if summary.SchemaVersion != 5 || summary.Conversations != 1 {
-		t.Fatalf("summary = %#v, want schema v5 and preserved conversation", summary)
+	if summary.SchemaVersion != 6 || summary.Conversations != 1 {
+		t.Fatalf("summary = %#v, want schema v6 and preserved conversation", summary)
 	}
 
 	db, err = sql.Open(driverName, path)
@@ -48,14 +49,28 @@ func TestRuntimeStateSchemaMigratesV3Database(t *testing.T) {
 		t.Fatalf("sql.Open() migrated error = %v", err)
 	}
 	defer db.Close()
-	for _, table := range []string{"turn_runtime_events", "lane_continuations", "context_windows"} {
+	for _, table := range []string{"turn_runtime_events", "lane_continuations", "context_windows", "memory_embedding_items", "memory_embedding_jobs", "memory_embedding_vec"} {
 		if !runtimeStateTableExists(t, db, table) {
 			t.Fatalf("runtime table %q does not exist", table)
 		}
 	}
+	assertSQLiteVecWorks(t, db)
 	if !runtimeStateColumnExists(t, db, "context_windows", "last_trigger") {
 		t.Fatal("context_windows.last_trigger column does not exist")
 	}
+}
+
+func TestSemanticVectorSchemaCreatesQueryableVec0Table(t *testing.T) {
+	store, err := OpenOrCreate(filepath.Join(t.TempDir(), "fairy.sqlite3"))
+	if err != nil {
+		t.Fatalf("OpenOrCreate() error = %v", err)
+	}
+	db, err := store.openWrite()
+	if err != nil {
+		t.Fatalf("openWrite() error = %v", err)
+	}
+	defer db.Close()
+	assertSQLiteVecWorks(t, db)
 }
 
 func TestTurnRuntimeEventsRoundTripAndRejectForbiddenMetadata(t *testing.T) {
@@ -248,6 +263,26 @@ func runtimeStateTableExists(t *testing.T, db *sql.DB, name string) bool {
 		t.Fatalf("checking table %q: %v", name, err)
 	}
 	return count == 1
+}
+
+func assertSQLiteVecWorks(t *testing.T, db *sql.DB) {
+	t.Helper()
+	zero := strings.Repeat("0,", SemanticEmbeddingDimensions-1) + "0"
+	oneHot := strings.Repeat("0,", SemanticEmbeddingDimensions-1) + "1"
+	if _, err := db.Exec("DELETE FROM memory_embedding_vec WHERE rowid IN (9001, 9002)"); err != nil {
+		t.Fatalf("clearing semantic vec fixture: %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO memory_embedding_vec(rowid, embedding) VALUES (?1, ?2), (?3, ?4)", 9001, "["+zero+"]", 9002, "["+oneHot+"]"); err != nil {
+		t.Fatalf("inserting semantic vec fixture: %v", err)
+	}
+	var rowID int64
+	var distance float64
+	if err := db.QueryRow("SELECT rowid, distance FROM memory_embedding_vec WHERE embedding MATCH ?1 ORDER BY distance LIMIT 1", "["+zero+"]").Scan(&rowID, &distance); err != nil {
+		t.Fatalf("querying semantic vec fixture: %v", err)
+	}
+	if rowID != 9001 || distance != 0 {
+		t.Fatalf("nearest vec = rowid %d distance %f, want rowid 9001 distance 0", rowID, distance)
+	}
 }
 
 func runtimeStateColumnExists(t *testing.T, db *sql.DB, table string, column string) bool {

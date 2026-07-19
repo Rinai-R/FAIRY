@@ -12,6 +12,7 @@ import (
 	"fairy/character"
 	"fairy/config"
 	"fairy/memory"
+	"fairy/memory/semantic"
 	"fairy/model"
 	"fairy/profile"
 	"fairy/search"
@@ -22,6 +23,7 @@ import (
 type CompanionService struct {
 	root              string
 	memoryStore       *memory.Store
+	semanticEmbedder  semantic.Embedder
 	modelService      *model.ModelService
 	webSearch         WebSearchBackend
 	speech            SpeechSynthesizer
@@ -141,6 +143,16 @@ func AttachSpeechSynthesizer(s *CompanionService, synthesizer SpeechSynthesizer)
 		return
 	}
 	s.speech = synthesizer
+}
+
+// AttachSemanticEmbedder injects the optional local semantic backend used by
+// memory_search and bounded embedding job passes. A nil or unavailable embedder
+// leaves the runtime on the existing FTS-only memory path.
+func AttachSemanticEmbedder(s *CompanionService, embedder semantic.Embedder) {
+	if s == nil || embedder == nil {
+		return
+	}
+	s.semanticEmbedder = embedder
 }
 
 func (s *CompanionService) characterStore() *character.Store {
@@ -526,7 +538,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 				)
 				switch call.Name {
 				case toolMemorySearch:
-					extra, toolErr := s.memoryStore.Retrieve(bootstrap.Conversation.CharacterID, query)
+					extra, toolErr := s.retrieveMemoryForTool(bootstrap.Conversation.CharacterID, query)
 					if toolErr != nil {
 						lg.Warn("cognition loop", zap.String("phase", "tool_failed"), zap.String("tool", call.Name), zap.Error(toolErr))
 						retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
@@ -546,6 +558,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 							"queryHash":        runtimeHash(query),
 							"personalCount":    len(extra.PersonalMemories),
 							"knowledgeCount":   len(extra.Knowledge),
+							"semanticStatus":   extra.SemanticStatus,
 							"mergedPersonal":   len(retrieval.PersonalMemories),
 							"mergedKnowledge":  len(retrieval.Knowledge),
 							"modelDrivenIndex": modelDrivenTools + 1,

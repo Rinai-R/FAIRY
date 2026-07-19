@@ -15,7 +15,7 @@ func TestRespondInstructionsStayStable(t *testing.T) {
 	// Exact strings define the Go/Wails production prompt contract.
 	const stableRespond = RespondInstructions
 	const stableCompact = "FAIRY conversation compactor v2. Return only a concise plain-text summary of meaningful user and assistant dialogue for future companion turns. Exclude developer instructions, obsolete character revisions, obsolete user names, cache metadata, and duplicate canonical context. Do not invent facts or wrap the summary in JSON or Markdown."
-	const stableExtract = "Read the supplied conversation batch and existing personal memories. Return exactly one JSON object: {\"mutations\": [...]}. A mutation operation is either create with kind, scope, content, confidenceBasisPoints; or supersede with memoryId plus the same fields. Use only memory IDs supplied in existingMemories. preference, profile, and experience use global scope; relationship uses the supplied current character scope. Record only durable facts directly supported by the dialogue. Return an empty mutations array when nothing should change. Do not output Markdown, reasoning, delete, or tombstone operations."
+	const stableExtract = "Read the supplied conversation batch and existing personal memories. Return exactly one JSON object: {\"mutations\": [...]}. A mutation operation is either create with kind, scope, content, confidenceBasisPoints; or supersede with memoryId plus the same fields. Use only memory IDs supplied in existingMemories. Map durable companion observations into existing kinds: profile for stable user traits and communication style; preference for likes, dislikes, support expectations, and interaction preferences; experience for recurring life context or meaningful events explicitly described by the user; relationship for current-character-specific trust, closeness, boundaries, and pacing cues. preference, profile, and experience use global scope; relationship uses the supplied current character scope. Record only durable facts directly supported by the dialogue. Do not record transient emotions, diagnoses, unsupported personality judgments, hidden analysis traces, or unsupported role strategies as facts. Return an empty mutations array when nothing should change. Do not output Markdown, reasoning, delete, or tombstone operations."
 	if RespondInstructions != stableRespond {
 		t.Fatalf("RespondInstructions changed unexpectedly (%d vs %d runes)", utf8.RuneCountInString(RespondInstructions), utf8.RuneCountInString(stableRespond))
 	}
@@ -47,6 +47,27 @@ func TestRespondInstructionsStayStable(t *testing.T) {
 	}
 	if strings.Contains(RespondInstructions, `"decision":`) {
 		t.Fatal("RespondInstructions must not request a decision JSON field")
+	}
+}
+
+func TestExtractInstructionsDescribeCompanionMemoryKinds(t *testing.T) {
+	for _, required := range []string{
+		"communication style",
+		"support expectations",
+		"interaction preferences",
+		"recurring life context",
+		"current-character-specific trust",
+		"boundaries",
+		"pacing cues",
+		"Do not record transient emotions",
+		"diagnoses",
+		"hidden analysis traces",
+		"unsupported role strategies",
+		"Do not output Markdown, reasoning, delete, or tombstone operations",
+	} {
+		if !strings.Contains(ExtractInstructions, required) {
+			t.Fatalf("ExtractInstructions missing %q", required)
+		}
 	}
 }
 

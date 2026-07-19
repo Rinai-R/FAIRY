@@ -2,6 +2,7 @@ package companion
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,9 +12,43 @@ import (
 
 	"fairy/config"
 	"fairy/memory"
+	"fairy/memory/semantic"
 	"fairy/model"
 	"fairy/search"
 )
+
+type companionSemanticFakeEmbedder struct {
+	ready bool
+	dims  int
+}
+
+func (f companionSemanticFakeEmbedder) Ready() bool { return f.ready }
+
+func (f companionSemanticFakeEmbedder) Status() semantic.Status {
+	if f.ready {
+		return semantic.StatusReady
+	}
+	return semantic.StatusUnavailable
+}
+
+func (f companionSemanticFakeEmbedder) Dims() int {
+	if f.dims != 0 {
+		return f.dims
+	}
+	return memory.SemanticEmbeddingDimensions
+}
+
+func (f companionSemanticFakeEmbedder) Embed(texts []string) ([][]float32, error) {
+	vectors := make([][]float32, len(texts))
+	for index := range texts {
+		vector := make([]float32, f.Dims())
+		if len(vector) > 0 {
+			vector[0] = 1
+		}
+		vectors[index] = vector
+	}
+	return vectors, nil
+}
 
 func writeChatToolCall(w http.ResponseWriter, name string, argumentsJSON string) {
 	payload := fmt.Sprintf(
@@ -37,6 +72,14 @@ func TestParseToolQueryAndSpecs(t *testing.T) {
 	if len(specs) != 1 || specs[0].Name != toolMemorySearch {
 		t.Fatalf("memory-only specs = %#v", specs)
 	}
+	for _, want := range []string{"profile", "preferences", "experiences", "current-character relationship", "confirmed local knowledge", "semanticStatus"} {
+		if !strings.Contains(specs[0].Description, want) {
+			t.Fatalf("memory tool description missing %q: %q", want, specs[0].Description)
+		}
+	}
+	if !strings.Contains(specs[0].Description, "FTS-only") {
+		t.Fatalf("memory tool description missing layered metadata: %q", specs[0].Description)
+	}
 	specs = RespondToolSpecs(true)
 	if len(specs) != 2 || specs[1].Name != toolWebSearch {
 		t.Fatalf("web specs = %#v", specs)
@@ -51,11 +94,161 @@ func TestParseToolQueryAndSpecs(t *testing.T) {
 
 func TestMergeRetrievalContextDedupesByID(t *testing.T) {
 	merged := mergeRetrievalContext(
-		memory.RetrievalContext{PersonalMemories: []memory.RetrievedPersonalMemory{{ID: "a", Content: "1"}}},
-		memory.RetrievalContext{PersonalMemories: []memory.RetrievedPersonalMemory{{ID: "a", Content: "dup"}, {ID: "b", Content: "2"}}},
+		memory.RetrievalContext{PersonalMemories: []memory.RetrievedPersonalMemory{{ID: "a", Content: "1"}}, SemanticStatus: "unavailable"},
+		memory.RetrievalContext{PersonalMemories: []memory.RetrievedPersonalMemory{{ID: "a", Content: "dup"}, {ID: "b", Content: "2"}}, SemanticStatus: "ready"},
 	)
 	if len(merged.PersonalMemories) != 2 || merged.PersonalMemories[0].Content != "1" || merged.PersonalMemories[1].ID != "b" {
 		t.Fatalf("merged = %#v", merged.PersonalMemories)
+	}
+	if merged.SemanticStatus != "ready" {
+		t.Fatalf("semantic status = %q", merged.SemanticStatus)
+	}
+}
+
+func TestRetrievalFromWebHitsUsesKnowledgeLayer(t *testing.T) {
+	ctx := retrievalFromWebHits([]search.Hit{{
+		Title: "某动画更新",
+		URL:   "https://anime.example/1",
+	}})
+	if len(ctx.Knowledge) != 1 {
+		t.Fatalf("knowledge = %#v", ctx.Knowledge)
+	}
+	if ctx.Knowledge[0].Layer != "knowledge" || ctx.SemanticStatus != "unavailable" {
+		t.Fatalf("metadata = layer %q semantic %q", ctx.Knowledge[0].Layer, ctx.SemanticStatus)
+	}
+}
+
+func TestRetrieveMemoryForToolUsesSemanticWhenReady(t *testing.T) {
+	root := t.TempDir()
+	memoryStore, characterID := seedCompanionRuntime(t, root)
+	bootstrap, err := memoryStore.OpenOrCreateCharacterConversation(characterID)
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation(seed) error = %v", err)
+	}
+	seedTurn, err := memoryStore.BeginTurn(bootstrap.Conversation.ID, "我喜欢咖啡")
+	if err != nil {
+		t.Fatalf("BeginTurn(seed) error = %v", err)
+	}
+	if _, err := memoryStore.CompleteTurn(bootstrap.Conversation.ID, seedTurn.ID, "我记住了。"); err != nil {
+		t.Fatalf("CompleteTurn(seed) error = %v", err)
+	}
+	if _, err := memoryStore.CreatePersonalMemory("preference", memory.MemoryScope{Type: "global"}, "用户喜欢咖啡", 9000); err != nil {
+		t.Fatalf("CreatePersonalMemory() error = %v", err)
+	}
+	embedder := companionSemanticFakeEmbedder{ready: true}
+	if result, err := memoryStore.ProcessEmbeddingJobs(embedder, 10); err != nil || result.Succeeded != 1 {
+		t.Fatalf("ProcessEmbeddingJobs() = %#v, %v", result, err)
+	}
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{}, nil), nil)
+	AttachSemanticEmbedder(service, embedder)
+	ctx, err := service.retrieveMemoryForTool(characterID, "咖啡")
+	if err != nil {
+		t.Fatalf("retrieveMemoryForTool() error = %v", err)
+	}
+	if ctx.SemanticStatus != string(semantic.StatusUsed) {
+		t.Fatalf("semantic status = %q, want used", ctx.SemanticStatus)
+	}
+	if len(ctx.PersonalMemories) != 1 || ctx.PersonalMemories[0].Layer != "preference" {
+		t.Fatalf("semantic memories = %#v", ctx.PersonalMemories)
+	}
+}
+
+func TestRetrieveMemoryForToolUsesSemanticAPIEmbedder(t *testing.T) {
+	var embeddingCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/embeddings" {
+			t.Fatalf("embedding path = %q, want /v1/embeddings", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode embedding request: %v", err)
+		}
+		if body["model"] != "text-embedding-3-small" || int(body["dimensions"].(float64)) != memory.SemanticEmbeddingDimensions || body["encoding_format"] != "float" {
+			t.Fatalf("embedding request = %#v", body)
+		}
+		input, ok := body["input"].([]any)
+		if !ok || len(input) != 1 || strings.TrimSpace(input[0].(string)) == "" {
+			t.Fatalf("embedding input = %#v", body["input"])
+		}
+		embeddingCalls.Add(1)
+		vector := make([]float32, memory.SemanticEmbeddingDimensions)
+		vector[0] = 1
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{
+				"index":     0,
+				"embedding": vector,
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	root := t.TempDir()
+	writeModelConnectionWithEndpoint(t, root, "chat_completions", server.URL+"/v1", "no_auth")
+	if err := config.WriteSemanticEmbeddingSettings(root, config.SemanticEmbeddingSettings{
+		Enabled:    true,
+		Model:      "text-embedding-3-small",
+		Dimensions: config.SemanticEmbeddingDimensions,
+	}); err != nil {
+		t.Fatalf("WriteSemanticEmbeddingSettings() error = %v", err)
+	}
+	memoryStore, characterID := seedCompanionRuntime(t, root)
+	bootstrap, err := memoryStore.OpenOrCreateCharacterConversation(characterID)
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation(seed) error = %v", err)
+	}
+	seedTurn, err := memoryStore.BeginTurn(bootstrap.Conversation.ID, "我喜欢咖啡")
+	if err != nil {
+		t.Fatalf("BeginTurn(seed) error = %v", err)
+	}
+	if _, err := memoryStore.CompleteTurn(bootstrap.Conversation.ID, seedTurn.ID, "我记住了。"); err != nil {
+		t.Fatalf("CompleteTurn(seed) error = %v", err)
+	}
+	if _, err := memoryStore.CreatePersonalMemory("preference", memory.MemoryScope{Type: "global"}, "用户喜欢咖啡", 9000); err != nil {
+		t.Fatalf("CreatePersonalMemory() error = %v", err)
+	}
+	settings, err := config.ReadSemanticEmbeddingSettings(root)
+	if err != nil {
+		t.Fatalf("ReadSemanticEmbeddingSettings() error = %v", err)
+	}
+	modelService := model.NewModelService(root, nil)
+	embedder, err := modelService.SemanticAPIEmbedder(settings)
+	if err != nil {
+		t.Fatalf("SemanticAPIEmbedder() error = %v", err)
+	}
+	if result, err := memoryStore.ProcessEmbeddingJobs(embedder, 10); err != nil || result.Succeeded != 1 {
+		t.Fatalf("ProcessEmbeddingJobs() = %#v, %v", result, err)
+	}
+	service := NewCompanionServiceWithRuntime(root, memoryStore, modelService, nil)
+	AttachSemanticEmbedder(service, embedder)
+	ctx, err := service.retrieveMemoryForTool(characterID, "咖啡")
+	if err != nil {
+		t.Fatalf("retrieveMemoryForTool() error = %v", err)
+	}
+	if ctx.SemanticStatus != string(semantic.StatusUsed) {
+		t.Fatalf("semantic status = %q, want used", ctx.SemanticStatus)
+	}
+	if len(ctx.PersonalMemories) != 1 || ctx.PersonalMemories[0].Content != "用户喜欢咖啡" {
+		t.Fatalf("semantic memories = %#v", ctx.PersonalMemories)
+	}
+	if embeddingCalls.Load() < 2 {
+		t.Fatalf("embedding calls = %d, want job + query", embeddingCalls.Load())
+	}
+}
+
+func TestRetrieveMemoryForToolFallsBackWhenSemanticUnavailable(t *testing.T) {
+	root := t.TempDir()
+	memoryStore, characterID := seedCompanionRuntime(t, root)
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{}, nil), nil)
+	AttachSemanticEmbedder(service, companionSemanticFakeEmbedder{})
+	ctx, err := service.retrieveMemoryForTool(characterID, "咖啡")
+	if err != nil {
+		t.Fatalf("retrieveMemoryForTool() error = %v", err)
+	}
+	if ctx.SemanticStatus != string(semantic.StatusUnavailable) {
+		t.Fatalf("semantic status = %q, want unavailable", ctx.SemanticStatus)
+	}
+	if len(ctx.PersonalMemories) != 0 || len(ctx.Knowledge) != 0 {
+		t.Fatalf("fallback should not fabricate short-query hits: %#v", ctx)
 	}
 }
 

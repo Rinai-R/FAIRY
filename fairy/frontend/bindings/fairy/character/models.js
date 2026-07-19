@@ -287,10 +287,10 @@ export class Record {
      * @returns {Record}
      */
     static createFrom($$source = {}) {
-        const $$createField6_0 = $$createType7;
+        const $$createField7_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("appearance" in $$parsedSource) {
-            $$parsedSource["appearance"] = $$createField6_0($$parsedSource["appearance"]);
+            $$parsedSource["appearance"] = $$createField7_0($$parsedSource["appearance"]);
         }
         return new Record(/** @type {Partial<Record>} */($$parsedSource));
     }

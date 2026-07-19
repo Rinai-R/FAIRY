@@ -32,3 +32,10 @@ func (r *Reader) WebSearchSettings() (WebSearchSettings, error) {
 	}
 	return ReadWebSearchSettings(r.root)
 }
+
+func (r *Reader) SemanticEmbeddingSettings() (SemanticEmbeddingSettings, error) {
+	if r == nil || r.root == "" {
+		return SemanticEmbeddingSettings{}, errors.New("config root is required")
+	}
+	return ReadSemanticEmbeddingSettings(r.root)
+}

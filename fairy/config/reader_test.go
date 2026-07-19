@@ -29,4 +29,11 @@ func TestReaderModelConnectionAndWebSearch(t *testing.T) {
 	if !settings.Enabled {
 		t.Fatal("WebSearchSettings().Enabled = false, want default true")
 	}
+	semanticSettings, err := reader.SemanticEmbeddingSettings()
+	if err != nil {
+		t.Fatalf("SemanticEmbeddingSettings() error = %v", err)
+	}
+	if semanticSettings.Enabled || semanticSettings.Dimensions != SemanticEmbeddingDimensions {
+		t.Fatalf("SemanticEmbeddingSettings() = %#v", semanticSettings)
+	}
 }

@@ -18,6 +18,7 @@ const (
 	extractionThreshold   uint64 = 6
 	extractionBatchLimit         = memory.DefaultExtractionBatchLimit
 	extractionIdleSeconds        = 30
+	embeddingJobPassLimit        = 8
 )
 
 type extractionBatchPromptPayload struct {
@@ -90,6 +91,9 @@ func (s *CompanionService) claimAndRunExtraction(conversationID string) {
 		return
 	}
 	s.clearBackgroundError()
+	if _, err := s.processEmbeddingJobPass(embeddingJobPassLimit); err != nil {
+		s.setBackgroundError(err)
+	}
 }
 
 func (s *CompanionService) executeExtractionBatch(batch *memory.ExtractionBatchInput) error {
@@ -120,6 +124,13 @@ func (s *CompanionService) executeExtractionBatch(batch *memory.ExtractionBatchI
 	}
 	_, err = s.memoryStore.CommitMemoryMutations(batch.BatchID, batch.CharacterID, allowed, output.Mutations)
 	return err
+}
+
+func (s *CompanionService) processEmbeddingJobPass(limit int) (memory.EmbeddingJobResult, error) {
+	if s == nil || s.memoryStore == nil || limit <= 0 {
+		return memory.EmbeddingJobResult{SemanticStatus: "unavailable"}, nil
+	}
+	return s.memoryStore.ProcessEmbeddingJobs(s.semanticEmbedder, limit)
 }
 
 func (s *CompanionService) ActiveBackgroundJobs() int64 {

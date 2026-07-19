@@ -259,6 +259,12 @@ export async function loadWailsMemorySummary(loadBindings = defaultLoadBindings)
   return parseMemorySummary(summary);
 }
 
+export async function loadWailsSemanticEmbeddingStatus(loadBindings = defaultLoadBindings) {
+  const bindings = await loadBindings();
+  const status = await bindings.MemoryService.SemanticEmbeddingStatus();
+  return parseSemanticEmbeddingStatus(status);
+}
+
 export async function loadWailsActiveBackgroundJobs(loadBindings = defaultLoadBindings) {
   const bindings = await loadBindings();
   const value = await bindings.CompanionService.ActiveBackgroundJobs();
@@ -573,6 +579,45 @@ export function parseMemorySummary(value) {
     candidateKnowledge: requireNonNegativeInteger(value.candidateKnowledge, "candidateKnowledge"),
     verifiedKnowledge: requireNonNegativeInteger(value.verifiedKnowledge, "verifiedKnowledge"),
     readOnly: requireBoolean(value.readOnly, "readOnly"),
+  });
+}
+
+export function parseSemanticEmbeddingStatus(value) {
+  requireObject(value, "Wails semantic embedding status");
+  rejectSecretFields(value, "Wails semantic embedding status");
+  rejectUnexpectedKeys(
+    value,
+    new Set([
+      "modelId",
+      "dimensions",
+      "modelPath",
+      "modelStatus",
+      "runtimeStatus",
+      "databaseStatus",
+      "semanticStatus",
+      "reason",
+      "pendingJobs",
+      "runningJobs",
+      "failedJobs",
+      "embeddedItems",
+      "vectorRows",
+    ]),
+    "Wails semantic embedding status",
+  );
+  return Object.freeze({
+    modelId: requireString(value.modelId, "modelId"),
+    dimensions: requirePositiveInteger(value.dimensions, "dimensions"),
+    modelPath: requireString(value.modelPath, "modelPath"),
+    modelStatus: requireString(value.modelStatus, "modelStatus"),
+    runtimeStatus: requireString(value.runtimeStatus, "runtimeStatus"),
+    databaseStatus: requireString(value.databaseStatus, "databaseStatus"),
+    semanticStatus: requireString(value.semanticStatus, "semanticStatus"),
+    reason: requireOptionalString(value.reason, "reason"),
+    pendingJobs: requireNonNegativeInteger(value.pendingJobs, "pendingJobs"),
+    runningJobs: requireNonNegativeInteger(value.runningJobs, "runningJobs"),
+    failedJobs: requireNonNegativeInteger(value.failedJobs, "failedJobs"),
+    embeddedItems: requireNonNegativeInteger(value.embeddedItems, "embeddedItems"),
+    vectorRows: requireNonNegativeInteger(value.vectorRows, "vectorRows"),
   });
 }
 

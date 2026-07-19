@@ -258,6 +258,11 @@ func insertPersonalMemory(tx *sql.Tx, id string, kind string, scope MemoryScope,
 	if _, err := tx.Exec("INSERT INTO personal_memories(id, kind, scope_kind, character_id, review_status, content, status, confidence_basis_points, source_conversation_id, source_turn_id, supersedes_id, created_at_ms, updated_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?10, ?11, ?11)", id, kind, scopeKind, characterID, reviewStatus, content, int(confidence), sourceConversationID, sourceTurnID, supersedesID, now); err != nil {
 		return PersonalMemoryRecord{}, fmt.Errorf("inserting personal memory: %w", err)
 	}
+	if reviewStatus == "ready" {
+		if err := enqueuePersonalMemoryEmbeddingJob(tx, id, content, now); err != nil {
+			return PersonalMemoryRecord{}, err
+		}
+	}
 	return PersonalMemoryRecord{ID: id, Kind: kind, Scope: scope, ReviewStatus: reviewStatus, Content: content, Status: "active", ConfidenceBasisPoints: confidence, SourceConversationID: sourceConversationID, SourceTurnID: sourceTurnID, SupersedesID: supersedesID, CreatedAtUnixMS: now, UpdatedAtUnixMS: now}, nil
 }
 

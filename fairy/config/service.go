@@ -53,3 +53,18 @@ func (s *ConfigService) ClearModelConnection() (ModelConnectionStatus, error) {
 	s.emitChange(notify.ModelChanged(status.Configured, status.Configured))
 	return status, nil
 }
+
+func (s *ConfigService) SemanticEmbeddingStatus() (SemanticEmbeddingStatus, error) {
+	settings, err := ReadSemanticEmbeddingSettings(s.root)
+	if err != nil {
+		return SemanticEmbeddingStatus{}, err
+	}
+	return SemanticEmbeddingStatusFromSettings(settings), nil
+}
+
+func (s *ConfigService) SaveSemanticEmbeddingSettings(input SemanticEmbeddingSettings) (SemanticEmbeddingStatus, error) {
+	if err := WriteSemanticEmbeddingSettings(s.root, input); err != nil {
+		return SemanticEmbeddingStatus{}, err
+	}
+	return s.SemanticEmbeddingStatus()
+}

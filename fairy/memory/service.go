@@ -25,6 +25,10 @@ func (s *MemoryService) Summary() (Summary, error) {
 	return NewStore(dbPath).Summary()
 }
 
+func (s *MemoryService) SemanticEmbeddingStatus() (SemanticEmbeddingReadiness, error) {
+	return LocalSemanticEmbeddingStatus(s.root)
+}
+
 func (s *MemoryService) OpenOrCreateCharacterConversation(characterID string) (ConversationBootstrap, error) {
 	store, err := s.openStore()
 	if err != nil {

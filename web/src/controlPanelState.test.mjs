@@ -185,8 +185,13 @@ test("intelligence status layout targets only its dot and stacks on narrow windo
   const cssSource = readFileSync(new URL("./styles/control-panel.css", import.meta.url), "utf8");
 
   assert.match(appSource, /className="cp-intelligence-status-dot"/);
+  assert.match(appSource, /loadWailsSemanticEmbeddingStatus/);
+  assert.match(appSource, /向量记忆/);
+  assert.match(appSource, /待向量化/);
+  assert.match(appSource, /本地语义检索/);
   assert.doesNotMatch(cssSource, /\.cp-intelligence-track\s*>\s*div\s*>\s*span/);
   assert.match(cssSource, /\.cp-intelligence-status-dot\s*\{/);
+  assert.match(cssSource, /\.cp-intelligence-track\s*\{[\s\S]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
   assert.match(cssSource, /@media \(max-width: 520px\)[\s\S]*\.cp-intelligence-track\s*\{[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
 });
 

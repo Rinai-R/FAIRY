@@ -104,11 +104,20 @@ export function RevisePersonalMemory(id, content, confidenceBasisPoints) {
 }
 
 /**
+ * @returns {$CancellablePromise<$models.SemanticEmbeddingReadiness>}
+ */
+export function SemanticEmbeddingStatus() {
+    return $Call.ByID(658162449).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType6($result);
+    }));
+}
+
+/**
  * @returns {$CancellablePromise<$models.Summary>}
  */
 export function Summary() {
     return $Call.ByID(3540947350).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType6($result);
+        return $$createType7($result);
     }));
 }
 
@@ -117,7 +126,7 @@ export function Summary() {
  */
 export function TokenUsageReport() {
     return $Call.ByID(92611580).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType7($result);
+        return $$createType8($result);
     }));
 }
 
@@ -144,5 +153,6 @@ const $$createType2 = $models.ExtractionBatchCatalog.createFrom;
 const $$createType3 = $models.KnowledgeCatalog.createFrom;
 const $$createType4 = $models.ConversationBootstrap.createFrom;
 const $$createType5 = $models.PersonalMemoryCatalog.createFrom;
-const $$createType6 = $models.Summary.createFrom;
-const $$createType7 = $models.UsageReport.createFrom;
+const $$createType6 = $models.SemanticEmbeddingReadiness.createFrom;
+const $$createType7 = $models.Summary.createFrom;
+const $$createType8 = $models.UsageReport.createFrom;

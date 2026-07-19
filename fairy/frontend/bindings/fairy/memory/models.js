@@ -807,6 +807,122 @@ export class PromptWindowRecord {
     }
 }
 
+/**
+ * SemanticEmbeddingReadiness reports local semantic embedding readiness without
+ * creating directories, downloading assets, or loading ONNX runtime.
+ */
+export class SemanticEmbeddingReadiness {
+    /**
+     * Creates a new SemanticEmbeddingReadiness instance.
+     * @param {Partial<SemanticEmbeddingReadiness>} [$$source = {}] - The source object to create the SemanticEmbeddingReadiness.
+     */
+    constructor($$source = {}) {
+        if (!("modelId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["modelId"] = "";
+        }
+        if (!("dimensions" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["dimensions"] = 0;
+        }
+        if (!("modelPath" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["modelPath"] = "";
+        }
+        if (!("modelStatus" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["modelStatus"] = "";
+        }
+        if (!("runtimeStatus" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["runtimeStatus"] = "";
+        }
+        if (!("databaseStatus" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["databaseStatus"] = "";
+        }
+        if (!("semanticStatus" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["semanticStatus"] = "";
+        }
+        if (!("reason" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["reason"] = "";
+        }
+        if (!("pendingJobs" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["pendingJobs"] = 0;
+        }
+        if (!("runningJobs" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["runningJobs"] = 0;
+        }
+        if (!("failedJobs" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["failedJobs"] = 0;
+        }
+        if (!("embeddedItems" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["embeddedItems"] = 0;
+        }
+        if (!("vectorRows" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["vectorRows"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SemanticEmbeddingReadiness instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {SemanticEmbeddingReadiness}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SemanticEmbeddingReadiness(/** @type {Partial<SemanticEmbeddingReadiness>} */($$parsedSource));
+    }
+}
+
 export class Summary {
     /**
      * Creates a new Summary instance.

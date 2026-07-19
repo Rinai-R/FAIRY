@@ -62,6 +62,7 @@ import {
   loadWailsMemorySummary,
   loadWailsModelStatus,
   loadWailsPersonalMemoryCatalog,
+  loadWailsSemanticEmbeddingStatus,
   loadWailsSpeechStatus,
   loadWailsTokenUsageReport,
   loadWailsUserProfile,
@@ -264,7 +265,7 @@ function SpeechLanguageSelect({ id, value, onValueChange, disabled, ariaLabel })
   );
 }
 
-function intelligenceStatusFromWailsSummary(summary, activeBackgroundJobs = 0) {
+function intelligenceStatusFromWailsSummary(summary, activeBackgroundJobs = 0, semanticEmbedding = null) {
   return Object.freeze({
     ready: true,
     schemaVersion: summary.schemaVersion,
@@ -280,6 +281,7 @@ function intelligenceStatusFromWailsSummary(summary, activeBackgroundJobs = 0) {
       verifiedKnowledge: summary.verifiedKnowledge,
     }),
     activeBackgroundJobs,
+    semanticEmbedding,
     error: null,
   });
 }
@@ -291,12 +293,32 @@ function intelligenceStatusFromWailsError(error) {
     schemaVersion: null,
     summary: null,
     activeBackgroundJobs: 0,
+    semanticEmbedding: null,
     error: Object.freeze({
       code: normalized.code,
       message: normalized.message,
       retryable: Boolean(normalized.retryable),
     }),
   });
+}
+
+function semanticEmbeddingReady(status) {
+  return status?.semanticStatus === "ready" || status?.semanticStatus === "used";
+}
+
+function semanticEmbeddingHeadline(status) {
+  if (!status) return "状态不可用";
+  if (semanticEmbeddingReady(status)) return "向量检索可用";
+  if (status.reason === "model_missing") return "模型未安装";
+  if (status.reason === "model_path_invalid") return "模型路径异常";
+  if (status.reason === "onnx_runtime_unavailable") return "ONNX 未接线";
+  return "语义检索未启用";
+}
+
+function semanticEmbeddingDetail(status) {
+  if (!status) return "等待读取状态";
+  const dbLabel = status.databaseStatus === "ready" ? "DB 就绪" : "DB 未创建";
+  return status.modelId + " · " + status.dimensions + "维 · " + dbLabel;
 }
 
 function controlPanelModelStatusFromWails(status) {
@@ -666,11 +688,12 @@ export function ControlPanelApp() {
       return intelligenceStatusFromWailsError(BROWSER_PREVIEW_INTELLIGENCE_ERROR);
     }
     try {
-      const [summary, activeBackgroundJobs] = await Promise.all([
+      const [summary, activeBackgroundJobs, semanticEmbedding] = await Promise.all([
         loadWailsMemorySummary(),
         loadWailsActiveBackgroundJobs(),
+        loadWailsSemanticEmbeddingStatus(),
       ]);
-      return intelligenceStatusFromWailsSummary(summary, activeBackgroundJobs);
+      return intelligenceStatusFromWailsSummary(summary, activeBackgroundJobs, semanticEmbedding);
     } catch (error) {
       return intelligenceStatusFromWailsError(error);
     }
@@ -1821,6 +1844,15 @@ export function ControlPanelApp() {
                                 </Text>
                               </div>
                             </div>
+                            <div className={`cp-intelligence-step ${semanticEmbeddingReady(intelligenceStatus?.semanticEmbedding) ? "is-ready" : ""}`}>
+                              <span className="cp-intelligence-status-dot" aria-hidden="true" />
+                              <div className="cp-intelligence-step-copy">
+                                <Text size="1" weight="medium">向量记忆</Text>
+                                <Text size="1" color="gray">
+                                  {semanticEmbeddingHeadline(intelligenceStatus?.semanticEmbedding)}
+                                </Text>
+                              </div>
+                            </div>
                           </div>
 
                           <div className="cp-intelligence-metrics" aria-label="智能层数据统计">
@@ -1842,7 +1874,35 @@ export function ControlPanelApp() {
                                 {intelligenceStatus?.summary?.pendingExtractionTurns ?? "—"}
                               </Text>
                             </Card>
+                            <Card size="1">
+                              <Text size="1" color="gray">待向量化</Text>
+                              <Text size="5" weight="medium">
+                                {intelligenceStatus?.semanticEmbedding?.pendingJobs ?? "—"}
+                              </Text>
+                            </Card>
+                            <Card size="1">
+                              <Text size="1" color="gray">向量条目</Text>
+                              <Text size="5" weight="medium">
+                                {intelligenceStatus?.semanticEmbedding
+                                  ? `${intelligenceStatus.semanticEmbedding.embeddedItems}/${intelligenceStatus.semanticEmbedding.vectorRows}`
+                                  : "—"}
+                              </Text>
+                            </Card>
                           </div>
+
+                          <Card className="cp-panel-card cp-semantic-status-card" size="1">
+                            <Flex align="center" justify="between" gap="3">
+                              <div>
+                                <Text size="1" weight="medium">本地语义检索</Text>
+                                <Text size="1" color="gray" as="p">
+                                  {semanticEmbeddingDetail(intelligenceStatus?.semanticEmbedding)}
+                                </Text>
+                              </div>
+                              <Badge size="1" variant="soft" color={semanticEmbeddingReady(intelligenceStatus?.semanticEmbedding) ? "green" : "gray"}>
+                                {intelligenceStatus?.semanticEmbedding?.semanticStatus ?? "unavailable"}
+                              </Badge>
+                            </Flex>
+                          </Card>
 
                           {intelligenceStatus?.error ? (
                             <Callout.Root color="tomato" size="1" role="status">

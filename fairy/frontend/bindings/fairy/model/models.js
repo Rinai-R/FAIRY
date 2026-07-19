@@ -249,6 +249,7 @@ export const PromptLane = {
     PromptLaneRespond: "respond",
     PromptLaneCompact: "compact",
     PromptLaneExtract: "extract",
+    PromptLaneTranslate: "translate",
 };
 
 /**

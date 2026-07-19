@@ -86,6 +86,7 @@ func TestCompanionServiceBackgroundExtractionCommitsCreateMutation(t *testing.T)
 		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
 	}
 	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{HTTPClient: server.Client()}, nil), nil)
+	AttachSemanticEmbedder(service, companionSemanticFakeEmbedder{ready: true})
 	for index := 0; index < int(extractionThreshold); index++ {
 		outcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 			ConversationID:        bootstrap.Conversation.ID,
@@ -109,11 +110,51 @@ func TestCompanionServiceBackgroundExtractionCommitsCreateMutation(t *testing.T)
 			t.Fatalf("PersonalMemoryCatalog() error = %v", err)
 		}
 		if len(catalog.Global) >= 1 && catalog.Global[0].Content == "用户喜欢 Rust" {
-			return
+			status, err := memory.LocalSemanticEmbeddingStatus(root)
+			if err != nil {
+				t.Fatalf("LocalSemanticEmbeddingStatus() error = %v", err)
+			}
+			if status.VectorRows >= 1 {
+				return
+			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatal("timed out waiting for threshold extraction to commit personal memory")
+	t.Fatal("timed out waiting for threshold extraction to commit and embed personal memory")
+}
+
+func TestProcessEmbeddingJobPassUnavailableLeavesPending(t *testing.T) {
+	root := t.TempDir()
+	memoryStore, characterID := seedCompanionRuntime(t, root)
+	bootstrap, err := memoryStore.OpenOrCreateCharacterConversation(characterID)
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation() error = %v", err)
+	}
+	seedTurn, err := memoryStore.BeginTurn(bootstrap.Conversation.ID, "我喜欢安静")
+	if err != nil {
+		t.Fatalf("BeginTurn(seed) error = %v", err)
+	}
+	if _, err := memoryStore.CompleteTurn(bootstrap.Conversation.ID, seedTurn.ID, "我记住了。"); err != nil {
+		t.Fatalf("CompleteTurn(seed) error = %v", err)
+	}
+	if _, err := memoryStore.CreatePersonalMemory("preference", memory.MemoryScope{Type: "global"}, "用户喜欢安静", 9000); err != nil {
+		t.Fatalf("CreatePersonalMemory() error = %v", err)
+	}
+	service := NewCompanionServiceWithRuntime(root, memoryStore, model.NewModelServiceWithTransport(root, model.SDKTransport{}, nil), nil)
+	result, err := service.processEmbeddingJobPass(embeddingJobPassLimit)
+	if err != nil {
+		t.Fatalf("processEmbeddingJobPass() error = %v", err)
+	}
+	if result.Processed != 0 || result.Succeeded != 0 || result.Failed != 0 || result.SemanticStatus != "unavailable" {
+		t.Fatalf("processEmbeddingJobPass(unavailable) = %#v", result)
+	}
+	status, err := memory.LocalSemanticEmbeddingStatus(root)
+	if err != nil {
+		t.Fatalf("LocalSemanticEmbeddingStatus() error = %v", err)
+	}
+	if status.PendingJobs != 1 || status.VectorRows != 0 {
+		t.Fatalf("semantic status after unavailable pass = %#v", status)
+	}
 }
 
 func TestScheduleBackgroundExtractionWaitsBelowThreshold(t *testing.T) {

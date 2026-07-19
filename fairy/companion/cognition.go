@@ -2,6 +2,7 @@ package companion
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -22,7 +23,7 @@ const (
 )
 
 // RespondInstructionsAllowTools extends reply rules with native function tools.
-const RespondInstructionsAllowTools = RespondInstructions + ` When personal memories or public facts in context are insufficient, call function tools instead of guessing. Available tools: memory_search for personal/relationship facts; web_search (when provided) for timely public topics such as anime, games, versions, or news. When you call a tool, you MAY put one short in-character line for the user in the assistant content (plain text in textLanguage, not JSON) so you stay present while the tool runs—keep it to a single natural sentence in this character's voice, and never mention tool names, searches, retrieval, reasoning, or system internals. If you have nothing natural to say, leave content empty; never invent filler. After tool results appear in retrieved context, output chains only. Never output a gather JSON object.`
+const RespondInstructionsAllowTools = RespondInstructions + ` When personal memories or public facts in context are insufficient, call function tools instead of guessing. Available tools: memory_search for profile, preference, experience, current-character relationship, and confirmed local knowledge; web_search (when provided) for timely public topics such as anime, games, versions, or news. When you call a tool, you MAY put one short in-character line for the user in the assistant content (plain text in textLanguage, not JSON) so you stay present while the tool runs—keep it to a single natural sentence in this character's voice, and never mention tool names, searches, retrieval, reasoning, or system internals. If you have nothing natural to say, leave content empty; never invent filler. After tool results appear in retrieved context, output chains only. Never output a gather JSON object.`
 
 type toolQueryArgs struct {
 	Query string `json:"query"`
@@ -32,7 +33,7 @@ func RespondToolSpecs(webSearchEnabled bool) []model.ToolSpec {
 	querySchema := json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"Short search query"}},"required":["query"],"additionalProperties":false}`)
 	tools := []model.ToolSpec{{
 		Name:        toolMemorySearch,
-		Description: "Search local personal memories and confirmed knowledge for this user/character.",
+		Description: "Search layered local memory for user profile, preferences, experiences, current-character relationship facts, and confirmed local knowledge. Results include semanticStatus metadata; unavailable means FTS-only recall.",
 		Parameters:  querySchema,
 	}}
 	if webSearchEnabled {
@@ -71,10 +72,34 @@ func parseToolQuery(arguments string) (string, error) {
 	return query, nil
 }
 
+func (s *CompanionService) retrieveMemoryForTool(characterID string, query string) (memory.RetrievalContext, error) {
+	if s == nil || s.memoryStore == nil {
+		return memory.RetrievalContext{}, errors.New("memory store is unavailable")
+	}
+	if s.semanticEmbedder != nil && s.semanticEmbedder.Ready() {
+		return s.memoryStore.RetrieveWithSemantic(characterID, query, s.semanticEmbedder)
+	}
+	return s.memoryStore.Retrieve(characterID, query)
+}
+
 func mergeRetrievalContext(base memory.RetrievalContext, extra memory.RetrievalContext) memory.RetrievalContext {
 	return memory.RetrievalContext{
 		PersonalMemories: mergePersonalMemories(base.PersonalMemories, extra.PersonalMemories),
 		Knowledge:        mergeKnowledge(base.Knowledge, extra.Knowledge),
+		SemanticStatus:   mergeSemanticStatus(base.SemanticStatus, extra.SemanticStatus),
+	}
+}
+
+func mergeSemanticStatus(base string, extra string) string {
+	switch {
+	case extra == "used" || base == "used":
+		return "used"
+	case extra == "ready" || base == "ready":
+		return "ready"
+	case extra != "":
+		return extra
+	default:
+		return base
 	}
 }
 
@@ -153,6 +178,7 @@ func retrievalFromWebHits(hits []search.Hit) memory.RetrievalContext {
 		}
 		knowledge = append(knowledge, memory.RetrievedKnowledge{
 			ID:                    fmt.Sprintf("web-search-%d", index+1),
+			Layer:                 "knowledge",
 			Topic:                 "web_search",
 			Statement:             statement,
 			VerificationBasis:     "web_search",
@@ -167,7 +193,7 @@ func retrievalFromWebHits(hits []search.Hit) memory.RetrievalContext {
 			UpdatedAtUnixMS: now,
 		})
 	}
-	return memory.RetrievalContext{Knowledge: knowledge}
+	return memory.RetrievalContext{Knowledge: knowledge, SemanticStatus: "unavailable"}
 }
 
 func retrievalFromToolError(toolName string, err error) memory.RetrievalContext {
@@ -175,11 +201,13 @@ func retrievalFromToolError(toolName string, err error) memory.RetrievalContext 
 	return memory.RetrievalContext{
 		Knowledge: []memory.RetrievedKnowledge{{
 			ID:                    fmt.Sprintf("tool-error-%s", toolName),
+			Layer:                 "knowledge",
 			Topic:                 "tool_error",
 			Statement:             fmt.Sprintf("%s failed: %s", toolName, err.Error()),
 			VerificationBasis:     "tool_error",
 			ConfidenceBasisPoints: 0,
 			UpdatedAtUnixMS:       now,
 		}},
+		SemanticStatus: "unavailable",
 	}
 }

@@ -8,11 +8,14 @@ import (
 	"path/filepath"
 
 	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite/vec"
 )
 
 const (
-	RelativePath = "intelligence/fairy.sqlite3"
-	driverName   = "sqlite"
+	RelativePath                = "intelligence/fairy.sqlite3"
+	driverName                  = "sqlite"
+	SemanticEmbeddingModelID    = "bge-small-zh-v1.5"
+	SemanticEmbeddingDimensions = 512
 )
 
 var (

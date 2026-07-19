@@ -83,7 +83,13 @@ func (s *Store) ConfirmKnowledgeCandidate(id string) (KnowledgeRecord, error) {
 		return KnowledgeRecord{}, err
 	}
 	defer db.Close()
-	changed, err := db.Exec("UPDATE knowledge_entries SET status = 'verified', verification_basis = 'user_confirmed', updated_at_ms = ?2 WHERE id = ?1 AND status = 'candidate' AND verification_basis = 'unverified' AND NOT EXISTS (SELECT 1 FROM knowledge_sources s WHERE s.knowledge_id = knowledge_entries.id)", id, nowUnixMS())
+	now := nowUnixMS()
+	tx, err := db.Begin()
+	if err != nil {
+		return KnowledgeRecord{}, fmt.Errorf("beginning knowledge confirmation transaction: %w", err)
+	}
+	defer tx.Rollback()
+	changed, err := tx.Exec("UPDATE knowledge_entries SET status = 'verified', verification_basis = 'user_confirmed', updated_at_ms = ?2 WHERE id = ?1 AND status = 'candidate' AND verification_basis = 'unverified' AND NOT EXISTS (SELECT 1 FROM knowledge_sources s WHERE s.knowledge_id = knowledge_entries.id)", id, now)
 	if err != nil {
 		return KnowledgeRecord{}, fmt.Errorf("confirming knowledge candidate: %w", err)
 	}
@@ -93,6 +99,16 @@ func (s *Store) ConfirmKnowledgeCandidate(id string) (KnowledgeRecord, error) {
 	}
 	if count != 1 {
 		return KnowledgeRecord{}, errors.New("knowledge entry is not a confirmable candidate")
+	}
+	var topic, statement string
+	if err := tx.QueryRow("SELECT topic, statement FROM knowledge_entries WHERE id = ?1", id).Scan(&topic, &statement); err != nil {
+		return KnowledgeRecord{}, fmt.Errorf("reading confirmed knowledge content: %w", err)
+	}
+	if err := enqueueKnowledgeEmbeddingJob(tx, id, topic, statement, now); err != nil {
+		return KnowledgeRecord{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return KnowledgeRecord{}, fmt.Errorf("committing knowledge confirmation transaction: %w", err)
 	}
 	return knowledgeByID(db, id)
 }

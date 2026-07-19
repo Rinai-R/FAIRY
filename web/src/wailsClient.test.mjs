@@ -13,6 +13,7 @@ import {
   loadWailsActiveBackgroundJobs,
   loadWailsMemorySummary,
   loadWailsPersonalMemoryCatalog,
+  loadWailsSemanticEmbeddingStatus,
   loadWailsModelRequestDraft,
   loadWailsModelStatus,
   loadWailsSpeechStatus,
@@ -22,6 +23,7 @@ import {
   parseMemorySummary,
   parseModelConnectionStatus,
   parseModelRequestDraft,
+  parseSemanticEmbeddingStatus,
   parseSpeechStatus,
   parseVoiceCloneResult,
   clearWailsModelConnection,
@@ -647,6 +649,48 @@ test("loadWailsMemorySummary calls generated MemoryService binding loader", asyn
   }));
   assert.equal(summary.schemaVersion, 3);
   assert.equal(summary.readOnly, true);
+});
+
+function semanticEmbeddingStatus(overrides = {}) {
+  return {
+    modelId: "bge-small-zh-v1.5",
+    dimensions: 512,
+    modelPath: "/tmp/fairy/intelligence/embeddings/bge-small-zh-v1.5/model.onnx",
+    modelStatus: "missing",
+    runtimeStatus: "unavailable",
+    databaseStatus: "ready",
+    semanticStatus: "unavailable",
+    reason: "model_missing",
+    pendingJobs: 2,
+    runningJobs: 0,
+    failedJobs: 1,
+    embeddedItems: 3,
+    vectorRows: 3,
+    ...overrides,
+  };
+}
+
+test("parseSemanticEmbeddingStatus accepts explicit readiness and queue counts", () => {
+  const status = semanticEmbeddingStatus();
+  assert.deepEqual(parseSemanticEmbeddingStatus(status), status);
+  assert.throws(
+    () => parseSemanticEmbeddingStatus({ ...status, pendingJobs: -1 }),
+    /pendingJobs/,
+  );
+  assert.throws(
+    () => parseSemanticEmbeddingStatus({ ...status, apiKey: "secret" }),
+    /apiKey/,
+  );
+});
+
+test("loadWailsSemanticEmbeddingStatus calls generated MemoryService binding loader", async () => {
+  const status = await loadWailsSemanticEmbeddingStatus(async () => ({
+    MemoryService: {
+      SemanticEmbeddingStatus: async () => semanticEmbeddingStatus({ pendingJobs: 4 }),
+    },
+  }));
+  assert.equal(status.modelId, "bge-small-zh-v1.5");
+  assert.equal(status.pendingJobs, 4);
 });
 
 test("loadWailsActiveBackgroundJobs calls CompanionService binding", async () => {

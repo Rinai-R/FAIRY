@@ -102,6 +102,7 @@ func Run(options Options) error {
 	companion.AttachProfileStore(companionService, profileService.ProfileStore())
 	companion.AttachConfigReader(companionService, configReader)
 	companion.AttachSpeechSynthesizer(companionService, companionSpeechAdapter{service: speechService})
+	attachSemanticAPIEmbedder(companionService, modelService, configReader, logger.Named("semantic"))
 	character.AttachLogger(characterService, logger.Named("character"))
 	visual.AttachLogger(assetHandler, logger.Named("visual"))
 	search.AttachLogger(webSearch, logger.Named("openserp"))

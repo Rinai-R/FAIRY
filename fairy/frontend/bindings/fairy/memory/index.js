@@ -21,6 +21,7 @@ export {
     PersonalMemoryCatalog,
     PersonalMemoryRecord,
     PromptWindowRecord,
+    SemanticEmbeddingReadiness,
     Summary,
     UsageLaneAggregate,
     UsageReport,
