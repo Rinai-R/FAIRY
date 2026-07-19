@@ -69,6 +69,10 @@ func (s *Server) routes() {
 	v1.GET("/sessions/:conversationId/events", s.handleSessionEvents)
 	v1.POST("/sessions/:conversationId/turns/:turnId/cancel", s.handleCancelTurn)
 	s.registerConfigRoutes()
+	s.registerCharacterRoutes()
+	s.registerProfileRoutes()
+	s.registerIntelligenceRoutes()
+	s.registerUsageRoutes()
 	s.registerConsoleRoutes()
 }
 

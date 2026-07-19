@@ -214,7 +214,7 @@ func TestConsoleAndConfigModel(t *testing.T) {
 	}
 	body, _ := io.ReadAll(res.Body)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK || !bytes.Contains(body, []byte("FAIRY")) {
+	if res.StatusCode != http.StatusOK || !bytes.Contains(body, []byte(`id="root"`)) {
 		t.Fatalf("console = %d body=%s", res.StatusCode, body)
 	}
 

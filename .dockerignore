@@ -1,9 +1,12 @@
 .git
 **/bin/
 **/*_test.go
-web/
 docs/
 openspec/
+local/
+data/
 *.md
 .DS_Store
-data/
+node_modules
+web/node_modules
+.pnpm-store

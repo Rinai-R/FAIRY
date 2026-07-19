@@ -1,8 +1,11 @@
 {
   "name": "fairy",
   "private": true,
+  "packageManager": "pnpm@11.10.0",
   "scripts": {
     "test:go": "go test -C fairy ./...",
-    "build": "mkdir -p bin && go build -C fairy -o ../bin/fairy ."
+    "build": "mkdir -p bin && go build -C fairy -o ../bin/fairy .",
+    "web:dev": "pnpm --filter @fairy/web dev",
+    "web:build": "pnpm --filter @fairy/web build"
   }
 }
