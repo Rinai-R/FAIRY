@@ -63,16 +63,45 @@ test("each reply chain is its own bubble, revealed one at a time", () => {
   let observer = createSpeechObserver();
   observer = reduceSpeechObserver(observer, stateChanged(TURN_A, "interpreting"));
   observer = reduceSpeechObserver(observer, replyChain(TURN_A, 0, "你好"));
+  // reply_chain alone must not reveal — 齐套 beat.ready does.
+  assert.equal(observer.draft, "");
+  assert.equal(observer.chains.length, 1);
+  observer = reduceSpeechObserver(observer, {
+    turnId: TURN_A,
+    state: "responding",
+    payload: {
+      type: "beat.ready",
+      beatId: "final-0",
+      kind: "final",
+      index: 0,
+      chainIndex: 0,
+      displayText: "你好",
+      speechText: "你好",
+      visualState: "idle",
+      dataUrl: "",
+    },
+  });
   assert.equal(observer.draft, "你好");
-  // Backend emitting the next beat must not stack it into the current bubble nor
-  // jump ahead; the bubble still shows only the first beat.
   observer = reduceSpeechObserver(observer, replyChain(TURN_A, 1, "呀"));
   assert.equal(observer.draft, "你好");
   assert.equal(observer.chains.length, 2);
   assert.equal(observer.waiting, false);
   assert.equal(speechBubbleVisible(observer), true);
-  // Playback (or the no-TTS timer) advances the reveal to the next single beat.
-  observer = revealSpeechObserverThrough(observer, 1);
+  observer = reduceSpeechObserver(observer, {
+    turnId: TURN_A,
+    state: "responding",
+    payload: {
+      type: "beat.ready",
+      beatId: "final-1",
+      kind: "final",
+      index: 1,
+      chainIndex: 1,
+      displayText: "呀",
+      speechText: "呀",
+      visualState: "idle",
+      dataUrl: "",
+    },
+  });
   assert.equal(observer.draft, "呀");
 });
 

@@ -9,29 +9,41 @@ import (
 // participates in playback order but must not drive reply-chain bubble reveal.
 const chainIndexUtterance = -1
 
-// speechPipelineJob is one semantic unit of speech to synthesize.
+const (
+	beatKindUtterance = "utterance"
+	beatKindFinal     = "final"
+)
+
+// speechPipelineJob is one semantic unit of speech to synthesize, paired with
+// the display text that must be revealed only after the job completes (齐套).
 type speechPipelineJob struct {
-	// PlayIndex is the monotonic playback order across the whole turn (utterance
-	// audio first, then reply chains). It becomes speech.synthesized.index.
-	PlayIndex int
-	// ChainIndex is the reply-chain index for chain audio, or chainIndexUtterance
-	// for mid-ReAct utterance audio.
-	ChainIndex int
+	BeatID      string
+	Kind        string
+	PlayIndex   int
+	ChainIndex  int
+	DisplayText string
+	VisualState string
+	Reason      string
 	// Resolve returns the final speakable text. It runs on the pipeline worker so
 	// translation never blocks the ReAct loop. Returning ("", nil) skips synthesis
-	// silently (e.g. an utterance whose translation was unusable).
+	// but still delivers beat.ready with display text only.
 	Resolve func() (string, error)
 }
 
 // speechPipelineResult is handed to the sink for one job outcome.
 type speechPipelineResult struct {
-	PlayIndex  int
-	ChainIndex int
-	Text       string
-	Result     SpeechSynthesisResult
-	Err        error
-	// Skipped is true when the job produced no audio and no error (empty resolved
-	// text, or a nil synthesizer). The sink emits nothing for skipped jobs.
+	BeatID      string
+	Kind        string
+	PlayIndex   int
+	ChainIndex  int
+	DisplayText string
+	VisualState string
+	Reason      string
+	Text        string // speakable text (may differ from DisplayText after translate)
+	Result      SpeechSynthesisResult
+	Err         error
+	// Skipped is true when synthesis produced no audio (empty speech text or nil
+	// synthesizer). The sink still emits beat.ready with display text.
 	Skipped bool
 }
 
@@ -66,7 +78,15 @@ func newSpeechPipeline(ctx context.Context, synth SpeechSynthesizer, capacity in
 }
 
 func runSpeechJob(ctx context.Context, synth SpeechSynthesizer, job speechPipelineJob) speechPipelineResult {
-	base := speechPipelineResult{PlayIndex: job.PlayIndex, ChainIndex: job.ChainIndex}
+	base := speechPipelineResult{
+		BeatID:      job.BeatID,
+		Kind:        job.Kind,
+		PlayIndex:   job.PlayIndex,
+		ChainIndex:  job.ChainIndex,
+		DisplayText: job.DisplayText,
+		VisualState: job.VisualState,
+		Reason:      job.Reason,
+	}
 	if err := ctx.Err(); err != nil {
 		base.Err = err
 		return base
@@ -98,7 +118,7 @@ func (p *speechPipeline) Enqueue(job speechPipelineJob) {
 }
 
 // Close stops accepting jobs and blocks until the worker drains the queue, so
-// every speech.synthesized is emitted before the turn tears down.
+// every beat.ready is emitted before the turn tears down.
 func (p *speechPipeline) Close() {
 	p.once.Do(func() { close(p.jobs) })
 	<-p.done

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
 	"fairy/character"
@@ -362,6 +363,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		speechPlayIndex int
 		speechRequested bool
 		utteranceSeq    int
+		ingestSnapshots []memory.KnowledgeIngestSnapshot
 	)
 	if request.SpeechEnabled && s.speech != nil {
 		capacity := maxReplyChains + maxModelDrivenToolCalls + 2
@@ -477,37 +479,52 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 				lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("reason", "budget_exhausted"), zap.Int("count", len(toolCalls)))
 				return fail("MODEL_RESPONSE_INVALID", errors.New("tool budget exhausted"))
 			}
-			// Mid-ReAct in-character line: if the model returned user-facing content
-			// alongside its tool calls, surface it now and (when speech is on) queue
-			// its TTS. This never blocks tool execution or the next ReAct step. No
-			// content → no utterance, and never invent filler.
+			// Mid-ReAct in-character line: queue a paired beat (text+TTS). Do NOT
+			// reveal the line until beat.ready — 齐套才揭示. Enqueue never blocks tools.
 			if line := sanitizeUtteranceText(draft); line != "" {
 				reason := toolUtteranceReason(toolCalls[0].Name)
 				seq := utteranceSeq
 				utteranceSeq++
-				if _, uttErr := s.publishLife(life, func() (HarnessEvent, error) {
-					return life.Utterance(uint8(seq), line, "", reason)
-				}); uttErr != nil {
-					lg.Warn("cognition loop", zap.String("phase", "utterance_skipped"), zap.Int("seq", seq), zap.Error(uttErr))
-				} else {
-					lg.Info("cognition loop", zap.String("phase", "utterance"), zap.Int("seq", seq), zap.String("reason", reason))
-					if speechFlow != nil {
-						play := speechPlayIndex
-						speechPlayIndex++
-						uttLine := line
-						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventSpeech, TurnStatePlanning, "", map[string]any{
-							"status":    "queued",
-							"kind":      "utterance",
-							"playIndex": play,
+				beatID := fmt.Sprintf("utt-%d", seq)
+				lg.Info("cognition loop", zap.String("phase", "utterance_queued"), zap.Int("seq", seq), zap.String("reason", reason))
+				if speechFlow == nil {
+					if _, uttErr := s.publishLife(life, func() (HarnessEvent, error) {
+						return life.BeatReady(BeatReadyCompletion{
+							BeatID:      beatID,
+							Kind:        beatKindUtterance,
+							Index:       uint8(speechPlayIndex),
+							ChainIndex:  chainIndexUtterance,
+							DisplayText: line,
+							SpeechText:  "",
+							VisualState: "idle",
+							Reason:      reason,
 						})
-						speechFlow.Enqueue(speechPipelineJob{
-							PlayIndex:  play,
-							ChainIndex: chainIndexUtterance,
-							Resolve: func() (string, error) {
-								return s.resolveUtteranceSpeech(turnCtx, lg, characterRecord, uttLine, request.ConversationID, connectionConfig.Model)
-							},
-						})
+					}); uttErr != nil {
+						lg.Warn("cognition loop", zap.String("phase", "beat_skipped"), zap.String("beatId", beatID), zap.Error(uttErr))
 					}
+					speechPlayIndex++
+				} else {
+					play := speechPlayIndex
+					speechPlayIndex++
+					uttLine := line
+					s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventSpeech, TurnStatePlanning, "", map[string]any{
+						"status":    "queued",
+						"kind":      "utterance",
+						"beatId":    beatID,
+						"playIndex": play,
+					})
+					speechFlow.Enqueue(speechPipelineJob{
+						BeatID:      beatID,
+						Kind:        beatKindUtterance,
+						PlayIndex:   play,
+						ChainIndex:  chainIndexUtterance,
+						DisplayText: uttLine,
+						VisualState: "idle",
+						Reason:      reason,
+						Resolve: func() (string, error) {
+							return s.resolveUtteranceSpeech(turnCtx, lg, characterRecord, uttLine, request.ConversationID, connectionConfig.Model)
+						},
+					})
 				}
 			}
 			for _, call := range toolCalls {
@@ -610,6 +627,19 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 						} else {
 							extra := retrievalFromWebHits(hits)
 							retrieval = mergeRetrievalContext(retrieval, extra)
+							nowMS := time.Now().UnixMilli()
+							for index, hit := range hits {
+								ingestSnapshots = append(ingestSnapshots, memory.KnowledgeIngestSnapshot{
+									ConversationID:  request.ConversationID,
+									TurnID:          persisted.ID,
+									Query:           query,
+									Title:           hit.Title,
+									URL:             hit.URL,
+									Snippet:         hit.Snippet,
+									Rank:            uint8(index + 1),
+									FetchedAtUnixMS: nowMS,
+								})
+							}
 							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
 								"tool":             call.Name,
 								"phase":            "model_driven",
@@ -719,10 +749,38 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 			return fail("MODEL_RESPONSE_INVALID", err)
 		}
 		if !request.SpeechEnabled {
+			if _, beatErr := s.publishLife(life, func() (HarnessEvent, error) {
+				return life.BeatReady(BeatReadyCompletion{
+					BeatID:      fmt.Sprintf("final-%d", index),
+					Kind:        beatKindFinal,
+					Index:       uint8(speechPlayIndex),
+					ChainIndex:  index,
+					DisplayText: chain.Text,
+					SpeechText:  "",
+					VisualState: chain.VisualState,
+				})
+			}); beatErr != nil {
+				lg.Warn("beat.ready skipped", zap.Int("chain", index), zap.Error(beatErr))
+			}
+			speechPlayIndex++
 			continue
 		}
 		speechText := strings.TrimSpace(chain.SpeechText)
 		if speechText == "" {
+			if _, beatErr := s.publishLife(life, func() (HarnessEvent, error) {
+				return life.BeatReady(BeatReadyCompletion{
+					BeatID:      fmt.Sprintf("final-%d", index),
+					Kind:        beatKindFinal,
+					Index:       uint8(speechPlayIndex),
+					ChainIndex:  index,
+					DisplayText: chain.Text,
+					SpeechText:  "",
+					VisualState: chain.VisualState,
+				})
+			}); beatErr != nil {
+				lg.Warn("beat.ready skipped", zap.Int("chain", index), zap.Error(beatErr))
+			}
+			speechPlayIndex++
 			continue
 		}
 		if speechExceedsSoftLimit(speechText) {
@@ -735,9 +793,22 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 			)
 		}
 		if speechFlow == nil {
-			// No synthesizer: never emit speech.requested, so the bubble is not put
-			// on hold waiting for audio that will never arrive.
+			// No synthesizer: deliver text-only beat; never hang the bubble on audio.
 			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventSpeech, TurnStateResponding, "TTS_SKIPPED", map[string]any{"status": "skipped", "reason": "speech_synthesizer_unavailable", "index": index})
+			if _, beatErr := s.publishLife(life, func() (HarnessEvent, error) {
+				return life.BeatReady(BeatReadyCompletion{
+					BeatID:      fmt.Sprintf("final-%d", index),
+					Kind:        beatKindFinal,
+					Index:       uint8(speechPlayIndex),
+					ChainIndex:  index,
+					DisplayText: chain.Text,
+					SpeechText:  speechText,
+					VisualState: chain.VisualState,
+				})
+			}); beatErr != nil {
+				lg.Warn("beat.ready skipped", zap.Int("chain", index), zap.Error(beatErr))
+			}
+			speechPlayIndex++
 			continue
 		}
 		if !speechRequested {
@@ -757,16 +828,24 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		play := speechPlayIndex
 		speechPlayIndex++
 		chainSpeech := speechText
+		beatID := fmt.Sprintf("final-%d", index)
 		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventSpeech, TurnStateResponding, "", map[string]any{
 			"status":         "queued",
 			"index":          index,
+			"beatId":         beatID,
 			"playIndex":      play,
 			"speechTextHash": runtimeHash(chainSpeech),
 		})
+		chainDisplay := chain.Text
+		chainVisual := chain.VisualState
 		speechFlow.Enqueue(speechPipelineJob{
-			PlayIndex:  play,
-			ChainIndex: index,
-			Resolve:    func() (string, error) { return chainSpeech, nil },
+			BeatID:      beatID,
+			Kind:        beatKindFinal,
+			PlayIndex:   play,
+			ChainIndex:  index,
+			DisplayText: chainDisplay,
+			VisualState: chainVisual,
+			Resolve:     func() (string, error) { return chainSpeech, nil },
 		})
 	}
 	rebuilt, rebuildErr := compiledReplyFromChains(filledChains)
@@ -812,6 +891,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	}
 	s.scheduleBackgroundExtraction(request.ConversationID)
 	s.scheduleAutoCompaction(request.ConversationID, events)
+	s.scheduleKnowledgeIngest(ingestSnapshots)
 	return TurnOutcome{
 		ConversationID:  request.ConversationID,
 		TurnID:          persisted.ID,
@@ -870,43 +950,70 @@ func (s *CompanionService) emitSpeechFailure(life *TurnLifecycle, conversationID
 
 // handleSpeechResult runs on the pipeline worker goroutine. publishLife holds the
 // lifecycle lock, so emitting from here stays serialized with the main goroutine
-// and preserves monotonic sequence numbers.
+// and preserves monotonic sequence numbers. Every finished job (including skipped
+// / failed TTS) delivers beat.ready so the UI never waits forever for a paired beat.
 func (s *CompanionService) handleSpeechResult(life *TurnLifecycle, conversationID string, turnID string, res speechPipelineResult) {
-	if res.Skipped {
+	display := strings.TrimSpace(res.DisplayText)
+	if display == "" {
+		display = strings.TrimSpace(res.Text)
+	}
+	if display == "" {
 		return
+	}
+	kind := res.Kind
+	if kind == "" {
+		if res.ChainIndex == chainIndexUtterance {
+			kind = beatKindUtterance
+		} else {
+			kind = beatKindFinal
+		}
+	}
+	beatID := res.BeatID
+	if beatID == "" {
+		beatID = fmt.Sprintf("play-%d", res.PlayIndex)
+	}
+	completion := BeatReadyCompletion{
+		BeatID:      beatID,
+		Kind:        kind,
+		Index:       uint8(res.PlayIndex),
+		ChainIndex:  res.ChainIndex,
+		DisplayText: display,
+		SpeechText:  res.Text,
+		VisualState: res.VisualState,
+		Reason:      res.Reason,
 	}
 	if res.Err != nil {
-		s.logger.Warn("tts failed",
+		s.logger.Warn("tts failed; delivering text-only beat",
 			zap.String("turn", turnID),
+			zap.String("beatId", beatID),
 			zap.Int("playIndex", res.PlayIndex),
-			zap.Int("chainIndex", res.ChainIndex),
 			zap.Error(res.Err),
 		)
-		s.emitSpeechFailure(life, conversationID, turnID, "TTS_FAILED", res.Err.Error(), false)
-		return
+		s.appendRuntimeLedger(conversationID, turnID, runtimeLedgerEventSpeech, life.State(), "TTS_FAILED", map[string]any{
+			"status":    "failed",
+			"beatId":    beatID,
+			"playIndex": res.PlayIndex,
+		})
+	} else if !res.Skipped && res.Result.DataURL != "" {
+		audio := res.Result
+		completion.Audio = &audio
+		s.logger.Info("tts synthesized",
+			zap.String("turn", turnID),
+			zap.String("beatId", beatID),
+			zap.Int("playIndex", res.PlayIndex),
+			zap.Int("chainIndex", res.ChainIndex),
+			zap.String("mimeType", res.Result.MimeType),
+		)
 	}
 	if _, err := s.publishLife(life, func() (HarnessEvent, error) {
-		return life.SpeechSynthesized(SpeechSynthesisCompletion{
-			Index:      uint8(res.PlayIndex),
-			ChainIndex: res.ChainIndex,
-			Text:       res.Text,
-			Result:     res.Result,
-		})
+		return life.BeatReady(completion)
 	}); err != nil {
-		s.logger.Warn("tts event skipped",
+		s.logger.Warn("beat.ready skipped",
 			zap.String("turn", turnID),
-			zap.Int("playIndex", res.PlayIndex),
+			zap.String("beatId", beatID),
 			zap.Error(err),
 		)
-		return
 	}
-	s.logger.Info("tts synthesized",
-		zap.String("turn", turnID),
-		zap.Int("playIndex", res.PlayIndex),
-		zap.Int("chainIndex", res.ChainIndex),
-		zap.String("mimeType", res.Result.MimeType),
-		zap.String("format", res.Result.Format),
-	)
 }
 
 func (s *CompanionService) CompactConversation(conversationID string) (memory.CompactionResult, error) {

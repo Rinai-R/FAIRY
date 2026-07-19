@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"fairy/config"
 	"fairy/memory"
@@ -16,6 +17,18 @@ import (
 	"fairy/model"
 	"fairy/search"
 )
+
+func waitForBackgroundJobs(t *testing.T, service *CompanionService) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if service.ActiveBackgroundJobs() == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("background jobs still active: %d", service.ActiveBackgroundJobs())
+}
 
 type companionSemanticFakeEmbedder struct {
 	ready bool
@@ -412,4 +425,5 @@ func TestSubmitCompiledTurnWebSearchToolThenReply(t *testing.T) {
 	if !runtimeLedgerContainsType(ledger, runtimeLedgerEventTool) {
 		t.Fatalf("missing tool ledger: %#v", ledger)
 	}
+	waitForBackgroundJobs(t, service)
 }

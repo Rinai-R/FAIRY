@@ -101,6 +101,45 @@ export function reduceSpeechPlayback(state, event) {
         state.synthesisComplete,
       );
     }
+    case "beat.ready": {
+      // Paired text+audio unit. Audio (when present) enters the playback queue;
+      // text-only beats do not hold the bubble waiting for sound that will never come.
+      const dataUrl = typeof payload.dataUrl === "string" ? payload.dataUrl : "";
+      if (!dataUrl) {
+        if (event.turnId !== state.turnId) {
+          return Object.freeze({
+            ...createSpeechPlaybackState(),
+            turnId: event.turnId,
+            synthesisComplete: false,
+          });
+        }
+        return state;
+      }
+      const segment = Object.freeze({
+        index: payload.index,
+        chainIndex: Number.isSafeInteger(payload.chainIndex) ? payload.chainIndex : -1,
+        dataUrl,
+        beatId: typeof payload.beatId === "string" ? payload.beatId : "",
+      });
+      if (event.turnId !== state.turnId) {
+        return playbackWithSegments(event.turnId, [segment], 0, null, true, false);
+      }
+      const segments = upsertSpeechSegment([...state.segments], segment);
+      let playIndex = state.playIndex;
+      if (state.played && !state.synthesisComplete) {
+        playIndex = playIndexForChainIndex(segments, segment.index);
+      } else if (playIndex >= segments.length) {
+        playIndex = playIndexForChainIndex(segments, segment.index);
+      }
+      return playbackWithSegments(
+        state.turnId,
+        segments,
+        playIndex,
+        null,
+        true,
+        state.synthesisComplete,
+      );
+    }
     case "speech.failed":
       return Object.freeze({
         turnId: event.turnId,

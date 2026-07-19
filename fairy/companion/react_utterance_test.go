@@ -57,6 +57,16 @@ func utteranceEvents(events []HarnessEvent) []utterancePayload {
 	return out
 }
 
+func beatReadyEvents(events []HarnessEvent) []beatReadyPayload {
+	out := make([]beatReadyPayload, 0)
+	for _, event := range events {
+		if payload, ok := event.Payload.(beatReadyPayload); ok {
+			out = append(out, payload)
+		}
+	}
+	return out
+}
+
 func synthesizedEvents(events []HarnessEvent) []speechSynthesizedPayload {
 	out := make([]speechSynthesizedPayload, 0)
 	for _, event := range events {
@@ -124,28 +134,27 @@ func TestReActUtteranceEmittedWithContentAndQueuesTTS(t *testing.T) {
 		t.Fatalf("outcome = %#v", outcome)
 	}
 	events := recorder.snapshot()
-	utterances := utteranceEvents(events)
-	if len(utterances) != 1 || utterances[0].Text != "让我翻翻记忆哦" {
-		t.Fatalf("utterances = %#v", utterances)
-	}
-	if utterances[0].Reason != "searching_memory" {
-		t.Fatalf("utterance reason = %q", utterances[0].Reason)
-	}
-	synthed := synthesizedEvents(events)
-	var utteranceAudio, chainAudio *speechSynthesizedPayload
-	for i := range synthed {
-		switch synthed[i].ChainIndex {
-		case chainIndexUtterance:
-			utteranceAudio = &synthed[i]
-		case 0:
-			chainAudio = &synthed[i]
+	beats := beatReadyEvents(events)
+	var utteranceBeat, finalBeat *beatReadyPayload
+	for i := range beats {
+		switch beats[i].Kind {
+		case beatKindUtterance:
+			utteranceBeat = &beats[i]
+		case beatKindFinal:
+			finalBeat = &beats[i]
 		}
 	}
-	if utteranceAudio == nil || chainAudio == nil {
-		t.Fatalf("expected utterance + chain audio, got %#v", synthed)
+	if utteranceBeat == nil || utteranceBeat.DisplayText != "让我翻翻记忆哦" {
+		t.Fatalf("utterance beat = %#v", beats)
 	}
-	if utteranceAudio.Index != 0 || chainAudio.Index != 1 {
-		t.Fatalf("playback order wrong: utterance=%d chain=%d", utteranceAudio.Index, chainAudio.Index)
+	if utteranceBeat.Reason != "searching_memory" {
+		t.Fatalf("utterance reason = %q", utteranceBeat.Reason)
+	}
+	if utteranceBeat.DataURL == "" || finalBeat == nil || finalBeat.DataURL == "" {
+		t.Fatalf("expected paired audio on both beats, got %#v", beats)
+	}
+	if utteranceBeat.Index != 0 || finalBeat.Index != 1 {
+		t.Fatalf("playback order wrong: utterance=%d final=%d", utteranceBeat.Index, finalBeat.Index)
 	}
 	if synth.calls.Load() != 2 {
 		t.Fatalf("synth calls = %d, want 2 (utterance + chain)", synth.calls.Load())
@@ -154,7 +163,7 @@ func TestReActUtteranceEmittedWithContentAndQueuesTTS(t *testing.T) {
 
 func TestSpeechSynthesizedEmittedBeforeCompleted(t *testing.T) {
 	// The bubble uses `completed` as "no more audio coming". Regression guard:
-	// every speech.synthesized must be emitted before completed so the frontend
+	// every beat.ready must be emitted before completed so the frontend
 	// never releases the hold (and flashes the bubble away) while audio is pending.
 	server := memoryToolThenReplyServer(t, "让我翻翻记忆哦")
 	root := t.TempDir()
@@ -188,17 +197,17 @@ func TestSpeechSynthesizedEmittedBeforeCompleted(t *testing.T) {
 	if completedAt < 0 {
 		t.Fatal("no completed event")
 	}
-	synthCount := 0
+	beatCount := 0
 	for i, event := range events {
-		if _, ok := event.Payload.(speechSynthesizedPayload); ok {
-			synthCount++
+		if _, ok := event.Payload.(beatReadyPayload); ok {
+			beatCount++
 			if i > completedAt {
-				t.Fatalf("speech.synthesized at %d emitted after completed at %d", i, completedAt)
+				t.Fatalf("beat.ready at %d emitted after completed at %d", i, completedAt)
 			}
 		}
 	}
-	if synthCount != 2 {
-		t.Fatalf("expected 2 speech.synthesized before completed, got %d", synthCount)
+	if beatCount != 2 {
+		t.Fatalf("expected 2 beat.ready before completed, got %d", beatCount)
 	}
 }
 
@@ -260,8 +269,21 @@ func TestReActUtteranceTTSFailureDoesNotAbortTurn(t *testing.T) {
 	if !hasCompleted(events) {
 		t.Fatal("turn must reach completed despite TTS failure")
 	}
-	if utterances := utteranceEvents(events); len(utterances) != 1 {
-		t.Fatalf("utterance text must still show, got %#v", utterances)
+	if utterances := utteranceEvents(events); len(utterances) != 0 {
+		t.Fatalf("legacy utterance must not be the delivery path, got %#v", utterances)
+	}
+	beats := beatReadyEvents(events)
+	foundUtt := false
+	for _, beat := range beats {
+		if beat.Kind == beatKindUtterance && beat.DisplayText == "让我翻翻记忆哦" {
+			foundUtt = true
+			if beat.DataURL != "" {
+				t.Fatalf("TTS failure should deliver text-only beat, got %#v", beat)
+			}
+		}
+	}
+	if !foundUtt {
+		t.Fatalf("utterance text must still show via beat.ready, got %#v", beats)
 	}
 }
 
@@ -289,12 +311,19 @@ func TestReActSpeechDisabledMakesNoTTSRequest(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SubmitCompiledTurn() error = %v", err)
 	}
+	events := recorder.snapshot()
 	if synth.calls.Load() != 0 {
 		t.Fatalf("speech disabled but synth called %d times", synth.calls.Load())
 	}
-	events := recorder.snapshot()
-	if utterances := utteranceEvents(events); len(utterances) != 1 {
-		t.Fatalf("utterance text must still show, got %#v", utterances)
+	beats := beatReadyEvents(events)
+	foundUtt := false
+	for _, beat := range beats {
+		if beat.Kind == beatKindUtterance && beat.DisplayText == "让我翻翻记忆哦" {
+			foundUtt = true
+		}
+	}
+	if !foundUtt {
+		t.Fatalf("utterance text must still show via beat.ready, got %#v", beats)
 	}
 	if len(synthesizedEvents(events)) != 0 {
 		t.Fatal("no speech.synthesized expected when speech disabled")

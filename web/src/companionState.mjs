@@ -312,7 +312,51 @@ function parseEventPayload(value) {
         visualState: parseVisualStateId(value.visualState, "event.payload.visualState"),
         reason: parseNonEmptyString(value.reason, "event.payload.reason"),
       });
-    case "completed":
+    case "beat.ready": {
+      const optionalKeys = new Set([
+        "type",
+        "beatId",
+        "kind",
+        "index",
+        "chainIndex",
+        "displayText",
+        "speechText",
+        "visualState",
+        "reason",
+        "speakerId",
+        "mimeType",
+        "format",
+        "dataUrl",
+      ]);
+      assertObject(value, "event.payload");
+      for (const key of Object.keys(value)) {
+        if (!optionalKeys.has(key)) {
+          throw new TypeError(`event.payload has unexpected field ${key}`);
+        }
+      }
+      if (!Number.isSafeInteger(value.index) || value.index < 0 || value.index > 255) {
+        throw new TypeError("event.payload.index must be between 0 and 255");
+      }
+      if (!Number.isSafeInteger(value.chainIndex) || value.chainIndex < -1 || value.chainIndex > 11) {
+        throw new TypeError("event.payload.chainIndex must be between -1 and 11");
+      }
+      const kind = value.kind === "final" ? "final" : "utterance";
+      return Object.freeze({
+        type: "beat.ready",
+        beatId: parseNonEmptyString(value.beatId, "event.payload.beatId"),
+        kind,
+        index: value.index,
+        chainIndex: value.chainIndex,
+        displayText: parseNonEmptyString(value.displayText, "event.payload.displayText"),
+        speechText: parseString(value.speechText ?? "", "event.payload.speechText"),
+        visualState: parseVisualStateId(value.visualState || "idle", "event.payload.visualState"),
+        reason: typeof value.reason === "string" ? value.reason : "",
+        speakerId: typeof value.speakerId === "string" ? value.speakerId : "",
+        mimeType: typeof value.mimeType === "string" ? value.mimeType : "",
+        format: typeof value.format === "string" ? value.format : "",
+        dataUrl: typeof value.dataUrl === "string" ? value.dataUrl : "",
+      });
+    }    case "completed":
       assertExactKeys(
         value,
         [
@@ -1464,6 +1508,27 @@ function reduceHarnessEvent(state, event) {
       activeTurnId,
       lastSequence: event.sequence,
       progressiveDraft: prefix + event.payload.text,
+    });
+  }
+
+  if (event.payload.type === "beat.ready") {
+    if (
+      event.state !== "planning" &&
+      event.state !== "gathering" &&
+      event.state !== "responding"
+    ) {
+      protocolError("beat.ready must be in gathering, planning, or responding state");
+    }
+    const prefix = state.progressiveDraft.length > 0 ? `${state.progressiveDraft}\n` : "";
+    const nextProgressive = event.payload.kind === "utterance"
+      ? prefix + event.payload.displayText
+      : state.progressiveDraft;
+    return Object.freeze({
+      ...state,
+      sessionState: event.state,
+      activeTurnId,
+      lastSequence: event.sequence,
+      progressiveDraft: nextProgressive,
     });
   }
 

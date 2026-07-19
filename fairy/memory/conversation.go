@@ -263,7 +263,7 @@ func (s *Store) openWrite() (*sql.DB, error) {
 func initializeSchema(db *sql.DB) error {
 	_, err := db.Exec(`
 CREATE TABLE IF NOT EXISTS schema_meta(singleton INTEGER PRIMARY KEY CHECK(singleton = 1), version INTEGER NOT NULL);
-INSERT OR IGNORE INTO schema_meta(singleton, version) VALUES (1, 6);
+INSERT OR IGNORE INTO schema_meta(singleton, version) VALUES (1, 7);
 CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY, character_id TEXT NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS conversations_character_updated ON conversations(character_id, updated_at_ms DESC, id ASC);
 CREATE TABLE IF NOT EXISTS conversation_turns(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), sequence INTEGER NOT NULL CHECK(sequence > 0), status TEXT NOT NULL CHECK(status IN ('interpreting', 'planning', 'responding', 'completed', 'interrupted', 'failed')), error_code TEXT, error_message TEXT, error_retryable INTEGER, extraction_state TEXT NOT NULL DEFAULT 'ineligible' CHECK(extraction_state IN ('ineligible', 'pending', 'claimed', 'processed')), created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL, UNIQUE(conversation_id, sequence));
@@ -282,6 +282,22 @@ CREATE TABLE IF NOT EXISTS memory_embedding_jobs(id TEXT PRIMARY KEY, item_kind 
 CREATE INDEX IF NOT EXISTS memory_embedding_jobs_status ON memory_embedding_jobs(status, updated_at_ms ASC, id ASC);
 CREATE TABLE IF NOT EXISTS extraction_batches(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), character_id TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')), first_turn_sequence INTEGER NOT NULL CHECK(first_turn_sequence > 0), last_turn_sequence INTEGER NOT NULL CHECK(last_turn_sequence >= first_turn_sequence), error_code TEXT, error_message TEXT, error_retryable INTEGER, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS extraction_batch_turns(batch_id TEXT NOT NULL REFERENCES extraction_batches(id), turn_id TEXT NOT NULL REFERENCES conversation_turns(id), turn_sequence INTEGER NOT NULL CHECK(turn_sequence > 0), PRIMARY KEY(batch_id, turn_id), UNIQUE(batch_id, turn_sequence));
+CREATE TABLE IF NOT EXISTS knowledge_ingest_jobs(
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  turn_id TEXT NOT NULL REFERENCES conversation_turns(id),
+  query TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL DEFAULT '',
+  snippet TEXT NOT NULL DEFAULT '',
+  rank INTEGER NOT NULL DEFAULT 0,
+  fetched_at_ms INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL CHECK(status IN ('pending', 'succeeded', 'failed', 'dropped')),
+  error_message TEXT,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS knowledge_ingest_jobs_status ON knowledge_ingest_jobs(status, created_at_ms ASC, id ASC);
 CREATE UNIQUE INDEX IF NOT EXISTS extraction_batches_one_running ON extraction_batches(conversation_id) WHERE status = 'running';
 CREATE VIRTUAL TABLE IF NOT EXISTS personal_memories_fts USING fts5(
   content,
@@ -323,13 +339,42 @@ CREATE TRIGGER IF NOT EXISTS knowledge_entries_au AFTER UPDATE OF topic, stateme
   VALUES (new.rowid, new.topic, new.statement);
 END;
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_embedding_vec USING vec0(embedding float[512]);
-UPDATE schema_meta SET version = 6 WHERE singleton = 1 AND version < 6;
+UPDATE schema_meta SET version = 7 WHERE singleton = 1 AND version < 7;
 `)
 	if err != nil {
 		return fmt.Errorf("initializing memory schema: %w", err)
 	}
 	if err := ensureContextWindowLastTriggerColumn(db); err != nil {
 		return err
+	}
+	if err := ensureKnowledgeIngestJobsTable(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureKnowledgeIngestJobsTable(db *sql.DB) error {
+	_, err := db.Exec(`
+CREATE TABLE IF NOT EXISTS knowledge_ingest_jobs(
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  query TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL DEFAULT '',
+  snippet TEXT NOT NULL DEFAULT '',
+  rank INTEGER NOT NULL DEFAULT 0,
+  fetched_at_ms INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL CHECK(status IN ('pending', 'succeeded', 'failed', 'dropped')),
+  error_message TEXT,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS knowledge_ingest_jobs_status ON knowledge_ingest_jobs(status, created_at_ms ASC, id ASC);
+UPDATE schema_meta SET version = 7 WHERE singleton = 1 AND version < 7;
+`)
+	if err != nil {
+		return fmt.Errorf("ensuring knowledge_ingest_jobs: %w", err)
 	}
 	return nil
 }

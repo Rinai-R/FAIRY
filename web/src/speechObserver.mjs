@@ -75,24 +75,38 @@ export function reduceSpeechObserver(state, event) {
   const payload = event.payload;
   switch (payload.type) {
     case "utterance": {
-      // Progressive tool-wait lines (if any) still append as plain draft.
-      const prefix = base.draft.length > 0 ? `${base.draft}\n` : "";
+      // Legacy progressive text. Prefer beat.ready; ignore bare utterance for
+      // bubble reveal so 齐套才揭示 stays intact when both are present.
+      return base === state ? state : Object.freeze({ ...base, waiting: base.draft.length === 0, active: true });
+    }
+    case "beat.ready": {
+      const display = typeof payload.displayText === "string" ? payload.displayText : "";
+      if (!display) {
+        return base === state ? state : Object.freeze(base);
+      }
+      const kind = payload.kind === "final" ? "final" : "utterance";
+      if (kind === "final" && Number.isSafeInteger(payload.chainIndex) && payload.chainIndex >= 0) {
+        const chains = upsertChain(base.chains, payload.chainIndex, display, payload.visualState);
+        return Object.freeze({
+          ...withRevealedDraft(base, chains, payload.chainIndex),
+          waiting: false,
+          active: true,
+        });
+      }
       return Object.freeze({
         ...base,
-        draft: prefix + payload.text,
+        draft: display,
         waiting: false,
         active: true,
       });
     }
     case "reply_chain": {
       const chains = upsertChain(base.chains, payload.index, payload.text, payload.visualState);
-      // Only surface the first beat here; later beats replace the bubble one at a
-      // time, driven by TTS playback (playIndex) or the no-TTS reveal timer. The
-      // backend may emit every chain up front, so never jump the bubble ahead.
-      const revealThrough = base.revealThrough < 0 ? 0 : base.revealThrough;
+      // Store chains but do not reveal draft yet — beat.ready (final) reveals.
       return Object.freeze({
-        ...withRevealedDraft(base, chains, revealThrough),
-        waiting: false,
+        ...base,
+        chains,
+        waiting: base.draft.length === 0 && base.revealThrough < 0,
         active: true,
       });
     }

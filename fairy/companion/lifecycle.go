@@ -98,6 +98,37 @@ type utterancePayload struct {
 	Reason      string `json:"reason"`
 }
 
+// beatReadyPayload is the paired text(+optional audio) delivery unit. Frontend
+// reveals a beat only after this event (齐套才揭示).
+type beatReadyPayload struct {
+	Type        string `json:"type"`
+	BeatID      string `json:"beatId"`
+	Kind        string `json:"kind"` // utterance | final
+	Index       uint8  `json:"index"`
+	ChainIndex  int    `json:"chainIndex"`
+	DisplayText string `json:"displayText"`
+	SpeechText  string `json:"speechText"`
+	VisualState string `json:"visualState"`
+	Reason      string `json:"reason,omitempty"`
+	SpeakerID   string `json:"speakerId,omitempty"`
+	MimeType    string `json:"mimeType,omitempty"`
+	Format      string `json:"format,omitempty"`
+	DataURL     string `json:"dataUrl,omitempty"`
+}
+
+// BeatReadyCompletion is the lifecycle input for a paired beat delivery.
+type BeatReadyCompletion struct {
+	BeatID      string
+	Kind        string
+	Index       uint8
+	ChainIndex  int
+	DisplayText string
+	SpeechText  string
+	VisualState string
+	Reason      string
+	Audio       *SpeechSynthesisResult
+}
+
 type completedPayload struct {
 	Type                string           `json:"type"`
 	Text                string           `json:"text"`
@@ -309,6 +340,46 @@ func (l *TurnLifecycle) SpeechSynthesized(completion SpeechSynthesisCompletion) 
 		Format:     completion.Result.Format,
 		DataURL:    completion.Result.DataURL,
 	}), nil
+}
+
+// BeatReady emits a paired display(+optional audio) beat. Allowed in planning
+// (utterance beats) and responding (final beats).
+func (l *TurnLifecycle) BeatReady(completion BeatReadyCompletion) (HarnessEvent, error) {
+	if l.state != TurnStatePlanning && l.state != TurnStateGathering && l.state != TurnStateResponding {
+		return HarnessEvent{}, errors.New("只有 Gathering/Planning/Responding 状态可以发送 beat.ready")
+	}
+	if strings.TrimSpace(completion.DisplayText) == "" {
+		return HarnessEvent{}, errors.New("beat.ready displayText cannot be empty")
+	}
+	if completion.BeatID == "" {
+		return HarnessEvent{}, errors.New("beat.ready beatId cannot be empty")
+	}
+	kind := completion.Kind
+	if kind == "" {
+		kind = "utterance"
+	}
+	visual := completion.VisualState
+	if visual == "" {
+		visual = "idle"
+	}
+	payload := beatReadyPayload{
+		Type:        "beat.ready",
+		BeatID:      completion.BeatID,
+		Kind:        kind,
+		Index:       completion.Index,
+		ChainIndex:  completion.ChainIndex,
+		DisplayText: completion.DisplayText,
+		SpeechText:  completion.SpeechText,
+		VisualState: visual,
+		Reason:      completion.Reason,
+	}
+	if completion.Audio != nil {
+		payload.SpeakerID = completion.Audio.SpeakerID
+		payload.MimeType = completion.Audio.MimeType
+		payload.Format = completion.Audio.Format
+		payload.DataURL = completion.Audio.DataURL
+	}
+	return l.event(payload), nil
 }
 
 func (l *TurnLifecycle) SpeechFailed(code string, message string, retryable bool) (HarnessEvent, error) {

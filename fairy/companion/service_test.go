@@ -350,16 +350,16 @@ func TestCompanionServiceTriggersSpeechAfterCompletedText(t *testing.T) {
 		t.Fatalf("speech = %#v calls=%d", speech, speech.calls.Load())
 	}
 	foundRequested := false
-	foundSynthesized := false
+	foundBeat := false
 	for _, event := range emitted {
 		switch payload := event.Payload.(type) {
 		case speechRequestedPayload:
 			foundRequested = payload.Text == "こんにちは。"
-		case speechSynthesizedPayload:
-			foundSynthesized = payload.DataURL == "data:audio/mpeg;base64,ZmFrZQ=="
+		case beatReadyPayload:
+			foundBeat = payload.DataURL == "data:audio/mpeg;base64,ZmFrZQ==" && payload.DisplayText == "こんにちは。"
 		}
 	}
-	if !foundRequested || !foundSynthesized {
+	if !foundRequested || !foundBeat {
 		t.Fatalf("speech events missing: %#v", emitted)
 	}
 	reloaded, err := memoryStore.LoadConversation(bootstrap.Conversation.ID)
@@ -475,14 +475,16 @@ func TestCompanionServiceSpeechFailureDoesNotRollbackCompletedText(t *testing.T)
 	if outcome.ResponseText != "こんにちは。" {
 		t.Fatalf("outcome = %#v", outcome)
 	}
-	foundFailure := false
+	foundTextBeat := false
 	for _, event := range emitted {
-		if payload, ok := event.Payload.(speechFailedPayload); ok {
-			foundFailure = payload.Error.Code == "TTS_FAILED"
+		if payload, ok := event.Payload.(beatReadyPayload); ok {
+			if payload.DisplayText == "こんにちは。" && payload.DataURL == "" {
+				foundTextBeat = true
+			}
 		}
 	}
-	if !foundFailure {
-		t.Fatalf("speech failure event missing: %#v", emitted)
+	if !foundTextBeat {
+		t.Fatalf("text-only beat.ready missing after TTS failure: %#v", emitted)
 	}
 	reloaded, err := memoryStore.LoadConversation(bootstrap.Conversation.ID)
 	if err != nil {

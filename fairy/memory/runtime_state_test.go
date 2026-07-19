@@ -40,8 +40,8 @@ func TestRuntimeStateSchemaMigratesV3Database(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Summary() error = %v", err)
 	}
-	if summary.SchemaVersion != 6 || summary.Conversations != 1 {
-		t.Fatalf("summary = %#v, want schema v6 and preserved conversation", summary)
+	if summary.SchemaVersion != 7 || summary.Conversations != 1 {
+		t.Fatalf("summary = %#v, want schema v7 and preserved conversation", summary)
 	}
 
 	db, err = sql.Open(driverName, path)
@@ -49,7 +49,7 @@ func TestRuntimeStateSchemaMigratesV3Database(t *testing.T) {
 		t.Fatalf("sql.Open() migrated error = %v", err)
 	}
 	defer db.Close()
-	for _, table := range []string{"turn_runtime_events", "lane_continuations", "context_windows", "memory_embedding_items", "memory_embedding_jobs", "memory_embedding_vec"} {
+	for _, table := range []string{"turn_runtime_events", "lane_continuations", "context_windows", "memory_embedding_items", "memory_embedding_jobs", "memory_embedding_vec", "knowledge_ingest_jobs"} {
 		if !runtimeStateTableExists(t, db, table) {
 			t.Fatalf("runtime table %q does not exist", table)
 		}
