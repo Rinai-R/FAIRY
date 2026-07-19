@@ -1924,7 +1924,13 @@ export function ControlPanelApp() {
                             <form className="cp-memory-create" onSubmit={addMemory}>
                               <Select.Root value={memoryKind} onValueChange={setMemoryKind}>
                                 <Select.Trigger aria-label="记忆类型" />
-                                <Select.Content>
+                                <Select.Content
+                                  className="cp-memory-kind-select-content"
+                                  position="popper"
+                                  side="bottom"
+                                  align="start"
+                                  collisionPadding={14}
+                                >
                                   <Select.Item value="preference">偏好</Select.Item>
                                   <Select.Item value="profile">用户资料</Select.Item>
                                   <Select.Item value="experience">经历</Select.Item>

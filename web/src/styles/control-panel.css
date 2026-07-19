@@ -827,15 +827,32 @@
 
 .cp-memory-create {
   display: grid;
-  grid-template-columns: 150px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(168px, 190px) minmax(0, 1fr) auto;
   gap: 8px;
   border-block: 1px solid var(--fairy-border-soft);
   background: #f7fbfd;
 }
 
+.cp-memory-create .rt-SelectTrigger {
+  width: 100%;
+}
+
+.cp-memory-kind-select-content.rt-SelectContent:where([data-side]) {
+  width: var(--radix-select-trigger-width);
+  min-width: var(--radix-select-trigger-width);
+  max-height: min(220px, var(--radix-select-content-available-height));
+  background: #fff;
+  box-shadow: 0 10px 28px rgb(25 75 105 / 16%);
+}
+
+.cp-memory-kind-select-content .rt-SelectItem {
+  white-space: nowrap;
+}
+
 .cp-memory-columns {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  isolation: isolate;
 }
 
 .cp-memory-column {

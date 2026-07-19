@@ -195,6 +195,15 @@ test("intelligence status layout targets only its dot and stacks on narrow windo
   assert.match(cssSource, /@media \(max-width: 520px\)[\s\S]*\.cp-intelligence-track\s*\{[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
 });
 
+test("personal memory kind select uses popper overlay instead of item-aligned mashup", () => {
+  const appSource = readFileSync(new URL("./apps/ControlPanelApp.jsx", import.meta.url), "utf8");
+  const cssSource = readFileSync(new URL("./styles/control-panel.css", import.meta.url), "utf8");
+
+  assert.match(appSource, /className="cp-memory-kind-select-content"[\s\S]*?position="popper"/);
+  assert.match(cssSource, /\.cp-memory-kind-select-content\.rt-SelectContent:where\(\[data-side\]\)\s*\{/);
+  assert.match(cssSource, /\.cp-memory-create\s*\{[\s\S]*grid-template-columns: minmax\(168px, 190px\)/);
+});
+
 test("control panel does not expose retired network search configuration", () => {
   const appSource = readFileSync(new URL("./apps/ControlPanelApp.jsx", import.meta.url), "utf8");
 
