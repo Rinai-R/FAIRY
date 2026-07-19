@@ -11,6 +11,7 @@ import {
   SPEECH_BUBBLE_FADE_AFTER_MS,
   createSpeechBubbleState,
   reduceSpeechBubbleState,
+  speechBubbleSurface,
 } from "../speechBubbleState.mjs";
 
 const TYPEWRITER_CHARS_PER_TICK = 1;
@@ -33,18 +34,19 @@ export function CharacterSpeechBubble({
   const [typewriter, setTypewriter] = useState(() => createTypewriterState());
   const [bubble, setBubble] = useState(() => createSpeechBubbleState());
   const hasTarget = typeof targetText === "string" && targetText.length > 0;
+  const surface = speechBubbleSurface(targetText, waiting);
   const caughtUp = isTypewriterCaughtUp(typewriter)
     && typewriter.target.length > 0
     && typewriter.target === bubble.target;
-  const visible = hasTarget || waiting;
+  const visible = surface.mode !== "hidden";
 
   useLayoutEffect(() => {
     if (!hasTarget) {
-      // Keep mounted waiting chrome; only clear typed target.
-      if (!waiting) {
-        setBubble(createSpeechBubbleState());
-        setTypewriter(createTypewriterState());
-      }
+      // Always drop the previous typewriter when the target is empty. A new turn
+      // sets waiting=true with draft="" (thinking dots); keeping the old visible
+      // text under those dots is the "speaking then send" stuck-bubble bug.
+      setBubble(createSpeechBubbleState());
+      setTypewriter(createTypewriterState());
       return;
     }
     setBubble((prev) => reduceSpeechBubbleState(prev, { type: "set_target", target: targetText }));
@@ -91,19 +93,19 @@ export function CharacterSpeechBubble({
   return (
     <motion.aside
       ref={bubbleRef}
-      className={`fairy-speech-bubble${bubble.fading ? " is-fading" : ""}${waiting && !hasTarget ? " is-waiting" : ""}`}
+      className={`fairy-speech-bubble${bubble.fading ? " is-fading" : ""}${surface.showWaiting ? " is-waiting" : ""}`}
       aria-label={characterName ? `${characterName}说` : "角色回复"}
-      aria-busy={waiting && !hasTarget}
+      aria-busy={surface.showWaiting}
       initial={false}
       animate={{ opacity: bubble.fading ? 0 : 1, y: 0, scale: 1 }}
       transition={{ duration: bubble.fading ? 0.45 : 0.18 }}
     >
-      {waiting && !hasTarget ? (
+      {surface.showWaiting ? (
         <div className="fairy-speech-bubble__waiting" aria-hidden="true">
           <span /><span /><span />
         </div>
       ) : null}
-      {typewriter.visible.length > 0 ? <p>{typewriter.visible}</p> : null}
+      {surface.showText && typewriter.visible.length > 0 ? <p>{typewriter.visible}</p> : null}
     </motion.aside>
   );
 }

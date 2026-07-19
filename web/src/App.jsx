@@ -667,11 +667,12 @@ export function App() {
           retryable: false,
         });
       }
-      await submitWailsCompanionTurn({
+      const outcome = await submitWailsCompanionTurn({
         conversationId: companion.conversationId,
         input: input.trim(),
         speechEnabled: true,
       });
+      dispatchCompanion({ type: "compiled_turn_reconciled", outcome });
     } catch (error) {
       dispatchCompanion({ type: "invoke_failed", error });
     }

@@ -158,6 +158,29 @@ function completedPayload(text = "那就先歇一会儿，我陪着你。") {
   };
 }
 
+function parsedCompiledOutcome(text = "那就先歇一会儿，我陪着你。") {
+  return Object.freeze({
+    conversationId: CONVERSATION_ID,
+    turnId: TURN_ID,
+    responseText: text,
+    speechText: text,
+    sources: Object.freeze([]),
+    usage: Object.freeze([]),
+    characterRevision: 1,
+    userProfileRevision: null,
+    speechRequested: true,
+    visualState: "idle",
+    chains: Object.freeze([
+      Object.freeze({
+        text,
+        speechText: text,
+        visualState: "idle",
+      }),
+    ]),
+    respondMigrated: true,
+  });
+}
+
 function knowledgeRecord(overrides = {}) {
   return {
     id: KNOWLEDGE_ID,
@@ -222,6 +245,167 @@ test("normal stream produces one completed transcript and matching speech reques
   );
   assert.equal(state.speechRequest.text, state.terminalTurn.text);
   assert.deepEqual(state.usage, USAGE);
+});
+
+test("compiled reconciliation accepts parsed Wails outcome when terminal event is missing", () => {
+  let state = advanceToResponding();
+  assert.equal(state.activeTurnId, TURN_ID);
+
+  state = reduceCompanionState(state, {
+    type: "compiled_turn_reconciled",
+    outcome: parsedCompiledOutcome("你好呀～今天也想和你高性能地在一起呢！"),
+  });
+
+  assert.equal(state.sessionState, "completed");
+  assert.equal(state.activeTurnId, null);
+  assert.equal(state.submitting, false);
+  assert.equal(state.progressiveDraft, "");
+  assert.equal(state.terminalTurn.turnId, TURN_ID);
+  assert.equal(state.terminalTurn.text, "你好呀～今天也想和你高性能地在一起呢！");
+  assert.equal(state.terminalTurn.speechText, "你好呀～今天也想和你高性能地在一起呢！");
+  assert.equal(state.terminalTurn.characterRevision, 1);
+  assert.equal(state.transcript.at(-1).role, "assistant");
+  assert.equal(state.transcript.at(-1).text, "你好呀～今天也想和你高性能地在一起呢！");
+  assert.equal(state.speechRequest.text, "你好呀～今天也想和你高性能地在一起呢！");
+});
+
+test("compiled reconciliation is idempotent after terminal event already completed", () => {
+  let state = advanceToResponding();
+  state = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(5, "completed", completedPayload("完成文本")),
+  });
+  const terminal = state;
+
+  state = reduceCompanionState(state, {
+    type: "compiled_turn_reconciled",
+    outcome: parsedCompiledOutcome("完成文本"),
+  });
+
+  assert.equal(state, terminal);
+  assert.equal(state.activeTurnId, null);
+});
+
+test("compiled reconciliation soft-noops when submission already failed", () => {
+  let state = advanceToResponding();
+  state = reduceCompanionState(state, {
+    type: "invoke_failed",
+    error: Object.freeze({ code: "MODEL_RESPONSE_INVALID", message: "bad", retryable: false }),
+  });
+  const failed = state;
+
+  state = reduceCompanionState(state, {
+    type: "compiled_turn_reconciled",
+    outcome: parsedCompiledOutcome("不应覆盖失败"),
+  });
+
+  assert.equal(state, failed);
+  assert.equal(state.submitting, false);
+  assert.equal(state.terminalTurn, null);
+});
+
+test("RPC-first reconcile then late completed enriches usage without duplicating transcript", () => {
+  let state = advanceToResponding();
+  state = reduceCompanionState(state, {
+    type: "compiled_turn_reconciled",
+    outcome: parsedCompiledOutcome("先应一声"),
+  });
+  assert.equal(state.transcript.filter((entry) => entry.role === "assistant").length, 1);
+  assert.equal(state.lastSequence, 4);
+  assert.deepEqual(state.usage, []);
+
+  state = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(5, "completed", {
+      ...completedPayload("先应一声"),
+      usage: USAGE,
+    }),
+  });
+
+  assert.equal(state.sessionState, "completed");
+  assert.equal(state.submitting, false);
+  assert.equal(state.transcript.filter((entry) => entry.role === "assistant").length, 1);
+  assert.equal(state.lastSequence, 5);
+  assert.deepEqual(state.usage, USAGE);
+  assert.equal(state.terminalTurn.speechText, "先应一声");
+});
+
+test("RPC-first reconcile drains leftover same-turn stream events in order", () => {
+  let state = advanceToResponding();
+  state = reduceCompanionState(state, {
+    type: "compiled_turn_reconciled",
+    outcome: parsedCompiledOutcome("最终句"),
+  });
+
+  state = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(5, "responding", {
+      type: "reply_chain",
+      index: 0,
+      delta: "最终句",
+      text: "最终句",
+      speechText: "最终句",
+      visualState: "idle",
+    }),
+  });
+  assert.equal(state.lastSequence, 5);
+  assert.equal(state.transcript.at(-1).text, "最终句");
+
+  state = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(6, "completed", completedPayload("最终句")),
+  });
+  assert.equal(state.lastSequence, 6);
+  assert.equal(state.transcript.filter((entry) => entry.role === "assistant").length, 1);
+});
+
+test("RPC-first reconcile accepts late speech.requested against rich terminal", () => {
+  let state = advanceToResponding();
+  state = reduceCompanionState(state, {
+    type: "compiled_turn_reconciled",
+    outcome: {
+      ...parsedCompiledOutcome("陪你一下"),
+      speechRequested: false,
+      speechText: "陪你一下",
+    },
+  });
+  assert.equal(state.speechRequest, null);
+
+  state = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(5, "completed", {
+      type: "speech.requested",
+      text: "陪你一下",
+      characterRevision: 1,
+      userProfileRevision: null,
+    }),
+  });
+
+  assert.equal(state.speechRequest.text, "陪你一下");
+  assert.equal(state.lastSequence, 5);
+});
+
+test("RPC-first reconcile allows completed to jump a mid-stream sequence gap", () => {
+  let state = advanceToResponding();
+  assert.equal(state.lastSequence, 4);
+  state = reduceCompanionState(state, {
+    type: "compiled_turn_reconciled",
+    outcome: parsedCompiledOutcome("跨序完成"),
+  });
+  assert.equal(state.terminalTurn.reconciled, true);
+
+  state = reduceCompanionState(state, {
+    type: "harness_event",
+    event: event(7, "completed", {
+      ...completedPayload("跨序完成"),
+      usage: USAGE,
+    }),
+  });
+
+  assert.equal(state.lastSequence, 7);
+  assert.equal(state.terminalTurn.reconciled, false);
+  assert.deepEqual(state.usage, USAGE);
+  assert.equal(state.transcript.filter((entry) => entry.role === "assistant").length, 1);
 });
 
 test("reply chain events append draft and carry segment visual states", () => {
@@ -424,7 +608,7 @@ test("failed stream preserves diagnostics without promoting partial text", () =>
   });
 });
 
-test("terminal turn drops deltas, duplicate completion, and mismatched speech without crashing", () => {
+test("terminal turn drops deltas and mismatched speech; duplicate completed acks sequence", () => {
   let state = advanceToResponding();
   state = reduceCompanionState(state, {
     type: "harness_event",
@@ -446,8 +630,9 @@ test("terminal turn drops deltas, duplicate completion, and mismatched speech wi
     type: "harness_event",
     event: event(6, "completed", completedPayload("完成文本")),
   });
-  assert.equal(afterDup.lastSequence, terminal.lastSequence);
+  assert.equal(afterDup.lastSequence, 6);
   assert.equal(afterDup.transcript.length, terminal.transcript.length);
+  assert.equal(afterDup.terminalTurn.reconciled, false);
 
   const afterMismatch = reduceCompanionState(terminal, {
     type: "harness_event",

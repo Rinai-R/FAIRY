@@ -13,6 +13,21 @@ export function createSpeechBubbleState() {
   });
 }
 
+/**
+ * Waiting dots and reply text must never share the bubble. Used when a new turn
+ * starts while the previous reply is still on screen (send-while-speaking).
+ */
+export function speechBubbleSurface(targetText, waiting) {
+  const hasTarget = typeof targetText === "string" && targetText.length > 0;
+  if (waiting && !hasTarget) {
+    return Object.freeze({ mode: "waiting", showText: false, showWaiting: true });
+  }
+  if (hasTarget) {
+    return Object.freeze({ mode: "text", showText: true, showWaiting: false });
+  }
+  return Object.freeze({ mode: "hidden", showText: false, showWaiting: false });
+}
+
 export function reduceSpeechBubbleState(state, action) {
   if (state === null || typeof state !== "object" || Object.isFrozen(state) === false) {
     throw new TypeError("speech bubble state must be immutable");

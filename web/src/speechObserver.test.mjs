@@ -119,6 +119,11 @@ test("a new turn resets the previous draft", () => {
   assert.equal(observer.turnId, TURN_B);
   assert.equal(observer.draft, "");
   assert.equal(observer.waiting, true);
+  assert.equal(observer.revealThrough, -1);
+  assert.equal(observer.chains.length, 0);
+  // Contract for CharacterSpeechBubble: waiting chrome only — never keep the
+  // previous turn's text under the thinking dots (send-while-speaking).
+  assert.equal(speechBubbleVisible(observer), true);
 });
 
 test("interrupt and failure clear the bubble", () => {

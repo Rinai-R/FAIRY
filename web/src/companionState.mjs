@@ -1171,6 +1171,134 @@ function protocolError(message) {
   throw new TypeError(`companion event protocol: ${message}`);
 }
 
+function readCompiledOutcome(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("compiled turn outcome must be an object");
+  }
+  if (typeof value.conversationId !== "string" || value.conversationId.length === 0) {
+    throw new TypeError("compiled turn outcome.conversationId must be a non-empty string");
+  }
+  if (typeof value.turnId !== "string" || value.turnId.length === 0) {
+    throw new TypeError("compiled turn outcome.turnId must be a non-empty string");
+  }
+  if (typeof value.responseText !== "string") {
+    throw new TypeError("compiled turn outcome.responseText must be a string");
+  }
+  if (typeof value.speechText !== "string") {
+    throw new TypeError("compiled turn outcome.speechText must be a string");
+  }
+  if (typeof value.speechRequested !== "boolean") {
+    throw new TypeError("compiled turn outcome.speechRequested must be a boolean");
+  }
+  if (!Array.isArray(value.chains)) {
+    throw new TypeError("compiled turn outcome.chains must be an array");
+  }
+  return value;
+}
+
+function completedTerminalFromOutcome(outcome) {
+  return Object.freeze({
+    turnId: outcome.turnId,
+    state: "completed",
+    text: outcome.responseText,
+    speechText: outcome.speechText,
+    sources: Array.isArray(outcome.sources) ? Object.freeze(outcome.sources) : Object.freeze([]),
+    chains: outcome.chains,
+    characterRevision: Number.isSafeInteger(outcome.characterRevision) && outcome.characterRevision > 0
+      ? outcome.characterRevision
+      : 1,
+    userProfileRevision: outcome.userProfileRevision == null
+      ? null
+      : outcome.userProfileRevision,
+    // Marks RPC-first completion so leftover mid-stream harness events can drain
+    // without breaking the events-first path (which must still reject stray deltas).
+    reconciled: true,
+  });
+}
+
+/**
+ * Apply a compiled SubmitTurn outcome when harness streaming may have missed
+ * `completed`, or when the RPC returned before the frontend processed it.
+ * Idempotent against an already-completed terminal for the same turn so the
+ * common "events first, then RPC" order is a no-op.
+ */
+function applyCompiledTurnOutcome(state, rawOutcome, { soft = false } = {}) {
+  const outcome = soft ? readCompiledOutcome(rawOutcome) : parseTurnOutcome(rawOutcome);
+  if (state.conversationId !== outcome.conversationId) {
+    if (soft) return state;
+    throw new TypeError("compiled turn outcome conversation id does not match");
+  }
+  if (state.terminalTurn?.turnId === outcome.turnId && state.terminalTurn.state === "completed") {
+    return state;
+  }
+  if (!state.submitting) {
+    // Failed/interrupted/idle after await: never throw into React from the
+    // submit finally-path; the harness path already owns the terminal state.
+    if (soft) return state;
+    throw new TypeError("compiled turn outcome has no pending submission");
+  }
+  const transcript = state.transcript.map((entry, index) => {
+    if (index !== state.transcript.length - 1 || entry.role !== "user") return entry;
+    return Object.freeze({ ...entry, turnId: outcome.turnId });
+  });
+  transcript.push(Object.freeze({
+    role: "assistant",
+    text: outcome.responseText,
+    speechText: outcome.speechText,
+    sources: Array.isArray(outcome.sources) ? outcome.sources : Object.freeze([]),
+    chains: outcome.chains,
+    status: "completed",
+    turnId: outcome.turnId,
+  }));
+  return Object.freeze({
+    ...state,
+    sessionState: "completed",
+    activeTurnId: null,
+    terminalTurn: completedTerminalFromOutcome(outcome),
+    responseDraft: "",
+    progressiveDraft: "",
+    transcript: Object.freeze(transcript),
+    error: null,
+    usage: Array.isArray(outcome.usage) ? outcome.usage : Object.freeze([]),
+    speechRequest: outcome.speechRequested && outcome.speechText.length > 0
+      ? Object.freeze({ text: outcome.speechText, turnId: outcome.turnId })
+      : null,
+    submitting: false,
+  });
+}
+
+function acknowledgeLateCompleted(state, event) {
+  const payload = event.payload;
+  const terminal = state.terminalTurn;
+  const enriched = Object.freeze({
+    turnId: terminal.turnId,
+    state: "completed",
+    text: typeof terminal.text === "string" ? terminal.text : payload.text,
+    speechText: typeof terminal.speechText === "string" ? terminal.speechText : payload.speechText,
+    sources: Array.isArray(terminal.sources) ? terminal.sources : payload.sources,
+    chains: Array.isArray(terminal.chains) ? terminal.chains : payload.chains,
+    characterRevision: Number.isSafeInteger(terminal.characterRevision)
+      ? terminal.characterRevision
+      : payload.characterRevision,
+    userProfileRevision: Object.prototype.hasOwnProperty.call(terminal, "userProfileRevision")
+      ? terminal.userProfileRevision
+      : payload.userProfileRevision,
+    // Once harness completed is seen, further stray stream events should not drain.
+    reconciled: false,
+  });
+  const usage = Array.isArray(state.usage) && state.usage.length > 0
+    ? state.usage
+    : payload.usage;
+  return Object.freeze({
+    ...state,
+    terminalTurn: enriched,
+    lastSequence: event.sequence,
+    usage,
+    progressiveDraft: "",
+    error: null,
+  });
+}
+
 function reduceHarnessEvent(state, event) {
   if (state.conversationId !== event.conversationId) {
     protocolError("conversation id does not match the active session");
@@ -1194,41 +1322,92 @@ function reduceHarnessEvent(state, event) {
     ) {
       return state;
     }
-    protocolError("event sequence is duplicated or out of order");
+    // RPC-first reconcile freezes lastSequence mid-stream. Allow same-turn
+    // completed/speech to jump forward when intermediate events are still queued
+    // or were drained out-of-band by speech playback.
+    if (
+      state.terminalTurn?.reconciled === true &&
+      state.terminalTurn.state === "completed" &&
+      event.turnId === state.terminalTurn.turnId &&
+      event.sequence > state.lastSequence &&
+      (
+        event.payload.type === "completed" ||
+        event.payload.type === "speech.requested" ||
+        event.payload.type === "speech.synthesized" ||
+        event.payload.type === "speech.failed"
+      )
+    ) {
+      // fall through
+    } else if (
+      state.terminalTurn?.state === "completed" &&
+      event.turnId === state.terminalTurn.turnId &&
+      event.sequence <= state.lastSequence
+    ) {
+      return state;
+    } else {
+      protocolError("event sequence is duplicated or out of order");
+    }
   }
 
   if (state.terminalTurn !== null) {
+    // RPC reconcile can win the race against a late harness `completed`. Treat
+    // same-turn completed as an idempotent ack / metadata enrich, never a crash.
+    if (
+      event.payload.type === "completed" &&
+      state.terminalTurn.state === "completed" &&
+      event.turnId === state.terminalTurn.turnId &&
+      event.state === "completed"
+    ) {
+      return acknowledgeLateCompleted(state, event);
+    }
     const speech = event.payload.type === "speech.requested" || event.payload.type === "speech.synthesized" || event.payload.type === "speech.failed";
     if (
-      !speech ||
-      state.terminalTurn.state !== "completed" ||
-      event.turnId !== state.terminalTurn.turnId ||
-      event.state !== "completed"
+      speech &&
+      state.terminalTurn.state === "completed" &&
+      event.turnId === state.terminalTurn.turnId &&
+      event.state === "completed"
     ) {
-      protocolError("terminal turn cannot accept this event");
+      if (event.payload.type === "speech.synthesized" || event.payload.type === "speech.failed") {
+        return Object.freeze({
+          ...state,
+          lastSequence: event.sequence,
+        });
+      }
+      if (state.speechRequest !== null) {
+        // Already set by reconcile or an earlier speech.requested — ignore duplicates.
+        return Object.freeze({
+          ...state,
+          lastSequence: event.sequence,
+        });
+      }
+      const completed = state.terminalTurn;
+      if (
+        event.payload.text !== completed.speechText ||
+        event.payload.characterRevision !== completed.characterRevision ||
+        event.payload.userProfileRevision !== completed.userProfileRevision
+      ) {
+        protocolError("speech request does not match the completed response");
+      }
+      return Object.freeze({
+        ...state,
+        lastSequence: event.sequence,
+        speechRequest: event.payload,
+      });
     }
-    if (event.payload.type === "speech.synthesized" || event.payload.type === "speech.failed") {
+    // After RPC-first reconcile only: leftover same-turn stream events
+    // (reply_chain, state_changed, …) advance lastSequence so later
+    // completed/speech stay ordered. Events-first terminals still reject strays.
+    if (
+      state.terminalTurn.reconciled === true &&
+      state.terminalTurn.state === "completed" &&
+      event.turnId === state.terminalTurn.turnId
+    ) {
       return Object.freeze({
         ...state,
         lastSequence: event.sequence,
       });
     }
-    if (state.speechRequest !== null) {
-      protocolError("terminal turn cannot accept this event");
-    }
-    const completed = state.terminalTurn;
-    if (
-      event.payload.text !== completed.speechText ||
-      event.payload.characterRevision !== completed.characterRevision ||
-      event.payload.userProfileRevision !== completed.userProfileRevision
-    ) {
-      protocolError("speech request does not match the completed response");
-    }
-    return Object.freeze({
-      ...state,
-      lastSequence: event.sequence,
-      speechRequest: event.payload,
-    });
+    protocolError("terminal turn cannot accept this event");
   }
 
   const activeTurnId = state.activeTurnId ?? event.turnId;
@@ -1483,42 +1662,13 @@ export function reduceCompanionState(state, action) {
         return state;
       }
     }
-    case "compiled_turn_completed": {
-      const outcome = parseTurnOutcome(action.outcome);
-      if (state.conversationId !== outcome.conversationId) {
-        throw new TypeError("compiled turn outcome conversation id does not match");
-      }
-      if (!state.submitting) {
-        throw new TypeError("compiled turn outcome has no pending submission");
-      }
-      const transcript = state.transcript.map((entry, index) => {
-        if (index !== state.transcript.length - 1 || entry.role !== "user") return entry;
-        return Object.freeze({ ...entry, turnId: outcome.turnId });
-      });
-      transcript.push(Object.freeze({
-        role: "assistant",
-        text: outcome.responseText,
-        speechText: outcome.speechText,
-        sources: outcome.sources,
-        chains: outcome.chains,
-        status: "completed",
-        turnId: outcome.turnId,
-      }));
-      return Object.freeze({
-        ...state,
-        sessionState: "completed",
-        activeTurnId: null,
-        terminalTurn: Object.freeze({ turnId: outcome.turnId, state: "completed" }),
-        responseDraft: "",
-        transcript: Object.freeze(transcript),
-        error: null,
-        usage: outcome.usage,
-        speechRequest: outcome.speechRequested && outcome.speechText.length > 0
-          ? Object.freeze({ text: outcome.speechText, turnId: outcome.turnId })
-          : null,
-        submitting: false,
-      });
-    }
+    case "compiled_turn_completed":
+      return applyCompiledTurnOutcome(state, action.outcome, { soft: false });
+    case "compiled_turn_reconciled":
+      // Soft: safe to always dispatch after await SubmitTurn. Events-first is a
+      // no-op; RPC-first fills a rich terminalTurn so late harness completed /
+      // speech.requested can ack without protocol errors.
+      return applyCompiledTurnOutcome(state, action.outcome, { soft: true });
     case "invoke_failed":
       return Object.freeze({
         ...state,

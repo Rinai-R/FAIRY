@@ -6,6 +6,7 @@ import {
   createSpeechBubbleState,
   reduceSpeechBubbleState,
   shouldClearFadedSpeechBubble,
+  speechBubbleSurface,
 } from "./speechBubbleState.mjs";
 
 test("speech bubble sets target and fades after dwell", () => {
@@ -31,4 +32,27 @@ test("empty target clears bubble", () => {
   });
   state = reduceSpeechBubbleState(state, { type: "set_target", target: "" });
   assert.deepEqual(state, createSpeechBubbleState());
+});
+
+test("waiting surface never shares the bubble with reply text", () => {
+  assert.deepEqual(speechBubbleSurface("", true), {
+    mode: "waiting",
+    showText: false,
+    showWaiting: true,
+  });
+  assert.deepEqual(speechBubbleSurface("旧台词还在", true), {
+    mode: "text",
+    showText: true,
+    showWaiting: false,
+  });
+  assert.deepEqual(speechBubbleSurface("你好", false), {
+    mode: "text",
+    showText: true,
+    showWaiting: false,
+  });
+  assert.deepEqual(speechBubbleSurface("", false), {
+    mode: "hidden",
+    showText: false,
+    showWaiting: false,
+  });
 });
