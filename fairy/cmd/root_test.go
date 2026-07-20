@@ -25,7 +25,7 @@ func TestHelpExposesOnlySupportedSurface(t *testing.T) {
 	if err := root.ExecuteContext(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"serve", "status", "doctor", "session", "turn", "events", "logs", "metrics", "config", "character", "profile"} {
+	for _, name := range []string{"serve", "status", "doctor", "session", "turn", "events", "logs", "metrics", "config", "character", "profile", "db"} {
 		if !strings.Contains(output.String(), name) {
 			t.Fatalf("help missing %q:\n%s", name, output)
 		}
@@ -235,6 +235,27 @@ func TestDoctorStoppedCoreWritesFailure(t *testing.T) {
 	err := root.ExecuteContext(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "65534") || !strings.Contains(output.String(), `"status":"fail"`) {
 		t.Fatalf("error=%v output=%q", err, output.String())
+	}
+}
+
+func TestDoctorFailsRequiredInfrastructureDependency(t *testing.T) {
+	client := &fakeClient{status: coreclient.Status{
+		Database:  coreclient.DependencyStatus{Ready: true, Mode: "production"},
+		Qdrant:    coreclient.DependencyStatus{Ready: false, Mode: "production", Error: "collection contract mismatch"},
+		SecretKey: coreclient.DependencyStatus{Ready: true, Mode: "production"},
+	}}
+	report, err := runDoctor(context.Background(), client, "http://core.test")
+	if err == nil || !strings.Contains(err.Error(), "collection contract mismatch") {
+		t.Fatalf("runDoctor() error = %v", err)
+	}
+	var qdrant doctorCheck
+	for _, check := range report.Checks {
+		if check.Name == "qdrant" {
+			qdrant = check
+		}
+	}
+	if qdrant.Status != "fail" || qdrant.Detail != "collection contract mismatch" {
+		t.Fatalf("qdrant check = %#v", qdrant)
 	}
 }
 

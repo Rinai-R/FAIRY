@@ -121,13 +121,9 @@ func (s *ModelService) bearerCredential(connection config.ModelConnection) (stri
 	return value.Expose(), nil
 }
 
-func resolveSecretStore(root string, secrets *secret.Store) (*secret.Store, error) {
+func resolveSecretStore(_ string, secrets *secret.Store) (*secret.Store, error) {
 	if secrets != nil {
 		return secrets, nil
 	}
-	dbPath, err := secret.DatabasePath(root)
-	if err != nil {
-		return nil, err
-	}
-	return secret.NewStore(dbPath), nil
+	return nil, fmt.Errorf("PostgreSQL secret store is required")
 }

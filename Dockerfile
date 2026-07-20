@@ -19,6 +19,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/fairy .
 
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates \
+  postgresql17-client \
   && mkdir -p /data
 WORKDIR /data
 ENV FAIRY_CONFIG_ROOT=/data

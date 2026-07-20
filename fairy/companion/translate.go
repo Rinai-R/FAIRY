@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"fairy/character"
 	"fairy/model"
@@ -55,8 +56,7 @@ func (s *CompanionService) fillSpeechForTTS(
 				zap.String("from", textLang),
 				zap.String("to", speakLang),
 				zap.Int("chain", index),
-				zap.String("displayText", source),
-				zap.String("speechText", ""),
+				zap.Int("displayRunes", utf8.RuneCountInString(source)),
 				zap.Error(err),
 			)
 			return reply, "translate_failed", err
@@ -66,8 +66,8 @@ func (s *CompanionService) fillSpeechForTTS(
 			zap.String("from", textLang),
 			zap.String("to", speakLang),
 			zap.Int("chain", index),
-			zap.String("displayText", source),
-			zap.String("speechText", translated),
+			zap.Int("displayRunes", utf8.RuneCountInString(source)),
+			zap.Int("speechRunes", utf8.RuneCountInString(translated)),
 		)
 		speech := sanitizeSpeechText(translated)
 		if speech == "" || validateSpeech(speech) != nil {

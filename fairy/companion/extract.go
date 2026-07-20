@@ -130,7 +130,7 @@ func (s *CompanionService) processEmbeddingJobPass(limit int) (memory.EmbeddingJ
 	if s == nil || s.memory == nil || limit <= 0 {
 		return memory.EmbeddingJobResult{SemanticStatus: "unavailable"}, nil
 	}
-	return s.memory.ProcessEmbeddingJobs(s.semanticEmbedder, limit)
+	return s.memory.ProcessEmbeddingJobsWithVectorIndex(context.Background(), s.semanticEmbedder, s.vectorIndex, limit)
 }
 
 func (s *CompanionService) ActiveBackgroundJobs() int64 {

@@ -2,9 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -50,5 +55,116 @@ func TestSessionCoreHasNoDesktopPackage(t *testing.T) {
 		t.Fatal("fairy/desktop must not exist; desktop shell is not part of Session Core")
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("stat desktop: %v", err)
+	}
+}
+
+func TestProductionBuildHasNoSQLite(t *testing.T) {
+	forbidden := []string{
+		"modernc.org/sqlite",
+		"sqlite-vec",
+		".sqlite3",
+		"PRAGMA",
+		"fts5",
+		"vec0",
+	}
+
+	cmd := exec.Command("go", "list", "-deps", "./...")
+	dependencies, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go list -deps ./...: %v\n%s", err, dependencies)
+	}
+	for _, marker := range forbidden[:2] {
+		if strings.Contains(string(dependencies), marker) {
+			t.Fatalf("production dependency graph contains forbidden SQLite marker %q", marker)
+		}
+	}
+
+	cmd = exec.Command("go", "list", "-json", "./...")
+	packagesJSON, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list -json ./...: %v", err)
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(packagesJSON)))
+	for {
+		var pkg struct {
+			Dir     string
+			GoFiles []string
+		}
+		if err := decoder.Decode(&pkg); err != nil {
+			if err == io.EOF {
+				break
+			}
+			t.Fatalf("decode go list package: %v", err)
+		}
+		for _, name := range pkg.GoFiles {
+			path := filepath.Join(pkg.Dir, name)
+			source, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			for _, marker := range forbidden {
+				if strings.Contains(string(source), marker) {
+					t.Fatalf("production source %s contains forbidden SQLite marker %q", path, marker)
+				}
+			}
+		}
+	}
+
+	binaryPath := filepath.Join(t.TempDir(), "fairy")
+	cmd = exec.Command("go", "build", "-o", binaryPath, ".")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, output)
+	}
+	binary, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatalf("read production binary: %v", err)
+	}
+	for _, marker := range forbidden {
+		if strings.Contains(string(binary), marker) {
+			t.Fatalf("production binary contains forbidden SQLite marker %q", marker)
+		}
+	}
+}
+
+func TestCompanionLogsDoNotEmitConversationTextFields(t *testing.T) {
+	files, err := filepath.Glob("companion/*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, filename := range files {
+		if strings.HasSuffix(filename, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), filename, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", filename, err)
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok || len(call.Args) == 0 {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			packageName, ok := selector.X.(*ast.Ident)
+			if !ok || packageName.Name != "zap" {
+				return true
+			}
+			literal, ok := call.Args[0].(*ast.BasicLit)
+			if !ok || literal.Kind != token.STRING {
+				return true
+			}
+			field, err := strconv.Unquote(literal.Value)
+			if err != nil {
+				t.Errorf("unquote zap field in %s: %v", filename, err)
+				return true
+			}
+			if field == "displayText" || field == "speechText" {
+				t.Errorf("%s emits forbidden conversation text field %q through zap", filename, field)
+			}
+			return true
+		})
 	}
 }

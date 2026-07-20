@@ -427,15 +427,11 @@ func writeSettings(root string, settings Settings) error {
 	return nil
 }
 
-func resolveSecretStore(root string, secrets *secret.Store) (*secret.Store, error) {
+func resolveSecretStore(_ string, secrets *secret.Store) (*secret.Store, error) {
 	if secrets != nil {
 		return secrets, nil
 	}
-	dbPath, err := secret.DatabasePath(root)
-	if err != nil {
-		return nil, err
-	}
-	return secret.NewStore(dbPath), nil
+	return nil, errors.New("PostgreSQL secret store is required")
 }
 
 func defaultString(value string, fallback string) string {

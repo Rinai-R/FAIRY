@@ -1,7 +1,7 @@
 package memory
 
 import (
-	"database/sql"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +17,7 @@ const (
 
 	maxRuntimeMetadataBytes = 32 * 1024
 	maxRuntimeTokenRunes    = 128
-	maxSQLiteInteger        = uint64(1<<63 - 1)
+	maxDatabaseInteger      = uint64(1<<63 - 1)
 )
 
 type TurnRuntimeEventInput struct {
@@ -68,253 +68,59 @@ type ContextWindowRecord struct {
 }
 
 func (s *Store) AppendTurnRuntimeEvent(input TurnRuntimeEventInput) (TurnRuntimeEventRecord, error) {
-	if err := validateTurnRuntimeEventInput(input); err != nil {
-		return TurnRuntimeEventRecord{}, err
-	}
-	metadataJSON, err := normalizeRuntimeMetadataJSON(input.MetadataJSON)
-	if err != nil {
-		return TurnRuntimeEventRecord{}, err
-	}
-	db, err := s.openWrite()
-	if err != nil {
-		return TurnRuntimeEventRecord{}, err
-	}
-	defer db.Close()
-	now := nowUnixMS()
-	tx, err := db.Begin()
-	if err != nil {
-		return TurnRuntimeEventRecord{}, fmt.Errorf("beginning runtime event transaction: %w", err)
-	}
-	defer tx.Rollback()
-	if err := requireTurn(tx, input.ConversationID, input.TurnID); err != nil {
-		return TurnRuntimeEventRecord{}, err
-	}
-	sequence, err := nextTurnRuntimeEventSequence(tx, input.ConversationID, input.TurnID)
-	if err != nil {
-		return TurnRuntimeEventRecord{}, err
-	}
-	id := newID()
-	if _, err := tx.Exec("INSERT INTO turn_runtime_events(id, conversation_id, turn_id, sequence, event_type, state, code, metadata_json, created_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)", id, input.ConversationID, input.TurnID, sequence, input.EventType, nullableStringValue(input.State), nullableStringValue(input.Code), metadataJSON, now); err != nil {
-		return TurnRuntimeEventRecord{}, fmt.Errorf("appending runtime event: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return TurnRuntimeEventRecord{}, fmt.Errorf("committing runtime event transaction: %w", err)
-	}
-	return TurnRuntimeEventRecord{
-		ID:              id,
-		ConversationID:  input.ConversationID,
-		TurnID:          input.TurnID,
-		Sequence:        uint64(sequence),
-		EventType:       input.EventType,
-		State:           cloneStringPtr(input.State),
-		Code:            cloneStringPtr(input.Code),
-		MetadataJSON:    metadataJSON,
-		CreatedAtUnixMS: now,
-	}, nil
+	return s.AppendTurnRuntimeEventContext(context.Background(), input)
+}
+
+func (s *Store) AppendTurnRuntimeEventContext(ctx context.Context, input TurnRuntimeEventInput) (TurnRuntimeEventRecord, error) {
+	return s.appendTurnRuntimeEventPostgres(ctx, input)
 }
 
 func (s *Store) ListTurnRuntimeEvents(conversationID string, turnID string) ([]TurnRuntimeEventRecord, error) {
-	if err := validateID("conversation_id", conversationID); err != nil {
-		return nil, err
-	}
-	if err := validateID("turn_id", turnID); err != nil {
-		return nil, err
-	}
-	db, err := s.openReadOnly()
-	if err != nil {
-		return nil, err
-	}
-	defer db.Close()
-	rows, err := db.Query("SELECT id, conversation_id, turn_id, sequence, event_type, state, code, metadata_json, created_at_ms FROM turn_runtime_events WHERE conversation_id = ?1 AND turn_id = ?2 ORDER BY sequence ASC", conversationID, turnID)
-	if err != nil {
-		return nil, fmt.Errorf("listing runtime events: %w", err)
-	}
-	defer rows.Close()
-	records := make([]TurnRuntimeEventRecord, 0)
-	for rows.Next() {
-		var record TurnRuntimeEventRecord
-		var state sql.NullString
-		var code sql.NullString
-		if err := rows.Scan(&record.ID, &record.ConversationID, &record.TurnID, &record.Sequence, &record.EventType, &state, &code, &record.MetadataJSON, &record.CreatedAtUnixMS); err != nil {
-			return nil, fmt.Errorf("scanning runtime event: %w", err)
-		}
-		record.State = stringPtrFromNull(state)
-		record.Code = stringPtrFromNull(code)
-		records = append(records, record)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating runtime events: %w", err)
-	}
-	return records, nil
+	return s.ListTurnRuntimeEventsContext(context.Background(), conversationID, turnID)
+}
+
+func (s *Store) ListTurnRuntimeEventsContext(ctx context.Context, conversationID string, turnID string) ([]TurnRuntimeEventRecord, error) {
+	return s.listTurnRuntimeEventsPostgres(ctx, conversationID, turnID)
 }
 
 func (s *Store) SaveLaneContinuation(record LaneContinuationRecord) (LaneContinuationRecord, error) {
-	if err := validateLaneContinuation(record); err != nil {
-		return LaneContinuationRecord{}, err
-	}
-	db, err := s.openWrite()
-	if err != nil {
-		return LaneContinuationRecord{}, err
-	}
-	defer db.Close()
-	now := nowUnixMS()
-	tx, err := db.Begin()
-	if err != nil {
-		return LaneContinuationRecord{}, fmt.Errorf("beginning lane continuation transaction: %w", err)
-	}
-	defer tx.Rollback()
-	if err := requireConversation(tx, record.ConversationID); err != nil {
-		return LaneContinuationRecord{}, err
-	}
-	windowRevision, err := sqliteUint64("window_revision", record.WindowRevision)
-	if err != nil {
-		return LaneContinuationRecord{}, err
-	}
-	if _, err := tx.Exec("INSERT INTO lane_continuations(conversation_id, lane, previous_response_id, request_shape_hash, input_prefix_hash, response_item_hash, window_revision, updated_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(conversation_id, lane) DO UPDATE SET previous_response_id = excluded.previous_response_id, request_shape_hash = excluded.request_shape_hash, input_prefix_hash = excluded.input_prefix_hash, response_item_hash = excluded.response_item_hash, window_revision = excluded.window_revision, updated_at_ms = excluded.updated_at_ms", record.ConversationID, record.Lane, record.PreviousResponseID, record.RequestShapeHash, record.InputPrefixHash, record.ResponseItemHash, windowRevision, now); err != nil {
-		return LaneContinuationRecord{}, fmt.Errorf("saving lane continuation: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return LaneContinuationRecord{}, fmt.Errorf("committing lane continuation transaction: %w", err)
-	}
-	record.UpdatedAtUnixMS = now
-	return record, nil
+	return s.SaveLaneContinuationContext(context.Background(), record)
+}
+
+func (s *Store) SaveLaneContinuationContext(ctx context.Context, record LaneContinuationRecord) (LaneContinuationRecord, error) {
+	return s.saveLaneContinuationPostgres(ctx, record)
 }
 
 func (s *Store) LoadLaneContinuation(conversationID string, lane string) (LaneContinuationRecord, bool, error) {
-	if err := validateID("conversation_id", conversationID); err != nil {
-		return LaneContinuationRecord{}, false, err
-	}
-	if err := validatePromptLane(lane); err != nil {
-		return LaneContinuationRecord{}, false, err
-	}
-	db, err := s.openReadOnly()
-	if err != nil {
-		return LaneContinuationRecord{}, false, err
-	}
-	defer db.Close()
-	var record LaneContinuationRecord
-	err = db.QueryRow("SELECT conversation_id, lane, previous_response_id, request_shape_hash, input_prefix_hash, response_item_hash, window_revision, updated_at_ms FROM lane_continuations WHERE conversation_id = ?1 AND lane = ?2", conversationID, lane).Scan(&record.ConversationID, &record.Lane, &record.PreviousResponseID, &record.RequestShapeHash, &record.InputPrefixHash, &record.ResponseItemHash, &record.WindowRevision, &record.UpdatedAtUnixMS)
-	if errors.Is(err, sql.ErrNoRows) {
-		return LaneContinuationRecord{}, false, nil
-	}
-	if err != nil {
-		return LaneContinuationRecord{}, false, fmt.Errorf("loading lane continuation: %w", err)
-	}
-	return record, true, nil
+	return s.LoadLaneContinuationContext(context.Background(), conversationID, lane)
+}
+
+func (s *Store) LoadLaneContinuationContext(ctx context.Context, conversationID string, lane string) (LaneContinuationRecord, bool, error) {
+	return s.loadLaneContinuationPostgres(ctx, conversationID, lane)
 }
 
 func (s *Store) ClearLaneContinuation(conversationID string, lane string) error {
-	if err := validateID("conversation_id", conversationID); err != nil {
-		return err
-	}
-	if err := validatePromptLane(lane); err != nil {
-		return err
-	}
-	db, err := s.openWrite()
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("beginning lane continuation clear transaction: %w", err)
-	}
-	defer tx.Rollback()
-	if err := requireConversation(tx, conversationID); err != nil {
-		return err
-	}
-	if _, err := tx.Exec("DELETE FROM lane_continuations WHERE conversation_id = ?1 AND lane = ?2", conversationID, lane); err != nil {
-		return fmt.Errorf("clearing lane continuation: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("committing lane continuation clear transaction: %w", err)
-	}
-	return nil
+	return s.ClearLaneContinuationContext(context.Background(), conversationID, lane)
+}
+
+func (s *Store) ClearLaneContinuationContext(ctx context.Context, conversationID string, lane string) error {
+	return s.clearLaneContinuationPostgres(ctx, conversationID, lane)
 }
 
 func (s *Store) SaveContextWindow(record ContextWindowRecord) (ContextWindowRecord, error) {
-	if err := validateContextWindow(record); err != nil {
-		return ContextWindowRecord{}, err
-	}
-	db, err := s.openWrite()
-	if err != nil {
-		return ContextWindowRecord{}, err
-	}
-	defer db.Close()
-	now := nowUnixMS()
-	tx, err := db.Begin()
-	if err != nil {
-		return ContextWindowRecord{}, fmt.Errorf("beginning context window transaction: %w", err)
-	}
-	defer tx.Rollback()
-	if err := requireConversation(tx, record.ConversationID); err != nil {
-		return ContextWindowRecord{}, err
-	}
-	windowNumber, err := sqliteUint64("window_number", record.WindowNumber)
-	if err != nil {
-		return ContextWindowRecord{}, err
-	}
-	failureCount, err := sqliteUint64("failure_count", record.FailureCount)
-	if err != nil {
-		return ContextWindowRecord{}, err
-	}
-	promptWindowRevision, err := sqliteUint64("prompt_window_revision", record.PromptWindowRevision)
-	if err != nil {
-		return ContextWindowRecord{}, err
-	}
-	observedPrefillTokens, err := nullableSQLiteUint64("observed_prefill_tokens", record.ObservedPrefillTokens)
-	if err != nil {
-		return ContextWindowRecord{}, err
-	}
-	estimatedPrefillTokens, err := nullableSQLiteUint64("estimated_prefill_tokens", record.EstimatedPrefillTokens)
-	if err != nil {
-		return ContextWindowRecord{}, err
-	}
-	if _, err := tx.Exec("INSERT INTO context_windows(conversation_id, lane, window_number, first_window_id, previous_window_id, window_id, observed_prefill_tokens, estimated_prefill_tokens, last_trigger, failure_count, prompt_window_revision, updated_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) ON CONFLICT(conversation_id, lane) DO UPDATE SET window_number = excluded.window_number, first_window_id = excluded.first_window_id, previous_window_id = excluded.previous_window_id, window_id = excluded.window_id, observed_prefill_tokens = excluded.observed_prefill_tokens, estimated_prefill_tokens = excluded.estimated_prefill_tokens, last_trigger = excluded.last_trigger, failure_count = excluded.failure_count, prompt_window_revision = excluded.prompt_window_revision, updated_at_ms = excluded.updated_at_ms", record.ConversationID, record.Lane, windowNumber, record.FirstWindowID, nullableStringValue(record.PreviousWindowID), record.WindowID, observedPrefillTokens, estimatedPrefillTokens, record.LastTrigger, failureCount, promptWindowRevision, now); err != nil {
-		return ContextWindowRecord{}, fmt.Errorf("saving context window: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return ContextWindowRecord{}, fmt.Errorf("committing context window transaction: %w", err)
-	}
-	record.UpdatedAtUnixMS = now
-	return record, nil
+	return s.SaveContextWindowContext(context.Background(), record)
+}
+
+func (s *Store) SaveContextWindowContext(ctx context.Context, record ContextWindowRecord) (ContextWindowRecord, error) {
+	return s.saveContextWindowPostgres(ctx, record)
 }
 
 func (s *Store) LoadContextWindow(conversationID string, lane string) (ContextWindowRecord, bool, error) {
-	if err := validateID("conversation_id", conversationID); err != nil {
-		return ContextWindowRecord{}, false, err
-	}
-	if err := validatePromptLane(lane); err != nil {
-		return ContextWindowRecord{}, false, err
-	}
-	db, err := s.openReadOnly()
-	if err != nil {
-		return ContextWindowRecord{}, false, err
-	}
-	defer db.Close()
-	var record ContextWindowRecord
-	var previousWindowID sql.NullString
-	var observedPrefillTokens sql.NullInt64
-	var estimatedPrefillTokens sql.NullInt64
-	err = db.QueryRow("SELECT conversation_id, lane, window_number, first_window_id, previous_window_id, window_id, observed_prefill_tokens, estimated_prefill_tokens, last_trigger, failure_count, prompt_window_revision, updated_at_ms FROM context_windows WHERE conversation_id = ?1 AND lane = ?2", conversationID, lane).Scan(&record.ConversationID, &record.Lane, &record.WindowNumber, &record.FirstWindowID, &previousWindowID, &record.WindowID, &observedPrefillTokens, &estimatedPrefillTokens, &record.LastTrigger, &record.FailureCount, &record.PromptWindowRevision, &record.UpdatedAtUnixMS)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ContextWindowRecord{}, false, nil
-	}
-	if err != nil {
-		return ContextWindowRecord{}, false, fmt.Errorf("loading context window: %w", err)
-	}
-	record.PreviousWindowID = stringPtrFromNull(previousWindowID)
-	observed, err := uintPtrFromNullInt64("observed_prefill_tokens", observedPrefillTokens)
-	if err != nil {
-		return ContextWindowRecord{}, false, err
-	}
-	estimated, err := uintPtrFromNullInt64("estimated_prefill_tokens", estimatedPrefillTokens)
-	if err != nil {
-		return ContextWindowRecord{}, false, err
-	}
-	record.ObservedPrefillTokens = observed
-	record.EstimatedPrefillTokens = estimated
-	return record, true, nil
+	return s.LoadContextWindowContext(context.Background(), conversationID, lane)
+}
+
+func (s *Store) LoadContextWindowContext(ctx context.Context, conversationID string, lane string) (ContextWindowRecord, bool, error) {
+	return s.loadContextWindowPostgres(ctx, conversationID, lane)
 }
 
 func validateTurnRuntimeEventInput(input TurnRuntimeEventInput) error {
@@ -362,7 +168,7 @@ func validateLaneContinuation(record LaneContinuationRecord) error {
 	if record.WindowRevision == 0 {
 		return errors.New("window_revision is required")
 	}
-	if _, err := sqliteUint64("window_revision", record.WindowRevision); err != nil {
+	if _, err := databaseInt64("window_revision", record.WindowRevision); err != nil {
 		return err
 	}
 	return nil
@@ -389,19 +195,19 @@ func validateContextWindow(record ContextWindowRecord) error {
 	if record.PromptWindowRevision == 0 {
 		return errors.New("prompt_window_revision is required")
 	}
-	if _, err := sqliteUint64("window_number", record.WindowNumber); err != nil {
+	if _, err := databaseInt64("window_number", record.WindowNumber); err != nil {
 		return err
 	}
-	if _, err := sqliteUint64("failure_count", record.FailureCount); err != nil {
+	if _, err := databaseInt64("failure_count", record.FailureCount); err != nil {
 		return err
 	}
-	if _, err := sqliteUint64("prompt_window_revision", record.PromptWindowRevision); err != nil {
+	if _, err := databaseInt64("prompt_window_revision", record.PromptWindowRevision); err != nil {
 		return err
 	}
-	if _, err := nullableSQLiteUint64("observed_prefill_tokens", record.ObservedPrefillTokens); err != nil {
+	if _, err := nullableDatabaseInt64("observed_prefill_tokens", record.ObservedPrefillTokens); err != nil {
 		return err
 	}
-	if _, err := nullableSQLiteUint64("estimated_prefill_tokens", record.EstimatedPrefillTokens); err != nil {
+	if _, err := nullableDatabaseInt64("estimated_prefill_tokens", record.EstimatedPrefillTokens); err != nil {
 		return err
 	}
 	if err := validateRuntimeToken("last_trigger", record.LastTrigger); err != nil {
@@ -511,52 +317,22 @@ func isForbiddenMetadataKey(key string) bool {
 	}
 }
 
-func requireTurn(tx *sql.Tx, conversationID string, turnID string) error {
-	var exists bool
-	if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM conversation_turns WHERE conversation_id = ?1 AND id = ?2)", conversationID, turnID).Scan(&exists); err != nil {
-		return fmt.Errorf("checking turn: %w", err)
-	}
-	if !exists {
-		return errors.New("turn does not belong to conversation")
-	}
-	return nil
-}
-
-func nextTurnRuntimeEventSequence(tx *sql.Tx, conversationID string, turnID string) (int64, error) {
-	var maxSequence int64
-	if err := tx.QueryRow("SELECT COALESCE(MAX(sequence), 0) FROM turn_runtime_events WHERE conversation_id = ?1 AND turn_id = ?2", conversationID, turnID).Scan(&maxSequence); err != nil {
-		return 0, fmt.Errorf("reading next runtime event sequence: %w", err)
-	}
-	return maxSequence + 1, nil
-}
-
-func sqliteUint64(label string, value uint64) (int64, error) {
-	if value > maxSQLiteInteger {
-		return 0, fmt.Errorf("%s exceeds SQLite integer range", label)
+func databaseInt64(label string, value uint64) (int64, error) {
+	if value > maxDatabaseInteger {
+		return 0, fmt.Errorf("%s exceeds database integer range", label)
 	}
 	return int64(value), nil
 }
 
-func nullableSQLiteUint64(label string, value *uint64) (any, error) {
+func nullableDatabaseInt64(label string, value *uint64) (any, error) {
 	if value == nil {
 		return nil, nil
 	}
-	converted, err := sqliteUint64(label, *value)
+	converted, err := databaseInt64(label, *value)
 	if err != nil {
 		return nil, err
 	}
 	return converted, nil
-}
-
-func uintPtrFromNullInt64(label string, value sql.NullInt64) (*uint64, error) {
-	if !value.Valid {
-		return nil, nil
-	}
-	if value.Int64 < 0 {
-		return nil, fmt.Errorf("%s is negative", label)
-	}
-	converted := uint64(value.Int64)
-	return &converted, nil
 }
 
 func nullableStringValue(value *string) any {
@@ -564,13 +340,6 @@ func nullableStringValue(value *string) any {
 		return nil
 	}
 	return *value
-}
-
-func stringPtrFromNull(value sql.NullString) *string {
-	if !value.Valid {
-		return nil
-	}
-	return &value.String
 }
 
 func cloneStringPtr(value *string) *string {

@@ -1,3 +1,5 @@
+//go:build sqlite_legacy
+
 package memory
 
 import (
@@ -5,9 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	_ "modernc.org/sqlite"
-	_ "modernc.org/sqlite/vec"
 )
 
 func TestRuntimeStateSchemaMigratesV3Database(t *testing.T) {

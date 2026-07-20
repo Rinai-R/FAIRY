@@ -2,6 +2,7 @@ package companion
 
 import (
 	"encoding/json"
+	"strings"
 
 	"fairy/memory"
 	"fairy/model"
@@ -15,6 +16,7 @@ const (
 	runtimeLedgerEventContextWindow = "context_window"
 	runtimeLedgerEventCompile       = "compile"
 	runtimeLedgerEventSpeech        = "speech"
+	runtimeLedgerEventBeatDelivery  = "beat_delivery"
 	runtimeLedgerEventTerminal      = "terminal"
 )
 
@@ -27,6 +29,7 @@ func (s *CompanionService) appendRuntimeLedger(conversationID string, turnID str
 	}
 	encoded, err := json.Marshal(metadata)
 	if err != nil {
+		s.setBackgroundError(err)
 		return
 	}
 	var stateValue *string
@@ -38,14 +41,28 @@ func (s *CompanionService) appendRuntimeLedger(conversationID string, turnID str
 	if code != "" {
 		codeValue = &code
 	}
-	_, _ = s.memory.AppendTurnRuntimeEvent(memory.TurnRuntimeEventInput{
+	if _, err := s.memory.AppendTurnRuntimeEvent(memory.TurnRuntimeEventInput{
 		ConversationID: conversationID,
 		TurnID:         turnID,
 		EventType:      eventType,
 		State:          stateValue,
 		Code:           codeValue,
 		MetadataJSON:   string(encoded),
-	})
+	}); err != nil {
+		s.setBackgroundError(err)
+	}
+}
+
+func runtimeBeatDeliveryLedgerMetadata(status, kind string, chainIndex, playIndex int, targetIntervalMS, paceWaitMS int64, prefixCount int) map[string]any {
+	return map[string]any{
+		"status":               status,
+		"kind":                 kind,
+		"chainIndex":           chainIndex,
+		"playIndex":            playIndex,
+		"targetIntervalMs":     targetIntervalMS,
+		"paceWaitMs":           paceWaitMS,
+		"publishedPrefixCount": prefixCount,
+	}
 }
 
 func runtimePromptLedgerMetadata(
@@ -152,5 +169,19 @@ func runtimeFailureLedgerMetadata(code string, cause error, retryable bool) map[
 		"errorCode":   code,
 		"retryable":   retryable,
 		"messageHash": runtimeHash(message),
+	}
+}
+
+func runtimeInterruptedTerminalLedgerMetadata(plannedCount int, published []ReplyChain) map[string]any {
+	parts := make([]string, 0, len(published))
+	for _, chain := range published {
+		parts = append(parts, chain.Text)
+	}
+	prefix := strings.Join(parts, "\n")
+	return map[string]any{
+		"status":              "interrupted",
+		"plannedChainCount":   plannedCount,
+		"publishedChainCount": len(published),
+		"publishedPrefixHash": runtimeHash(prefix),
 	}
 }

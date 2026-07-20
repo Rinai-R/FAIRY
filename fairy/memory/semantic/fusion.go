@@ -123,7 +123,7 @@ type Embedder interface {
 	Dims() int
 }
 
-// UnavailableEmbedder is the default until local ONNX / sqlite-vec is wired.
+// UnavailableEmbedder represents an embedding provider that is not configured.
 type UnavailableEmbedder struct{}
 
 func (UnavailableEmbedder) Ready() bool    { return false }

@@ -117,6 +117,10 @@ func (s *Server) handleStatus(ctx context.Context, c *app.RequestContext) {
 		"semanticEmbedding":    semantic,
 		"activeBackgroundJobs": s.rt.Companion.ActiveBackgroundJobs(),
 	}
+	database, qdrant, secretKey := s.infrastructureStatus(ctx)
+	payload["database"] = database
+	payload["qdrant"] = qdrant
+	payload["secretKey"] = secretKey
 	s.enrichStatusPayload(payload)
 	c.JSON(http.StatusOK, payload)
 }

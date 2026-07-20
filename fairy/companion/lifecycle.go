@@ -101,32 +101,38 @@ type utterancePayload struct {
 // beatReadyPayload is the paired text(+optional audio) delivery unit. Frontend
 // reveals a beat only after this event (齐套才揭示).
 type beatReadyPayload struct {
-	Type        string `json:"type"`
-	BeatID      string `json:"beatId"`
-	Kind        string `json:"kind"` // utterance | final
-	Index       uint8  `json:"index"`
-	ChainIndex  int    `json:"chainIndex"`
-	DisplayText string `json:"displayText"`
-	SpeechText  string `json:"speechText"`
-	VisualState string `json:"visualState"`
-	Reason      string `json:"reason,omitempty"`
-	SpeakerID   string `json:"speakerId,omitempty"`
-	MimeType    string `json:"mimeType,omitempty"`
-	Format      string `json:"format,omitempty"`
-	DataURL     string `json:"dataUrl,omitempty"`
+	Type                 string `json:"type"`
+	BeatID               string `json:"beatId"`
+	Kind                 string `json:"kind"` // utterance | final
+	Index                uint8  `json:"index"`
+	ChainIndex           int    `json:"chainIndex"`
+	DisplayText          string `json:"displayText"`
+	SpeechText           string `json:"speechText"`
+	VisualState          string `json:"visualState"`
+	TargetIntervalMS     int64  `json:"targetIntervalMs"`
+	PaceWaitMS           int64  `json:"paceWaitMs"`
+	PublishedPrefixCount int    `json:"publishedPrefixCount"`
+	Reason               string `json:"reason,omitempty"`
+	SpeakerID            string `json:"speakerId,omitempty"`
+	MimeType             string `json:"mimeType,omitempty"`
+	Format               string `json:"format,omitempty"`
+	DataURL              string `json:"dataUrl,omitempty"`
 }
 
 // BeatReadyCompletion is the lifecycle input for a paired beat delivery.
 type BeatReadyCompletion struct {
-	BeatID      string
-	Kind        string
-	Index       uint8
-	ChainIndex  int
-	DisplayText string
-	SpeechText  string
-	VisualState string
-	Reason      string
-	Audio       *SpeechSynthesisResult
+	BeatID               string
+	Kind                 string
+	Index                uint8
+	ChainIndex           int
+	DisplayText          string
+	SpeechText           string
+	VisualState          string
+	TargetIntervalMS     int64
+	PaceWaitMS           int64
+	PublishedPrefixCount int
+	Reason               string
+	Audio                *SpeechSynthesisResult
 }
 
 type completedPayload struct {
@@ -363,15 +369,18 @@ func (l *TurnLifecycle) BeatReady(completion BeatReadyCompletion) (HarnessEvent,
 		visual = "idle"
 	}
 	payload := beatReadyPayload{
-		Type:        "beat.ready",
-		BeatID:      completion.BeatID,
-		Kind:        kind,
-		Index:       completion.Index,
-		ChainIndex:  completion.ChainIndex,
-		DisplayText: completion.DisplayText,
-		SpeechText:  completion.SpeechText,
-		VisualState: visual,
-		Reason:      completion.Reason,
+		Type:                 "beat.ready",
+		BeatID:               completion.BeatID,
+		Kind:                 kind,
+		Index:                completion.Index,
+		ChainIndex:           completion.ChainIndex,
+		DisplayText:          completion.DisplayText,
+		SpeechText:           completion.SpeechText,
+		VisualState:          visual,
+		TargetIntervalMS:     completion.TargetIntervalMS,
+		PaceWaitMS:           completion.PaceWaitMS,
+		PublishedPrefixCount: completion.PublishedPrefixCount,
+		Reason:               completion.Reason,
 	}
 	if completion.Audio != nil {
 		payload.SpeakerID = completion.Audio.SpeakerID

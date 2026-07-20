@@ -7,15 +7,24 @@ import (
 )
 
 type Status struct {
-	Bootstrap            json.RawMessage `json:"bootstrap"`
-	ConfigRoot           string          `json:"configRoot"`
-	WebSearch            json.RawMessage `json:"webSearch"`
-	SemanticEmbedding    json.RawMessage `json:"semanticEmbedding"`
-	ActiveBackgroundJobs int64           `json:"activeBackgroundJobs"`
-	Model                json.RawMessage `json:"model,omitempty"`
-	ModelError           string          `json:"modelError,omitempty"`
-	Speech               json.RawMessage `json:"speech,omitempty"`
-	SpeechError          string          `json:"speechError,omitempty"`
+	Bootstrap            json.RawMessage  `json:"bootstrap"`
+	ConfigRoot           string           `json:"configRoot"`
+	WebSearch            json.RawMessage  `json:"webSearch"`
+	SemanticEmbedding    json.RawMessage  `json:"semanticEmbedding"`
+	ActiveBackgroundJobs int64            `json:"activeBackgroundJobs"`
+	Model                json.RawMessage  `json:"model,omitempty"`
+	ModelError           string           `json:"modelError,omitempty"`
+	Speech               json.RawMessage  `json:"speech,omitempty"`
+	SpeechError          string           `json:"speechError,omitempty"`
+	Database             DependencyStatus `json:"database"`
+	Qdrant               DependencyStatus `json:"qdrant"`
+	SecretKey            DependencyStatus `json:"secretKey"`
+}
+
+type DependencyStatus struct {
+	Ready bool   `json:"ready"`
+	Mode  string `json:"mode"`
+	Error string `json:"error,omitempty"`
 }
 
 type OpenSessionRequest struct {
@@ -84,6 +93,8 @@ type Metrics struct {
 	Logs              observability.LogStats            `json:"logs"`
 	Runtime           RuntimeMetrics                    `json:"runtime"`
 	Usage             UsageReport                       `json:"usage"`
+	Database          json.RawMessage                   `json:"database"`
+	Qdrant            json.RawMessage                   `json:"qdrant"`
 }
 
 type LogQuery struct {

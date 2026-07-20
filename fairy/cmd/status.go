@@ -69,6 +69,25 @@ func runDoctor(ctx context.Context, client APIClient, endpoint string) (doctorRe
 		doctorCheck{Name: "bootstrap", Status: "pass"},
 	)
 	var failures []error
+	for _, dependency := range []struct {
+		name   string
+		status coreclient.DependencyStatus
+	}{
+		{name: "database", status: status.Database},
+		{name: "qdrant", status: status.Qdrant},
+		{name: "secret-key", status: status.SecretKey},
+	} {
+		check := doctorCheck{Name: dependency.name, Status: "pass"}
+		if dependency.status.Mode != "production" || !dependency.status.Ready {
+			check.Status = "fail"
+			check.Detail = dependency.status.Error
+			if check.Detail == "" {
+				check.Detail = "required production dependency is not ready"
+			}
+			failures = append(failures, fmt.Errorf("%s: %s", dependency.name, check.Detail))
+		}
+		report.Checks = append(report.Checks, check)
+	}
 	checkConfig := func(section string) {
 		raw, err := client.GetConfig(ctx, section)
 		if err != nil {
@@ -113,7 +132,6 @@ func runDoctor(ctx context.Context, client APIClient, endpoint string) (doctorRe
 	} else {
 		report.Checks = append(report.Checks, doctorCheck{Name: "metrics", Status: "pass"})
 	}
-	_ = status
 	if len(failures) > 0 {
 		return report, errors.Join(failures...)
 	}

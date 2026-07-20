@@ -28,19 +28,17 @@ func writeModelConnectionWithEndpoint(t *testing.T, root string, protocol string
 	}
 }
 
-func saveModelSecret(t *testing.T, root string, raw string) {
+func saveModelSecret(t *testing.T, raw string) *secret.Store {
 	t.Helper()
-	dbPath, err := secret.DatabasePath(root)
-	if err != nil {
-		t.Fatalf("DatabasePath() error = %v", err)
-	}
+	store := secret.NewTestStore()
 	value, err := secret.NewValue(raw)
 	if err != nil {
 		t.Fatalf("NewValue() error = %v", err)
 	}
-	if err := secret.NewStore(dbPath).Save("6a129284-6358-47b0-ad64-2a5907d36c91", value); err != nil {
+	if err := store.Save("6a129284-6358-47b0-ad64-2a5907d36c91", value); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
+	return store
 }
 
 func modelServiceRequest() CompiledPromptRequest {
@@ -101,8 +99,8 @@ func TestModelServiceExecuteRequestUsesStoredSecretWithoutReturningIt(t *testing
 
 	root := t.TempDir()
 	writeModelConnectionWithEndpoint(t, root, "chat_completions", server.URL, "bearer_key")
-	saveModelSecret(t, root, "sk-service-secret")
-	service := NewModelServiceWithTransport(root, SDKTransport{HTTPClient: server.Client()}, nil)
+	secrets := saveModelSecret(t, "sk-service-secret")
+	service := NewModelServiceWithTransport(root, SDKTransport{HTTPClient: server.Client()}, secrets)
 
 	events, err := service.ExecuteRequest(modelServiceRequest())
 	if err != nil {

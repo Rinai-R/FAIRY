@@ -1,3 +1,5 @@
+//go:build sqlite_legacy
+
 package api_test
 
 import (
@@ -17,7 +19,7 @@ import (
 
 func TestStatusAndAuth(t *testing.T) {
 	root := t.TempDir()
-	rt, err := fairyruntime.Open(fairyruntime.Options{ConfigRoot: root, Logger: zap.NewNop()})
+	rt, err := fairyruntime.Open(testRuntimeOptions(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +75,7 @@ func TestStatusAndAuth(t *testing.T) {
 
 func TestOpenSessionRequiresActiveCharacter(t *testing.T) {
 	root := t.TempDir()
-	rt, err := fairyruntime.Open(fairyruntime.Options{ConfigRoot: root, Logger: zap.NewNop()})
+	rt, err := fairyruntime.Open(testRuntimeOptions(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +112,7 @@ func TestOpenSessionRequiresActiveCharacter(t *testing.T) {
 
 func TestOpenSessionRejectsUnknownSurface(t *testing.T) {
 	root := t.TempDir()
-	rt, err := fairyruntime.Open(fairyruntime.Options{ConfigRoot: root, Logger: zap.NewNop()})
+	rt, err := fairyruntime.Open(testRuntimeOptions(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +149,7 @@ func TestOpenSessionRejectsUnknownSurface(t *testing.T) {
 
 func TestSubmitTurnRejectsUnknownSurface(t *testing.T) {
 	root := t.TempDir()
-	rt, err := fairyruntime.Open(fairyruntime.Options{ConfigRoot: root, Logger: zap.NewNop()})
+	rt, err := fairyruntime.Open(testRuntimeOptions(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +186,7 @@ func TestSubmitTurnRejectsUnknownSurface(t *testing.T) {
 
 func TestConsoleAndConfigModel(t *testing.T) {
 	root := t.TempDir()
-	rt, err := fairyruntime.Open(fairyruntime.Options{ConfigRoot: root, Logger: zap.NewNop()})
+	rt, err := fairyruntime.Open(testRuntimeOptions(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}

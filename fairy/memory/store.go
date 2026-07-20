@@ -1,28 +1,27 @@
 package memory
 
 import (
-	"database/sql"
+	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"strings"
+	"time"
 
-	_ "modernc.org/sqlite"
-	_ "modernc.org/sqlite/vec"
+	pgstore "fairy/postgres"
 )
 
 const (
-	RelativePath                = "intelligence/fairy.sqlite3"
-	driverName                  = "sqlite"
 	SemanticEmbeddingModelID    = "bge-small-zh-v1.5"
 	SemanticEmbeddingDimensions = 512
 )
 
 var (
-	ErrRootRequired      = errors.New("config root is required")
-	ErrDatabasePathEmpty = errors.New("memory database path is required")
-	ErrDatabaseMissing   = errors.New("memory database does not exist")
+	ErrDatabasePoolEmpty = errors.New("memory database pool is required")
+	ErrWorkerIDInvalid   = errors.New("memory worker id is invalid")
+	ErrJobLeaseInvalid   = errors.New("memory job lease duration is invalid")
 )
+
+const defaultJobLeaseDuration = 30 * time.Second
 
 type Summary struct {
 	SchemaVersion           int64 `json:"schemaVersion"`
@@ -39,64 +38,79 @@ type Summary struct {
 }
 
 type Store struct {
-	path string
+	pool             *pgstore.Pool
+	workerID         string
+	jobLeaseDuration time.Duration
 }
 
-func DatabasePath(root string) (string, error) {
-	if root == "" {
-		return "", ErrRootRequired
+func NewStoreFromPool(pool *pgstore.Pool) (*Store, error) {
+	return newStoreFromPoolWithLease(pool, "memory-"+newID(), defaultJobLeaseDuration)
+}
+
+func newStoreFromPoolWithLease(pool *pgstore.Pool, workerID string, leaseDuration time.Duration) (*Store, error) {
+	if pool == nil || pool.Raw() == nil {
+		return nil, ErrDatabasePoolEmpty
 	}
-	return filepath.Join(root, RelativePath), nil
-}
-
-func NewStore(path string) *Store {
-	return &Store{path: path}
+	if workerID == "" || workerID != strings.TrimSpace(workerID) || containsDisallowedControl(workerID) {
+		return nil, ErrWorkerIDInvalid
+	}
+	if leaseDuration <= 0 {
+		return nil, ErrJobLeaseInvalid
+	}
+	return &Store{pool: pool, workerID: workerID, jobLeaseDuration: leaseDuration}, nil
 }
 
 func (s *Store) Summary() (Summary, error) {
-	db, err := s.openReadOnly()
-	if err != nil {
-		return Summary{}, err
-	}
-	defer db.Close()
+	return s.SummaryContext(context.Background())
+}
 
-	schemaVersion, err := countScalar(db, "SELECT version FROM schema_meta WHERE singleton = 1")
+func (s *Store) SummaryContext(ctx context.Context) (Summary, error) {
+	return s.postgresSummary(ctx)
+}
+
+func (s *Store) postgresSummary(ctx context.Context) (Summary, error) {
+	if s == nil || s.pool == nil || s.pool.Raw() == nil {
+		return Summary{}, ErrDatabasePoolEmpty
+	}
+	queryCtx, cancel := s.pool.QueryContext(ctx)
+	defer cancel()
+	schemaVersion, err := countPostgresScalar(queryCtx, s.pool, "SELECT COALESCE(MAX(version), 0) FROM fairy_schema_migrations")
 	if err != nil {
 		return Summary{}, fmt.Errorf("reading memory schema version: %w", err)
 	}
-	conversations, err := countScalar(db, "SELECT COUNT(*) FROM conversations")
+	conversations, err := countPostgresScalar(queryCtx, s.pool, "SELECT COUNT(*) FROM conversations")
 	if err != nil {
 		return Summary{}, fmt.Errorf("counting conversations: %w", err)
 	}
-	activeGlobalMemories, err := countScalar(db, "SELECT COUNT(*) FROM personal_memories WHERE scope_kind = 'global' AND review_status = 'ready' AND status = 'active'")
+	activeGlobalMemories, err := countPostgresScalar(queryCtx, s.pool, "SELECT COUNT(*) FROM personal_memories WHERE scope_kind = 'global' AND review_status = 'ready' AND status = 'active'")
 	if err != nil {
 		return Summary{}, fmt.Errorf("counting global memories: %w", err)
 	}
-	activeCharacterMemories, err := countScalar(db, "SELECT COUNT(*) FROM personal_memories WHERE scope_kind = 'character' AND review_status = 'ready' AND status = 'active'")
+	activeCharacterMemories, err := countPostgresScalar(queryCtx, s.pool, "SELECT COUNT(*) FROM personal_memories WHERE scope_kind = 'character' AND review_status = 'ready' AND status = 'active'")
 	if err != nil {
 		return Summary{}, fmt.Errorf("counting character memories: %w", err)
 	}
-	needsReviewMemories, err := countScalar(db, "SELECT COUNT(*) FROM personal_memories WHERE scope_kind = 'unassigned_legacy' AND review_status = 'needs_review' AND status = 'active'")
+	needsReviewMemories, err := countPostgresScalar(queryCtx, s.pool, "SELECT COUNT(*) FROM personal_memories WHERE scope_kind = 'unassigned_legacy' AND review_status = 'needs_review' AND status = 'active'")
 	if err != nil {
 		return Summary{}, fmt.Errorf("counting needs-review memories: %w", err)
 	}
-	pendingExtractionTurns, err := countScalar(db, "SELECT COUNT(*) FROM conversation_turns WHERE extraction_state = 'pending'")
+	pendingExtractionTurns, err := countPostgresScalar(queryCtx, s.pool, "SELECT COUNT(*) FROM conversation_turns WHERE extraction_state = 'pending'")
 	if err != nil {
 		return Summary{}, fmt.Errorf("counting pending extraction turns: %w", err)
 	}
-	runningBatches, err := countScalar(db, "SELECT COUNT(*) FROM extraction_batches WHERE status = 'running'")
+	runningBatches, err := countPostgresScalar(queryCtx, s.pool, "SELECT COUNT(*) FROM extraction_batches WHERE status = 'running'")
 	if err != nil {
 		return Summary{}, fmt.Errorf("counting running batches: %w", err)
 	}
-	failedBatches, err := countScalar(db, "SELECT COUNT(*) FROM extraction_batches WHERE status = 'failed'")
+	failedBatches, err := countPostgresScalar(queryCtx, s.pool, "SELECT COUNT(*) FROM extraction_batches WHERE status = 'failed'")
 	if err != nil {
 		return Summary{}, fmt.Errorf("counting failed batches: %w", err)
 	}
-	candidateKnowledge, err := countScalar(db, "SELECT COUNT(*) FROM knowledge_entries WHERE status = 'candidate'")
+	candidateKnowledge, err := countPostgresScalar(queryCtx, s.pool, "SELECT COUNT(*) FROM knowledge_entries WHERE status = 'candidate'")
 	if err != nil {
 		return Summary{}, fmt.Errorf("counting candidate knowledge: %w", err)
 	}
-	verifiedKnowledge, err := countScalar(db, "SELECT COUNT(*) FROM knowledge_entries WHERE status = 'verified'")
+	verifiedKnowledge, err := countPostgresScalar(queryCtx, s.pool, "SELECT COUNT(*) FROM knowledge_entries WHERE status = 'verified'")
 	if err != nil {
 		return Summary{}, fmt.Errorf("counting verified knowledge: %w", err)
 	}
@@ -115,56 +129,9 @@ func (s *Store) Summary() (Summary, error) {
 	}, nil
 }
 
-func (s *Store) openReadOnly() (*sql.DB, error) {
-	if s == nil || s.path == "" {
-		return nil, ErrDatabasePathEmpty
-	}
-	if _, err := os.Stat(s.path); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, ErrDatabaseMissing
-		}
-		return nil, fmt.Errorf("checking memory database: %w", err)
-	}
-	db, err := sql.Open(driverName, "file:"+s.path+"?mode=ro")
-	if err != nil {
-		return nil, fmt.Errorf("opening memory database read-only: %w", err)
-	}
-	if err := configureSQLiteConnection(db, true); err != nil {
-		db.Close()
-		return nil, err
-	}
-	return db, nil
-}
-
-func configureSQLiteConnection(db *sql.DB, readOnly bool) error {
-	if readOnly {
-		db.SetMaxOpenConns(4)
-		db.SetMaxIdleConns(4)
-	} else {
-		db.SetMaxOpenConns(1)
-		db.SetMaxIdleConns(1)
-	}
-	pragmas := []string{
-		"PRAGMA busy_timeout = 5000",
-		"PRAGMA foreign_keys = ON",
-	}
-	if !readOnly {
-		pragmas = append(pragmas,
-			"PRAGMA journal_mode = WAL",
-			"PRAGMA synchronous = NORMAL",
-		)
-	}
-	for _, pragma := range pragmas {
-		if _, err := db.Exec(pragma); err != nil {
-			return fmt.Errorf("configuring memory database connection: %w", err)
-		}
-	}
-	return nil
-}
-
-func countScalar(db *sql.DB, query string) (int64, error) {
+func countPostgresScalar(ctx context.Context, pool *pgstore.Pool, query string) (int64, error) {
 	var count int64
-	if err := db.QueryRow(query).Scan(&count); err != nil {
+	if err := pool.Raw().QueryRow(ctx, query).Scan(&count); err != nil {
 		return 0, err
 	}
 	return count, nil

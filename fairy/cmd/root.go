@@ -48,6 +48,7 @@ type Dependencies struct {
 	Stdin         io.Reader
 	ClientFactory func(ConnectionConfig) (APIClient, error)
 	Serve         func(context.Context, core.Options) error
+	Database      DatabaseOperations
 }
 
 func DefaultDependencies() Dependencies {
@@ -59,7 +60,8 @@ func DefaultDependencies() Dependencies {
 				Endpoint: config.Endpoint, Timeout: config.Timeout, Token: config.Token,
 			})
 		},
-		Serve: core.Run,
+		Serve:    core.Run,
+		Database: localDatabaseOperations{getenv: os.Getenv},
 	}
 }
 
@@ -108,6 +110,7 @@ func NewRootCmd(dependencies Dependencies) *cobra.Command {
 		newConfigCmd(v, deps),
 		newProfileCmd(v, deps),
 		newCharacterCmd(v, deps),
+		newDBCmd(v, deps),
 		newCompletionCmd(root),
 	)
 	return root
@@ -126,6 +129,9 @@ func normalizeDependencies(deps Dependencies) Dependencies {
 	}
 	if deps.Serve == nil {
 		deps.Serve = defaults.Serve
+	}
+	if deps.Database == nil {
+		deps.Database = localDatabaseOperations{getenv: deps.Getenv}
 	}
 	return deps
 }

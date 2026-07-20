@@ -88,7 +88,7 @@ func (c *Client) Endpoint() string { return c.baseURL.String() }
 func (c *Client) Status(ctx context.Context) (Status, error) {
 	var result Status
 	err := c.doJSON(ctx, "read status", http.MethodGet, "/v1/status", nil, &result)
-	if err == nil && (result.ConfigRoot == "" || len(result.Bootstrap) == 0 || len(result.WebSearch) == 0 || len(result.SemanticEmbedding) == 0) {
+	if err == nil && (result.ConfigRoot == "" || len(result.Bootstrap) == 0 || len(result.WebSearch) == 0 || len(result.SemanticEmbedding) == 0 || result.Database.Mode == "" || result.Qdrant.Mode == "" || result.SecretKey.Mode == "") {
 		err = &Error{Action: "read status", Endpoint: c.url("/v1/status"), Message: "response is missing required status fields"}
 	}
 	return result, err

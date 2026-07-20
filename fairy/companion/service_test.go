@@ -1,3 +1,5 @@
+//go:build sqlite_legacy
+
 package companion
 
 import (
@@ -17,7 +19,6 @@ import (
 	"fairy/memory"
 	"fairy/model"
 	"fairy/profile"
-	_ "modernc.org/sqlite"
 )
 
 type fakeSpeechSynthesizer struct {

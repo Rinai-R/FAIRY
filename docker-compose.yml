@@ -1,26 +1,89 @@
 services:
+  postgres:
+    image: postgres:17.10-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: fairy
+      POSTGRES_USER: fairy
+      POSTGRES_PASSWORD: ${FAIRY_POSTGRES_PASSWORD:?FAIRY_POSTGRES_PASSWORD is required}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fairy -d fairy"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - fairy-postgres:/var/lib/postgresql/data
+
+  qdrant:
+    image: qdrant/qdrant:v1.18.3
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/6334'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - fairy-qdrant:/qdrant/storage
+
+  migrate:
+    build: .
+    restart: "no"
+    command: ["db", "migrate"]
+    environment: &fairy-environment
+      FAIRY_CONFIG_ROOT: /data
+      FAIRY_DATABASE_URL: postgres://fairy:${FAIRY_POSTGRES_PASSWORD:?FAIRY_POSTGRES_PASSWORD is required}@postgres:5432/fairy?sslmode=disable
+      FAIRY_QDRANT_URL: http://qdrant:6334
+      FAIRY_SECRET_MASTER_KEY: ${FAIRY_SECRET_MASTER_KEY:?FAIRY_SECRET_MASTER_KEY is required}
+      FAIRY_OPENSERP_URL: http://openserp:7000
+      FAIRY_API_TOKEN: ${FAIRY_API_TOKEN:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - fairy-config:/data
+
+  vector-migrate:
+    build: .
+    restart: "no"
+    command: ["db", "vector", "migrate"]
+    environment: *fairy-environment
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    volumes:
+      - fairy-config:/data
+
   fairy:
     build: .
     restart: unless-stopped
     ports:
       - "127.0.0.1:8787:8787"
     environment:
-      FAIRY_CONFIG_ROOT: /data
+      <<: *fairy-environment
       FAIRY_LISTEN_ADDR: 0.0.0.0:8787
-      FAIRY_OPENSERP_URL: http://openserp:7000
-      # FAIRY_API_TOKEN: change-me
+    healthcheck:
+      test: ["CMD", "fairy", "status", "--endpoint", "http://127.0.0.1:8787"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     volumes:
-      - fairy-data:/data
+      - fairy-config:/data
     depends_on:
-      - openserp
+      migrate:
+        condition: service_completed_successfully
+      vector-migrate:
+        condition: service_completed_successfully
+      openserp:
+        condition: service_started
 
   openserp:
     image: karust/openserp:latest
     restart: unless-stopped
-    # Internal-only by default; fairy reaches it on the compose network.
     expose:
       - "7000"
     command: ["serve", "-a", "0.0.0.0", "-p", "7000"]
 
 volumes:
-  fairy-data:
+  fairy-config:
+  fairy-postgres:
+  fairy-qdrant:

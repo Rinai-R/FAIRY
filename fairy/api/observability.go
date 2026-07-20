@@ -33,6 +33,8 @@ type metricsResponse struct {
 	Logs              observability.LogStats            `json:"logs"`
 	Runtime           runtimeMetrics                    `json:"runtime"`
 	Usage             memory.UsageReport                `json:"usage"`
+	Database          databaseMetrics                   `json:"database"`
+	Qdrant            qdrantMetrics                     `json:"qdrant"`
 }
 
 func (s *Server) registerObservabilityRoutes() {
@@ -107,6 +109,11 @@ func (s *Server) handleMetrics(ctx context.Context, c *app.RequestContext) {
 		writeErr(c, http.StatusInternalServerError, errors.New("active background job count is negative"))
 		return
 	}
+	database, qdrant, err := s.infrastructureMetrics(ctx)
+	if err != nil {
+		writeErr(c, http.StatusInternalServerError, fmt.Errorf("read infrastructure metrics: %w", err))
+		return
+	}
 	response := metricsResponse{
 		Process: observability.SnapshotProcess(s.rt.StartedAt),
 		HTTP:    s.rt.HTTPMetrics.Snapshot(),
@@ -115,7 +122,9 @@ func (s *Server) handleMetrics(ctx context.Context, c *app.RequestContext) {
 			ActiveBackgroundJobs: uint64(activeJobs),
 			EventSubscribers:     s.rt.Events.SubscriberCount(),
 		},
-		Usage: usage,
+		Usage:    usage,
+		Database: database,
+		Qdrant:   qdrant,
 	}
 	response.GeneratedAtUnixMS = time.Now().UnixMilli()
 	c.JSON(http.StatusOK, response)

@@ -1,7 +1,7 @@
 package memory
 
 import (
-	"database/sql"
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -76,75 +76,63 @@ type usageTurnAccumulator struct {
 	lanes           map[string]*UsageLaneAggregate
 }
 
+type usageLedgerRow struct {
+	conversationID  string
+	turnID          string
+	eventType       string
+	state           *string
+	metadataJSON    string
+	createdAtUnixMS int64
+}
+
 // AggregateTokenUsage rolls up token usage across every conversation turn from
 // the runtime ledger. Token figures come solely from `model` events (each model
 // call carries its own lane-tagged usage) so tool-calling loops with several
 // calls per turn are summed without double counting the `terminal` summary.
 // `terminal` events only supply each turn's final status.
 func (s *Store) AggregateTokenUsage(limit int) (UsageReport, error) {
+	return s.AggregateTokenUsageContext(context.Background(), limit)
+}
+
+func (s *Store) AggregateTokenUsageContext(ctx context.Context, limit int) (UsageReport, error) {
+	return s.aggregateTokenUsagePostgres(ctx, limit)
+}
+
+func aggregateUsageRows(characterByConversation map[string]string, ledgerRows []usageLedgerRow, limit int) (UsageReport, error) {
 	if limit <= 0 {
 		limit = DefaultUsageTurnLimit
 	}
 	if limit > maxUsageTurnLimit {
 		limit = maxUsageTurnLimit
 	}
-	db, err := s.openReadOnly()
-	if err != nil {
-		return UsageReport{}, err
-	}
-	defer db.Close()
-
-	characterByConversation, err := loadCharacterByConversation(db)
-	if err != nil {
-		return UsageReport{}, err
-	}
-
-	rows, err := db.Query("SELECT conversation_id, turn_id, event_type, state, metadata_json, created_at_ms FROM turn_runtime_events WHERE event_type IN ('model', 'terminal') ORDER BY created_at_ms ASC, sequence ASC")
-	if err != nil {
-		return UsageReport{}, fmt.Errorf("querying runtime usage events: %w", err)
-	}
-	defer rows.Close()
-
 	accumulators := make(map[string]*usageTurnAccumulator)
 	order := make([]string, 0)
-	for rows.Next() {
-		var conversationID string
-		var turnID string
-		var eventType string
-		var state *string
-		var metadataJSON string
-		var createdAtUnixMS int64
-		if err := rows.Scan(&conversationID, &turnID, &eventType, &state, &metadataJSON, &createdAtUnixMS); err != nil {
-			return UsageReport{}, fmt.Errorf("scanning runtime usage event: %w", err)
-		}
-		key := conversationID + "\x00" + turnID
+	for _, row := range ledgerRows {
+		key := row.conversationID + "\x00" + row.turnID
 		accumulator := accumulators[key]
 		if accumulator == nil {
 			accumulator = &usageTurnAccumulator{
-				conversationID: conversationID,
-				turnID:         turnID,
+				conversationID: row.conversationID,
+				turnID:         row.turnID,
 				status:         usageTurnStatusUnknown,
 				lanes:          make(map[string]*UsageLaneAggregate),
 			}
 			accumulators[key] = accumulator
 			order = append(order, key)
 		}
-		if createdAtUnixMS > accumulator.createdAtUnixMS {
-			accumulator.createdAtUnixMS = createdAtUnixMS
+		if row.createdAtUnixMS > accumulator.createdAtUnixMS {
+			accumulator.createdAtUnixMS = row.createdAtUnixMS
 		}
-		switch eventType {
+		switch row.eventType {
 		case "model":
-			if err := accumulateModelUsage(accumulator, metadataJSON); err != nil {
+			if err := accumulateModelUsage(accumulator, row.metadataJSON); err != nil {
 				return UsageReport{}, err
 			}
 		case "terminal":
-			if state != nil && *state != "" {
-				accumulator.status = *state
+			if row.state != nil && *row.state != "" {
+				accumulator.status = *row.state
 			}
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return UsageReport{}, fmt.Errorf("iterating runtime usage events: %w", err)
 	}
 
 	overall := make(map[string]*UsageLaneAggregate)
@@ -243,25 +231,4 @@ func sortedLaneAggregateSlice(lanes map[string]*UsageLaneAggregate) []UsageLaneA
 		return result[a].Lane < result[b].Lane
 	})
 	return result
-}
-
-func loadCharacterByConversation(db *sql.DB) (map[string]string, error) {
-	rows, err := db.Query("SELECT id, character_id FROM conversations")
-	if err != nil {
-		return nil, fmt.Errorf("querying conversations for usage report: %w", err)
-	}
-	defer rows.Close()
-	result := make(map[string]string)
-	for rows.Next() {
-		var id string
-		var characterID string
-		if err := rows.Scan(&id, &characterID); err != nil {
-			return nil, fmt.Errorf("scanning conversation for usage report: %w", err)
-		}
-		result[id] = characterID
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating conversations for usage report: %w", err)
-	}
-	return result, nil
 }

@@ -34,6 +34,8 @@ func TestRespondInstructionsStayStable(t *testing.T) {
 		"display line for the user", "Do not output speechText", "textLanguage", "speakingLanguage",
 		"HARD RULE for chains.text language", "Never write chains.text in speakingLanguage",
 		"chains length is 1-12", "short performance beat", "about 20 characters", "semantic completeness outranks", "split across multiple chains",
+		"brief MUST be exactly 1 chain", "normal SHOULD usually be 1-3 chains", "expanded SHOULD usually be 2-6 chains",
+		"12-chain schema limit is a safety ceiling, not a target",
 		"Do not pretend to perform real-world or code actions",
 	} {
 		if !strings.Contains(RespondInstructions, required) {

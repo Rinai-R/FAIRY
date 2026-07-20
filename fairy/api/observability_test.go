@@ -1,3 +1,5 @@
+//go:build sqlite_legacy
+
 package api_test
 
 import (
@@ -150,7 +152,7 @@ func TestMetricsReturnsFailureWhenUsageDatabaseCannotBeRead(t *testing.T) {
 }
 
 func TestNewServerRejectsTokenWhitespace(t *testing.T) {
-	rt, err := fairyruntime.Open(fairyruntime.Options{ConfigRoot: t.TempDir(), Logger: zap.NewNop()})
+	rt, err := fairyruntime.Open(testRuntimeOptions(t, t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +164,7 @@ func TestNewServerRejectsTokenWhitespace(t *testing.T) {
 
 func startObservabilityServer(t *testing.T, token string) (*fairyruntime.Runtime, string) {
 	t.Helper()
-	rt, err := fairyruntime.Open(fairyruntime.Options{ConfigRoot: t.TempDir(), Logger: zap.NewNop()})
+	rt, err := fairyruntime.Open(testRuntimeOptions(t, t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
 	}

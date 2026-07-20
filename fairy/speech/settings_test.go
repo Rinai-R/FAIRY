@@ -12,7 +12,7 @@ import (
 
 func TestReadStatusDefaultsToDisabledAndNoSecret(t *testing.T) {
 	root := t.TempDir()
-	status, err := ReadStatus(root, nil)
+	status, err := ReadStatus(root, secret.NewTestStore())
 	if err != nil {
 		t.Fatalf("ReadStatus() error = %v", err)
 	}
@@ -26,12 +26,13 @@ func TestReadStatusDefaultsToDisabledAndNoSecret(t *testing.T) {
 
 func TestSaveSettingsStoresAPIKeyAndReturnsRedactedStatus(t *testing.T) {
 	root := t.TempDir()
+	store := secret.NewTestStore()
 	status, err := SaveSettings(root, SaveSettingsRequest{
 		Enabled:        true,
 		APIKey:         "test-api-key",
 		DefaultSpeaker: "S_voice",
 		DefaultFormat:  "wav",
-	}, nil)
+	}, store)
 	if err != nil {
 		t.Fatalf("SaveSettings() error = %v", err)
 	}
@@ -46,10 +47,6 @@ func TestSaveSettingsStoresAPIKeyAndReturnsRedactedStatus(t *testing.T) {
 		t.Fatalf("status leaked secret: %s", wire)
 	}
 
-	store, err := resolveSecretStore(root, nil)
-	if err != nil {
-		t.Fatalf("resolveSecretStore() error = %v", err)
-	}
 	value, ok, err := store.Load(apiKeySecretID)
 	if err != nil {
 		t.Fatalf("Load(api key) error = %v", err)
@@ -61,7 +58,7 @@ func TestSaveSettingsStoresAPIKeyAndReturnsRedactedStatus(t *testing.T) {
 
 func TestSaveSettingsRequiresCredentialWhenEnabled(t *testing.T) {
 	root := t.TempDir()
-	_, err := SaveSettings(root, SaveSettingsRequest{Enabled: true}, nil)
+	_, err := SaveSettings(root, SaveSettingsRequest{Enabled: true}, secret.NewTestStore())
 	if err == nil {
 		t.Fatal("SaveSettings() error = nil, want missing credential")
 	}
@@ -72,7 +69,7 @@ func TestSaveSettingsRequiresCredentialWhenEnabled(t *testing.T) {
 
 func TestSaveSettingsCanUseAPIKeyOnlyWhenEnabled(t *testing.T) {
 	root := t.TempDir()
-	status, err := SaveSettings(root, SaveSettingsRequest{Enabled: true, APIKey: "test-api-key"}, nil)
+	status, err := SaveSettings(root, SaveSettingsRequest{Enabled: true, APIKey: "test-api-key"}, secret.NewTestStore())
 	if err != nil {
 		t.Fatalf("SaveSettings() error = %v", err)
 	}
@@ -83,11 +80,7 @@ func TestSaveSettingsCanUseAPIKeyOnlyWhenEnabled(t *testing.T) {
 
 func TestSaveSettingsCanUseExistingAPIKey(t *testing.T) {
 	root := t.TempDir()
-	dbPath, err := secret.DatabasePath(root)
-	if err != nil {
-		t.Fatalf("DatabasePath() error = %v", err)
-	}
-	store := secret.NewStore(dbPath)
+	store := secret.NewTestStore()
 	value, err := secret.NewValue("existing-key")
 	if err != nil {
 		t.Fatalf("NewValue() error = %v", err)
@@ -125,7 +118,7 @@ func TestLegacyWSSSettingsFileDoesNotConfigureVoiceCloneHTTP(t *testing.T) {
 	if err := os.WriteFile(legacyPath, []byte(legacy), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-	status, err := ReadStatus(root, nil)
+	status, err := ReadStatus(root, secret.NewTestStore())
 	if err != nil {
 		t.Fatalf("ReadStatus() error = %v", err)
 	}

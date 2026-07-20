@@ -17,10 +17,11 @@ type MemoryPort interface {
 	LoadConversation(conversationID string) (memory.ConversationBootstrap, error)
 	BeginTurn(conversationID string, userMessage string) (memory.PersistedTurn, error)
 	CompleteTurn(conversationID string, turnID string, assistantMessage string) (memory.MessageRecord, error)
+	InterruptTurn(conversationID string, turnID string, publishedPrefix string) (*memory.MessageRecord, error)
 	FailTurn(conversationID string, turnID string, code string, message string, retryable bool) error
 	CommitPromptWindow(conversationID string, expectedRevision uint64, summary string) (memory.CompactionResult, error)
 	Retrieve(characterID string, query string) (memory.RetrievalContext, error)
-	RetrieveWithSemantic(characterID string, query string, embedder semantic.Embedder) (memory.RetrievalContext, error)
+	RetrieveWithSemanticVectorIndex(context.Context, string, string, semantic.Embedder, memory.SemanticVectorIndex) (memory.RetrievalContext, error)
 	AppendTurnRuntimeEvent(input memory.TurnRuntimeEventInput) (memory.TurnRuntimeEventRecord, error)
 	SaveLaneContinuation(record memory.LaneContinuationRecord) (memory.LaneContinuationRecord, error)
 	LoadLaneContinuation(conversationID string, lane string) (memory.LaneContinuationRecord, bool, error)
@@ -31,7 +32,7 @@ type MemoryPort interface {
 	ClaimExtractionBatch(conversationID string, limit int) (*memory.ExtractionBatchInput, error)
 	FailExtractionBatch(batchID, code, message string, retryable bool) error
 	CommitMemoryMutations(batchID string, characterID string, allowedMemoryIDs []string, mutations []memory.MemoryMutation) ([]memory.MemoryMutationResult, error)
-	ProcessEmbeddingJobs(embedder semantic.Embedder, limit int) (memory.EmbeddingJobResult, error)
+	ProcessEmbeddingJobsWithVectorIndex(context.Context, semantic.Embedder, memory.VectorIndex, int) (memory.EmbeddingJobResult, error)
 	EnqueueKnowledgeIngestSnapshots(snapshots []memory.KnowledgeIngestSnapshot) error
 	ProcessKnowledgeIngestJobs(limit int) (int, error)
 }

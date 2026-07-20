@@ -195,17 +195,11 @@ func ClearModelConnection(root string, secrets *secret.Store) (bool, error) {
 	return true, nil
 }
 
-// resolveSecretStore prefers an injected store from main; when nil it opens the
-// path-handle under root (test-friendly fallback).
-func resolveSecretStore(root string, secrets *secret.Store) (*secret.Store, error) {
+func resolveSecretStore(_ string, secrets *secret.Store) (*secret.Store, error) {
 	if secrets != nil {
 		return secrets, nil
 	}
-	dbPath, err := secret.DatabasePath(root)
-	if err != nil {
-		return nil, err
-	}
-	return secret.NewStore(dbPath), nil
+	return nil, errors.New("PostgreSQL secret store is required")
 }
 
 func ParseModelConnectionStatus(data []byte) (ModelConnectionStatus, error) {

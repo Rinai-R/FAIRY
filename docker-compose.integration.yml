@@ -1,0 +1,30 @@
+services:
+  postgres:
+    image: public.ecr.aws/docker/library/postgres:17-bookworm@sha256:4f736ae292687621d4dbe0d499ffd024a36bd2ee7d8ca6f2ccd4c800f047b394
+    environment:
+      POSTGRES_DB: fairy_test
+      POSTGRES_USER: fairy
+      POSTGRES_PASSWORD: fairy_test_password
+    ports:
+      - "127.0.0.1:15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fairy -d fairy_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  qdrant:
+    image: qdrant/qdrant:v1.18.3
+    ports:
+      - "127.0.0.1:16333:6333"
+      - "127.0.0.1:16334:6334"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      - /qdrant/storage
+      - /qdrant/snapshots

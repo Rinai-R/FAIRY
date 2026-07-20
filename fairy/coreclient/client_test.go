@@ -19,7 +19,7 @@ func TestClientStatusUsesBearerAndRejectsInvalidResponses(t *testing.T) {
 			t.Errorf("authorization = %q", r.Header.Get("Authorization"))
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		io.WriteString(w, `{"bootstrap":{},"configRoot":"/tmp","webSearch":{},"semanticEmbedding":{},"activeBackgroundJobs":0}`)
+		io.WriteString(w, `{"bootstrap":{},"configRoot":"/tmp","webSearch":{},"semanticEmbedding":{},"activeBackgroundJobs":0,"database":{"ready":true,"mode":"production"},"qdrant":{"ready":true,"mode":"production"},"secretKey":{"ready":true,"mode":"production"}}`)
 	}))
 	defer server.Close()
 	client, err := New(Options{Endpoint: server.URL, Token: "exact-token"})

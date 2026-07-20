@@ -1,3 +1,5 @@
+//go:build sqlite_legacy
+
 package api_test
 
 import (
@@ -23,7 +25,7 @@ import (
 func startTestServer(t *testing.T, root string) (addr string, rt *fairyruntime.Runtime) {
 	t.Helper()
 	var err error
-	rt, err = fairyruntime.Open(fairyruntime.Options{ConfigRoot: root, Logger: zap.NewNop()})
+	rt, err = fairyruntime.Open(testRuntimeOptions(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}

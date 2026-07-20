@@ -1,3 +1,5 @@
+//go:build sqlite_legacy
+
 package companion
 
 import (

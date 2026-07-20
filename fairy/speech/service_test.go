@@ -70,12 +70,13 @@ func (f *fakeVoiceCloneClient) SynthesizeSpeech(_ context.Context, settings Sett
 
 func TestSpeechServiceTrainVoiceUsesStoredSecretAndDefaults(t *testing.T) {
 	root := t.TempDir()
-	_, err := SaveSettings(root, SaveSettingsRequest{Enabled: true, APIKey: "test-api-key", DefaultSpeaker: "S_default", DefaultFormat: "wav"}, nil)
+	store := secret.NewTestStore()
+	_, err := SaveSettings(root, SaveSettingsRequest{Enabled: true, APIKey: "test-api-key", DefaultSpeaker: "S_default", DefaultFormat: "wav"}, store)
 	if err != nil {
 		t.Fatalf("SaveSettings() error = %v", err)
 	}
 	fake := &fakeVoiceCloneClient{result: VoiceResult{SpeakerID: "S_default", Status: 2}}
-	service := NewSpeechServiceWithClient(root, nil, fake)
+	service := NewSpeechServiceWithClient(root, store, fake)
 	audio := base64.StdEncoding.EncodeToString([]byte("fake wav"))
 	result, err := service.TrainVoice(TrainVoiceRequest{AudioData: audio})
 	if err != nil {
@@ -95,7 +96,7 @@ func TestSpeechServiceTrainVoiceUsesStoredSecretAndDefaults(t *testing.T) {
 func TestSpeechServiceRejectsDisabledBeforeProvider(t *testing.T) {
 	root := t.TempDir()
 	fake := &fakeVoiceCloneClient{result: VoiceResult{SpeakerID: "S_voice"}}
-	service := NewSpeechServiceWithClient(root, nil, fake)
+	service := NewSpeechServiceWithClient(root, secret.NewTestStore(), fake)
 	_, err := service.QueryVoice(VoiceOperationRequest{SpeakerID: "S_voice"})
 	if err == nil {
 		t.Fatal("QueryVoice() error = nil, want disabled")
@@ -110,12 +111,13 @@ func TestSpeechServiceRejectsDisabledBeforeProvider(t *testing.T) {
 
 func TestSpeechServiceRejectsMissingTrainInputBeforeProvider(t *testing.T) {
 	root := t.TempDir()
-	_, err := SaveSettings(root, SaveSettingsRequest{Enabled: true, APIKey: "test-api-key"}, nil)
+	store := secret.NewTestStore()
+	_, err := SaveSettings(root, SaveSettingsRequest{Enabled: true, APIKey: "test-api-key"}, store)
 	if err != nil {
 		t.Fatalf("SaveSettings() error = %v", err)
 	}
 	fake := &fakeVoiceCloneClient{}
-	service := NewSpeechServiceWithClient(root, nil, fake)
+	service := NewSpeechServiceWithClient(root, store, fake)
 	_, err = service.TrainVoice(TrainVoiceRequest{SpeakerID: "S_voice", AudioFormat: "wav"})
 	if err == nil {
 		t.Fatal("TrainVoice() error = nil, want audio error")
@@ -127,11 +129,7 @@ func TestSpeechServiceRejectsMissingTrainInputBeforeProvider(t *testing.T) {
 
 func TestSpeechServiceQueryAndUpgradeUseDefaultSpeaker(t *testing.T) {
 	root := t.TempDir()
-	dbPath, err := secret.DatabasePath(root)
-	if err != nil {
-		t.Fatalf("DatabasePath() error = %v", err)
-	}
-	store := secret.NewStore(dbPath)
+	store := secret.NewTestStore()
 	value, err := secret.NewValue("test-api-key")
 	if err != nil {
 		t.Fatalf("NewValue() error = %v", err)
@@ -161,12 +159,13 @@ func TestSpeechServiceQueryAndUpgradeUseDefaultSpeaker(t *testing.T) {
 
 func TestSpeechServiceSynthesizeUsesStoredSecretAndDefaultSpeaker(t *testing.T) {
 	root := t.TempDir()
-	_, err := SaveSettings(root, SaveSettingsRequest{Enabled: true, APIKey: "test-api-key", DefaultSpeaker: "S_default"}, nil)
+	store := secret.NewTestStore()
+	_, err := SaveSettings(root, SaveSettingsRequest{Enabled: true, APIKey: "test-api-key", DefaultSpeaker: "S_default"}, store)
 	if err != nil {
 		t.Fatalf("SaveSettings() error = %v", err)
 	}
 	fake := &fakeVoiceCloneClient{synthResult: SynthesisResult{SpeakerID: "S_default", DataURL: "data:audio/mpeg;base64,ZmFrZQ=="}}
-	service := NewSpeechServiceWithClient(root, nil, fake)
+	service := NewSpeechServiceWithClient(root, store, fake)
 	result, err := service.SynthesizeSpeech(SynthesizeSpeechRequest{Text: "こんにちは。"})
 	if err != nil {
 		t.Fatalf("SynthesizeSpeech() error = %v", err)
@@ -181,12 +180,13 @@ func TestSpeechServiceSynthesizeUsesStoredSecretAndDefaultSpeaker(t *testing.T) 
 
 func TestSpeechServiceSynthesizeRejectsMissingInputBeforeProvider(t *testing.T) {
 	root := t.TempDir()
-	_, err := SaveSettings(root, SaveSettingsRequest{Enabled: true, APIKey: "test-api-key", DefaultSpeaker: "S_default"}, nil)
+	store := secret.NewTestStore()
+	_, err := SaveSettings(root, SaveSettingsRequest{Enabled: true, APIKey: "test-api-key", DefaultSpeaker: "S_default"}, store)
 	if err != nil {
 		t.Fatalf("SaveSettings() error = %v", err)
 	}
 	fake := &fakeVoiceCloneClient{}
-	service := NewSpeechServiceWithClient(root, nil, fake)
+	service := NewSpeechServiceWithClient(root, store, fake)
 	_, err = service.SynthesizeSpeech(SynthesizeSpeechRequest{Text: "   "})
 	if err == nil {
 		t.Fatal("SynthesizeSpeech() error = nil, want text error")

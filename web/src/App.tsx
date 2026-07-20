@@ -1,4 +1,14 @@
 import { Theme, TextField, Text } from "@radix-ui/themes";
+import {
+  ActivityLogIcon,
+  BarChartIcon,
+  DashboardIcon,
+  IdCardIcon,
+  LightningBoltIcon,
+  MixerHorizontalIcon,
+  PersonIcon,
+  SpeakerLoudIcon,
+} from "@radix-ui/react-icons";
 import { useState } from "react";
 import { getToken, setToken } from "./api";
 import {
@@ -13,14 +23,14 @@ import "@radix-ui/themes/styles.css";
 import "./styles/pure.css";
 
 const NAV = [
-  { id: "overview", label: "概览" },
-  { id: "character", label: "角色" },
-  { id: "profile", label: "称呼" },
-  { id: "model", label: "模型" },
-  { id: "speech", label: "语音" },
-  { id: "intelligence", label: "智能" },
-  { id: "usage", label: "用量" },
-  { id: "logs", label: "日志" },
+  { id: "overview", label: "概览", icon: DashboardIcon },
+  { id: "character", label: "角色", icon: PersonIcon },
+  { id: "profile", label: "称呼", icon: IdCardIcon },
+  { id: "model", label: "模型", icon: MixerHorizontalIcon },
+  { id: "speech", label: "语音", icon: SpeakerLoudIcon },
+  { id: "intelligence", label: "智能", icon: LightningBoltIcon },
+  { id: "usage", label: "用量", icon: BarChartIcon },
+  { id: "logs", label: "日志", icon: ActivityLogIcon },
 ] as const;
 
 type Section = (typeof NAV)[number]["id"];
@@ -47,16 +57,22 @@ export default function App() {
             </div>
           </div>
           <nav className="nav">
-            {NAV.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={`nav-item ${section === item.id ? "active" : ""}`}
-                onClick={() => setSection(item.id)}
-              >
-                {item.label}
-              </button>
-            ))}
+            {NAV.map((item) => {
+              const Icon = item.icon;
+              const active = section === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`nav-item ${active ? "active" : ""}`}
+                  aria-current={active ? "page" : undefined}
+                  onClick={() => setSection(item.id)}
+                >
+                  <span className="nav-icon" aria-hidden="true"><Icon /></span>
+                  <span className="nav-label">{item.label}</span>
+                </button>
+              );
+            })}
           </nav>
           <div className="sidebar-foot">
             <Text as="label" size="1" color="gray">

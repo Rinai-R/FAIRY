@@ -1,6 +1,7 @@
 package companion
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 )
@@ -63,6 +64,45 @@ func TestTurnLifecycleRejectsInvalidTransition(t *testing.T) {
 	life := NewTurnLifecycle("c", "t")
 	if _, err := life.Transition(TurnStateResponding); err == nil {
 		t.Fatal("idle -> responding must fail")
+	}
+}
+
+func TestBeatReadyIncludesPacingFields(t *testing.T) {
+	life := NewTurnLifecycle("conversation", "turn")
+	for _, state := range []TurnState{TurnStateInterpreting, TurnStateGathering, TurnStatePlanning, TurnStateResponding} {
+		if _, err := life.Transition(state); err != nil {
+			t.Fatalf("Transition(%s) error = %v", state, err)
+		}
+	}
+	event, err := life.BeatReady(BeatReadyCompletion{
+		BeatID:               "final-1",
+		Kind:                 beatKindFinal,
+		Index:                1,
+		ChainIndex:           1,
+		DisplayText:          "第二拍",
+		VisualState:          "idle",
+		TargetIntervalMS:     920,
+		PaceWaitMS:           370,
+		PublishedPrefixCount: 2,
+	})
+	if err != nil {
+		t.Fatalf("BeatReady() error = %v", err)
+	}
+	payload, ok := event.Payload.(beatReadyPayload)
+	if !ok {
+		t.Fatalf("payload = %T, want beatReadyPayload", event.Payload)
+	}
+	if payload.TargetIntervalMS != 920 || payload.PaceWaitMS != 370 || payload.PublishedPrefixCount != 2 {
+		t.Fatalf("pacing payload = %#v", payload)
+	}
+	raw, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	for _, field := range []string{`"targetIntervalMs":920`, `"paceWaitMs":370`, `"publishedPrefixCount":2`} {
+		if !bytes.Contains(raw, []byte(field)) {
+			t.Fatalf("wire event missing %s: %s", field, raw)
+		}
 	}
 }
 

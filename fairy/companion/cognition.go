@@ -1,6 +1,7 @@
 package companion
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,7 +78,7 @@ func (s *CompanionService) retrieveMemoryForTool(characterID string, query strin
 		return memory.RetrievalContext{}, errors.New("memory store is unavailable")
 	}
 	if s.semanticEmbedder != nil && s.semanticEmbedder.Ready() {
-		return s.memory.RetrieveWithSemantic(characterID, query, s.semanticEmbedder)
+		return s.memory.RetrieveWithSemanticVectorIndex(context.Background(), characterID, query, s.semanticEmbedder, s.vectorIndex)
 	}
 	return s.memory.Retrieve(characterID, query)
 }

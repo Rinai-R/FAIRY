@@ -1,7 +1,9 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,22 +17,32 @@ import (
 	"fairy/memory"
 	"fairy/model"
 	"fairy/observability"
+	pgstore "fairy/postgres"
 	"fairy/profile"
 	"fairy/search"
 	"fairy/secret"
 	"fairy/speech"
+	"fairy/vectorindex"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
 // Options configures a Session Core process.
 type Options struct {
-	ConfigRoot  string
-	Logger      *zap.Logger
-	LogStore    *observability.LogStore
-	HTTPMetrics *observability.HTTPMetrics
+	ConfigRoot   string
+	Logger       *zap.Logger
+	LogStore     *observability.LogStore
+	HTTPMetrics  *observability.HTTPMetrics
+	Dependencies *Dependencies
 	// LogEventsJSONL prints harness events to stdout (optional local debugging).
 	LogEventsJSONL bool
+}
+
+type Dependencies struct {
+	Database    *pgstore.Pool
+	MemoryStore *memory.Store
+	SecretStore *secret.Store
+	VectorIndex *vectorindex.Client
 }
 
 // Runtime owns long-lived Core services for the HTTP/SSE Session Core.
@@ -41,6 +53,8 @@ type Runtime struct {
 	Logs        *observability.LogStore
 	HTTPMetrics *observability.HTTPMetrics
 	StartedAt   time.Time
+	Database    *pgstore.Pool
+	VectorIndex *vectorindex.Client
 
 	MemoryStore  *memory.Store
 	Memory       *memory.MemoryService
@@ -56,6 +70,10 @@ type Runtime struct {
 	Bootstrap    *BootstrapService
 	eventMu      sync.Mutex
 	events       []companion.HarnessEvent
+	ownDatabase  bool
+	ownVector    bool
+	closeOnce    sync.Once
+	closeErr     error
 }
 
 func Open(options Options) (*Runtime, error) {
@@ -83,19 +101,22 @@ func Open(options Options) (*Runtime, error) {
 		configRoot = filepath.Join(os.Getenv("HOME"), "Library", "Application Support", "dev.rinai.fairy", "harness", "v1")
 	}
 
-	memoryPath, err := memory.DatabasePath(configRoot)
+	database, memoryStore, secretStore, vectorClient, ownDatabase, ownVector, err := openDependencies(context.Background(), options.Dependencies)
 	if err != nil {
-		return nil, fmt.Errorf("resolve memory path: %w", err)
+		return nil, err
 	}
-	memoryStore, err := memory.OpenOrCreate(memoryPath)
-	if err != nil {
-		return nil, fmt.Errorf("open memory store: %w", err)
-	}
-	secretPath, err := secret.DatabasePath(configRoot)
-	if err != nil {
-		return nil, fmt.Errorf("resolve secret path: %w", err)
-	}
-	secretStore := secret.NewStore(secretPath)
+	keepDependencies := false
+	defer func() {
+		if keepDependencies {
+			return
+		}
+		if ownVector && vectorClient != nil {
+			_ = vectorClient.Close()
+		}
+		if ownDatabase && database != nil {
+			database.Close()
+		}
+	}()
 
 	webSettings, err := config.ReadWebSearchSettings(configRoot)
 	if err != nil {
@@ -117,6 +138,8 @@ func Open(options Options) (*Runtime, error) {
 		Logs:         logStore,
 		HTTPMetrics:  httpMetrics,
 		StartedAt:    time.Now(),
+		Database:     database,
+		VectorIndex:  vectorClient,
 		MemoryStore:  memoryStore,
 		Memory:       memory.NewMemoryServiceWithStore(configRoot, memoryStore),
 		Secret:       secretStore,
@@ -134,6 +157,8 @@ func Open(options Options) (*Runtime, error) {
 			CoreVersion:            "0.1.0",
 			RespondRuntimeMigrated: true,
 		}),
+		ownDatabase: ownDatabase,
+		ownVector:   ownVector,
 	}
 
 	companion.AttachLogger(companionService, logger.Named("companion"))
@@ -142,6 +167,9 @@ func Open(options Options) (*Runtime, error) {
 	companion.AttachConfigReader(companionService, configReader)
 	companion.AttachSpeechSynthesizer(companionService, companionSpeechAdapter{service: speechService})
 	attachSemanticEmbedder(companionService, modelService, configReader, logger.Named("semantic"))
+	if vectorClient != nil {
+		companion.AttachVectorIndex(companionService, vectorClient)
+	}
 	character.AttachLogger(characterService, logger.Named("character"))
 	search.AttachLogger(webSearch, logger.Named("openserp"))
 
@@ -160,6 +188,7 @@ func Open(options Options) (*Runtime, error) {
 		}
 	})
 
+	keepDependencies = true
 	return rt, nil
 }
 
@@ -167,10 +196,78 @@ func (rt *Runtime) Close() error {
 	if rt == nil {
 		return nil
 	}
-	err := rt.Companion.Close()
-	rt.Events.Close()
-	rt.Logs.Close()
-	return err
+	rt.closeOnce.Do(func() {
+		rt.closeErr = rt.Companion.Close()
+		rt.Events.Close()
+		rt.Logs.Close()
+		if rt.ownVector && rt.VectorIndex != nil {
+			if closeErr := rt.VectorIndex.Close(); rt.closeErr == nil {
+				rt.closeErr = closeErr
+			}
+		}
+		if rt.ownDatabase && rt.Database != nil {
+			rt.Database.Close()
+		}
+	})
+	return rt.closeErr
+}
+
+func openDependencies(ctx context.Context, injected *Dependencies) (*pgstore.Pool, *memory.Store, *secret.Store, *vectorindex.Client, bool, bool, error) {
+	if injected != nil {
+		if injected.MemoryStore == nil {
+			return nil, nil, nil, nil, false, false, errors.New("injected memory store is required")
+		}
+		if injected.SecretStore == nil {
+			return nil, nil, nil, nil, false, false, errors.New("injected secret store is required")
+		}
+		return injected.Database, injected.MemoryStore, injected.SecretStore, injected.VectorIndex, false, false, nil
+	}
+	databaseConfig, err := pgstore.ConfigFromEnv(os.Getenv)
+	if err != nil {
+		return nil, nil, nil, nil, false, false, fmt.Errorf("database configuration: %w", err)
+	}
+	database, err := pgstore.Open(ctx, databaseConfig)
+	if err != nil {
+		return nil, nil, nil, nil, false, false, err
+	}
+	if _, err := pgstore.VerifySchema(ctx, database, pgstore.CurrentSchemaVersion); err != nil {
+		database.Close()
+		return nil, nil, nil, nil, false, false, fmt.Errorf("database schema: %w", err)
+	}
+	vectorConfig, err := vectorindex.ConfigFromEnv(os.Getenv)
+	if err != nil {
+		database.Close()
+		return nil, nil, nil, nil, false, false, fmt.Errorf("qdrant configuration: %w", err)
+	}
+	vectorClient, err := vectorindex.Open(ctx, vectorConfig)
+	if err != nil {
+		database.Close()
+		return nil, nil, nil, nil, false, false, err
+	}
+	if _, err := vectorClient.VerifyCollection(ctx); err != nil {
+		_ = vectorClient.Close()
+		database.Close()
+		return nil, nil, nil, nil, false, false, fmt.Errorf("qdrant collection: %w", err)
+	}
+	secretCipher, err := secret.CipherFromEnv(os.Getenv)
+	if err != nil {
+		_ = vectorClient.Close()
+		database.Close()
+		return nil, nil, nil, nil, false, false, fmt.Errorf("secret master key: %w", err)
+	}
+	secretStore, err := secret.NewPostgresStore(database, secretCipher)
+	if err != nil {
+		_ = vectorClient.Close()
+		database.Close()
+		return nil, nil, nil, nil, false, false, err
+	}
+	memoryStore, err := memory.NewStoreFromPool(database)
+	if err != nil {
+		_ = vectorClient.Close()
+		database.Close()
+		return nil, nil, nil, nil, false, false, err
+	}
+	return database, memoryStore, secretStore, vectorClient, true, true, nil
 }
 
 func (rt *Runtime) DrainEvents() []companion.HarnessEvent {

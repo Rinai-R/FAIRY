@@ -1,5 +1,7 @@
 package memory
 
+import "context"
+
 type MemoryService struct {
 	root  string
 	store *Store
@@ -13,20 +15,43 @@ func NewMemoryServiceWithStore(root string, store *Store) *MemoryService {
 	return &MemoryService{root: root, store: store}
 }
 
+func NewMemoryServiceFromStore(store *Store) (*MemoryService, error) {
+	if store == nil {
+		return nil, ErrDatabasePoolEmpty
+	}
+	return &MemoryService{store: store}, nil
+}
+
 func (s *MemoryService) Summary() (Summary, error) {
+	return s.SummaryContext(context.Background())
+}
+
+func (s *MemoryService) SummaryContext(ctx context.Context) (Summary, error) {
 	if s.store != nil {
-		return s.store.Summary()
+		return s.store.SummaryContext(ctx)
 	}
-	dbPath, err := DatabasePath(s.root)
-	if err != nil {
-		return Summary{}, err
-	}
-	// Summary stays read-only and must not create a missing database.
-	return NewStore(dbPath).Summary()
+	return Summary{}, ErrDatabasePoolEmpty
 }
 
 func (s *MemoryService) SemanticEmbeddingStatus() (SemanticEmbeddingReadiness, error) {
-	return LocalSemanticEmbeddingStatus(s.root)
+	if s == nil || s.store == nil {
+		return SemanticEmbeddingReadiness{}, ErrDatabasePoolEmpty
+	}
+	metrics, err := s.store.VectorMetricsContext(context.Background())
+	if err != nil {
+		return SemanticEmbeddingReadiness{}, err
+	}
+	return SemanticEmbeddingReadiness{
+		Dimensions:     SemanticEmbeddingDimensions,
+		DatabaseStatus: SemanticDatabaseStatusReady,
+		SemanticStatus: "unavailable",
+		Reason:         "api_embedder_required",
+		PendingJobs:    metrics.EmbeddingJobs.Pending,
+		RunningJobs:    metrics.EmbeddingJobs.Running,
+		FailedJobs:     metrics.EmbeddingJobs.Failed,
+		EmbeddedItems:  metrics.EmbeddingJobs.Embedded,
+		VectorRows:     metrics.EmbeddingJobs.Embedded,
+	}, nil
 }
 
 func (s *MemoryService) OpenOrCreateCharacterConversation(characterID string) (ConversationBootstrap, error) {
@@ -129,14 +154,5 @@ func (s *MemoryService) openStore() (*Store, error) {
 	if s.store != nil {
 		return s.store, nil
 	}
-	dbPath, err := DatabasePath(s.root)
-	if err != nil {
-		return nil, err
-	}
-	store, err := OpenOrCreate(dbPath)
-	if err != nil {
-		return nil, err
-	}
-	s.store = store
-	return store, nil
+	return nil, ErrDatabasePoolEmpty
 }

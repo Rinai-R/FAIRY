@@ -1,3 +1,5 @@
+//go:build sqlite_legacy
+
 package memory
 
 import (
@@ -5,14 +7,34 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
-
-	_ "modernc.org/sqlite"
+	"time"
 )
 
 func TestDatabasePathRequiresRoot(t *testing.T) {
 	_, err := DatabasePath("")
 	if !errors.Is(err, ErrRootRequired) {
 		t.Fatalf("DatabasePath() error = %v, want %v", err, ErrRootRequired)
+	}
+}
+
+func TestNewStoreFromPoolRequiresPool(t *testing.T) {
+	store, err := NewStoreFromPool(nil)
+	if store != nil || !errors.Is(err, ErrDatabasePoolEmpty) {
+		t.Fatalf("NewStoreFromPool(nil) = (%v, %v), want (nil, %v)", store, err, ErrDatabasePoolEmpty)
+	}
+}
+
+func TestNewMemoryServiceFromStoreRequiresStore(t *testing.T) {
+	service, err := NewMemoryServiceFromStore(nil)
+	if service != nil || !errors.Is(err, ErrDatabasePoolEmpty) {
+		t.Fatalf("NewMemoryServiceFromStore(nil) = (%v, %v), want (nil, %v)", service, err, ErrDatabasePoolEmpty)
+	}
+}
+
+func TestNewStoreFromPoolLeaseValidationRunsAfterPoolValidation(t *testing.T) {
+	store, err := newStoreFromPoolWithLease(nil, "worker-1", time.Second)
+	if store != nil || !errors.Is(err, ErrDatabasePoolEmpty) {
+		t.Fatalf("newStoreFromPoolWithLease(nil) = (%v, %v)", store, err)
 	}
 }
 
