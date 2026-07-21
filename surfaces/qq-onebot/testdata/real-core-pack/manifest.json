@@ -1,1 +1,0 @@
-{"schemaVersion":2,"packId":"fairy.zerobot-real-e2e","displayName":"ZeroBot Real E2E","renderer":"state_images","frame":{"width":512,"height":512},"scale":1,"anchor":{"x":256,"y":512},"states":[{"id":"idle","description":"用于真实 ZeroBot E2E 的临时静态状态。","imagePath":"fairy-character://localhost/fairy.zerobot-real-e2e/images/idle.png"}]}

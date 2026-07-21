@@ -153,6 +153,49 @@ func TestConfigApplyReadsStdinAndCapturesOutput(t *testing.T) {
 	}
 }
 
+func TestSessionParticipateReadsStrictJSONBeforeCreatingClient(t *testing.T) {
+	target := "m1"
+	client := &fakeClient{participation: coreclient.GroupParticipationResponse{Action: "reply", TargetMessageID: &target}}
+	deps := testDependencies(client)
+	deps.Stdin = strings.NewReader(`{"evaluationReason":"message","messages":[{"messageId":"m1","senderId":"u1","senderName":"群友","text":"在吗","directedToBot":true,"isNew":true,"timestampUnixMs":1}]}`)
+	output := new(bytes.Buffer)
+	root := NewRootCmd(deps)
+	root.SetOut(output)
+	root.SetErr(output)
+	root.SetArgs([]string{"session", "participate", "--conversation", "c1", "--file", "-"})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if client.participationConversation != "c1" || client.participationRequest.EvaluationReason != "message" || len(client.participationRequest.Messages) != 1 {
+		t.Fatalf("request = %#v conversation=%q", client.participationRequest, client.participationConversation)
+	}
+	if !strings.Contains(output.String(), `"action":"reply"`) || !strings.Contains(output.String(), `"targetMessageId":"m1"`) {
+		t.Fatalf("output = %q", output.String())
+	}
+
+	for _, payload := range []string{
+		`{"evaluationReason":"message","messages":[],"unknown":true}`,
+		`{"evaluationReason":"message","messages":[]} {}`,
+		`[]`,
+	} {
+		factories := 0
+		badDeps := testDependencies(&fakeClient{})
+		badDeps.Stdin = strings.NewReader(payload)
+		badDeps.ClientFactory = func(ConnectionConfig) (APIClient, error) {
+			factories++
+			return &fakeClient{}, nil
+		}
+		badRoot := NewRootCmd(badDeps)
+		badRoot.SetArgs([]string{"session", "participate", "--conversation", "c1", "--file", "-"})
+		if err := badRoot.ExecuteContext(context.Background()); err == nil {
+			t.Fatalf("payload %q accepted", payload)
+		}
+		if factories != 0 {
+			t.Fatalf("payload %q created %d clients", payload, factories)
+		}
+	}
+}
+
 func TestTurnSendWritesJSONLAndReturnsTerminalError(t *testing.T) {
 	for _, state := range []string{"completed", "failed", "interrupted"} {
 		t.Run(state, func(t *testing.T) {
@@ -272,18 +315,26 @@ func testDependencies(client APIClient) Dependencies {
 }
 
 type fakeClient struct {
-	status    coreclient.Status
-	statusErr error
-	raw       json.RawMessage
-	applied   []byte
-	stream    coreclient.EventStream
-	openLogs  func(context.Context, coreclient.LogQuery, time.Duration) (coreclient.EventStream, error)
-	turn      coreclient.SubmitTurnResponse
+	status                    coreclient.Status
+	statusErr                 error
+	raw                       json.RawMessage
+	applied                   []byte
+	stream                    coreclient.EventStream
+	openLogs                  func(context.Context, coreclient.LogQuery, time.Duration) (coreclient.EventStream, error)
+	turn                      coreclient.SubmitTurnResponse
+	participation             coreclient.GroupParticipationResponse
+	participationConversation string
+	participationRequest      coreclient.GroupParticipationRequest
 }
 
 func (f *fakeClient) Status(context.Context) (coreclient.Status, error) { return f.status, f.statusErr }
 func (f *fakeClient) OpenSession(context.Context, coreclient.OpenSessionRequest) (coreclient.OpenSessionResponse, error) {
 	return coreclient.OpenSessionResponse{ConversationID: "c1"}, nil
+}
+func (f *fakeClient) DecideGroupParticipation(_ context.Context, conversationID string, request coreclient.GroupParticipationRequest) (coreclient.GroupParticipationResponse, error) {
+	f.participationConversation = conversationID
+	f.participationRequest = request
+	return f.participation, nil
 }
 func (f *fakeClient) SubmitTurn(context.Context, string, coreclient.SubmitTurnRequest) (coreclient.SubmitTurnResponse, error) {
 	return f.turn, nil

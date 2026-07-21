@@ -167,6 +167,21 @@ func TestBuildResponsesRequestDraftMatchesOpenAICompatibleShape(t *testing.T) {
 	}
 }
 
+func TestParticipationLaneUsesJSONResponseFormatForChatCompletions(t *testing.T) {
+	req := request()
+	req.Shape.Lane = PromptLaneParticipate
+	req.Shape.PromptCacheKey = ""
+	draft, err := BuildRequestDraft(connection(ProtocolChatCompletions), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := bodyMap(t, draft)
+	format, ok := body["response_format"].(map[string]any)
+	if !ok || format["type"] != "json_object" {
+		t.Fatalf("response_format = %#v", body["response_format"])
+	}
+}
+
 func TestBuildResponsesRequestDraftSupportsContinuationSuffix(t *testing.T) {
 	req := request()
 	req.Input = []PromptItem{{Type: PromptItemUserMessage, Content: "新增问题"}}

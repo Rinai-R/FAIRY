@@ -318,6 +318,10 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		return TurnOutcome{}, err
 	}
 	request.Surface = surface
+	policy, err := InteractionPolicyForSurface(surface)
+	if err != nil {
+		return TurnOutcome{}, err
+	}
 	if !s.RespondRuntimeMigrated() {
 		return TurnOutcome{}, ErrRespondRuntimeNotMigrated
 	}
@@ -402,9 +406,12 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	if err != nil {
 		return fail("CHARACTER_NOT_AVAILABLE", err)
 	}
-	userProfile, err := s.profileSource().Current()
-	if err != nil {
-		return fail("USER_PROFILE_UNAVAILABLE", err)
+	var userProfile *profile.Snapshot
+	if policy.Audience == AudiencePrivate {
+		userProfile, err = s.profileSource().Current()
+		if err != nil {
+			return fail("USER_PROFILE_UNAVAILABLE", err)
+		}
 	}
 	if err := transition(TurnStateGathering); err != nil {
 		return fail("INVALID_STATE_TRANSITION", err)
@@ -464,9 +471,9 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		allowTools := modelDrivenTools < maxModelDrivenToolCalls
 		tools := []model.ToolSpec(nil)
 		if allowTools {
-			tools = RespondToolSpecsForSurface(webSearchEnabled, request.Surface)
+			tools = RespondToolSpecsForPolicy(webSearchEnabled, policy)
 		}
-		instructions := RespondInstructionsForSurface(len(tools) > 0, request.Surface)
+		instructions := RespondInstructionsForPolicy(len(tools) > 0, policy)
 		attempt := modelDrivenTools + 1
 		slots, err := BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval, request.Surface)
 		if err != nil {
@@ -638,7 +645,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 				)
 				switch call.Name {
 				case toolMemorySearch:
-					if request.Surface == SurfaceIMGroup {
+					if policy.Audience == AudiencePublic {
 						return fail("MODEL_RESPONSE_INVALID", errors.New("memory_search is unavailable for group conversations"))
 					}
 					extra, toolErr := s.retrieveMemoryForTool(bootstrap.Conversation.CharacterID, query)
@@ -676,6 +683,30 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 							zap.Int("index", modelDrivenTools+1),
 						)
 					}
+				case toolPublicMemorySearch:
+					if policy.Audience != AudiencePublic {
+						return fail("MODEL_RESPONSE_INVALID", errors.New("public_memory_search is available only for group conversations"))
+					}
+					extra, toolErr := s.retrievePublicKnowledgeForTool(turnCtx, query)
+					status := "ok"
+					if toolErr != nil {
+						status = "failed"
+						lg.Warn("cognition loop", zap.String("phase", "tool_failed"), zap.String("tool", call.Name), zap.Error(toolErr))
+						retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
+					} else {
+						retrieval = mergeRetrievalContext(retrieval, extra)
+					}
+					retrievalOmitReason = ""
+					modelDrivenTools++
+					s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+						"tool":             call.Name,
+						"phase":            "model_driven",
+						"status":           status,
+						"queryHash":        runtimeHash(query),
+						"personalCount":    len(extra.PersonalMemories),
+						"knowledgeCount":   len(extra.Knowledge),
+						"modelDrivenIndex": modelDrivenTools,
+					})
 				case toolWebSearch:
 					if !webSearchEnabled {
 						toolErr := errors.New("web search is disabled")
@@ -714,7 +745,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 							extra := retrievalFromWebHits(hits)
 							retrieval = mergeRetrievalContext(retrieval, extra)
 							nowMS := time.Now().UnixMilli()
-							if request.Surface != SurfaceIMGroup {
+							if policy.Audience == AudiencePrivate {
 								for index, hit := range hits {
 									ingestSnapshots = append(ingestSnapshots, memory.KnowledgeIngestSnapshot{
 										ConversationID: request.ConversationID, TurnID: persisted.ID, Query: query,
@@ -980,11 +1011,11 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	if err := s.updateContinuationState(request.ConversationID, connectionConfig.Capabilities.CacheRetention, bootstrap.PromptWindow.Revision, fullRequest, reply.DisplayText, events); err != nil {
 		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContinuation, TurnStateCompleted, "CONTINUATION_STATE_FAILED", runtimeFailureLedgerMetadata("CONTINUATION_STATE_FAILED", err, false))
 	}
-	if request.Surface != SurfaceIMGroup {
+	if policy.Audience == AudiencePrivate {
 		s.scheduleBackgroundExtraction(request.ConversationID)
 	}
 	s.scheduleAutoCompaction(request.ConversationID, events)
-	if request.Surface != SurfaceIMGroup {
+	if policy.Audience == AudiencePrivate {
 		s.scheduleKnowledgeIngest(ingestSnapshots)
 	}
 	return TurnOutcome{
@@ -1166,9 +1197,20 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
-	userProfile, err := s.profileSource().Current()
+	surface, err := s.ResolveSurface(conversationID, "")
 	if err != nil {
 		return memory.CompactionResult{}, err
+	}
+	policy, err := InteractionPolicyForSurface(surface)
+	if err != nil {
+		return memory.CompactionResult{}, err
+	}
+	var userProfile *profile.Snapshot
+	if policy.Audience == AudiencePrivate {
+		userProfile, err = s.profileSource().Current()
+		if err != nil {
+			return memory.CompactionResult{}, err
+		}
 	}
 	windowed := messagesAfterCutoff(bootstrap.Messages, bootstrap.PromptWindow.CutoffMessageSequence)
 	if len(windowed) == 0 {
@@ -1178,7 +1220,7 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
-	input, err := BuildCompactInput(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, states)
+	input, err := BuildCompactInput(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, states, surface)
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}

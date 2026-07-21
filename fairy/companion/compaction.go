@@ -135,11 +135,23 @@ func BuildCompactInput(
 	promptWindow memory.PromptWindowRecord,
 	messages []memory.MessageRecord,
 	states []VisualState,
+	surface SurfaceKind,
 ) ([]model.PromptItem, error) {
+	normalizedSurface, err := NormalizeSurface(string(surface))
+	if err != nil {
+		return nil, err
+	}
+	policy, err := InteractionPolicyForSurface(normalizedSurface)
+	if err != nil {
+		return nil, err
+	}
 	windowed := messagesAfterCutoff(messages, promptWindow.CutoffMessageSequence)
 	prefix, err := BuildStablePrefixItems(record, userProfile, states)
 	if err != nil {
 		return nil, err
+	}
+	if policy.Audience == AudiencePublic {
+		prefix = append(prefix[:2], prefix[3:]...)
 	}
 	items := make([]model.PromptItem, 0, len(prefix)+len(windowed)+2)
 	items = append(items, prefix...)
@@ -213,9 +225,16 @@ func (s *CompanionService) maybeCompactBeforeTurn(request SubmitCompiledTurnRequ
 	if err != nil {
 		return err
 	}
-	userProfile, err := s.profileSource().Current()
+	interactionPolicy, err := InteractionPolicyForSurface(request.Surface)
 	if err != nil {
 		return err
+	}
+	var userProfile *profile.Snapshot
+	if interactionPolicy.Audience == AudiencePrivate {
+		userProfile, err = s.profileSource().Current()
+		if err != nil {
+			return err
+		}
 	}
 	estimatedMessages := append([]memory.MessageRecord(nil), bootstrap.Messages...)
 	estimatedMessages = append(estimatedMessages, memory.MessageRecord{

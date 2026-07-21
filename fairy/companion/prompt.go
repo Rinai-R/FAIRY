@@ -108,6 +108,10 @@ func BuildRespondContextSlots(
 	if err != nil {
 		return nil, err
 	}
+	policy, err := InteractionPolicyForSurface(normalizedSurface)
+	if err != nil {
+		return nil, err
+	}
 	windowed := messagesAfterCutoff(messages, promptWindow.CutoffMessageSequence)
 	slots := make([]ContextSlot, 0, 8)
 	prefix, err := BuildStablePrefixItems(record, userProfile, states)
@@ -119,7 +123,11 @@ func BuildRespondContextSlots(
 	}
 	slots = append(slots, presentContextSlot("character", true, "local_trusted", "stable", []model.PromptItem{prefix[0]}, map[string]any{"revision": record.Revision}))
 	slots = append(slots, presentContextSlot("display_language", true, "local_trusted", "stable", []model.PromptItem{prefix[1]}, map[string]any{"textLanguage": record.TextLanguage}))
-	slots = append(slots, presentContextSlot("profile", true, "local_trusted", "stable", []model.PromptItem{prefix[2]}, map[string]any{"profile": userProfile}))
+	if policy.Audience == AudiencePublic {
+		slots = append(slots, omittedContextSlot("profile", false, "private_context", "stable", "public_surface"))
+	} else {
+		slots = append(slots, presentContextSlot("profile", true, "local_trusted", "stable", []model.PromptItem{prefix[2]}, map[string]any{"profile": userProfile}))
+	}
 	slots = append(slots, presentContextSlot("available_visual_states", true, "local_trusted", "stable", []model.PromptItem{prefix[3]}, states))
 	surfaceItem, err := encodeSurfaceContext(normalizedSurface)
 	if err != nil {
@@ -327,6 +335,8 @@ func InstructionsForLane(lane model.PromptLane) (string, uint32, error) {
 	switch lane {
 	case model.PromptLaneRespond:
 		return RespondInstructions, RespondMaxOutputTokens, nil
+	case model.PromptLaneParticipate:
+		return GroupParticipationInstructions, GroupParticipationMaxOutputTokens, nil
 	case model.PromptLaneCompact:
 		return CompactInstructions, CompactMaxOutputTokens, nil
 	case model.PromptLaneExtract:

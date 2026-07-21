@@ -1471,6 +1471,10 @@ func TestPostgresTrigramRetrievalPreservesScopeLimitsAndStableOrder(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	privateOverlap, err := store.CreatePersonalMemoryContext(ctx, "experience", MemoryScope{Type: "global"}, "用户私人收藏了明年正式发布续作的纪念品", 8700)
+	if err != nil {
+		t.Fatal(err)
+	}
 	phrase, err := store.RetrieveContext(ctx, "character-search-a", "太甜的饮料")
 	if err != nil {
 		t.Fatal(err)
@@ -1549,6 +1553,16 @@ func TestPostgresTrigramRetrievalPreservesScopeLimitsAndStableOrder(t *testing.T
 	}
 	if len(knowledgeResult.Knowledge) != 1 || knowledgeResult.Knowledge[0].ID != knowledge.ID || knowledgeResult.Knowledge[0].Layer != "knowledge" || len(knowledgeResult.Knowledge[0].Sources) != 1 {
 		t.Fatalf("knowledge result = %#v", knowledgeResult.Knowledge)
+	}
+	if !containsRetrievedPersonalID(knowledgeResult.PersonalMemories, privateOverlap.ID) {
+		t.Fatalf("private retrieval lost overlapping personal memory = %#v", knowledgeResult.PersonalMemories)
+	}
+	publicResult, err := store.RetrievePublicKnowledgeContext(ctx, "明年正式发布续作")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(publicResult.PersonalMemories) != 0 || len(publicResult.Knowledge) != 1 || publicResult.Knowledge[0].ID != knowledge.ID {
+		t.Fatalf("public retrieval crossed privacy boundary = %#v", publicResult)
 	}
 }
 

@@ -22,6 +22,7 @@ type MemoryPort interface {
 	CommitPromptWindow(conversationID string, expectedRevision uint64, summary string) (memory.CompactionResult, error)
 	Retrieve(characterID string, query string) (memory.RetrievalContext, error)
 	RetrieveWithSemanticVectorIndex(context.Context, string, string, semantic.Embedder, memory.SemanticVectorIndex) (memory.RetrievalContext, error)
+	RetrievePublicKnowledgeContext(context.Context, string) (memory.RetrievalContext, error)
 	AppendTurnRuntimeEvent(input memory.TurnRuntimeEventInput) (memory.TurnRuntimeEventRecord, error)
 	SaveLaneContinuation(record memory.LaneContinuationRecord) (memory.LaneContinuationRecord, error)
 	LoadLaneContinuation(conversationID string, lane string) (memory.LaneContinuationRecord, bool, error)

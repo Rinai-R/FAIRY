@@ -75,6 +75,7 @@ func (s *Server) routes() {
 	v1.GET("/sessions/:conversationId/messages", s.handleSessionMessages)
 	v1.GET("/visual-assets/:packId/*assetPath", s.handleVisualAsset)
 	v1.POST("/sessions/:conversationId/turns", s.handleSubmitTurn)
+	v1.POST("/sessions/:conversationId/group-participation", s.handleGroupParticipation)
 	v1.GET("/sessions/:conversationId/events", s.handleSessionEvents)
 	v1.POST("/sessions/:conversationId/turns/:turnId/cancel", s.handleCancelTurn)
 	s.registerConfigRoutes()
@@ -189,6 +190,30 @@ type submitTurnBody struct {
 	Input         string `json:"input"`
 	SpeechEnabled bool   `json:"speechEnabled"`
 	Surface       string `json:"surface"`
+}
+
+type groupParticipationBody struct {
+	EvaluationReason companion.GroupParticipationEvaluationReason `json:"evaluationReason"`
+	Messages         []companion.GroupObservation                 `json:"messages"`
+}
+
+func (s *Server) handleGroupParticipation(ctx context.Context, c *app.RequestContext) {
+	conversationID := c.Param("conversationId")
+	var body groupParticipationBody
+	if err := c.Bind(&body); err != nil {
+		writeErr(c, http.StatusBadRequest, err)
+		return
+	}
+	result, err := s.rt.Companion.DecideGroupParticipation(ctx, companion.GroupParticipationRequest{
+		ConversationID:   conversationID,
+		EvaluationReason: body.EvaluationReason,
+		Messages:         body.Messages,
+	})
+	if err != nil {
+		writeErr(c, http.StatusBadRequest, err)
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 func (s *Server) handleSubmitTurn(ctx context.Context, c *app.RequestContext) {

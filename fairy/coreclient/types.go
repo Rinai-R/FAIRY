@@ -71,6 +71,27 @@ type SubmitTurnResponse struct {
 	Surface string      `json:"surface"`
 }
 
+type GroupObservation struct {
+	MessageID       string `json:"messageId"`
+	SenderID        string `json:"senderId"`
+	SenderName      string `json:"senderName"`
+	Text            string `json:"text"`
+	DirectedToBot   bool   `json:"directedToBot"`
+	IsNew           bool   `json:"isNew"`
+	TimestampUnixMS int64  `json:"timestampUnixMs"`
+}
+
+type GroupParticipationRequest struct {
+	EvaluationReason string             `json:"evaluationReason"`
+	Messages         []GroupObservation `json:"messages"`
+}
+
+type GroupParticipationResponse struct {
+	Action          string  `json:"action"`
+	TargetMessageID *string `json:"targetMessageId,omitempty"`
+	WaitSeconds     *int    `json:"waitSeconds,omitempty"`
+}
+
 type HarnessEvent struct {
 	ConversationID string          `json:"conversationId"`
 	TurnID         string          `json:"turnId"`

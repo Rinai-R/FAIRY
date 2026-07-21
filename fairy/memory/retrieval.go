@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"fairy/memory/semantic"
 )
 
 // Constants match crates/fairy-intelligence/src/store/mod.rs.
@@ -53,6 +55,34 @@ func (s *Store) Retrieve(characterID string, query string) (RetrievalContext, er
 
 func (s *Store) RetrieveContext(ctx context.Context, characterID string, query string) (RetrievalContext, error) {
 	return s.retrievePostgres(ctx, characterID, query)
+}
+
+// RetrievePublicKnowledgeContext is the public-surface retrieval boundary.
+// It never queries personal memories or the mixed personal vector index.
+func (s *Store) RetrievePublicKnowledgeContext(ctx context.Context, query string) (RetrievalContext, error) {
+	if s == nil || s.pool == nil {
+		return RetrievalContext{}, ErrDatabasePoolEmpty
+	}
+	normalized, err := normalizePostgresSearchQuery(query)
+	if err != nil {
+		return RetrievalContext{}, err
+	}
+	result := RetrievalContext{
+		PersonalMemories: []RetrievedPersonalMemory{},
+		Knowledge:        []RetrievedKnowledge{},
+		SemanticStatus:   string(semantic.StatusUnavailable),
+	}
+	if normalized == "" {
+		return result, nil
+	}
+	queryCtx, cancel := s.pool.QueryContext(ctx)
+	defer cancel()
+	remaining := maxRetrievedContextChars
+	result.Knowledge, err = retrieveKnowledgeTrigramPostgres(queryCtx, s.pool.Raw(), normalized, &remaining)
+	if err != nil {
+		return RetrievalContext{}, err
+	}
+	return result, nil
 }
 
 // buildFTSQuery mirrors Rust build_fts_query: alphanumeric runs → trigrams → quoted OR terms.

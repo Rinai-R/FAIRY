@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -18,6 +19,40 @@ func (c *Client) OpenSession(ctx context.Context, request OpenSessionRequest) (O
 		err = errors.New("open session response is missing required fields")
 	}
 	return result, err
+}
+
+func (c *Client) DecideGroupParticipation(ctx context.Context, conversationID string, request GroupParticipationRequest) (GroupParticipationResponse, error) {
+	body, err := json.Marshal(request)
+	if err != nil {
+		return GroupParticipationResponse{}, err
+	}
+	path := "/v1/sessions/" + url.PathEscape(conversationID) + "/group-participation"
+	var result GroupParticipationResponse
+	err = c.doJSON(ctx, "decide group participation", http.MethodPost, path, body, &result)
+	if err == nil {
+		err = validateGroupParticipationResponse(result)
+	}
+	return result, err
+}
+
+func validateGroupParticipationResponse(result GroupParticipationResponse) error {
+	switch result.Action {
+	case "reply":
+		if result.TargetMessageID == nil || strings.TrimSpace(*result.TargetMessageID) == "" || result.WaitSeconds != nil {
+			return errors.New("group participation reply response is invalid")
+		}
+	case "wait":
+		if result.TargetMessageID != nil || result.WaitSeconds == nil || *result.WaitSeconds < 1 || *result.WaitSeconds > 300 {
+			return errors.New("group participation wait response is invalid")
+		}
+	case "silent":
+		if result.TargetMessageID != nil || result.WaitSeconds != nil {
+			return errors.New("group participation silent response is invalid")
+		}
+	default:
+		return errors.New("group participation response has invalid action")
+	}
+	return nil
 }
 
 func (c *Client) ListMessages(ctx context.Context, conversationID string, beforeSequence uint64, limit int) (MessagePage, error) {

@@ -37,6 +37,52 @@ func TestOpenSessionSendsSurfaceKey(t *testing.T) {
 	}
 }
 
+func TestDecideGroupParticipationUsesTypedSessionEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != "/v1/sessions/c%2F1/group-participation" && r.URL.Path != "/v1/sessions/c/1/group-participation" {
+			t.Fatalf("path = %q", r.URL.EscapedPath())
+		}
+		var request GroupParticipationRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if request.EvaluationReason != "message" || len(request.Messages) != 1 || request.Messages[0].SenderName != "群友" || !request.Messages[0].DirectedToBot || !request.Messages[0].IsNew {
+			t.Fatalf("request = %#v", request)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"action":"wait","waitSeconds":7}`)
+	}))
+	defer server.Close()
+	client, _ := New(Options{Endpoint: server.URL})
+	response, err := client.DecideGroupParticipation(t.Context(), "c/1", GroupParticipationRequest{EvaluationReason: "message", Messages: []GroupObservation{{
+		MessageID: "m1", SenderID: "u1", SenderName: "群友", Text: "不用回", DirectedToBot: true, IsNew: true, TimestampUnixMS: 1,
+	}}})
+	if err != nil || response.Action != "wait" || response.WaitSeconds == nil || *response.WaitSeconds != 7 {
+		t.Fatalf("response=%#v err=%v", response, err)
+	}
+}
+
+func TestDecideGroupParticipationRejectsInvalidActionShapes(t *testing.T) {
+	for _, body := range []string{
+		`{"action":"maybe"}`,
+		`{"action":"reply"}`,
+		`{"action":"wait","waitSeconds":301}`,
+		`{"action":"silent","waitSeconds":1}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, body)
+			}))
+			defer server.Close()
+			client, _ := New(Options{Endpoint: server.URL})
+			if _, err := client.DecideGroupParticipation(t.Context(), "c1", GroupParticipationRequest{}); err == nil {
+				t.Fatal("invalid action accepted")
+			}
+		})
+	}
+}
+
 func TestListMessagesSendsPaginationAndRequiresMessages(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/sessions/c%2F1/messages" && r.URL.Path != "/v1/sessions/c/1/messages" {

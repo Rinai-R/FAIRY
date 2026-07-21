@@ -19,6 +19,7 @@ import (
 type APIClient interface {
 	Status(context.Context) (coreclient.Status, error)
 	OpenSession(context.Context, coreclient.OpenSessionRequest) (coreclient.OpenSessionResponse, error)
+	DecideGroupParticipation(context.Context, string, coreclient.GroupParticipationRequest) (coreclient.GroupParticipationResponse, error)
 	SubmitTurn(context.Context, string, coreclient.SubmitTurnRequest) (coreclient.SubmitTurnResponse, error)
 	CancelTurn(context.Context, string, string) error
 	OpenEvents(context.Context, string, time.Duration) (coreclient.EventStream, error)

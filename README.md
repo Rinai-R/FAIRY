@@ -2,7 +2,7 @@
 
 FAIRY 是一个 Go Session Core：通过 HTTP/SSE 提供角色对话、记忆、模型、语音与设置能力，同时内置 React 管理控制台和面向 AI Coding 测试/调试的白名单 CLI。
 
-独立 Surface 位于 `surfaces/`：`surfaces/macos` 提供 Wails v2 macOS聊天客户端，`surfaces/qq-onebot` 提供依赖 ZeroBot、连接 LLOneBot 的 QQ群 Surface；客户端状态机不放入 Core。
+独立 Surface 位于 `surfaces/`：`surfaces/macos` 提供 Wails v2 macOS聊天客户端；`surfaces/qq-onebot` 是拥有独立 `go.mod`、依赖 ZeroBot 并通过本机 HTTP webhook/API 连接 LLOneBot 的 QQ 群 Surface。ZeroBot 负责 OneBot transport/action；QQ Surface 维护每群最新 20 条 rolling observations，新消息立即驱动 Core participation（无固定 debounce），严格执行 `reply|wait|silent`：`reply` 提交带 `[reply-target]` 的 `im_group` turn，`wait` 按模型秒数可被新消息提前唤醒，`silent` 不建 turn。群聊只使用公共 Prompt 投影和 verified knowledge，不读取私人 profile/记忆；回复频度由 Core 根据 transcript presence 语义权衡，Gateway 不做关键词/随机/评分。
 
 ## 本地启动
 
@@ -98,6 +98,9 @@ go -C fairy run . db status
 go test -C fairy ./... -count=1
 (cd fairy && go test ./... -race -count=1)
 (cd fairy && go vet ./...)
+go test -C surfaces/qq-onebot ./... -race -count=1
+go vet -C surfaces/qq-onebot ./...
+go build -C surfaces/qq-onebot .
 FAIRY_TEST_DATABASE_URL=... FAIRY_TEST_QDRANT_GRPC_URL=... go test -C fairy ./... -tags integration -count=1
 pnpm --filter @fairy/web test
 pnpm --filter @fairy/web build

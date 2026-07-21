@@ -82,6 +82,12 @@ type companionIntegrationProfile struct{}
 
 func (companionIntegrationProfile) Current() (*profile.Snapshot, error) { return nil, nil }
 
+type rejectingGroupProfile struct{}
+
+func (rejectingGroupProfile) Current() (*profile.Snapshot, error) {
+	return nil, errors.New("group surface must not read private profile")
+}
+
 type companionIntegrationConfig struct{}
 
 func (companionIntegrationConfig) ModelConnection() (config.ModelConnection, error) {
@@ -345,6 +351,7 @@ func TestPostgresGroupTurnExcludesPrivateMemoryJobsAndKeepsCompaction(t *testing
 	before := groupPrivacyJobCounts(t, pool)
 	provider := &capturingIntegrationModel{}
 	service := newCompanionIntegrationService(store, characterID, provider)
+	AttachProfileSource(service, rejectingGroupProfile{})
 	if err := service.BindSurface(bootstrap.Conversation.ID, SurfaceIMGroup); err != nil {
 		t.Fatalf("BindSurface: %v", err)
 	}
@@ -363,6 +370,9 @@ func TestPostgresGroupTurnExcludesPrivateMemoryJobsAndKeepsCompaction(t *testing
 		if tool.Name == toolMemorySearch {
 			t.Fatalf("group request exposes %q: %#v", toolMemorySearch, request.Tools)
 		}
+	}
+	if len(request.Tools) != 1 || request.Tools[0].Name != toolPublicMemorySearch {
+		t.Fatalf("group request tools = %#v, want public memory only", request.Tools)
 	}
 	for _, item := range request.Input {
 		if strings.Contains(item.Content, privateFixture) {

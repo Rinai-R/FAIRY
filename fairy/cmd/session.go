@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"fairy/coreclient"
@@ -35,8 +38,52 @@ func newSessionCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 	}
 	open.Flags().StringVar(&surface, "surface", "desktop", "session surface: desktop, im_private, or im_group")
 	open.Flags().StringVar(&surfaceKey, "surface-key", "", "opaque external conversation key for IM surfaces")
-	command.AddCommand(open)
+
+	var conversationID, participationFile string
+	participate := &cobra.Command{
+		Use: "participate", Short: "Evaluate an ambient group snapshot", Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, args []string) error {
+			payload, err := readPayload(participationFile, deps.Stdin)
+			if err != nil {
+				return err
+			}
+			var request coreclient.GroupParticipationRequest
+			if err := decodeStrictCLIObject(payload, &request); err != nil {
+				return fmt.Errorf("decode participation request: %w", err)
+			}
+			client, config, err := newClient(v, deps)
+			if err != nil {
+				return err
+			}
+			result, err := client.DecideGroupParticipation(command.Context(), conversationID, request)
+			if err != nil {
+				return err
+			}
+			return writeOutput(command.OutOrStdout(), config.Output, result)
+		},
+	}
+	participate.Flags().StringVar(&conversationID, "conversation", "", "conversation ID")
+	participate.Flags().StringVar(&participationFile, "file", "", "JSON file path, or - for stdin")
+	_ = participate.MarkFlagRequired("conversation")
+	_ = participate.MarkFlagRequired("file")
+	command.AddCommand(open, participate)
 	return command
+}
+
+func decodeStrictCLIObject(payload []byte, out any) error {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("payload must contain exactly one JSON object")
+	}
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return errors.New("payload must be a JSON object")
+	}
+	return nil
 }
 
 func newTurnCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
