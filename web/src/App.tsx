@@ -48,7 +48,7 @@ export default function App() {
   }
 
   return (
-    <Theme appearance="light" accentColor="cyan" grayColor="slate" radius="medium" scaling="100%">
+    <Theme appearance="light" accentColor="teal" grayColor="sand" radius="large" scaling="100%">
       <div className="shell">
         <aside className="sidebar">
           <div className="brand">
