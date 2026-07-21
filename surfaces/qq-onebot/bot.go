@@ -2,14 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"strconv"
 	"strings"
-	"time"
+	"sync"
 
-	"fairy-surfaces/turnclient"
 	"fairy/coreclient"
 	zero "github.com/wdvxdr1123/ZeroBot"
 	"github.com/wdvxdr1123/ZeroBot/driver"
@@ -19,23 +19,16 @@ import (
 type bot struct {
 	ctx       context.Context
 	allowlist map[int64]struct{}
-	windows   *groupWindow
-	turns     interface {
-		Run(context.Context, turnclient.Request, turnclient.Callback) (turnclient.Result, error)
-	}
-	core interface {
-		OpenSession(context.Context, coreclient.OpenSessionRequest) (coreclient.OpenSessionResponse, error)
-		DecideGroupParticipation(context.Context, string, coreclient.GroupParticipationRequest) (coreclient.GroupParticipationResponse, error)
-	}
+	socket    *coreclient.SessionSocket
+
+	mu            sync.Mutex
+	conversations map[int64]string
+	senders       map[string]func(string) error
 }
 
-func newBot(ctx context.Context, cfg Config, core *coreclient.Client) (*bot, error) {
-	if ctx == nil || core == nil {
-		return nil, errors.New("bot context and Core client are required")
-	}
-	turns, err := turnclient.New(core, 15*time.Second)
-	if err != nil {
-		return nil, err
+func newBot(ctx context.Context, cfg Config, socket *coreclient.SessionSocket) (*bot, error) {
+	if ctx == nil || socket == nil {
+		return nil, errors.New("bot context and session socket are required")
 	}
 	allowlist := make(map[int64]struct{}, len(cfg.GroupAllowlist))
 	for _, raw := range cfg.GroupAllowlist {
@@ -45,14 +38,11 @@ func newBot(ctx context.Context, cfg Config, core *coreclient.Client) (*bot, err
 		}
 		allowlist[id] = struct{}{}
 	}
-	b := &bot{ctx: ctx, allowlist: allowlist, turns: turns, core: core}
-	b.windows, err = newGroupWindow(ctx, b.decideGroupParticipation, b.replyToGroupWindow, func(groupID int64, err error) {
-		log.Printf("group window %d failed: %v", groupID, err)
-	})
-	if err != nil {
-		return nil, err
-	}
-	return b, nil
+	return &bot{
+		ctx: ctx, allowlist: allowlist, socket: socket,
+		conversations: make(map[int64]string),
+		senders:       make(map[string]func(string) error),
+	}, nil
 }
 
 func (b *bot) register(engine *zero.Engine) {
@@ -72,14 +62,71 @@ func (b *bot) handle(ctx *zero.Ctx) {
 		log.Printf("group message %d ignored: %v", groupID, err)
 		return
 	}
-	if err := b.windows.Add(groupID, observation, func(text string) error {
+	send := func(text string) error {
 		id := ctx.SendChain(message.Text(text))
 		if id.ID() == 0 {
 			return errors.New("ZeroBot send_group_msg returned empty message ID")
 		}
 		return nil
-	}); err != nil {
-		log.Printf("group message %d enqueue failed: %v", groupID, err)
+	}
+	conversationID, err := b.ensureConversation(groupID, send)
+	if err != nil {
+		log.Printf("group message %d open session failed: %v", groupID, err)
+		return
+	}
+	if err := b.socket.ObserveGroup(b.ctx, conversationID, observation); err != nil {
+		log.Printf("group message %d observe failed: %v", groupID, err)
+	}
+}
+
+func (b *bot) ensureConversation(groupID int64, send func(string) error) (string, error) {
+	b.mu.Lock()
+	if conversationID, ok := b.conversations[groupID]; ok {
+		b.senders[conversationID] = send
+		b.mu.Unlock()
+		return conversationID, nil
+	}
+	b.mu.Unlock()
+
+	session, err := b.socket.OpenSession(b.ctx, coreclient.OpenSessionRequest{
+		Surface: "im_group", SurfaceKey: "onebot-group:" + strconv.FormatInt(groupID, 10),
+	})
+	if err != nil {
+		return "", err
+	}
+	if _, err := b.socket.Watch(b.ctx, session.ConversationID); err != nil {
+		return "", err
+	}
+	b.mu.Lock()
+	b.conversations[groupID] = session.ConversationID
+	b.senders[session.ConversationID] = send
+	b.mu.Unlock()
+	return session.ConversationID, nil
+}
+
+func (b *bot) consumeHarness() {
+	for {
+		event, err := b.socket.NextHarness(b.ctx)
+		if err != nil {
+			if b.ctx.Err() != nil {
+				return
+			}
+			log.Printf("session harness read failed: %v", err)
+			return
+		}
+		text, ok := finalBeatText(event)
+		if !ok {
+			continue
+		}
+		b.mu.Lock()
+		send := b.senders[event.ConversationID]
+		b.mu.Unlock()
+		if send == nil {
+			continue
+		}
+		if err := send(text); err != nil {
+			log.Printf("deliver final beat failed: %v", err)
+		}
 	}
 }
 
@@ -107,61 +154,19 @@ func groupObservationFromEvent(ctx *zero.Ctx) (coreclient.GroupObservation, erro
 	}, nil
 }
 
-func (b *bot) decideGroupParticipation(ctx context.Context, batch groupWindowBatch) (groupWindowDecision, error) {
-	if b == nil || ctx == nil || batch.send == nil || len(batch.messages) == 0 {
-		return groupWindowDecision{}, errors.New("bot group participation processor is not configured")
+func finalBeatText(event coreclient.HarnessEvent) (string, bool) {
+	var envelope struct {
+		Type        string `json:"type"`
+		Kind        string `json:"kind"`
+		DisplayText string `json:"displayText"`
 	}
-	session, err := b.core.OpenSession(ctx, coreclient.OpenSessionRequest{
-		Surface: "im_group", SurfaceKey: "onebot-group:" + strconv.FormatInt(batch.groupID, 10),
-	})
-	if err != nil {
-		return groupWindowDecision{}, fmt.Errorf("open group session: %w", err)
+	if err := json.Unmarshal(event.Payload, &envelope); err != nil {
+		return "", false
 	}
-	participation, err := b.core.DecideGroupParticipation(ctx, session.ConversationID, coreclient.GroupParticipationRequest{
-		EvaluationReason: batch.evaluationReason, Messages: batch.messages,
-	})
-	if err != nil {
-		return groupWindowDecision{}, fmt.Errorf("decide group participation: %w", err)
+	if envelope.Type != "beat.ready" || envelope.Kind != "final" || strings.TrimSpace(envelope.DisplayText) == "" {
+		return "", false
 	}
-	return groupWindowDecision{GroupParticipationResponse: participation, conversationID: session.ConversationID}, nil
-}
-
-func (b *bot) replyToGroupWindow(ctx context.Context, batch groupWindowBatch, decision groupWindowDecision) error {
-	if b == nil || ctx == nil || batch.send == nil || len(batch.messages) == 0 || decision.conversationID == "" || decision.TargetMessageID == nil {
-		return errors.New("bot group reply processor is not configured")
-	}
-	input, err := formatGroupTurnInput(batch.messages, *decision.TargetMessageID)
-	if err != nil {
-		return err
-	}
-	_, err = b.turns.Run(ctx, turnclient.Request{
-		ConversationID: decision.conversationID, Input: input, Surface: "im_group",
-	}, func(event turnclient.Event) error {
-		if event.Beat == nil || event.Beat.Kind != "final" {
-			return nil
-		}
-		return batch.send(event.Beat.DisplayText)
-	})
-	return err
-}
-
-func formatGroupTurnInput(messages []coreclient.GroupObservation, targetMessageID string) (string, error) {
-	var builder strings.Builder
-	targets := 0
-	for index, observation := range messages {
-		if index > 0 {
-			builder.WriteByte('\n')
-		}
-		if observation.MessageID == targetMessageID {
-			builder.WriteString("[reply-target]")
-			targets++
-		}
-		fmt.Fprintf(&builder, "[%s/%s] %s", observation.SenderName, observation.SenderID, observation.Text)
-	}
-	if targets != 1 {
-		return "", errors.New("group reply target must match exactly one observation")
-	}
-	return builder.String(), nil
+	return envelope.DisplayText, true
 }
 
 func runBot(ctx context.Context, cfg Config) error {
@@ -172,16 +177,21 @@ func runBot(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	b, err := newBot(ctx, cfg, core)
+	socket, err := core.DialSession(ctx)
 	if err != nil {
 		return err
 	}
-	defer b.windows.Close()
+	defer socket.Close()
+	b, err := newBot(ctx, cfg, socket)
+	if err != nil {
+		return err
+	}
+	go b.consumeHarness()
 	engine := zero.New()
 	b.register(engine)
 	defer engine.Delete()
 	go zero.Run(&zero.Config{
-		RingLen: 16, Latency: time.Millisecond,
+		RingLen: 16, Latency: 0,
 		Driver: []zero.Driver{driver.NewHTTPClient(
 			cfg.OneBotWebhookEndpoint, cfg.OneBotToken,
 			cfg.OneBotAPIEndpoint, cfg.OneBotToken,

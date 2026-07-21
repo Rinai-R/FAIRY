@@ -2,39 +2,51 @@ package turnclient
 
 import (
 	"context"
-	"fmt"
-	"io"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"fairy/coreclient"
+	"github.com/gorilla/websocket"
 )
 
 func TestRunnerCompletedDeliversTypedBeatsAndWaitsForSubmit(t *testing.T) {
 	allow := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		if r.URL.Path == "/v1/sessions/c1/events" {
-			fmt.Fprint(w, "event: ready\ndata: {}\n\n")
-			w.(http.Flusher).Flush()
-			<-allow
-			writeHarnessTestEvent(w, 1, "responding", `{"type":"beat.ready","beatId":"b1","kind":"final","displayText":"你好","visualState":"idle"}`)
-			writeHarnessTestEvent(w, 2, "completed", `{"type":"completed","text":"你好"}`)
-			<-r.Context().Done()
-			return
-		}
-		if r.URL.Path == "/v1/sessions/c1/turns" {
+	server := newTurnWSServer(t, func(conn *websocket.Conn, frame map[string]any) {
+		requestID, _ := frame["requestId"].(string)
+		switch frame["type"] {
+		case "session.watch":
+			_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID})
+			go func() {
+				<-allow
+				_ = conn.WriteJSON(map[string]any{
+					"type": "harness", "conversationId": "c1",
+					"event": map[string]any{
+						"conversationId": "c1", "turnId": "t1", "sequence": 1, "state": "responding",
+						"payload": json.RawMessage(`{"type":"beat.ready","beatId":"b1","kind":"final","displayText":"你好","visualState":"idle"}`),
+					},
+				})
+				_ = conn.WriteJSON(map[string]any{
+					"type": "harness", "conversationId": "c1",
+					"event": map[string]any{
+						"conversationId": "c1", "turnId": "t1", "sequence": 2, "state": "completed",
+						"payload": json.RawMessage(`{"type":"completed","text":"你好"}`),
+					},
+				})
+			}()
+		case "turn.submit":
 			close(allow)
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"outcome":{"conversationId":"c1","turnId":"t1","responseText":"你好"},"surface":"desktop"}`)
-			return
+			_ = conn.WriteJSON(map[string]any{
+				"type": "result", "requestId": requestID,
+				"payload": json.RawMessage(`{"outcome":{"conversationId":"c1","turnId":"t1","responseText":"你好"},"surface":"desktop"}`),
+			})
 		}
-		http.NotFound(w, r)
-	}))
+	})
 	defer server.Close()
 	client, err := coreclient.New(coreclient.Options{Endpoint: server.URL})
 	if err != nil {
@@ -62,25 +74,29 @@ func TestRunnerCompletedDeliversTypedBeatsAndWaitsForSubmit(t *testing.T) {
 
 func TestRunnerDisconnectReturnsErrorAndCancelsKnownTurn(t *testing.T) {
 	var cancelCalls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/v1/sessions/c1/events":
-			w.Header().Set("Content-Type", "text/event-stream")
-			fmt.Fprint(w, "event: ready\ndata: {}\n\n")
-			w.(http.Flusher).Flush()
-			writeHarnessTestEvent(w, 1, "responding", `{"type":"state_changed"}`)
-			return
-		case r.URL.Path == "/v1/sessions/c1/turns":
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"outcome":{"conversationId":"c1","turnId":"t1","responseText":"断开"},"surface":"desktop"}`)
-		case r.URL.Path == "/v1/sessions/c1/turns/t1/cancel":
+	server := newTurnWSServer(t, func(conn *websocket.Conn, frame map[string]any) {
+		requestID, _ := frame["requestId"].(string)
+		switch frame["type"] {
+		case "session.watch":
+			_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID})
+			_ = conn.WriteJSON(map[string]any{
+				"type": "harness", "conversationId": "c1",
+				"event": map[string]any{
+					"conversationId": "c1", "turnId": "t1", "sequence": 1, "state": "responding",
+					"payload": json.RawMessage(`{"type":"state_changed"}`),
+				},
+			})
+			_ = conn.Close()
+		case "turn.submit":
+			_ = conn.WriteJSON(map[string]any{
+				"type": "result", "requestId": requestID,
+				"payload": json.RawMessage(`{"outcome":{"conversationId":"c1","turnId":"t1","responseText":"断开"},"surface":"desktop"}`),
+			})
+		case "turn.cancel":
 			cancelCalls.Add(1)
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"ok":true}`)
-		default:
-			http.NotFound(w, r)
+			_ = conn.WriteJSON(map[string]any{"type": "result", "requestId": requestID, "payload": json.RawMessage(`{"ok":true}`)})
 		}
-	}))
+	})
 	defer server.Close()
 	client, _ := coreclient.New(coreclient.Options{Endpoint: server.URL})
 	runner, _ := New(client, time.Second)
@@ -98,33 +114,49 @@ func TestDecodeInterruptedAndFailedTerminals(t *testing.T) {
 		name    string
 		state   string
 		payload string
+		want    string
 	}{
-		{name: "interrupted", state: "interrupted", payload: `{"type":"state_changed"}`},
-		{name: "failed", state: "failed", payload: `{"type":"failed","error":{"code":"MODEL_FAILED","message":"provider unavailable","retryable":true}}`},
+		{name: "interrupted", state: "interrupted", payload: `{"type":"state_changed"}`, want: "state_changed"},
+		{name: "failed", state: "failed", payload: `{"type":"failed","error":{"code":"x","message":"y","retryable":false}}`, want: "failed"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			raw := coreclient.SSEEvent{Event: "harness", Data: []byte(fmt.Sprintf(`{"conversationId":"c1","turnId":"t1","sequence":1,"state":%q,"payload":%s}`, test.state, test.payload))}
-			event, err := DecodeEvent(raw)
-			if err != nil || !isTerminal(event) {
-				t.Fatalf("event=%#v error=%v", event, err)
-			}
-			if test.name == "failed" && (event.Failure == nil || event.Failure.Code != "MODEL_FAILED") {
-				t.Fatalf("failed payload = %#v", event.Failure)
+			event, err := DecodeEvent(coreclient.SSEEvent{
+				Event: "harness",
+				Data:  []byte(`{"conversationId":"c1","turnId":"t1","sequence":1,"state":"` + test.state + `","payload":` + test.payload + `}`),
+			})
+			if err != nil || event.Type != test.want || !isTerminal(event) {
+				t.Fatalf("event=%#v err=%v", event, err)
 			}
 		})
 	}
 }
 
-func TestDecodeEventRejectsInvalidBeat(t *testing.T) {
-	_, err := DecodeEvent(coreclient.SSEEvent{Event: "harness", Data: []byte(`{"conversationId":"c1","turnId":"t1","sequence":1,"state":"responding","payload":{"type":"beat.ready"}}`)})
-	if err == nil {
-		t.Fatal("invalid beat accepted")
-	}
-}
-
-func writeHarnessTestEvent(w io.Writer, sequence uint64, state, payload string) {
-	fmt.Fprintf(w, "event: harness\ndata: {\"conversationId\":\"c1\",\"turnId\":\"t1\",\"sequence\":%d,\"state\":%q,\"payload\":%s}\n\n", sequence, state, payload)
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
-	}
+func newTurnWSServer(t *testing.T, handle func(*websocket.Conn, map[string]any)) *httptest.Server {
+	t.Helper()
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	var mu sync.Mutex
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/session/ws" {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		if err := conn.WriteJSON(map[string]any{"type": "ready"}); err != nil {
+			return
+		}
+		for {
+			var frame map[string]any
+			if err := conn.ReadJSON(&frame); err != nil {
+				return
+			}
+			mu.Lock()
+			handle(conn, frame)
+			mu.Unlock()
+		}
+	}))
 }

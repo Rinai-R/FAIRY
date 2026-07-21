@@ -19,20 +19,20 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestZeroBotWebhookCoreRoundTrip(t *testing.T) {
-	turnStarted := make(chan struct{})
-	silentDecided := make(chan struct{})
-	waitDecided := make(chan struct{})
+	silentObserved := make(chan struct{})
+	waitObserved := make(chan struct{})
 	actionReceived := make(chan struct{})
 	errorsCh := make(chan error, 8)
-	var sessionCalls atomic.Int32
-	var participationCalls atomic.Int32
-	var turnCalls atomic.Int32
+	var openCalls atomic.Int32
+	var observeCalls atomic.Int32
 	var actionCalls atomic.Int32
 
-	coreServer := newCoreTestServer(turnStarted, silentDecided, waitDecided, &sessionCalls, &participationCalls, &turnCalls, errorsCh)
+	coreServer := newCoreWSTestServer(silentObserved, waitObserved, &openCalls, &observeCalls, errorsCh)
 	defer coreServer.Close()
 	actionServer := newOneBotActionServer(actionReceived, &actionCalls, errorsCh)
 	defer actionServer.Close()
@@ -59,30 +59,30 @@ func TestZeroBotWebhookCoreRoundTrip(t *testing.T) {
 		t.Fatalf("invalid signature status = %d, want 403", response.StatusCode)
 	}
 	response.Body.Close()
-	if sessionCalls.Load() != 0 {
-		t.Fatalf("invalid signature reached Core: sessions=%d", sessionCalls.Load())
+	if openCalls.Load() != 0 {
+		t.Fatalf("invalid signature opened session: opens=%d", openCalls.Load())
 	}
 
 	postSignedWebhook(t, ctx, webhookEndpoint, groupEvent(99999, 30001, "不应触发"))
 	postSignedWebhook(t, ctx, webhookEndpoint, groupEvent(20001, 30002, "保持安静"))
 	select {
-	case <-silentDecided:
+	case <-silentObserved:
 	case err := <-errorsCh:
-		t.Fatalf("silent participation failed: %v\n%s", err, output.String())
+		t.Fatalf("silent observe failed: %v\n%s", err, output.String())
 	case <-ctx.Done():
-		t.Fatalf("silent participation timeout: %v\n%s", ctx.Err(), output.String())
+		t.Fatalf("silent observe timeout: %v\n%s", ctx.Err(), output.String())
 	}
 	time.Sleep(100 * time.Millisecond)
-	if turnCalls.Load() != 0 || actionCalls.Load() != 0 {
-		t.Fatalf("silent window created turn=%d action=%d", turnCalls.Load(), actionCalls.Load())
+	if actionCalls.Load() != 0 {
+		t.Fatalf("silent window created action=%d", actionCalls.Load())
 	}
 	postSignedWebhook(t, ctx, webhookEndpoint, groupEvent(20001, 30003, "你好"))
 	select {
-	case <-waitDecided:
+	case <-waitObserved:
 	case err := <-errorsCh:
-		t.Fatalf("wait participation failed: %v\n%s", err, output.String())
+		t.Fatalf("wait observe failed: %v\n%s", err, output.String())
 	case <-ctx.Done():
-		t.Fatalf("wait participation timeout: %v\n%s", ctx.Err(), output.String())
+		t.Fatalf("wait observe timeout: %v\n%s", ctx.Err(), output.String())
 	}
 	postSignedWebhook(t, ctx, webhookEndpoint, groupEvent(20001, 30004, "最近如何"))
 	select {
@@ -92,8 +92,8 @@ func TestZeroBotWebhookCoreRoundTrip(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatalf("round trip timeout: %v\n%s", ctx.Err(), output.String())
 	}
-	if sessionCalls.Load() != 3 || participationCalls.Load() != 3 || turnCalls.Load() != 1 || actionCalls.Load() != 1 {
-		t.Fatalf("calls session=%d participation=%d turn=%d action=%d", sessionCalls.Load(), participationCalls.Load(), turnCalls.Load(), actionCalls.Load())
+	if openCalls.Load() != 1 || observeCalls.Load() != 3 || actionCalls.Load() != 1 {
+		t.Fatalf("calls open=%d observe=%d action=%d", openCalls.Load(), observeCalls.Load(), actionCalls.Load())
 	}
 	if err := command.Process.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)
@@ -103,109 +103,96 @@ func TestZeroBotWebhookCoreRoundTrip(t *testing.T) {
 	}
 }
 
-func newCoreTestServer(turnStarted, silentDecided, waitDecided chan struct{}, sessionCalls, participationCalls, turnCalls *atomic.Int32, errorsCh chan<- error) *httptest.Server {
+func newCoreWSTestServer(silentObserved, waitObserved chan struct{}, openCalls, observeCalls *atomic.Int32, errorsCh chan<- error) *httptest.Server {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	var mu sync.Mutex
+	var watchConn *websocket.Conn
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer core-token" {
 			errorsCh <- fmt.Errorf("Core authorization = %q", r.Header.Get("Authorization"))
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/sessions":
-			w.Header().Set("Content-Type", "application/json")
-			sessionCalls.Add(1)
-			var request coreSessionRequest
-			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				errorsCh <- err
-				return
-			}
-			if request.Surface != "im_group" || request.SurfaceKey != "onebot-group:20001" {
-				errorsCh <- fmt.Errorf("session request = %#v", request)
-				return
-			}
-			fmt.Fprint(w, `{"conversationId":"c1","characterId":"character-1","messageCount":0,"surface":"im_group"}`)
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/sessions/c1/group-participation":
-			w.Header().Set("Content-Type", "application/json")
-			call := participationCalls.Add(1)
-			var request struct {
-				EvaluationReason string `json:"evaluationReason"`
-				Messages         []struct {
-					MessageID     string `json:"messageId"`
-					SenderID      string `json:"senderId"`
-					SenderName    string `json:"senderName"`
-					Text          string `json:"text"`
-					DirectedToBot bool   `json:"directedToBot"`
-					IsNew         bool   `json:"isNew"`
-				} `json:"messages"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				errorsCh <- err
-				return
-			}
-			if request.EvaluationReason != "message" {
-				errorsCh <- fmt.Errorf("evaluation reason = %q", request.EvaluationReason)
-				return
-			}
-			switch call {
-			case 1:
-				if len(request.Messages) != 1 || request.Messages[0].Text != "保持安静" || !request.Messages[0].IsNew {
-					errorsCh <- fmt.Errorf("silent participation request = %#v", request)
-					return
-				}
-				if request.Messages[0].DirectedToBot {
-					errorsCh <- fmt.Errorf("ordinary group message marked directed: %#v", request.Messages[0])
-					return
-				}
-				close(silentDecided)
-				fmt.Fprint(w, `{"action":"silent"}`)
-				return
-			case 2:
-				if len(request.Messages) != 2 || request.Messages[0].Text != "保持安静" || request.Messages[1].Text != "你好" || request.Messages[0].IsNew || !request.Messages[1].IsNew {
-					errorsCh <- fmt.Errorf("wait participation request = %#v", request)
-					return
-				}
-				fmt.Fprint(w, `{"action":"wait","waitSeconds":300}`)
-				close(waitDecided)
-				return
-			case 3:
-				if len(request.Messages) != 3 || request.Messages[0].Text != "保持安静" || request.Messages[1].Text != "你好" || request.Messages[2].Text != "最近如何" || request.Messages[0].IsNew || request.Messages[1].IsNew || !request.Messages[2].IsNew || request.Messages[1].SenderID != "40001" || request.Messages[1].SenderName != "测试成员" {
-					errorsCh <- fmt.Errorf("fresh participation request = %#v", request)
-					return
-				}
-				fmt.Fprint(w, `{"action":"reply","targetMessageId":"30004"}`)
-				return
-			default:
-				errorsCh <- fmt.Errorf("unexpected participation call %d", call)
-				return
-			}
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions/c1/events":
-			w.Header().Set("Content-Type", "text/event-stream")
-			fmt.Fprint(w, "event: ready\ndata: {}\n\n")
-			w.(http.Flusher).Flush()
-			select {
-			case <-turnStarted:
-			case <-r.Context().Done():
-				return
-			}
-			fmt.Fprint(w, "event: harness\ndata: {\"conversationId\":\"c1\",\"turnId\":\"t1\",\"sequence\":1,\"state\":\"responding\",\"payload\":{\"type\":\"beat.ready\",\"beatId\":\"b1\",\"kind\":\"final\",\"displayText\":\"真实回复\"}}\n\n")
-			fmt.Fprint(w, "event: harness\ndata: {\"conversationId\":\"c1\",\"turnId\":\"t1\",\"sequence\":2,\"state\":\"completed\",\"payload\":{\"type\":\"completed\"}}\n\n")
-			w.(http.Flusher).Flush()
-			<-r.Context().Done()
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/sessions/c1/turns":
-			w.Header().Set("Content-Type", "application/json")
-			turnCalls.Add(1)
-			var request coreTurnRequest
-			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				errorsCh <- err
-				return
-			}
-			if request.Input != "[测试成员/40001] 保持安静\n[测试成员/40001] 你好\n[reply-target][测试成员/40001] 最近如何" || request.Surface != "im_group" {
-				errorsCh <- fmt.Errorf("turn request = %#v", request)
-				return
-			}
-			close(turnStarted)
-			fmt.Fprint(w, `{"outcome":{"conversationId":"c1","turnId":"t1","responseText":"真实回复"},"surface":"im_group"}`)
-		default:
+		if r.URL.Path != "/v1/session/ws" {
 			http.NotFound(w, r)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			errorsCh <- err
+			return
+		}
+		defer conn.Close()
+		if err := conn.WriteJSON(map[string]any{"type": "ready"}); err != nil {
+			return
+		}
+		for {
+			var frame map[string]any
+			if err := conn.ReadJSON(&frame); err != nil {
+				return
+			}
+			requestID, _ := frame["requestId"].(string)
+			switch frame["type"] {
+			case "session.open":
+				openCalls.Add(1)
+				surface, _ := frame["surface"].(string)
+				surfaceKey, _ := frame["surfaceKey"].(string)
+				if surface != "im_group" || surfaceKey != "onebot-group:20001" {
+					errorsCh <- fmt.Errorf("session open = %#v", frame)
+					return
+				}
+				_ = conn.WriteJSON(map[string]any{
+					"type": "session.opened", "requestId": requestID,
+					"conversationId": "c1", "characterId": "character-1", "messageCount": 0, "surface": "im_group",
+				})
+			case "session.watch":
+				mu.Lock()
+				watchConn = conn
+				mu.Unlock()
+				_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID, "conversationId": "c1"})
+			case "group.observe":
+				call := observeCalls.Add(1)
+				message, _ := frame["message"].(map[string]any)
+				text, _ := message["text"].(string)
+				_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID, "conversationId": "c1"})
+				switch call {
+				case 1:
+					if text != "保持安静" {
+						errorsCh <- fmt.Errorf("silent observe = %#v", frame)
+						return
+					}
+					close(silentObserved)
+				case 2:
+					if text != "你好" {
+						errorsCh <- fmt.Errorf("wait observe = %#v", frame)
+						return
+					}
+					close(waitObserved)
+				case 3:
+					if text != "最近如何" {
+						errorsCh <- fmt.Errorf("reply observe = %#v", frame)
+						return
+					}
+					mu.Lock()
+					target := watchConn
+					mu.Unlock()
+					if target == nil {
+						errorsCh <- fmt.Errorf("no watch connection for harness")
+						return
+					}
+					_ = target.WriteJSON(map[string]any{
+						"type": "harness", "conversationId": "c1",
+						"event": map[string]any{
+							"conversationId": "c1", "turnId": "t1", "sequence": 1, "state": "responding",
+							"payload": json.RawMessage(`{"type":"beat.ready","beatId":"b1","kind":"final","displayText":"真实回复"}`),
+						},
+					})
+				default:
+					errorsCh <- fmt.Errorf("unexpected observe call %d", call)
+				}
+			default:
+				errorsCh <- fmt.Errorf("unexpected frame %#v", frame)
+			}
 		}
 	}))
 }
@@ -310,16 +297,6 @@ func postSignedWebhook(t *testing.T, ctx context.Context, endpoint string, body 
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("signed webhook status = %d", response.StatusCode)
 	}
-}
-
-type coreSessionRequest struct {
-	Surface    string `json:"surface"`
-	SurfaceKey string `json:"surfaceKey"`
-}
-
-type coreTurnRequest struct {
-	Input   string `json:"input"`
-	Surface string `json:"surface"`
 }
 
 func TestZeroBotWebhookServeHelper(t *testing.T) {

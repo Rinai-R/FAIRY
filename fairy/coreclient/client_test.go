@@ -12,20 +12,24 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestOpenSessionSendsSurfaceKey(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request OpenSessionRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+	server := newSessionWSServer(t, func(conn *websocket.Conn) {
+		var frame sessionClientFrame
+		if err := conn.ReadJSON(&frame); err != nil {
 			t.Fatal(err)
 		}
-		if request.Surface != "im_group" || request.SurfaceKey != "onebot-group:123" {
-			t.Fatalf("request = %#v", request)
+		if frame.Type != "session.open" || frame.Surface != "im_group" || frame.SurfaceKey != "onebot-group:123" {
+			t.Fatalf("frame = %#v", frame)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"conversationId":"c1","characterId":"ch1","messageCount":0,"surface":"im_group"}`)
-	}))
+		_ = conn.WriteJSON(sessionServerFrame{
+			Type: "session.opened", RequestID: frame.RequestID,
+			ConversationID: "c1", CharacterID: "ch1", MessageCount: 0, Surface: "im_group",
+		})
+	})
 	defer server.Close()
 	client, err := New(Options{Endpoint: server.URL})
 	if err != nil {
@@ -38,20 +42,21 @@ func TestOpenSessionSendsSurfaceKey(t *testing.T) {
 }
 
 func TestDecideGroupParticipationUsesTypedSessionEndpoint(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.EscapedPath() != "/v1/sessions/c%2F1/group-participation" && r.URL.Path != "/v1/sessions/c/1/group-participation" {
-			t.Fatalf("path = %q", r.URL.EscapedPath())
-		}
-		var request GroupParticipationRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+	server := newSessionWSServer(t, func(conn *websocket.Conn) {
+		var frame sessionClientFrame
+		if err := conn.ReadJSON(&frame); err != nil {
 			t.Fatal(err)
 		}
-		if request.EvaluationReason != "message" || len(request.Messages) != 1 || request.Messages[0].SenderName != "群友" || !request.Messages[0].DirectedToBot || !request.Messages[0].IsNew {
-			t.Fatalf("request = %#v", request)
+		if frame.Type != "group.participate" || frame.ConversationID != "c/1" {
+			t.Fatalf("frame = %#v", frame)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"action":"wait","waitSeconds":7}`)
-	}))
+		if frame.EvaluationReason != "message" || len(frame.Messages) != 1 || frame.Messages[0].SenderName != "群友" || !frame.Messages[0].DirectedToBot || !frame.Messages[0].IsNew {
+			t.Fatalf("frame = %#v", frame)
+		}
+		_ = conn.WriteJSON(sessionServerFrame{
+			Type: "result", RequestID: frame.RequestID, Payload: json.RawMessage(`{"action":"wait","waitSeconds":7}`),
+		})
+	})
 	defer server.Close()
 	client, _ := New(Options{Endpoint: server.URL})
 	response, err := client.DecideGroupParticipation(t.Context(), "c/1", GroupParticipationRequest{EvaluationReason: "message", Messages: []GroupObservation{{
@@ -70,10 +75,13 @@ func TestDecideGroupParticipationRejectsInvalidActionShapes(t *testing.T) {
 		`{"action":"silent","waitSeconds":1}`,
 	} {
 		t.Run(body, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				io.WriteString(w, body)
-			}))
+			server := newSessionWSServer(t, func(conn *websocket.Conn) {
+				var frame sessionClientFrame
+				if err := conn.ReadJSON(&frame); err != nil {
+					t.Fatal(err)
+				}
+				_ = conn.WriteJSON(sessionServerFrame{Type: "result", RequestID: frame.RequestID, Payload: json.RawMessage(body)})
+			})
 			defer server.Close()
 			client, _ := New(Options{Endpoint: server.URL})
 			if _, err := client.DecideGroupParticipation(t.Context(), "c1", GroupParticipationRequest{}); err == nil {
@@ -153,25 +161,56 @@ func TestClientStatusUsesBearerAndRejectsInvalidResponses(t *testing.T) {
 	}
 }
 
-func TestClientFiniteTimeoutAndTurnCallerLifetime(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestClientFiniteTimeoutAndTurnCallerDeadline(t *testing.T) {
+	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(40 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
-		if strings.HasSuffix(r.URL.Path, "/turns") {
-			io.WriteString(w, `{"outcome":{"conversationId":"c1","turnId":"t1","responseText":"ok"},"surface":"desktop"}`)
-			return
-		}
 		io.WriteString(w, `{"bootstrap":{},"configRoot":"/tmp","webSearch":{},"semanticEmbedding":{},"activeBackgroundJobs":0}`)
 	}))
-	defer server.Close()
-	client, _ := New(Options{Endpoint: server.URL, Timeout: 10 * time.Millisecond})
+	defer statusServer.Close()
+	client, _ := New(Options{Endpoint: statusServer.URL, Timeout: 10 * time.Millisecond})
 	if _, err := client.Status(context.Background()); err == nil {
 		t.Fatal("finite status request did not time out")
 	}
+
+	turnServer := newSessionWSServer(t, func(conn *websocket.Conn) {
+		var frame sessionClientFrame
+		if err := conn.ReadJSON(&frame); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(40 * time.Millisecond)
+		_ = conn.WriteJSON(sessionServerFrame{
+			Type: "result", RequestID: frame.RequestID,
+			Payload: json.RawMessage(`{"outcome":{"conversationId":"c1","turnId":"t1","responseText":"ok"},"surface":"desktop"}`),
+		})
+	})
+	defer turnServer.Close()
+	client, _ = New(Options{Endpoint: turnServer.URL, Timeout: 10 * time.Millisecond})
 	turn, err := client.SubmitTurn(context.Background(), "c1", SubmitTurnRequest{Input: "hello"})
 	if err != nil || turn.Outcome.TurnID != "t1" {
 		t.Fatalf("turn=%#v err=%v", turn, err)
 	}
+}
+
+func newSessionWSServer(t *testing.T, handle func(*websocket.Conn)) *httptest.Server {
+	t.Helper()
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/session/ws" {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		if err := conn.WriteJSON(sessionServerFrame{Type: "ready"}); err != nil {
+			return
+		}
+		handle(conn)
+	}))
 }
 
 func TestClientRejectsSecretWhitespaceAndRedactsServerErrors(t *testing.T) {
@@ -232,7 +271,7 @@ func TestSSEDecoderRejectsIncompleteAndOversizedFrames(t *testing.T) {
 	}
 }
 
-func TestOpenLogsReadyTimeoutAndLifetime(t *testing.T) {
+func TestOpenLogsReadyTimeoutAndDeadline(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
 		if !ok {

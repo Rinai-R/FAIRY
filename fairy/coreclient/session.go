@@ -12,26 +12,28 @@ import (
 )
 
 func (c *Client) OpenSession(ctx context.Context, request OpenSessionRequest) (OpenSessionResponse, error) {
-	body, _ := json.Marshal(request)
 	var result OpenSessionResponse
-	err := c.doJSON(ctx, "open session", http.MethodPost, "/v1/sessions", body, &result)
-	if err == nil && (result.ConversationID == "" || result.CharacterID == "" || result.Surface == "") {
-		err = errors.New("open session response is missing required fields")
-	}
+	err := c.sessionRPC(ctx, c.timeout, func(ctx context.Context, socket *SessionSocket) error {
+		opened, openErr := socket.OpenSession(ctx, request)
+		if openErr != nil {
+			return openErr
+		}
+		result = opened
+		return nil
+	})
 	return result, err
 }
 
 func (c *Client) DecideGroupParticipation(ctx context.Context, conversationID string, request GroupParticipationRequest) (GroupParticipationResponse, error) {
-	body, err := json.Marshal(request)
-	if err != nil {
-		return GroupParticipationResponse{}, err
-	}
-	path := "/v1/sessions/" + url.PathEscape(conversationID) + "/group-participation"
 	var result GroupParticipationResponse
-	err = c.doJSON(ctx, "decide group participation", http.MethodPost, path, body, &result)
-	if err == nil {
-		err = validateGroupParticipationResponse(result)
-	}
+	err := c.sessionRPC(ctx, c.timeout, func(ctx context.Context, socket *SessionSocket) error {
+		decision, decideErr := socket.DecideGroupParticipation(ctx, conversationID, request)
+		if decideErr != nil {
+			return decideErr
+		}
+		result = decision
+		return nil
+	})
 	return result, err
 }
 
@@ -76,29 +78,38 @@ func (c *Client) ListMessages(ctx context.Context, conversationID string, before
 }
 
 func (c *Client) SubmitTurn(ctx context.Context, conversationID string, request SubmitTurnRequest) (SubmitTurnResponse, error) {
-	body, _ := json.Marshal(request)
-	path := "/v1/sessions/" + url.PathEscape(conversationID) + "/turns"
-	var result SubmitTurnResponse
-	// Turn execution is synchronous and intentionally follows the caller context,
-	// not the finite client timeout.
-	err := c.doJSONWithoutTimeout(ctx, "submit turn", http.MethodPost, path, body, &result)
-	if err == nil && (result.Outcome.ConversationID == "" || result.Outcome.TurnID == "" || result.Surface == "") {
-		err = errors.New("submit turn response is missing required fields")
+	socket, err := c.DialSession(ctx)
+	if err != nil {
+		return SubmitTurnResponse{}, err
 	}
-	return result, err
+	defer socket.Close()
+	return socket.SubmitTurn(ctx, conversationID, request)
 }
 
 func (c *Client) CancelTurn(ctx context.Context, conversationID, turnID string) error {
-	path := "/v1/sessions/" + url.PathEscape(conversationID) + "/turns/" + url.PathEscape(turnID) + "/cancel"
-	var result struct {
-		OK bool `json:"ok"`
-	}
-	return c.doJSON(ctx, "cancel turn", http.MethodPost, path, nil, &result)
+	return c.sessionRPC(ctx, c.timeout, func(ctx context.Context, socket *SessionSocket) error {
+		return socket.CancelTurn(ctx, conversationID, turnID)
+	})
 }
 
 func (c *Client) OpenEvents(ctx context.Context, conversationID string, readyTimeout time.Duration) (EventStream, error) {
-	path := "/v1/sessions/" + url.PathEscape(conversationID) + "/events"
-	return c.openReadyStream(ctx, "follow session events", path, readyTimeout)
+	_ = readyTimeout
+	socket, err := c.DialSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ch, err := socket.Watch(ctx, conversationID)
+	if err != nil {
+		_ = socket.Close()
+		return nil, err
+	}
+	return &wsEventStream{ctx: ctx, socket: socket, ch: ch}, nil
+}
+
+func (c *Client) ObserveGroup(ctx context.Context, conversationID string, message GroupObservation) error {
+	return c.sessionRPC(ctx, c.timeout, func(ctx context.Context, socket *SessionSocket) error {
+		return socket.ObserveGroup(ctx, conversationID, message)
+	})
 }
 
 func DecodeHarnessEvent(event SSEEvent) (HarnessEvent, error) {

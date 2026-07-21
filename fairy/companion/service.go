@@ -44,6 +44,7 @@ type CompanionService struct {
 	surfaces          map[string]SurfaceKind
 	emitMu            sync.Mutex
 	emit              EventEmitter
+	ambient           *AmbientInbox
 }
 
 // WebSearchBackend is the optional OpenSERP sidecar search surface.
@@ -88,12 +89,14 @@ func (s *CompanionService) publishLife(life *TurnLifecycle, produce func() (Harn
 }
 
 func NewCompanionService() *CompanionService {
-	return &CompanionService{
+	service := &CompanionService{
 		logger:         zap.NewNop(),
 		extractionIdle: make(map[string]context.CancelFunc),
 		gates:          make(map[string]*conversationGate),
 		surfaces:       make(map[string]SurfaceKind),
 	}
+	service.ambient = newAmbientInbox(context.Background(), service)
+	return service
 }
 
 // NewCompanionServiceWithRuntime wires the companion runtime. webSearch is owned
@@ -116,6 +119,7 @@ func NewCompanionServiceWithRuntime(root string, memory MemoryPort, model ModelP
 		service.profiles = profile.NewStore(root)
 		service.cfg = config.NewReader(root)
 	}
+	service.ambient = newAmbientInbox(context.Background(), service)
 	return service
 }
 
@@ -237,6 +241,9 @@ func (s *CompanionService) modelPort() ModelPort {
 func (s *CompanionService) Close() error {
 	if s == nil {
 		return nil
+	}
+	if s.ambient != nil {
+		s.ambient.Close()
 	}
 	s.cancelActiveTurns()
 	s.cancelExtractionTimers()

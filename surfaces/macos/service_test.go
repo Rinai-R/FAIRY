@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 type fakeTokenStore struct {
@@ -94,20 +95,35 @@ func TestSaveConnectionDoesNotFallbackWhenKeychainWriteFails(t *testing.T) {
 }
 
 func TestConnectUsesBearerAndDesktopInstallationSession(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer exact-token" {
 			t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		if r.URL.Path == "/v1/session/ws" {
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			_ = conn.WriteJSON(map[string]any{"type": "ready"})
+			var frame map[string]any
+			if err := conn.ReadJSON(&frame); err != nil {
+				t.Fatal(err)
+			}
+			if frame["type"] != "session.open" || frame["surface"] != "desktop" || frame["surfaceKey"] != "macos-installation" {
+				t.Fatalf("session frame = %#v", frame)
+			}
+			_ = conn.WriteJSON(map[string]any{
+				"type": "session.opened", "requestId": frame["requestId"],
+				"conversationId": "c1", "characterId": "ch1", "messageCount": 1, "surface": "desktop",
+			})
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/v1/status":
 			fmt.Fprint(w, `{"bootstrap":{},"configRoot":"/tmp","webSearch":{},"semanticEmbedding":{},"database":{"ready":true,"mode":"production"},"qdrant":{"ready":true,"mode":"production"},"secretKey":{"ready":true,"mode":"production"}}`)
-		case "/v1/sessions":
-			var body struct{ Surface, SurfaceKey string }
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Surface != "desktop" || body.SurfaceKey != "macos-installation" {
-				t.Fatalf("session request = %#v err=%v", body, err)
-			}
-			fmt.Fprint(w, `{"conversationId":"c1","characterId":"ch1","messageCount":1,"surface":"desktop"}`)
 		case "/v1/sessions/c1/messages":
 			fmt.Fprint(w, `{"messages":[{"id":"m1","conversationId":"c1","turnId":"t1","sequence":1,"role":"assistant","content":"你好","createdAtUnixMs":1}]}`)
 		case "/v1/characters":

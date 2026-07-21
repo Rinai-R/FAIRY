@@ -1,0 +1,458 @@
+package coreclient
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
+)
+
+const (
+	sessionWSPath     = "/v1/session/ws"
+	wsReadyTimeout    = 15 * time.Second
+	wsRequestTimeout  = 15 * time.Second
+	maxWSFrameBytes   = 4 << 20
+)
+
+type sessionClientFrame struct {
+	Type             string             `json:"type"`
+	RequestID        string             `json:"requestId,omitempty"`
+	Surface          string             `json:"surface,omitempty"`
+	SurfaceKey       string             `json:"surfaceKey,omitempty"`
+	ConversationID   string             `json:"conversationId,omitempty"`
+	EvaluationReason string             `json:"evaluationReason,omitempty"`
+	Messages         []GroupObservation `json:"messages,omitempty"`
+	Message          *GroupObservation  `json:"message,omitempty"`
+	Input            string             `json:"input,omitempty"`
+	SpeechEnabled    bool               `json:"speechEnabled,omitempty"`
+	TurnID           string             `json:"turnId,omitempty"`
+}
+
+type sessionServerFrame struct {
+	Type           string          `json:"type"`
+	RequestID      string          `json:"requestId,omitempty"`
+	ConversationID string          `json:"conversationId,omitempty"`
+	CharacterID    string          `json:"characterId,omitempty"`
+	MessageCount   int             `json:"messageCount,omitempty"`
+	Surface        string          `json:"surface,omitempty"`
+	Error          string          `json:"error,omitempty"`
+	Payload        json.RawMessage `json:"payload,omitempty"`
+	Event          *HarnessEvent   `json:"event,omitempty"`
+}
+
+// SessionSocket is a long-lived session-plane WebSocket.
+type SessionSocket struct {
+	conn    *websocket.Conn
+	writeMu sync.Mutex
+
+	mu       sync.Mutex
+	pending  map[string]chan sessionServerFrame
+	harness  map[string]chan HarnessEvent
+	events   chan HarnessEvent
+	closed   bool
+	closeErr error
+}
+
+// DialSession upgrades to the Core session WebSocket and waits for ready.
+func (c *Client) DialSession(ctx context.Context) (*SessionSocket, error) {
+	if c == nil {
+		return nil, errors.New("client is not configured")
+	}
+	if ctx == nil {
+		return nil, errors.New("context is required")
+	}
+	wsURL, err := c.sessionWSURL()
+	if err != nil {
+		return nil, err
+	}
+	header := http.Header{}
+	if c.token != "" {
+		header.Set("Authorization", "Bearer "+c.token)
+	}
+	dialer := websocket.Dialer{Proxy: http.ProxyFromEnvironment}
+	conn, res, err := dialer.DialContext(ctx, wsURL, header)
+	if err != nil {
+		message := redactClientError(err.Error())
+		status := 0
+		if res != nil {
+			status = res.StatusCode
+			_ = res.Body.Close()
+		}
+		return nil, &Error{Action: "dial session websocket", Endpoint: wsURL, Status: status, Message: message}
+	}
+	socket := &SessionSocket{
+		conn:    conn,
+		pending: make(map[string]chan sessionServerFrame),
+		harness: make(map[string]chan HarnessEvent),
+		events:  make(chan HarnessEvent, 128),
+	}
+	conn.SetReadLimit(maxWSFrameBytes)
+	readyCtx, cancel := context.WithTimeout(ctx, readyTimeoutOr(c.timeout))
+	defer cancel()
+	if err := socket.waitReady(readyCtx); err != nil {
+		_ = conn.Close()
+		return nil, &Error{Action: "dial session websocket", Endpoint: wsURL, Message: err.Error()}
+	}
+	go socket.readLoop()
+	return socket, nil
+}
+
+func readyTimeoutOr(timeout time.Duration) time.Duration {
+	if timeout > 0 {
+		return timeout
+	}
+	return wsReadyTimeout
+}
+
+func (c *Client) sessionWSURL() (string, error) {
+	cloned := *c.baseURL
+	switch cloned.Scheme {
+	case "http":
+		cloned.Scheme = "ws"
+	case "https":
+		cloned.Scheme = "wss"
+	default:
+		return "", errors.New("endpoint must be an absolute http or https URL")
+	}
+	cloned.Path = sessionWSPath
+	cloned.RawQuery = ""
+	cloned.Fragment = ""
+	return cloned.String(), nil
+}
+
+func (s *SessionSocket) waitReady(ctx context.Context) error {
+	type result struct {
+		frame sessionServerFrame
+		err   error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		var frame sessionServerFrame
+		err := s.conn.ReadJSON(&frame)
+		ch <- result{frame: frame, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		return errors.New("websocket ready timeout")
+	case result := <-ch:
+		if result.err != nil {
+			return result.err
+		}
+		if result.frame.Type != "ready" {
+			return fmt.Errorf("first websocket frame is %q, want ready", result.frame.Type)
+		}
+		return nil
+	}
+}
+
+func (s *SessionSocket) readLoop() {
+	for {
+		var frame sessionServerFrame
+		err := s.conn.ReadJSON(&frame)
+		if err != nil {
+			s.failPending(err)
+			return
+		}
+		switch frame.Type {
+		case "harness":
+			if frame.Event == nil {
+				continue
+			}
+			select {
+			case s.events <- *frame.Event:
+			default:
+			}
+			conversationID := frame.ConversationID
+			if conversationID == "" {
+				conversationID = frame.Event.ConversationID
+			}
+			s.mu.Lock()
+			ch := s.harness[conversationID]
+			s.mu.Unlock()
+			if ch == nil {
+				continue
+			}
+			select {
+			case ch <- *frame.Event:
+			default:
+			}
+		default:
+			if frame.RequestID == "" {
+				continue
+			}
+			s.mu.Lock()
+			ch := s.pending[frame.RequestID]
+			s.mu.Unlock()
+			if ch == nil {
+				continue
+			}
+			select {
+			case ch <- frame:
+			default:
+			}
+		}
+	}
+}
+
+func (s *SessionSocket) failPending(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.closed = true
+	s.closeErr = err
+	for id, ch := range s.pending {
+		select {
+		case ch <- sessionServerFrame{Type: "error", RequestID: id, Error: err.Error()}:
+		default:
+		}
+		delete(s.pending, id)
+	}
+	for id, ch := range s.harness {
+		close(ch)
+		delete(s.harness, id)
+	}
+	if s.events != nil {
+		close(s.events)
+	}
+}
+
+func (s *SessionSocket) Close() error {
+	if s == nil || s.conn == nil {
+		return nil
+	}
+	s.failPending(errors.New("session websocket closed"))
+	return s.conn.Close()
+}
+
+func (s *SessionSocket) request(ctx context.Context, frame sessionClientFrame, expectTypes ...string) (sessionServerFrame, error) {
+	if s == nil || s.conn == nil {
+		return sessionServerFrame{}, errors.New("session websocket is not open")
+	}
+	if ctx == nil {
+		return sessionServerFrame{}, errors.New("context is required")
+	}
+	if strings.TrimSpace(frame.RequestID) == "" {
+		frame.RequestID = uuid.NewString()
+	}
+	ch := make(chan sessionServerFrame, 1)
+	s.mu.Lock()
+	if s.closed {
+		err := s.closeErr
+		s.mu.Unlock()
+		if err == nil {
+			err = errors.New("session websocket closed")
+		}
+		return sessionServerFrame{}, err
+	}
+	s.pending[frame.RequestID] = ch
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.pending, frame.RequestID)
+		s.mu.Unlock()
+	}()
+
+	s.writeMu.Lock()
+	err := s.conn.WriteJSON(frame)
+	s.writeMu.Unlock()
+	if err != nil {
+		return sessionServerFrame{}, err
+	}
+
+	select {
+	case <-ctx.Done():
+		return sessionServerFrame{}, ctx.Err()
+	case reply := <-ch:
+		if reply.Type == "error" {
+			message := reply.Error
+			if message == "" {
+				message = "session websocket error"
+			}
+			return sessionServerFrame{}, errors.New(message)
+		}
+		if len(expectTypes) > 0 {
+			ok := false
+			for _, want := range expectTypes {
+				if reply.Type == want {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				return sessionServerFrame{}, fmt.Errorf("unexpected websocket frame %q", reply.Type)
+			}
+		}
+		return reply, nil
+	}
+}
+
+func (s *SessionSocket) OpenSession(ctx context.Context, request OpenSessionRequest) (OpenSessionResponse, error) {
+	reply, err := s.request(ctx, sessionClientFrame{
+		Type: "session.open", Surface: request.Surface, SurfaceKey: request.SurfaceKey,
+	}, "session.opened")
+	if err != nil {
+		return OpenSessionResponse{}, err
+	}
+	result := OpenSessionResponse{
+		ConversationID: reply.ConversationID,
+		CharacterID:    reply.CharacterID,
+		MessageCount:   reply.MessageCount,
+		Surface:        reply.Surface,
+	}
+	if result.ConversationID == "" || result.CharacterID == "" || result.Surface == "" {
+		return OpenSessionResponse{}, errors.New("open session response is missing required fields")
+	}
+	return result, nil
+}
+
+func (s *SessionSocket) Watch(ctx context.Context, conversationID string) (<-chan HarnessEvent, error) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return nil, errors.New("conversation ID is required")
+	}
+	s.mu.Lock()
+	ch := s.harness[conversationID]
+	if ch == nil {
+		ch = make(chan HarnessEvent, 64)
+		s.harness[conversationID] = ch
+	}
+	s.mu.Unlock()
+	_, err := s.request(ctx, sessionClientFrame{Type: "session.watch", ConversationID: conversationID}, "ack")
+	return ch, err
+}
+
+func (s *SessionSocket) ObserveGroup(ctx context.Context, conversationID string, message GroupObservation) error {
+	_, err := s.request(ctx, sessionClientFrame{
+		Type: "group.observe", ConversationID: conversationID, Message: &message,
+	}, "ack")
+	return err
+}
+
+func (s *SessionSocket) DecideGroupParticipation(ctx context.Context, conversationID string, request GroupParticipationRequest) (GroupParticipationResponse, error) {
+	reply, err := s.request(ctx, sessionClientFrame{
+		Type: "group.participate", ConversationID: conversationID,
+		EvaluationReason: request.EvaluationReason, Messages: request.Messages,
+	}, "result")
+	if err != nil {
+		return GroupParticipationResponse{}, err
+	}
+	var result GroupParticipationResponse
+	if err := json.Unmarshal(reply.Payload, &result); err != nil {
+		return GroupParticipationResponse{}, err
+	}
+	if err := validateGroupParticipationResponse(result); err != nil {
+		return GroupParticipationResponse{}, err
+	}
+	return result, nil
+}
+
+func (s *SessionSocket) SubmitTurn(ctx context.Context, conversationID string, request SubmitTurnRequest) (SubmitTurnResponse, error) {
+	// Turn execution follows caller context; do not impose the short request timeout.
+	reply, err := s.request(ctx, sessionClientFrame{
+		Type: "turn.submit", ConversationID: conversationID,
+		Input: request.Input, SpeechEnabled: request.SpeechEnabled, Surface: request.Surface,
+	}, "result")
+	if err != nil {
+		return SubmitTurnResponse{}, err
+	}
+	var result SubmitTurnResponse
+	if err := json.Unmarshal(reply.Payload, &result); err != nil {
+		return SubmitTurnResponse{}, err
+	}
+	if result.Outcome.ConversationID == "" || result.Outcome.TurnID == "" || result.Surface == "" {
+		return SubmitTurnResponse{}, errors.New("submit turn response is missing required fields")
+	}
+	return result, nil
+}
+
+func (s *SessionSocket) CancelTurn(ctx context.Context, conversationID, turnID string) error {
+	_, err := s.request(ctx, sessionClientFrame{
+		Type: "turn.cancel", ConversationID: conversationID, TurnID: turnID,
+	}, "result")
+	return err
+}
+
+// NextHarness blocks until the next harness event on this socket.
+func (s *SessionSocket) NextHarness(ctx context.Context) (HarnessEvent, error) {
+	if s == nil || s.events == nil {
+		return HarnessEvent{}, errors.New("session websocket is not open")
+	}
+	select {
+	case <-ctx.Done():
+		return HarnessEvent{}, ctx.Err()
+	case event, ok := <-s.events:
+		if !ok {
+			return HarnessEvent{}, errors.New("session websocket closed")
+		}
+		return event, nil
+	}
+}
+
+type wsEventStream struct {
+	ctx    context.Context
+	socket *SessionSocket
+	ch     <-chan HarnessEvent
+}
+
+func (s *wsEventStream) Next() (SSEEvent, error) {
+	if s == nil || s.ch == nil {
+		return SSEEvent{}, errors.New("stream is not open")
+	}
+	select {
+	case <-s.ctx.Done():
+		return SSEEvent{}, s.ctx.Err()
+	case event, ok := <-s.ch:
+		if !ok {
+			return SSEEvent{}, io.EOF
+		}
+		payload, err := json.Marshal(event)
+		if err != nil {
+			return SSEEvent{}, err
+		}
+		return SSEEvent{Event: "harness", Data: payload}, nil
+	}
+}
+
+func (s *wsEventStream) Close() error {
+	if s == nil || s.socket == nil {
+		return nil
+	}
+	return s.socket.Close()
+}
+
+func (c *Client) withSession(ctx context.Context, fn func(*SessionSocket) error) error {
+	socket, err := c.DialSession(ctx)
+	if err != nil {
+		return err
+	}
+	defer socket.Close()
+	return fn(socket)
+}
+
+func (c *Client) sessionRPC(ctx context.Context, timeout time.Duration, fn func(context.Context, *SessionSocket) error) error {
+	if timeout <= 0 {
+		timeout = c.timeout
+	}
+	if timeout <= 0 {
+		timeout = wsRequestTimeout
+	}
+	requestCtx := ctx
+	cancel := func() {}
+	if _, ok := ctx.Deadline(); !ok {
+		requestCtx, cancel = context.WithTimeout(ctx, timeout)
+	}
+	defer cancel()
+	return c.withSession(requestCtx, func(socket *SessionSocket) error {
+		return fn(requestCtx, socket)
+	})
+}

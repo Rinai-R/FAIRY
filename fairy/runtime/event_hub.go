@@ -8,7 +8,7 @@ import (
 
 const eventHubBuffer = 64
 
-// EventHub fans harness events out to per-conversation SSE subscribers.
+// EventHub fans harness events out to per-conversation WebSocket watchers.
 type EventHub struct {
 	mu     sync.Mutex
 	subs   map[string]map[chan companion.HarnessEvent]struct{}
