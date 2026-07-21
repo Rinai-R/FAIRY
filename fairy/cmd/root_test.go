@@ -119,6 +119,7 @@ func TestLocalValidationDoesNotCreateClient(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"session", "open", "--surface", "web_widget"},
+		{"session", "open", "--surface", "im_group"},
 		{"config", "delete", "web-search"},
 	} {
 		root := NewRootCmd(deps)

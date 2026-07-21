@@ -43,6 +43,52 @@ func (s *Store) openOrCreateCharacterConversationPostgres(ctx context.Context, c
 	return s.loadConversationPostgres(ctx, conversationID)
 }
 
+func (s *Store) openOrCreateSurfaceConversationPostgres(ctx context.Context, characterID, surface, digest string) (ConversationBootstrap, error) {
+	queryCtx, cancel := s.pool.QueryContext(ctx)
+	defer cancel()
+	tx, err := s.pool.Raw().Begin(queryCtx)
+	if err != nil {
+		return ConversationBootstrap{}, fmt.Errorf("beginning surface conversation transaction: %w", err)
+	}
+	defer tx.Rollback(queryCtx)
+	lockKey := characterID + "|" + surface + "|" + digest
+	if _, err := tx.Exec(queryCtx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", lockKey); err != nil {
+		return ConversationBootstrap{}, fmt.Errorf("locking surface conversation: %w", err)
+	}
+	var conversationID string
+	err = tx.QueryRow(queryCtx, `
+SELECT conversation_id
+FROM surface_conversations
+WHERE character_id = $1 AND surface = $2 AND surface_key_digest = $3`, characterID, surface, digest).Scan(&conversationID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return ConversationBootstrap{}, fmt.Errorf("loading surface conversation: %w", err)
+	}
+	now := nowUnixMS()
+	if errors.Is(err, pgx.ErrNoRows) {
+		conversationID = newID()
+		if _, err := tx.Exec(queryCtx, "INSERT INTO conversations(id, character_id, created_at_ms, updated_at_ms) VALUES ($1, $2, $3, $3)", conversationID, characterID, now); err != nil {
+			return ConversationBootstrap{}, fmt.Errorf("creating surface conversation: %w", err)
+		}
+		if _, err := tx.Exec(queryCtx, "INSERT INTO prompt_windows(conversation_id, revision, summary, cutoff_message_sequence, updated_at_ms) VALUES ($1, 1, NULL, 0, $2)", conversationID, now); err != nil {
+			return ConversationBootstrap{}, fmt.Errorf("creating surface prompt window: %w", err)
+		}
+		if _, err := tx.Exec(queryCtx, `
+INSERT INTO surface_conversations(character_id, surface, surface_key_digest, conversation_id, created_at_ms, updated_at_ms)
+VALUES ($1, $2, $3, $4, $5, $5)`, characterID, surface, digest, conversationID, now); err != nil {
+			return ConversationBootstrap{}, fmt.Errorf("binding surface conversation: %w", err)
+		}
+	} else if _, err := tx.Exec(queryCtx, `
+UPDATE surface_conversations
+SET updated_at_ms = $4
+WHERE character_id = $1 AND surface = $2 AND surface_key_digest = $3`, characterID, surface, digest, now); err != nil {
+		return ConversationBootstrap{}, fmt.Errorf("touching surface conversation binding: %w", err)
+	}
+	if err := tx.Commit(queryCtx); err != nil {
+		return ConversationBootstrap{}, fmt.Errorf("committing surface conversation transaction: %w", err)
+	}
+	return s.loadConversationPostgres(ctx, conversationID)
+}
+
 func (s *Store) loadConversationPostgres(ctx context.Context, conversationID string) (ConversationBootstrap, error) {
 	if err := validateID("conversation_id", conversationID); err != nil {
 		return ConversationBootstrap{}, err
@@ -271,7 +317,15 @@ func (s *Store) failTurnPostgres(ctx context.Context, conversationID string, tur
 
 func recentConversationIDPostgres(ctx context.Context, tx pgx.Tx, characterID string) (string, error) {
 	var id string
-	err := tx.QueryRow(ctx, "SELECT id FROM conversations WHERE character_id = $1 ORDER BY updated_at_ms DESC, id ASC LIMIT 1", characterID).Scan(&id)
+	err := tx.QueryRow(ctx, `
+SELECT c.id
+FROM conversations c
+WHERE c.character_id = $1
+  AND NOT EXISTS (
+    SELECT 1 FROM surface_conversations s WHERE s.conversation_id = c.id
+  )
+ORDER BY c.updated_at_ms DESC, c.id ASC
+LIMIT 1`, characterID).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}

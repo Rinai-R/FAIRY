@@ -464,9 +464,9 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		allowTools := modelDrivenTools < maxModelDrivenToolCalls
 		tools := []model.ToolSpec(nil)
 		if allowTools {
-			tools = RespondToolSpecs(webSearchEnabled)
+			tools = RespondToolSpecsForSurface(webSearchEnabled, request.Surface)
 		}
-		instructions := RespondInstructionsForTools(allowTools)
+		instructions := RespondInstructionsForSurface(len(tools) > 0, request.Surface)
 		attempt := modelDrivenTools + 1
 		slots, err := BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval, request.Surface)
 		if err != nil {
@@ -638,6 +638,9 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 				)
 				switch call.Name {
 				case toolMemorySearch:
+					if request.Surface == SurfaceIMGroup {
+						return fail("MODEL_RESPONSE_INVALID", errors.New("memory_search is unavailable for group conversations"))
+					}
 					extra, toolErr := s.retrieveMemoryForTool(bootstrap.Conversation.CharacterID, query)
 					if toolErr != nil {
 						lg.Warn("cognition loop", zap.String("phase", "tool_failed"), zap.String("tool", call.Name), zap.Error(toolErr))
@@ -711,17 +714,13 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 							extra := retrievalFromWebHits(hits)
 							retrieval = mergeRetrievalContext(retrieval, extra)
 							nowMS := time.Now().UnixMilli()
-							for index, hit := range hits {
-								ingestSnapshots = append(ingestSnapshots, memory.KnowledgeIngestSnapshot{
-									ConversationID:  request.ConversationID,
-									TurnID:          persisted.ID,
-									Query:           query,
-									Title:           hit.Title,
-									URL:             hit.URL,
-									Snippet:         hit.Snippet,
-									Rank:            uint8(index + 1),
-									FetchedAtUnixMS: nowMS,
-								})
+							if request.Surface != SurfaceIMGroup {
+								for index, hit := range hits {
+									ingestSnapshots = append(ingestSnapshots, memory.KnowledgeIngestSnapshot{
+										ConversationID: request.ConversationID, TurnID: persisted.ID, Query: query,
+										Title: hit.Title, URL: hit.URL, Snippet: hit.Snippet, Rank: uint8(index + 1), FetchedAtUnixMS: nowMS,
+									})
+								}
 							}
 							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
 								"tool":             call.Name,
@@ -981,9 +980,13 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	if err := s.updateContinuationState(request.ConversationID, connectionConfig.Capabilities.CacheRetention, bootstrap.PromptWindow.Revision, fullRequest, reply.DisplayText, events); err != nil {
 		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContinuation, TurnStateCompleted, "CONTINUATION_STATE_FAILED", runtimeFailureLedgerMetadata("CONTINUATION_STATE_FAILED", err, false))
 	}
-	s.scheduleBackgroundExtraction(request.ConversationID)
+	if request.Surface != SurfaceIMGroup {
+		s.scheduleBackgroundExtraction(request.ConversationID)
+	}
 	s.scheduleAutoCompaction(request.ConversationID, events)
-	s.scheduleKnowledgeIngest(ingestSnapshots)
+	if request.Surface != SurfaceIMGroup {
+		s.scheduleKnowledgeIngest(ingestSnapshots)
+	}
 	return TurnOutcome{
 		ConversationID:  request.ConversationID,
 		TurnID:          persisted.ID,

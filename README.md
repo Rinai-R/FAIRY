@@ -2,6 +2,8 @@
 
 FAIRY 是一个 Go Session Core：通过 HTTP/SSE 提供角色对话、记忆、模型、语音与设置能力，同时内置 React 管理控制台和面向 AI Coding 测试/调试的白名单 CLI。
 
+独立 Surface 位于 `surfaces/`：`surfaces/macos` 提供 Wails v2 macOS聊天客户端，`surfaces/qq-onebot` 提供依赖 ZeroBot、连接 LLOneBot 的 QQ群 Surface；客户端状态机不放入 Core。
+
 ## 本地启动
 
 ```bash

@@ -28,7 +28,8 @@ type DependencyStatus struct {
 }
 
 type OpenSessionRequest struct {
-	Surface string `json:"surface,omitempty"`
+	Surface    string `json:"surface,omitempty"`
+	SurfaceKey string `json:"surfaceKey,omitempty"`
 }
 
 type OpenSessionResponse struct {
@@ -36,6 +37,21 @@ type OpenSessionResponse struct {
 	CharacterID    string `json:"characterId"`
 	MessageCount   int    `json:"messageCount"`
 	Surface        string `json:"surface"`
+}
+
+type MessageRecord struct {
+	ID              string `json:"id"`
+	ConversationID  string `json:"conversationId"`
+	TurnID          string `json:"turnId"`
+	Sequence        uint64 `json:"sequence"`
+	Role            string `json:"role"`
+	Content         string `json:"content"`
+	CreatedAtUnixMS int64  `json:"createdAtUnixMs"`
+}
+
+type MessagePage struct {
+	Messages           []MessageRecord `json:"messages"`
+	NextBeforeSequence *uint64         `json:"nextBeforeSequence,omitempty"`
 }
 
 type SubmitTurnRequest struct {
@@ -64,9 +80,26 @@ type HarnessEvent struct {
 }
 
 type CharacterRecord struct {
-	CharacterID string `json:"characterId"`
-	Revision    uint64 `json:"revision"`
-	Name        string `json:"name"`
+	CharacterID string              `json:"characterId"`
+	Revision    uint64              `json:"revision"`
+	Name        string              `json:"name"`
+	Appearance  CharacterAppearance `json:"appearance"`
+}
+
+type CharacterAppearance struct {
+	Status string          `json:"status"`
+	Visual *VisualManifest `json:"visual,omitempty"`
+}
+
+type VisualManifest struct {
+	PackID string        `json:"packId"`
+	States []VisualState `json:"states"`
+}
+
+type VisualState struct {
+	ID          string `json:"id"`
+	Description string `json:"description"`
+	ImagePath   string `json:"imagePath"`
 }
 
 type CharacterCatalog struct {

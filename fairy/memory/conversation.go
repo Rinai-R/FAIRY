@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -44,6 +45,17 @@ type PersistedTurn struct {
 	ID             string        `json:"id"`
 	ConversationID string        `json:"conversationId"`
 	UserMessage    MessageRecord `json:"userMessage"`
+}
+
+func (s *Store) OpenOrCreateSurfaceConversation(characterID, surface, surfaceKeyDigest string) (ConversationBootstrap, error) {
+	return s.OpenOrCreateSurfaceConversationContext(context.Background(), characterID, surface, surfaceKeyDigest)
+}
+
+func (s *Store) OpenOrCreateSurfaceConversationContext(ctx context.Context, characterID, surface, surfaceKeyDigest string) (ConversationBootstrap, error) {
+	if err := validateSurfaceConversationKey(characterID, surface, surfaceKeyDigest); err != nil {
+		return ConversationBootstrap{}, err
+	}
+	return s.openOrCreateSurfaceConversationPostgres(ctx, characterID, surface, surfaceKeyDigest)
 }
 
 func (s *Store) OpenOrCreateCharacterConversation(characterID string) (ConversationBootstrap, error) {
@@ -104,6 +116,27 @@ func validateID(label string, value string) error {
 func validateContent(label string, value string) error {
 	if value == "" || strings.TrimSpace(value) == "" || containsDisallowedControl(value) {
 		return fmt.Errorf("%s is invalid", label)
+	}
+	return nil
+}
+
+func validateSurfaceConversationKey(characterID, surface, digest string) error {
+	if err := validateID("character_id", characterID); err != nil {
+		return err
+	}
+	switch surface {
+	case "desktop", "im_private", "im_group":
+	default:
+		return errors.New("surface is invalid")
+	}
+	if len(digest) != 64 {
+		return errors.New("surface key digest is invalid")
+	}
+	for _, r := range digest {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') {
+			continue
+		}
+		return errors.New("surface key digest is invalid")
 	}
 	return nil
 }

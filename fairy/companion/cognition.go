@@ -31,12 +31,21 @@ type toolQueryArgs struct {
 }
 
 func RespondToolSpecs(webSearchEnabled bool) []model.ToolSpec {
+	return RespondToolSpecsForSurface(webSearchEnabled, SurfaceDesktop)
+}
+
+// RespondToolSpecsForSurface applies the hard privacy boundary for group IM.
+// Group turns may use current-turn web search, but never receive personal memory tooling.
+func RespondToolSpecsForSurface(webSearchEnabled bool, surface SurfaceKind) []model.ToolSpec {
 	querySchema := json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"Short search query"}},"required":["query"],"additionalProperties":false}`)
-	tools := []model.ToolSpec{{
-		Name:        toolMemorySearch,
-		Description: "Search layered local memory for user profile, preferences, experiences, current-character relationship facts, and confirmed local knowledge. Results include semanticStatus metadata; unavailable means FTS-only recall.",
-		Parameters:  querySchema,
-	}}
+	tools := make([]model.ToolSpec, 0, 2)
+	if mustNormalizeSurface(surface) != SurfaceIMGroup {
+		tools = append(tools, model.ToolSpec{
+			Name:        toolMemorySearch,
+			Description: "Search layered local memory for user profile, preferences, experiences, current-character relationship facts, and confirmed local knowledge. Results include semanticStatus metadata; unavailable means FTS-only recall.",
+			Parameters:  querySchema,
+		})
+	}
 	if webSearchEnabled {
 		tools = append(tools, model.ToolSpec{
 			Name:        toolWebSearch,
@@ -52,6 +61,16 @@ func RespondInstructionsForTools(toolsEnabled bool) string {
 		return RespondInstructionsAllowTools
 	}
 	return RespondInstructions
+}
+
+func RespondInstructionsForSurface(toolsEnabled bool, surface SurfaceKind) string {
+	if mustNormalizeSurface(surface) == SurfaceIMGroup {
+		if toolsEnabled {
+			return strings.ReplaceAll(RespondInstructionsAllowTools, "memory_search for profile, preference, experience, current-character relationship, and confirmed local knowledge; ", "")
+		}
+		return RespondInstructions
+	}
+	return RespondInstructionsForTools(toolsEnabled)
 }
 
 func parseToolQuery(arguments string) (string, error) {

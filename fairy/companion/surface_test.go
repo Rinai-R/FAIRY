@@ -8,6 +8,22 @@ import (
 	"fairy/memory"
 )
 
+func TestGroupSurfaceHasNoPersonalMemoryTool(t *testing.T) {
+	groupTools := RespondToolSpecsForSurface(true, SurfaceIMGroup)
+	if len(groupTools) != 1 || groupTools[0].Name != toolWebSearch {
+		t.Fatalf("group tools = %#v, want web_search only", groupTools)
+	}
+	if strings.Contains(RespondInstructionsForSurface(true, SurfaceIMGroup), toolMemorySearch) {
+		t.Fatal("group instructions expose memory_search")
+	}
+	for _, tool := range RespondToolSpecsForSurface(true, SurfaceDesktop) {
+		if tool.Name == toolMemorySearch {
+			return
+		}
+	}
+	t.Fatal("desktop tool schema lost memory_search")
+}
+
 func TestNormalizeSurface(t *testing.T) {
 	got, err := NormalizeSurface("")
 	if err != nil || got != SurfaceDesktop {

@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	CurrentSchemaVersion = 1
+	CurrentSchemaVersion = 2
 
 	migrationLockKey int64 = 0x46414952595f4442
 )

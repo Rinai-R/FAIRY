@@ -10,12 +10,15 @@ import (
 	"time"
 
 	"fairy/companion"
+	"fairy/memory"
 	fairyruntime "fairy/runtime"
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/protocol/sse"
 	"go.uber.org/zap"
 )
+
+const sessionHarnessEventName = "harness"
 
 // Options configures the Hertz Core HTTP API.
 type Options struct {
@@ -69,6 +72,8 @@ func (s *Server) routes() {
 	v1.Use(s.authMiddleware)
 	v1.GET("/status", s.handleStatus)
 	v1.POST("/sessions", s.handleOpenSession)
+	v1.GET("/sessions/:conversationId/messages", s.handleSessionMessages)
+	v1.GET("/visual-assets/:packId/*assetPath", s.handleVisualAsset)
 	v1.POST("/sessions/:conversationId/turns", s.handleSubmitTurn)
 	v1.GET("/sessions/:conversationId/events", s.handleSessionEvents)
 	v1.POST("/sessions/:conversationId/turns/:turnId/cancel", s.handleCancelTurn)
@@ -133,6 +138,17 @@ func (s *Server) handleOpenSession(ctx context.Context, c *app.RequestContext) {
 		writeErr(c, http.StatusBadRequest, err)
 		return
 	}
+	var surfaceKeyDigest string
+	if body.SurfaceKey != "" {
+		surfaceKeyDigest, err = s.rt.Secret.DigestSurfaceKey(string(surface), body.SurfaceKey)
+		if err != nil {
+			writeErr(c, http.StatusBadRequest, err)
+			return
+		}
+	} else if surface == companion.SurfaceIMPrivate || surface == companion.SurfaceIMGroup {
+		writeErr(c, http.StatusBadRequest, errors.New("surfaceKey is required for IM sessions"))
+		return
+	}
 	catalog, err := s.rt.Character.ListCharacters()
 	if err != nil {
 		writeErr(c, http.StatusInternalServerError, err)
@@ -142,7 +158,12 @@ func (s *Server) handleOpenSession(ctx context.Context, c *app.RequestContext) {
 		writeErr(c, http.StatusConflict, errors.New("no active character"))
 		return
 	}
-	bootstrap, err := s.rt.Memory.OpenOrCreateCharacterConversation(catalog.Active.CharacterID)
+	var bootstrap memory.ConversationBootstrap
+	if surfaceKeyDigest != "" {
+		bootstrap, err = s.rt.MemoryStore.OpenOrCreateSurfaceConversationContext(ctx, catalog.Active.CharacterID, string(surface), surfaceKeyDigest)
+	} else {
+		bootstrap, err = s.rt.MemoryStore.OpenOrCreateCharacterConversationContext(ctx, catalog.Active.CharacterID)
+	}
 	if err != nil {
 		writeErr(c, http.StatusInternalServerError, err)
 		return
@@ -160,7 +181,8 @@ func (s *Server) handleOpenSession(ctx context.Context, c *app.RequestContext) {
 }
 
 type openSessionBody struct {
-	Surface string `json:"surface"`
+	Surface    string `json:"surface"`
+	SurfaceKey string `json:"surfaceKey"`
 }
 
 type submitTurnBody struct {
@@ -243,7 +265,7 @@ func (s *Server) handleSessionEvents(ctx context.Context, c *app.RequestContext)
 				continue
 			}
 			id := fmt.Sprintf("%s-%d", ev.TurnID, ev.Sequence)
-			if err := w.WriteEvent(id, string(ev.State), payload); err != nil {
+			if err := w.WriteEvent(id, sessionHarnessEventName, payload); err != nil {
 				return
 			}
 		case <-time.After(15 * time.Second):

@@ -12,18 +12,21 @@ import (
 
 func newSessionCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 	command := &cobra.Command{Use: "session", Short: "Manage debug sessions", GroupID: "debug"}
-	var surface string
+	var surface, surfaceKey string
 	open := &cobra.Command{
 		Use: "open", Short: "Open a character conversation", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := validateSurface(surface); err != nil {
 				return err
 			}
+			if surface != "desktop" && strings.TrimSpace(surfaceKey) == "" {
+				return errors.New("--surface-key is required for IM sessions")
+			}
 			client, config, err := newClient(v, deps)
 			if err != nil {
 				return err
 			}
-			result, err := client.OpenSession(command.Context(), coreclient.OpenSessionRequest{Surface: surface})
+			result, err := client.OpenSession(command.Context(), coreclient.OpenSessionRequest{Surface: surface, SurfaceKey: surfaceKey})
 			if err != nil {
 				return err
 			}
@@ -31,6 +34,7 @@ func newSessionCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 		},
 	}
 	open.Flags().StringVar(&surface, "surface", "desktop", "session surface: desktop, im_private, or im_group")
+	open.Flags().StringVar(&surfaceKey, "surface-key", "", "opaque external conversation key for IM surfaces")
 	command.AddCommand(open)
 	return command
 }

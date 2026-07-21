@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 )
 
@@ -15,6 +16,26 @@ func (c *Client) OpenSession(ctx context.Context, request OpenSessionRequest) (O
 	err := c.doJSON(ctx, "open session", http.MethodPost, "/v1/sessions", body, &result)
 	if err == nil && (result.ConversationID == "" || result.CharacterID == "" || result.Surface == "") {
 		err = errors.New("open session response is missing required fields")
+	}
+	return result, err
+}
+
+func (c *Client) ListMessages(ctx context.Context, conversationID string, beforeSequence uint64, limit int) (MessagePage, error) {
+	values := url.Values{}
+	if beforeSequence != 0 {
+		values.Set("beforeSequence", strconv.FormatUint(beforeSequence, 10))
+	}
+	if limit != 0 {
+		values.Set("limit", strconv.Itoa(limit))
+	}
+	path := "/v1/sessions/" + url.PathEscape(conversationID) + "/messages"
+	if query := values.Encode(); query != "" {
+		path += "?" + query
+	}
+	var result MessagePage
+	err := c.doJSON(ctx, "list session messages", http.MethodGet, path, nil, &result)
+	if err == nil && result.Messages == nil {
+		err = errors.New("message page response is missing messages")
 	}
 	return result, err
 }

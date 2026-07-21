@@ -2,6 +2,7 @@ package coreclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,70 @@ import (
 	"testing"
 	"time"
 )
+
+func TestOpenSessionSendsSurfaceKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request OpenSessionRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if request.Surface != "im_group" || request.SurfaceKey != "onebot-group:123" {
+			t.Fatalf("request = %#v", request)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"conversationId":"c1","characterId":"ch1","messageCount":0,"surface":"im_group"}`)
+	}))
+	defer server.Close()
+	client, err := New(Options{Endpoint: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.OpenSession(context.Background(), OpenSessionRequest{Surface: "im_group", SurfaceKey: "onebot-group:123"})
+	if err != nil || response.ConversationID != "c1" {
+		t.Fatalf("response=%#v err=%v", response, err)
+	}
+}
+
+func TestListMessagesSendsPaginationAndRequiresMessages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/sessions/c%2F1/messages" && r.URL.Path != "/v1/sessions/c/1/messages" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if r.URL.Query().Get("beforeSequence") != "42" || r.URL.Query().Get("limit") != "20" {
+			t.Fatalf("query = %q", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"messages":[{"id":"m","conversationId":"c/1","turnId":"t","sequence":41,"role":"assistant","content":"ok","createdAtUnixMs":1}],"nextBeforeSequence":41}`)
+	}))
+	defer server.Close()
+	client, _ := New(Options{Endpoint: server.URL})
+	page, err := client.ListMessages(context.Background(), "c/1", 42, 20)
+	if err != nil || len(page.Messages) != 1 || page.Messages[0].Sequence != 41 {
+		t.Fatalf("page=%#v err=%v", page, err)
+	}
+}
+
+func TestVisualAssetUsesBearerAndBoundsType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer exact-token" {
+			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		if r.URL.EscapedPath() != "/v1/visual-assets/fairy.test/images/idle.png" {
+			t.Fatalf("path = %q", r.URL.EscapedPath())
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.Write([]byte("png-bytes"))
+	}))
+	defer server.Close()
+	client, _ := New(Options{Endpoint: server.URL, Token: "exact-token"})
+	data, err := client.VisualAsset(context.Background(), "fairy.test", "images/idle.png")
+	if err != nil || string(data) != "png-bytes" {
+		t.Fatalf("data=%q err=%v", data, err)
+	}
+	if _, err := client.VisualAsset(context.Background(), "fairy.test", "../idle.png"); err == nil {
+		t.Fatal("traversal asset path accepted")
+	}
+}
 
 func TestClientStatusUsesBearerAndRejectsInvalidResponses(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

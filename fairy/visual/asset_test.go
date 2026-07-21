@@ -1,6 +1,7 @@
 package visual
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -38,10 +39,25 @@ func TestResolveAssetFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveAssetFile() error = %v", err)
 	}
-	if got != path {
-		t.Fatalf("ResolveAssetFile() = %q, want %q", got, path)
+	want, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("ResolveAssetFile() = %q, want %q", got, want)
 	}
 	if _, err := ResolveAssetFile(root, "fairy.local/missing.png"); err == nil {
 		t.Fatal("ResolveAssetFile(missing) error = nil")
+	}
+	outside := filepath.Join(t.TempDir(), "outside.png")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "fairy.local", "images", "escape.png")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveAssetFile(root, "fairy.local/images/escape.png"); !errors.Is(err, ErrInvalidAssetPath) {
+		t.Fatalf("symlink escape error = %v", err)
 	}
 }

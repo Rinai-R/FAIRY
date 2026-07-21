@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,8 @@ import (
 	"fairy/model"
 	pgstore "fairy/postgres"
 	"fairy/profile"
+	"fairy/search"
+	"fairy/visual"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -51,6 +54,22 @@ func (companionIntegrationModel) ExecutePrompt(model.PromptLane, string, uint32,
 	return []model.StreamEvent{{Type: "text_delta", Data: "摘要"}, {Type: "usage", Usage: &model.Usage{PromptTokens: 2, CompletionTokens: 1}}}, nil
 }
 
+type capturingIntegrationModel struct {
+	mu      sync.Mutex
+	request model.CompiledPromptRequest
+}
+
+func (m *capturingIntegrationModel) ExecuteRequestContext(_ context.Context, request model.CompiledPromptRequest) ([]model.StreamEvent, error) {
+	m.mu.Lock()
+	m.request = request
+	m.mu.Unlock()
+	return companionIntegrationModel{chains: []ReplyChain{{VisualState: "idle", Text: "群聊回复。"}}}.ExecuteRequestContext(context.Background(), request)
+}
+
+func (m *capturingIntegrationModel) ExecutePrompt(model.PromptLane, string, uint32, []model.PromptItem, string) ([]model.StreamEvent, error) {
+	return []model.StreamEvent{{Type: "text_delta", Data: "群聊摘要"}, {Type: "usage", Usage: &model.Usage{PromptTokens: 2, CompletionTokens: 1}}}, nil
+}
+
 type companionIntegrationCatalog struct {
 	record character.Record
 }
@@ -78,6 +97,42 @@ func (companionIntegrationConfig) ModelConnection() (config.ModelConnection, err
 func (companionIntegrationConfig) WebSearchSettings() (config.WebSearchSettings, error) {
 	return config.WebSearchSettings{SchemaVersion: 1, Enabled: false}, nil
 }
+
+type groupWebIntegrationConfig struct{ companionIntegrationConfig }
+
+func (groupWebIntegrationConfig) WebSearchSettings() (config.WebSearchSettings, error) {
+	return config.WebSearchSettings{SchemaVersion: 1, Enabled: true}, nil
+}
+
+type groupWebIntegrationModel struct {
+	mu       sync.Mutex
+	requests []model.CompiledPromptRequest
+}
+
+func (m *groupWebIntegrationModel) ExecuteRequestContext(_ context.Context, request model.CompiledPromptRequest) ([]model.StreamEvent, error) {
+	m.mu.Lock()
+	m.requests = append(m.requests, request)
+	call := len(m.requests)
+	m.mu.Unlock()
+	if call == 1 {
+		return []model.StreamEvent{{Type: "function_calls", FunctionCalls: []model.FunctionCall{{
+			CallID: "web-1", Name: toolWebSearch, Arguments: `{"query":"公开新闻"}`,
+		}}}}, nil
+	}
+	return companionIntegrationModel{chains: []ReplyChain{{VisualState: "idle", Text: "公开消息。"}}}.ExecuteRequestContext(context.Background(), request)
+}
+
+func (*groupWebIntegrationModel) ExecutePrompt(model.PromptLane, string, uint32, []model.PromptItem, string) ([]model.StreamEvent, error) {
+	return []model.StreamEvent{{Type: "text_delta", Data: "摘要"}}, nil
+}
+
+type groupWebSearchStub struct{}
+
+func (groupWebSearchStub) Search(context.Context, string, int) ([]search.Hit, error) {
+	return []search.Hit{{Title: "公开新闻标题", URL: "https://example.com/news", Snippet: "公开摘要"}}, nil
+}
+
+func (groupWebSearchStub) Close() error { return nil }
 
 type terminalFailureMemory struct {
 	MemoryPort
@@ -268,7 +323,138 @@ func TestPostgresCompanionInterruptPersistenceFailureEmitsFailed(t *testing.T) {
 	}
 }
 
-func newCompanionIntegrationService(memoryPort MemoryPort, characterID string, scripted companionIntegrationModel) *CompanionService {
+func TestPostgresGroupTurnExcludesPrivateMemoryJobsAndKeepsCompaction(t *testing.T) {
+	store, pool, cleanup := openCompanionIntegrationStore(t)
+	defer cleanup()
+	const characterID = "character-group-privacy"
+	bootstrap, err := store.OpenOrCreateCharacterConversation(characterID)
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation: %v", err)
+	}
+	seedTurn, err := store.BeginTurn(bootstrap.Conversation.ID, "桌面私人上下文")
+	if err != nil {
+		t.Fatalf("BeginTurn(private fixture): %v", err)
+	}
+	if _, err := store.CompleteTurn(bootstrap.Conversation.ID, seedTurn.ID, "桌面回复"); err != nil {
+		t.Fatalf("CompleteTurn(private fixture): %v", err)
+	}
+	const privateFixture = "仅限桌面的私人记忆-7f62"
+	if _, err := store.CreatePersonalMemory("preference", memory.MemoryScope{Type: "global"}, privateFixture, 9000); err != nil {
+		t.Fatalf("CreatePersonalMemory: %v", err)
+	}
+	before := groupPrivacyJobCounts(t, pool)
+	provider := &capturingIntegrationModel{}
+	service := newCompanionIntegrationService(store, characterID, provider)
+	if err := service.BindSurface(bootstrap.Conversation.ID, SurfaceIMGroup); err != nil {
+		t.Fatalf("BindSurface: %v", err)
+	}
+	if _, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+		ConversationID:        bootstrap.Conversation.ID,
+		Input:                 "大家好",
+		MaxOutputTokens:       160,
+		AvailableVisualStates: []VisualState{{ID: "idle", Description: "idle"}},
+	}); err != nil {
+		t.Fatalf("SubmitCompiledTurn: %v", err)
+	}
+	provider.mu.Lock()
+	request := provider.request
+	provider.mu.Unlock()
+	for _, tool := range request.Tools {
+		if tool.Name == toolMemorySearch {
+			t.Fatalf("group request exposes %q: %#v", toolMemorySearch, request.Tools)
+		}
+	}
+	for _, item := range request.Input {
+		if strings.Contains(item.Content, privateFixture) {
+			t.Fatalf("private fixture leaked into group prompt item: %s", item.Content)
+		}
+	}
+	if after := groupPrivacyJobCounts(t, pool); after != before {
+		t.Fatalf("group background job counts changed: before=%v after=%v", before, after)
+	}
+	result, err := service.CompactConversation(bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatalf("CompactConversation(group): %v", err)
+	}
+	if result.WindowRevision < 2 || result.RetainedDialogueItems == 0 {
+		t.Fatalf("group compaction result = %#v", result)
+	}
+	reloaded, err := store.LoadConversation(bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatalf("LoadConversation after group compaction: %v", err)
+	}
+	if reloaded.PromptWindow.Summary == nil || *reloaded.PromptWindow.Summary != "群聊摘要" || reloaded.PromptWindow.CutoffMessageSequence == 0 {
+		t.Fatalf("group prompt window after compaction = %#v", reloaded.PromptWindow)
+	}
+}
+
+func TestPostgresGroupWebSearchIsEphemeral(t *testing.T) {
+	store, pool, cleanup := openCompanionIntegrationStore(t)
+	defer cleanup()
+	const characterID = "character-group-web"
+	bootstrap, err := store.OpenOrCreateCharacterConversation(characterID)
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation: %v", err)
+	}
+	provider := &groupWebIntegrationModel{}
+	service := newCompanionIntegrationService(store, characterID, provider)
+	AttachConfigSource(service, groupWebIntegrationConfig{})
+	service.webSearch = groupWebSearchStub{}
+	if err := service.BindSurface(bootstrap.Conversation.ID, SurfaceIMGroup); err != nil {
+		t.Fatalf("BindSurface: %v", err)
+	}
+	before := groupPrivacyJobCounts(t, pool)
+	if _, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+		ConversationID: bootstrap.Conversation.ID, Input: "有什么新闻", MaxOutputTokens: 160,
+		AvailableVisualStates: []VisualState{{ID: "idle", Description: "idle"}},
+	}); err != nil {
+		t.Fatalf("SubmitCompiledTurn: %v", err)
+	}
+	provider.mu.Lock()
+	requests := append([]model.CompiledPromptRequest(nil), provider.requests...)
+	provider.mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("model request count = %d, want 2", len(requests))
+	}
+	if !compiledPromptContains(requests[1], "公开新闻标题") {
+		t.Fatal("web result was not available to the current group turn")
+	}
+	if after := groupPrivacyJobCounts(t, pool); after != before {
+		t.Fatalf("group web search persisted jobs: before=%v after=%v", before, after)
+	}
+}
+
+func compiledPromptContains(request model.CompiledPromptRequest, text string) bool {
+	for _, item := range request.Input {
+		if strings.Contains(item.Content, text) {
+			return true
+		}
+	}
+	return false
+}
+
+type privacyJobCounts struct {
+	extraction int
+	embedding  int
+	ingest     int
+}
+
+func groupPrivacyJobCounts(t *testing.T, pool *pgxpool.Pool) privacyJobCounts {
+	t.Helper()
+	var counts privacyJobCounts
+	for query, destination := range map[string]*int{
+		"SELECT count(*) FROM extraction_batches":    &counts.extraction,
+		"SELECT count(*) FROM memory_embedding_jobs": &counts.embedding,
+		"SELECT count(*) FROM knowledge_ingest_jobs": &counts.ingest,
+	} {
+		if err := pool.QueryRow(context.Background(), query).Scan(destination); err != nil {
+			t.Fatalf("counting privacy jobs: %v", err)
+		}
+	}
+	return counts
+}
+
+func newCompanionIntegrationService(memoryPort MemoryPort, characterID string, scripted ModelPort) *CompanionService {
 	record := character.Record{
 		CharacterID:      characterID,
 		Revision:         1,
@@ -276,7 +462,9 @@ func newCompanionIntegrationService(memoryPort MemoryPort, characterID string, s
 		Description:      "认真听用户说话。",
 		TextLanguage:     "zh",
 		SpeakingLanguage: "zh",
-		Appearance:       character.Appearance{Status: "assigned"},
+		Appearance: character.Appearance{Status: "assigned", Visual: &visual.Manifest{States: []visual.State{{
+			ID: "idle", Description: "idle", ImagePath: "states/idle.png",
+		}}}},
 	}
 	service := NewCompanionServiceWithRuntime("", memoryPort, scripted, nil)
 	AttachCharacterCatalog(service, companionIntegrationCatalog{record: record})

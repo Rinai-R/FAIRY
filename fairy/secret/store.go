@@ -90,6 +90,15 @@ func (s *Store) Encrypted() bool {
 	return s != nil && s.pool != nil && s.pool.Raw() != nil && s.cipher != nil && s.cipher.aead != nil
 }
 
+// DigestSurfaceKey derives the opaque binding digest used to isolate an
+// external Surface conversation. The raw key is never persisted or exposed.
+func (s *Store) DigestSurfaceKey(surface, rawKey string) (string, error) {
+	if s == nil || s.cipher == nil {
+		return "", ErrCipherRequired
+	}
+	return s.cipher.DigestSurfaceKey(surface, rawKey)
+}
+
 func (s *Store) Save(connectionID string, value Value) error {
 	return s.SaveContext(context.Background(), connectionID, value)
 }
