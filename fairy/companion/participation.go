@@ -191,7 +191,11 @@ func BuildGroupParticipationInput(record character.Record, reason GroupParticipa
 }
 
 func CompileGroupParticipation(draft string, messages []GroupObservation) (GroupParticipationResult, error) {
-	decoder := json.NewDecoder(strings.NewReader(draft))
+	sanitized, err := sanitizeParticipationDraft(draft)
+	if err != nil {
+		return GroupParticipationResult{}, err
+	}
+	decoder := json.NewDecoder(strings.NewReader(sanitized))
 	decoder.DisallowUnknownFields()
 	var parsed groupParticipationDraft
 	if err := decoder.Decode(&parsed); err != nil {
@@ -230,6 +234,30 @@ func CompileGroupParticipation(draft string, messages []GroupObservation) (Group
 	default:
 		return GroupParticipationResult{}, errors.New("group participation action must be reply, wait, or silent")
 	}
+}
+
+func sanitizeParticipationDraft(draft string) (string, error) {
+	trimmed := strings.TrimSpace(draft)
+	if trimmed == "" {
+		return "", errors.New("decoding group participation: EOF")
+	}
+	if strings.HasPrefix(trimmed, "```") {
+		body := strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
+		if len(body) >= 4 && strings.EqualFold(body[:4], "json") {
+			rest := body[4:]
+			if rest == "" || rest[0] == '\n' || rest[0] == '\r' || rest[0] == ' ' || rest[0] == '\t' {
+				body = strings.TrimSpace(rest)
+			}
+		}
+		if end := strings.LastIndex(body, "```"); end >= 0 {
+			body = body[:end]
+		}
+		trimmed = strings.TrimSpace(body)
+	}
+	if trimmed == "" || trimmed[0] != '{' {
+		return "", errors.New("group participation draft must be a JSON object")
+	}
+	return trimmed, nil
 }
 
 func groupObservationContainsID(messages []GroupObservation, target string) bool {

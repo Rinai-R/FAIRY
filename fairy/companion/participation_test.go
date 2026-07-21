@@ -33,6 +33,8 @@ func TestCompileGroupParticipationIsStrict(t *testing.T) {
 		{`{"action":"reply","targetMessageId":"m1"}`, GroupParticipationReply},
 		{`{"action":"wait","waitSeconds":7}`, GroupParticipationWait},
 		{`{"action":"silent"}`, GroupParticipationSilent},
+		{"  {\"action\":\"silent\"}  ", GroupParticipationSilent},
+		{"```json\n{\"action\":\"wait\",\"waitSeconds\":3}\n```", GroupParticipationWait},
 	}
 	for _, test := range tests {
 		result, err := CompileGroupParticipation(test.draft, messages)
@@ -154,10 +156,20 @@ func TestBuildGroupParticipationInputHasPolicyPresenceAndNoProfile(t *testing.T)
 type participationMemory struct {
 	MemoryPort
 	bootstrap memory.ConversationBootstrap
+	surface   string
+	found     bool
+	lookupErr error
 }
 
 func (m participationMemory) LoadConversation(string) (memory.ConversationBootstrap, error) {
 	return m.bootstrap, nil
+}
+
+func (m participationMemory) LookupSurfaceForConversation(string) (string, bool, error) {
+	if m.lookupErr != nil {
+		return "", false, m.lookupErr
+	}
+	return m.surface, m.found, nil
 }
 
 type participationCatalog struct{ record character.Record }

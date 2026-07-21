@@ -58,6 +58,16 @@ func (s *Store) OpenOrCreateSurfaceConversationContext(ctx context.Context, char
 	return s.openOrCreateSurfaceConversationPostgres(ctx, characterID, surface, surfaceKeyDigest)
 }
 
+// LookupSurfaceForConversation returns the durable surface binding for a conversation.
+// ok=false means no surface_conversations row (character-level desktop conversations).
+func (s *Store) LookupSurfaceForConversation(conversationID string) (string, bool, error) {
+	return s.lookupSurfaceForConversationPostgres(context.Background(), conversationID)
+}
+
+func (s *Store) LookupSurfaceForConversationContext(ctx context.Context, conversationID string) (string, bool, error) {
+	return s.lookupSurfaceForConversationPostgres(ctx, conversationID)
+}
+
 func (s *Store) OpenOrCreateCharacterConversation(characterID string) (ConversationBootstrap, error) {
 	return s.OpenOrCreateCharacterConversationContext(context.Background(), characterID)
 }

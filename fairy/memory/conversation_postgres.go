@@ -89,6 +89,26 @@ WHERE character_id = $1 AND surface = $2 AND surface_key_digest = $3`, character
 	return s.loadConversationPostgres(ctx, conversationID)
 }
 
+func (s *Store) lookupSurfaceForConversationPostgres(ctx context.Context, conversationID string) (string, bool, error) {
+	if err := validateID("conversation_id", conversationID); err != nil {
+		return "", false, err
+	}
+	queryCtx, cancel := s.pool.QueryContext(ctx)
+	defer cancel()
+	var surface string
+	err := s.pool.Raw().QueryRow(queryCtx, `
+SELECT surface
+FROM surface_conversations
+WHERE conversation_id = $1`, conversationID).Scan(&surface)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("looking up surface conversation: %w", err)
+	}
+	return surface, true, nil
+}
+
 func (s *Store) loadConversationPostgres(ctx context.Context, conversationID string) (ConversationBootstrap, error) {
 	if err := validateID("conversation_id", conversationID); err != nil {
 		return ConversationBootstrap{}, err

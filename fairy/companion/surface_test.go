@@ -1,6 +1,7 @@
 package companion
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -211,5 +212,46 @@ func TestBindAndResolveSurface(t *testing.T) {
 	}
 	if err := service.BindSurface("conv-1", SurfaceKind("nope")); err == nil {
 		t.Fatal("want bind error")
+	}
+}
+
+func TestResolveSurfaceHydratesDurableBinding(t *testing.T) {
+	service := NewCompanionService()
+	service.memory = participationMemory{surface: "im_group", found: true}
+	got, err := service.ResolveSurface("conv-durable", "")
+	if err != nil || got != SurfaceIMGroup {
+		t.Fatalf("hydrated = %q %v", got, err)
+	}
+	service.memory = participationMemory{}
+	got, err = service.ResolveSurface("conv-durable", "")
+	if err != nil || got != SurfaceIMGroup {
+		t.Fatalf("cached after hydrate = %q %v", got, err)
+	}
+}
+
+func TestResolveSurfaceLookupErrorDoesNotInventDesktop(t *testing.T) {
+	service := NewCompanionService()
+	service.memory = participationMemory{lookupErr: errors.New("db down")}
+	if _, err := service.ResolveSurface("conv-err", ""); err == nil || !strings.Contains(err.Error(), "db down") {
+		t.Fatalf("lookup error = %v", err)
+	}
+}
+
+func TestDecideGroupParticipationHydratesAmbientBinding(t *testing.T) {
+	modelPort := &participationModel{draft: "```json\n{\"action\":\"silent\"}\n```"}
+	service := NewCompanionService()
+	service.memory = participationMemory{
+		bootstrap: memory.ConversationBootstrap{Conversation: memory.ConversationRecord{ID: "c-hydrate", CharacterID: "character-1"}},
+		surface:   "im_group",
+		found:     true,
+	}
+	service.model = modelPort
+	service.characters = participationCatalog{record: character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"}}
+	service.cfg = participationConfig{}
+	request := validGroupParticipationRequest()
+	request.ConversationID = "c-hydrate"
+	result, err := service.DecideGroupParticipation(t.Context(), request)
+	if err != nil || result.Action != GroupParticipationSilent {
+		t.Fatalf("hydrated participate result=%#v err=%v", result, err)
 	}
 }

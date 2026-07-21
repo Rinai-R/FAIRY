@@ -15,6 +15,7 @@ import (
 // Implemented by *memory.Store (service+store merged in the memory package).
 type MemoryPort interface {
 	LoadConversation(conversationID string) (memory.ConversationBootstrap, error)
+	LookupSurfaceForConversation(conversationID string) (string, bool, error)
 	BeginTurn(conversationID string, userMessage string) (memory.PersistedTurn, error)
 	CompleteTurn(conversationID string, turnID string, assistantMessage string) (memory.MessageRecord, error)
 	InterruptTurn(conversationID string, turnID string, publishedPrefix string) (*memory.MessageRecord, error)

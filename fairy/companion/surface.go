@@ -168,12 +168,23 @@ func (s *CompanionService) BindSurface(conversationID string, kind SurfaceKind) 
 	return nil
 }
 
-// ResolveSurface prefers an explicit override, then the session binding, else desktop.
+func (s *CompanionService) cacheSurfaceLocked(conversationID string, kind SurfaceKind) {
+	if s.surfaces == nil {
+		s.surfaces = make(map[string]SurfaceKind)
+	}
+	s.surfaces[conversationID] = kind
+}
+
+// ResolveSurface prefers an explicit override, then the session binding, then durable
+// surface_conversations, else desktop for character-level conversations.
 func (s *CompanionService) ResolveSurface(conversationID string, override SurfaceKind) (SurfaceKind, error) {
 	if strings.TrimSpace(string(override)) != "" {
 		return NormalizeSurface(string(override))
 	}
 	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return "", errors.New("conversation_id is required")
+	}
 	if s != nil {
 		s.surfaceMu.RLock()
 		bound, ok := s.surfaces[conversationID]
@@ -181,17 +192,47 @@ func (s *CompanionService) ResolveSurface(conversationID string, override Surfac
 		if ok {
 			return bound, nil
 		}
+		if port := s.memoryPort(); port != nil {
+			surface, found, err := port.LookupSurfaceForConversation(conversationID)
+			if err != nil {
+				return "", fmt.Errorf("looking up durable surface binding: %w", err)
+			}
+			if found {
+				normalized, err := NormalizeSurface(surface)
+				if err != nil {
+					return "", err
+				}
+				s.surfaceMu.Lock()
+				s.cacheSurfaceLocked(conversationID, normalized)
+				s.surfaceMu.Unlock()
+				return normalized, nil
+			}
+		}
 	}
 	return SurfaceDesktop, nil
 }
 
-// BoundSurface returns the session-bound surface if any.
+// BoundSurface returns the session-bound surface if any, hydrating from durable storage when needed.
 func (s *CompanionService) BoundSurface(conversationID string) (SurfaceKind, bool) {
 	if s == nil {
 		return "", false
 	}
+	conversationID = strings.TrimSpace(conversationID)
 	s.surfaceMu.RLock()
-	defer s.surfaceMu.RUnlock()
-	kind, ok := s.surfaces[strings.TrimSpace(conversationID)]
-	return kind, ok
+	kind, ok := s.surfaces[conversationID]
+	s.surfaceMu.RUnlock()
+	if ok {
+		return kind, true
+	}
+	resolved, err := s.ResolveSurface(conversationID, "")
+	if err != nil {
+		return "", false
+	}
+	s.surfaceMu.RLock()
+	_, ok = s.surfaces[conversationID]
+	s.surfaceMu.RUnlock()
+	if !ok {
+		return "", false
+	}
+	return resolved, true
 }
