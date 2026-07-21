@@ -61,9 +61,6 @@ VALUES
 	if err != nil {
 		t.Fatalf("service SummaryContext: %v", err)
 	}
-	if summary.SchemaVersion != pgstore.CurrentSchemaVersion {
-		t.Fatalf("schema version = %d, want %d", summary.SchemaVersion, pgstore.CurrentSchemaVersion)
-	}
 	if summary.Conversations != 1 || summary.ActiveGlobalMemories != 1 || summary.NeedsReviewMemories != 1 || summary.PendingExtractionTurns != 1 || summary.CandidateKnowledge != 1 || summary.VerifiedKnowledge != 1 {
 		t.Fatalf("summary = %#v", summary)
 	}

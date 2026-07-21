@@ -230,7 +230,7 @@ func openDependencies(ctx context.Context, injected *Dependencies) (*pgstore.Poo
 	if err != nil {
 		return nil, nil, nil, nil, false, false, err
 	}
-	if _, err := pgstore.VerifySchema(ctx, database, pgstore.CurrentSchemaVersion); err != nil {
+	if _, err := pgstore.VerifySchema(ctx, database); err != nil {
 		database.Close()
 		return nil, nil, nil, nil, false, false, fmt.Errorf("database schema: %w", err)
 	}

@@ -2,59 +2,35 @@ package postgres
 
 import (
 	"errors"
-	"io/fs"
 	"testing"
-	"testing/fstest"
 )
 
-func TestLoadMigrations(t *testing.T) {
-	migrations, err := LoadMigrations()
-	if err != nil {
-		t.Fatal(err)
+func TestSchemaModelsMatchTableNames(t *testing.T) {
+	models := schemaModels()
+	tables := schemaTableNames()
+	if len(models) != len(tables) {
+		t.Fatalf("models = %d, tables = %d", len(models), len(tables))
 	}
-	if len(migrations) != CurrentSchemaVersion {
-		t.Fatalf("len(migrations) = %d, want %d", len(migrations), CurrentSchemaVersion)
+	seen := make(map[string]bool, len(tables))
+	for _, table := range tables {
+		if table == "" || seen[table] {
+			t.Fatalf("invalid schema table name %q", table)
+		}
+		seen[table] = true
 	}
-	first := migrations[0]
-	if first.Version != 1 || first.Name != "initial" {
-		t.Fatalf("first migration = %#v", first)
-	}
-	if len(first.Checksum) != 64 {
-		t.Fatalf("checksum length = %d, want 64", len(first.Checksum))
-	}
-	if first.SQL == "" {
-		t.Fatal("first migration SQL is empty")
+	if seen["sqlite_import_runs"] || seen["sqlite_import_checkpoints"] {
+		t.Fatal("SQLite importer tables must not be part of the current schema")
 	}
 }
 
-func TestLoadMigrationsRejectsBadNames(t *testing.T) {
-	_, err := loadMigrations(fstest.MapFS{
-		"migrations/1_bad.sql": {Data: []byte("select 1")},
-	})
-	if err == nil {
-		t.Fatal("expected error")
+func TestQuoteIdentifier(t *testing.T) {
+	if got := quoteIdentifier(`a"b`); got != `"a""b"` {
+		t.Fatalf("quoteIdentifier() = %q", got)
 	}
 }
 
-func TestValidateMigrationsRejectsGaps(t *testing.T) {
-	err := validateMigrations([]Migration{
-		{Version: 1, Name: "one", SQL: "select 1", Checksum: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
-		{Version: 3, Name: "three", SQL: "select 3", Checksum: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
-	})
-	if err == nil {
-		t.Fatal("expected gap error")
-	}
-}
-
-func TestVerifySchemaAbsentSentinel(t *testing.T) {
-	if !errors.Is(ErrSchemaAbsent, ErrSchemaAbsent) {
-		t.Fatal("schema absent sentinel should compare with itself")
-	}
-}
-
-func TestLoadMigrationsRequiresDirectory(t *testing.T) {
-	_, err := loadMigrations(fstest.MapFS{})
-	if !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("err = %v, want fs.ErrNotExist", err)
+func TestSchemaErrorSentinels(t *testing.T) {
+	if !errors.Is(ErrSchemaAbsent, ErrSchemaAbsent) || !errors.Is(ErrSchemaNotCurrent, ErrSchemaNotCurrent) {
+		t.Fatal("schema sentinels should compare with themselves")
 	}
 }

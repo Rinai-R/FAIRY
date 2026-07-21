@@ -24,7 +24,6 @@ var (
 const defaultJobLeaseDuration = 30 * time.Second
 
 type Summary struct {
-	SchemaVersion           int64 `json:"schemaVersion"`
 	Conversations           int64 `json:"conversations"`
 	ActiveGlobalMemories    int64 `json:"activeGlobalMemories"`
 	ActiveCharacterMemories int64 `json:"activeCharacterMemories"`
@@ -74,10 +73,6 @@ func (s *Store) postgresSummary(ctx context.Context) (Summary, error) {
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
-	schemaVersion, err := countPostgresScalar(queryCtx, s.pool, "SELECT COALESCE(MAX(version), 0) FROM fairy_schema_migrations")
-	if err != nil {
-		return Summary{}, fmt.Errorf("reading memory schema version: %w", err)
-	}
 	conversations, err := countPostgresScalar(queryCtx, s.pool, "SELECT COUNT(*) FROM conversations")
 	if err != nil {
 		return Summary{}, fmt.Errorf("counting conversations: %w", err)
@@ -115,7 +110,6 @@ func (s *Store) postgresSummary(ctx context.Context) (Summary, error) {
 		return Summary{}, fmt.Errorf("counting verified knowledge: %w", err)
 	}
 	return Summary{
-		SchemaVersion:           schemaVersion,
 		Conversations:           conversations,
 		ActiveGlobalMemories:    activeGlobalMemories,
 		ActiveCharacterMemories: activeCharacterMemories,

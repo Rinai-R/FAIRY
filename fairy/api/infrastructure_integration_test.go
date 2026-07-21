@@ -62,7 +62,7 @@ func TestProductionInfrastructureStatusAndMetrics(t *testing.T) {
 	assertReadyDependency(t, status, "secretKey")
 	database := status["database"].(map[string]any)
 	schema := database["schema"].(map[string]any)
-	if schema["current"] != true || schema["appliedVersion"] != float64(pgstore.CurrentSchemaVersion) {
+	if schema["current"] != true || schema["presentObjects"] != schema["expectedObjects"] {
 		t.Fatalf("database schema status = %#v", schema)
 	}
 	qdrant := status["qdrant"].(map[string]any)

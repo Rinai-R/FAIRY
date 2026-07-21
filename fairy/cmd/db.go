@@ -56,7 +56,7 @@ func newDBCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 
 func newDBMigrateCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 	return &cobra.Command{
-		Use: "migrate", Short: "Apply embedded PostgreSQL migrations", Args: cobra.NoArgs,
+		Use: "migrate", Short: "Create the current PostgreSQL schema with GORM", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
 			result, err := deps.Database.Migrate(command.Context())
 			if err != nil {
@@ -151,7 +151,7 @@ func (o localDatabaseOperations) Migrate(ctx context.Context) (any, error) {
 	if err := pgstore.Migrate(ctx, pool); err != nil {
 		return nil, err
 	}
-	return pgstore.VerifySchema(ctx, pool, pgstore.CurrentSchemaVersion)
+	return pgstore.VerifySchema(ctx, pool)
 }
 
 func (o localDatabaseOperations) Status(ctx context.Context) (any, error) {
@@ -160,7 +160,7 @@ func (o localDatabaseOperations) Status(ctx context.Context) (any, error) {
 		return nil, err
 	}
 	defer pool.Close()
-	schema, err := pgstore.VerifySchema(ctx, pool, pgstore.CurrentSchemaVersion)
+	schema, err := pgstore.VerifySchema(ctx, pool)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +270,7 @@ func (o localDatabaseOperations) openDatabase(ctx context.Context, verify bool) 
 		return nil, err
 	}
 	if verify {
-		if _, err := pgstore.VerifySchema(ctx, pool, pgstore.CurrentSchemaVersion); err != nil {
+		if _, err := pgstore.VerifySchema(ctx, pool); err != nil {
 			pool.Close()
 			return nil, fmt.Errorf("database schema: %w", err)
 		}

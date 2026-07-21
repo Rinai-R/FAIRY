@@ -54,7 +54,7 @@ func (s *Server) infrastructureStatus(ctx context.Context) (databaseStatus, qdra
 			database.Descriptor = &descriptor
 			database.Error = err.Error()
 		} else {
-			schema, err := pgstore.VerifySchema(ctx, s.rt.Database, pgstore.CurrentSchemaVersion)
+			schema, err := pgstore.VerifySchema(ctx, s.rt.Database)
 			database.Descriptor = &descriptor
 			if err != nil {
 				database.Error = err.Error()

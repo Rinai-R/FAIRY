@@ -20,7 +20,7 @@ export FAIRY_SECRET_MASTER_KEY='<base64-exactly-32-bytes>'
 docker compose up --build
 ```
 
-Compose 固定 PostgreSQL 17 与 Qdrant，先执行 database/vector one-shot migration，再启动 Core。`FAIRY_DATABASE_URL`、`FAIRY_QDRANT_URL` 和 `FAIRY_SECRET_MASTER_KEY` 是生产 required 配置；Core 不使用 SQLite fallback。
+Compose 固定 PostgreSQL 17 与 Qdrant，先使用 GORM `AutoMigrate` 初始化全新 PostgreSQL schema 并执行 vector one-shot migration，再启动 Core。`FAIRY_DATABASE_URL`、`FAIRY_QDRANT_URL` 和 `FAIRY_SECRET_MASTER_KEY` 是生产 required 配置；Core 不使用 SQLite fallback。
 
 ## AI Coding CLI
 
@@ -68,7 +68,7 @@ go -C fairy run . db vector reconcile          # 默认 dry-run
 go -C fairy run . db vector reconcile --apply  # 只删除确认 orphan
 ```
 
-旧 schema v7 SQLite 只由独立离线工具 `tools/sqlite-importer` 读取，正常 `serve` 和 Admin API 不会扫描或自动导入旧数据库。
+PostgreSQL 初始化只支持全新空 schema，不升级旧 PostgreSQL schema，也不读取或导入 SQLite 数据。
 
 ## 备份与恢复
 
@@ -99,7 +99,6 @@ go test -C fairy ./... -count=1
 (cd fairy && go test ./... -race -count=1)
 (cd fairy && go vet ./...)
 FAIRY_TEST_DATABASE_URL=... FAIRY_TEST_QDRANT_GRPC_URL=... go test -C fairy ./... -tags integration -count=1
-go test -C tools/sqlite-importer ./... -race -count=1
 pnpm --filter @fairy/web test
 pnpm --filter @fairy/web build
 docker compose up -d --build --wait
