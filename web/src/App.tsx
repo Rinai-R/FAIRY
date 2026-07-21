@@ -5,9 +5,11 @@ import {
   DashboardIcon,
   IdCardIcon,
   LightningBoltIcon,
+  LockClosedIcon,
   MixerHorizontalIcon,
   PersonIcon,
   SpeakerLoudIcon,
+  StarFilledIcon,
 } from "@radix-ui/react-icons";
 import { useState } from "react";
 import { getToken, setToken } from "./api";
@@ -50,7 +52,7 @@ export default function App() {
       <div className="shell">
         <aside className="sidebar">
           <div className="brand">
-            <span className="brand-mark" aria-hidden="true">✦</span>
+            <span className="brand-mark" aria-hidden="true"><StarFilledIcon /></span>
             <div>
               <strong>FAIRY</strong>
               <small>控制台</small>
@@ -75,7 +77,8 @@ export default function App() {
             })}
           </nav>
           <div className="sidebar-foot">
-            <Text as="label" size="1" color="gray">
+            <Text as="label" size="1" color="gray" className="token-label">
+              <LockClosedIcon aria-hidden="true" />
               API Token
             </Text>
             <TextField.Root
