@@ -6,6 +6,7 @@ import (
 	"unicode/utf8"
 
 	"fairy/character"
+	"fairy/interaction"
 	"fairy/memory"
 	"fairy/model"
 	"fairy/profile"
@@ -135,22 +136,14 @@ func BuildCompactInput(
 	promptWindow memory.PromptWindowRecord,
 	messages []memory.MessageRecord,
 	states []VisualState,
-	surface SurfaceKind,
+	resolved interaction.Resolved,
 ) ([]model.PromptItem, error) {
-	normalizedSurface, err := NormalizeSurface(string(surface))
-	if err != nil {
-		return nil, err
-	}
-	policy, err := InteractionPolicyForSurface(normalizedSurface)
-	if err != nil {
-		return nil, err
-	}
 	windowed := messagesAfterCutoff(messages, promptWindow.CutoffMessageSequence)
 	prefix, err := BuildStablePrefixItems(record, userProfile, states)
 	if err != nil {
 		return nil, err
 	}
-	if policy.Audience == AudiencePublic {
+	if !resolved.AllowsPersonalMemory() {
 		prefix = append(prefix[:2], prefix[3:]...)
 	}
 	items := make([]model.PromptItem, 0, len(prefix)+len(windowed)+2)
@@ -225,12 +218,12 @@ func (s *CompanionService) maybeCompactBeforeTurn(request SubmitCompiledTurnRequ
 	if err != nil {
 		return err
 	}
-	interactionPolicy, err := InteractionPolicyForSurface(request.Surface)
+	resolved, err := s.ResolveInteraction(request.ConversationID)
 	if err != nil {
 		return err
 	}
 	var userProfile *profile.Snapshot
-	if interactionPolicy.Audience == AudiencePrivate {
+	if resolved.AllowsPersonalMemory() {
 		userProfile, err = s.profileSource().Current()
 		if err != nil {
 			return err
@@ -242,7 +235,7 @@ func (s *CompanionService) maybeCompactBeforeTurn(request SubmitCompiledTurnRequ
 		Content:  request.Input,
 		Sequence: uint64(len(estimatedMessages) + 1),
 	})
-	slots, err := BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, estimatedMessages, request.AvailableVisualStates, memory.RetrievalContext{}, request.Surface)
+	slots, err := BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, estimatedMessages, request.AvailableVisualStates, memory.RetrievalContext{}, resolved)
 	if err != nil {
 		return err
 	}

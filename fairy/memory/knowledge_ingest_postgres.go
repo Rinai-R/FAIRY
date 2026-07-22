@@ -147,7 +147,7 @@ func (s *Store) processKnowledgeIngestJobsPostgres(ctx context.Context, limit in
 		if statement == "" {
 			statement = topic
 		}
-		if !acceptKnowledgeIngest(topic, statement) {
+		if !acceptKnowledgeIngest(job.query, topic, statement, job.url, job.rank) {
 			if err := s.finishKnowledgeIngestJobPostgres(ctx, job.id, "dropped", ""); err != nil {
 				return written, err
 			}

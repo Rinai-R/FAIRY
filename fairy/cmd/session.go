@@ -9,35 +9,49 @@ import (
 	"strings"
 
 	"fairy/coreclient"
+	"fairy/interaction"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
 
 func newSessionCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 	command := &cobra.Command{Use: "session", Short: "Manage debug sessions", GroupID: "debug"}
-	var surface, surfaceKey string
+	var endpoint, endpointKey, audience, initiation, presentation, principalNamespace, principalSubject string
 	open := &cobra.Command{
 		Use: "open", Short: "Open a character conversation", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
-			if err := validateSurface(surface); err != nil {
-				return err
+			interactionContext := interaction.Context{
+				Audience: interaction.AudienceKind(audience), Initiation: interaction.InitiationKind(initiation),
+				Presentation: interaction.PresentationKind(presentation),
 			}
-			if surface != "desktop" && strings.TrimSpace(surfaceKey) == "" {
-				return errors.New("--surface-key is required for IM sessions")
+			if principalNamespace != "" || principalSubject != "" {
+				interactionContext.Principal = &interaction.PrincipalRef{Namespace: principalNamespace, Subject: principalSubject}
+			}
+			endpointKind := interaction.EndpointKind(endpoint)
+			if err := interactionContext.Validate(endpointKind); err != nil {
+				return err
 			}
 			client, config, err := newClient(v, deps)
 			if err != nil {
 				return err
 			}
-			result, err := client.OpenSession(command.Context(), coreclient.OpenSessionRequest{Surface: surface, SurfaceKey: surfaceKey})
+			result, err := client.OpenSession(command.Context(), coreclient.OpenSessionRequest{Endpoint: endpointKind, EndpointKey: endpointKey, Interaction: interactionContext})
 			if err != nil {
 				return err
 			}
 			return writeOutput(command.OutOrStdout(), config.Output, result)
 		},
 	}
-	open.Flags().StringVar(&surface, "surface", "desktop", "session surface: desktop, im_private, or im_group")
-	open.Flags().StringVar(&surfaceKey, "surface-key", "", "opaque external conversation key for IM surfaces")
+	open.Flags().StringVar(&endpoint, "endpoint-kind", "", "endpoint kind: desktop or im")
+	open.Flags().StringVar(&endpointKey, "endpoint-key", "", "stable opaque endpoint conversation key")
+	open.Flags().StringVar(&audience, "audience", "", "audience shape: single or multi")
+	open.Flags().StringVar(&initiation, "initiation", "", "initiation mode: direct or ambient")
+	open.Flags().StringVar(&presentation, "presentation", "", "presentation mode: embodied or chat")
+	open.Flags().StringVar(&principalNamespace, "principal-namespace", "", "authenticated principal namespace for single-user IM")
+	open.Flags().StringVar(&principalSubject, "principal-subject", "", "authenticated principal subject for single-user IM")
+	for _, name := range []string{"endpoint-kind", "endpoint-key", "audience", "initiation", "presentation"} {
+		_ = open.MarkFlagRequired(name)
+	}
 
 	var conversationID, participationFile string
 	participate := &cobra.Command{
@@ -47,7 +61,7 @@ func newSessionCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var request coreclient.GroupParticipationRequest
+			var request coreclient.ParticipationRequest
 			if err := decodeStrictCLIObject(payload, &request); err != nil {
 				return fmt.Errorf("decode participation request: %w", err)
 			}
@@ -55,7 +69,7 @@ func newSessionCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			result, err := client.DecideGroupParticipation(command.Context(), conversationID, request)
+			result, err := client.DecideParticipation(command.Context(), conversationID, request)
 			if err != nil {
 				return err
 			}
@@ -88,7 +102,7 @@ func decodeStrictCLIObject(payload []byte, out any) error {
 
 func newTurnCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 	command := &cobra.Command{Use: "turn", Short: "Send or cancel debug turns", GroupID: "debug"}
-	var conversationID, input, surface string
+	var conversationID, input string
 	var speech bool
 	send := &cobra.Command{
 		Use: "send", Short: "Submit a turn and stream harness events", Args: cobra.NoArgs,
@@ -96,21 +110,17 @@ func newTurnCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 			if strings.TrimSpace(conversationID) == "" || strings.TrimSpace(input) == "" {
 				return errors.New("conversation and input are required")
 			}
-			if err := validateSurface(surface); err != nil {
-				return err
-			}
 			client, config, err := newClient(v, deps)
 			if err != nil {
 				return err
 			}
 			return sendTurn(command, client, config, conversationID, coreclient.SubmitTurnRequest{
-				Input: input, SpeechEnabled: speech, Surface: surface,
+				Input: input, SpeechEnabled: speech,
 			})
 		},
 	}
 	send.Flags().StringVar(&conversationID, "conversation", "", "conversation ID")
 	send.Flags().StringVar(&input, "input", "", "user input")
-	send.Flags().StringVar(&surface, "surface", "desktop", "turn surface")
 	send.Flags().BoolVar(&speech, "speech", false, "request speech synthesis")
 	_ = send.MarkFlagRequired("conversation")
 	_ = send.MarkFlagRequired("input")
@@ -249,13 +259,4 @@ func newEventsCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 	_ = follow.MarkFlagRequired("conversation")
 	command.AddCommand(follow)
 	return command
-}
-
-func validateSurface(surface string) error {
-	switch surface {
-	case "desktop", "im_private", "im_group":
-		return nil
-	default:
-		return fmt.Errorf("surface must be desktop, im_private, or im_group")
-	}
 }

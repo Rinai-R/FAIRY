@@ -135,22 +135,22 @@ func newCoreWSTestServer(silentObserved, waitObserved chan struct{}, openCalls, 
 			switch frame["type"] {
 			case "session.open":
 				openCalls.Add(1)
-				surface, _ := frame["surface"].(string)
-				surfaceKey, _ := frame["surfaceKey"].(string)
-				if surface != "im_group" || surfaceKey != "onebot-group:20001" {
+				endpoint, _ := frame["endpoint"].(string)
+				endpointKey, _ := frame["endpointKey"].(string)
+				if endpoint != "im" || endpointKey != "onebot-group:20001" {
 					errorsCh <- fmt.Errorf("session open = %#v", frame)
 					return
 				}
 				_ = conn.WriteJSON(map[string]any{
 					"type": "session.opened", "requestId": requestID,
-					"conversationId": "c1", "characterId": "character-1", "messageCount": 0, "surface": "im_group",
+					"conversationId": "c1", "characterId": "character-1", "messageCount": 0, "endpoint": "im",
 				})
 			case "session.watch":
 				mu.Lock()
 				watchConn = conn
 				mu.Unlock()
 				_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID, "conversationId": "c1"})
-			case "group.observe":
+			case "ambient.observe":
 				call := observeCalls.Add(1)
 				message, _ := frame["message"].(map[string]any)
 				text, _ := message["text"].(string)

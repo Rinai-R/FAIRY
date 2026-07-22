@@ -13,8 +13,9 @@ var (
 )
 
 type activeTurn struct {
-	turnID string
-	cancel context.CancelFunc
+	turnID     string
+	cancel     context.CancelFunc
+	delivering bool
 }
 
 type conversationGate struct {
@@ -58,6 +59,33 @@ func (s *CompanionService) bindTurn(conversationID string, turnID string) {
 	if gate.activeTurn != nil {
 		gate.activeTurn.turnID = turnID
 	}
+}
+
+func (s *CompanionService) markTurnDelivering(conversationID, turnID string) {
+	gate := s.gateFor(conversationID)
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	if gate.activeTurn != nil && gate.activeTurn.turnID == turnID {
+		gate.activeTurn.delivering = true
+	}
+}
+
+// cancelTurnBeforeDelivery invalidates model generation when newer ambient
+// input arrives, but never interrupts a turn that has entered final delivery.
+func (s *CompanionService) cancelTurnBeforeDelivery(conversationID string) bool {
+	s.gateMu.Lock()
+	gate := s.gates[conversationID]
+	s.gateMu.Unlock()
+	if gate == nil {
+		return false
+	}
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	if gate.activeTurn == nil || gate.activeTurn.delivering {
+		return false
+	}
+	gate.activeTurn.cancel()
+	return true
 }
 
 func (s *CompanionService) endTurn(conversationID string, turnID string) {

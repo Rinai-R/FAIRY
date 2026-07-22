@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"fairy/coreclient"
+	"fairy/interaction"
 	zero "github.com/wdvxdr1123/ZeroBot"
 	"github.com/wdvxdr1123/ZeroBot/driver"
 	"github.com/wdvxdr1123/ZeroBot/message"
@@ -22,6 +23,7 @@ type bot struct {
 	socket    *coreclient.SessionSocket
 
 	mu            sync.Mutex
+	ensureMu      sync.Mutex
 	conversations map[int64]string
 	senders       map[string]func(string) error
 }
@@ -57,7 +59,7 @@ func (b *bot) handle(ctx *zero.Ctx) {
 	if _, ok := b.allowlist[groupID]; !ok {
 		return
 	}
-	observation, err := groupObservationFromEvent(ctx)
+	observation, err := ambientObservationFromEvent(ctx)
 	if err != nil {
 		log.Printf("group message %d ignored: %v", groupID, err)
 		return
@@ -74,12 +76,14 @@ func (b *bot) handle(ctx *zero.Ctx) {
 		log.Printf("group message %d open session failed: %v", groupID, err)
 		return
 	}
-	if err := b.socket.ObserveGroup(b.ctx, conversationID, observation); err != nil {
+	if err := b.socket.ObserveAmbient(b.ctx, conversationID, observation); err != nil {
 		log.Printf("group message %d observe failed: %v", groupID, err)
 	}
 }
 
 func (b *bot) ensureConversation(groupID int64, send func(string) error) (string, error) {
+	b.ensureMu.Lock()
+	defer b.ensureMu.Unlock()
 	b.mu.Lock()
 	if conversationID, ok := b.conversations[groupID]; ok {
 		b.senders[conversationID] = send
@@ -89,37 +93,45 @@ func (b *bot) ensureConversation(groupID int64, send func(string) error) (string
 	b.mu.Unlock()
 
 	session, err := b.socket.OpenSession(b.ctx, coreclient.OpenSessionRequest{
-		Surface: "im_group", SurfaceKey: "onebot-group:" + strconv.FormatInt(groupID, 10),
+		Endpoint: interaction.EndpointIM, EndpointKey: "onebot-group:" + strconv.FormatInt(groupID, 10),
+		Interaction: interaction.Context{Audience: interaction.AudienceMulti, Initiation: interaction.InitiationAmbient, Presentation: interaction.PresentationChat},
 	})
 	if err != nil {
 		return "", err
 	}
-	if _, err := b.socket.Watch(b.ctx, session.ConversationID); err != nil {
+	stream, err := b.socket.Watch(b.ctx, session.ConversationID)
+	if err != nil {
 		return "", err
 	}
 	b.mu.Lock()
 	b.conversations[groupID] = session.ConversationID
 	b.senders[session.ConversationID] = send
 	b.mu.Unlock()
+	go b.consumeHarness(session.ConversationID, stream)
 	return session.ConversationID, nil
 }
 
-func (b *bot) consumeHarness() {
+func (b *bot) consumeHarness(conversationID string, stream <-chan coreclient.HarnessEvent) {
 	for {
-		event, err := b.socket.NextHarness(b.ctx)
-		if err != nil {
-			if b.ctx.Err() != nil {
+		var event coreclient.HarnessEvent
+		select {
+		case <-b.ctx.Done():
+			return
+		case received, ok := <-stream:
+			if !ok {
+				if b.ctx.Err() == nil {
+					log.Printf("session harness stream closed: conversation=%s", conversationID)
+				}
 				return
 			}
-			log.Printf("session harness read failed: %v", err)
-			return
+			event = received
 		}
 		text, ok := finalBeatText(event)
 		if !ok {
 			continue
 		}
 		b.mu.Lock()
-		send := b.senders[event.ConversationID]
+		send := b.senders[conversationID]
 		b.mu.Unlock()
 		if send == nil {
 			continue
@@ -130,25 +142,25 @@ func (b *bot) consumeHarness() {
 	}
 }
 
-func groupObservationFromEvent(ctx *zero.Ctx) (coreclient.GroupObservation, error) {
+func ambientObservationFromEvent(ctx *zero.Ctx) (coreclient.AmbientObservation, error) {
 	if ctx == nil || ctx.Event == nil || ctx.Event.Sender == nil {
-		return coreclient.GroupObservation{}, errors.New("OneBot event sender is required")
+		return coreclient.AmbientObservation{}, errors.New("OneBot event sender is required")
 	}
 	text := strings.TrimSpace(ctx.ExtractPlainText())
 	if text == "" {
-		return coreclient.GroupObservation{}, errors.New("plain text is empty")
+		return coreclient.AmbientObservation{}, errors.New("plain text is empty")
 	}
 	if ctx.Event.MessageID == nil {
-		return coreclient.GroupObservation{}, errors.New("message ID is required")
+		return coreclient.AmbientObservation{}, errors.New("message ID is required")
 	}
 	senderName := strings.TrimSpace(ctx.Event.Sender.Card)
 	if senderName == "" {
 		senderName = strings.TrimSpace(ctx.Event.Sender.NickName)
 	}
 	if senderName == "" || ctx.Event.UserID <= 0 || ctx.Event.Time <= 0 {
-		return coreclient.GroupObservation{}, errors.New("sender name, sender ID, and timestamp are required")
+		return coreclient.AmbientObservation{}, errors.New("sender name, sender ID, and timestamp are required")
 	}
-	return coreclient.GroupObservation{
+	return coreclient.AmbientObservation{
 		MessageID: fmt.Sprint(ctx.Event.MessageID), SenderID: strconv.FormatInt(ctx.Event.UserID, 10), SenderName: senderName,
 		Text: text, DirectedToBot: ctx.Event.IsToMe, TimestampUnixMS: ctx.Event.Time * 1000,
 	}, nil
@@ -186,7 +198,6 @@ func runBot(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	go b.consumeHarness()
 	engine := zero.New()
 	b.register(engine)
 	defer engine.Delete()

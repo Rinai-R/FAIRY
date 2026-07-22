@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"fairy/interaction"
 	pgstore "fairy/postgres"
 
 	"github.com/jackc/pgx/v5"
@@ -90,13 +91,18 @@ func (s *Store) Encrypted() bool {
 	return s != nil && s.pool != nil && s.pool.Raw() != nil && s.cipher != nil && s.cipher.aead != nil
 }
 
-// DigestSurfaceKey derives the opaque binding digest used to isolate an
-// external Surface conversation. The raw key is never persisted or exposed.
-func (s *Store) DigestSurfaceKey(surface, rawKey string) (string, error) {
+func (s *Store) DigestEndpointKey(endpoint interaction.EndpointKind, rawKey string) (string, error) {
 	if s == nil || s.cipher == nil {
 		return "", ErrCipherRequired
 	}
-	return s.cipher.DigestSurfaceKey(surface, rawKey)
+	return s.cipher.DigestEndpointKey(endpoint, rawKey)
+}
+
+func (s *Store) DigestPrincipal(principal interaction.PrincipalRef) (string, error) {
+	if s == nil || s.cipher == nil {
+		return "", ErrCipherRequired
+	}
+	return s.cipher.DigestPrincipal(principal)
 }
 
 func (s *Store) Save(connectionID string, value Value) error {

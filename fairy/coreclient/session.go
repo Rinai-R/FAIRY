@@ -24,10 +24,10 @@ func (c *Client) OpenSession(ctx context.Context, request OpenSessionRequest) (O
 	return result, err
 }
 
-func (c *Client) DecideGroupParticipation(ctx context.Context, conversationID string, request GroupParticipationRequest) (GroupParticipationResponse, error) {
-	var result GroupParticipationResponse
+func (c *Client) DecideParticipation(ctx context.Context, conversationID string, request ParticipationRequest) (ParticipationResponse, error) {
+	var result ParticipationResponse
 	err := c.sessionRPC(ctx, c.timeout, func(ctx context.Context, socket *SessionSocket) error {
-		decision, decideErr := socket.DecideGroupParticipation(ctx, conversationID, request)
+		decision, decideErr := socket.DecideParticipation(ctx, conversationID, request)
 		if decideErr != nil {
 			return decideErr
 		}
@@ -37,7 +37,7 @@ func (c *Client) DecideGroupParticipation(ctx context.Context, conversationID st
 	return result, err
 }
 
-func validateGroupParticipationResponse(result GroupParticipationResponse) error {
+func validateParticipationResponse(result ParticipationResponse) error {
 	switch result.Action {
 	case "reply":
 		if result.TargetMessageID == nil || strings.TrimSpace(*result.TargetMessageID) == "" || result.WaitSeconds != nil {
@@ -106,9 +106,9 @@ func (c *Client) OpenEvents(ctx context.Context, conversationID string, readyTim
 	return &wsEventStream{ctx: ctx, socket: socket, ch: ch}, nil
 }
 
-func (c *Client) ObserveGroup(ctx context.Context, conversationID string, message GroupObservation) error {
+func (c *Client) ObserveAmbient(ctx context.Context, conversationID string, message AmbientObservation) error {
 	return c.sessionRPC(ctx, c.timeout, func(ctx context.Context, socket *SessionSocket) error {
-		return socket.ObserveGroup(ctx, conversationID, message)
+		return socket.ObserveAmbient(ctx, conversationID, message)
 	})
 }
 

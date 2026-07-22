@@ -160,12 +160,22 @@ var schemaConstraints = []schemaConstraint{
 	{"vector_reconciliation_runs", "vector_reconciliation_runs_orphan_check", "CHECK (orphan_points >= 0)"},
 	{"vector_reconciliation_runs", "vector_reconciliation_runs_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
 	{"vector_reconciliation_runs", "vector_reconciliation_runs_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
-	{"surface_conversations", "surface_conversations_surface_check", "CHECK (surface IN ('desktop', 'im_private', 'im_group'))"},
-	{"surface_conversations", "surface_conversations_digest_check", "CHECK (surface_key_digest ~ '^[0-9a-f]{64}$')"},
-	{"surface_conversations", "surface_conversations_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
-	{"surface_conversations", "surface_conversations_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"surface_conversations", "surface_conversations_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
-	{"surface_conversations", "surface_conversations_conversation_key", "UNIQUE (conversation_id)"},
+	{"endpoint_conversations", "endpoint_conversations_endpoint_check", "CHECK (endpoint IN ('desktop', 'im'))"},
+	{"endpoint_conversations", "endpoint_conversations_endpoint_digest_check", "CHECK (endpoint_key_digest ~ '^[0-9a-f]{64}$')"},
+	{"endpoint_conversations", "endpoint_conversations_audience_check", "CHECK (audience IN ('single', 'multi'))"},
+	{"endpoint_conversations", "endpoint_conversations_initiation_check", "CHECK (initiation IN ('direct', 'ambient'))"},
+	{"endpoint_conversations", "endpoint_conversations_presentation_check", "CHECK (presentation IN ('embodied', 'chat'))"},
+	{"endpoint_conversations", "endpoint_conversations_principal_pair_check", "CHECK ((principal_namespace IS NULL) = (principal_digest IS NULL))"},
+	{"endpoint_conversations", "endpoint_conversations_principal_shape_check", "CHECK ((endpoint = 'im' AND audience = 'single') = (principal_namespace IS NOT NULL AND principal_digest IS NOT NULL))"},
+	{"endpoint_conversations", "endpoint_conversations_principal_namespace_check", "CHECK (principal_namespace IS NULL OR principal_namespace ~ '^[a-z0-9._-]{1,64}$')"},
+	{"endpoint_conversations", "endpoint_conversations_principal_digest_check", "CHECK (principal_digest IS NULL OR principal_digest ~ '^[0-9a-f]{64}$')"},
+	{"endpoint_conversations", "endpoint_conversations_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
+	{"endpoint_conversations", "endpoint_conversations_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
+	{"endpoint_conversations", "endpoint_conversations_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
+	{"endpoint_conversations", "endpoint_conversations_conversation_key", "UNIQUE (conversation_id)"},
+	{"owner_identities", "owner_identities_namespace_check", "CHECK (namespace ~ '^[a-z0-9._-]{1,64}$')"},
+	{"owner_identities", "owner_identities_digest_check", "CHECK (subject_digest ~ '^[0-9a-f]{64}$')"},
+	{"owner_identities", "owner_identities_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
 }
 
 var schemaIndexes = []schemaIndex{
@@ -189,7 +199,7 @@ var schemaIndexes = []schemaIndex{
 	{"memory_embedding_jobs_item", "CREATE INDEX IF NOT EXISTS memory_embedding_jobs_item ON memory_embedding_jobs(item_kind, item_id, model_id, content_hash)"},
 	{"vector_rebuild_runs_status", "CREATE INDEX IF NOT EXISTS vector_rebuild_runs_status ON vector_rebuild_runs(status, updated_at_ms DESC, id ASC)"},
 	{"vector_reconciliation_runs_status", "CREATE INDEX IF NOT EXISTS vector_reconciliation_runs_status ON vector_reconciliation_runs(status, updated_at_ms DESC, id ASC)"},
-	{"surface_conversations_conversation", "CREATE INDEX IF NOT EXISTS surface_conversations_conversation ON surface_conversations(conversation_id)"},
+	{"endpoint_conversations_conversation", "CREATE INDEX IF NOT EXISTS endpoint_conversations_conversation ON endpoint_conversations(conversation_id)"},
 }
 
 func Migrate(ctx context.Context, pool *Pool) error {

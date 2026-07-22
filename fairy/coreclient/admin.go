@@ -12,6 +12,31 @@ var configSections = map[string]struct{}{
 	"model": {}, "speech": {}, "web-search": {}, "semantic-embedding": {},
 }
 
+type OwnerIdentity struct {
+	Namespace       string `json:"namespace"`
+	PrincipalDigest string `json:"principalDigest"`
+	CreatedAtUnixMS int64  `json:"createdAtUnixMs"`
+}
+
+func (c *Client) ListOwnerIdentities(ctx context.Context) ([]OwnerIdentity, error) {
+	var result []OwnerIdentity
+	err := c.doJSON(ctx, "list owner identities", http.MethodGet, "/v1/identities/owners", nil, &result)
+	return result, err
+}
+
+func (c *Client) BindOwnerIdentity(ctx context.Context, namespace, subject string) (OwnerIdentity, error) {
+	body, _ := json.Marshal(map[string]string{"namespace": namespace, "subject": subject})
+	var result OwnerIdentity
+	err := c.doJSON(ctx, "bind owner identity", http.MethodPut, "/v1/identities/owners", body, &result)
+	return result, err
+}
+
+func (c *Client) UnbindOwnerIdentity(ctx context.Context, namespace, subject string) error {
+	body, _ := json.Marshal(map[string]string{"namespace": namespace, "subject": subject})
+	_, err := c.doRawJSON(ctx, "unbind owner identity", http.MethodDelete, "/v1/identities/owners", body)
+	return err
+}
+
 func (c *Client) GetConfig(ctx context.Context, section string) (json.RawMessage, error) {
 	if _, ok := configSections[section]; !ok {
 		return nil, errors.New("unsupported config section")

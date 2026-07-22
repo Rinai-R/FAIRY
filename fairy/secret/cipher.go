@@ -10,10 +10,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"golang.org/x/crypto/hkdf"
 	"io"
 	"os"
 	"strings"
+
+	"fairy/interaction"
+	"golang.org/x/crypto/hkdf"
 )
 
 const (
@@ -23,17 +25,18 @@ const (
 )
 
 var (
-	ErrMasterKeyRequired = errors.New("FAIRY_SECRET_MASTER_KEY is required")
-	ErrMasterKeyInvalid  = errors.New("FAIRY_SECRET_MASTER_KEY must be an exact base64 encoding of 32 bytes")
-	ErrCipherRequired    = errors.New("secret cipher is required")
-	ErrDecryptFailed     = errors.New("secret ciphertext authentication failed")
-	ErrSurfaceKeyInvalid = errors.New("surface key must be 1-128 ASCII characters from [A-Za-z0-9._:-]")
+	ErrMasterKeyRequired  = errors.New("FAIRY_SECRET_MASTER_KEY is required")
+	ErrMasterKeyInvalid   = errors.New("FAIRY_SECRET_MASTER_KEY must be an exact base64 encoding of 32 bytes")
+	ErrCipherRequired     = errors.New("secret cipher is required")
+	ErrDecryptFailed      = errors.New("secret ciphertext authentication failed")
+	ErrEndpointKeyInvalid = errors.New("endpoint key must be 1-128 ASCII characters from [A-Za-z0-9._:-]")
 )
 
 type Cipher struct {
-	aead           cipher.AEAD
-	rand           io.Reader
-	surfaceHMACKey []byte
+	aead             cipher.AEAD
+	rand             io.Reader
+	endpointHMACKey  []byte
+	principalHMACKey []byte
 }
 
 func CipherFromEnv(getenv func(string) string) (*Cipher, error) {
@@ -72,46 +75,68 @@ func newCipher(key []byte, random io.Reader) (*Cipher, error) {
 	if err != nil {
 		return nil, errors.New("initializing secret cipher mode failed")
 	}
-	hmacKey := make([]byte, 32)
-	reader := hkdf.New(sha256.New, key, nil, []byte("FAIRY surface binding v1"))
-	if _, err := io.ReadFull(reader, hmacKey); err != nil {
-		clear(hmacKey)
-		return nil, errors.New("deriving surface binding key failed")
+	endpointHMACKey, err := deriveHMACKey(key, "FAIRY endpoint binding v1")
+	if err != nil {
+		return nil, err
 	}
-	return &Cipher{aead: aead, rand: random, surfaceHMACKey: hmacKey}, nil
+	principalHMACKey, err := deriveHMACKey(key, "FAIRY principal identity v1")
+	if err != nil {
+		clear(endpointHMACKey)
+		return nil, err
+	}
+	return &Cipher{aead: aead, rand: random, endpointHMACKey: endpointHMACKey, principalHMACKey: principalHMACKey}, nil
 }
 
-// DigestSurfaceKey returns a stable, domain-separated HMAC digest for a
-// validated external Surface key. The raw key is never returned or persisted.
-func (c *Cipher) DigestSurfaceKey(surface, rawKey string) (string, error) {
-	if c == nil || len(c.surfaceHMACKey) == 0 {
+func deriveHMACKey(key []byte, info string) ([]byte, error) {
+	derived := make([]byte, 32)
+	reader := hkdf.New(sha256.New, key, nil, []byte(info))
+	if _, err := io.ReadFull(reader, derived); err != nil {
+		clear(derived)
+		return nil, errors.New("deriving identity binding key failed")
+	}
+	return derived, nil
+}
+
+func (c *Cipher) DigestEndpointKey(endpoint interaction.EndpointKind, rawKey string) (string, error) {
+	if c == nil || len(c.endpointHMACKey) == 0 {
 		return "", ErrCipherRequired
 	}
-	if strings.TrimSpace(surface) == "" || strings.ContainsAny(surface, "\x00\n\r\t") {
-		return "", ErrSurfaceKeyInvalid
-	}
-	if err := ValidateSurfaceKey(rawKey); err != nil {
+	if err := interaction.ValidateEndpoint(endpoint); err != nil {
 		return "", err
 	}
-	mac := hmac.New(sha256.New, c.surfaceHMACKey)
-	_, _ = mac.Write([]byte(surface))
+	if err := ValidateEndpointKey(rawKey); err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, c.endpointHMACKey)
+	_, _ = mac.Write([]byte(endpoint))
 	_, _ = mac.Write([]byte{0})
 	_, _ = mac.Write([]byte(rawKey))
 	return hex.EncodeToString(mac.Sum(nil)), nil
 }
 
-// ValidateSurfaceKey accepts only stable opaque ASCII identifiers supplied by
-// a Surface adapter. Restricting the alphabet keeps the transport contract
-// deterministic and prevents control/path characters at the boundary.
-func ValidateSurfaceKey(rawKey string) error {
+func (c *Cipher) DigestPrincipal(principal interaction.PrincipalRef) (string, error) {
+	if c == nil || len(c.principalHMACKey) == 0 {
+		return "", ErrCipherRequired
+	}
+	if err := principal.Validate(); err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, c.principalHMACKey)
+	_, _ = mac.Write([]byte(principal.Namespace))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(principal.Subject))
+	return hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+func ValidateEndpointKey(rawKey string) error {
 	if rawKey == "" || strings.TrimSpace(rawKey) != rawKey || len(rawKey) > 128 {
-		return ErrSurfaceKeyInvalid
+		return ErrEndpointKeyInvalid
 	}
 	for _, r := range rawKey {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || strings.ContainsRune("._:-", r) {
 			continue
 		}
-		return ErrSurfaceKeyInvalid
+		return ErrEndpointKeyInvalid
 	}
 	return nil
 }

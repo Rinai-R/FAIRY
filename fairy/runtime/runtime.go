@@ -13,6 +13,7 @@ import (
 	"fairy/character"
 	"fairy/companion"
 	"fairy/config"
+	"fairy/identity"
 	"fairy/logx"
 	"fairy/memory"
 	"fairy/model"
@@ -57,6 +58,7 @@ type Runtime struct {
 	VectorIndex *vectorindex.Client
 
 	MemoryStore  *memory.Store
+	Identity     *identity.Store
 	Memory       *memory.MemoryService
 	Secret       *secret.Store
 	Model        *model.ModelService
@@ -125,6 +127,11 @@ func Open(options Options) (*Runtime, error) {
 	webSearch := search.NewServiceFromEnv(webSettings.BaseURL)
 	modelService := model.NewModelService(configRoot, secretStore)
 	companionService := companion.NewCompanionServiceWithRuntime(configRoot, memoryStore, modelService, webSearch)
+	identityStore, err := identity.NewStore(database)
+	if err != nil {
+		return nil, err
+	}
+	companion.AttachOwnerIdentityStore(companionService, identityStore)
 	characterService := character.NewCharacterService(configRoot)
 	configService := config.NewConfigService(configRoot, secretStore)
 	speechService := speech.NewSpeechService(configRoot, secretStore)
@@ -141,6 +148,7 @@ func Open(options Options) (*Runtime, error) {
 		Database:     database,
 		VectorIndex:  vectorClient,
 		MemoryStore:  memoryStore,
+		Identity:     identityStore,
 		Memory:       memory.NewMemoryServiceWithStore(configRoot, memoryStore),
 		Secret:       secretStore,
 		Model:        modelService,

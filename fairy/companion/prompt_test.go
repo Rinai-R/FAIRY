@@ -81,12 +81,12 @@ func TestBuildRespondContextSlotsKeepsStableOrderAndOmissionMetadata(t *testing.
 		[]memory.MessageRecord{{Role: "user", Content: "你好", Sequence: 1}},
 		[]VisualState{{ID: "idle", Description: "待机"}},
 		memory.RetrievalContext{},
-		SurfaceDesktop,
+		desktopResolved(),
 	)
 	if err != nil {
 		t.Fatalf("BuildRespondContextSlots() error = %v", err)
 	}
-	wantIDs := []string{"character", "display_language", "profile", "available_visual_states", "surface", "compaction_summary", "dialogue", "retrieved_context"}
+	wantIDs := []string{"character", "display_language", "profile", "available_visual_states", "interaction", "compaction_summary", "dialogue", "retrieved_context"}
 	if len(slots) != len(wantIDs) {
 		t.Fatalf("slots len = %d, want %d: %#v", len(slots), len(wantIDs), slots)
 	}
@@ -108,8 +108,8 @@ func TestBuildRespondContextSlotsKeepsStableOrderAndOmissionMetadata(t *testing.
 	if len(items) != 6 {
 		t.Fatalf("items len = %d, want 6: %#v", len(items), items)
 	}
-	if !strings.Contains(items[4].Content, `"kind":"desktop"`) {
-		t.Fatalf("surface item = %q, want desktop kind", items[4].Content)
+	if !strings.Contains(items[4].Content, `"endpoint":"desktop"`) {
+		t.Fatalf("interaction item = %q, want desktop endpoint", items[4].Content)
 	}
 }
 
@@ -142,7 +142,7 @@ func TestBuildRespondInputKeepsPersonaOutOfInstructions(t *testing.T) {
 				ConfidenceBasisPoints: 9000,
 			}},
 		},
-		SurfaceDesktop,
+		desktopResolved(),
 	)
 	if err != nil {
 		t.Fatalf("BuildRespondInput() error = %v", err)
@@ -165,8 +165,8 @@ func TestBuildRespondInputKeepsPersonaOutOfInstructions(t *testing.T) {
 	if !strings.Contains(items[3].Content, "available_visual_states") || !strings.Contains(items[3].Content, "fairy_context_data") {
 		t.Fatalf("visual states = %#v", items[3])
 	}
-	if items[4].Type != model.PromptItemContextData || !strings.Contains(items[4].Content, `"contextType":"surface"`) || !strings.Contains(items[4].Content, `"kind":"desktop"`) {
-		t.Fatalf("surface context = %#v", items[4])
+	if items[4].Type != model.PromptItemContextData || !strings.Contains(items[4].Content, `"contextType":"interaction"`) || !strings.Contains(items[4].Content, `"endpoint":"desktop"`) {
+		t.Fatalf("interaction context = %#v", items[4])
 	}
 	if items[5].Type != model.PromptItemUserMessage || items[6].Type != model.PromptItemAssistantMessage {
 		t.Fatalf("dialogue items = %#v %#v", items[5], items[6])
@@ -196,7 +196,7 @@ func TestBuildRespondInputAppliesPromptWindowSummaryAndCutoff(t *testing.T) {
 		},
 		[]VisualState{{ID: "idle", Description: "待机"}},
 		memory.RetrievalContext{},
-		SurfaceDesktop,
+		desktopResolved(),
 	)
 	if err != nil {
 		t.Fatalf("BuildRespondInput() error = %v", err)

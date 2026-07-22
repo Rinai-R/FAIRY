@@ -29,7 +29,6 @@ type Request struct {
 	ConversationID string
 	Input          string
 	SpeechEnabled  bool
-	Surface        string
 }
 
 type Event struct {
@@ -105,7 +104,7 @@ func (r *Runner) Run(ctx context.Context, request Request, callback Callback) (R
 	submitCh := make(chan submitResult, 1)
 	go func() {
 		response, submitErr := r.client.SubmitTurn(runCtx, request.ConversationID, coreclient.SubmitTurnRequest{
-			Input: request.Input, SpeechEnabled: request.SpeechEnabled, Surface: request.Surface,
+			Input: request.Input, SpeechEnabled: request.SpeechEnabled,
 		})
 		submitCh <- submitResult{response: response, err: submitErr}
 	}()

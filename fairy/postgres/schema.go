@@ -268,16 +268,29 @@ type vectorReconciliationRunSchema struct {
 
 func (vectorReconciliationRunSchema) TableName() string { return "vector_reconciliation_runs" }
 
-type surfaceConversationSchema struct {
-	CharacterID      string `gorm:"type:text;primaryKey"`
-	Surface          string `gorm:"type:text;primaryKey"`
-	SurfaceKeyDigest string `gorm:"type:text;primaryKey"`
-	ConversationID   string `gorm:"type:text;not null"`
-	CreatedAtMS      int64  `gorm:"not null"`
-	UpdatedAtMS      int64  `gorm:"not null"`
+type endpointConversationSchema struct {
+	CharacterID        string  `gorm:"type:text;primaryKey"`
+	Endpoint           string  `gorm:"type:text;primaryKey"`
+	EndpointKeyDigest  string  `gorm:"type:text;primaryKey"`
+	ConversationID     string  `gorm:"type:text;not null"`
+	Audience           string  `gorm:"type:text;not null"`
+	Initiation         string  `gorm:"type:text;not null"`
+	Presentation       string  `gorm:"type:text;not null"`
+	PrincipalNamespace *string `gorm:"type:text"`
+	PrincipalDigest    *string `gorm:"type:text"`
+	CreatedAtMS        int64   `gorm:"not null"`
+	UpdatedAtMS        int64   `gorm:"not null"`
 }
 
-func (surfaceConversationSchema) TableName() string { return "surface_conversations" }
+func (endpointConversationSchema) TableName() string { return "endpoint_conversations" }
+
+type ownerIdentitySchema struct {
+	Namespace     string `gorm:"type:text;primaryKey"`
+	SubjectDigest string `gorm:"type:text;primaryKey"`
+	CreatedAtMS   int64  `gorm:"not null"`
+}
+
+func (ownerIdentitySchema) TableName() string { return "owner_identities" }
 
 func schemaModels() []any {
 	return []any{
@@ -299,7 +312,8 @@ func schemaModels() []any {
 		&secretValueSchema{},
 		&vectorRebuildRunSchema{},
 		&vectorReconciliationRunSchema{},
-		&surfaceConversationSchema{},
+		&endpointConversationSchema{},
+		&ownerIdentitySchema{},
 	}
 }
 
@@ -323,6 +337,7 @@ func schemaTableNames() []string {
 		"secret_values",
 		"vector_rebuild_runs",
 		"vector_reconciliation_runs",
-		"surface_conversations",
+		"endpoint_conversations",
+		"owner_identities",
 	}
 }

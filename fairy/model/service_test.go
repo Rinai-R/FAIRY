@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -8,9 +9,25 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"fairy/secret"
 )
+
+type blockingStreamTransport struct {
+	release <-chan struct{}
+}
+
+func (t blockingStreamTransport) Execute(ctx context.Context, _ RequestDraft, _ string, onEvent func(StreamEvent)) error {
+	onEvent(StreamEvent{Type: "text_delta", Data: "first"})
+	select {
+	case <-t.release:
+		onEvent(StreamEvent{Type: "completed"})
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
 func writeModelConnection(t *testing.T, root string, protocol string) {
 	writeModelConnectionWithEndpoint(t, root, protocol, "https://api.deepseek.com", "bearer_key")
@@ -154,5 +171,42 @@ func TestModelServiceExecuteRequestOmitsSecretForNoAuth(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Type != "completed" {
 		t.Fatalf("events = %#v", events)
+	}
+}
+
+func TestModelServiceExecuteRequestContextStreamDeliversBeforeReturn(t *testing.T) {
+	root := t.TempDir()
+	writeModelConnectionWithEndpoint(t, root, "chat_completions", "http://model.test", "no_auth")
+	release := make(chan struct{})
+	service := NewModelServiceWithTransport(root, blockingStreamTransport{release: release}, nil)
+	events := make(chan StreamEvent, 2)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- service.ExecuteRequestContextStream(context.Background(), modelServiceRequest(), func(event StreamEvent) {
+			events <- event
+		})
+	}()
+
+	select {
+	case event := <-events:
+		if event.Type != "text_delta" || event.Data != "first" {
+			t.Fatalf("first event = %#v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stream callback was not called before request completion")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("stream returned before transport release: %v", err)
+	default:
+	}
+
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("ExecuteRequestContextStream() error = %v", err)
+	}
+	if event := <-events; event.Type != "completed" {
+		t.Fatalf("last event = %#v", event)
 	}
 }

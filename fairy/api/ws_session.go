@@ -10,7 +10,8 @@ import (
 	"time"
 
 	"fairy/companion"
-	"fairy/memory"
+	"fairy/interaction"
+	fairyruntime "fairy/runtime"
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/common/adaptor"
 	"github.com/gorilla/websocket"
@@ -32,29 +33,30 @@ var sessionUpgrader = websocket.Upgrader{
 }
 
 type wsClientFrame struct {
-	Type             string                                   `json:"type"`
-	RequestID        string                                   `json:"requestId,omitempty"`
-	Surface          string                                   `json:"surface,omitempty"`
-	SurfaceKey       string                                   `json:"surfaceKey,omitempty"`
-	ConversationID   string                                   `json:"conversationId,omitempty"`
-	EvaluationReason companion.GroupParticipationEvaluationReason `json:"evaluationReason,omitempty"`
-	Messages         []companion.GroupObservation             `json:"messages,omitempty"`
-	Message          *companion.GroupObservation              `json:"message,omitempty"`
-	Input            string                                   `json:"input,omitempty"`
-	SpeechEnabled    bool                                     `json:"speechEnabled,omitempty"`
-	TurnID           string                                   `json:"turnId,omitempty"`
+	Type             string                                  `json:"type"`
+	RequestID        string                                  `json:"requestId,omitempty"`
+	Endpoint         interaction.EndpointKind                `json:"endpoint,omitempty"`
+	EndpointKey      string                                  `json:"endpointKey,omitempty"`
+	Interaction      interaction.Context                     `json:"interaction,omitempty"`
+	ConversationID   string                                  `json:"conversationId,omitempty"`
+	EvaluationReason companion.ParticipationEvaluationReason `json:"evaluationReason,omitempty"`
+	Messages         []companion.AmbientObservation          `json:"messages,omitempty"`
+	Message          *companion.AmbientObservation           `json:"message,omitempty"`
+	Input            string                                  `json:"input,omitempty"`
+	SpeechEnabled    bool                                    `json:"speechEnabled,omitempty"`
+	TurnID           string                                  `json:"turnId,omitempty"`
 }
 
 type wsServerFrame struct {
-	Type           string                  `json:"type"`
-	RequestID      string                  `json:"requestId,omitempty"`
-	ConversationID string                  `json:"conversationId,omitempty"`
-	CharacterID    string                  `json:"characterId,omitempty"`
-	MessageCount   int                     `json:"messageCount,omitempty"`
-	Surface        companion.SurfaceKind   `json:"surface,omitempty"`
-	Error          string                  `json:"error,omitempty"`
-	Payload        json.RawMessage         `json:"payload,omitempty"`
-	Event          *companion.HarnessEvent `json:"event,omitempty"`
+	Type           string                   `json:"type"`
+	RequestID      string                   `json:"requestId,omitempty"`
+	ConversationID string                   `json:"conversationId,omitempty"`
+	CharacterID    string                   `json:"characterId,omitempty"`
+	MessageCount   int                      `json:"messageCount,omitempty"`
+	Endpoint       interaction.EndpointKind `json:"endpoint,omitempty"`
+	Error          string                   `json:"error,omitempty"`
+	Payload        json.RawMessage          `json:"payload,omitempty"`
+	Event          *companion.HarnessEvent  `json:"event,omitempty"`
 }
 
 func (s *Server) handleSessionWebSocket() app.HandlerFunc {
@@ -77,15 +79,16 @@ func (s *Server) handleSessionWebSocket() app.HandlerFunc {
 }
 
 type sessionConn struct {
-	server  *Server
-	conn    *websocket.Conn
-	writeMu sync.Mutex
-	watchMu sync.Mutex
-	watches map[string]func()
+	server    *Server
+	conn      *websocket.Conn
+	writeMu   sync.Mutex
+	watchMu   sync.Mutex
+	watches   map[string]func()
+	closeOnce sync.Once
 }
 
 func (c *sessionConn) run(parent context.Context) {
-	defer c.close()
+	defer c.shutdown(nil)
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	c.conn.SetReadLimit(wsReadLimit)
@@ -128,6 +131,7 @@ func (c *sessionConn) pingLoop(ctx context.Context) {
 			err := c.conn.WriteMessage(websocket.PingMessage, nil)
 			c.writeMu.Unlock()
 			if err != nil {
+				c.shutdown(nil)
 				return
 			}
 		}
@@ -140,9 +144,9 @@ func (c *sessionConn) dispatch(ctx context.Context, frame wsClientFrame) {
 		c.handleOpen(ctx, frame)
 	case "session.watch":
 		c.handleWatch(frame)
-	case "group.observe":
+	case "ambient.observe":
 		c.handleObserve(frame)
-	case "group.participate":
+	case "participation.decide":
 		c.handleParticipate(ctx, frame)
 	case "turn.submit":
 		c.handleSubmitTurn(frame)
@@ -154,7 +158,7 @@ func (c *sessionConn) dispatch(ctx context.Context, frame wsClientFrame) {
 }
 
 func (c *sessionConn) handleOpen(ctx context.Context, frame wsClientFrame) {
-	result, err := c.server.openSession(ctx, frame.Surface, frame.SurfaceKey)
+	result, err := c.server.openSession(ctx, frame.Endpoint, frame.EndpointKey, frame.Interaction)
 	if err != nil {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 		return
@@ -162,7 +166,7 @@ func (c *sessionConn) handleOpen(ctx context.Context, frame wsClientFrame) {
 	_ = c.write(wsServerFrame{
 		Type: "session.opened", RequestID: frame.RequestID,
 		ConversationID: result.ConversationID, CharacterID: result.CharacterID,
-		MessageCount: result.MessageCount, Surface: result.Surface,
+		MessageCount: result.MessageCount, Endpoint: result.Endpoint,
 	})
 }
 
@@ -178,19 +182,46 @@ func (c *sessionConn) handleWatch(frame wsClientFrame) {
 		_ = c.write(wsServerFrame{Type: "ack", RequestID: frame.RequestID, ConversationID: conversationID})
 		return
 	}
-	ch, unsub := c.server.rt.Events.Subscribe(conversationID)
-	c.watches[conversationID] = unsub
+	subscription := c.server.rt.Events.Subscribe(conversationID)
+	c.watches[conversationID] = subscription.Unsubscribe
 	c.watchMu.Unlock()
-	go c.forwardHarness(conversationID, ch, unsub)
+	go c.forwardHarness(conversationID, subscription)
 	_ = c.write(wsServerFrame{Type: "ack", RequestID: frame.RequestID, ConversationID: conversationID})
 }
 
-func (c *sessionConn) forwardHarness(conversationID string, ch <-chan companion.HarnessEvent, unsub func()) {
-	for event := range ch {
-		ev := event
-		if err := c.write(wsServerFrame{Type: "harness", ConversationID: conversationID, Event: &ev}); err != nil {
-			unsub()
+func (c *sessionConn) forwardHarness(conversationID string, subscription fairyruntime.EventSubscription) {
+	defer subscription.Unsubscribe()
+	for {
+		select {
+		case err, ok := <-subscription.Failures:
+			if ok && err != nil {
+				c.shutdown(err)
+			}
 			return
+		default:
+		}
+		select {
+		case err, ok := <-subscription.Failures:
+			if ok && err != nil {
+				c.shutdown(err)
+			}
+			return
+		case event, ok := <-subscription.Events:
+			if !ok {
+				select {
+				case err, failureOpen := <-subscription.Failures:
+					if failureOpen && err != nil {
+						c.shutdown(err)
+					}
+				default:
+				}
+				return
+			}
+			ev := event
+			if err := c.write(wsServerFrame{Type: "harness", ConversationID: conversationID, Event: &ev}); err != nil {
+				c.shutdown(nil)
+				return
+			}
 		}
 	}
 }
@@ -200,7 +231,7 @@ func (c *sessionConn) handleObserve(frame wsClientFrame) {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "message is required"})
 		return
 	}
-	if err := c.server.rt.Companion.ObserveGroupMessage(frame.ConversationID, *frame.Message); err != nil {
+	if err := c.server.rt.Companion.ObserveAmbient(frame.ConversationID, *frame.Message); err != nil {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 		return
 	}
@@ -208,7 +239,7 @@ func (c *sessionConn) handleObserve(frame wsClientFrame) {
 }
 
 func (c *sessionConn) handleParticipate(ctx context.Context, frame wsClientFrame) {
-	result, err := c.server.rt.Companion.DecideGroupParticipation(ctx, companion.GroupParticipationRequest{
+	result, err := c.server.rt.Companion.DecideParticipation(ctx, companion.ParticipationRequest{
 		ConversationID:   frame.ConversationID,
 		EvaluationReason: frame.EvaluationReason,
 		Messages:         frame.Messages,
@@ -226,15 +257,6 @@ func (c *sessionConn) handleParticipate(ctx context.Context, frame wsClientFrame
 }
 
 func (c *sessionConn) handleSubmitTurn(frame wsClientFrame) {
-	surface, err := companion.NormalizeSurface(frame.Surface)
-	if err != nil {
-		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
-		return
-	}
-	var turnSurface companion.SurfaceKind
-	if strings.TrimSpace(frame.Surface) != "" {
-		turnSurface = surface
-	}
 	if strings.TrimSpace(frame.Input) == "" {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "input is required"})
 		return
@@ -244,14 +266,12 @@ func (c *sessionConn) handleSubmitTurn(frame wsClientFrame) {
 			ConversationID: frame.ConversationID,
 			Input:          frame.Input,
 			SpeechEnabled:  frame.SpeechEnabled,
-			Surface:        turnSurface,
 		})
 		if err != nil {
 			_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 			return
 		}
-		resolved, _ := c.server.rt.Companion.ResolveSurface(frame.ConversationID, turnSurface)
-		payload, err := json.Marshal(map[string]any{"outcome": outcome, "surface": resolved})
+		payload, err := json.Marshal(map[string]any{"outcome": outcome})
 		if err != nil {
 			_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 			return
@@ -276,36 +296,63 @@ func (c *sessionConn) write(frame wsServerFrame) error {
 	return c.conn.WriteJSON(frame)
 }
 
-func (c *sessionConn) close() {
-	c.watchMu.Lock()
-	for id, unsub := range c.watches {
-		unsub()
-		delete(c.watches, id)
-	}
-	c.watchMu.Unlock()
-	_ = c.conn.Close()
+func (c *sessionConn) shutdown(reason error) {
+	c.closeOnce.Do(func() {
+		if reason != nil {
+			code := websocket.CloseInternalServerErr
+			if errors.Is(reason, fairyruntime.ErrEventSubscriberOverflow) {
+				code = websocket.CloseTryAgainLater
+			}
+			c.writeMu.Lock()
+			_ = c.conn.WriteControl(
+				websocket.CloseMessage,
+				websocket.FormatCloseMessage(code, reason.Error()),
+				time.Now().Add(wsWriteWait),
+			)
+			c.writeMu.Unlock()
+		}
+		c.watchMu.Lock()
+		unsubscribes := make([]func(), 0, len(c.watches))
+		for id, unsubscribe := range c.watches {
+			unsubscribes = append(unsubscribes, unsubscribe)
+			delete(c.watches, id)
+		}
+		c.watchMu.Unlock()
+		for _, unsubscribe := range unsubscribes {
+			unsubscribe()
+		}
+		_ = c.conn.Close()
+	})
 }
 
 type openSessionResult struct {
 	ConversationID string
 	CharacterID    string
 	MessageCount   int
-	Surface        companion.SurfaceKind
+	Endpoint       interaction.EndpointKind
 }
 
-func (s *Server) openSession(ctx context.Context, surfaceRaw, surfaceKey string) (openSessionResult, error) {
-	surface, err := companion.NormalizeSurface(surfaceRaw)
+func (s *Server) openSession(ctx context.Context, endpoint interaction.EndpointKind, endpointKey string, interactionContext interaction.Context) (openSessionResult, error) {
+	if err := interactionContext.Validate(endpoint); err != nil {
+		return openSessionResult{}, err
+	}
+	if strings.TrimSpace(endpointKey) == "" {
+		return openSessionResult{}, errors.New("endpointKey is required")
+	}
+	endpointKeyDigest, err := s.rt.Secret.DigestEndpointKey(endpoint, endpointKey)
 	if err != nil {
 		return openSessionResult{}, err
 	}
-	var surfaceKeyDigest string
-	if surfaceKey != "" {
-		surfaceKeyDigest, err = s.rt.Secret.DigestSurfaceKey(string(surface), surfaceKey)
+	principalDigest := ""
+	if interactionContext.Principal != nil {
+		principalDigest, err = s.rt.Secret.DigestPrincipal(*interactionContext.Principal)
 		if err != nil {
 			return openSessionResult{}, err
 		}
-	} else if surface == companion.SurfaceIMPrivate || surface == companion.SurfaceIMGroup {
-		return openSessionResult{}, errors.New("surfaceKey is required for IM sessions")
+	}
+	binding, err := interaction.NewBinding(endpoint, interactionContext, principalDigest)
+	if err != nil {
+		return openSessionResult{}, err
 	}
 	catalog, err := s.rt.Character.ListCharacters()
 	if err != nil {
@@ -314,22 +361,17 @@ func (s *Server) openSession(ctx context.Context, surfaceRaw, surfaceKey string)
 	if catalog.Active == nil {
 		return openSessionResult{}, errors.New("no active character")
 	}
-	var bootstrap memory.ConversationBootstrap
-	if surfaceKeyDigest != "" {
-		bootstrap, err = s.rt.MemoryStore.OpenOrCreateSurfaceConversationContext(ctx, catalog.Active.CharacterID, string(surface), surfaceKeyDigest)
-	} else {
-		bootstrap, err = s.rt.MemoryStore.OpenOrCreateCharacterConversationContext(ctx, catalog.Active.CharacterID)
-	}
+	bootstrap, err := s.rt.MemoryStore.OpenOrCreateEndpointConversationContext(ctx, catalog.Active.CharacterID, binding, endpointKeyDigest)
 	if err != nil {
 		return openSessionResult{}, err
 	}
-	if err := s.rt.Companion.BindSurface(bootstrap.Conversation.ID, surface); err != nil {
+	if err := s.rt.Companion.BindInteraction(bootstrap.Conversation.ID, binding); err != nil {
 		return openSessionResult{}, err
 	}
 	return openSessionResult{
 		ConversationID: bootstrap.Conversation.ID,
 		CharacterID:    bootstrap.Conversation.CharacterID,
 		MessageCount:   len(bootstrap.Messages),
-		Surface:        surface,
+		Endpoint:       endpoint,
 	}, nil
 }

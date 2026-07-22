@@ -40,11 +40,11 @@ func TestRunnerCompletedDeliversTypedBeatsAndWaitsForSubmit(t *testing.T) {
 				})
 			}()
 		case "turn.submit":
-			close(allow)
 			_ = conn.WriteJSON(map[string]any{
 				"type": "result", "requestId": requestID,
-				"payload": json.RawMessage(`{"outcome":{"conversationId":"c1","turnId":"t1","responseText":"你好"},"surface":"desktop"}`),
+				"payload": json.RawMessage(`{"outcome":{"conversationId":"c1","turnId":"t1","responseText":"你好"}}`),
 			})
+			close(allow)
 		}
 	})
 	defer server.Close()
@@ -90,7 +90,7 @@ func TestRunnerDisconnectReturnsErrorAndCancelsKnownTurn(t *testing.T) {
 		case "turn.submit":
 			_ = conn.WriteJSON(map[string]any{
 				"type": "result", "requestId": requestID,
-				"payload": json.RawMessage(`{"outcome":{"conversationId":"c1","turnId":"t1","responseText":"断开"},"surface":"desktop"}`),
+				"payload": json.RawMessage(`{"outcome":{"conversationId":"c1","turnId":"t1","responseText":"断开"}}`),
 			})
 		case "turn.cancel":
 			cancelCalls.Add(1)

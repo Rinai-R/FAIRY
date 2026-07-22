@@ -118,8 +118,8 @@ func TestLocalValidationDoesNotCreateClient(t *testing.T) {
 		return &fakeClient{}, nil
 	}
 	for _, args := range [][]string{
-		{"session", "open", "--surface", "web_widget"},
-		{"session", "open", "--surface", "im_group"},
+		{"session", "open", "--endpoint-kind", "web_widget", "--endpoint-key", "x", "--audience", "single", "--initiation", "direct", "--presentation", "chat"},
+		{"session", "open", "--endpoint-kind", "im", "--endpoint-key", "x", "--audience", "single", "--initiation", "direct", "--presentation", "chat"},
 		{"config", "delete", "web-search"},
 	} {
 		root := NewRootCmd(deps)
@@ -155,7 +155,7 @@ func TestConfigApplyReadsStdinAndCapturesOutput(t *testing.T) {
 
 func TestSessionParticipateReadsStrictJSONBeforeCreatingClient(t *testing.T) {
 	target := "m1"
-	client := &fakeClient{participation: coreclient.GroupParticipationResponse{Action: "reply", TargetMessageID: &target}}
+	client := &fakeClient{participation: coreclient.ParticipationResponse{Action: "reply", TargetMessageID: &target}}
 	deps := testDependencies(client)
 	deps.Stdin = strings.NewReader(`{"evaluationReason":"message","messages":[{"messageId":"m1","senderId":"u1","senderName":"群友","text":"在吗","directedToBot":true,"isNew":true,"timestampUnixMs":1}]}`)
 	output := new(bytes.Buffer)
@@ -196,6 +196,24 @@ func TestSessionParticipateReadsStrictJSONBeforeCreatingClient(t *testing.T) {
 	}
 }
 
+func TestIdentityBindRoutesValidatedPrincipalWithoutEchoingSubject(t *testing.T) {
+	client := &fakeClient{ownerIdentity: coreclient.OwnerIdentity{Namespace: "qq.onebot", PrincipalDigest: strings.Repeat("a", 64)}}
+	output := new(bytes.Buffer)
+	root := NewRootCmd(testDependencies(client))
+	root.SetOut(output)
+	root.SetErr(output)
+	root.SetArgs([]string{"identity", "bind", "--namespace", "qq.onebot", "--subject", "raw-owner-123"})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if client.ownerNamespace != "qq.onebot" || client.ownerSubject != "raw-owner-123" {
+		t.Fatalf("identity request = %q/%q", client.ownerNamespace, client.ownerSubject)
+	}
+	if strings.Contains(output.String(), "raw-owner-123") || !strings.Contains(output.String(), strings.Repeat("a", 64)) {
+		t.Fatalf("identity output = %q", output.String())
+	}
+}
+
 func TestTurnSendWritesJSONLAndReturnsTerminalError(t *testing.T) {
 	for _, state := range []string{"completed", "failed", "interrupted"} {
 		t.Run(state, func(t *testing.T) {
@@ -211,7 +229,7 @@ func TestTurnSendWritesJSONLAndReturnsTerminalError(t *testing.T) {
 			}
 			client := &fakeClient{
 				stream: &fakeStream{events: events},
-				turn:   coreclient.SubmitTurnResponse{Outcome: coreclient.TurnOutcome{ConversationID: "c1", TurnID: "t1"}, Surface: "desktop"},
+				turn:   coreclient.SubmitTurnResponse{Outcome: coreclient.TurnOutcome{ConversationID: "c1", TurnID: "t1"}},
 			}
 			root := NewRootCmd(testDependencies(client))
 			output := new(bytes.Buffer)
@@ -322,16 +340,19 @@ type fakeClient struct {
 	stream                    coreclient.EventStream
 	openLogs                  func(context.Context, coreclient.LogQuery, time.Duration) (coreclient.EventStream, error)
 	turn                      coreclient.SubmitTurnResponse
-	participation             coreclient.GroupParticipationResponse
+	participation             coreclient.ParticipationResponse
 	participationConversation string
-	participationRequest      coreclient.GroupParticipationRequest
+	participationRequest      coreclient.ParticipationRequest
+	ownerIdentity             coreclient.OwnerIdentity
+	ownerNamespace            string
+	ownerSubject              string
 }
 
 func (f *fakeClient) Status(context.Context) (coreclient.Status, error) { return f.status, f.statusErr }
 func (f *fakeClient) OpenSession(context.Context, coreclient.OpenSessionRequest) (coreclient.OpenSessionResponse, error) {
 	return coreclient.OpenSessionResponse{ConversationID: "c1"}, nil
 }
-func (f *fakeClient) DecideGroupParticipation(_ context.Context, conversationID string, request coreclient.GroupParticipationRequest) (coreclient.GroupParticipationResponse, error) {
+func (f *fakeClient) DecideParticipation(_ context.Context, conversationID string, request coreclient.ParticipationRequest) (coreclient.ParticipationResponse, error) {
 	f.participationConversation = conversationID
 	f.participationRequest = request
 	return f.participation, nil
@@ -387,6 +408,16 @@ func (f *fakeClient) OpenLogs(ctx context.Context, query coreclient.LogQuery, ti
 func (f *fakeClient) Metrics(context.Context) (coreclient.Metrics, error) {
 	return coreclient.Metrics{}, nil
 }
+func (f *fakeClient) ListOwnerIdentities(context.Context) ([]coreclient.OwnerIdentity, error) {
+	return []coreclient.OwnerIdentity{}, nil
+}
+
+func (f *fakeClient) BindOwnerIdentity(_ context.Context, namespace, subject string) (coreclient.OwnerIdentity, error) {
+	f.ownerNamespace = namespace
+	f.ownerSubject = subject
+	return f.ownerIdentity, nil
+}
+func (f *fakeClient) UnbindOwnerIdentity(context.Context, string, string) error { return nil }
 
 type fakeStream struct {
 	mu     sync.Mutex

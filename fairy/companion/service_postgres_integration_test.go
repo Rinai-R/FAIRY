@@ -15,6 +15,7 @@ import (
 
 	"fairy/character"
 	"fairy/config"
+	"fairy/interaction"
 	"fairy/memory"
 	"fairy/model"
 	pgstore "fairy/postgres"
@@ -146,6 +147,20 @@ type terminalFailureMemory struct {
 	interruptErr error
 }
 
+func mustBindDesktopInteraction(t *testing.T, service *CompanionService, conversationID string) {
+	t.Helper()
+	err := service.BindInteraction(conversationID, interaction.Binding{
+		Endpoint: interaction.EndpointDesktop,
+		Facts: interaction.Facts{
+			Audience: interaction.AudienceSingle, Initiation: interaction.InitiationDirect,
+			Presentation: interaction.PresentationEmbodied,
+		},
+	})
+	if err != nil {
+		t.Fatalf("BindInteraction: %v", err)
+	}
+}
+
 func (m terminalFailureMemory) CompleteTurn(string, string, string) (memory.MessageRecord, error) {
 	return memory.MessageRecord{}, m.completeErr
 }
@@ -165,6 +180,7 @@ func TestPostgresCompanionMultiBeatCompletesWithPacing(t *testing.T) {
 		{VisualState: "idle", Text: "第一拍。"},
 		{VisualState: "happy", Text: "第二拍"},
 	}})
+	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
 	var mu sync.Mutex
 	var events []HarnessEvent
 	AttachEventEmitter(service, func(event HarnessEvent) {
@@ -223,6 +239,7 @@ func TestPostgresCompanionCancelAfterFirstBeatPersistsPrefix(t *testing.T) {
 		{VisualState: "idle", Text: "不应发布的第二拍"},
 		{VisualState: "idle", Text: "不应发布的第三拍"},
 	}})
+	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
 	var mu sync.Mutex
 	var events []HarnessEvent
 	var cancelErr error
@@ -277,6 +294,7 @@ func TestPostgresCompanionTerminalPersistenceFailureEmitsFailed(t *testing.T) {
 	service := newCompanionIntegrationService(terminalFailureMemory{MemoryPort: store, completeErr: errCompletePersistence}, "character-terminal-failure", companionIntegrationModel{chains: []ReplyChain{
 		{VisualState: "idle", Text: "已发布但无法保存"},
 	}})
+	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
 	var events []HarnessEvent
 	AttachEventEmitter(service, func(event HarnessEvent) { events = append(events, event) })
 	_, submitErr := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
@@ -308,6 +326,7 @@ func TestPostgresCompanionInterruptPersistenceFailureEmitsFailed(t *testing.T) {
 		{VisualState: "idle", Text: "第一拍"},
 		{VisualState: "idle", Text: "第二拍"},
 	}})
+	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
 	var events []HarnessEvent
 	AttachEventEmitter(service, func(event HarnessEvent) {
 		events = append(events, event)
@@ -352,8 +371,8 @@ func TestPostgresGroupTurnExcludesPrivateMemoryJobsAndKeepsCompaction(t *testing
 	provider := &capturingIntegrationModel{}
 	service := newCompanionIntegrationService(store, characterID, provider)
 	AttachProfileSource(service, rejectingGroupProfile{})
-	if err := service.BindSurface(bootstrap.Conversation.ID, SurfaceIMGroup); err != nil {
-		t.Fatalf("BindSurface: %v", err)
+	if err := service.BindInteraction(bootstrap.Conversation.ID, publicAmbientBinding()); err != nil {
+		t.Fatalf("BindInteraction: %v", err)
 	}
 	if _, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 		ConversationID:        bootstrap.Conversation.ID,
@@ -410,8 +429,8 @@ func TestPostgresGroupWebSearchIsEphemeral(t *testing.T) {
 	service := newCompanionIntegrationService(store, characterID, provider)
 	AttachConfigSource(service, groupWebIntegrationConfig{})
 	service.webSearch = groupWebSearchStub{}
-	if err := service.BindSurface(bootstrap.Conversation.ID, SurfaceIMGroup); err != nil {
-		t.Fatalf("BindSurface: %v", err)
+	if err := service.BindInteraction(bootstrap.Conversation.ID, publicAmbientBinding()); err != nil {
+		t.Fatalf("BindInteraction: %v", err)
 	}
 	before := groupPrivacyJobCounts(t, pool)
 	if _, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{

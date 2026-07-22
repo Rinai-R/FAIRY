@@ -2,16 +2,16 @@ package companion
 
 import "testing"
 
-func TestFormatGroupTurnInputRequiresExactlyOneTarget(t *testing.T) {
-	messages := []GroupObservation{{MessageID: "1", SenderID: "2", SenderName: "甲", Text: "你好"}}
-	if _, err := FormatGroupTurnInput(messages, "missing"); err == nil {
+func TestFormatAmbientTurnInputRequiresExactlyOneTarget(t *testing.T) {
+	messages := []AmbientObservation{{MessageID: "1", SenderID: "2", SenderName: "甲", Text: "你好"}}
+	if _, err := FormatAmbientTurnInput(messages, "missing"); err == nil {
 		t.Fatal("missing target accepted")
 	}
 	messages = append(messages, messages[0])
-	if _, err := FormatGroupTurnInput(messages, "1"); err == nil {
+	if _, err := FormatAmbientTurnInput(messages, "1"); err == nil {
 		t.Fatal("duplicate target accepted")
 	}
-	input, err := FormatGroupTurnInput([]GroupObservation{
+	input, err := FormatAmbientTurnInput([]AmbientObservation{
 		{MessageID: "1", SenderID: "40001", SenderName: "甲", Text: "你好"},
 		{MessageID: "2", SenderID: "40002", SenderName: "乙", Text: "在吗"},
 	}, "2")

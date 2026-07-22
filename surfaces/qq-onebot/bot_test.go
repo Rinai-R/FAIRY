@@ -1,11 +1,53 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"sync"
 	"testing"
+	"time"
 
 	"fairy/coreclient"
 )
+
+func TestConsumeHarnessDeliversConversationStreamInOrder(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	delivered := make(chan string, 2)
+	bot := &bot{
+		ctx: ctx,
+		senders: map[string]func(string) error{
+			"c1": func(text string) error {
+				delivered <- text
+				return nil
+			},
+		},
+		conversations: make(map[int64]string),
+	}
+	stream := make(chan coreclient.HarnessEvent, 2)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		bot.consumeHarness("c1", stream)
+	}()
+	for _, text := range []string{"第一拍", "第二拍"} {
+		payload, _ := json.Marshal(map[string]any{"type": "beat.ready", "kind": "final", "displayText": text})
+		stream <- coreclient.HarnessEvent{ConversationID: "c1", Payload: payload}
+	}
+	for _, want := range []string{"第一拍", "第二拍"} {
+		select {
+		case got := <-delivered:
+			if got != want {
+				t.Fatalf("delivered = %q, want %q", got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for %q", want)
+		}
+	}
+	cancel()
+	wg.Wait()
+}
 
 func TestFinalBeatTextRequiresFinalKind(t *testing.T) {
 	payload, _ := json.Marshal(map[string]any{"type": "beat.ready", "kind": "utterance", "displayText": "skip"})

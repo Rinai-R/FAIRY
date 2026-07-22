@@ -5,6 +5,8 @@ import (
 
 	"fairy/character"
 	"fairy/config"
+	"fairy/identity"
+	"fairy/interaction"
 	"fairy/memory"
 	"fairy/memory/semantic"
 	"fairy/model"
@@ -15,7 +17,7 @@ import (
 // Implemented by *memory.Store (service+store merged in the memory package).
 type MemoryPort interface {
 	LoadConversation(conversationID string) (memory.ConversationBootstrap, error)
-	LookupSurfaceForConversation(conversationID string) (string, bool, error)
+	LookupEndpointForConversation(conversationID string) (interaction.Binding, bool, error)
 	BeginTurn(conversationID string, userMessage string) (memory.PersistedTurn, error)
 	CompleteTurn(conversationID string, turnID string, assistantMessage string) (memory.MessageRecord, error)
 	InterruptTurn(conversationID string, turnID string, publishedPrefix string) (*memory.MessageRecord, error)
@@ -39,11 +41,21 @@ type MemoryPort interface {
 	ProcessKnowledgeIngestJobs(limit int) (int, error)
 }
 
+type OwnerIdentityPort interface {
+	IsOwner(namespace, principalDigest string) (bool, error)
+}
+
 // ModelPort is the model-execution surface Companion needs.
 // Implemented by *model.ModelService.
 type ModelPort interface {
 	ExecuteRequestContext(ctx context.Context, request model.CompiledPromptRequest) ([]model.StreamEvent, error)
 	ExecutePrompt(lane model.PromptLane, instructions string, maxOutputTokens uint32, input []model.PromptItem, promptCacheKey string) ([]model.StreamEvent, error)
+}
+
+// StreamingModelPort is an optional extension implemented by model services
+// that can deliver provider events before the request completes.
+type StreamingModelPort interface {
+	ExecuteRequestContextStream(ctx context.Context, request model.CompiledPromptRequest, onEvent func(model.StreamEvent)) error
 }
 
 // CharacterCatalog lists character records for persona + visual states.
@@ -67,9 +79,10 @@ type ConfigSource interface {
 
 // Compile-time assertions that domain stores satisfy companion ports.
 var (
-	_ MemoryPort       = (*memory.Store)(nil)
-	_ ModelPort        = (*model.ModelService)(nil)
-	_ CharacterCatalog = (*character.Store)(nil)
-	_ ProfileSource    = (*profile.Store)(nil)
-	_ ConfigSource     = (*config.Reader)(nil)
+	_ MemoryPort        = (*memory.Store)(nil)
+	_ ModelPort         = (*model.ModelService)(nil)
+	_ CharacterCatalog  = (*character.Store)(nil)
+	_ ProfileSource     = (*profile.Store)(nil)
+	_ ConfigSource      = (*config.Reader)(nil)
+	_ OwnerIdentityPort = (*identity.Store)(nil)
 )

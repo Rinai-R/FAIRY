@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"sync"
 
 	"fairy/companion"
@@ -8,67 +9,114 @@ import (
 
 const eventHubBuffer = 64
 
+var ErrEventSubscriberOverflow = errors.New("event subscriber overflow")
+
+type eventSubscriber struct {
+	events   chan companion.HarnessEvent
+	failures chan error
+}
+
+// EventSubscription is one ordered per-conversation harness stream.
+type EventSubscription struct {
+	Events      <-chan companion.HarnessEvent
+	Failures    <-chan error
+	unsubscribe func()
+}
+
+func (s EventSubscription) Unsubscribe() {
+	if s.unsubscribe != nil {
+		s.unsubscribe()
+	}
+}
+
 // EventHub fans harness events out to per-conversation WebSocket watchers.
 type EventHub struct {
 	mu     sync.Mutex
-	subs   map[string]map[chan companion.HarnessEvent]struct{}
+	subs   map[string]map[*eventSubscriber]struct{}
 	closed bool
 }
 
 func NewEventHub() *EventHub {
-	return &EventHub{subs: make(map[string]map[chan companion.HarnessEvent]struct{})}
+	return &EventHub{subs: make(map[string]map[*eventSubscriber]struct{})}
 }
 
-// Subscribe returns a buffered channel of events for conversationID and an unsubscribe func.
-func (h *EventHub) Subscribe(conversationID string) (<-chan companion.HarnessEvent, func()) {
+// Subscribe returns one ordered stream and a separate terminal-failure signal.
+func (h *EventHub) Subscribe(conversationID string) EventSubscription {
 	if h == nil || conversationID == "" {
-		ch := make(chan companion.HarnessEvent)
-		close(ch)
-		return ch, func() {}
+		return closedEventSubscription()
 	}
-	ch := make(chan companion.HarnessEvent, eventHubBuffer)
+	subscriber := &eventSubscriber{
+		events:   make(chan companion.HarnessEvent, eventHubBuffer),
+		failures: make(chan error, 1),
+	}
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
-		close(ch)
-		return ch, func() {}
+		close(subscriber.events)
+		close(subscriber.failures)
+		return EventSubscription{Events: subscriber.events, Failures: subscriber.failures, unsubscribe: func() {}}
 	}
 	if h.subs[conversationID] == nil {
-		h.subs[conversationID] = make(map[chan companion.HarnessEvent]struct{})
+		h.subs[conversationID] = make(map[*eventSubscriber]struct{})
 	}
-	h.subs[conversationID][ch] = struct{}{}
+	h.subs[conversationID][subscriber] = struct{}{}
 	h.mu.Unlock()
+
 	var once sync.Once
-	unsub := func() {
-		once.Do(func() {
-			h.mu.Lock()
-			if set, ok := h.subs[conversationID]; ok {
-				delete(set, ch)
-				close(ch)
-				if len(set) == 0 {
-					delete(h.subs, conversationID)
-				}
-			}
-			h.mu.Unlock()
-		})
+	return EventSubscription{
+		Events:   subscriber.events,
+		Failures: subscriber.failures,
+		unsubscribe: func() {
+			once.Do(func() {
+				h.mu.Lock()
+				h.removeLocked(conversationID, subscriber, nil)
+				h.mu.Unlock()
+			})
+		},
 	}
-	return ch, unsub
 }
 
-// Publish delivers an event to all subscribers of its conversation (non-blocking per sub).
+func closedEventSubscription() EventSubscription {
+	events := make(chan companion.HarnessEvent)
+	failures := make(chan error)
+	close(events)
+	close(failures)
+	return EventSubscription{Events: events, Failures: failures, unsubscribe: func() {}}
+}
+
+// Publish never blocks Core turn execution. A slow subscriber is failed and removed.
 func (h *EventHub) Publish(event companion.HarnessEvent) {
 	if h == nil || event.ConversationID == "" {
 		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for ch := range h.subs[event.ConversationID] {
+	for subscriber := range h.subs[event.ConversationID] {
 		select {
-		case ch <- event:
+		case subscriber.events <- event:
 		default:
-			// Drop if subscriber is slow; SSE client can reconnect.
+			h.removeLocked(event.ConversationID, subscriber, ErrEventSubscriberOverflow)
 		}
 	}
+}
+
+func (h *EventHub) removeLocked(conversationID string, subscriber *eventSubscriber, failure error) {
+	subscribers, ok := h.subs[conversationID]
+	if !ok {
+		return
+	}
+	if _, ok := subscribers[subscriber]; !ok {
+		return
+	}
+	delete(subscribers, subscriber)
+	if len(subscribers) == 0 {
+		delete(h.subs, conversationID)
+	}
+	if failure != nil {
+		subscriber.failures <- failure
+	}
+	close(subscriber.failures)
+	close(subscriber.events)
 }
 
 func (h *EventHub) SubscriberCount() uint64 {
@@ -95,10 +143,8 @@ func (h *EventHub) Close() {
 	}
 	h.closed = true
 	for conversationID, subscribers := range h.subs {
-		for ch := range subscribers {
-			delete(subscribers, ch)
-			close(ch)
+		for subscriber := range subscribers {
+			h.removeLocked(conversationID, subscriber, nil)
 		}
-		delete(h.subs, conversationID)
 	}
 }

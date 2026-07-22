@@ -9,35 +9,36 @@ import (
 
 	"fairy/character"
 	"fairy/config"
+	"fairy/interaction"
 	"fairy/memory"
 	"fairy/model"
 )
 
-func validGroupObservation() GroupObservation {
-	return GroupObservation{MessageID: "m1", SenderID: "u1", SenderName: "群友", Text: "这话题挺有意思", IsNew: true, TimestampUnixMS: 1}
+func validAmbientObservation() AmbientObservation {
+	return AmbientObservation{MessageID: "m1", SenderID: "u1", SenderName: "群友", Text: "这话题挺有意思", IsNew: true, TimestampUnixMS: 1}
 }
 
-func validGroupParticipationRequest() GroupParticipationRequest {
-	return GroupParticipationRequest{
-		ConversationID: "c1", EvaluationReason: GroupParticipationReasonMessage,
-		Messages: []GroupObservation{validGroupObservation()},
+func validParticipationRequest() ParticipationRequest {
+	return ParticipationRequest{
+		ConversationID: "c1", EvaluationReason: ParticipationReasonMessage,
+		Messages: []AmbientObservation{validAmbientObservation()},
 	}
 }
 
-func TestCompileGroupParticipationIsStrict(t *testing.T) {
-	messages := []GroupObservation{validGroupObservation()}
+func TestCompileParticipationIsStrict(t *testing.T) {
+	messages := []AmbientObservation{validAmbientObservation()}
 	tests := []struct {
 		draft  string
-		action GroupParticipationAction
+		action ParticipationAction
 	}{
-		{`{"action":"reply","targetMessageId":"m1"}`, GroupParticipationReply},
-		{`{"action":"wait","waitSeconds":7}`, GroupParticipationWait},
-		{`{"action":"silent"}`, GroupParticipationSilent},
-		{"  {\"action\":\"silent\"}  ", GroupParticipationSilent},
-		{"```json\n{\"action\":\"wait\",\"waitSeconds\":3}\n```", GroupParticipationWait},
+		{`{"action":"reply","targetMessageId":"m1"}`, ParticipationReply},
+		{`{"action":"wait","waitSeconds":7}`, ParticipationWait},
+		{`{"action":"silent"}`, ParticipationSilent},
+		{"  {\"action\":\"silent\"}  ", ParticipationSilent},
+		{"```json\n{\"action\":\"wait\",\"waitSeconds\":3}\n```", ParticipationWait},
 	}
 	for _, test := range tests {
-		result, err := CompileGroupParticipation(test.draft, messages)
+		result, err := CompileParticipation(test.draft, messages)
 		if err != nil || result.Action != test.action {
 			t.Fatalf("draft %q: result=%#v err=%v", test.draft, result, err)
 		}
@@ -56,51 +57,51 @@ func TestCompileGroupParticipationIsStrict(t *testing.T) {
 		`{"action":"silent"} trailing`,
 		``,
 	} {
-		if _, err := CompileGroupParticipation(invalid, messages); err == nil {
+		if _, err := CompileParticipation(invalid, messages); err == nil {
 			t.Fatalf("invalid participation accepted: %q", invalid)
 		}
 	}
 }
 
-func TestValidateGroupParticipationBoundsAndReason(t *testing.T) {
-	request := validGroupParticipationRequest()
-	if err := ValidateGroupParticipationRequest(request); err != nil {
+func TestValidateParticipationBoundsAndReason(t *testing.T) {
+	request := validParticipationRequest()
+	if err := ValidateParticipationRequest(request); err != nil {
 		t.Fatal(err)
 	}
 	waitRequest := request
-	waitRequest.EvaluationReason = GroupParticipationReasonWaitElapsed
-	waitRequest.Messages = append([]GroupObservation(nil), request.Messages...)
+	waitRequest.EvaluationReason = ParticipationReasonWaitElapsed
+	waitRequest.Messages = append([]AmbientObservation(nil), request.Messages...)
 	waitRequest.Messages[0].IsNew = false
-	if err := ValidateGroupParticipationRequest(waitRequest); err != nil {
+	if err := ValidateParticipationRequest(waitRequest); err != nil {
 		t.Fatal(err)
 	}
 	invalidMessage := request
-	invalidMessage.Messages = append([]GroupObservation(nil), request.Messages...)
+	invalidMessage.Messages = append([]AmbientObservation(nil), request.Messages...)
 	invalidMessage.Messages[0].IsNew = false
-	if err := ValidateGroupParticipationRequest(invalidMessage); err == nil {
+	if err := ValidateParticipationRequest(invalidMessage); err == nil {
 		t.Fatal("message reason without new observation accepted")
 	}
 	invalidWait := request
-	invalidWait.EvaluationReason = GroupParticipationReasonWaitElapsed
-	if err := ValidateGroupParticipationRequest(invalidWait); err == nil {
+	invalidWait.EvaluationReason = ParticipationReasonWaitElapsed
+	if err := ValidateParticipationRequest(invalidWait); err == nil {
 		t.Fatal("wait_elapsed with new observation accepted")
 	}
-	request.Messages[0].Text = strings.Repeat("群", maxGroupTextRunes+1)
-	if err := ValidateGroupParticipationRequest(request); err == nil {
+	request.Messages[0].Text = strings.Repeat("群", maxAmbientTextRunes+1)
+	if err := ValidateParticipationRequest(request); err == nil {
 		t.Fatal("oversized text accepted")
 	}
-	request = validGroupParticipationRequest()
+	request = validParticipationRequest()
 	request.Messages = append(request.Messages, request.Messages[0])
-	if err := ValidateGroupParticipationRequest(request); err == nil {
+	if err := ValidateParticipationRequest(request); err == nil {
 		t.Fatal("duplicate message ID accepted")
 	}
-	request.Messages = make([]GroupObservation, maxGroupObservations+1)
-	if err := ValidateGroupParticipationRequest(request); err == nil {
+	request.Messages = make([]AmbientObservation, maxAmbientObservations+1)
+	if err := ValidateParticipationRequest(request); err == nil {
 		t.Fatal("oversized window accepted")
 	}
 }
 
-func TestDeriveGroupRecentPresenceUsesInclusiveWindows(t *testing.T) {
+func TestDeriveRecentPresenceUsesInclusiveWindows(t *testing.T) {
 	now := int64(1_800_000_000_000)
 	messages := []memory.MessageRecord{
 		{Role: "assistant", CreatedAtUnixMS: now - time.Minute.Milliseconds()},
@@ -110,7 +111,7 @@ func TestDeriveGroupRecentPresenceUsesInclusiveWindows(t *testing.T) {
 		{Role: "assistant", CreatedAtUnixMS: now - 30*time.Minute.Milliseconds() - 1},
 		{Role: "user", CreatedAtUnixMS: now},
 	}
-	presence, err := DeriveGroupRecentPresence(messages, now)
+	presence, err := DeriveRecentPresence(messages, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,20 +121,20 @@ func TestDeriveGroupRecentPresenceUsesInclusiveWindows(t *testing.T) {
 	if presence.SecondsSinceLastReply == nil || *presence.SecondsSinceLastReply != 60 {
 		t.Fatalf("seconds since last reply = %#v", presence.SecondsSinceLastReply)
 	}
-	empty, err := DeriveGroupRecentPresence(nil, now)
+	empty, err := DeriveRecentPresence(nil, now)
 	if err != nil || empty.SecondsSinceLastReply != nil {
 		t.Fatalf("empty presence = %#v, %v", empty, err)
 	}
-	if _, err := DeriveGroupRecentPresence([]memory.MessageRecord{{Role: "assistant", CreatedAtUnixMS: now + 1}}, now); err == nil {
+	if _, err := DeriveRecentPresence([]memory.MessageRecord{{Role: "assistant", CreatedAtUnixMS: now + 1}}, now); err == nil {
 		t.Fatal("future assistant timestamp accepted")
 	}
 }
 
-func TestBuildGroupParticipationInputHasPolicyPresenceAndNoProfile(t *testing.T) {
+func TestBuildParticipationInputHasPolicyPresenceAndNoProfile(t *testing.T) {
 	seconds := int64(12)
-	input, err := BuildGroupParticipationInput(character.Record{
+	input, err := BuildParticipationInput(character.Record{
 		CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "自然参与群聊", TextLanguage: "zh", SpeakingLanguage: "zh",
-	}, GroupParticipationReasonMessage, []GroupObservation{validGroupObservation()}, GroupRecentPresence{
+	}, publicAmbientResolved(), ParticipationReasonMessage, []AmbientObservation{validAmbientObservation()}, RecentPresence{
 		AssistantReplies5Minutes: 2, AssistantReplies30Minutes: 4, SecondsSinceLastReply: &seconds,
 	})
 	if err != nil {
@@ -146,17 +147,35 @@ func TestBuildGroupParticipationInputHasPolicyPresenceAndNoProfile(t *testing.T)
 	if strings.Contains(joined, "preferredName") || strings.Contains(joined, `"contextType":"user_profile"`) {
 		t.Fatalf("participation input contains private profile: %s", joined)
 	}
-	for _, want := range []string{"群友", "group_observations", `"audience":"public"`, `"evaluationReason":"message"`, `"assistantReplies5Minutes":2`} {
+	for _, want := range []string{"群友", "ambient_observations", `"memoryPolicy":"public"`, `"evaluationReason":"message"`, `"assistantReplies5Minutes":2`} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("participation input missing %q: %s", want, joined)
 		}
 	}
 }
 
+func TestDeriveParticipationSignalsPreservesDirectedQuestionAndFrequencyFacts(t *testing.T) {
+	now := int64((10 * time.Minute) / time.Millisecond)
+	messages := []AmbientObservation{
+		{MessageID: "m1", SenderID: "u1", SenderName: "甲", Text: "你觉得呢？", DirectedToBot: true, IsNew: true, TimestampUnixMS: now - 5*int64(time.Second.Milliseconds())},
+		{MessageID: "m2", SenderID: "u2", SenderName: "乙", Text: "你觉得呢？", IsNew: true, TimestampUnixMS: now},
+	}
+	signals, err := DeriveParticipationSignals(messages, []memory.MessageRecord{{Role: "assistant", CreatedAtUnixMS: now - 2*int64(time.Minute.Milliseconds())}, {Role: "user", CreatedAtUnixMS: now - int64(time.Minute.Milliseconds())}}, now)
+	if err != nil {
+		t.Fatalf("DeriveParticipationSignals() error = %v", err)
+	}
+	if signals.DirectedCount != 1 || signals.QuestionCount != 2 || signals.PendingCount != 2 || signals.RepetitionCount != 1 {
+		t.Fatalf("signals = %#v", signals)
+	}
+	if signals.RecentSelfReplyRatio != 0.5 || signals.EffectiveReplyFrequencyPerMinute <= 0 {
+		t.Fatalf("frequency signals = %#v", signals)
+	}
+}
+
 type participationMemory struct {
 	MemoryPort
 	bootstrap memory.ConversationBootstrap
-	surface   string
+	binding   interaction.Binding
 	found     bool
 	lookupErr error
 }
@@ -165,11 +184,11 @@ func (m participationMemory) LoadConversation(string) (memory.ConversationBootst
 	return m.bootstrap, nil
 }
 
-func (m participationMemory) LookupSurfaceForConversation(string) (string, bool, error) {
+func (m participationMemory) LookupEndpointForConversation(string) (interaction.Binding, bool, error) {
 	if m.lookupErr != nil {
-		return "", false, m.lookupErr
+		return interaction.Binding{}, false, m.lookupErr
 	}
-	return m.surface, m.found, nil
+	return m.binding, m.found, nil
 }
 
 type participationCatalog struct{ record character.Record }
@@ -199,22 +218,22 @@ func (m *participationModel) ExecuteRequestContext(ctx context.Context, request 
 	return []model.StreamEvent{{Type: "text_delta", Data: m.draft}}, nil
 }
 
-func TestDecideGroupParticipationRequiresAmbientPublicAndPropagatesContext(t *testing.T) {
+func TestDecideParticipationRequiresAmbientPublicAndPropagatesContext(t *testing.T) {
 	modelPort := &participationModel{draft: `{"action":"silent"}`}
 	service := NewCompanionService()
 	service.memory = participationMemory{bootstrap: memory.ConversationBootstrap{Conversation: memory.ConversationRecord{ID: "c1", CharacterID: "character-1"}}}
 	service.model = modelPort
 	service.characters = participationCatalog{record: character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"}}
 	service.cfg = participationConfig{}
-	request := validGroupParticipationRequest()
-	if _, err := service.DecideGroupParticipation(t.Context(), request); err == nil || !strings.Contains(err.Error(), "public ambient") {
-		t.Fatalf("non-ambient error = %v", err)
+	request := validParticipationRequest()
+	if _, err := service.DecideParticipation(t.Context(), request); err == nil || !strings.Contains(err.Error(), "no interaction binding") {
+		t.Fatalf("missing interaction error = %v", err)
 	}
-	if err := service.BindSurface("c1", SurfaceIMGroup); err != nil {
+	if err := service.BindInteraction("c1", publicAmbientBinding()); err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.DecideGroupParticipation(t.Context(), request)
-	if err != nil || result.Action != GroupParticipationSilent {
+	result, err := service.DecideParticipation(t.Context(), request)
+	if err != nil || result.Action != ParticipationSilent {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
 	if modelPort.request.Shape.Lane != model.PromptLaneParticipate || modelPort.request.Shape.PromptCacheKey != "fairy:c1:participate" || modelPort.request.Shape.MaxOutputTokens != 256 {
@@ -224,7 +243,7 @@ func TestDecideGroupParticipationRequiresAmbientPublicAndPropagatesContext(t *te
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	modelPort.err = canceled.Err()
-	if _, err := service.DecideGroupParticipation(canceled, request); !errors.Is(err, context.Canceled) {
+	if _, err := service.DecideParticipation(canceled, request); !errors.Is(err, context.Canceled) {
 		t.Fatalf("context error = %v", err)
 	}
 }

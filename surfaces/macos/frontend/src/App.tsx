@@ -9,7 +9,7 @@ const iconLabel = (label: string) => <span className="icon" aria-hidden="true">{
 export default function App() {
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const [endpoint, setEndpoint] = useState(localStorage.getItem("fairy.endpoint") || "http://127.0.0.1:8787");
-  const [surfaceKey, setSurfaceKey] = useState(localStorage.getItem("fairy.surfaceKey") || "");
+  const [endpointKey, setEndpointKey] = useState(localStorage.getItem("fairy.endpointKey") || "");
   const [token, setToken] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [connection, setConnection] = useState<any>(null);
@@ -39,15 +39,15 @@ export default function App() {
   async function connect() {
     dispatch({ type: "connect" });
     try {
-      const nextKey = surfaceKey || undefined;
+      const nextKey = endpointKey || undefined;
       const result = await service()?.Connect(endpoint, nextKey);
-      const key = result.connection.surfaceKey;
-      localStorage.setItem("fairy.endpoint", endpoint); localStorage.setItem("fairy.surfaceKey", key); setSurfaceKey(key);
+      const key = result.connection.endpointKey;
+	  localStorage.setItem("fairy.endpoint", endpoint); localStorage.setItem("fairy.endpointKey", key); setEndpointKey(key);
       setConnection(result); dispatch({ type: "restore", messages: result.messages.map((m: any) => ({ id: m.id, role: m.role, text: m.content, sequence: m.sequence })) }); dispatch({ type: "connected" });
     } catch (error: any) { dispatch({ type: "error", message: error?.message || "连接失败" }); }
   }
   async function saveAndConnect() {
-    try { await service()?.SaveConnection(endpoint, token, surfaceKey); setToken(""); await connect(); setShowSettings(false); }
+    try { await service()?.SaveConnection(endpoint, token, endpointKey); setToken(""); await connect(); setShowSettings(false); }
     catch (error: any) { dispatch({ type: "error", message: error?.message || "保存连接失败" }); }
   }
   async function send(form: HTMLFormElement) { const data = new FormData(form); const text = String(data.get("input") || "").trim(); if (!text || state.status === "sending") return; dispatch({ type: "send", id: `turn-${Date.now()}`, text }); try { await service()?.Send(text, false); } catch (error: any) { dispatch({ type: "failed", message: error?.message || "发送失败" }); } }

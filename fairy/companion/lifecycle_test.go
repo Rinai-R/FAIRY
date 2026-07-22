@@ -67,6 +67,47 @@ func TestTurnLifecycleRejectsInvalidTransition(t *testing.T) {
 	}
 }
 
+func TestTurnLifecycleTemporaryStreamEventsAreOrderedAndMarked(t *testing.T) {
+	life := NewTurnLifecycle("conversation", "turn")
+	for _, state := range []TurnState{TurnStateInterpreting, TurnStateGathering, TurnStatePlanning} {
+		if _, err := life.Transition(state); err != nil {
+			t.Fatalf("Transition(%s) error = %v", state, err)
+		}
+	}
+	presence, err := life.Presence("model_stream")
+	if err != nil {
+		t.Fatalf("Presence() error = %v", err)
+	}
+	preview, err := life.ReplyPreview([]ReplyChain{{Text: "完整文本", VisualState: "idle"}})
+	if err != nil {
+		t.Fatalf("ReplyPreview() error = %v", err)
+	}
+	if presence.Sequence >= preview.Sequence {
+		t.Fatalf("temporary event order = presence %d, preview %d", presence.Sequence, preview.Sequence)
+	}
+	if payload, ok := presence.Payload.(presencePayload); !ok || payload.Type != "presence" || payload.Phase != "model_stream" {
+		t.Fatalf("presence payload = %#v", presence.Payload)
+	}
+	if payload, ok := preview.Payload.(replyPreviewPayload); !ok || payload.Type != "reply.preview" || len(payload.Chains) != 1 {
+		t.Fatalf("preview payload = %#v", preview.Payload)
+	}
+}
+
+func TestTurnLifecycleRejectsUnsafeTemporaryEvents(t *testing.T) {
+	life := NewTurnLifecycle("conversation", "turn")
+	if _, err := life.Presence("model_stream"); err == nil {
+		t.Fatal("Presence() in idle error = nil")
+	}
+	for _, state := range []TurnState{TurnStateInterpreting, TurnStateGathering, TurnStatePlanning} {
+		if _, err := life.Transition(state); err != nil {
+			t.Fatalf("Transition(%s) error = %v", state, err)
+		}
+	}
+	if _, err := life.ReplyPreview(nil); err == nil {
+		t.Fatal("ReplyPreview(nil) error = nil")
+	}
+}
+
 func TestBeatReadyIncludesPacingFields(t *testing.T) {
 	life := NewTurnLifecycle("conversation", "turn")
 	for _, state := range []TurnState{TurnStateInterpreting, TurnStateGathering, TurnStatePlanning, TurnStateResponding} {

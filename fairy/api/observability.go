@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"fairy/companion"
 	"fairy/memory"
 	"fairy/observability"
 	"github.com/cloudwego/hertz/pkg/app"
@@ -22,8 +23,9 @@ const (
 )
 
 type runtimeMetrics struct {
-	ActiveBackgroundJobs uint64 `json:"activeBackgroundJobs"`
-	EventSubscribers     uint64 `json:"eventSubscribers"`
+	ActiveBackgroundJobs uint64                             `json:"activeBackgroundJobs"`
+	EventSubscribers     uint64                             `json:"eventSubscribers"`
+	AgentLoop            companion.AgentLoopMetricsSnapshot `json:"agentLoop"`
 }
 
 type metricsResponse struct {
@@ -121,6 +123,7 @@ func (s *Server) handleMetrics(ctx context.Context, c *app.RequestContext) {
 		Runtime: runtimeMetrics{
 			ActiveBackgroundJobs: uint64(activeJobs),
 			EventSubscribers:     s.rt.Events.SubscriberCount(),
+			AgentLoop:            s.rt.Companion.AgentLoopMetrics(),
 		},
 		Usage:    usage,
 		Database: database,

@@ -12,6 +12,7 @@ import (
 
 	"fairy/character"
 	"fairy/config"
+	"fairy/interaction"
 	"fairy/memory"
 	"fairy/memory/semantic"
 	"fairy/model"
@@ -38,10 +39,12 @@ type CompanionService struct {
 	extractionIdle    map[string]context.CancelFunc
 	backgroundErrorMu sync.Mutex
 	backgroundError   error
+	loopMetrics       agentLoopMetrics
 	gateMu            sync.Mutex
 	gates             map[string]*conversationGate
-	surfaceMu         sync.RWMutex
-	surfaces          map[string]SurfaceKind
+	interactionMu     sync.RWMutex
+	interactions      map[string]interaction.Binding
+	identities        OwnerIdentityPort
 	emitMu            sync.Mutex
 	emit              EventEmitter
 	ambient           *AmbientInbox
@@ -93,7 +96,7 @@ func NewCompanionService() *CompanionService {
 		logger:         zap.NewNop(),
 		extractionIdle: make(map[string]context.CancelFunc),
 		gates:          make(map[string]*conversationGate),
-		surfaces:       make(map[string]SurfaceKind),
+		interactions:   make(map[string]interaction.Binding),
 	}
 	service.ambient = newAmbientInbox(context.Background(), service)
 	return service
@@ -112,7 +115,7 @@ func NewCompanionServiceWithRuntime(root string, memory MemoryPort, model ModelP
 		logger:         zap.NewNop(),
 		extractionIdle: make(map[string]context.CancelFunc),
 		gates:          make(map[string]*conversationGate),
-		surfaces:       make(map[string]SurfaceKind),
+		interactions:   make(map[string]interaction.Binding),
 	}
 	if strings.TrimSpace(root) != "" {
 		service.characters = character.NewStore(root)
@@ -150,6 +153,13 @@ func AttachProfileSource(s *CompanionService, source ProfileSource) {
 		return
 	}
 	s.profiles = source
+}
+
+func AttachOwnerIdentityStore(s *CompanionService, store OwnerIdentityPort) {
+	if s == nil || store == nil {
+		return
+	}
+	s.identities = store
 }
 
 // AttachProfileStore is retained for call-site compatibility; prefer AttachProfileSource.
@@ -293,17 +303,12 @@ func (s *CompanionService) SubmitTurn(request SubmitTurnRequest) (TurnOutcome, e
 	if err != nil {
 		return TurnOutcome{}, err
 	}
-	surface, err := s.ResolveSurface(request.ConversationID, request.Surface)
-	if err != nil {
-		return TurnOutcome{}, err
-	}
 	return s.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 		ConversationID:        request.ConversationID,
 		Input:                 request.Input,
 		SpeechEnabled:         request.SpeechEnabled,
 		MaxOutputTokens:       RespondMaxOutputTokens,
 		AvailableVisualStates: states,
-		Surface:               surface,
 	})
 }
 
@@ -320,12 +325,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	if err := ValidateSubmitCompiledTurnRequest(request); err != nil {
 		return TurnOutcome{}, err
 	}
-	surface, err := s.ResolveSurface(request.ConversationID, request.Surface)
-	if err != nil {
-		return TurnOutcome{}, err
-	}
-	request.Surface = surface
-	policy, err := InteractionPolicyForSurface(surface)
+	resolved, err := s.ResolveInteraction(request.ConversationID)
 	if err != nil {
 		return TurnOutcome{}, err
 	}
@@ -346,6 +346,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	}
 	s.bindTurn(request.ConversationID, persisted.ID)
 	defer s.endTurn(request.ConversationID, persisted.ID)
+	turnStarted := time.Now()
 
 	lg := s.logger.With(zap.String("turn", persisted.ID))
 	life := NewTurnLifecycle(request.ConversationID, persisted.ID)
@@ -414,7 +415,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		return fail("CHARACTER_NOT_AVAILABLE", err)
 	}
 	var userProfile *profile.Snapshot
-	if policy.Audience == AudiencePrivate {
+	if resolved.AllowsPersonalMemory() {
 		userProfile, err = s.profileSource().Current()
 		if err != nil {
 			return fail("USER_PROFILE_UNAVAILABLE", err)
@@ -478,11 +479,11 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		allowTools := modelDrivenTools < maxModelDrivenToolCalls
 		tools := []model.ToolSpec(nil)
 		if allowTools {
-			tools = RespondToolSpecsForPolicy(webSearchEnabled, policy)
+			tools = RespondToolSpecsForInteraction(webSearchEnabled, resolved)
 		}
-		instructions := RespondInstructionsForPolicy(len(tools) > 0, policy)
+		instructions := RespondInstructionsForInteraction(len(tools) > 0, resolved)
 		attempt := modelDrivenTools + 1
-		slots, err := BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval, request.Surface)
+		slots, err := BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval, resolved)
 		if err != nil {
 			return fail("PROMPT_BUILD_FAILED", err)
 		}
@@ -548,7 +549,56 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		if err := turnCtx.Err(); err != nil {
 			return fail("TURN_INTERRUPTED", ErrTurnInterrupted)
 		}
-		events, err = s.model.ExecuteRequestContext(turnCtx, executeRequest)
+		events = make([]model.StreamEvent, 0)
+		previewAccumulator := newStreamPreviewAccumulator(request.AvailableVisualStates)
+		modelCallStarted := time.Now()
+		firstByteAt := time.Time{}
+		previewAt := time.Time{}
+		streamCallback := func(event model.StreamEvent) {
+			events = append(events, event)
+			if firstByteAt.IsZero() {
+				firstByteAt = time.Now()
+				if _, presenceErr := s.publishLife(life, func() (HarnessEvent, error) {
+					return life.Presence("model_stream")
+				}); presenceErr != nil {
+					lg.Warn("cognition loop", zap.String("phase", "presence_skipped"), zap.Error(presenceErr))
+				}
+			}
+			preview, ready := previewAccumulator.Observe(event)
+			if !ready {
+				return
+			}
+			previewAt = time.Now()
+			if _, previewErr := s.publishLife(life, func() (HarnessEvent, error) {
+				return life.ReplyPreview(preview.Chains)
+			}); previewErr != nil {
+				lg.Warn("cognition loop", zap.String("phase", "preview_skipped"), zap.Error(previewErr))
+			}
+		}
+		if streaming, ok := s.model.(StreamingModelPort); ok {
+			err = streaming.ExecuteRequestContextStream(turnCtx, executeRequest, streamCallback)
+		} else {
+			var collected []model.StreamEvent
+			collected, err = s.model.ExecuteRequestContext(turnCtx, executeRequest)
+			for _, event := range collected {
+				streamCallback(event)
+			}
+		}
+		streamTiming := map[string]any{"phase": "model_stream_timing"}
+		if !firstByteAt.IsZero() {
+			streamTiming["firstByteMs"] = firstByteAt.Sub(modelCallStarted).Milliseconds()
+		}
+		if !previewAt.IsZero() {
+			streamTiming["previewMs"] = previewAt.Sub(modelCallStarted).Milliseconds()
+		}
+		streamTiming["completedMs"] = time.Since(modelCallStarted).Milliseconds()
+		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventModel, TurnStatePlanning, "", streamTiming)
+		if !firstByteAt.IsZero() {
+			s.loopMetrics.providerFirstByte(firstByteAt.Sub(modelCallStarted))
+		}
+		if !previewAt.IsZero() {
+			s.loopMetrics.replyPreview(previewAt.Sub(modelCallStarted))
+		}
 		if err != nil {
 			err = mapModelCancelError(err)
 			code := "MODEL_FAILED"
@@ -652,8 +702,8 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 				)
 				switch call.Name {
 				case toolMemorySearch:
-					if policy.Audience == AudiencePublic {
-						return fail("MODEL_RESPONSE_INVALID", errors.New("memory_search is unavailable for group conversations"))
+					if !resolved.AllowsPersonalMemory() {
+						return fail("MODEL_RESPONSE_INVALID", errors.New("memory_search is unavailable for public interactions"))
 					}
 					extra, toolErr := s.retrieveMemoryForTool(bootstrap.Conversation.CharacterID, query)
 					if toolErr != nil {
@@ -691,8 +741,8 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 						)
 					}
 				case toolPublicMemorySearch:
-					if policy.Audience != AudiencePublic {
-						return fail("MODEL_RESPONSE_INVALID", errors.New("public_memory_search is available only for group conversations"))
+					if resolved.AllowsPersonalMemory() {
+						return fail("MODEL_RESPONSE_INVALID", errors.New("public_memory_search is available only for public interactions"))
 					}
 					extra, toolErr := s.retrievePublicKnowledgeForTool(turnCtx, query)
 					status := "ok"
@@ -751,15 +801,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 						} else {
 							extra := retrievalFromWebHits(hits)
 							retrieval = mergeRetrievalContext(retrieval, extra)
-							nowMS := time.Now().UnixMilli()
-							if policy.Audience == AudiencePrivate {
-								for index, hit := range hits {
-									ingestSnapshots = append(ingestSnapshots, memory.KnowledgeIngestSnapshot{
-										ConversationID: request.ConversationID, TurnID: persisted.ID, Query: query,
-										Title: hit.Title, URL: hit.URL, Snippet: hit.Snippet, Rank: uint8(index + 1), FetchedAtUnixMS: nowMS,
-									})
-								}
-							}
+							ingestSnapshots = append(ingestSnapshots, knowledgeIngestSnapshots(request.ConversationID, persisted.ID, query, hits, time.Now().UnixMilli())...)
 							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
 								"tool":             call.Name,
 								"phase":            "model_driven",
@@ -835,11 +877,13 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	if err := transition(TurnStateResponding); err != nil {
 		return fail("INVALID_STATE_TRANSITION", err)
 	}
+	s.markTurnDelivering(request.ConversationID, persisted.ID)
 	var profileRevision *uint64
 	if userProfile != nil {
 		value := userProfile.Revision
 		profileRevision = &value
 	}
+	var firstBeatOnce sync.Once
 	finalDelivery = newReplyDelivery(
 		turnCtx,
 		len(reply.Chains),
@@ -847,6 +891,9 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 			_, err := s.publishLife(life, func() (HarnessEvent, error) {
 				return life.BeatReady(completion)
 			})
+			if err == nil && completion.Kind == beatKindFinal {
+				firstBeatOnce.Do(func() { s.loopMetrics.firstBeat(time.Since(turnStarted)) })
+			}
 			return err
 		},
 		func(record replyDeliveryRecord) {
@@ -1007,6 +1054,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	}); err != nil {
 		return fail("INVALID_STATE_TRANSITION", err)
 	}
+	s.loopMetrics.completed(time.Since(turnStarted))
 	s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTerminal, TurnStateCompleted, "", runtimeTerminalLedgerMetadata("completed", reply, finalUsage))
 	contextWindow, err := s.recordObservedContextWindow(request.ConversationID, bootstrap.PromptWindow.Revision, finalUsage)
 	if err != nil {
@@ -1018,13 +1066,11 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	if err := s.updateContinuationState(request.ConversationID, connectionConfig.Capabilities.CacheRetention, bootstrap.PromptWindow.Revision, fullRequest, reply.DisplayText, events); err != nil {
 		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContinuation, TurnStateCompleted, "CONTINUATION_STATE_FAILED", runtimeFailureLedgerMetadata("CONTINUATION_STATE_FAILED", err, false))
 	}
-	if policy.Audience == AudiencePrivate {
+	if resolved.AllowsPersonalMemory() {
 		s.scheduleBackgroundExtraction(request.ConversationID)
 	}
 	s.scheduleAutoCompaction(request.ConversationID, events)
-	if policy.Audience == AudiencePrivate {
-		s.scheduleKnowledgeIngest(ingestSnapshots)
-	}
+	s.scheduleKnowledgeIngest(ingestSnapshots)
 	return TurnOutcome{
 		ConversationID:  request.ConversationID,
 		TurnID:          persisted.ID,
@@ -1204,16 +1250,12 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
-	surface, err := s.ResolveSurface(conversationID, "")
-	if err != nil {
-		return memory.CompactionResult{}, err
-	}
-	policy, err := InteractionPolicyForSurface(surface)
+	resolved, err := s.ResolveInteraction(conversationID)
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
 	var userProfile *profile.Snapshot
-	if policy.Audience == AudiencePrivate {
+	if resolved.AllowsPersonalMemory() {
 		userProfile, err = s.profileSource().Current()
 		if err != nil {
 			return memory.CompactionResult{}, err
@@ -1227,7 +1269,7 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
-	input, err := BuildCompactInput(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, states, surface)
+	input, err := BuildCompactInput(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, states, resolved)
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}

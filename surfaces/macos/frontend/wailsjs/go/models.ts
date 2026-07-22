@@ -144,7 +144,7 @@ export namespace coreclient {
 	    conversationId: string;
 	    characterId: string;
 	    messageCount: number;
-	    surface: string;
+	    endpoint: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new OpenSessionResponse(source);
@@ -155,7 +155,7 @@ export namespace coreclient {
 	        this.conversationId = source["conversationId"];
 	        this.characterId = source["characterId"];
 	        this.messageCount = source["messageCount"];
-	        this.surface = source["surface"];
+	        this.endpoint = source["endpoint"];
 	    }
 	}
 	
@@ -166,7 +166,7 @@ export namespace main {
 	
 	export class ConnectionState {
 	    endpoint: string;
-	    surfaceKey: string;
+	    endpointKey: string;
 	    hasToken: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -176,7 +176,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.endpoint = source["endpoint"];
-	        this.surfaceKey = source["surfaceKey"];
+	        this.endpointKey = source["endpointKey"];
 	        this.hasToken = source["hasToken"];
 	    }
 	}
@@ -236,4 +236,3 @@ export namespace main {
 	}
 
 }
-

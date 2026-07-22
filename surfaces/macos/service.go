@@ -15,15 +15,16 @@ import (
 
 	"fairy-surfaces/turnclient"
 	"fairy/coreclient"
+	"fairy/interaction"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 var installationKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
 type ConnectionState struct {
-	Endpoint   string `json:"endpoint"`
-	SurfaceKey string `json:"surfaceKey"`
-	HasToken   bool   `json:"hasToken"`
+	Endpoint    string `json:"endpoint"`
+	EndpointKey string `json:"endpointKey"`
+	HasToken    bool   `json:"hasToken"`
 }
 
 type SessionState struct {
@@ -94,8 +95,8 @@ func EnsureInstallationKey(existing string) (string, error) {
 	return "macos-" + base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-func (s *AppService) Connection(endpoint, surfaceKey string) (ConnectionState, error) {
-	state, err := validatedConnectionState(endpoint, surfaceKey)
+func (s *AppService) Connection(endpoint, endpointKey string) (ConnectionState, error) {
+	state, err := validatedConnectionState(endpoint, endpointKey)
 	if err != nil {
 		return ConnectionState{}, err
 	}
@@ -110,8 +111,8 @@ func (s *AppService) Connection(endpoint, surfaceKey string) (ConnectionState, e
 	return state, nil
 }
 
-func (s *AppService) SaveConnection(endpoint, token, surfaceKey string) (ConnectionState, error) {
-	state, err := validatedConnectionState(endpoint, surfaceKey)
+func (s *AppService) SaveConnection(endpoint, token, endpointKey string) (ConnectionState, error) {
+	state, err := validatedConnectionState(endpoint, endpointKey)
 	if err != nil {
 		return ConnectionState{}, err
 	}
@@ -128,20 +129,20 @@ func (s *AppService) SaveConnection(endpoint, token, surfaceKey string) (Connect
 	return state, nil
 }
 
-func validatedConnectionState(endpoint, surfaceKey string) (ConnectionState, error) {
+func validatedConnectionState(endpoint, endpointKey string) (ConnectionState, error) {
 	endpoint, err := ValidateEndpoint(endpoint)
 	if err != nil {
 		return ConnectionState{}, err
 	}
-	surfaceKey, err = EnsureInstallationKey(surfaceKey)
+	endpointKey, err = EnsureInstallationKey(endpointKey)
 	if err != nil {
 		return ConnectionState{}, err
 	}
-	return ConnectionState{Endpoint: endpoint, SurfaceKey: surfaceKey}, nil
+	return ConnectionState{Endpoint: endpoint, EndpointKey: endpointKey}, nil
 }
 
-func (s *AppService) Connect(endpoint, surfaceKey string) (SessionState, error) {
-	state, err := s.Connection(endpoint, surfaceKey)
+func (s *AppService) Connect(endpoint, endpointKey string) (SessionState, error) {
+	state, err := s.Connection(endpoint, endpointKey)
 	if err != nil {
 		return SessionState{}, err
 	}
@@ -158,7 +159,10 @@ func (s *AppService) Connect(endpoint, surfaceKey string) (SessionState, error) 
 	if _, err := client.Status(ctx); err != nil {
 		return SessionState{}, err
 	}
-	session, err := client.OpenSession(ctx, coreclient.OpenSessionRequest{Surface: "desktop", SurfaceKey: state.SurfaceKey})
+	session, err := client.OpenSession(ctx, coreclient.OpenSessionRequest{
+		Endpoint: interaction.EndpointDesktop, EndpointKey: state.EndpointKey,
+		Interaction: interaction.Context{Audience: interaction.AudienceSingle, Initiation: interaction.InitiationDirect, Presentation: interaction.PresentationEmbodied},
+	})
 	if err != nil {
 		return SessionState{}, err
 	}
@@ -238,7 +242,7 @@ func (s *AppService) Send(input string, speechEnabled bool) error {
 	}
 	defer func() { cancel(); s.clearActive(cancel) }()
 	runner, _ := turnclient.New(client, 15*time.Second)
-	_, err := runner.Run(turnCtx, turnclient.Request{ConversationID: conversation, Input: input, SpeechEnabled: speechEnabled, Surface: "desktop"}, func(event turnclient.Event) error {
+	_, err := runner.Run(turnCtx, turnclient.Request{ConversationID: conversation, Input: input, SpeechEnabled: speechEnabled}, func(event turnclient.Event) error {
 		if s.ctx != nil {
 			runtime.EventsEmit(s.ctx, "turn:event", event)
 		}

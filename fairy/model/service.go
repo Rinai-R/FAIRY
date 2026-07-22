@@ -46,32 +46,41 @@ func (s *ModelService) ExecuteRequest(request CompiledPromptRequest) ([]StreamEv
 }
 
 func (s *ModelService) ExecuteRequestContext(ctx context.Context, request CompiledPromptRequest) ([]StreamEvent, error) {
-	if ctx == nil {
-		return nil, fmt.Errorf("model request context is required")
-	}
-	connectionConfig, err := config.ReadModelConnection(s.root)
-	if err != nil {
-		return nil, fmt.Errorf("reading model connection: %w", err)
-	}
-	connection, err := ConnectionFromConfig(connectionConfig)
-	if err != nil {
-		return nil, err
-	}
-	draft, err := BuildRequestDraft(connection, request)
-	if err != nil {
-		return nil, fmt.Errorf("building model request draft: %w", err)
-	}
-	bearerKey, err := s.bearerCredential(connectionConfig)
-	if err != nil {
-		return nil, err
-	}
 	events := make([]StreamEvent, 0)
-	if err := s.transport.Execute(ctx, draft, bearerKey, func(event StreamEvent) {
+	if err := s.ExecuteRequestContextStream(ctx, request, func(event StreamEvent) {
 		events = append(events, event)
 	}); err != nil {
 		return nil, err
 	}
 	return events, nil
+}
+
+// ExecuteRequestContextStream executes a compiled request and invokes onEvent
+// synchronously for each provider event, preserving provider order.
+func (s *ModelService) ExecuteRequestContextStream(ctx context.Context, request CompiledPromptRequest, onEvent func(StreamEvent)) error {
+	if ctx == nil {
+		return fmt.Errorf("model request context is required")
+	}
+	if onEvent == nil {
+		return fmt.Errorf("model stream callback is required")
+	}
+	connectionConfig, err := config.ReadModelConnection(s.root)
+	if err != nil {
+		return fmt.Errorf("reading model connection: %w", err)
+	}
+	connection, err := ConnectionFromConfig(connectionConfig)
+	if err != nil {
+		return err
+	}
+	draft, err := BuildRequestDraft(connection, request)
+	if err != nil {
+		return fmt.Errorf("building model request draft: %w", err)
+	}
+	bearerKey, err := s.bearerCredential(connectionConfig)
+	if err != nil {
+		return err
+	}
+	return s.transport.Execute(ctx, draft, bearerKey, onEvent)
 }
 
 func LaneCacheKey(conversationID string, lane PromptLane) string {

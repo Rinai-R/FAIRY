@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"net/url"
 	"strings"
 	"unicode/utf8"
 )
@@ -64,22 +65,23 @@ func (s *Store) ProcessKnowledgeIngestJobsContext(ctx context.Context, limit int
 	return s.processKnowledgeIngestJobsPostgres(ctx, limit)
 }
 
-// acceptKnowledgeIngest applies structural reject rules only (no domain/topic
-// examples) so cold ingest does not overfit to particular subjects.
-func acceptKnowledgeIngest(topic, statement string) bool {
+func acceptKnowledgeIngest(category, topic, statement, sourceURL string, rank uint8) bool {
+	switch strings.TrimSpace(category) {
+	case "anime", "game", "book":
+	default:
+		return false
+	}
 	topic = strings.TrimSpace(topic)
 	statement = strings.TrimSpace(statement)
-	if topic == "" || statement == "" {
+	if topic == "" || statement == "" || rank < 1 || rank > 5 {
 		return false
 	}
 	if utf8.RuneCountInString(statement) < 8 {
 		return false
 	}
-	lower := strings.ToLower(statement)
-	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
-		if !strings.ContainsAny(statement, " \t\n") {
-			return false
-		}
+	parsed, err := url.Parse(strings.TrimSpace(sourceURL))
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Hostname() == "" || parsed.User != nil {
+		return false
 	}
 	return true
 }

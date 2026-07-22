@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"fairy/character"
+	"fairy/interaction"
 	"fairy/memory"
 	"fairy/model"
 	"fairy/profile"
@@ -86,9 +87,9 @@ func BuildRespondInput(
 	messages []memory.MessageRecord,
 	states []VisualState,
 	retrieval memory.RetrievalContext,
-	surface SurfaceKind,
+	resolved interaction.Resolved,
 ) ([]model.PromptItem, error) {
-	slots, err := BuildRespondContextSlots(record, userProfile, promptWindow, messages, states, retrieval, surface)
+	slots, err := BuildRespondContextSlots(record, userProfile, promptWindow, messages, states, retrieval, resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -102,14 +103,9 @@ func BuildRespondContextSlots(
 	messages []memory.MessageRecord,
 	states []VisualState,
 	retrieval memory.RetrievalContext,
-	surface SurfaceKind,
+	resolved interaction.Resolved,
 ) ([]ContextSlot, error) {
-	normalizedSurface, err := NormalizeSurface(string(surface))
-	if err != nil {
-		return nil, err
-	}
-	policy, err := InteractionPolicyForSurface(normalizedSurface)
-	if err != nil {
+	if _, err := interactionSegment(resolved); err != nil {
 		return nil, err
 	}
 	windowed := messagesAfterCutoff(messages, promptWindow.CutoffMessageSequence)
@@ -123,17 +119,17 @@ func BuildRespondContextSlots(
 	}
 	slots = append(slots, presentContextSlot("character", true, "local_trusted", "stable", []model.PromptItem{prefix[0]}, map[string]any{"revision": record.Revision}))
 	slots = append(slots, presentContextSlot("display_language", true, "local_trusted", "stable", []model.PromptItem{prefix[1]}, map[string]any{"textLanguage": record.TextLanguage}))
-	if policy.Audience == AudiencePublic {
-		slots = append(slots, omittedContextSlot("profile", false, "private_context", "stable", "public_surface"))
+	if !resolved.AllowsPersonalMemory() {
+		slots = append(slots, omittedContextSlot("profile", false, "private_context", "stable", "public_interaction"))
 	} else {
 		slots = append(slots, presentContextSlot("profile", true, "local_trusted", "stable", []model.PromptItem{prefix[2]}, map[string]any{"profile": userProfile}))
 	}
 	slots = append(slots, presentContextSlot("available_visual_states", true, "local_trusted", "stable", []model.PromptItem{prefix[3]}, states))
-	surfaceItem, err := encodeSurfaceContext(normalizedSurface)
+	interactionItem, err := encodeInteractionContext(resolved)
 	if err != nil {
 		return nil, err
 	}
-	slots = append(slots, presentContextSlot("surface", true, "local_trusted", "window", []model.PromptItem{surfaceItem}, map[string]any{"kind": normalizedSurface}))
+	slots = append(slots, presentContextSlot("interaction", true, "local_trusted", "window", []model.PromptItem{interactionItem}, resolved))
 	if promptWindow.Summary != nil && *promptWindow.Summary != "" {
 		summaryItem, err := encodeCompactionSummary(*promptWindow.Summary)
 		if err != nil {
@@ -336,7 +332,7 @@ func InstructionsForLane(lane model.PromptLane) (string, uint32, error) {
 	case model.PromptLaneRespond:
 		return RespondInstructions, RespondMaxOutputTokens, nil
 	case model.PromptLaneParticipate:
-		return GroupParticipationInstructions, GroupParticipationMaxOutputTokens, nil
+		return ParticipationInstructions, ParticipationMaxOutputTokens, nil
 	case model.PromptLaneCompact:
 		return CompactInstructions, CompactMaxOutputTokens, nil
 	case model.PromptLaneExtract:

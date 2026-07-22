@@ -111,12 +111,12 @@ func TestConnectUsesBearerAndDesktopInstallationSession(t *testing.T) {
 			if err := conn.ReadJSON(&frame); err != nil {
 				t.Fatal(err)
 			}
-			if frame["type"] != "session.open" || frame["surface"] != "desktop" || frame["surfaceKey"] != "macos-installation" {
+			if frame["type"] != "session.open" || frame["endpoint"] != "desktop" || frame["endpointKey"] != "macos-installation" {
 				t.Fatalf("session frame = %#v", frame)
 			}
 			_ = conn.WriteJSON(map[string]any{
 				"type": "session.opened", "requestId": frame["requestId"],
-				"conversationId": "c1", "characterId": "ch1", "messageCount": 1, "surface": "desktop",
+				"conversationId": "c1", "characterId": "ch1", "messageCount": 1, "endpoint": "desktop",
 			})
 			return
 		}

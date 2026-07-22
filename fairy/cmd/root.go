@@ -19,7 +19,7 @@ import (
 type APIClient interface {
 	Status(context.Context) (coreclient.Status, error)
 	OpenSession(context.Context, coreclient.OpenSessionRequest) (coreclient.OpenSessionResponse, error)
-	DecideGroupParticipation(context.Context, string, coreclient.GroupParticipationRequest) (coreclient.GroupParticipationResponse, error)
+	DecideParticipation(context.Context, string, coreclient.ParticipationRequest) (coreclient.ParticipationResponse, error)
 	SubmitTurn(context.Context, string, coreclient.SubmitTurnRequest) (coreclient.SubmitTurnResponse, error)
 	CancelTurn(context.Context, string, string) error
 	OpenEvents(context.Context, string, time.Duration) (coreclient.EventStream, error)
@@ -35,6 +35,9 @@ type APIClient interface {
 	Logs(context.Context, coreclient.LogQuery) (coreclient.LogResponse, error)
 	OpenLogs(context.Context, coreclient.LogQuery, time.Duration) (coreclient.EventStream, error)
 	Metrics(context.Context) (coreclient.Metrics, error)
+	ListOwnerIdentities(context.Context) ([]coreclient.OwnerIdentity, error)
+	BindOwnerIdentity(context.Context, string, string) (coreclient.OwnerIdentity, error)
+	UnbindOwnerIdentity(context.Context, string, string) error
 }
 
 type ConnectionConfig struct {
@@ -111,6 +114,7 @@ func NewRootCmd(dependencies Dependencies) *cobra.Command {
 		newConfigCmd(v, deps),
 		newProfileCmd(v, deps),
 		newCharacterCmd(v, deps),
+		newIdentityCmd(v, deps),
 		newDBCmd(v, deps),
 		newCompletionCmd(root),
 	)

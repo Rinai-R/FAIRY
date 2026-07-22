@@ -8,7 +8,11 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"fairy/interaction"
 )
+
+var ErrEndpointBindingMismatch = errors.New("endpoint conversation binding does not match stored interaction facts")
 
 type ConversationRecord struct {
 	ID              string `json:"id"`
@@ -47,25 +51,23 @@ type PersistedTurn struct {
 	UserMessage    MessageRecord `json:"userMessage"`
 }
 
-func (s *Store) OpenOrCreateSurfaceConversation(characterID, surface, surfaceKeyDigest string) (ConversationBootstrap, error) {
-	return s.OpenOrCreateSurfaceConversationContext(context.Background(), characterID, surface, surfaceKeyDigest)
+func (s *Store) OpenOrCreateEndpointConversation(characterID string, binding interaction.Binding, endpointKeyDigest string) (ConversationBootstrap, error) {
+	return s.OpenOrCreateEndpointConversationContext(context.Background(), characterID, binding, endpointKeyDigest)
 }
 
-func (s *Store) OpenOrCreateSurfaceConversationContext(ctx context.Context, characterID, surface, surfaceKeyDigest string) (ConversationBootstrap, error) {
-	if err := validateSurfaceConversationKey(characterID, surface, surfaceKeyDigest); err != nil {
+func (s *Store) OpenOrCreateEndpointConversationContext(ctx context.Context, characterID string, binding interaction.Binding, endpointKeyDigest string) (ConversationBootstrap, error) {
+	if err := validateEndpointConversationKey(characterID, binding, endpointKeyDigest); err != nil {
 		return ConversationBootstrap{}, err
 	}
-	return s.openOrCreateSurfaceConversationPostgres(ctx, characterID, surface, surfaceKeyDigest)
+	return s.openOrCreateEndpointConversationPostgres(ctx, characterID, binding, endpointKeyDigest)
 }
 
-// LookupSurfaceForConversation returns the durable surface binding for a conversation.
-// ok=false means no surface_conversations row (character-level desktop conversations).
-func (s *Store) LookupSurfaceForConversation(conversationID string) (string, bool, error) {
-	return s.lookupSurfaceForConversationPostgres(context.Background(), conversationID)
+func (s *Store) LookupEndpointForConversation(conversationID string) (interaction.Binding, bool, error) {
+	return s.LookupEndpointForConversationContext(context.Background(), conversationID)
 }
 
-func (s *Store) LookupSurfaceForConversationContext(ctx context.Context, conversationID string) (string, bool, error) {
-	return s.lookupSurfaceForConversationPostgres(ctx, conversationID)
+func (s *Store) LookupEndpointForConversationContext(ctx context.Context, conversationID string) (interaction.Binding, bool, error) {
+	return s.lookupEndpointForConversationPostgres(ctx, conversationID)
 }
 
 func (s *Store) OpenOrCreateCharacterConversation(characterID string) (ConversationBootstrap, error) {
@@ -130,23 +132,15 @@ func validateContent(label string, value string) error {
 	return nil
 }
 
-func validateSurfaceConversationKey(characterID, surface, digest string) error {
+func validateEndpointConversationKey(characterID string, binding interaction.Binding, digest string) error {
 	if err := validateID("character_id", characterID); err != nil {
 		return err
 	}
-	switch surface {
-	case "desktop", "im_private", "im_group":
-	default:
-		return errors.New("surface is invalid")
+	if err := binding.Validate(); err != nil {
+		return err
 	}
-	if len(digest) != 64 {
-		return errors.New("surface key digest is invalid")
-	}
-	for _, r := range digest {
-		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') {
-			continue
-		}
-		return errors.New("surface key digest is invalid")
+	if err := interaction.ValidateDigest(digest); err != nil {
+		return errors.New("endpoint key digest is invalid")
 	}
 	return nil
 }

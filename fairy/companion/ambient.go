@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"fairy/interaction"
 )
 
 // AmbientInbox owns per-conversation rolling observations, wait timers, and
@@ -16,7 +18,8 @@ type AmbientInbox struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	after      func(time.Duration, func()) stoppableTimer
-	decideHook func(context.Context, ambientBatch) (GroupParticipationResult, error)
+	decideHook func(context.Context, ambientBatch) (ParticipationResult, error)
+	submitHook func(SubmitTurnRequest) (TurnOutcome, error)
 
 	mu     sync.Mutex
 	states map[string]*ambientState
@@ -30,7 +33,7 @@ type stoppableTimer interface {
 
 type sequencedObservation struct {
 	sequence    uint64
-	observation GroupObservation
+	observation AmbientObservation
 }
 
 type ambientState struct {
@@ -40,13 +43,15 @@ type ambientState struct {
 	running            bool
 	timer              stoppableTimer
 	timerOwner         uint64
+	decisionOwner      uint64
+	decisionCancel     context.CancelFunc
 }
 
 type ambientBatch struct {
 	conversationID   string
 	generation       uint64
-	evaluationReason GroupParticipationEvaluationReason
-	messages         []GroupObservation
+	evaluationReason ParticipationEvaluationReason
+	messages         []AmbientObservation
 }
 
 func newAmbientInbox(parent context.Context, service *CompanionService) *AmbientInbox {
@@ -63,15 +68,25 @@ func newAmbientInbox(parent context.Context, service *CompanionService) *Ambient
 	}
 }
 
-// ObserveGroupMessage enqueues one observation and schedules ambient participation.
-func (s *CompanionService) ObserveGroupMessage(conversationID string, observation GroupObservation) error {
+// ObserveAmbient enqueues one observation and schedules ambient participation.
+func (s *CompanionService) ObserveAmbient(conversationID string, observation AmbientObservation) error {
 	if s == nil || s.ambient == nil {
 		return errors.New("ambient inbox is not configured")
+	}
+	resolved, err := s.ResolveInteraction(conversationID)
+	if err != nil {
+		return err
+	}
+	if !resolved.AllowsAmbientParticipation() {
+		return errors.New("ambient observation requires initiation=ambient")
+	}
+	if resolved.Memory != interaction.MemoryPublic {
+		return errors.New("ambient observation requires memory_policy=public")
 	}
 	return s.ambient.Observe(conversationID, observation)
 }
 
-func (a *AmbientInbox) Observe(conversationID string, observation GroupObservation) error {
+func (a *AmbientInbox) Observe(conversationID string, observation AmbientObservation) error {
 	if a == nil {
 		return errors.New("ambient inbox is not configured")
 	}
@@ -80,7 +95,7 @@ func (a *AmbientInbox) Observe(conversationID string, observation GroupObservati
 		return errors.New("conversation_id is required")
 	}
 	observation.IsNew = false
-	if err := validateGroupObservation(observation); err != nil {
+	if err := validateAmbientObservation(observation); err != nil {
 		return err
 	}
 	a.mu.Lock()
@@ -95,12 +110,18 @@ func (a *AmbientInbox) Observe(conversationID string, observation GroupObservati
 	}
 	state.generation++
 	state.messages = append(state.messages, sequencedObservation{sequence: state.generation, observation: observation})
-	if len(state.messages) > maxGroupObservations {
-		state.messages = state.messages[len(state.messages)-maxGroupObservations:]
+	if len(state.messages) > maxAmbientObservations {
+		state.messages = state.messages[len(state.messages)-maxAmbientObservations:]
+	}
+	if a.service != nil {
+		a.service.cancelTurnBeforeDelivery(conversationID)
 	}
 	a.cancelTimerLocked(state)
+	if state.decisionCancel != nil {
+		state.decisionCancel()
+	}
 	if !state.running {
-		a.startLocked(conversationID, state, GroupParticipationReasonMessage)
+		a.startLocked(conversationID, state, ParticipationReasonMessage)
 	}
 	return nil
 }
@@ -123,24 +144,36 @@ func (a *AmbientInbox) stop() {
 	a.closed = true
 	for _, state := range a.states {
 		a.cancelTimerLocked(state)
+		if state.decisionCancel != nil {
+			state.decisionCancel()
+			state.decisionCancel = nil
+		}
 	}
 }
 
-func (a *AmbientInbox) startLocked(conversationID string, state *ambientState, reason GroupParticipationEvaluationReason) {
+func (a *AmbientInbox) startLocked(conversationID string, state *ambientState, reason ParticipationEvaluationReason) {
 	if a.closed || state.running || len(state.messages) == 0 {
 		return
 	}
 	state.running = true
 	batch := snapshotAmbient(conversationID, state, reason)
+	decisionCtx, decisionOwner := a.beginDecisionLocked(state)
 	a.wg.Add(1)
-	go a.run(batch)
+	go a.run(batch, decisionCtx, decisionOwner)
 }
 
-func snapshotAmbient(conversationID string, state *ambientState, reason GroupParticipationEvaluationReason) ambientBatch {
-	messages := make([]GroupObservation, 0, len(state.messages))
+func (a *AmbientInbox) beginDecisionLocked(state *ambientState) (context.Context, uint64) {
+	state.decisionOwner++
+	ctx, cancel := context.WithCancel(a.ctx)
+	state.decisionCancel = cancel
+	return ctx, state.decisionOwner
+}
+
+func snapshotAmbient(conversationID string, state *ambientState, reason ParticipationEvaluationReason) ambientBatch {
+	messages := make([]AmbientObservation, 0, len(state.messages))
 	for _, entry := range state.messages {
 		observation := entry.observation
-		observation.IsNew = reason == GroupParticipationReasonMessage && entry.sequence > state.acceptedGeneration
+		observation.IsNew = reason == ParticipationReasonMessage && entry.sequence > state.acceptedGeneration
 		messages = append(messages, observation)
 	}
 	return ambientBatch{
@@ -149,32 +182,40 @@ func snapshotAmbient(conversationID string, state *ambientState, reason GroupPar
 	}
 }
 
-func (a *AmbientInbox) run(batch ambientBatch) {
+func (a *AmbientInbox) run(batch ambientBatch, decisionCtx context.Context, decisionOwner uint64) {
 	defer a.wg.Done()
 	for {
-		decision, err := a.decide(batch)
-		if err != nil {
-			a.finishOrRefresh(batch, err)
-			return
-		}
+		decision, err := a.decide(decisionCtx, batch)
 		a.mu.Lock()
 		state := a.states[batch.conversationID]
 		if state == nil || a.closed {
 			a.mu.Unlock()
 			return
 		}
+		if state.decisionOwner == decisionOwner {
+			if state.decisionCancel != nil {
+				state.decisionCancel()
+			}
+			state.decisionCancel = nil
+		}
 		if state.generation != batch.generation {
-			batch = snapshotAmbient(batch.conversationID, state, GroupParticipationReasonMessage)
+			batch = snapshotAmbient(batch.conversationID, state, ParticipationReasonMessage)
+			decisionCtx, decisionOwner = a.beginDecisionLocked(state)
 			a.mu.Unlock()
 			continue
 		}
-		state.acceptedGeneration = batch.generation
-		switch decision.Action {
-		case GroupParticipationSilent:
+		if err != nil {
 			state.running = false
 			a.mu.Unlock()
 			return
-		case GroupParticipationWait:
+		}
+		state.acceptedGeneration = batch.generation
+		switch decision.Action {
+		case ParticipationSilent:
+			state.running = false
+			a.mu.Unlock()
+			return
+		case ParticipationWait:
 			if decision.WaitSeconds == nil || *decision.WaitSeconds < 1 || *decision.WaitSeconds > 300 {
 				state.running = false
 				a.mu.Unlock()
@@ -184,29 +225,29 @@ func (a *AmbientInbox) run(batch ambientBatch) {
 			a.scheduleWaitLocked(batch.conversationID, state, time.Duration(*decision.WaitSeconds)*time.Second)
 			a.mu.Unlock()
 			return
-		case GroupParticipationReply:
+		case ParticipationReply:
 			if decision.TargetMessageID == nil || !ambientBatchContains(batch, *decision.TargetMessageID) {
 				state.running = false
 				a.mu.Unlock()
 				return
 			}
 			target := *decision.TargetMessageID
-			messages := append([]GroupObservation(nil), batch.messages...)
+			messages := append([]AmbientObservation(nil), batch.messages...)
 			conversationID := batch.conversationID
 			generation := batch.generation
 			a.mu.Unlock()
-			input, err := FormatGroupTurnInput(messages, target)
+			input, err := FormatAmbientTurnInput(messages, target)
 			if err == nil {
-				_, err = a.service.SubmitTurn(SubmitTurnRequest{
+				_, err = a.submit(SubmitTurnRequest{
 					ConversationID: conversationID,
 					Input:          input,
-					Surface:        SurfaceIMGroup,
 				})
 			}
 			a.mu.Lock()
 			state = a.states[conversationID]
 			if state != nil && !a.closed && state.generation != generation {
-				batch = snapshotAmbient(conversationID, state, GroupParticipationReasonMessage)
+				batch = snapshotAmbient(conversationID, state, ParticipationReasonMessage)
+				decisionCtx, decisionOwner = a.beginDecisionLocked(state)
 				a.mu.Unlock()
 				if err != nil && a.service != nil && a.service.logger != nil {
 					a.service.logger.Warn("ambient reply failed before refresh")
@@ -226,33 +267,22 @@ func (a *AmbientInbox) run(batch ambientBatch) {
 	}
 }
 
-func (a *AmbientInbox) decide(batch ambientBatch) (GroupParticipationResult, error) {
+func (a *AmbientInbox) decide(ctx context.Context, batch ambientBatch) (ParticipationResult, error) {
 	if a.decideHook != nil {
-		return a.decideHook(a.ctx, batch)
+		return a.decideHook(ctx, batch)
 	}
-	return a.service.DecideGroupParticipation(a.ctx, GroupParticipationRequest{
+	return a.service.DecideParticipation(ctx, ParticipationRequest{
 		ConversationID:   batch.conversationID,
 		EvaluationReason: batch.evaluationReason,
 		Messages:         batch.messages,
 	})
 }
 
-func (a *AmbientInbox) finishOrRefresh(batch ambientBatch, err error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	state := a.states[batch.conversationID]
-	if state == nil || a.closed {
-		return
+func (a *AmbientInbox) submit(request SubmitTurnRequest) (TurnOutcome, error) {
+	if a.submitHook != nil {
+		return a.submitHook(request)
 	}
-	if state.generation != batch.generation {
-		batch = snapshotAmbient(batch.conversationID, state, GroupParticipationReasonMessage)
-		state.running = true
-		a.wg.Add(1)
-		go a.run(batch)
-		return
-	}
-	state.running = false
-	_ = err
+	return a.service.SubmitTurn(request)
 }
 
 func (a *AmbientInbox) scheduleWaitLocked(conversationID string, state *ambientState, delay time.Duration) {
@@ -269,7 +299,7 @@ func (a *AmbientInbox) scheduleWaitLocked(conversationID string, state *ambientS
 			return
 		}
 		current.timer = nil
-		a.startLocked(conversationID, current, GroupParticipationReasonWaitElapsed)
+		a.startLocked(conversationID, current, ParticipationReasonWaitElapsed)
 	})
 }
 
@@ -290,8 +320,8 @@ func ambientBatchContains(batch ambientBatch, target string) bool {
 	return false
 }
 
-// FormatGroupTurnInput marks the reply target and formats ambient observations for SubmitTurn.
-func FormatGroupTurnInput(messages []GroupObservation, targetMessageID string) (string, error) {
+// FormatAmbientTurnInput marks the reply target and formats ambient observations for SubmitTurn.
+func FormatAmbientTurnInput(messages []AmbientObservation, targetMessageID string) (string, error) {
 	var builder strings.Builder
 	targets := 0
 	for index, observation := range messages {

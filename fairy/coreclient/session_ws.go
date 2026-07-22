@@ -11,41 +11,49 @@ import (
 	"sync"
 	"time"
 
+	"fairy/interaction"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
 const (
-	sessionWSPath     = "/v1/session/ws"
-	wsReadyTimeout    = 15 * time.Second
-	wsRequestTimeout  = 15 * time.Second
-	maxWSFrameBytes   = 4 << 20
+	sessionWSPath    = "/v1/session/ws"
+	wsReadyTimeout   = 15 * time.Second
+	wsRequestTimeout = 15 * time.Second
+	maxWSFrameBytes  = 4 << 20
+)
+
+var (
+	ErrHarnessConsumerOverflow = errors.New("session harness consumer overflow")
+	errSessionSocketClosed     = errors.New("session websocket closed")
 )
 
 type sessionClientFrame struct {
-	Type             string             `json:"type"`
-	RequestID        string             `json:"requestId,omitempty"`
-	Surface          string             `json:"surface,omitempty"`
-	SurfaceKey       string             `json:"surfaceKey,omitempty"`
-	ConversationID   string             `json:"conversationId,omitempty"`
-	EvaluationReason string             `json:"evaluationReason,omitempty"`
-	Messages         []GroupObservation `json:"messages,omitempty"`
-	Message          *GroupObservation  `json:"message,omitempty"`
-	Input            string             `json:"input,omitempty"`
-	SpeechEnabled    bool               `json:"speechEnabled,omitempty"`
-	TurnID           string             `json:"turnId,omitempty"`
+	Type             string                   `json:"type"`
+	RequestID        string                   `json:"requestId,omitempty"`
+	Endpoint         interaction.EndpointKind `json:"endpoint,omitempty"`
+	EndpointKey      string                   `json:"endpointKey,omitempty"`
+	Interaction      interaction.Context      `json:"interaction,omitempty"`
+	ConversationID   string                   `json:"conversationId,omitempty"`
+	EvaluationReason string                   `json:"evaluationReason,omitempty"`
+	Messages         []AmbientObservation     `json:"messages,omitempty"`
+	Message          *AmbientObservation      `json:"message,omitempty"`
+	Input            string                   `json:"input,omitempty"`
+	SpeechEnabled    bool                     `json:"speechEnabled,omitempty"`
+	TurnID           string                   `json:"turnId,omitempty"`
 }
 
 type sessionServerFrame struct {
-	Type           string          `json:"type"`
-	RequestID      string          `json:"requestId,omitempty"`
-	ConversationID string          `json:"conversationId,omitempty"`
-	CharacterID    string          `json:"characterId,omitempty"`
-	MessageCount   int             `json:"messageCount,omitempty"`
-	Surface        string          `json:"surface,omitempty"`
-	Error          string          `json:"error,omitempty"`
-	Payload        json.RawMessage `json:"payload,omitempty"`
-	Event          *HarnessEvent   `json:"event,omitempty"`
+	Type           string                   `json:"type"`
+	RequestID      string                   `json:"requestId,omitempty"`
+	ConversationID string                   `json:"conversationId,omitempty"`
+	CharacterID    string                   `json:"characterId,omitempty"`
+	MessageCount   int                      `json:"messageCount,omitempty"`
+	Endpoint       interaction.EndpointKind `json:"endpoint,omitempty"`
+	Error          string                   `json:"error,omitempty"`
+	Payload        json.RawMessage          `json:"payload,omitempty"`
+	Event          *HarnessEvent            `json:"event,omitempty"`
+	cause          error
 }
 
 // SessionSocket is a long-lived session-plane WebSocket.
@@ -56,7 +64,10 @@ type SessionSocket struct {
 	mu       sync.Mutex
 	pending  map[string]chan sessionServerFrame
 	harness  map[string]chan HarnessEvent
-	events   chan HarnessEvent
+	done     chan struct{}
+	connOnce sync.Once
+	connErr  error
+	closing  bool
 	closed   bool
 	closeErr error
 }
@@ -92,7 +103,7 @@ func (c *Client) DialSession(ctx context.Context) (*SessionSocket, error) {
 		conn:    conn,
 		pending: make(map[string]chan sessionServerFrame),
 		harness: make(map[string]chan HarnessEvent),
-		events:  make(chan HarnessEvent, 128),
+		done:    make(chan struct{}),
 	}
 	conn.SetReadLimit(maxWSFrameBytes)
 	readyCtx, cancel := context.WithTimeout(ctx, readyTimeoutOr(c.timeout))
@@ -154,11 +165,13 @@ func (s *SessionSocket) waitReady(ctx context.Context) error {
 }
 
 func (s *SessionSocket) readLoop() {
+	var terminalErr error
+	defer func() { s.finish(terminalErr) }()
 	for {
 		var frame sessionServerFrame
 		err := s.conn.ReadJSON(&frame)
 		if err != nil {
-			s.failPending(err)
+			terminalErr = err
 			return
 		}
 		switch frame.Type {
@@ -166,24 +179,24 @@ func (s *SessionSocket) readLoop() {
 			if frame.Event == nil {
 				continue
 			}
-			select {
-			case s.events <- *frame.Event:
-			default:
-			}
 			conversationID := frame.ConversationID
 			if conversationID == "" {
 				conversationID = frame.Event.ConversationID
 			}
 			s.mu.Lock()
 			ch := s.harness[conversationID]
-			s.mu.Unlock()
 			if ch == nil {
+				s.mu.Unlock()
 				continue
 			}
 			select {
 			case ch <- *frame.Event:
 			default:
+				s.mu.Unlock()
+				terminalErr = fmt.Errorf("%w: conversation %s", ErrHarnessConsumerOverflow, conversationID)
+				return
 			}
+			s.mu.Unlock()
 		default:
 			if frame.RequestID == "" {
 				continue
@@ -202,17 +215,27 @@ func (s *SessionSocket) readLoop() {
 	}
 }
 
-func (s *SessionSocket) failPending(err error) {
+// finish is called only by readLoop and owns all business-channel closure.
+func (s *SessionSocket) finish(err error) {
+	_ = s.closeConn()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return
 	}
 	s.closed = true
-	s.closeErr = err
+	if errors.Is(err, ErrHarnessConsumerOverflow) {
+		s.closeErr = err
+	} else if s.closing {
+		s.closeErr = errSessionSocketClosed
+	} else if err != nil {
+		s.closeErr = err
+	} else {
+		s.closeErr = errSessionSocketClosed
+	}
 	for id, ch := range s.pending {
 		select {
-		case ch <- sessionServerFrame{Type: "error", RequestID: id, Error: err.Error()}:
+		case ch <- sessionServerFrame{Type: "error", RequestID: id, Error: s.closeErr.Error(), cause: s.closeErr}:
 		default:
 		}
 		delete(s.pending, id)
@@ -221,17 +244,31 @@ func (s *SessionSocket) failPending(err error) {
 		close(ch)
 		delete(s.harness, id)
 	}
-	if s.events != nil {
-		close(s.events)
-	}
+	close(s.done)
 }
 
 func (s *SessionSocket) Close() error {
 	if s == nil || s.conn == nil {
 		return nil
 	}
-	s.failPending(errors.New("session websocket closed"))
-	return s.conn.Close()
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closing = true
+	done := s.done
+	s.mu.Unlock()
+	err := s.closeConn()
+	<-done
+	return err
+}
+
+func (s *SessionSocket) closeConn() error {
+	s.connOnce.Do(func() {
+		s.connErr = s.conn.Close()
+	})
+	return s.connErr
 }
 
 func (s *SessionSocket) request(ctx context.Context, frame sessionClientFrame, expectTypes ...string) (sessionServerFrame, error) {
@@ -246,11 +283,11 @@ func (s *SessionSocket) request(ctx context.Context, frame sessionClientFrame, e
 	}
 	ch := make(chan sessionServerFrame, 1)
 	s.mu.Lock()
-	if s.closed {
+	if s.closed || s.closing {
 		err := s.closeErr
 		s.mu.Unlock()
 		if err == nil {
-			err = errors.New("session websocket closed")
+			err = errSessionSocketClosed
 		}
 		return sessionServerFrame{}, err
 	}
@@ -274,6 +311,9 @@ func (s *SessionSocket) request(ctx context.Context, frame sessionClientFrame, e
 		return sessionServerFrame{}, ctx.Err()
 	case reply := <-ch:
 		if reply.Type == "error" {
+			if reply.cause != nil {
+				return sessionServerFrame{}, reply.cause
+			}
 			message := reply.Error
 			if message == "" {
 				message = "session websocket error"
@@ -298,7 +338,7 @@ func (s *SessionSocket) request(ctx context.Context, frame sessionClientFrame, e
 
 func (s *SessionSocket) OpenSession(ctx context.Context, request OpenSessionRequest) (OpenSessionResponse, error) {
 	reply, err := s.request(ctx, sessionClientFrame{
-		Type: "session.open", Surface: request.Surface, SurfaceKey: request.SurfaceKey,
+		Type: "session.open", Endpoint: request.Endpoint, EndpointKey: request.EndpointKey, Interaction: request.Interaction,
 	}, "session.opened")
 	if err != nil {
 		return OpenSessionResponse{}, err
@@ -307,9 +347,9 @@ func (s *SessionSocket) OpenSession(ctx context.Context, request OpenSessionRequ
 		ConversationID: reply.ConversationID,
 		CharacterID:    reply.CharacterID,
 		MessageCount:   reply.MessageCount,
-		Surface:        reply.Surface,
+		Endpoint:       reply.Endpoint,
 	}
-	if result.ConversationID == "" || result.CharacterID == "" || result.Surface == "" {
+	if result.ConversationID == "" || result.CharacterID == "" || result.Endpoint == "" {
 		return OpenSessionResponse{}, errors.New("open session response is missing required fields")
 	}
 	return result, nil
@@ -328,30 +368,38 @@ func (s *SessionSocket) Watch(ctx context.Context, conversationID string) (<-cha
 	}
 	s.mu.Unlock()
 	_, err := s.request(ctx, sessionClientFrame{Type: "session.watch", ConversationID: conversationID}, "ack")
-	return ch, err
+	if err != nil {
+		s.mu.Lock()
+		if s.harness[conversationID] == ch {
+			delete(s.harness, conversationID)
+		}
+		s.mu.Unlock()
+		return nil, err
+	}
+	return ch, nil
 }
 
-func (s *SessionSocket) ObserveGroup(ctx context.Context, conversationID string, message GroupObservation) error {
+func (s *SessionSocket) ObserveAmbient(ctx context.Context, conversationID string, message AmbientObservation) error {
 	_, err := s.request(ctx, sessionClientFrame{
-		Type: "group.observe", ConversationID: conversationID, Message: &message,
+		Type: "ambient.observe", ConversationID: conversationID, Message: &message,
 	}, "ack")
 	return err
 }
 
-func (s *SessionSocket) DecideGroupParticipation(ctx context.Context, conversationID string, request GroupParticipationRequest) (GroupParticipationResponse, error) {
+func (s *SessionSocket) DecideParticipation(ctx context.Context, conversationID string, request ParticipationRequest) (ParticipationResponse, error) {
 	reply, err := s.request(ctx, sessionClientFrame{
-		Type: "group.participate", ConversationID: conversationID,
+		Type: "participation.decide", ConversationID: conversationID,
 		EvaluationReason: request.EvaluationReason, Messages: request.Messages,
 	}, "result")
 	if err != nil {
-		return GroupParticipationResponse{}, err
+		return ParticipationResponse{}, err
 	}
-	var result GroupParticipationResponse
+	var result ParticipationResponse
 	if err := json.Unmarshal(reply.Payload, &result); err != nil {
-		return GroupParticipationResponse{}, err
+		return ParticipationResponse{}, err
 	}
-	if err := validateGroupParticipationResponse(result); err != nil {
-		return GroupParticipationResponse{}, err
+	if err := validateParticipationResponse(result); err != nil {
+		return ParticipationResponse{}, err
 	}
 	return result, nil
 }
@@ -360,7 +408,7 @@ func (s *SessionSocket) SubmitTurn(ctx context.Context, conversationID string, r
 	// Turn execution follows caller context; do not impose the short request timeout.
 	reply, err := s.request(ctx, sessionClientFrame{
 		Type: "turn.submit", ConversationID: conversationID,
-		Input: request.Input, SpeechEnabled: request.SpeechEnabled, Surface: request.Surface,
+		Input: request.Input, SpeechEnabled: request.SpeechEnabled,
 	}, "result")
 	if err != nil {
 		return SubmitTurnResponse{}, err
@@ -369,7 +417,7 @@ func (s *SessionSocket) SubmitTurn(ctx context.Context, conversationID string, r
 	if err := json.Unmarshal(reply.Payload, &result); err != nil {
 		return SubmitTurnResponse{}, err
 	}
-	if result.Outcome.ConversationID == "" || result.Outcome.TurnID == "" || result.Surface == "" {
+	if result.Outcome.ConversationID == "" || result.Outcome.TurnID == "" {
 		return SubmitTurnResponse{}, errors.New("submit turn response is missing required fields")
 	}
 	return result, nil
@@ -380,22 +428,6 @@ func (s *SessionSocket) CancelTurn(ctx context.Context, conversationID, turnID s
 		Type: "turn.cancel", ConversationID: conversationID, TurnID: turnID,
 	}, "result")
 	return err
-}
-
-// NextHarness blocks until the next harness event on this socket.
-func (s *SessionSocket) NextHarness(ctx context.Context) (HarnessEvent, error) {
-	if s == nil || s.events == nil {
-		return HarnessEvent{}, errors.New("session websocket is not open")
-	}
-	select {
-	case <-ctx.Done():
-		return HarnessEvent{}, ctx.Err()
-	case event, ok := <-s.events:
-		if !ok {
-			return HarnessEvent{}, errors.New("session websocket closed")
-		}
-		return event, nil
-	}
 }
 
 type wsEventStream struct {

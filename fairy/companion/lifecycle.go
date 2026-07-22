@@ -98,6 +98,16 @@ type utterancePayload struct {
 	Reason      string `json:"reason"`
 }
 
+type presencePayload struct {
+	Type  string `json:"type"`
+	Phase string `json:"phase"`
+}
+
+type replyPreviewPayload struct {
+	Type   string       `json:"type"`
+	Chains []ReplyChain `json:"chains"`
+}
+
 // beatReadyPayload is the paired text(+optional audio) delivery unit. Frontend
 // reveals a beat only after this event (齐套才揭示).
 type beatReadyPayload struct {
@@ -277,6 +287,29 @@ func (l *TurnLifecycle) Utterance(seq uint8, text string, visualState string, re
 		VisualState: visualState,
 		Reason:      reason,
 	}), nil
+}
+
+// Presence and Preview are temporary events. They are never transcript
+// messages; beat.ready and completed remain the final display contract.
+func (l *TurnLifecycle) Presence(phase string) (HarnessEvent, error) {
+	if l.state != TurnStatePlanning && l.state != TurnStateGathering {
+		return HarnessEvent{}, errors.New("只有 Gathering/Planning 状态可以发送 presence")
+	}
+	if strings.TrimSpace(phase) == "" {
+		phase = "model_stream"
+	}
+	return l.event(presencePayload{Type: "presence", Phase: phase}), nil
+}
+
+func (l *TurnLifecycle) ReplyPreview(chains []ReplyChain) (HarnessEvent, error) {
+	if l.state != TurnStatePlanning && l.state != TurnStateGathering {
+		return HarnessEvent{}, errors.New("只有 Gathering/Planning 状态可以发送 reply.preview")
+	}
+	if len(chains) == 0 {
+		return HarnessEvent{}, errors.New("reply.preview chains cannot be empty")
+	}
+	copyChains := append([]ReplyChain(nil), chains...)
+	return l.event(replyPreviewPayload{Type: "reply.preview", Chains: copyChains}), nil
 }
 
 func (l *TurnLifecycle) Fail(code string, message string, retryable bool) (HarnessEvent, error) {

@@ -69,6 +69,7 @@ func (s *Server) routes() {
 	s.registerConfigRoutes()
 	s.registerCharacterRoutes()
 	s.registerProfileRoutes()
+	s.registerIdentityRoutes()
 	s.registerIntelligenceRoutes()
 	s.registerUsageRoutes()
 	s.registerObservabilityRoutes()

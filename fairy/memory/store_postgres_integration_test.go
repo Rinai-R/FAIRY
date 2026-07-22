@@ -1136,7 +1136,7 @@ func TestPostgresKnowledgeIngestWorkersClaimDisjointJobs(t *testing.T) {
 	}
 	snapshots := make([]KnowledgeIngestSnapshot, 0, 6)
 	for index := range 6 {
-		snapshots = append(snapshots, KnowledgeIngestSnapshot{ConversationID: bootstrap.Conversation.ID, TurnID: turn.ID, Query: fmt.Sprintf("query-%d", index), Title: fmt.Sprintf("topic-%d", index), URL: fmt.Sprintf("https://example.test/%d", index), Snippet: fmt.Sprintf("这是第 %d 条足够长的知识摘要内容。", index), Rank: uint8(index%5 + 1), FetchedAtUnixMS: int64(index + 1)})
+		snapshots = append(snapshots, KnowledgeIngestSnapshot{ConversationID: bootstrap.Conversation.ID, TurnID: turn.ID, Query: "anime", Title: fmt.Sprintf("topic-%d", index), URL: fmt.Sprintf("https://example.test/%d", index), Snippet: fmt.Sprintf("这是第 %d 条足够长的知识摘要内容。", index), Rank: uint8(index%5 + 1), FetchedAtUnixMS: int64(index + 1)})
 	}
 	if err := first.EnqueueKnowledgeIngestSnapshotsContext(ctx, snapshots); err != nil {
 		t.Fatal(err)
@@ -1206,7 +1206,7 @@ func TestPostgresKnowledgeIngestExpiredLeaseReclaimsAndRejectsOldOwner(t *testin
 	if _, err := first.CompleteTurnContext(ctx, bootstrap.Conversation.ID, turn.ID, "reply"); err != nil {
 		t.Fatal(err)
 	}
-	if err := first.EnqueueKnowledgeIngestSnapshotsContext(ctx, []KnowledgeIngestSnapshot{{ConversationID: bootstrap.Conversation.ID, TurnID: turn.ID, Query: "query", Title: "topic", URL: "https://example.test", Snippet: "这是一条足够长的待处理知识摘要。", Rank: 1}}); err != nil {
+	if err := first.EnqueueKnowledgeIngestSnapshotsContext(ctx, []KnowledgeIngestSnapshot{{ConversationID: bootstrap.Conversation.ID, TurnID: turn.ID, Query: "game", Title: "topic", URL: "https://example.test", Snippet: "这是一条足够长的待处理知识摘要。", Rank: 1}}); err != nil {
 		t.Fatal(err)
 	}
 	now := nowUnixMS()

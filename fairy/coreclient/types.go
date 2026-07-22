@@ -3,6 +3,7 @@ package coreclient
 import (
 	"encoding/json"
 
+	"fairy/interaction"
 	"fairy/observability"
 )
 
@@ -28,15 +29,16 @@ type DependencyStatus struct {
 }
 
 type OpenSessionRequest struct {
-	Surface    string `json:"surface,omitempty"`
-	SurfaceKey string `json:"surfaceKey,omitempty"`
+	Endpoint    interaction.EndpointKind `json:"endpoint"`
+	EndpointKey string                   `json:"endpointKey"`
+	Interaction interaction.Context      `json:"interaction"`
 }
 
 type OpenSessionResponse struct {
-	ConversationID string `json:"conversationId"`
-	CharacterID    string `json:"characterId"`
-	MessageCount   int    `json:"messageCount"`
-	Surface        string `json:"surface"`
+	ConversationID string                   `json:"conversationId"`
+	CharacterID    string                   `json:"characterId"`
+	MessageCount   int                      `json:"messageCount"`
+	Endpoint       interaction.EndpointKind `json:"endpoint"`
 }
 
 type MessageRecord struct {
@@ -57,7 +59,6 @@ type MessagePage struct {
 type SubmitTurnRequest struct {
 	Input         string `json:"input"`
 	SpeechEnabled bool   `json:"speechEnabled"`
-	Surface       string `json:"surface,omitempty"`
 }
 
 type TurnOutcome struct {
@@ -68,10 +69,9 @@ type TurnOutcome struct {
 
 type SubmitTurnResponse struct {
 	Outcome TurnOutcome `json:"outcome"`
-	Surface string      `json:"surface"`
 }
 
-type GroupObservation struct {
+type AmbientObservation struct {
 	MessageID       string `json:"messageId"`
 	SenderID        string `json:"senderId"`
 	SenderName      string `json:"senderName"`
@@ -81,12 +81,12 @@ type GroupObservation struct {
 	TimestampUnixMS int64  `json:"timestampUnixMs"`
 }
 
-type GroupParticipationRequest struct {
-	EvaluationReason string             `json:"evaluationReason"`
-	Messages         []GroupObservation `json:"messages"`
+type ParticipationRequest struct {
+	EvaluationReason string               `json:"evaluationReason"`
+	Messages         []AmbientObservation `json:"messages"`
 }
 
-type GroupParticipationResponse struct {
+type ParticipationResponse struct {
 	Action          string  `json:"action"`
 	TargetMessageID *string `json:"targetMessageId,omitempty"`
 	WaitSeconds     *int    `json:"waitSeconds,omitempty"`
@@ -136,8 +136,22 @@ type UsageReport struct {
 }
 
 type RuntimeMetrics struct {
-	ActiveBackgroundJobs uint64 `json:"activeBackgroundJobs"`
-	EventSubscribers     uint64 `json:"eventSubscribers"`
+	ActiveBackgroundJobs uint64           `json:"activeBackgroundJobs"`
+	EventSubscribers     uint64           `json:"eventSubscribers"`
+	AgentLoop            AgentLoopMetrics `json:"agentLoop"`
+}
+
+type LatencyMetrics struct {
+	Observations    uint64 `json:"observations"`
+	TotalDurationMS uint64 `json:"totalDurationMs"`
+	MaxDurationMS   uint64 `json:"maxDurationMs"`
+}
+
+type AgentLoopMetrics struct {
+	ProviderFirstByte LatencyMetrics `json:"providerFirstByte"`
+	ReplyPreview      LatencyMetrics `json:"replyPreview"`
+	FirstBeat         LatencyMetrics `json:"firstBeat"`
+	Completed         LatencyMetrics `json:"completed"`
 }
 
 type Metrics struct {

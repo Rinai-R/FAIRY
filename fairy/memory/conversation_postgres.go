@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"fairy/interaction"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -43,70 +44,113 @@ func (s *Store) openOrCreateCharacterConversationPostgres(ctx context.Context, c
 	return s.loadConversationPostgres(ctx, conversationID)
 }
 
-func (s *Store) openOrCreateSurfaceConversationPostgres(ctx context.Context, characterID, surface, digest string) (ConversationBootstrap, error) {
+func (s *Store) openOrCreateEndpointConversationPostgres(ctx context.Context, characterID string, binding interaction.Binding, digest string) (ConversationBootstrap, error) {
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
 	tx, err := s.pool.Raw().Begin(queryCtx)
 	if err != nil {
-		return ConversationBootstrap{}, fmt.Errorf("beginning surface conversation transaction: %w", err)
+		return ConversationBootstrap{}, fmt.Errorf("beginning endpoint conversation transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
-	lockKey := characterID + "|" + surface + "|" + digest
+	lockKey := characterID + "|" + string(binding.Endpoint) + "|" + digest
 	if _, err := tx.Exec(queryCtx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", lockKey); err != nil {
-		return ConversationBootstrap{}, fmt.Errorf("locking surface conversation: %w", err)
+		return ConversationBootstrap{}, fmt.Errorf("locking endpoint conversation: %w", err)
 	}
-	var conversationID string
+
+	var conversationID, audience, initiation, presentation string
+	var namespace, principalDigest pgtype.Text
 	err = tx.QueryRow(queryCtx, `
-SELECT conversation_id
-FROM surface_conversations
-WHERE character_id = $1 AND surface = $2 AND surface_key_digest = $3`, characterID, surface, digest).Scan(&conversationID)
+SELECT conversation_id, audience, initiation, presentation, principal_namespace, principal_digest
+FROM endpoint_conversations
+WHERE character_id = $1 AND endpoint = $2 AND endpoint_key_digest = $3`,
+		characterID, binding.Endpoint, digest,
+	).Scan(&conversationID, &audience, &initiation, &presentation, &namespace, &principalDigest)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return ConversationBootstrap{}, fmt.Errorf("loading surface conversation: %w", err)
+		return ConversationBootstrap{}, fmt.Errorf("loading endpoint conversation: %w", err)
 	}
 	now := nowUnixMS()
 	if errors.Is(err, pgx.ErrNoRows) {
 		conversationID = newID()
 		if _, err := tx.Exec(queryCtx, "INSERT INTO conversations(id, character_id, created_at_ms, updated_at_ms) VALUES ($1, $2, $3, $3)", conversationID, characterID, now); err != nil {
-			return ConversationBootstrap{}, fmt.Errorf("creating surface conversation: %w", err)
+			return ConversationBootstrap{}, fmt.Errorf("creating endpoint conversation: %w", err)
 		}
 		if _, err := tx.Exec(queryCtx, "INSERT INTO prompt_windows(conversation_id, revision, summary, cutoff_message_sequence, updated_at_ms) VALUES ($1, 1, NULL, 0, $2)", conversationID, now); err != nil {
-			return ConversationBootstrap{}, fmt.Errorf("creating surface prompt window: %w", err)
+			return ConversationBootstrap{}, fmt.Errorf("creating endpoint prompt window: %w", err)
 		}
 		if _, err := tx.Exec(queryCtx, `
-INSERT INTO surface_conversations(character_id, surface, surface_key_digest, conversation_id, created_at_ms, updated_at_ms)
-VALUES ($1, $2, $3, $4, $5, $5)`, characterID, surface, digest, conversationID, now); err != nil {
-			return ConversationBootstrap{}, fmt.Errorf("binding surface conversation: %w", err)
+INSERT INTO endpoint_conversations(
+    character_id, endpoint, endpoint_key_digest, conversation_id,
+    audience, initiation, presentation, principal_namespace, principal_digest,
+    created_at_ms, updated_at_ms
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)`,
+			characterID, binding.Endpoint, digest, conversationID,
+			binding.Facts.Audience, binding.Facts.Initiation, binding.Facts.Presentation,
+			nullableText(binding.Facts.PrincipalNamespace), nullableText(binding.Facts.PrincipalDigest), now,
+		); err != nil {
+			return ConversationBootstrap{}, fmt.Errorf("binding endpoint conversation: %w", err)
 		}
-	} else if _, err := tx.Exec(queryCtx, `
-UPDATE surface_conversations
+	} else {
+		stored := interaction.Binding{
+			Endpoint: binding.Endpoint,
+			Facts: interaction.Facts{
+				Audience: interaction.AudienceKind(audience), Initiation: interaction.InitiationKind(initiation),
+				Presentation:       interaction.PresentationKind(presentation),
+				PrincipalNamespace: namespace.String, PrincipalDigest: principalDigest.String,
+			},
+		}
+		if stored != binding {
+			return ConversationBootstrap{}, ErrEndpointBindingMismatch
+		}
+		if _, err := tx.Exec(queryCtx, `
+UPDATE endpoint_conversations
 SET updated_at_ms = $4
-WHERE character_id = $1 AND surface = $2 AND surface_key_digest = $3`, characterID, surface, digest, now); err != nil {
-		return ConversationBootstrap{}, fmt.Errorf("touching surface conversation binding: %w", err)
+WHERE character_id = $1 AND endpoint = $2 AND endpoint_key_digest = $3`, characterID, binding.Endpoint, digest, now); err != nil {
+			return ConversationBootstrap{}, fmt.Errorf("touching endpoint conversation binding: %w", err)
+		}
 	}
 	if err := tx.Commit(queryCtx); err != nil {
-		return ConversationBootstrap{}, fmt.Errorf("committing surface conversation transaction: %w", err)
+		return ConversationBootstrap{}, fmt.Errorf("committing endpoint conversation transaction: %w", err)
 	}
 	return s.loadConversationPostgres(ctx, conversationID)
 }
 
-func (s *Store) lookupSurfaceForConversationPostgres(ctx context.Context, conversationID string) (string, bool, error) {
+func (s *Store) lookupEndpointForConversationPostgres(ctx context.Context, conversationID string) (interaction.Binding, bool, error) {
 	if err := validateID("conversation_id", conversationID); err != nil {
-		return "", false, err
+		return interaction.Binding{}, false, err
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
-	var surface string
+	var endpoint, audience, initiation, presentation string
+	var namespace, digest pgtype.Text
 	err := s.pool.Raw().QueryRow(queryCtx, `
-SELECT surface
-FROM surface_conversations
-WHERE conversation_id = $1`, conversationID).Scan(&surface)
+SELECT endpoint, audience, initiation, presentation, principal_namespace, principal_digest
+FROM endpoint_conversations
+WHERE conversation_id = $1`, conversationID).Scan(&endpoint, &audience, &initiation, &presentation, &namespace, &digest)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false, nil
+		return interaction.Binding{}, false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("looking up surface conversation: %w", err)
+		return interaction.Binding{}, false, fmt.Errorf("looking up endpoint conversation: %w", err)
 	}
-	return surface, true, nil
+	binding := interaction.Binding{
+		Endpoint: interaction.EndpointKind(endpoint),
+		Facts: interaction.Facts{
+			Audience: interaction.AudienceKind(audience), Initiation: interaction.InitiationKind(initiation),
+			Presentation:       interaction.PresentationKind(presentation),
+			PrincipalNamespace: namespace.String, PrincipalDigest: digest.String,
+		},
+	}
+	if err := binding.Validate(); err != nil {
+		return interaction.Binding{}, false, fmt.Errorf("validating stored endpoint conversation: %w", err)
+	}
+	return binding, true, nil
+}
+
+func nullableText(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 func (s *Store) loadConversationPostgres(ctx context.Context, conversationID string) (ConversationBootstrap, error) {
@@ -342,7 +386,7 @@ SELECT c.id
 FROM conversations c
 WHERE c.character_id = $1
   AND NOT EXISTS (
-    SELECT 1 FROM surface_conversations s WHERE s.conversation_id = c.id
+    SELECT 1 FROM endpoint_conversations e WHERE e.conversation_id = c.id
   )
 ORDER BY c.updated_at_ms DESC, c.id ASC
 LIMIT 1`, characterID).Scan(&id)

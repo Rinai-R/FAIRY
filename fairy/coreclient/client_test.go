@@ -9,25 +9,27 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"fairy/interaction"
 	"github.com/gorilla/websocket"
 )
 
-func TestOpenSessionSendsSurfaceKey(t *testing.T) {
+func TestOpenSessionSendsEndpointFacts(t *testing.T) {
 	server := newSessionWSServer(t, func(conn *websocket.Conn) {
 		var frame sessionClientFrame
 		if err := conn.ReadJSON(&frame); err != nil {
 			t.Fatal(err)
 		}
-		if frame.Type != "session.open" || frame.Surface != "im_group" || frame.SurfaceKey != "onebot-group:123" {
+		if frame.Type != "session.open" || frame.Endpoint != interaction.EndpointIM || frame.EndpointKey != "onebot-group:123" || frame.Interaction.Audience != interaction.AudienceMulti {
 			t.Fatalf("frame = %#v", frame)
 		}
 		_ = conn.WriteJSON(sessionServerFrame{
 			Type: "session.opened", RequestID: frame.RequestID,
-			ConversationID: "c1", CharacterID: "ch1", MessageCount: 0, Surface: "im_group",
+			ConversationID: "c1", CharacterID: "ch1", MessageCount: 0, Endpoint: interaction.EndpointIM,
 		})
 	})
 	defer server.Close()
@@ -35,19 +37,19 @@ func TestOpenSessionSendsSurfaceKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := client.OpenSession(context.Background(), OpenSessionRequest{Surface: "im_group", SurfaceKey: "onebot-group:123"})
+	response, err := client.OpenSession(context.Background(), OpenSessionRequest{Endpoint: interaction.EndpointIM, EndpointKey: "onebot-group:123", Interaction: interaction.Context{Audience: interaction.AudienceMulti, Initiation: interaction.InitiationAmbient, Presentation: interaction.PresentationChat}})
 	if err != nil || response.ConversationID != "c1" {
 		t.Fatalf("response=%#v err=%v", response, err)
 	}
 }
 
-func TestDecideGroupParticipationUsesTypedSessionEndpoint(t *testing.T) {
+func TestDecideParticipationUsesTypedSessionEndpoint(t *testing.T) {
 	server := newSessionWSServer(t, func(conn *websocket.Conn) {
 		var frame sessionClientFrame
 		if err := conn.ReadJSON(&frame); err != nil {
 			t.Fatal(err)
 		}
-		if frame.Type != "group.participate" || frame.ConversationID != "c/1" {
+		if frame.Type != "participation.decide" || frame.ConversationID != "c/1" {
 			t.Fatalf("frame = %#v", frame)
 		}
 		if frame.EvaluationReason != "message" || len(frame.Messages) != 1 || frame.Messages[0].SenderName != "群友" || !frame.Messages[0].DirectedToBot || !frame.Messages[0].IsNew {
@@ -59,7 +61,7 @@ func TestDecideGroupParticipationUsesTypedSessionEndpoint(t *testing.T) {
 	})
 	defer server.Close()
 	client, _ := New(Options{Endpoint: server.URL})
-	response, err := client.DecideGroupParticipation(t.Context(), "c/1", GroupParticipationRequest{EvaluationReason: "message", Messages: []GroupObservation{{
+	response, err := client.DecideParticipation(t.Context(), "c/1", ParticipationRequest{EvaluationReason: "message", Messages: []AmbientObservation{{
 		MessageID: "m1", SenderID: "u1", SenderName: "群友", Text: "不用回", DirectedToBot: true, IsNew: true, TimestampUnixMS: 1,
 	}}})
 	if err != nil || response.Action != "wait" || response.WaitSeconds == nil || *response.WaitSeconds != 7 {
@@ -67,7 +69,7 @@ func TestDecideGroupParticipationUsesTypedSessionEndpoint(t *testing.T) {
 	}
 }
 
-func TestDecideGroupParticipationRejectsInvalidActionShapes(t *testing.T) {
+func TestDecideParticipationRejectsInvalidActionShapes(t *testing.T) {
 	for _, body := range []string{
 		`{"action":"maybe"}`,
 		`{"action":"reply"}`,
@@ -84,7 +86,7 @@ func TestDecideGroupParticipationRejectsInvalidActionShapes(t *testing.T) {
 			})
 			defer server.Close()
 			client, _ := New(Options{Endpoint: server.URL})
-			if _, err := client.DecideGroupParticipation(t.Context(), "c1", GroupParticipationRequest{}); err == nil {
+			if _, err := client.DecideParticipation(t.Context(), "c1", ParticipationRequest{}); err == nil {
 				t.Fatal("invalid action accepted")
 			}
 		})
@@ -161,6 +163,45 @@ func TestClientStatusUsesBearerAndRejectsInvalidResponses(t *testing.T) {
 	}
 }
 
+func TestOwnerIdentityAdminNeverRequiresRawSubjectInResponse(t *testing.T) {
+	const rawSubject = "raw-owner-123"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer exact-token" || r.URL.Path != "/v1/identities/owners" {
+			t.Fatalf("request = %s %s auth=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodPut, http.MethodDelete:
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["namespace"] != "qq.onebot" || body["subject"] != rawSubject {
+				t.Fatalf("body = %#v, %v", body, err)
+			}
+			if r.Method == http.MethodPut {
+				fmt.Fprintf(w, `{"namespace":"qq.onebot","principalDigest":"%s"}`, strings.Repeat("a", 64))
+			} else {
+				io.WriteString(w, `{"ok":true}`)
+			}
+		case http.MethodGet:
+			fmt.Fprintf(w, `[{"namespace":"qq.onebot","principalDigest":"%s"}]`, strings.Repeat("a", 64))
+		default:
+			http.Error(w, "method", http.StatusMethodNotAllowed)
+		}
+	}))
+	defer server.Close()
+	client, _ := New(Options{Endpoint: server.URL, Token: "exact-token"})
+	bound, err := client.BindOwnerIdentity(t.Context(), "qq.onebot", rawSubject)
+	if err != nil || strings.Contains(bound.PrincipalDigest, rawSubject) {
+		t.Fatalf("bound = %#v, %v", bound, err)
+	}
+	listed, err := client.ListOwnerIdentities(t.Context())
+	if err != nil || len(listed) != 1 || listed[0].PrincipalDigest != bound.PrincipalDigest {
+		t.Fatalf("listed = %#v, %v", listed, err)
+	}
+	if err := client.UnbindOwnerIdentity(t.Context(), "qq.onebot", rawSubject); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestClientFiniteTimeoutAndTurnCallerDeadline(t *testing.T) {
 	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(40 * time.Millisecond)
@@ -181,7 +222,7 @@ func TestClientFiniteTimeoutAndTurnCallerDeadline(t *testing.T) {
 		time.Sleep(40 * time.Millisecond)
 		_ = conn.WriteJSON(sessionServerFrame{
 			Type: "result", RequestID: frame.RequestID,
-			Payload: json.RawMessage(`{"outcome":{"conversationId":"c1","turnId":"t1","responseText":"ok"},"surface":"desktop"}`),
+			Payload: json.RawMessage(`{"outcome":{"conversationId":"c1","turnId":"t1","responseText":"ok"}}`),
 		})
 	})
 	defer turnServer.Close()
@@ -211,6 +252,97 @@ func newSessionWSServer(t *testing.T, handle func(*websocket.Conn)) *httptest.Se
 		}
 		handle(conn)
 	}))
+}
+
+func TestSessionSocketHarnessOverflowFailsConnection(t *testing.T) {
+	sent := make(chan struct{})
+	server := newSessionWSServer(t, func(conn *websocket.Conn) {
+		var watch sessionClientFrame
+		if err := conn.ReadJSON(&watch); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := conn.WriteJSON(sessionServerFrame{Type: "ack", RequestID: watch.RequestID}); err != nil {
+			return
+		}
+		for sequence := 1; sequence <= 65; sequence++ {
+			event := HarnessEvent{ConversationID: "c1", TurnID: "t1", Sequence: uint64(sequence)}
+			if err := conn.WriteJSON(sessionServerFrame{Type: "harness", ConversationID: "c1", Event: &event}); err != nil {
+				return
+			}
+		}
+		close(sent)
+		var ignored sessionClientFrame
+		_ = conn.ReadJSON(&ignored)
+	})
+	defer server.Close()
+	client, _ := New(Options{Endpoint: server.URL})
+	socket, err := client.DialSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer socket.Close()
+	if _, err := socket.Watch(t.Context(), "c1"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-sent:
+	case <-time.After(time.Second):
+		t.Fatal("server did not send overflow fixture")
+	}
+	select {
+	case <-socket.done:
+	case <-time.After(time.Second):
+		t.Fatal("socket did not terminate after harness overflow")
+	}
+	socket.mu.Lock()
+	err = socket.closeErr
+	socket.mu.Unlock()
+	if !errors.Is(err, ErrHarnessConsumerOverflow) {
+		t.Fatalf("socket error = %v, want ErrHarnessConsumerOverflow", err)
+	}
+}
+
+func TestSessionSocketCloseWhileReceivingHarnessIsRaceFree(t *testing.T) {
+	started := make(chan struct{})
+	server := newSessionWSServer(t, func(conn *websocket.Conn) {
+		var watch sessionClientFrame
+		if err := conn.ReadJSON(&watch); err != nil {
+			return
+		}
+		if err := conn.WriteJSON(sessionServerFrame{Type: "ack", RequestID: watch.RequestID}); err != nil {
+			return
+		}
+		close(started)
+		for sequence := 1; ; sequence++ {
+			event := HarnessEvent{ConversationID: "c1", TurnID: "t1", Sequence: uint64(sequence)}
+			if err := conn.WriteJSON(sessionServerFrame{Type: "harness", ConversationID: "c1", Event: &event}); err != nil {
+				return
+			}
+		}
+	})
+	defer server.Close()
+	client, _ := New(Options{Endpoint: server.URL})
+	socket, err := client.DialSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := socket.Watch(t.Context(), "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for range stream {
+		}
+	}()
+	if err := socket.Close(); err != nil && !errors.Is(err, websocket.ErrCloseSent) {
+		t.Fatalf("Close() error = %v", err)
+	}
+	wg.Wait()
 }
 
 func TestClientRejectsSecretWhitespaceAndRedactsServerErrors(t *testing.T) {
