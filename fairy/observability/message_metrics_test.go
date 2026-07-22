@@ -56,6 +56,18 @@ func TestMessageMetricsQueuePressureNeverBlocks(t *testing.T) {
 	}
 }
 
+func TestMessageMetricsColdSnapshotSerializesRecentAsArray(t *testing.T) {
+	metrics := NewMessageMetrics()
+	t.Cleanup(metrics.Close)
+	payload, err := json.Marshal(metrics.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), `"recent":[]`) {
+		t.Fatalf("cold snapshot must encode recent as an array: %s", payload)
+	}
+}
+
 func TestMessageMetricsCloseIsIdempotentAndRejectsNewEvents(t *testing.T) {
 	metrics := NewMessageMetrics()
 	metrics.Close()

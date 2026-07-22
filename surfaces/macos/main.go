@@ -15,9 +15,10 @@ var assets embed.FS
 func main() {
 	service := NewAppService(systemTokenStore{})
 	if err := wails.Run(&options.App{
-		Title: "FAIRY", Width: 760, Height: 720, MinWidth: 420, MinHeight: 640,
+		Title: "FAIRY", Width: 360, Height: 500, MinWidth: 280, MinHeight: 430,
 		AssetServer: &assetserver.Options{Assets: assets},
 		OnStartup:   service.Startup,
+		OnShutdown:  service.Shutdown,
 		Bind:        []any{service},
 	}); err != nil {
 		log.Fatal(err)

@@ -113,8 +113,24 @@ type CharacterAppearance struct {
 }
 
 type VisualManifest struct {
-	PackID string        `json:"packId"`
-	States []VisualState `json:"states"`
+	SchemaVersion uint64        `json:"schemaVersion"`
+	PackID        string        `json:"packId"`
+	DisplayName   string        `json:"displayName"`
+	Renderer      string        `json:"renderer"`
+	Frame         VisualFrame   `json:"frame"`
+	Scale         float64       `json:"scale"`
+	Anchor        VisualAnchor  `json:"anchor"`
+	States        []VisualState `json:"states"`
+}
+
+type VisualFrame struct {
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+}
+
+type VisualAnchor struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
 }
 
 type VisualState struct {

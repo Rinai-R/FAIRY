@@ -21,6 +21,7 @@ export function chatReducer(state: ChatState, action: any): ChatState {
     case "completed": return { ...state, messages: state.messages.map((message) => message.pending ? { ...message, pending: false } : message), activeTurn: null, status: "idle" };
     case "interrupted": return { ...state, messages: state.messages.filter((message) => !message.pending), activeTurn: null, status: "idle" };
     case "failed": return { ...state, messages: state.messages.filter((message) => !message.pending), activeTurn: null, status: "error", error: action.message || "本轮请求失败" };
+    case "stream_closed": return { ...state, messages: state.messages.filter((message) => !message.pending), activeTurn: null, status: "error", error: action.message || "与 Core 的会话连接已断开" };
     case "error": return { ...state, status: "error", error: action.message };
     default: return state;
   }

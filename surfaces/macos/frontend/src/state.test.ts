@@ -20,4 +20,11 @@ describe("chatReducer", () => {
     expect(state.messages).toEqual([{ id: "t1", role: "user", text: "停止" }]);
     expect(state.activeTurn).toBeNull();
   });
+
+  it("clears pending state when the session stream closes", () => {
+    let state = chatReducer(initialChatState, { type: "send", id: "t1", text: "还在吗" });
+    state = chatReducer(state, { type: "stream_closed", message: "连接已断开" });
+    expect(state.messages).toEqual([{ id: "t1", role: "user", text: "还在吗" }]);
+    expect(state).toMatchObject({ activeTurn: null, status: "error", error: "连接已断开" });
+  });
 });

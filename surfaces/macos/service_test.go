@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -94,10 +95,23 @@ func TestSaveConnectionDoesNotFallbackWhenKeychainWriteFails(t *testing.T) {
 	}
 }
 
+func TestSaveConnectionAllowsEmptyTokenWithoutOverwritingKeychain(t *testing.T) {
+	tokens := &fakeTokenStore{token: "existing-token"}
+	service := NewAppService(tokens)
+	state, err := service.SaveConnection("http://127.0.0.1:8787", "", "macos-installation")
+	if err != nil || !state.HasToken {
+		t.Fatalf("SaveConnection() = %#v, %v", state, err)
+	}
+	if tokens.token != "existing-token" || tokens.sets != 0 {
+		t.Fatalf("empty token changed Keychain: %#v", tokens)
+	}
+}
+
 func TestConnectUsesBearerAndDesktopInstallationSession(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	expectedAuthorization := "Bearer exact-token"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer exact-token" {
+		if r.Header.Get("Authorization") != expectedAuthorization {
 			t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
 		}
 		if r.URL.Path == "/v1/session/ws" {
@@ -118,7 +132,37 @@ func TestConnectUsesBearerAndDesktopInstallationSession(t *testing.T) {
 				"type": "session.opened", "requestId": frame["requestId"],
 				"conversationId": "c1", "characterId": "ch1", "messageCount": 1, "endpoint": "desktop",
 			})
-			return
+			if err := conn.ReadJSON(&frame); err != nil {
+				t.Fatal(err)
+			}
+			if frame["type"] != "session.watch" || frame["conversationId"] != "c1" {
+				t.Fatalf("watch frame = %#v", frame)
+			}
+			_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": frame["requestId"]})
+			for {
+				if err := conn.ReadJSON(&frame); err != nil {
+					return
+				}
+				switch frame["type"] {
+				case "turn.submit":
+					input, _ := frame["input"].(string)
+					submitRequestID := frame["requestId"]
+					if input == "cancel" {
+						_ = conn.WriteJSON(map[string]any{"type": "turn.event", "conversationId": "c1", "event": map[string]any{"conversationId": "c1", "turnId": "t2", "sequence": 1, "state": "running", "payload": json.RawMessage(`{"type":"state_changed"}`)}})
+						if err := conn.ReadJSON(&frame); err != nil {
+							return
+						}
+						if frame["type"] != "turn.cancel" || frame["turnId"] != "t2" {
+							t.Fatalf("cancel frame = %#v", frame)
+						}
+						_ = conn.WriteJSON(map[string]any{"type": "result", "requestId": frame["requestId"], "payload": json.RawMessage(`{}`)})
+						_ = conn.WriteJSON(map[string]any{"type": "turn.event", "conversationId": "c1", "event": map[string]any{"conversationId": "c1", "turnId": "t2", "sequence": 2, "state": "interrupted", "payload": json.RawMessage(`{"type":"state_changed"}`)}})
+					} else {
+						_ = conn.WriteJSON(map[string]any{"type": "turn.event", "conversationId": "c1", "event": map[string]any{"conversationId": "c1", "turnId": "t1", "sequence": 1, "state": "completed", "payload": json.RawMessage(`{"type":"completed"}`)}})
+					}
+					_ = conn.WriteJSON(map[string]any{"type": "result", "requestId": submitRequestID, "payload": json.RawMessage(`{"outcome":{"conversationId":"c1","turnId":"t` + map[bool]string{true: "2", false: "1"}[input == "cancel"] + `"}}`)})
+				}
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -137,22 +181,62 @@ func TestConnectUsesBearerAndDesktopInstallationSession(t *testing.T) {
 	}))
 	defer server.Close()
 	service := NewAppService(&fakeTokenStore{token: "exact-token"})
+	defer service.Shutdown(context.Background())
 	state, err := service.Connect(server.URL, "macos-installation")
 	if err != nil || state.Session.ConversationID != "c1" || len(state.Messages) != 1 || state.Character.Name != "Fairy" || len(state.Visuals) != 1 {
 		t.Fatalf("Connect() = %#v, %v", state, err)
 	}
-}
-
-func TestCancelStopsActiveContext(t *testing.T) {
-	service := NewAppService(&fakeTokenStore{})
-	ctx, cancel := context.WithCancel(context.Background())
-	service.activeCancel = cancel
+	turnStarted := make(chan desktopTurnEvent, 1)
+	turnCompleted := make(chan desktopTurnEvent, 1)
+	service.emit = func(event any) {
+		if converted, ok := event.(desktopTurnEvent); ok {
+			switch converted.TurnEvent.State {
+			case "running":
+				turnStarted <- converted
+			case "completed":
+				turnCompleted <- converted
+			}
+		}
+	}
+	if err := service.Send("complete", false); err != nil {
+		t.Fatalf("Send(completed): %v", err)
+	}
+	select {
+	case <-turnCompleted:
+	case <-time.After(time.Second):
+		t.Fatal("completed event was not forwarded")
+	}
+	sendDone := make(chan error, 1)
+	go func() { sendDone <- service.Send("cancel", false) }()
+	select {
+	case <-turnStarted:
+	case <-time.After(time.Second):
+		t.Fatal("turn did not reach running state")
+	}
 	if err := service.Cancel(); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
 	select {
-	case <-ctx.Done():
+	case err := <-sendDone:
+		if err != nil {
+			t.Fatalf("Send(cancel): %v", err)
+		}
 	case <-time.After(time.Second):
-		t.Fatal("active context was not cancelled")
+		t.Fatal("cancelled submit did not return")
+	}
+
+	expectedAuthorization = ""
+	unauthenticated := NewAppService(&fakeTokenStore{})
+	defer unauthenticated.Shutdown(context.Background())
+	state, err = unauthenticated.Connect(server.URL, "macos-installation")
+	if err != nil || state.Connection.HasToken {
+		t.Fatalf("unauthenticated Connect() = %#v, %v", state, err)
+	}
+}
+
+func TestCancelRejectsWhenNoTurnIsActive(t *testing.T) {
+	service := NewAppService(&fakeTokenStore{})
+	if err := service.Cancel(); err == nil {
+		t.Fatal("Cancel() succeeded without an active turn")
 	}
 }

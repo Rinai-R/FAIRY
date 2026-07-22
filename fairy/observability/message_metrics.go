@@ -172,7 +172,7 @@ func (m *MessageMetrics) Snapshot() MessageMetricsSnapshot {
 	}
 	snapshot := m.snapshot.Load().(MessageMetricsSnapshot)
 	snapshot.DroppedEvents = m.dropped.Load()
-	snapshot.Recent = append([]MessageTrace(nil), snapshot.Recent...)
+	snapshot.Recent = append([]MessageTrace{}, snapshot.Recent...)
 	return snapshot
 }
 
