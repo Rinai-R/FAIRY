@@ -25,14 +25,14 @@ func TestRunnerCompletedDeliversTypedBeatsAndWaitsForSubmit(t *testing.T) {
 			go func() {
 				<-allow
 				_ = conn.WriteJSON(map[string]any{
-					"type": "harness", "conversationId": "c1",
+					"type": "turn.event", "conversationId": "c1",
 					"event": map[string]any{
 						"conversationId": "c1", "turnId": "t1", "sequence": 1, "state": "responding",
 						"payload": json.RawMessage(`{"type":"beat.ready","beatId":"b1","kind":"final","displayText":"你好","visualState":"idle"}`),
 					},
 				})
 				_ = conn.WriteJSON(map[string]any{
-					"type": "harness", "conversationId": "c1",
+					"type": "turn.event", "conversationId": "c1",
 					"event": map[string]any{
 						"conversationId": "c1", "turnId": "t1", "sequence": 2, "state": "completed",
 						"payload": json.RawMessage(`{"type":"completed","text":"你好"}`),
@@ -80,7 +80,7 @@ func TestRunnerDisconnectReturnsErrorAndCancelsKnownTurn(t *testing.T) {
 		case "session.watch":
 			_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID})
 			_ = conn.WriteJSON(map[string]any{
-				"type": "harness", "conversationId": "c1",
+				"type": "turn.event", "conversationId": "c1",
 				"event": map[string]any{
 					"conversationId": "c1", "turnId": "t1", "sequence": 1, "state": "responding",
 					"payload": json.RawMessage(`{"type":"state_changed"}`),
@@ -121,7 +121,7 @@ func TestDecodeInterruptedAndFailedTerminals(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			event, err := DecodeEvent(coreclient.SSEEvent{
-				Event: "harness",
+				Event: "turn.event",
 				Data:  []byte(`{"conversationId":"c1","turnId":"t1","sequence":1,"state":"` + test.state + `","payload":` + test.payload + `}`),
 			})
 			if err != nil || event.Type != test.want || !isTerminal(event) {

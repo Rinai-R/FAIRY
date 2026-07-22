@@ -13,7 +13,7 @@ import (
 	"fairy/model"
 )
 
-// Constants match crates/fairy-harness/src/runtime.rs.
+// Constants match companion runtime.
 const (
 	extractionThreshold   uint64 = 6
 	extractionBatchLimit         = memory.DefaultExtractionBatchLimit

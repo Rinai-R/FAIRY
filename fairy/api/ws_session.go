@@ -56,7 +56,7 @@ type wsServerFrame struct {
 	Endpoint       interaction.EndpointKind `json:"endpoint,omitempty"`
 	Error          string                   `json:"error,omitempty"`
 	Payload        json.RawMessage          `json:"payload,omitempty"`
-	Event          *companion.HarnessEvent  `json:"event,omitempty"`
+	Event          *companion.TurnEvent     `json:"event,omitempty"`
 }
 
 func (s *Server) handleSessionWebSocket() app.HandlerFunc {
@@ -185,11 +185,11 @@ func (c *sessionConn) handleWatch(frame wsClientFrame) {
 	subscription := c.server.rt.Events.Subscribe(conversationID)
 	c.watches[conversationID] = subscription.Unsubscribe
 	c.watchMu.Unlock()
-	go c.forwardHarness(conversationID, subscription)
+	go c.forwardTurnEvents(conversationID, subscription)
 	_ = c.write(wsServerFrame{Type: "ack", RequestID: frame.RequestID, ConversationID: conversationID})
 }
 
-func (c *sessionConn) forwardHarness(conversationID string, subscription fairyruntime.EventSubscription) {
+func (c *sessionConn) forwardTurnEvents(conversationID string, subscription fairyruntime.EventSubscription) {
 	defer subscription.Unsubscribe()
 	for {
 		select {
@@ -218,7 +218,7 @@ func (c *sessionConn) forwardHarness(conversationID string, subscription fairyru
 				return
 			}
 			ev := event
-			if err := c.write(wsServerFrame{Type: "harness", ConversationID: conversationID, Event: &ev}); err != nil {
+			if err := c.write(wsServerFrame{Type: "turn.event", ConversationID: conversationID, Event: &ev}); err != nil {
 				c.shutdown(nil)
 				return
 			}

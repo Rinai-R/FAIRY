@@ -12,7 +12,7 @@ func TestEventHubFanOut(t *testing.T) {
 	hub := NewEventHub()
 	subscription := hub.Subscribe("c1")
 	defer subscription.Unsubscribe()
-	hub.Publish(companion.HarnessEvent{ConversationID: "c1", TurnID: "t1", Sequence: 1})
+	hub.Publish(companion.TurnEvent{ConversationID: "c1", TurnID: "t1", Sequence: 1})
 	select {
 	case event := <-subscription.Events:
 		if event.TurnID != "t1" {
@@ -21,7 +21,7 @@ func TestEventHubFanOut(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for event")
 	}
-	hub.Publish(companion.HarnessEvent{ConversationID: "other", TurnID: "x"})
+	hub.Publish(companion.TurnEvent{ConversationID: "other", TurnID: "x"})
 	select {
 	case <-subscription.Events:
 		t.Fatal("received cross-conversation event")
@@ -37,7 +37,7 @@ func TestEventHubOverflowFailsOnlySlowSubscriber(t *testing.T) {
 	defer fast.Unsubscribe()
 
 	for sequence := 1; sequence <= eventHubBuffer; sequence++ {
-		hub.Publish(companion.HarnessEvent{ConversationID: "c1", Sequence: uint64(sequence)})
+		hub.Publish(companion.TurnEvent{ConversationID: "c1", Sequence: uint64(sequence)})
 		select {
 		case event := <-fast.Events:
 			if event.Sequence != uint64(sequence) {
@@ -47,7 +47,7 @@ func TestEventHubOverflowFailsOnlySlowSubscriber(t *testing.T) {
 			t.Fatal("fast subscriber stalled")
 		}
 	}
-	hub.Publish(companion.HarnessEvent{ConversationID: "c1", Sequence: eventHubBuffer + 1})
+	hub.Publish(companion.TurnEvent{ConversationID: "c1", Sequence: eventHubBuffer + 1})
 
 	select {
 	case err := <-slow.Failures:

@@ -92,7 +92,7 @@ type ParticipationResponse struct {
 	WaitSeconds     *int    `json:"waitSeconds,omitempty"`
 }
 
-type HarnessEvent struct {
+type TurnEvent struct {
 	ConversationID string          `json:"conversationId"`
 	TurnID         string          `json:"turnId"`
 	Sequence       uint64          `json:"sequence"`

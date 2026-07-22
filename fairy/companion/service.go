@@ -66,7 +66,7 @@ func AttachEventEmitter(s *CompanionService, emit EventEmitter) {
 	s.emit = emit
 }
 
-func (s *CompanionService) emitEvent(event HarnessEvent) {
+func (s *CompanionService) emitEvent(event TurnEvent) {
 	s.emitMu.Lock()
 	emit := s.emit
 	s.emitMu.Unlock()
@@ -75,17 +75,17 @@ func (s *CompanionService) emitEvent(event HarnessEvent) {
 	}
 }
 
-// publishLife allocates the next harness sequence and emits under one lock so
+// publishLife allocates the next turn-event sequence and emits under one lock so
 // concurrent utterance TTS cannot deliver duplicated or out-of-order sequences.
-func (s *CompanionService) publishLife(life *TurnLifecycle, produce func() (HarnessEvent, error)) (HarnessEvent, error) {
+func (s *CompanionService) publishLife(life *TurnLifecycle, produce func() (TurnEvent, error)) (TurnEvent, error) {
 	if life == nil {
-		return HarnessEvent{}, errors.New("nil turn lifecycle")
+		return TurnEvent{}, errors.New("nil turn lifecycle")
 	}
 	life.mu.Lock()
 	defer life.mu.Unlock()
 	event, err := produce()
 	if err != nil {
-		return HarnessEvent{}, err
+		return TurnEvent{}, err
 	}
 	s.emitEvent(event)
 	return event, nil
@@ -383,7 +383,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		if err := s.memory.FailTurn(request.ConversationID, persisted.ID, code, cause.Error(), false); err != nil {
 			return s.terminalPersistenceFailure(life, request.ConversationID, persisted.ID, cause, err)
 		}
-		if _, err := s.publishLife(life, func() (HarnessEvent, error) {
+		if _, err := s.publishLife(life, func() (TurnEvent, error) {
 			return life.Fail(code, cause.Error(), false)
 		}); err != nil {
 			return TurnOutcome{}, errors.Join(cause, err)
@@ -392,7 +392,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		return TurnOutcome{}, cause
 	}
 	transition := func(state TurnState) error {
-		if _, err := s.publishLife(life, func() (HarnessEvent, error) {
+		if _, err := s.publishLife(life, func() (TurnEvent, error) {
 			return life.Transition(state)
 		}); err != nil {
 			return err
@@ -558,7 +558,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 			events = append(events, event)
 			if firstByteAt.IsZero() {
 				firstByteAt = time.Now()
-				if _, presenceErr := s.publishLife(life, func() (HarnessEvent, error) {
+				if _, presenceErr := s.publishLife(life, func() (TurnEvent, error) {
 					return life.Presence("model_stream")
 				}); presenceErr != nil {
 					lg.Warn("cognition loop", zap.String("phase", "presence_skipped"), zap.Error(presenceErr))
@@ -569,7 +569,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 				return
 			}
 			previewAt = time.Now()
-			if _, previewErr := s.publishLife(life, func() (HarnessEvent, error) {
+			if _, previewErr := s.publishLife(life, func() (TurnEvent, error) {
 				return life.ReplyPreview(preview.Chains)
 			}); previewErr != nil {
 				lg.Warn("cognition loop", zap.String("phase", "preview_skipped"), zap.Error(previewErr))
@@ -635,7 +635,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 				beatID := fmt.Sprintf("utt-%d", seq)
 				lg.Info("cognition loop", zap.String("phase", "utterance_queued"), zap.Int("seq", seq), zap.String("reason", reason))
 				if speechFlow == nil {
-					if _, uttErr := s.publishLife(life, func() (HarnessEvent, error) {
+					if _, uttErr := s.publishLife(life, func() (TurnEvent, error) {
 						return life.BeatReady(BeatReadyCompletion{
 							BeatID:      beatID,
 							Kind:        beatKindUtterance,
@@ -888,7 +888,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		turnCtx,
 		len(reply.Chains),
 		func(completion BeatReadyCompletion) error {
-			_, err := s.publishLife(life, func() (HarnessEvent, error) {
+			_, err := s.publishLife(life, func() (TurnEvent, error) {
 				return life.BeatReady(completion)
 			})
 			if err == nil && completion.Kind == beatKindFinal {
@@ -938,7 +938,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 		if index > 0 {
 			delta = "\n" + chain.Text
 		}
-		if _, err := s.publishLife(life, func() (HarnessEvent, error) {
+		if _, err := s.publishLife(life, func() (TurnEvent, error) {
 			return life.ReplyChain(uint8(index), delta, chain)
 		}); err != nil {
 			return fail("MODEL_RESPONSE_INVALID", err)
@@ -978,7 +978,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 			continue
 		}
 		if speechText != "" && !speechRequested {
-			if _, err := s.publishLife(life, func() (HarnessEvent, error) {
+			if _, err := s.publishLife(life, func() (TurnEvent, error) {
 				return life.SpeechRequested(TurnCompletion{
 					Text:                chain.Text,
 					SpeechText:          speechText,
@@ -1041,7 +1041,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	// release the hold and flash the bubble away prematurely. Chain audio still
 	// streams to the UI as each job finishes during this drain (idempotent Close;
 	// the deferred Close remains a safety net for fail paths).
-	if _, err := s.publishLife(life, func() (HarnessEvent, error) {
+	if _, err := s.publishLife(life, func() (TurnEvent, error) {
 		return life.Complete(TurnCompletion{
 			Text:                reply.DisplayText,
 			SpeechText:          reply.SpeechText,
@@ -1122,7 +1122,7 @@ func cacheObservationFromProvider(tokens *uint64) CachedTokenObservation {
 }
 
 func (s *CompanionService) emitSpeechFailure(life *TurnLifecycle, conversationID string, turnID string, code string, message string, retryable bool) {
-	_, _ = s.publishLife(life, func() (HarnessEvent, error) {
+	_, _ = s.publishLife(life, func() (TurnEvent, error) {
 		return life.SpeechFailed(code, message, retryable)
 	})
 }
@@ -1133,7 +1133,7 @@ func (s *CompanionService) terminalPersistenceFailure(life *TurnLifecycle, conve
 		err = errors.Join(cause, err)
 	}
 	const code = "TURN_TERMINAL_PERSISTENCE_FAILED"
-	if _, lifeErr := s.publishLife(life, func() (HarnessEvent, error) {
+	if _, lifeErr := s.publishLife(life, func() (TurnEvent, error) {
 		return life.Fail(code, err.Error(), false)
 	}); lifeErr != nil {
 		err = errors.Join(err, lifeErr)
@@ -1222,7 +1222,7 @@ func (s *CompanionService) handleSpeechResult(life *TurnLifecycle, conversationI
 		}
 		return
 	}
-	if _, err := s.publishLife(life, func() (HarnessEvent, error) {
+	if _, err := s.publishLife(life, func() (TurnEvent, error) {
 		return life.BeatReady(completion)
 	}); err != nil {
 		s.logger.Warn("beat.ready skipped",

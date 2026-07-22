@@ -3,7 +3,7 @@ package config
 import "errors"
 
 // Reader is a process-scoped handle for reading durable companion config from a
-// harness root. Construct once in main and inject into consumers.
+// config root. Construct once in main and inject into consumers.
 type Reader struct {
 	root string
 }

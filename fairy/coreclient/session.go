@@ -112,13 +112,13 @@ func (c *Client) ObserveAmbient(ctx context.Context, conversationID string, mess
 	})
 }
 
-func DecodeHarnessEvent(event SSEEvent) (HarnessEvent, error) {
-	var result HarnessEvent
+func DecodeTurnEvent(event SSEEvent) (TurnEvent, error) {
+	var result TurnEvent
 	if err := json.Unmarshal(event.Data, &result); err != nil {
-		return HarnessEvent{}, err
+		return TurnEvent{}, err
 	}
 	if result.ConversationID == "" || result.TurnID == "" || result.Sequence == 0 || result.State == "" || len(result.Payload) == 0 {
-		return HarnessEvent{}, errors.New("invalid harness event")
+		return TurnEvent{}, errors.New("invalid turn event")
 	}
 	return result, nil
 }

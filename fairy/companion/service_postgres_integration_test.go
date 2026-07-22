@@ -182,8 +182,8 @@ func TestPostgresCompanionMultiBeatCompletesWithPacing(t *testing.T) {
 	}})
 	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
 	var mu sync.Mutex
-	var events []HarnessEvent
-	AttachEventEmitter(service, func(event HarnessEvent) {
+	var events []TurnEvent
+	AttachEventEmitter(service, func(event TurnEvent) {
 		mu.Lock()
 		events = append(events, event)
 		mu.Unlock()
@@ -241,9 +241,9 @@ func TestPostgresCompanionCancelAfterFirstBeatPersistsPrefix(t *testing.T) {
 	}})
 	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
 	var mu sync.Mutex
-	var events []HarnessEvent
+	var events []TurnEvent
 	var cancelErr error
-	AttachEventEmitter(service, func(event HarnessEvent) {
+	AttachEventEmitter(service, func(event TurnEvent) {
 		mu.Lock()
 		events = append(events, event)
 		mu.Unlock()
@@ -295,8 +295,8 @@ func TestPostgresCompanionTerminalPersistenceFailureEmitsFailed(t *testing.T) {
 		{VisualState: "idle", Text: "已发布但无法保存"},
 	}})
 	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
-	var events []HarnessEvent
-	AttachEventEmitter(service, func(event HarnessEvent) { events = append(events, event) })
+	var events []TurnEvent
+	AttachEventEmitter(service, func(event TurnEvent) { events = append(events, event) })
 	_, submitErr := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 		ConversationID:        bootstrap.Conversation.ID,
 		Input:                 "测试持久化错误",
@@ -327,8 +327,8 @@ func TestPostgresCompanionInterruptPersistenceFailureEmitsFailed(t *testing.T) {
 		{VisualState: "idle", Text: "第二拍"},
 	}})
 	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
-	var events []HarnessEvent
-	AttachEventEmitter(service, func(event HarnessEvent) {
+	var events []TurnEvent
+	AttachEventEmitter(service, func(event TurnEvent) {
 		events = append(events, event)
 		if payload, ok := event.Payload.(beatReadyPayload); ok && payload.ChainIndex == 0 {
 			_ = service.CancelTurn(event.ConversationID, event.TurnID)
@@ -502,7 +502,7 @@ func newCompanionIntegrationService(memoryPort MemoryPort, characterID string, s
 	return service
 }
 
-func finalBeatEvents(events []HarnessEvent) []beatReadyPayload {
+func finalBeatEvents(events []TurnEvent) []beatReadyPayload {
 	result := make([]beatReadyPayload, 0)
 	for _, event := range events {
 		if payload, ok := event.Payload.(beatReadyPayload); ok && payload.Kind == beatKindFinal {
@@ -512,7 +512,7 @@ func finalBeatEvents(events []HarnessEvent) []beatReadyPayload {
 	return result
 }
 
-func terminalEventCount(events []HarnessEvent, state TurnState) int {
+func terminalEventCount(events []TurnEvent, state TurnState) int {
 	count := 0
 	for _, event := range events {
 		if event.State != state {
@@ -528,7 +528,7 @@ func terminalEventCount(events []HarnessEvent, state TurnState) int {
 
 type failedEvent struct{ Code string }
 
-func lastFailedEvent(events []HarnessEvent) *failedEvent {
+func lastFailedEvent(events []TurnEvent) *failedEvent {
 	for index := len(events) - 1; index >= 0; index-- {
 		if payload, ok := events[index].Payload.(failedPayload); ok {
 			return &failedEvent{Code: payload.Error.Code}

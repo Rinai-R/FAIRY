@@ -32,10 +32,10 @@ type Request struct {
 }
 
 type Event struct {
-	Harness coreclient.HarnessEvent
-	Type    string
-	Beat    *BeatReady
-	Failure *Failure
+	TurnEvent coreclient.TurnEvent
+	Type      string
+	Beat      *BeatReady
+	Failure   *Failure
 }
 
 type BeatReady struct {
@@ -156,21 +156,21 @@ func (r *Runner) Run(ctx context.Context, request Request, callback Callback) (R
 				return Result{}, result.err
 			}
 			event := result.event
-			if event.Harness.ConversationID != request.ConversationID {
+			if event.TurnEvent.ConversationID != request.ConversationID {
 				cancelTurn()
 				return Result{}, errors.New("event conversation ID does not match request")
 			}
 			if turnID == "" {
-				turnID = event.Harness.TurnID
-			} else if event.Harness.TurnID != turnID {
+				turnID = event.TurnEvent.TurnID
+			} else if event.TurnEvent.TurnID != turnID {
 				cancelTurn()
 				return Result{}, errors.New("event stream contains multiple turns")
 			}
-			if event.Harness.Sequence <= lastSequence {
+			if event.TurnEvent.Sequence <= lastSequence {
 				cancelTurn()
 				return Result{}, errors.New("event sequence is not strictly increasing")
 			}
-			lastSequence = event.Harness.Sequence
+			lastSequence = event.TurnEvent.Sequence
 			if err := callback(event); err != nil {
 				cancelTurn()
 				return Result{}, fmt.Errorf("turn event callback: %w", err)
@@ -181,7 +181,7 @@ func (r *Runner) Run(ctx context.Context, request Request, callback Callback) (R
 			}
 		}
 	}
-	if submitted.response.Outcome.TurnID != terminal.Harness.TurnID {
+	if submitted.response.Outcome.TurnID != terminal.TurnEvent.TurnID {
 		return Result{}, errors.New("terminal event does not match submit response")
 	}
 	return Result{Response: submitted.response, Terminal: *terminal}, nil
@@ -195,7 +195,7 @@ func readEvents(stream coreclient.EventStream, output chan<- streamResult) {
 			output <- streamResult{err: err}
 			return
 		}
-		if raw.Event != "harness" {
+		if raw.Event != "turn.event" {
 			continue
 		}
 		event, err := DecodeEvent(raw)
@@ -213,21 +213,21 @@ type streamResult struct {
 }
 
 func DecodeEvent(raw coreclient.SSEEvent) (Event, error) {
-	harness, err := coreclient.DecodeHarnessEvent(raw)
+	turnEvent, err := coreclient.DecodeTurnEvent(raw)
 	if err != nil {
 		return Event{}, err
 	}
 	var envelope struct {
 		Type string `json:"type"`
 	}
-	if err := json.Unmarshal(harness.Payload, &envelope); err != nil || envelope.Type == "" {
-		return Event{}, errors.New("harness payload is missing type")
+	if err := json.Unmarshal(turnEvent.Payload, &envelope); err != nil || envelope.Type == "" {
+		return Event{}, errors.New("turn event payload is missing type")
 	}
-	event := Event{Harness: harness, Type: envelope.Type}
+	event := Event{TurnEvent: turnEvent, Type: envelope.Type}
 	switch envelope.Type {
 	case "beat.ready":
 		var beat BeatReady
-		if err := json.Unmarshal(harness.Payload, &beat); err != nil || beat.BeatID == "" || beat.DisplayText == "" {
+		if err := json.Unmarshal(turnEvent.Payload, &beat); err != nil || beat.BeatID == "" || beat.DisplayText == "" {
 			return Event{}, errors.New("invalid beat.ready payload")
 		}
 		event.Beat = &beat
@@ -235,7 +235,7 @@ func DecodeEvent(raw coreclient.SSEEvent) (Event, error) {
 		var payload struct {
 			Error Failure `json:"error"`
 		}
-		if err := json.Unmarshal(harness.Payload, &payload); err != nil || payload.Error.Code == "" {
+		if err := json.Unmarshal(turnEvent.Payload, &payload); err != nil || payload.Error.Code == "" {
 			return Event{}, errors.New("invalid failed payload")
 		}
 		event.Failure = &payload.Error
@@ -244,7 +244,7 @@ func DecodeEvent(raw coreclient.SSEEvent) (Event, error) {
 }
 
 func isTerminal(event Event) bool {
-	switch event.Harness.State {
+	switch event.TurnEvent.State {
 	case "completed":
 		return event.Type == "completed"
 	case "interrupted":

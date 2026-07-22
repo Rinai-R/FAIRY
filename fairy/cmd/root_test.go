@@ -219,12 +219,12 @@ func TestTurnSendWritesJSONLAndReturnsTerminalError(t *testing.T) {
 		t.Run(state, func(t *testing.T) {
 			events := []coreclient.SSEEvent{{
 				Event: state,
-				Data:  mustJSON(coreclient.HarnessEvent{ConversationID: "c1", TurnID: "t1", Sequence: 1, State: state, Payload: json.RawMessage(`{}`)}),
+				Data:  mustJSON(coreclient.TurnEvent{ConversationID: "c1", TurnID: "t1", Sequence: 1, State: state, Payload: json.RawMessage(`{}`)}),
 			}}
 			if state == "failed" {
 				events = []coreclient.SSEEvent{
-					{Event: "planning", Data: mustJSON(coreclient.HarnessEvent{ConversationID: "c1", TurnID: "t1", Sequence: 1, State: "planning", Payload: json.RawMessage(`{}`)})},
-					{Event: "failed", Data: mustJSON(coreclient.HarnessEvent{ConversationID: "c1", TurnID: "t1", Sequence: 2, State: "failed", Payload: json.RawMessage(`{"error":"invalid provider reply"}`)})},
+					{Event: "planning", Data: mustJSON(coreclient.TurnEvent{ConversationID: "c1", TurnID: "t1", Sequence: 1, State: "planning", Payload: json.RawMessage(`{}`)})},
+					{Event: "failed", Data: mustJSON(coreclient.TurnEvent{ConversationID: "c1", TurnID: "t1", Sequence: 2, State: "failed", Payload: json.RawMessage(`{"error":"invalid provider reply"}`)})},
 				}
 			}
 			client := &fakeClient{

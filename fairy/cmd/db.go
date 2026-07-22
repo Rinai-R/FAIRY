@@ -308,5 +308,5 @@ func (o localDatabaseOperations) configRoot() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	return filepath.Join(home, "Library", "Application Support", "dev.rinai.fairy", "harness", "v1"), nil
+	return filepath.Join(home, "Library", "Application Support", "dev.rinai.fairy", "session-core", "v1"), nil
 }

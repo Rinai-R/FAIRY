@@ -177,11 +177,11 @@ func newCoreWSTestServer(silentObserved, waitObserved chan struct{}, openCalls, 
 					target := watchConn
 					mu.Unlock()
 					if target == nil {
-						errorsCh <- fmt.Errorf("no watch connection for harness")
+						errorsCh <- fmt.Errorf("no watch connection for turn events")
 						return
 					}
 					_ = target.WriteJSON(map[string]any{
-						"type": "harness", "conversationId": "c1",
+						"type": "turn.event", "conversationId": "c1",
 						"event": map[string]any{
 							"conversationId": "c1", "turnId": "t1", "sequence": 1, "state": "responding",
 							"payload": json.RawMessage(`{"type":"beat.ready","beatId":"b1","kind":"final","displayText":"真实回复"}`),

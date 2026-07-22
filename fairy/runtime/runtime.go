@@ -35,7 +35,7 @@ type Options struct {
 	LogStore     *observability.LogStore
 	HTTPMetrics  *observability.HTTPMetrics
 	Dependencies *Dependencies
-	// LogEventsJSONL prints harness events to stdout (optional local debugging).
+	// LogEventsJSONL prints turn events to stdout (optional local debugging).
 	LogEventsJSONL bool
 }
 
@@ -71,7 +71,7 @@ type Runtime struct {
 	WebSearch    *search.Service
 	Bootstrap    *BootstrapService
 	eventMu      sync.Mutex
-	events       []companion.HarnessEvent
+	events       []companion.TurnEvent
 	ownDatabase  bool
 	ownVector    bool
 	closeOnce    sync.Once
@@ -100,7 +100,7 @@ func Open(options Options) (*Runtime, error) {
 		configRoot = os.Getenv("FAIRY_CONFIG_ROOT")
 	}
 	if configRoot == "" {
-		configRoot = filepath.Join(os.Getenv("HOME"), "Library", "Application Support", "dev.rinai.fairy", "harness", "v1")
+		configRoot = filepath.Join(os.Getenv("HOME"), "Library", "Application Support", "dev.rinai.fairy", "session-core", "v1")
 	}
 
 	database, memoryStore, secretStore, vectorClient, ownDatabase, ownVector, err := openDependencies(context.Background(), options.Dependencies)
@@ -181,7 +181,7 @@ func Open(options Options) (*Runtime, error) {
 	character.AttachLogger(characterService, logger.Named("character"))
 	search.AttachLogger(webSearch, logger.Named("openserp"))
 
-	companion.AttachEventEmitter(companionService, func(event companion.HarnessEvent) {
+	companion.AttachEventEmitter(companionService, func(event companion.TurnEvent) {
 		rt.eventMu.Lock()
 		rt.events = append(rt.events, event)
 		rt.eventMu.Unlock()
@@ -189,7 +189,7 @@ func Open(options Options) (*Runtime, error) {
 		if options.LogEventsJSONL {
 			line, err := json.Marshal(event)
 			if err != nil {
-				logger.Warn("marshal harness event", zap.Error(err))
+				logger.Warn("marshal turn event", zap.Error(err))
 				return
 			}
 			fmt.Println(string(line))
@@ -278,13 +278,13 @@ func openDependencies(ctx context.Context, injected *Dependencies) (*pgstore.Poo
 	return database, memoryStore, secretStore, vectorClient, true, true, nil
 }
 
-func (rt *Runtime) DrainEvents() []companion.HarnessEvent {
+func (rt *Runtime) DrainEvents() []companion.TurnEvent {
 	if rt == nil {
 		return nil
 	}
 	rt.eventMu.Lock()
 	defer rt.eventMu.Unlock()
-	out := append([]companion.HarnessEvent(nil), rt.events...)
+	out := append([]companion.TurnEvent(nil), rt.events...)
 	rt.events = nil
 	return out
 }

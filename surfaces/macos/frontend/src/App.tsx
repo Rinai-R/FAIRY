@@ -21,9 +21,9 @@ export default function App() {
     const off = window.runtime?.EventsOn?.("turn:event", (event: any) => {
       const type = event.type || event.Type;
       if (type === "beat.ready" && (event.beat || event.Beat)) dispatch({ type: "beat", beat: event.beat || event.Beat });
-      else if ((event.harness?.state || event.Harness?.State) === "completed") dispatch({ type: "completed" });
-      else if ((event.harness?.state || event.Harness?.State) === "interrupted") dispatch({ type: "interrupted" });
-      else if ((event.harness?.state || event.Harness?.State) === "failed") dispatch({ type: "failed", message: event.failure?.message || "Core 返回失败" });
+      else if ((event.turnEvent?.state || event.TurnEvent?.State) === "completed") dispatch({ type: "completed" });
+      else if ((event.turnEvent?.state || event.TurnEvent?.State) === "interrupted") dispatch({ type: "interrupted" });
+      else if ((event.turnEvent?.state || event.TurnEvent?.State) === "failed") dispatch({ type: "failed", message: event.failure?.message || "Core 返回失败" });
     });
     return () => { if (typeof off === "function") off(); };
   }, []);

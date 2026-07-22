@@ -12,13 +12,13 @@ const eventHubBuffer = 64
 var ErrEventSubscriberOverflow = errors.New("event subscriber overflow")
 
 type eventSubscriber struct {
-	events   chan companion.HarnessEvent
+	events   chan companion.TurnEvent
 	failures chan error
 }
 
-// EventSubscription is one ordered per-conversation harness stream.
+// EventSubscription is one ordered per-conversation turn-event stream.
 type EventSubscription struct {
-	Events      <-chan companion.HarnessEvent
+	Events      <-chan companion.TurnEvent
 	Failures    <-chan error
 	unsubscribe func()
 }
@@ -29,7 +29,7 @@ func (s EventSubscription) Unsubscribe() {
 	}
 }
 
-// EventHub fans harness events out to per-conversation WebSocket watchers.
+// EventHub fans turn events out to per-conversation WebSocket watchers.
 type EventHub struct {
 	mu     sync.Mutex
 	subs   map[string]map[*eventSubscriber]struct{}
@@ -46,7 +46,7 @@ func (h *EventHub) Subscribe(conversationID string) EventSubscription {
 		return closedEventSubscription()
 	}
 	subscriber := &eventSubscriber{
-		events:   make(chan companion.HarnessEvent, eventHubBuffer),
+		events:   make(chan companion.TurnEvent, eventHubBuffer),
 		failures: make(chan error, 1),
 	}
 	h.mu.Lock()
@@ -77,7 +77,7 @@ func (h *EventHub) Subscribe(conversationID string) EventSubscription {
 }
 
 func closedEventSubscription() EventSubscription {
-	events := make(chan companion.HarnessEvent)
+	events := make(chan companion.TurnEvent)
 	failures := make(chan error)
 	close(events)
 	close(failures)
@@ -85,7 +85,7 @@ func closedEventSubscription() EventSubscription {
 }
 
 // Publish never blocks Core turn execution. A slow subscriber is failed and removed.
-func (h *EventHub) Publish(event companion.HarnessEvent) {
+func (h *EventHub) Publish(event companion.TurnEvent) {
 	if h == nil || event.ConversationID == "" {
 		return
 	}

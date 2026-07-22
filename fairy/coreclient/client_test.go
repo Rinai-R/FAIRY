@@ -254,7 +254,7 @@ func newSessionWSServer(t *testing.T, handle func(*websocket.Conn)) *httptest.Se
 	}))
 }
 
-func TestSessionSocketHarnessOverflowFailsConnection(t *testing.T) {
+func TestSessionSocketTurnEventOverflowFailsConnection(t *testing.T) {
 	sent := make(chan struct{})
 	server := newSessionWSServer(t, func(conn *websocket.Conn) {
 		var watch sessionClientFrame
@@ -266,8 +266,8 @@ func TestSessionSocketHarnessOverflowFailsConnection(t *testing.T) {
 			return
 		}
 		for sequence := 1; sequence <= 65; sequence++ {
-			event := HarnessEvent{ConversationID: "c1", TurnID: "t1", Sequence: uint64(sequence)}
-			if err := conn.WriteJSON(sessionServerFrame{Type: "harness", ConversationID: "c1", Event: &event}); err != nil {
+			event := TurnEvent{ConversationID: "c1", TurnID: "t1", Sequence: uint64(sequence)}
+			if err := conn.WriteJSON(sessionServerFrame{Type: "turn.event", ConversationID: "c1", Event: &event}); err != nil {
 				return
 			}
 		}
@@ -293,17 +293,17 @@ func TestSessionSocketHarnessOverflowFailsConnection(t *testing.T) {
 	select {
 	case <-socket.done:
 	case <-time.After(time.Second):
-		t.Fatal("socket did not terminate after harness overflow")
+		t.Fatal("socket did not terminate after turn-event overflow")
 	}
 	socket.mu.Lock()
 	err = socket.closeErr
 	socket.mu.Unlock()
-	if !errors.Is(err, ErrHarnessConsumerOverflow) {
-		t.Fatalf("socket error = %v, want ErrHarnessConsumerOverflow", err)
+	if !errors.Is(err, ErrTurnEventConsumerOverflow) {
+		t.Fatalf("socket error = %v, want ErrTurnEventConsumerOverflow", err)
 	}
 }
 
-func TestSessionSocketCloseWhileReceivingHarnessIsRaceFree(t *testing.T) {
+func TestSessionSocketCloseWhileReceivingTurnEventIsRaceFree(t *testing.T) {
 	started := make(chan struct{})
 	server := newSessionWSServer(t, func(conn *websocket.Conn) {
 		var watch sessionClientFrame
@@ -315,8 +315,8 @@ func TestSessionSocketCloseWhileReceivingHarnessIsRaceFree(t *testing.T) {
 		}
 		close(started)
 		for sequence := 1; ; sequence++ {
-			event := HarnessEvent{ConversationID: "c1", TurnID: "t1", Sequence: uint64(sequence)}
-			if err := conn.WriteJSON(sessionServerFrame{Type: "harness", ConversationID: "c1", Event: &event}); err != nil {
+			event := TurnEvent{ConversationID: "c1", TurnID: "t1", Sequence: uint64(sequence)}
+			if err := conn.WriteJSON(sessionServerFrame{Type: "turn.event", ConversationID: "c1", Event: &event}); err != nil {
 				return
 			}
 		}
@@ -461,10 +461,10 @@ func TestLogQueryValidation(t *testing.T) {
 	}
 }
 
-func TestDecodeHarnessEventRejectsMissingFields(t *testing.T) {
-	_, err := DecodeHarnessEvent(SSEEvent{Data: []byte(`{"conversationId":"c"}`)})
+func TestDecodeTurnEventRejectsMissingFields(t *testing.T) {
+	_, err := DecodeTurnEvent(SSEEvent{Data: []byte(`{"conversationId":"c"}`)})
 	if err == nil {
-		t.Fatal("incomplete harness event accepted")
+		t.Fatal("incomplete turn event accepted")
 	}
 }
 

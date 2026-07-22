@@ -6,7 +6,7 @@ import (
 	"unicode"
 )
 
-// Continuation types mirror crates/fairy-harness/src/gateway.rs.
+// Continuation types describe how a response continues across model calls.
 
 type ContinuationState struct {
 	PreviousResponseID string

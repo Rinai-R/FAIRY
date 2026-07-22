@@ -68,11 +68,11 @@ func TestSessionConnOverflowSendsTryAgainLaterClose(t *testing.T) {
 	}
 }
 
-func TestForwardHarnessPreservesOverflowReasonAfterEventStreamCloses(t *testing.T) {
+func TestForwardTurnEventsPreservesOverflowReasonAfterEventStreamCloses(t *testing.T) {
 	hub := fairyruntime.NewEventHub()
 	subscription := hub.Subscribe("c1")
 	for sequence := 1; sequence <= 65; sequence++ {
-		hub.Publish(companion.HarnessEvent{ConversationID: "c1", Sequence: uint64(sequence)})
+		hub.Publish(companion.TurnEvent{ConversationID: "c1", Sequence: uint64(sequence)})
 	}
 
 	handlerDone := make(chan struct{})
@@ -84,7 +84,7 @@ func TestForwardHarnessPreservesOverflowReasonAfterEventStreamCloses(t *testing.
 			return
 		}
 		session := &sessionConn{conn: conn, watches: map[string]func(){"c1": subscription.Unsubscribe}}
-		session.forwardHarness("c1", subscription)
+		session.forwardTurnEvents("c1", subscription)
 	}))
 	defer server.Close()
 
@@ -108,6 +108,6 @@ func TestForwardHarnessPreservesOverflowReasonAfterEventStreamCloses(t *testing.
 	select {
 	case <-handlerDone:
 	case <-time.After(time.Second):
-		t.Fatal("forward harness did not terminate")
+		t.Fatal("forward turn event did not terminate")
 	}
 }

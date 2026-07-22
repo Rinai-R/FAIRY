@@ -105,7 +105,7 @@ func newTurnCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 	var conversationID, input string
 	var speech bool
 	send := &cobra.Command{
-		Use: "send", Short: "Submit a turn and stream harness events", Args: cobra.NoArgs,
+		Use: "send", Short: "Submit a turn and stream turn events", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
 			if strings.TrimSpace(conversationID) == "" || strings.TrimSpace(input) == "" {
 				return errors.New("conversation and input are required")
@@ -148,7 +148,7 @@ func newTurnCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 }
 
 type eventResult struct {
-	event coreclient.HarnessEvent
+	event coreclient.TurnEvent
 	err   error
 }
 
@@ -164,7 +164,7 @@ func sendTurn(command *cobra.Command, client APIClient, config ConnectionConfig,
 	}
 	defer stream.Close()
 	events := make(chan eventResult, 1)
-	go readHarnessEvents(stream, events)
+	go readTurnEvents(stream, events)
 	turns := make(chan turnResult, 1)
 	go func() {
 		response, err := client.SubmitTurn(command.Context(), conversationID, request)
@@ -206,14 +206,14 @@ func sendTurn(command *cobra.Command, client APIClient, config ConnectionConfig,
 	}
 }
 
-func readHarnessEvents(stream coreclient.EventStream, results chan<- eventResult) {
+func readTurnEvents(stream coreclient.EventStream, results chan<- eventResult) {
 	for {
 		event, err := stream.Next()
 		if err != nil {
 			results <- eventResult{err: err}
 			return
 		}
-		decoded, err := coreclient.DecodeHarnessEvent(event)
+		decoded, err := coreclient.DecodeTurnEvent(event)
 		if err != nil {
 			results <- eventResult{err: err}
 			return
@@ -223,7 +223,7 @@ func readHarnessEvents(stream coreclient.EventStream, results chan<- eventResult
 }
 
 func newEventsCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
-	command := &cobra.Command{Use: "events", Short: "Follow session harness events", GroupID: "debug"}
+	command := &cobra.Command{Use: "events", Short: "Follow session turn events", GroupID: "debug"}
 	var conversationID string
 	follow := &cobra.Command{
 		Use: "follow", Short: "Follow events as JSONL", Args: cobra.NoArgs,
@@ -245,7 +245,7 @@ func newEventsCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 					}
 					return fmt.Errorf("event stream disconnected: %w", err)
 				}
-				decoded, err := coreclient.DecodeHarnessEvent(event)
+				decoded, err := coreclient.DecodeTurnEvent(event)
 				if err != nil {
 					return err
 				}

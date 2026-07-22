@@ -107,20 +107,20 @@ func (b *bot) ensureConversation(groupID int64, send func(string) error) (string
 	b.conversations[groupID] = session.ConversationID
 	b.senders[session.ConversationID] = send
 	b.mu.Unlock()
-	go b.consumeHarness(session.ConversationID, stream)
+	go b.consumeTurnEvents(session.ConversationID, stream)
 	return session.ConversationID, nil
 }
 
-func (b *bot) consumeHarness(conversationID string, stream <-chan coreclient.HarnessEvent) {
+func (b *bot) consumeTurnEvents(conversationID string, stream <-chan coreclient.TurnEvent) {
 	for {
-		var event coreclient.HarnessEvent
+		var event coreclient.TurnEvent
 		select {
 		case <-b.ctx.Done():
 			return
 		case received, ok := <-stream:
 			if !ok {
 				if b.ctx.Err() == nil {
-					log.Printf("session harness stream closed: conversation=%s", conversationID)
+					log.Printf("session turn-event stream closed: conversation=%s", conversationID)
 				}
 				return
 			}
@@ -166,7 +166,7 @@ func ambientObservationFromEvent(ctx *zero.Ctx) (coreclient.AmbientObservation, 
 	}, nil
 }
 
-func finalBeatText(event coreclient.HarnessEvent) (string, bool) {
+func finalBeatText(event coreclient.TurnEvent) (string, bool) {
 	var envelope struct {
 		Type        string `json:"type"`
 		Kind        string `json:"kind"`

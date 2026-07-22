@@ -4,9 +4,31 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestDatabaseConfigRootDefaultsToSessionCore(t *testing.T) {
+	root, err := (localDatabaseOperations{getenv: func(string) string { return "" }}).configRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(mustUserHomeDir(t), "Library", "Application Support", "dev.rinai.fairy", "session-core", "v1")
+	if root != want {
+		t.Fatalf("config root = %q, want %q", root, want)
+	}
+}
+
+func mustUserHomeDir(t *testing.T) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
 
 type fakeDatabaseOperations struct {
 	calls    []string

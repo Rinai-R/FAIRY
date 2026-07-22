@@ -10,7 +10,7 @@ import (
 	"fairy/coreclient"
 )
 
-func TestConsumeHarnessDeliversConversationStreamInOrder(t *testing.T) {
+func TestConsumeTurnEventsDeliversConversationStreamInOrder(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	delivered := make(chan string, 2)
@@ -24,16 +24,16 @@ func TestConsumeHarnessDeliversConversationStreamInOrder(t *testing.T) {
 		},
 		conversations: make(map[int64]string),
 	}
-	stream := make(chan coreclient.HarnessEvent, 2)
+	stream := make(chan coreclient.TurnEvent, 2)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		bot.consumeHarness("c1", stream)
+		bot.consumeTurnEvents("c1", stream)
 	}()
 	for _, text := range []string{"第一拍", "第二拍"} {
 		payload, _ := json.Marshal(map[string]any{"type": "beat.ready", "kind": "final", "displayText": text})
-		stream <- coreclient.HarnessEvent{ConversationID: "c1", Payload: payload}
+		stream <- coreclient.TurnEvent{ConversationID: "c1", Payload: payload}
 	}
 	for _, want := range []string{"第一拍", "第二拍"} {
 		select {
@@ -51,11 +51,11 @@ func TestConsumeHarnessDeliversConversationStreamInOrder(t *testing.T) {
 
 func TestFinalBeatTextRequiresFinalKind(t *testing.T) {
 	payload, _ := json.Marshal(map[string]any{"type": "beat.ready", "kind": "utterance", "displayText": "skip"})
-	if _, ok := finalBeatText(coreclient.HarnessEvent{Payload: payload}); ok {
+	if _, ok := finalBeatText(coreclient.TurnEvent{Payload: payload}); ok {
 		t.Fatal("utterance accepted as final")
 	}
 	payload, _ = json.Marshal(map[string]any{"type": "beat.ready", "kind": "final", "displayText": "你好"})
-	text, ok := finalBeatText(coreclient.HarnessEvent{Payload: payload})
+	text, ok := finalBeatText(coreclient.TurnEvent{Payload: payload})
 	if !ok || text != "你好" {
 		t.Fatalf("text=%q ok=%v", text, ok)
 	}

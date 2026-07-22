@@ -7,7 +7,7 @@ import (
 	"sync"
 )
 
-// Turn lifecycle and harness events mirror crates/fairy-domain/src/conversation.rs.
+// Turn lifecycle and turn events mirror crates/fairy-domain/src/conversation.rs.
 
 type TurnState string
 
@@ -189,7 +189,7 @@ type speechFailedPayload struct {
 	Error WireError `json:"error"`
 }
 
-type HarnessEvent struct {
+type TurnEvent struct {
 	ConversationID string    `json:"conversationId"`
 	TurnID         string    `json:"turnId"`
 	Sequence       uint64    `json:"sequence"`
@@ -217,7 +217,7 @@ type SpeechSynthesisCompletion struct {
 	Result     SpeechSynthesisResult
 }
 
-type EventEmitter func(HarnessEvent)
+type EventEmitter func(TurnEvent)
 
 type TurnLifecycle struct {
 	mu             sync.Mutex
@@ -240,20 +240,20 @@ func (l *TurnLifecycle) State() TurnState {
 	return l.state
 }
 
-func (l *TurnLifecycle) Transition(next TurnState) (HarnessEvent, error) {
+func (l *TurnLifecycle) Transition(next TurnState) (TurnEvent, error) {
 	if !l.state.canTransitionTo(next) {
-		return HarnessEvent{}, fmt.Errorf("invalid turn state transition from %s to %s", l.state, next)
+		return TurnEvent{}, fmt.Errorf("invalid turn state transition from %s to %s", l.state, next)
 	}
 	l.state = next
 	return l.event(stateChangedPayload{Type: "state_changed"}), nil
 }
 
-func (l *TurnLifecycle) ReplyChain(index uint8, delta string, chain ReplyChain) (HarnessEvent, error) {
+func (l *TurnLifecycle) ReplyChain(index uint8, delta string, chain ReplyChain) (TurnEvent, error) {
 	if l.state != TurnStateResponding {
-		return HarnessEvent{}, errors.New("只有 Responding 状态可以发送回复分段")
+		return TurnEvent{}, errors.New("只有 Responding 状态可以发送回复分段")
 	}
 	if delta == "" {
-		return HarnessEvent{}, errors.New("回复分段增量不能为空")
+		return TurnEvent{}, errors.New("回复分段增量不能为空")
 	}
 	return l.event(replyChainPayload{
 		Type:        "reply_chain",
@@ -267,12 +267,12 @@ func (l *TurnLifecycle) ReplyChain(index uint8, delta string, chain ReplyChain) 
 
 // Utterance emits a progressive in-character line during gathering/planning.
 // It does not enter transcript; final reply_chain remains the persisted answer.
-func (l *TurnLifecycle) Utterance(seq uint8, text string, visualState string, reason string) (HarnessEvent, error) {
+func (l *TurnLifecycle) Utterance(seq uint8, text string, visualState string, reason string) (TurnEvent, error) {
 	if l.state != TurnStatePlanning && l.state != TurnStateGathering {
-		return HarnessEvent{}, errors.New("只有 Gathering/Planning 状态可以发送 progressive utterance")
+		return TurnEvent{}, errors.New("只有 Gathering/Planning 状态可以发送 progressive utterance")
 	}
 	if strings.TrimSpace(text) == "" {
-		return HarnessEvent{}, errors.New("utterance text cannot be empty")
+		return TurnEvent{}, errors.New("utterance text cannot be empty")
 	}
 	if reason == "" {
 		reason = "thinking"
@@ -291,9 +291,9 @@ func (l *TurnLifecycle) Utterance(seq uint8, text string, visualState string, re
 
 // Presence and Preview are temporary events. They are never transcript
 // messages; beat.ready and completed remain the final display contract.
-func (l *TurnLifecycle) Presence(phase string) (HarnessEvent, error) {
+func (l *TurnLifecycle) Presence(phase string) (TurnEvent, error) {
 	if l.state != TurnStatePlanning && l.state != TurnStateGathering {
-		return HarnessEvent{}, errors.New("只有 Gathering/Planning 状态可以发送 presence")
+		return TurnEvent{}, errors.New("只有 Gathering/Planning 状态可以发送 presence")
 	}
 	if strings.TrimSpace(phase) == "" {
 		phase = "model_stream"
@@ -301,20 +301,20 @@ func (l *TurnLifecycle) Presence(phase string) (HarnessEvent, error) {
 	return l.event(presencePayload{Type: "presence", Phase: phase}), nil
 }
 
-func (l *TurnLifecycle) ReplyPreview(chains []ReplyChain) (HarnessEvent, error) {
+func (l *TurnLifecycle) ReplyPreview(chains []ReplyChain) (TurnEvent, error) {
 	if l.state != TurnStatePlanning && l.state != TurnStateGathering {
-		return HarnessEvent{}, errors.New("只有 Gathering/Planning 状态可以发送 reply.preview")
+		return TurnEvent{}, errors.New("只有 Gathering/Planning 状态可以发送 reply.preview")
 	}
 	if len(chains) == 0 {
-		return HarnessEvent{}, errors.New("reply.preview chains cannot be empty")
+		return TurnEvent{}, errors.New("reply.preview chains cannot be empty")
 	}
 	copyChains := append([]ReplyChain(nil), chains...)
 	return l.event(replyPreviewPayload{Type: "reply.preview", Chains: copyChains}), nil
 }
 
-func (l *TurnLifecycle) Fail(code string, message string, retryable bool) (HarnessEvent, error) {
+func (l *TurnLifecycle) Fail(code string, message string, retryable bool) (TurnEvent, error) {
 	if !l.state.canTransitionTo(TurnStateFailed) {
-		return HarnessEvent{}, fmt.Errorf("invalid turn state transition from %s to failed", l.state)
+		return TurnEvent{}, fmt.Errorf("invalid turn state transition from %s to failed", l.state)
 	}
 	l.state = TurnStateFailed
 	return l.event(failedPayload{
@@ -327,9 +327,9 @@ func (l *TurnLifecycle) Fail(code string, message string, retryable bool) (Harne
 	}), nil
 }
 
-func (l *TurnLifecycle) Complete(completion TurnCompletion) (HarnessEvent, error) {
+func (l *TurnLifecycle) Complete(completion TurnCompletion) (TurnEvent, error) {
 	if !l.state.canTransitionTo(TurnStateCompleted) {
-		return HarnessEvent{}, fmt.Errorf("invalid turn state transition from %s to completed", l.state)
+		return TurnEvent{}, fmt.Errorf("invalid turn state transition from %s to completed", l.state)
 	}
 	l.state = TurnStateCompleted
 	sources := completion.Sources
@@ -353,9 +353,9 @@ func (l *TurnLifecycle) Complete(completion TurnCompletion) (HarnessEvent, error
 	}), nil
 }
 
-func (l *TurnLifecycle) SpeechRequested(completion TurnCompletion) (HarnessEvent, error) {
+func (l *TurnLifecycle) SpeechRequested(completion TurnCompletion) (TurnEvent, error) {
 	if l.state != TurnStateCompleted && l.state != TurnStatePlanning && l.state != TurnStateResponding {
-		return HarnessEvent{}, errors.New("只有 Planning/Responding/Completed 状态可以请求语音")
+		return TurnEvent{}, errors.New("只有 Planning/Responding/Completed 状态可以请求语音")
 	}
 	return l.event(speechRequestedPayload{
 		Type:                "speech.requested",
@@ -365,9 +365,9 @@ func (l *TurnLifecycle) SpeechRequested(completion TurnCompletion) (HarnessEvent
 	}), nil
 }
 
-func (l *TurnLifecycle) SpeechSynthesized(completion SpeechSynthesisCompletion) (HarnessEvent, error) {
+func (l *TurnLifecycle) SpeechSynthesized(completion SpeechSynthesisCompletion) (TurnEvent, error) {
 	if l.state != TurnStateCompleted && l.state != TurnStatePlanning && l.state != TurnStateResponding {
-		return HarnessEvent{}, errors.New("只有 Planning/Responding/Completed 状态可以完成语音合成")
+		return TurnEvent{}, errors.New("只有 Planning/Responding/Completed 状态可以完成语音合成")
 	}
 	return l.event(speechSynthesizedPayload{
 		Type:       "speech.synthesized",
@@ -383,15 +383,15 @@ func (l *TurnLifecycle) SpeechSynthesized(completion SpeechSynthesisCompletion) 
 
 // BeatReady emits a paired display(+optional audio) beat. Allowed in planning
 // (utterance beats) and responding (final beats).
-func (l *TurnLifecycle) BeatReady(completion BeatReadyCompletion) (HarnessEvent, error) {
+func (l *TurnLifecycle) BeatReady(completion BeatReadyCompletion) (TurnEvent, error) {
 	if l.state != TurnStatePlanning && l.state != TurnStateGathering && l.state != TurnStateResponding {
-		return HarnessEvent{}, errors.New("只有 Gathering/Planning/Responding 状态可以发送 beat.ready")
+		return TurnEvent{}, errors.New("只有 Gathering/Planning/Responding 状态可以发送 beat.ready")
 	}
 	if strings.TrimSpace(completion.DisplayText) == "" {
-		return HarnessEvent{}, errors.New("beat.ready displayText cannot be empty")
+		return TurnEvent{}, errors.New("beat.ready displayText cannot be empty")
 	}
 	if completion.BeatID == "" {
-		return HarnessEvent{}, errors.New("beat.ready beatId cannot be empty")
+		return TurnEvent{}, errors.New("beat.ready beatId cannot be empty")
 	}
 	kind := completion.Kind
 	if kind == "" {
@@ -424,23 +424,23 @@ func (l *TurnLifecycle) BeatReady(completion BeatReadyCompletion) (HarnessEvent,
 	return l.event(payload), nil
 }
 
-func (l *TurnLifecycle) SpeechFailed(code string, message string, retryable bool) (HarnessEvent, error) {
+func (l *TurnLifecycle) SpeechFailed(code string, message string, retryable bool) (TurnEvent, error) {
 	if l.state != TurnStateCompleted && l.state != TurnStatePlanning && l.state != TurnStateResponding {
-		return HarnessEvent{}, errors.New("只有 Planning/Responding/Completed 状态可以发送语音失败事件")
+		return TurnEvent{}, errors.New("只有 Planning/Responding/Completed 状态可以发送语音失败事件")
 	}
 	return l.event(speechFailedPayload{Type: "speech.failed", Error: WireError{Code: code, Message: message, Retryable: retryable}}), nil
 }
 
-func (l *TurnLifecycle) Interrupt() (HarnessEvent, error) {
+func (l *TurnLifecycle) Interrupt() (TurnEvent, error) {
 	if !l.state.canTransitionTo(TurnStateInterrupted) {
-		return HarnessEvent{}, fmt.Errorf("invalid turn state transition from %s to interrupted", l.state)
+		return TurnEvent{}, fmt.Errorf("invalid turn state transition from %s to interrupted", l.state)
 	}
 	l.state = TurnStateInterrupted
 	return l.event(stateChangedPayload{Type: "state_changed"}), nil
 }
 
-func (l *TurnLifecycle) event(payload any) HarnessEvent {
-	event := HarnessEvent{
+func (l *TurnLifecycle) event(payload any) TurnEvent {
+	event := TurnEvent{
 		ConversationID: l.conversationID,
 		TurnID:         l.turnID,
 		Sequence:       l.nextSequence,
