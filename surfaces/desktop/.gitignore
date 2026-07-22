@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+
+# 编译产物与打包的 .app
+/bin/
+/FAIRY
+/FAIRY.app/
+/fairy-desktop
+build/bin/
+
+# 前端依赖与构建缓存
+frontend/node_modules/
+frontend/package.json.md5
+
+# Wails 开发服务数据
+frontend/.data/
+
+# 前端构建产物：由 `task frontend` / `npm run build` 生成。
+# go:embed all:frontend/dist 需要目录存在，故用 .gitkeep 保留空目录。
+frontend/dist/*
+!frontend/dist/.gitkeep
+
+# 非 macOS 平台的 Wails 脚手架（本 surface 仅面向 macOS）
+build/ios/
+build/windows/
+build/linux/

@@ -1,3 +1,8 @@
 build/
 frontend/node_modules/
 frontend/package.json.md5
+
+# 前端构建产物：由 npm run build 生成。
+# go:embed all:frontend/dist 需要目录存在，故用 .gitkeep 保留空目录。
+frontend/dist/*
+!frontend/dist/.gitkeep

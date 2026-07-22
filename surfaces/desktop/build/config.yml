@@ -1,0 +1,41 @@
+name: FAIRY
+outputfilename: FAIRY
+frontend:
+  directory: frontend
+  install: "true"
+  build: "npm run build"
+  dev: "npm run dev"
+  serve: "npm run preview"
+
+# wails3 dev 读取该段。root_path 缺失会报 "root path is required"。
+# 本项目使用自定义精简 Taskfile，未提供 wails3 标准的 common:* 任务，
+# 因此这里直接用原始命令：后台启动 vite dev server（端口 9245，与 wails3
+# 的 devServerURL 一致），再 go build 并运行；改 .go 会自动重建重启，
+# 前端改动由 vite HMR 处理。
+dev_mode:
+  root_path: .
+  log_level: warn
+  debounce: 1000
+  ignore:
+    dir:
+      - .git
+      - bin
+      - build
+      - frontend/node_modules
+      - frontend/dist
+    file:
+      - .DS_Store
+      - .gitignore
+      - .gitkeep
+    watched_extension:
+      - "*.go"
+    git_ignore: true
+  executes:
+    - cmd: npm --prefix frontend install
+      type: once
+    - cmd: npm --prefix frontend run dev
+      type: background
+    - cmd: go build -o bin/FAIRY .
+      type: blocking
+    - cmd: bin/FAIRY
+      type: primary

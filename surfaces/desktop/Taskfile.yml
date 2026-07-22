@@ -1,0 +1,35 @@
+version: "3"
+
+vars:
+  APP_NAME: FAIRY
+  BIN_DIR: bin
+
+tasks:
+  frontend:
+    desc: 构建桌面 Surface 前端
+    dir: frontend
+    cmds:
+      - npm run build
+
+  bindings:
+    desc: 生成 CoreService 前端 bindings
+    cmds:
+      - wails3 generate bindings -b -d frontend/bindings
+
+  build:
+    desc: 构建 macOS 桌面伴侣二进制
+    deps: [frontend, bindings]
+    cmds:
+      - go test ./...
+      - mkdir -p {{.BIN_DIR}}
+      - go build -o {{.BIN_DIR}}/{{.APP_NAME}} .
+
+  package:
+    desc: 打包显示在系统 Dock 的 macOS 桌面伴侣
+    deps: [build]
+    cmds:
+      - rm -rf {{.BIN_DIR}}/{{.APP_NAME}}.app
+      - mkdir -p {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources
+      - cp build/darwin/Info.plist {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Info.plist
+      - cp {{.BIN_DIR}}/{{.APP_NAME}} {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS/{{.APP_NAME}}
+      - chmod +x {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS/{{.APP_NAME}}

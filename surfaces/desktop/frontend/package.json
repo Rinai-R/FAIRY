@@ -1,0 +1,26 @@
+{
+  "name": "@fairy/desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "preview": "vite preview --host 127.0.0.1 --port 1420 --strictPort",
+    "test": "node --test src/*.test.mjs"
+  },
+  "dependencies": {
+    "@pixi/react": "8.0.5",
+    "@radix-ui/react-icons": "^1.3.2",
+    "@radix-ui/themes": "^3.3.0",
+    "motion": "^12.42.2",
+    "pixi.js": "8.19.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "@wailsio/runtime": "3.0.0-alpha.97"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "6.0.3",
+    "vite": "8.1.4"
+  }
+}

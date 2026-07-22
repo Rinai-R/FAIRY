@@ -25,6 +25,7 @@ logs.txt
 /.pnpm-store/
 /target/
 /pnpm-debug.log*
+/.env
 /.env.persona.local
 /web/public/characters/
 /character-packs/
