@@ -30,8 +30,22 @@ describe("observability parsers", () => {
 
   it("parses complete metrics and rejects missing fields", () => {
     const metrics = parseMetrics(validMetrics());
+    expect(metrics.messagesAvailable).toBe(true);
     expect(metrics.process.goVersion).toBe("go1.26");
+    expect(metrics.messages.received).toBe(3);
+    expect(metrics.messages.latencies.receiveToCompleted.maxDurationMs).toBe(65);
     expect(() => parseMetrics({ ...validMetrics(), logs: {} })).toThrow();
+    expect(() => parseMetrics({ ...validMetrics(), messages: {} })).toThrow();
+  });
+
+  it("accepts legacy metrics without message telemetry", () => {
+    const { messages: _messages, ...legacyMetrics } = validMetrics();
+    const metrics = parseMetrics(legacyMetrics);
+
+    expect(metrics.messagesAvailable).toBe(false);
+    expect(metrics.messages.received).toBe(0);
+    expect(metrics.messages.latencies.receiveToCompleted.observations).toBe(0);
+    expect(metrics.messages.recent).toEqual([]);
   });
 
   it("parses split SSE frames and rejects incomplete final data", () => {
@@ -66,7 +80,21 @@ export function validMetrics() {
     process: { uptimeSeconds: 1, goVersion: "go1.26", goroutines: 2, heapAllocBytes: 3 },
     http: { inFlight: 0, total: 1, status2xx: 1, status4xx: 0, status5xx: 0, routes: [] },
     logs: { retainedEntries: 0, droppedEntries: 0, activeSubscribers: 0, slowSubscriberDisconnects: 0 },
+    messages: validMessageMetrics(),
     runtime: { activeBackgroundJobs: 0, eventSubscribers: 0 },
     usage: { overall: [], turns: [], turnCount: 0, truncated: false },
+  };
+}
+
+function validMessageMetrics() {
+  const latency = { observations: 1, totalDurationMs: 65, maxDurationMs: 65 };
+  return {
+    received: 3, sent: 1, directReceived: 1, ambientReceived: 2,
+    completed: 1, failed: 0, interrupted: 0, silent: 1, active: 1, droppedEvents: 0,
+    latencies: {
+      receiveToDecision: latency, receiveToTurn: latency, turnToFirstBeat: latency,
+      turnToCompleted: latency, receiveToFirstBeat: latency, receiveToCompleted: latency,
+    },
+    recent: [{ traceId: "msg-3", source: "ambient", conversationId: "c1", turnId: "t1", status: "completed", receivedAtUnixMs: 1, completedAtUnixMs: 66, totalDurationMs: 65 }],
   };
 }

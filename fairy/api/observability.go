@@ -29,14 +29,15 @@ type runtimeMetrics struct {
 }
 
 type metricsResponse struct {
-	GeneratedAtUnixMS int64                             `json:"generatedAtUnixMs"`
-	Process           observability.ProcessMetrics      `json:"process"`
-	HTTP              observability.HTTPMetricsSnapshot `json:"http"`
-	Logs              observability.LogStats            `json:"logs"`
-	Runtime           runtimeMetrics                    `json:"runtime"`
-	Usage             memory.UsageReport                `json:"usage"`
-	Database          databaseMetrics                   `json:"database"`
-	Qdrant            qdrantMetrics                     `json:"qdrant"`
+	GeneratedAtUnixMS int64                                `json:"generatedAtUnixMs"`
+	Process           observability.ProcessMetrics         `json:"process"`
+	HTTP              observability.HTTPMetricsSnapshot    `json:"http"`
+	Logs              observability.LogStats               `json:"logs"`
+	Messages          observability.MessageMetricsSnapshot `json:"messages"`
+	Runtime           runtimeMetrics                       `json:"runtime"`
+	Usage             memory.UsageReport                   `json:"usage"`
+	Database          databaseMetrics                      `json:"database"`
+	Qdrant            qdrantMetrics                        `json:"qdrant"`
 }
 
 func (s *Server) registerObservabilityRoutes() {
@@ -117,9 +118,10 @@ func (s *Server) handleMetrics(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	response := metricsResponse{
-		Process: observability.SnapshotProcess(s.rt.StartedAt),
-		HTTP:    s.rt.HTTPMetrics.Snapshot(),
-		Logs:    s.rt.Logs.Stats(),
+		Process:  observability.SnapshotProcess(s.rt.StartedAt),
+		HTTP:     s.rt.HTTPMetrics.Snapshot(),
+		Logs:     s.rt.Logs.Stats(),
+		Messages: s.rt.Messages.Snapshot(),
 		Runtime: runtimeMetrics{
 			ActiveBackgroundJobs: uint64(activeJobs),
 			EventSubscribers:     s.rt.Events.SubscriberCount(),

@@ -39,8 +39,29 @@ export type UsageLane = {
   callCount: number;
 };
 
+export type MessageLatency = {
+  observations: number;
+  totalDurationMs: number;
+  maxDurationMs: number;
+};
+
+export type MessageTrace = {
+  traceId: string;
+  source: string;
+  conversationId: string;
+  turnId: string;
+  status: string;
+  receivedAtUnixMs: number;
+  decisionAtUnixMs: number;
+  turnStartedAtUnixMs: number;
+  firstBeatAtUnixMs: number;
+  completedAtUnixMs: number;
+  totalDurationMs: number;
+};
+
 export type MetricsSnapshot = {
   generatedAtUnixMs: number;
+  messagesAvailable: boolean;
   process: { uptimeSeconds: number; goVersion: string; goroutines: number; heapAllocBytes: number };
   http: {
     inFlight: number;
@@ -55,6 +76,27 @@ export type MetricsSnapshot = {
     droppedEntries: number;
     activeSubscribers: number;
     slowSubscriberDisconnects: number;
+  };
+  messages: {
+    received: number;
+    sent: number;
+    directReceived: number;
+    ambientReceived: number;
+    completed: number;
+    failed: number;
+    interrupted: number;
+    silent: number;
+    active: number;
+    droppedEvents: number;
+    latencies: {
+      receiveToDecision: MessageLatency;
+      receiveToTurn: MessageLatency;
+      turnToFirstBeat: MessageLatency;
+      turnToCompleted: MessageLatency;
+      receiveToFirstBeat: MessageLatency;
+      receiveToCompleted: MessageLatency;
+    };
+    recent: MessageTrace[];
   };
   runtime: { activeBackgroundJobs: number; eventSubscribers: number };
   usage: { overall: UsageLane[]; turns: unknown[]; turnCount: number; truncated: boolean };
@@ -94,14 +136,19 @@ export function parseMetrics(value: unknown): MetricsSnapshot {
   const process = asRecord(root.process, "process metrics");
   const http = asRecord(root.http, "http metrics");
   const logs = asRecord(root.logs, "log metrics");
+  const messagesAvailable = root.messages !== undefined;
+  const messages = messagesAvailable ? asRecord(root.messages, "message metrics") : emptyMessageMetrics();
+  const messageLatencies = asRecord(messages.latencies, "message latency metrics");
   const runtime = asRecord(root.runtime, "runtime metrics");
   const usage = asRecord(root.usage, "usage metrics");
   if (!Array.isArray(http.routes)) throw new Error("metrics.http.routes 必须是数组");
+  if (!Array.isArray(messages.recent)) throw new Error("metrics.messages.recent 必须是数组");
   if (!Array.isArray(usage.overall) || !Array.isArray(usage.turns)) {
     throw new Error("metrics.usage 缺少数组字段");
   }
   return {
     generatedAtUnixMs: requiredPositiveInteger(root, "generatedAtUnixMs"),
+    messagesAvailable,
     process: {
       uptimeSeconds: requiredNonNegativeInteger(process, "uptimeSeconds"),
       goVersion: requiredString(process, "goVersion"),
@@ -122,6 +169,27 @@ export function parseMetrics(value: unknown): MetricsSnapshot {
       activeSubscribers: requiredNonNegativeInteger(logs, "activeSubscribers"),
       slowSubscriberDisconnects: requiredNonNegativeInteger(logs, "slowSubscriberDisconnects"),
     },
+    messages: {
+      received: requiredNonNegativeInteger(messages, "received"),
+      sent: requiredNonNegativeInteger(messages, "sent"),
+      directReceived: requiredNonNegativeInteger(messages, "directReceived"),
+      ambientReceived: requiredNonNegativeInteger(messages, "ambientReceived"),
+      completed: requiredNonNegativeInteger(messages, "completed"),
+      failed: requiredNonNegativeInteger(messages, "failed"),
+      interrupted: requiredNonNegativeInteger(messages, "interrupted"),
+      silent: requiredNonNegativeInteger(messages, "silent"),
+      active: requiredNonNegativeInteger(messages, "active"),
+      droppedEvents: requiredNonNegativeInteger(messages, "droppedEvents"),
+      latencies: {
+        receiveToDecision: parseMessageLatency(messageLatencies.receiveToDecision),
+        receiveToTurn: parseMessageLatency(messageLatencies.receiveToTurn),
+        turnToFirstBeat: parseMessageLatency(messageLatencies.turnToFirstBeat),
+        turnToCompleted: parseMessageLatency(messageLatencies.turnToCompleted),
+        receiveToFirstBeat: parseMessageLatency(messageLatencies.receiveToFirstBeat),
+        receiveToCompleted: parseMessageLatency(messageLatencies.receiveToCompleted),
+      },
+      recent: messages.recent.map(parseMessageTrace),
+    },
     runtime: {
       activeBackgroundJobs: requiredNonNegativeInteger(runtime, "activeBackgroundJobs"),
       eventSubscribers: requiredNonNegativeInteger(runtime, "eventSubscribers"),
@@ -132,6 +200,57 @@ export function parseMetrics(value: unknown): MetricsSnapshot {
       turnCount: requiredNonNegativeInteger(usage, "turnCount"),
       truncated: requiredBoolean(usage, "truncated"),
     },
+  };
+}
+
+function emptyMessageMetrics(): Record<string, unknown> {
+  const latency = { observations: 0, totalDurationMs: 0, maxDurationMs: 0 };
+  return {
+    received: 0,
+    sent: 0,
+    directReceived: 0,
+    ambientReceived: 0,
+    completed: 0,
+    failed: 0,
+    interrupted: 0,
+    silent: 0,
+    active: 0,
+    droppedEvents: 0,
+    latencies: {
+      receiveToDecision: latency,
+      receiveToTurn: latency,
+      turnToFirstBeat: latency,
+      turnToCompleted: latency,
+      receiveToFirstBeat: latency,
+      receiveToCompleted: latency,
+    },
+    recent: [],
+  };
+}
+
+function parseMessageLatency(value: unknown): MessageLatency {
+  const metric = asRecord(value, "message latency");
+  return {
+    observations: requiredNonNegativeInteger(metric, "observations"),
+    totalDurationMs: requiredNonNegativeInteger(metric, "totalDurationMs"),
+    maxDurationMs: requiredNonNegativeInteger(metric, "maxDurationMs"),
+  };
+}
+
+function parseMessageTrace(value: unknown): MessageTrace {
+  const trace = asRecord(value, "message trace");
+  return {
+    traceId: requiredString(trace, "traceId"),
+    source: requiredString(trace, "source"),
+    conversationId: requiredString(trace, "conversationId"),
+    turnId: optionalString(trace, "turnId"),
+    status: requiredString(trace, "status"),
+    receivedAtUnixMs: requiredPositiveInteger(trace, "receivedAtUnixMs"),
+    decisionAtUnixMs: optionalNonNegativeInteger(trace, "decisionAtUnixMs"),
+    turnStartedAtUnixMs: optionalNonNegativeInteger(trace, "turnStartedAtUnixMs"),
+    firstBeatAtUnixMs: optionalNonNegativeInteger(trace, "firstBeatAtUnixMs"),
+    completedAtUnixMs: optionalNonNegativeInteger(trace, "completedAtUnixMs"),
+    totalDurationMs: optionalNonNegativeInteger(trace, "totalDurationMs"),
   };
 }
 
@@ -289,6 +408,16 @@ function requiredString(record: Record<string, unknown>, key: string): string {
 function requiredBoolean(record: Record<string, unknown>, key: string): boolean {
   if (typeof record[key] !== "boolean") throw new Error(`${key} 必须是 boolean`);
   return record[key];
+}
+
+function optionalString(record: Record<string, unknown>, key: string): string {
+  if (record[key] === undefined) return "";
+  return requiredString(record, key);
+}
+
+function optionalNonNegativeInteger(record: Record<string, unknown>, key: string): number {
+  if (record[key] === undefined) return 0;
+  return requiredNonNegativeInteger(record, key);
 }
 
 function requiredPositiveInteger(record: Record<string, unknown>, key: string): number {

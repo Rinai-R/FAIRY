@@ -147,7 +147,7 @@ func TestBuildParticipationInputHasPolicyPresenceAndNoProfile(t *testing.T) {
 	if strings.Contains(joined, "preferredName") || strings.Contains(joined, `"contextType":"user_profile"`) {
 		t.Fatalf("participation input contains private profile: %s", joined)
 	}
-	for _, want := range []string{"群友", "ambient_observations", `"memoryPolicy":"public"`, `"evaluationReason":"message"`, `"assistantReplies5Minutes":2`} {
+	for _, want := range []string{"群友", "ambient_observations", `"memoryPolicy":"public"`, `"presenceProjection":"public_peer"`, "public social setting", `"evaluationReason":"message"`, `"assistantReplies5Minutes":2`} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("participation input missing %q: %s", want, joined)
 		}

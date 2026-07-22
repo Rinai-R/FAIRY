@@ -103,6 +103,9 @@ func (a *AmbientInbox) Observe(conversationID string, observation AmbientObserva
 	if a.closed {
 		return context.Canceled
 	}
+	if a.service != nil {
+		observation.TraceID = a.service.beginMessageTrace("ambient", conversationID, observation.TraceID)
+	}
 	state := a.states[conversationID]
 	if state == nil {
 		state = &ambientState{}
@@ -205,6 +208,7 @@ func (a *AmbientInbox) run(batch ambientBatch, decisionCtx context.Context, deci
 			continue
 		}
 		if err != nil {
+			a.recordParticipation(batch, "", "failed")
 			state.running = false
 			a.mu.Unlock()
 			return
@@ -212,26 +216,32 @@ func (a *AmbientInbox) run(batch ambientBatch, decisionCtx context.Context, deci
 		state.acceptedGeneration = batch.generation
 		switch decision.Action {
 		case ParticipationSilent:
+			a.recordParticipation(batch, "", "silent")
 			state.running = false
 			a.mu.Unlock()
 			return
 		case ParticipationWait:
 			if decision.WaitSeconds == nil || *decision.WaitSeconds < 1 || *decision.WaitSeconds > 300 {
+				a.recordParticipation(batch, "", "failed")
 				state.running = false
 				a.mu.Unlock()
 				return
 			}
+			a.recordParticipation(batch, "", "wait")
 			state.running = false
 			a.scheduleWaitLocked(batch.conversationID, state, time.Duration(*decision.WaitSeconds)*time.Second)
 			a.mu.Unlock()
 			return
 		case ParticipationReply:
 			if decision.TargetMessageID == nil || !ambientBatchContains(batch, *decision.TargetMessageID) {
+				a.recordParticipation(batch, "", "failed")
 				state.running = false
 				a.mu.Unlock()
 				return
 			}
 			target := *decision.TargetMessageID
+			targetTraceID := ambientTraceID(batch, target)
+			a.recordParticipation(batch, targetTraceID, "reply")
 			messages := append([]AmbientObservation(nil), batch.messages...)
 			conversationID := batch.conversationID
 			generation := batch.generation
@@ -241,7 +251,11 @@ func (a *AmbientInbox) run(batch ambientBatch, decisionCtx context.Context, deci
 				_, err = a.submit(SubmitTurnRequest{
 					ConversationID: conversationID,
 					Input:          input,
+					TraceID:        targetTraceID,
+					MessageSource:  "ambient",
 				})
+			} else if a.service != nil {
+				a.service.endMessageTrace(targetTraceID, "failed")
 			}
 			a.mu.Lock()
 			state = a.states[conversationID]
@@ -260,11 +274,40 @@ func (a *AmbientInbox) run(batch ambientBatch, decisionCtx context.Context, deci
 			a.mu.Unlock()
 			return
 		default:
+			a.recordParticipation(batch, "", "failed")
 			state.running = false
 			a.mu.Unlock()
 			return
 		}
 	}
+}
+
+func (a *AmbientInbox) recordParticipation(batch ambientBatch, targetTraceID, action string) {
+	if a == nil || a.service == nil {
+		return
+	}
+	a.service.emitMu.Lock()
+	telemetry := a.service.messageTelemetry
+	a.service.emitMu.Unlock()
+	if telemetry == nil {
+		return
+	}
+	traceIDs := make([]string, 0, len(batch.messages))
+	for _, observation := range batch.messages {
+		if observation.TraceID != "" {
+			traceIDs = append(traceIDs, observation.TraceID)
+		}
+	}
+	telemetry.Participation(traceIDs, targetTraceID, action)
+}
+
+func ambientTraceID(batch ambientBatch, messageID string) string {
+	for _, observation := range batch.messages {
+		if observation.MessageID == messageID {
+			return observation.TraceID
+		}
+	}
+	return ""
 }
 
 func (a *AmbientInbox) decide(ctx context.Context, batch ambientBatch) (ParticipationResult, error) {

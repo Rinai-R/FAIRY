@@ -479,9 +479,18 @@ html, body, #root {
   overflow-wrap: anywhere;
 }
 
+.observability-notice {
+  margin: 0 0 1rem;
+  padding: 0.7rem 0.85rem;
+  border-left: 3px solid var(--amber-9);
+  background: var(--amber-2);
+  color: var(--gray-12);
+  font-size: 0.82rem;
+}
+
 .observability-metrics {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   margin-bottom: 1.1rem;
   border: 1px solid var(--fairy-border-soft);
   border-radius: var(--fairy-radius);
@@ -495,7 +504,8 @@ html, body, #root {
   padding: 0.95rem 0.95rem;
   border-right: 1px solid var(--fairy-border-soft);
 }
-.observability-metric:last-child { border-right: 0; }
+.observability-metric:nth-child(4n) { border-right: 0; }
+.observability-metric:nth-child(-n+4) { border-bottom: 1px solid var(--fairy-border-soft); }
 .observability-metric span,
 .observability-metric small {
   display: block;
@@ -512,6 +522,22 @@ html, body, #root {
   font-variant-numeric: tabular-nums;
 }
 .observability-metric small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.message-observability { display: grid; gap: 1.1rem; margin: 0 0 1.1rem; }
+.message-observability section { min-width: 0; }
+.message-section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin-bottom: 0.55rem; }
+.message-section-heading h2 { margin: 0; font-size: 0.92rem; font-weight: 600; letter-spacing: 0; }
+.message-section-heading span { color: var(--fairy-text-faint); font-size: 0.74rem; text-align: right; }
+.message-table-wrap { overflow-x: auto; border-top: 1px solid var(--fairy-border-soft); }
+.message-table { width: 100%; border-collapse: collapse; font-size: 0.77rem; }
+.message-table th, .message-table td { padding: 0.55rem 0.65rem; border-bottom: 1px solid var(--fairy-border-soft); text-align: left; white-space: nowrap; }
+.message-table th { color: var(--fairy-text-faint); font-size: 0.7rem; font-weight: 600; }
+.message-table td:not(:first-child) { font-variant-numeric: tabular-nums; }
+.message-table code { color: var(--fairy-text-muted); font-size: 0.74rem; }
+.message-empty { color: var(--fairy-text-faint); text-align: center !important; }
+.trace-status { color: var(--fairy-text-muted); }
+.trace-status.completed { color: var(--fairy-success); }
+.trace-status.failed, .trace-status.interrupted { color: var(--fairy-danger); }
 
 .log-tool {
   overflow: hidden;
@@ -621,9 +647,9 @@ html, body, #root {
   .nav-item.active::before { display: none; }
   .grid-2, .grid-stats, .memory-compose { grid-template-columns: 1fr; }
   .main { padding: 1.5rem 1.1rem 2rem; }
-  .observability-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .observability-metric:nth-child(3) { border-right: 0; }
-  .observability-metric:nth-child(-n+3) { border-bottom: 1px solid var(--fairy-border-soft); }
+  .observability-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .observability-metric:nth-child(even) { border-right: 0; }
+  .observability-metric:nth-child(-n+6) { border-bottom: 1px solid var(--fairy-border-soft); }
   .log-toolbar { grid-template-columns: 132px minmax(0, 1fr); }
   .log-stream-actions { grid-column: 1 / -1; justify-content: flex-start; }
   .stream-state { text-align: left; }
@@ -635,9 +661,10 @@ html, body, #root {
   .page-header { flex-direction: column; }
   .page-header > .rt-Flex { width: 100%; flex-wrap: wrap; justify-content: flex-start; }
   .observability-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .observability-metric:nth-child(3) { border-right: 1px solid var(--fairy-border-soft); }
-  .observability-metric:nth-child(even) { border-right: 0; }
-  .observability-metric:nth-child(-n+4) { border-bottom: 1px solid var(--fairy-border-soft); }
+	.observability-metric:nth-child(even) { border-right: 0; }
+	.observability-metric:nth-child(-n+6) { border-bottom: 1px solid var(--fairy-border-soft); }
+  .message-section-heading { align-items: flex-start; flex-direction: column; gap: 0.2rem; }
+  .message-section-heading span { text-align: left; }
   .log-toolbar { grid-template-columns: 1fr; }
   .log-stream-actions { grid-column: auto; flex-wrap: wrap; }
   .log-meta { flex-wrap: wrap; }

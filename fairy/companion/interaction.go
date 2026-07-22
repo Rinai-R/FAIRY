@@ -18,18 +18,45 @@ type interactionContextPayload struct {
 	Presentation         interaction.PresentationKind `json:"presentation"`
 	Principal            interaction.PrincipalKind    `json:"principal"`
 	MemoryPolicy         interaction.MemoryPolicy     `json:"memoryPolicy"`
+	PresenceProjection   presenceProjection           `json:"presenceProjection"`
+	PresenceGuidance     string                       `json:"presenceGuidance"`
 	OutputContract       string                       `json:"outputContract"`
 	MemoryVisibilityHint string                       `json:"memoryVisibilityHint"`
+}
+
+type presenceProjection string
+
+const (
+	presencePrivateCompanion presenceProjection = "private_companion"
+	presencePublicPeer       presenceProjection = "public_peer"
+)
+
+func derivePresenceProjection(resolved interaction.Resolved) (presenceProjection, string, error) {
+	switch resolved.Memory {
+	case interaction.MemoryPersonal:
+		return presencePrivateCompanion,
+			"This is the same character in a private owner interaction. Relate as the user's familiar, exclusive companion with only the closeness supported by the established relationship, profile, and dialogue. Be natural: never announce a role, mode, or relationship label, and never force romantic wording unsupported by context.", nil
+	case interaction.MemoryPublic:
+		return presencePublicPeer,
+			"This is the same character in a public social setting. Relate as a socially aware peer or group member: contribute naturally, respect the room, and never imply private intimacy or dominate the conversation. Never announce a mode or internal policy.", nil
+	default:
+		return "", "", fmt.Errorf("unsupported interaction memory policy %q", resolved.Memory)
+	}
 }
 
 func interactionSegment(resolved interaction.Resolved) (interactionContextPayload, error) {
 	if err := resolved.Validate(); err != nil {
 		return interactionContextPayload{}, err
 	}
+	projection, guidance, err := derivePresenceProjection(resolved)
+	if err != nil {
+		return interactionContextPayload{}, err
+	}
 	payload := interactionContextPayload{
 		ContextType: "interaction", Endpoint: resolved.Endpoint, Audience: resolved.Facts.Audience,
 		Initiation: resolved.Facts.Initiation, Presentation: resolved.Facts.Presentation,
 		Principal: resolved.Principal, MemoryPolicy: resolved.Memory,
+		PresenceProjection: projection, PresenceGuidance: guidance,
 	}
 	switch resolved.Facts.Presentation {
 	case interaction.PresentationChat:

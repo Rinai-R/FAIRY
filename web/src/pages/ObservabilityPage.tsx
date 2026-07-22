@@ -10,6 +10,7 @@ import {
   parseMetrics,
   type LogEntry,
   type LogLevel,
+  type MessageLatency,
   type MetricsSnapshot,
 } from "../observability";
 
@@ -114,16 +115,31 @@ export function ObservabilityPage({ token }: { token: string }) {
       />
 
       {metricsError ? <div className="observability-error">{metricsError}</div> : null}
+      {metrics && !metrics.messagesAvailable ? (
+        <div className="observability-notice">当前 Core 未提供消息链路指标，请重启 Core 后查看。</div>
+      ) : null}
       {metrics ? (
         <div className="observability-metrics" aria-label="运行指标摘要">
           <Metric label="进程" value={formatDuration(metrics.process.uptimeSeconds)} detail={`${metrics.process.goroutines} goroutines`} />
           <Metric label="HTTP" value={formatNumber(metrics.http.total)} detail={`${metrics.http.status4xx + metrics.http.status5xx} errors · ${metrics.http.inFlight} active`} />
+          <Metric
+            label="收到消息"
+            value={metrics.messagesAvailable ? formatNumber(metrics.messages.received) : "N/A"}
+            detail={metrics.messagesAvailable ? `${metrics.messages.directReceived} direct · ${metrics.messages.ambientReceived} ambient` : "需重启 Core"}
+          />
+          <Metric
+            label="发送消息"
+            value={metrics.messagesAvailable ? formatNumber(metrics.messages.sent) : "N/A"}
+            detail={metrics.messagesAvailable ? `${metrics.messages.active} active · ${metrics.messages.droppedEvents} telemetry dropped` : "需重启 Core"}
+          />
           <Metric label="Turn" value={formatNumber(metrics.usage.turnCount)} detail={`${formatNumber(totals?.inputTokens ?? 0)} in · ${formatNumber(totals?.outputTokens ?? 0)} out`} />
           <Metric label="Cache" value={cacheRate} detail={`${formatNumber(totals?.cachedInputTokens ?? 0)} cached tokens`} />
           <Metric label="后台任务" value={formatNumber(metrics.runtime.activeBackgroundJobs)} detail={`${metrics.runtime.eventSubscribers} event subscribers`} />
           <Metric label="日志" value={formatNumber(metrics.logs.retainedEntries)} detail={`${metrics.logs.droppedEntries} dropped · ${metrics.logs.activeSubscribers} live`} />
         </div>
       ) : null}
+
+      {metrics?.messagesAvailable ? <MessageObservability metrics={metrics} /> : null}
 
       <div className="log-tool">
         <div className="log-toolbar">
@@ -176,6 +192,63 @@ export function ObservabilityPage({ token }: { token: string }) {
       </div>
     </section>
   );
+}
+
+const latencyRows: Array<[string, keyof MetricsSnapshot["messages"]["latencies"]]> = [
+  ["接收 → 参与判断", "receiveToDecision"],
+  ["接收 → Turn 开始", "receiveToTurn"],
+  ["Turn → 首个回复", "turnToFirstBeat"],
+  ["Turn → 完成", "turnToCompleted"],
+  ["接收 → 首个回复", "receiveToFirstBeat"],
+  ["接收 → 完成", "receiveToCompleted"],
+];
+
+function MessageObservability({ metrics }: { metrics: MetricsSnapshot }) {
+  return (
+    <div className="message-observability" aria-label="消息链路指标">
+      <section>
+        <div className="message-section-heading">
+          <h2>链路延迟</h2>
+          <span>{metrics.messages.completed} completed · {metrics.messages.failed} failed · {metrics.messages.interrupted} interrupted · {metrics.messages.silent} silent</span>
+        </div>
+        <div className="message-table-wrap">
+          <table className="message-table">
+            <thead><tr><th>链路阶段</th><th>样本</th><th>平均</th><th>最大</th></tr></thead>
+            <tbody>
+              {latencyRows.map(([label, key]) => <LatencyRow key={key} label={label} metric={metrics.messages.latencies[key]} />)}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <section>
+        <div className="message-section-heading"><h2>最近链路</h2><span>仅元数据，最多 {metrics.messages.recent.length} 条可见</span></div>
+        <div className="message-table-wrap">
+          <table className="message-table trace-table">
+            <thead><tr><th>Trace</th><th>来源</th><th>状态</th><th>Conversation / Turn</th><th>总耗时</th><th>接收时间</th></tr></thead>
+            <tbody>
+              {metrics.messages.recent.length === 0 ? (
+                <tr><td colSpan={6} className="message-empty">暂无消息链路</td></tr>
+              ) : metrics.messages.recent.map((trace) => (
+                <tr key={trace.traceId}>
+                  <td><code>{trace.traceId}</code></td>
+                  <td>{trace.source}</td>
+                  <td><span className={`trace-status ${trace.status}`}>{trace.status}</span></td>
+                  <td><code>{trace.conversationId}{trace.turnId ? ` / ${trace.turnId}` : ""}</code></td>
+                  <td>{trace.completedAtUnixMs ? `${formatNumber(trace.totalDurationMs)} ms` : "进行中"}</td>
+                  <td>{formatTime(trace.receivedAtUnixMs)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function LatencyRow({ label, metric }: { label: string; metric: MessageLatency }) {
+  const average = metric.observations > 0 ? Math.round(metric.totalDurationMs / metric.observations) : null;
+  return <tr><td>{label}</td><td>{formatNumber(metric.observations)}</td><td>{average === null ? "N/A" : `${formatNumber(average)} ms`}</td><td>{metric.observations === 0 ? "N/A" : `${formatNumber(metric.maxDurationMs)} ms`}</td></tr>;
 }
 
 function Metric({ label, value, detail }: { label: string; value: string; detail: string }) {

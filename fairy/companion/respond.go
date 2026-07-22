@@ -18,6 +18,8 @@ type SubmitTurnRequest struct {
 	ConversationID string `json:"conversationId"`
 	Input          string `json:"input"`
 	SpeechEnabled  bool   `json:"speechEnabled"`
+	TraceID        string `json:"-"`
+	MessageSource  string `json:"-"`
 }
 
 type SubmitCompiledTurnRequest struct {
@@ -26,6 +28,8 @@ type SubmitCompiledTurnRequest struct {
 	SpeechEnabled         bool          `json:"speechEnabled"`
 	MaxOutputTokens       uint32        `json:"maxOutputTokens"`
 	AvailableVisualStates []VisualState `json:"availableVisualStates"`
+	TraceID               string        `json:"-"`
+	MessageSource         string        `json:"-"`
 }
 
 type TurnOutcome struct {

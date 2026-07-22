@@ -43,6 +43,35 @@ func TestOpenSessionSendsEndpointFacts(t *testing.T) {
 	}
 }
 
+func TestOpenSessionRequestExposesOnlyInteractionFacts(t *testing.T) {
+	raw, err := json.Marshal(OpenSessionRequest{
+		Endpoint:    interaction.EndpointIM,
+		EndpointKey: "onebot-group:123",
+		Interaction: interaction.Context{Audience: interaction.AudienceMulti, Initiation: interaction.InitiationAmbient, Presentation: interaction.PresentationChat},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"memoryPolicy", "presenceProjection", "presenceGuidance", "prompt", "trust", "replyFrequency", "participationScore"} {
+		if _, ok := envelope[forbidden]; ok {
+			t.Fatalf("session.open exposes forbidden field %q: %s", forbidden, raw)
+		}
+	}
+	var facts map[string]json.RawMessage
+	if err := json.Unmarshal(envelope["interaction"], &facts); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"memoryPolicy", "presenceProjection", "presenceGuidance", "prompt", "trust", "replyFrequency", "participationScore"} {
+		if _, ok := facts[forbidden]; ok {
+			t.Fatalf("interaction facts expose forbidden field %q: %s", forbidden, envelope["interaction"])
+		}
+	}
+}
+
 func TestDecideParticipationUsesTypedSessionEndpoint(t *testing.T) {
 	server := newSessionWSServer(t, func(conn *websocket.Conn) {
 		var frame sessionClientFrame

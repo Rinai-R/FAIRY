@@ -47,7 +47,16 @@ type CompanionService struct {
 	identities        OwnerIdentityPort
 	emitMu            sync.Mutex
 	emit              EventEmitter
+	messageTelemetry  MessageTelemetry
 	ambient           *AmbientInbox
+}
+
+type MessageTelemetry interface {
+	Begin(source, conversationID string) string
+	Participation(traceIDs []string, targetTraceID, action string)
+	TurnStarted(traceID, conversationID, turnID string)
+	TurnStage(conversationID, turnID, stage string)
+	End(traceID, status string)
 }
 
 // WebSearchBackend is the optional OpenSERP sidecar search surface.
@@ -64,6 +73,15 @@ func AttachEventEmitter(s *CompanionService, emit EventEmitter) {
 	s.emitMu.Lock()
 	defer s.emitMu.Unlock()
 	s.emit = emit
+}
+
+func AttachMessageTelemetry(s *CompanionService, telemetry MessageTelemetry) {
+	if s == nil {
+		return
+	}
+	s.emitMu.Lock()
+	s.messageTelemetry = telemetry
+	s.emitMu.Unlock()
 }
 
 func (s *CompanionService) emitEvent(event TurnEvent) {
@@ -88,7 +106,59 @@ func (s *CompanionService) publishLife(life *TurnLifecycle, produce func() (Turn
 		return TurnEvent{}, err
 	}
 	s.emitEvent(event)
+	s.emitMu.Lock()
+	telemetry := s.messageTelemetry
+	s.emitMu.Unlock()
+	if telemetry != nil {
+		if stage := messageTelemetryStage(event); stage != "" {
+			telemetry.TurnStage(event.ConversationID, event.TurnID, stage)
+		}
+	}
 	return event, nil
+}
+
+func messageTelemetryStage(event TurnEvent) string {
+	if beat, ok := event.Payload.(beatReadyPayload); ok && beat.Kind == beatKindFinal {
+		return "first_beat"
+	}
+	switch event.State {
+	case TurnStateCompleted:
+		return "completed"
+	case TurnStateFailed:
+		return "failed"
+	case TurnStateInterrupted:
+		return "interrupted"
+	default:
+		return ""
+	}
+}
+
+func (s *CompanionService) beginMessageTrace(source, conversationID, traceID string) string {
+	if traceID != "" {
+		return traceID
+	}
+	s.emitMu.Lock()
+	telemetry := s.messageTelemetry
+	s.emitMu.Unlock()
+	if telemetry == nil {
+		return ""
+	}
+	if source == "" {
+		source = "direct"
+	}
+	return telemetry.Begin(source, conversationID)
+}
+
+func (s *CompanionService) endMessageTrace(traceID, status string) {
+	if traceID == "" {
+		return
+	}
+	s.emitMu.Lock()
+	telemetry := s.messageTelemetry
+	s.emitMu.Unlock()
+	if telemetry != nil {
+		telemetry.End(traceID, status)
+	}
 }
 
 func NewCompanionService() *CompanionService {
@@ -299,8 +369,13 @@ func (s *CompanionService) SubmitTurn(request SubmitTurnRequest) (TurnOutcome, e
 	if s == nil || !s.RespondRuntimeMigrated() {
 		return TurnOutcome{}, ErrRespondRuntimeNotMigrated
 	}
+	request.TraceID = s.beginMessageTrace(request.MessageSource, request.ConversationID, request.TraceID)
+	if request.MessageSource == "" {
+		request.MessageSource = "direct"
+	}
 	states, err := s.availableVisualStatesForConversation(request.ConversationID)
 	if err != nil {
+		s.endMessageTrace(request.TraceID, "failed")
 		return TurnOutcome{}, err
 	}
 	return s.SubmitCompiledTurn(SubmitCompiledTurnRequest{
@@ -309,6 +384,8 @@ func (s *CompanionService) SubmitTurn(request SubmitTurnRequest) (TurnOutcome, e
 		SpeechEnabled:         request.SpeechEnabled,
 		MaxOutputTokens:       RespondMaxOutputTokens,
 		AvailableVisualStates: states,
+		TraceID:               request.TraceID,
+		MessageSource:         request.MessageSource,
 	})
 }
 
@@ -321,7 +398,7 @@ func (s *CompanionService) RespondRuntimeMigrated() bool {
 		s.cfg != nil
 }
 
-func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (TurnOutcome, error) {
+func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outcome TurnOutcome, err error) {
 	if err := ValidateSubmitCompiledTurnRequest(request); err != nil {
 		return TurnOutcome{}, err
 	}
@@ -332,19 +409,33 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	if !s.RespondRuntimeMigrated() {
 		return TurnOutcome{}, ErrRespondRuntimeNotMigrated
 	}
+	request.TraceID = s.beginMessageTrace(request.MessageSource, request.ConversationID, request.TraceID)
+	defer func() {
+		if err != nil {
+			s.endMessageTrace(request.TraceID, "failed")
+		}
+	}()
 	if err := s.maybeCompactBeforeTurn(request); err != nil {
 		s.setBackgroundError(err)
 	}
 	turnCtx, err := s.reserveTurn(request.ConversationID)
 	if err != nil {
+		s.endMessageTrace(request.TraceID, "failed")
 		return TurnOutcome{}, err
 	}
 	persisted, err := s.memory.BeginTurn(request.ConversationID, request.Input)
 	if err != nil {
 		s.endTurn(request.ConversationID, "")
+		s.endMessageTrace(request.TraceID, "failed")
 		return TurnOutcome{}, err
 	}
 	s.bindTurn(request.ConversationID, persisted.ID)
+	s.emitMu.Lock()
+	telemetry := s.messageTelemetry
+	s.emitMu.Unlock()
+	if telemetry != nil && request.TraceID != "" {
+		telemetry.TurnStarted(request.TraceID, request.ConversationID, persisted.ID)
+	}
 	defer s.endTurn(request.ConversationID, persisted.ID)
 	turnStarted := time.Now()
 

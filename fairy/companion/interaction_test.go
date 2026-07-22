@@ -49,6 +49,15 @@ func TestInteractionPresentationAndMemoryAreIndependent(t *testing.T) {
 	if desktop.MemoryPolicy != interaction.MemoryPersonal || ownerIM.MemoryPolicy != interaction.MemoryPersonal || publicIM.MemoryPolicy != interaction.MemoryPublic {
 		t.Fatalf("memory policies = %q/%q/%q", desktop.MemoryPolicy, ownerIM.MemoryPolicy, publicIM.MemoryPolicy)
 	}
+	if desktop.PresenceProjection != presencePrivateCompanion || ownerIM.PresenceProjection != presencePrivateCompanion {
+		t.Fatalf("private projections = %q/%q", desktop.PresenceProjection, ownerIM.PresenceProjection)
+	}
+	if publicIM.PresenceProjection != presencePublicPeer {
+		t.Fatalf("public projection = %q", publicIM.PresenceProjection)
+	}
+	if !strings.Contains(desktop.PresenceGuidance, "private owner interaction") || !strings.Contains(publicIM.PresenceGuidance, "public social setting") {
+		t.Fatalf("presence guidance private=%q public=%q", desktop.PresenceGuidance, publicIM.PresenceGuidance)
+	}
 }
 
 func TestStablePrefixAndProfileProjectionFollowResolvedInteraction(t *testing.T) {
@@ -70,6 +79,12 @@ func TestStablePrefixAndProfileProjectionFollowResolvedInteraction(t *testing.T)
 		if personal[index].Items[0].Content != prefix[index].Content || personal[index].Items[0].Content != public[index].Items[0].Content {
 			t.Fatalf("stable prefix item %d drifted", index)
 		}
+	}
+	if !strings.Contains(personal[4].Items[0].Content, `"presenceProjection":"private_companion"`) {
+		t.Fatalf("personal interaction slot = %s", personal[4].Items[0].Content)
+	}
+	if !strings.Contains(public[4].Items[0].Content, `"presenceProjection":"public_peer"`) {
+		t.Fatalf("public interaction slot = %s", public[4].Items[0].Content)
 	}
 	if public[2].Present || public[2].OmitReason != "public_interaction" || !personal[2].Present {
 		t.Fatalf("profile projection personal=%#v public=%#v", personal[2], public[2])

@@ -36,7 +36,7 @@ func (c *Client) OpenLogs(ctx context.Context, query LogQuery, readyTimeout time
 func (c *Client) Metrics(ctx context.Context) (Metrics, error) {
 	var result Metrics
 	err := c.doJSON(ctx, "read metrics", http.MethodGet, "/v1/metrics", nil, &result)
-	if err == nil && (result.GeneratedAtUnixMS == 0 || result.Process.GoVersion == "" || result.HTTP.Routes == nil || len(result.Usage.Overall) == 0 || len(result.Usage.Turns) == 0 || len(result.Database) == 0 || len(result.Qdrant) == 0) {
+	if err == nil && (result.GeneratedAtUnixMS == 0 || result.Process.GoVersion == "" || result.HTTP.Routes == nil || result.Messages.Recent == nil || len(result.Usage.Overall) == 0 || len(result.Usage.Turns) == 0 || len(result.Database) == 0 || len(result.Qdrant) == 0) {
 		err = errors.New("metrics response is missing required fields")
 	}
 	return result, err

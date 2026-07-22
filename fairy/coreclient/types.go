@@ -155,14 +155,15 @@ type AgentLoopMetrics struct {
 }
 
 type Metrics struct {
-	GeneratedAtUnixMS int64                             `json:"generatedAtUnixMs"`
-	Process           observability.ProcessMetrics      `json:"process"`
-	HTTP              observability.HTTPMetricsSnapshot `json:"http"`
-	Logs              observability.LogStats            `json:"logs"`
-	Runtime           RuntimeMetrics                    `json:"runtime"`
-	Usage             UsageReport                       `json:"usage"`
-	Database          json.RawMessage                   `json:"database"`
-	Qdrant            json.RawMessage                   `json:"qdrant"`
+	GeneratedAtUnixMS int64                                `json:"generatedAtUnixMs"`
+	Process           observability.ProcessMetrics         `json:"process"`
+	HTTP              observability.HTTPMetricsSnapshot    `json:"http"`
+	Logs              observability.LogStats               `json:"logs"`
+	Messages          observability.MessageMetricsSnapshot `json:"messages"`
+	Runtime           RuntimeMetrics                       `json:"runtime"`
+	Usage             UsageReport                          `json:"usage"`
+	Database          json.RawMessage                      `json:"database"`
+	Qdrant            json.RawMessage                      `json:"qdrant"`
 }
 
 type LogQuery struct {

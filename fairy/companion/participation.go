@@ -34,6 +34,7 @@ type AmbientObservation struct {
 	DirectedToBot   bool   `json:"directedToBot"`
 	IsNew           bool   `json:"isNew"`
 	TimestampUnixMS int64  `json:"timestampUnixMs"`
+	TraceID         string `json:"-"`
 }
 
 type ParticipationEvaluationReason string

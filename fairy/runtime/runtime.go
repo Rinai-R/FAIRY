@@ -53,6 +53,7 @@ type Runtime struct {
 	Events      *EventHub
 	Logs        *observability.LogStore
 	HTTPMetrics *observability.HTTPMetrics
+	Messages    *observability.MessageMetrics
 	StartedAt   time.Time
 	Database    *pgstore.Pool
 	VectorIndex *vectorindex.Client
@@ -137,6 +138,7 @@ func Open(options Options) (*Runtime, error) {
 	speechService := speech.NewSpeechService(configRoot, secretStore)
 	profileService := profile.NewProfileService(configRoot)
 	configReader := config.NewReader(configRoot)
+	messageMetrics := observability.NewMessageMetrics()
 
 	rt := &Runtime{
 		ConfigRoot:   configRoot,
@@ -144,6 +146,7 @@ func Open(options Options) (*Runtime, error) {
 		Events:       NewEventHub(),
 		Logs:         logStore,
 		HTTPMetrics:  httpMetrics,
+		Messages:     messageMetrics,
 		StartedAt:    time.Now(),
 		Database:     database,
 		VectorIndex:  vectorClient,
@@ -170,6 +173,7 @@ func Open(options Options) (*Runtime, error) {
 	}
 
 	companion.AttachLogger(companionService, logger.Named("companion"))
+	companion.AttachMessageTelemetry(companionService, messageMetrics)
 	companion.AttachCharacterStore(companionService, characterService.CatalogStore())
 	companion.AttachProfileStore(companionService, profileService.ProfileStore())
 	companion.AttachConfigReader(companionService, configReader)
@@ -207,6 +211,7 @@ func (rt *Runtime) Close() error {
 	rt.closeOnce.Do(func() {
 		rt.closeErr = rt.Companion.Close()
 		rt.Events.Close()
+		rt.Messages.Close()
 		rt.Logs.Close()
 		if rt.ownVector && rt.VectorIndex != nil {
 			if closeErr := rt.VectorIndex.Close(); rt.closeErr == nil {
