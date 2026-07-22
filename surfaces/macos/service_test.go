@@ -228,9 +228,9 @@ func TestConnectUsesBearerAndDesktopInstallationSession(t *testing.T) {
 	expectedAuthorization = ""
 	unauthenticated := NewAppService(&fakeTokenStore{})
 	defer unauthenticated.Shutdown(context.Background())
-	state, err = unauthenticated.Connect(server.URL, "macos-installation")
-	if err != nil || state.Connection.HasToken {
-		t.Fatalf("unauthenticated Connect() = %#v, %v", state, err)
+	_, err = unauthenticated.Connect(server.URL, "macos-installation")
+	if err == nil || !strings.Contains(err.Error(), "Core token is required") {
+		t.Fatalf("unauthenticated Connect() error = %v", err)
 	}
 }
 

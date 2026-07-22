@@ -15,7 +15,7 @@ import (
 // Options configures the Hertz Core HTTP API.
 type Options struct {
 	Addr   string // e.g. 127.0.0.1:8787
-	Token  string // if non-empty, require Authorization: Bearer <token>
+	Token  string // required non-empty Authorization: Bearer <token>
 	Logger *zap.Logger
 }
 
@@ -41,6 +41,9 @@ func NewServer(rt *fairyruntime.Runtime, options Options) (*Server, error) {
 	}
 	if options.Token != strings.TrimSpace(options.Token) {
 		return nil, errors.New("API token must not contain leading or trailing whitespace")
+	}
+	if strings.TrimSpace(options.Token) == "" {
+		return nil, errors.New("FAIRY_API_TOKEN is required")
 	}
 	engine := server.Default(server.WithHostPorts(addr), server.WithSenseClientDisconnection(true))
 	s := &Server{rt: rt, engine: engine, token: options.Token, logger: logger}
@@ -77,10 +80,6 @@ func (s *Server) routes() {
 }
 
 func (s *Server) authMiddleware(ctx context.Context, c *app.RequestContext) {
-	if s.token == "" {
-		c.Next(ctx)
-		return
-	}
 	header := string(c.GetHeader("Authorization"))
 	if header != "Bearer "+s.token {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, map[string]any{"error": "unauthorized"})

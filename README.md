@@ -51,7 +51,8 @@ go -C fairy run . character activate --character <id> --revision <revision>
 - `--endpoint` / `FAIRY_ENDPOINT`，默认 `http://127.0.0.1:8787`
 - `--timeout` / `FAIRY_CLI_TIMEOUT`，默认 `15s`
 - `--output json|table` / `FAIRY_CLI_OUTPUT`，默认 `json`
-- `FAIRY_API_TOKEN`：唯一 Bearer token 输入，不提供 token flag，也不写配置文件
+- `FAIRY_API_TOKEN`：必需的 Bearer token（含 loopback）；不提供 token flag，也不写配置文件。未设置时 `serve` / `NewServer` 失败。
+- `FAIRY_RUNTIME_PROFILE`：`full`（默认，强制 Qdrant）或 `desktop-lite`（Qdrant 可选，检索可降级 FTS）
 
 `turn send`、`events follow` 和 `logs --follow` 的流式生命周期由命令 context 控制，不会在默认 15 秒后自动断开。stream 断开时不会自动重连。
 

@@ -41,8 +41,8 @@ func TestProductionInfrastructureStatusAndMetrics(t *testing.T) {
 	t.Cleanup(func() { _ = rt.Close() })
 	insertPendingEmbeddingMetric(t, rt.Database)
 
-	baseURL := startProductionAPIServer(t, rt)
-	statusResponse := doRequest(t, http.MethodGet, baseURL+"/v1/status", "")
+	baseURL, token := startProductionAPIServer(t, rt)
+	statusResponse := doRequest(t, http.MethodGet, baseURL+"/v1/status", token)
 	statusBody, err := io.ReadAll(statusResponse.Body)
 	statusResponse.Body.Close()
 	if err != nil || statusResponse.StatusCode != http.StatusOK {
@@ -71,7 +71,7 @@ func TestProductionInfrastructureStatusAndMetrics(t *testing.T) {
 		t.Fatalf("qdrant collection status = %#v", collection)
 	}
 
-	metricsResponse := doRequest(t, http.MethodGet, baseURL+"/v1/metrics", "")
+	metricsResponse := doRequest(t, http.MethodGet, baseURL+"/v1/metrics", token)
 	defer metricsResponse.Body.Close()
 	var metrics map[string]any
 	if err := json.NewDecoder(metricsResponse.Body).Decode(&metrics); err != nil {
@@ -121,7 +121,7 @@ INSERT INTO memory_embedding_jobs(
 	}
 }
 
-func startProductionAPIServer(t *testing.T, rt *fairyruntime.Runtime) string {
+func startProductionAPIServer(t *testing.T, rt *fairyruntime.Runtime) (string, string) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -129,7 +129,8 @@ func startProductionAPIServer(t *testing.T, rt *fairyruntime.Runtime) string {
 	}
 	addr := listener.Addr().String()
 	listener.Close()
-	server, err := api.NewServer(rt, api.Options{Addr: addr, Logger: zap.NewNop()})
+	const token = "integration-test-token"
+	server, err := api.NewServer(rt, api.Options{Addr: addr, Token: token, Logger: zap.NewNop()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,8 +140,8 @@ func startProductionAPIServer(t *testing.T, rt *fairyruntime.Runtime) string {
 		defer cancel()
 		_ = server.Shutdown(ctx)
 	})
-	waitHTTP(t, "http://"+addr+"/v1/status")
-	return "http://" + addr
+	waitHTTP(t, "http://"+addr+"/v1/status", token)
+	return "http://" + addr, token
 }
 
 func isolatedAPISchema(t *testing.T) (string, func()) {
@@ -241,11 +242,18 @@ func doRequest(t *testing.T, method, rawURL, token string) *http.Response {
 	return response
 }
 
-func waitHTTP(t *testing.T, rawURL string) {
+func waitHTTP(t *testing.T, rawURL, token string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		response, err := http.Get(rawURL)
+		req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		response, err := http.DefaultClient.Do(req)
 		if err == nil {
 			response.Body.Close()
 			return

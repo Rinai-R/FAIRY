@@ -90,10 +90,30 @@ func TestStatusOutputAndSecretWhitespace(t *testing.T) {
 	}
 }
 
+func TestServeRequiresAPIToken(t *testing.T) {
+	deps := testDependencies(&fakeClient{})
+	deps.Getenv = func(string) string { return "" }
+	deps.Serve = func(context.Context, core.Options) error {
+		t.Fatal("serve must not run without token")
+		return nil
+	}
+	root := NewRootCmd(deps)
+	root.SetArgs([]string{"serve"})
+	if err := root.ExecuteContext(context.Background()); err == nil || !strings.Contains(err.Error(), "FAIRY_API_TOKEN") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestNoArgumentAndExplicitServeUseRunner(t *testing.T) {
 	for _, args := range [][]string{nil, {"serve", "--addr", "127.0.0.1:9999"}} {
 		var got core.Options
 		deps := testDependencies(&fakeClient{})
+		deps.Getenv = func(key string) string {
+			if key == "FAIRY_API_TOKEN" {
+				return "test-token"
+			}
+			return ""
+		}
 		deps.Serve = func(ctx context.Context, options core.Options) error {
 			got = options
 			return nil
@@ -105,6 +125,9 @@ func TestNoArgumentAndExplicitServeUseRunner(t *testing.T) {
 		}
 		if got.Addr == "" {
 			t.Fatalf("args=%v options=%#v", args, got)
+		}
+		if got.Token != "test-token" {
+			t.Fatalf("token = %q", got.Token)
 		}
 	}
 }

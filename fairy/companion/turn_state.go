@@ -121,34 +121,3 @@ func (s *CompanionService) endCompaction(conversationID string) {
 }
 
 // CancelTurn cancels an in-flight compiled turn for the conversation.
-func (s *CompanionService) CancelTurn(conversationID string, turnID string) error {
-	if s == nil || !s.RespondRuntimeMigrated() {
-		return ErrRespondRuntimeNotMigrated
-	}
-	if conversationID == "" || turnID == "" {
-		return errors.New("conversation_id and turn_id are required")
-	}
-	s.gateMu.Lock()
-	gate := s.gates[conversationID]
-	s.gateMu.Unlock()
-	if gate == nil {
-		return ErrTurnNotActive
-	}
-	gate.mu.Lock()
-	defer gate.mu.Unlock()
-	if gate.activeTurn == nil || gate.activeTurn.turnID != turnID {
-		return ErrTurnNotActive
-	}
-	gate.activeTurn.cancel()
-	return nil
-}
-
-func mapModelCancelError(err error) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, context.Canceled) {
-		return ErrTurnInterrupted
-	}
-	return err
-}

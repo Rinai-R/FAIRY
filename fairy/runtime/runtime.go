@@ -35,6 +35,8 @@ type Options struct {
 	LogStore     *observability.LogStore
 	HTTPMetrics  *observability.HTTPMetrics
 	Dependencies *Dependencies
+	// Profile selects full vs desktop-lite dependency rules. Empty defaults to full.
+	Profile Profile
 	// LogEventsJSONL prints turn events to stdout (optional local debugging).
 	LogEventsJSONL bool
 }
@@ -104,7 +106,22 @@ func Open(options Options) (*Runtime, error) {
 		configRoot = filepath.Join(os.Getenv("HOME"), "Library", "Application Support", "dev.rinai.fairy", "session-core", "v1")
 	}
 
-	database, memoryStore, secretStore, vectorClient, ownDatabase, ownVector, err := openDependencies(context.Background(), options.Dependencies)
+	runtimeProfile := options.Profile
+	if runtimeProfile == "" {
+		parsed, err := ProfileFromEnv(os.Getenv)
+		if err != nil {
+			return nil, err
+		}
+		runtimeProfile = parsed
+	} else {
+		parsed, err := ParseProfile(string(runtimeProfile))
+		if err != nil {
+			return nil, err
+		}
+		runtimeProfile = parsed
+	}
+
+	database, memoryStore, secretStore, vectorClient, ownDatabase, ownVector, err := openDependencies(context.Background(), options.Dependencies, runtimeProfile)
 	if err != nil {
 		return nil, err
 	}
@@ -225,7 +242,7 @@ func (rt *Runtime) Close() error {
 	return rt.closeErr
 }
 
-func openDependencies(ctx context.Context, injected *Dependencies) (*pgstore.Pool, *memory.Store, *secret.Store, *vectorindex.Client, bool, bool, error) {
+func openDependencies(ctx context.Context, injected *Dependencies, runtimeProfile Profile) (*pgstore.Pool, *memory.Store, *secret.Store, *vectorindex.Client, bool, bool, error) {
 	if injected != nil {
 		if injected.MemoryStore == nil {
 			return nil, nil, nil, nil, false, false, errors.New("injected memory store is required")
@@ -247,40 +264,60 @@ func openDependencies(ctx context.Context, injected *Dependencies) (*pgstore.Poo
 		database.Close()
 		return nil, nil, nil, nil, false, false, fmt.Errorf("database schema: %w", err)
 	}
-	vectorConfig, err := vectorindex.ConfigFromEnv(os.Getenv)
-	if err != nil {
+
+	var vectorClient *vectorindex.Client
+	ownVector := false
+	vectorConfig, vectorErr := vectorindex.ConfigFromEnv(os.Getenv)
+	switch {
+	case vectorErr == nil:
+		client, openErr := vectorindex.Open(ctx, vectorConfig)
+		if openErr != nil {
+			if runtimeProfile.RequiresVectorIndex() {
+				database.Close()
+				return nil, nil, nil, nil, false, false, openErr
+			}
+			break
+		}
+		if _, verifyErr := client.VerifyCollection(ctx); verifyErr != nil {
+			_ = client.Close()
+			if runtimeProfile.RequiresVectorIndex() {
+				database.Close()
+				return nil, nil, nil, nil, false, false, fmt.Errorf("qdrant collection: %w", verifyErr)
+			}
+			break
+		}
+		vectorClient = client
+		ownVector = true
+	case runtimeProfile.RequiresVectorIndex():
 		database.Close()
-		return nil, nil, nil, nil, false, false, fmt.Errorf("qdrant configuration: %w", err)
+		return nil, nil, nil, nil, false, false, fmt.Errorf("qdrant configuration: %w", vectorErr)
 	}
-	vectorClient, err := vectorindex.Open(ctx, vectorConfig)
-	if err != nil {
-		database.Close()
-		return nil, nil, nil, nil, false, false, err
-	}
-	if _, err := vectorClient.VerifyCollection(ctx); err != nil {
-		_ = vectorClient.Close()
-		database.Close()
-		return nil, nil, nil, nil, false, false, fmt.Errorf("qdrant collection: %w", err)
-	}
+
 	secretCipher, err := secret.CipherFromEnv(os.Getenv)
 	if err != nil {
-		_ = vectorClient.Close()
+		if ownVector && vectorClient != nil {
+			_ = vectorClient.Close()
+		}
 		database.Close()
 		return nil, nil, nil, nil, false, false, fmt.Errorf("secret master key: %w", err)
 	}
 	secretStore, err := secret.NewPostgresStore(database, secretCipher)
 	if err != nil {
-		_ = vectorClient.Close()
+		if ownVector && vectorClient != nil {
+			_ = vectorClient.Close()
+		}
 		database.Close()
 		return nil, nil, nil, nil, false, false, err
 	}
 	memoryStore, err := memory.NewStoreFromPool(database)
 	if err != nil {
-		_ = vectorClient.Close()
+		if ownVector && vectorClient != nil {
+			_ = vectorClient.Close()
+		}
 		database.Close()
 		return nil, nil, nil, nil, false, false, err
 	}
-	return database, memoryStore, secretStore, vectorClient, true, true, nil
+	return database, memoryStore, secretStore, vectorClient, true, ownVector, nil
 }
 
 func (rt *Runtime) DrainEvents() []companion.TurnEvent {

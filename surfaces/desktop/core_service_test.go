@@ -26,6 +26,16 @@ type emptyTokenStore struct{}
 func (emptyTokenStore) Get() (string, error) { return "", errTokenNotFound }
 func (emptyTokenStore) Set(string) error     { return nil }
 
+type staticTokenStore struct{ token string }
+
+func (s staticTokenStore) Get() (string, error) {
+	if s.token == "" {
+		return "", errTokenNotFound
+	}
+	return s.token, nil
+}
+func (staticTokenStore) Set(string) error { return nil }
+
 func (w *fakeWindow) Position() (int, int) { return w.x, w.y }
 func (w *fakeWindow) SetPosition(x, y int) { w.x, w.y = x, y }
 func (w *fakeWindow) Show() application.Window {
@@ -209,7 +219,7 @@ func TestCoreServiceUsesOneSocketAndClearsCompletedTurn(t *testing.T) {
 	defer server.Close()
 
 	service := NewCoreService()
-	service.tokens = emptyTokenStore{}
+	service.tokens = staticTokenStore{token: "desktop-test-token"}
 	service.newCache = func() (*visualCache, error) { return newVisualCacheAt(t.TempDir()) }
 	turns := make(chan desktopTurnEvent, 4)
 	service.attachEmitter(func(name string, payload any) {

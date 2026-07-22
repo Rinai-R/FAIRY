@@ -168,8 +168,8 @@ func (s *AppService) Connect(endpoint, endpointKey string) (SessionState, error)
 		return SessionState{}, err
 	}
 	token, err := s.tokens.Get()
-	if errors.Is(err, ErrTokenNotFound) {
-		token = ""
+	if errors.Is(err, ErrTokenNotFound) || strings.TrimSpace(token) == "" {
+		return SessionState{}, errors.New("Core token is required: open settings and save FAIRY_API_TOKEN to Keychain")
 	} else if err != nil {
 		return SessionState{}, errors.New("reading Core token from macOS Keychain failed")
 	}

@@ -35,7 +35,8 @@ services:
       FAIRY_QDRANT_URL: http://qdrant:6334
       FAIRY_SECRET_MASTER_KEY: ${FAIRY_SECRET_MASTER_KEY:?FAIRY_SECRET_MASTER_KEY is required}
       FAIRY_OPENSERP_URL: http://openserp:7000
-      FAIRY_API_TOKEN: ${FAIRY_API_TOKEN:-}
+      FAIRY_API_TOKEN: ${FAIRY_API_TOKEN:?FAIRY_API_TOKEN is required}
+      FAIRY_RUNTIME_PROFILE: ${FAIRY_RUNTIME_PROFILE:-full}
     depends_on:
       postgres:
         condition: service_healthy

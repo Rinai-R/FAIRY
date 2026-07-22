@@ -29,7 +29,35 @@ const (
 var sessionUpgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
-	CheckOrigin:     func(r *http.Request) bool { return true },
+	CheckOrigin:     allowedSessionOrigin,
+}
+
+// allowedSessionOrigin permits native clients (empty Origin) and local console hosts.
+func allowedSessionOrigin(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	return isLocalConsoleOrigin(origin)
+}
+
+func isLocalConsoleOrigin(origin string) bool {
+	origin = strings.ToLower(strings.TrimSpace(origin))
+	switch {
+	case origin == "http://127.0.0.1" || origin == "https://127.0.0.1":
+		return true
+	case origin == "http://localhost" || origin == "https://localhost":
+		return true
+	case strings.HasPrefix(origin, "http://127.0.0.1:") || strings.HasPrefix(origin, "https://127.0.0.1:"):
+		return true
+	case strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "https://localhost:"):
+		return true
+	default:
+		return false
+	}
 }
 
 type wsClientFrame struct {
@@ -61,12 +89,14 @@ type wsServerFrame struct {
 
 func (s *Server) handleSessionWebSocket() app.HandlerFunc {
 	return adaptor.HertzHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.token != "" {
-			header := r.Header.Get("Authorization")
-			if header != "Bearer "+s.token {
-				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-				return
-			}
+		header := r.Header.Get("Authorization")
+		if header != "Bearer "+s.token {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		if !allowedSessionOrigin(r) {
+			http.Error(w, `{"error":"origin not allowed"}`, http.StatusForbidden)
+			return
 		}
 		conn, err := sessionUpgrader.Upgrade(w, r, nil)
 		if err != nil {

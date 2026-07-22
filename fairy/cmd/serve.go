@@ -48,5 +48,8 @@ func runServe(command *cobra.Command, deps Dependencies, options core.Options) e
 	if options.Token != strings.TrimSpace(options.Token) {
 		return errors.New("API token must not contain leading or trailing whitespace")
 	}
+	if strings.TrimSpace(options.Token) == "" {
+		return errors.New("FAIRY_API_TOKEN is required")
+	}
 	return deps.Serve(command.Context(), options)
 }
