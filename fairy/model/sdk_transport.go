@@ -179,7 +179,7 @@ func (t SDKTransport) executeChatCompletions(ctx context.Context, client openai.
 					}
 					onEvent(StreamEvent{Type: "function_calls", FunctionCalls: calls})
 				}
-				onEvent(StreamEvent{Type: "completed"})
+				onEvent(StreamEvent{Type: "completed", FinishReason: string(choice.FinishReason)})
 			}
 			completed = true
 			break

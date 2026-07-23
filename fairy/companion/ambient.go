@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"fairy/interaction"
+	"go.uber.org/zap"
 )
 
 // AmbientInbox owns per-conversation rolling observations, wait timers, and
@@ -37,14 +38,17 @@ type sequencedObservation struct {
 }
 
 type ambientState struct {
-	messages           []sequencedObservation
-	generation         uint64
-	acceptedGeneration uint64
-	running            bool
-	timer              stoppableTimer
-	timerOwner         uint64
-	decisionOwner      uint64
-	decisionCancel     context.CancelFunc
+	messages              []sequencedObservation
+	cacheMessages         []sequencedObservation
+	generation            uint64
+	acceptedGeneration    uint64
+	running               bool
+	timer                 stoppableTimer
+	timerOwner            uint64
+	decisionOwner         uint64
+	decisionCancel        context.CancelFunc
+	lastLearnedGeneration uint64
+	recentRepliesBySender map[string]string
 }
 
 type ambientBatch struct {
@@ -52,6 +56,7 @@ type ambientBatch struct {
 	generation       uint64
 	evaluationReason ParticipationEvaluationReason
 	messages         []AmbientObservation
+	cacheMessages    []AmbientObservation
 }
 
 func newAmbientInbox(parent context.Context, service *CompanionService) *AmbientInbox {
@@ -105,6 +110,9 @@ func (a *AmbientInbox) Observe(conversationID string, observation AmbientObserva
 	}
 	if a.service != nil {
 		observation.TraceID = a.service.beginMessageTrace("ambient", conversationID, observation.TraceID)
+		if a.service.socialFeedback != nil {
+			a.service.socialFeedback.Observe(conversationID, observation)
+		}
 	}
 	state := a.states[conversationID]
 	if state == nil {
@@ -112,9 +120,19 @@ func (a *AmbientInbox) Observe(conversationID string, observation AmbientObserva
 		a.states[conversationID] = state
 	}
 	state.generation++
-	state.messages = append(state.messages, sequencedObservation{sequence: state.generation, observation: observation})
+	entry := sequencedObservation{sequence: state.generation, observation: observation}
+	state.messages = append(state.messages, entry)
 	if len(state.messages) > maxAmbientObservations {
 		state.messages = state.messages[len(state.messages)-maxAmbientObservations:]
+	}
+	state.cacheMessages = append(state.cacheMessages, entry)
+	if len(state.cacheMessages) > maxAmbientCacheObservations {
+		state.cacheMessages = append([]sequencedObservation(nil), state.messages...)
+	}
+	if a.service != nil && a.service.socialLearning != nil && state.generation-state.lastLearnedGeneration >= socialLearningObservationThreshold {
+		snapshot := socialLearningSnapshotFromState(conversationID, state)
+		a.service.socialLearning.Enqueue(snapshot)
+		state.lastLearnedGeneration = state.generation
 	}
 	if a.service != nil {
 		a.service.cancelTurnBeforeDelivery(conversationID)
@@ -179,9 +197,15 @@ func snapshotAmbient(conversationID string, state *ambientState, reason Particip
 		observation.IsNew = reason == ParticipationReasonMessage && entry.sequence > state.acceptedGeneration
 		messages = append(messages, observation)
 	}
+	cacheMessages := make([]AmbientObservation, 0, len(state.cacheMessages))
+	for _, entry := range state.cacheMessages {
+		observation := entry.observation
+		observation.IsNew = false
+		cacheMessages = append(cacheMessages, observation)
+	}
 	return ambientBatch{
 		conversationID: conversationID, generation: state.generation,
-		evaluationReason: reason, messages: messages,
+		evaluationReason: reason, messages: messages, cacheMessages: cacheMessages,
 	}
 }
 
@@ -208,7 +232,11 @@ func (a *AmbientInbox) run(batch ambientBatch, decisionCtx context.Context, deci
 			continue
 		}
 		if err != nil {
+			if a.service.logger != nil {
+				a.service.logger.Warn("ambient participation failed", zap.String("conversationId", batch.conversationID), zap.Uint64("generation", batch.generation), zap.Error(err))
+			}
 			a.recordParticipation(batch, "", "failed")
+			a.publishParticipation(batch, "failed", "", 0, nil)
 			state.running = false
 			a.mu.Unlock()
 			return
@@ -217,43 +245,73 @@ func (a *AmbientInbox) run(batch ambientBatch, decisionCtx context.Context, deci
 		switch decision.Action {
 		case ParticipationSilent:
 			a.recordParticipation(batch, "", "silent")
+			a.publishParticipation(batch, "silent", "", 0, decision.Usage)
 			state.running = false
 			a.mu.Unlock()
 			return
 		case ParticipationWait:
 			if decision.WaitSeconds == nil || *decision.WaitSeconds < 1 || *decision.WaitSeconds > 300 {
+				if a.service.logger != nil {
+					a.service.logger.Warn("ambient wait decision invalid", zap.String("conversationId", batch.conversationID), zap.Uint64("generation", batch.generation))
+				}
 				a.recordParticipation(batch, "", "failed")
+				a.publishParticipation(batch, "failed", "", 0, nil)
 				state.running = false
 				a.mu.Unlock()
 				return
 			}
 			a.recordParticipation(batch, "", "wait")
+			a.publishParticipation(batch, "wait", "", *decision.WaitSeconds, decision.Usage)
 			state.running = false
 			a.scheduleWaitLocked(batch.conversationID, state, time.Duration(*decision.WaitSeconds)*time.Second)
 			a.mu.Unlock()
 			return
 		case ParticipationReply:
 			if decision.TargetMessageID == nil || !ambientBatchContains(batch, *decision.TargetMessageID) {
+				if a.service.logger != nil {
+					a.service.logger.Warn("ambient reply target invalid", zap.String("conversationId", batch.conversationID), zap.Uint64("generation", batch.generation))
+				}
 				a.recordParticipation(batch, "", "failed")
+				a.publishParticipation(batch, "failed", "", 0, nil)
 				state.running = false
 				a.mu.Unlock()
 				return
 			}
 			target := *decision.TargetMessageID
+			targetSenderID := ambientSenderID(batch, target)
+			recentTargetReply := ""
+			if state.recentRepliesBySender != nil {
+				recentTargetReply = state.recentRepliesBySender[targetSenderID]
+			}
 			targetTraceID := ambientTraceID(batch, target)
 			a.recordParticipation(batch, targetTraceID, "reply")
+			a.publishParticipation(batch, "reply", target, 0, decision.Usage)
 			messages := append([]AmbientObservation(nil), batch.messages...)
 			conversationID := batch.conversationID
 			generation := batch.generation
 			a.mu.Unlock()
 			input, err := FormatAmbientTurnInput(messages, target)
 			if err == nil {
-				_, err = a.submit(SubmitTurnRequest{
-					ConversationID: conversationID,
-					Input:          input,
-					TraceID:        targetTraceID,
-					MessageSource:  "ambient",
+				var outcome TurnOutcome
+				outcome, err = a.submit(SubmitTurnRequest{
+					ConversationID:    conversationID,
+					Input:             input,
+					TraceID:           targetTraceID,
+					MessageSource:     "ambient",
+					ReplyIntent:       decision.Intent,
+					RecentTargetReply: recentTargetReply,
 				})
+				if err == nil && targetSenderID != "" && strings.TrimSpace(outcome.ResponseText) != "" {
+					a.mu.Lock()
+					current := a.states[conversationID]
+					if current != nil {
+						if current.recentRepliesBySender == nil {
+							current.recentRepliesBySender = make(map[string]string)
+						}
+						current.recentRepliesBySender[targetSenderID] = strings.TrimSpace(outcome.ResponseText)
+					}
+					a.mu.Unlock()
+				}
 			} else if a.service != nil {
 				a.service.endMessageTrace(targetTraceID, "failed")
 			}
@@ -274,12 +332,27 @@ func (a *AmbientInbox) run(batch ambientBatch, decisionCtx context.Context, deci
 			a.mu.Unlock()
 			return
 		default:
+			if a.service.logger != nil {
+				a.service.logger.Warn("ambient participation action invalid", zap.String("conversationId", batch.conversationID), zap.Uint64("generation", batch.generation))
+			}
 			a.recordParticipation(batch, "", "failed")
+			a.publishParticipation(batch, "failed", "", 0, nil)
 			state.running = false
 			a.mu.Unlock()
 			return
 		}
 	}
+}
+
+func (a *AmbientInbox) publishParticipation(batch ambientBatch, action, targetMessageID string, waitSeconds int, usage []LaneModelUsage) {
+	if a == nil || a.service == nil {
+		return
+	}
+	a.service.emitParticipationEvent(ParticipationEvent{
+		ConversationID: batch.conversationID, Generation: batch.generation,
+		EvaluationReason: batch.evaluationReason, Action: action,
+		TargetMessageID: targetMessageID, WaitSeconds: waitSeconds, Usage: usage, ObservedAt: time.Now().UTC(),
+	})
 }
 
 func (a *AmbientInbox) recordParticipation(batch ambientBatch, targetTraceID, action string) {
@@ -310,6 +383,15 @@ func ambientTraceID(batch ambientBatch, messageID string) string {
 	return ""
 }
 
+func ambientSenderID(batch ambientBatch, messageID string) string {
+	for _, observation := range batch.messages {
+		if observation.MessageID == messageID {
+			return observation.SenderID
+		}
+	}
+	return ""
+}
+
 func (a *AmbientInbox) decide(ctx context.Context, batch ambientBatch) (ParticipationResult, error) {
 	if a.decideHook != nil {
 		return a.decideHook(ctx, batch)
@@ -318,6 +400,7 @@ func (a *AmbientInbox) decide(ctx context.Context, batch ambientBatch) (Particip
 		ConversationID:   batch.conversationID,
 		EvaluationReason: batch.evaluationReason,
 		Messages:         batch.messages,
+		CacheMessages:    batch.cacheMessages,
 	})
 }
 

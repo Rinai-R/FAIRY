@@ -76,15 +76,16 @@ type wsClientFrame struct {
 }
 
 type wsServerFrame struct {
-	Type           string                   `json:"type"`
-	RequestID      string                   `json:"requestId,omitempty"`
-	ConversationID string                   `json:"conversationId,omitempty"`
-	CharacterID    string                   `json:"characterId,omitempty"`
-	MessageCount   int                      `json:"messageCount,omitempty"`
-	Endpoint       interaction.EndpointKind `json:"endpoint,omitempty"`
-	Error          string                   `json:"error,omitempty"`
-	Payload        json.RawMessage          `json:"payload,omitempty"`
-	Event          *companion.TurnEvent     `json:"event,omitempty"`
+	Type           string                        `json:"type"`
+	RequestID      string                        `json:"requestId,omitempty"`
+	ConversationID string                        `json:"conversationId,omitempty"`
+	CharacterID    string                        `json:"characterId,omitempty"`
+	MessageCount   int                           `json:"messageCount,omitempty"`
+	Endpoint       interaction.EndpointKind      `json:"endpoint,omitempty"`
+	Error          string                        `json:"error,omitempty"`
+	Payload        json.RawMessage               `json:"payload,omitempty"`
+	Event          *companion.TurnEvent          `json:"event,omitempty"`
+	Participation  *companion.ParticipationEvent `json:"participation,omitempty"`
 }
 
 func (s *Server) handleSessionWebSocket() app.HandlerFunc {
@@ -213,10 +214,37 @@ func (c *sessionConn) handleWatch(frame wsClientFrame) {
 		return
 	}
 	subscription := c.server.rt.Events.Subscribe(conversationID)
-	c.watches[conversationID] = subscription.Unsubscribe
+	participation := c.server.rt.Participation.Subscribe(conversationID)
+	c.watches[conversationID] = func() {
+		subscription.Unsubscribe()
+		participation.Unsubscribe()
+	}
 	c.watchMu.Unlock()
 	go c.forwardTurnEvents(conversationID, subscription)
+	go c.forwardParticipationEvents(conversationID, participation)
 	_ = c.write(wsServerFrame{Type: "ack", RequestID: frame.RequestID, ConversationID: conversationID})
+}
+
+func (c *sessionConn) forwardParticipationEvents(conversationID string, subscription fairyruntime.ParticipationSubscription) {
+	defer subscription.Unsubscribe()
+	for {
+		select {
+		case err, ok := <-subscription.Failures:
+			if ok && err != nil {
+				c.shutdown(err)
+			}
+			return
+		case event, ok := <-subscription.Events:
+			if !ok {
+				return
+			}
+			ev := event
+			if err := c.write(wsServerFrame{Type: "participation.event", ConversationID: conversationID, Participation: &ev}); err != nil {
+				c.shutdown(nil)
+				return
+			}
+		}
+	}
 }
 
 func (c *sessionConn) forwardTurnEvents(conversationID string, subscription fairyruntime.EventSubscription) {
@@ -330,7 +358,7 @@ func (c *sessionConn) shutdown(reason error) {
 	c.closeOnce.Do(func() {
 		if reason != nil {
 			code := websocket.CloseInternalServerErr
-			if errors.Is(reason, fairyruntime.ErrEventSubscriberOverflow) {
+			if errors.Is(reason, fairyruntime.ErrEventSubscriberOverflow) || errors.Is(reason, fairyruntime.ErrParticipationSubscriberOverflow) {
 				code = websocket.CloseTryAgainLater
 			}
 			c.writeMu.Lock()

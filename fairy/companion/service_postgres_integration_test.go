@@ -55,6 +55,35 @@ func (companionIntegrationModel) ExecutePrompt(model.PromptLane, string, uint32,
 	return []model.StreamEvent{{Type: "text_delta", Data: "摘要"}, {Type: "usage", Usage: &model.Usage{PromptTokens: 2, CompletionTokens: 1}}}, nil
 }
 
+type retryingReplyIntegrationModel struct {
+	mu       sync.Mutex
+	requests []model.CompiledPromptRequest
+}
+
+func (m *retryingReplyIntegrationModel) ExecuteRequestContext(_ context.Context, request model.CompiledPromptRequest) ([]model.StreamEvent, error) {
+	m.mu.Lock()
+	m.requests = append(m.requests, request)
+	call := len(m.requests)
+	m.mu.Unlock()
+	if call == 1 {
+		return []model.StreamEvent{
+			{Type: "text_delta", Data: "not strict reply json"},
+			{Type: "usage", Usage: &model.Usage{PromptTokens: 11, CompletionTokens: 3}},
+		}, nil
+	}
+	return companionIntegrationModel{chains: []ReplyChain{{VisualState: "idle", Text: "第二次严格返回。"}}}.ExecuteRequestContext(context.Background(), request)
+}
+
+func (*retryingReplyIntegrationModel) ExecutePrompt(model.PromptLane, string, uint32, []model.PromptItem, string) ([]model.StreamEvent, error) {
+	return []model.StreamEvent{{Type: "text_delta", Data: "摘要"}}, nil
+}
+
+func (m *retryingReplyIntegrationModel) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.requests)
+}
+
 type capturingIntegrationModel struct {
 	mu      sync.Mutex
 	request model.CompiledPromptRequest
@@ -224,6 +253,50 @@ func TestPostgresCompanionMultiBeatCompletesWithPacing(t *testing.T) {
 	}
 	if !hasRuntimeLedgerType(ledger, runtimeLedgerEventBeatDelivery) {
 		t.Fatalf("ledger missing beat_delivery: %#v", ledger)
+	}
+}
+
+func TestPostgresCompanionRetriesOneInvalidReplyWithoutDuplicatingTurn(t *testing.T) {
+	store, _, cleanup := openCompanionIntegrationStore(t)
+	defer cleanup()
+	bootstrap, err := store.OpenOrCreateCharacterConversation("character-retry")
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation: %v", err)
+	}
+	provider := &retryingReplyIntegrationModel{}
+	service := newCompanionIntegrationService(store, "character-retry", provider)
+	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
+	var mu sync.Mutex
+	var events []TurnEvent
+	AttachEventEmitter(service, func(event TurnEvent) {
+		mu.Lock()
+		events = append(events, event)
+		mu.Unlock()
+	})
+
+	outcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+		ConversationID:        bootstrap.Conversation.ID,
+		Input:                 "测试严格回复重试",
+		MaxOutputTokens:       160,
+		AvailableVisualStates: []VisualState{{ID: "idle", Description: "idle"}},
+	})
+	if err != nil {
+		t.Fatalf("SubmitCompiledTurn: %v", err)
+	}
+	if provider.callCount() != 2 || outcome.ResponseText != "第二次严格返回。" {
+		t.Fatalf("calls=%d outcome=%#v", provider.callCount(), outcome)
+	}
+	reloaded, err := store.LoadConversation(bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Messages) != 2 || reloaded.Messages[0].Role != "user" || reloaded.Messages[1].Role != "assistant" {
+		t.Fatalf("messages=%#v", reloaded.Messages)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if terminalEventCount(events, TurnStateCompleted) != 1 || terminalEventCount(events, TurnStateFailed) != 0 {
+		t.Fatalf("terminal events=%#v", events)
 	}
 }
 

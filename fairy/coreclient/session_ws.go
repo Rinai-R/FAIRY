@@ -24,8 +24,9 @@ const (
 )
 
 var (
-	ErrTurnEventConsumerOverflow = errors.New("session turn-event consumer overflow")
-	errSessionSocketClosed       = errors.New("session websocket closed")
+	ErrTurnEventConsumerOverflow     = errors.New("session turn-event consumer overflow")
+	ErrParticipationConsumerOverflow = errors.New("session participation-event consumer overflow")
+	errSessionSocketClosed           = errors.New("session websocket closed")
 )
 
 type sessionClientFrame struct {
@@ -53,6 +54,7 @@ type sessionServerFrame struct {
 	Error          string                   `json:"error,omitempty"`
 	Payload        json.RawMessage          `json:"payload,omitempty"`
 	Event          *TurnEvent               `json:"event,omitempty"`
+	Participation  *ParticipationEvent      `json:"participation,omitempty"`
 	cause          error
 }
 
@@ -61,15 +63,16 @@ type SessionSocket struct {
 	conn    *websocket.Conn
 	writeMu sync.Mutex
 
-	mu         sync.Mutex
-	pending    map[string]chan sessionServerFrame
-	turnEvents map[string]chan TurnEvent
-	done       chan struct{}
-	connOnce   sync.Once
-	connErr    error
-	closing    bool
-	closed     bool
-	closeErr   error
+	mu                  sync.Mutex
+	pending             map[string]chan sessionServerFrame
+	turnEvents          map[string]chan TurnEvent
+	participationEvents map[string]chan ParticipationEvent
+	done                chan struct{}
+	connOnce            sync.Once
+	connErr             error
+	closing             bool
+	closed              bool
+	closeErr            error
 }
 
 // DialSession upgrades to the Core session WebSocket and waits for ready.
@@ -100,10 +103,11 @@ func (c *Client) DialSession(ctx context.Context) (*SessionSocket, error) {
 		return nil, &Error{Action: "dial session websocket", Endpoint: wsURL, Status: status, Message: message}
 	}
 	socket := &SessionSocket{
-		conn:       conn,
-		pending:    make(map[string]chan sessionServerFrame),
-		turnEvents: make(map[string]chan TurnEvent),
-		done:       make(chan struct{}),
+		conn:                conn,
+		pending:             make(map[string]chan sessionServerFrame),
+		turnEvents:          make(map[string]chan TurnEvent),
+		participationEvents: make(map[string]chan ParticipationEvent),
+		done:                make(chan struct{}),
 	}
 	conn.SetReadLimit(maxWSFrameBytes)
 	readyCtx, cancel := context.WithTimeout(ctx, readyTimeoutOr(c.timeout))
@@ -197,6 +201,28 @@ func (s *SessionSocket) readLoop() {
 				return
 			}
 			s.mu.Unlock()
+		case "participation.event":
+			if frame.Participation == nil {
+				continue
+			}
+			conversationID := frame.ConversationID
+			if conversationID == "" {
+				conversationID = frame.Participation.ConversationID
+			}
+			s.mu.Lock()
+			ch := s.participationEvents[conversationID]
+			if ch == nil {
+				s.mu.Unlock()
+				continue
+			}
+			select {
+			case ch <- *frame.Participation:
+			default:
+				s.mu.Unlock()
+				terminalErr = fmt.Errorf("%w: conversation %s", ErrParticipationConsumerOverflow, conversationID)
+				return
+			}
+			s.mu.Unlock()
 		default:
 			if frame.RequestID == "" {
 				continue
@@ -224,7 +250,7 @@ func (s *SessionSocket) finish(err error) {
 		return
 	}
 	s.closed = true
-	if errors.Is(err, ErrTurnEventConsumerOverflow) {
+	if errors.Is(err, ErrTurnEventConsumerOverflow) || errors.Is(err, ErrParticipationConsumerOverflow) {
 		s.closeErr = err
 	} else if s.closing {
 		s.closeErr = errSessionSocketClosed
@@ -243,6 +269,10 @@ func (s *SessionSocket) finish(err error) {
 	for id, ch := range s.turnEvents {
 		close(ch)
 		delete(s.turnEvents, id)
+	}
+	for id, ch := range s.participationEvents {
+		close(ch)
+		delete(s.participationEvents, id)
 	}
 	close(s.done)
 }
@@ -366,6 +396,9 @@ func (s *SessionSocket) Watch(ctx context.Context, conversationID string) (<-cha
 		ch = make(chan TurnEvent, 64)
 		s.turnEvents[conversationID] = ch
 	}
+	if s.participationEvents[conversationID] == nil {
+		s.participationEvents[conversationID] = make(chan ParticipationEvent, 64)
+	}
 	s.mu.Unlock()
 	_, err := s.request(ctx, sessionClientFrame{Type: "session.watch", ConversationID: conversationID}, "ack")
 	if err != nil {
@@ -373,8 +406,26 @@ func (s *SessionSocket) Watch(ctx context.Context, conversationID string) (<-cha
 		if s.turnEvents[conversationID] == ch {
 			delete(s.turnEvents, conversationID)
 		}
+		delete(s.participationEvents, conversationID)
 		s.mu.Unlock()
 		return nil, err
+	}
+	return ch, nil
+}
+
+func (s *SessionSocket) ParticipationEvents(conversationID string) (<-chan ParticipationEvent, error) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return nil, errors.New("conversation ID is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.closing {
+		return nil, errSessionSocketClosed
+	}
+	ch := s.participationEvents[conversationID]
+	if ch == nil {
+		return nil, errors.New("conversation is not watched")
 	}
 	return ch, nil
 }

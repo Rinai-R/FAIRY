@@ -28,11 +28,13 @@ const (
 type PromptLane string
 
 const (
-	PromptLaneRespond     PromptLane = "respond"
-	PromptLaneParticipate PromptLane = "participate"
-	PromptLaneCompact     PromptLane = "compact"
-	PromptLaneExtract     PromptLane = "extract"
-	PromptLaneTranslate   PromptLane = "translate"
+	PromptLaneRespond        PromptLane = "respond"
+	PromptLaneParticipate    PromptLane = "participate"
+	PromptLaneCompact        PromptLane = "compact"
+	PromptLaneExtract        PromptLane = "extract"
+	PromptLaneTranslate      PromptLane = "translate"
+	PromptLaneSocialLearn    PromptLane = "social_learn"
+	PromptLaneSocialFeedback PromptLane = "social_feedback"
 )
 
 type PromptItemType string
@@ -187,7 +189,7 @@ func parseProtocol(value string) (Protocol, error) {
 
 func validateLane(lane PromptLane) error {
 	switch lane {
-	case PromptLaneRespond, PromptLaneParticipate, PromptLaneCompact, PromptLaneExtract, PromptLaneTranslate:
+	case PromptLaneRespond, PromptLaneParticipate, PromptLaneCompact, PromptLaneExtract, PromptLaneTranslate, PromptLaneSocialLearn, PromptLaneSocialFeedback:
 		return nil
 	default:
 		return fmt.Errorf("prompt lane %q is not supported", lane)
@@ -352,7 +354,7 @@ func chatCompletionsBody(connection Connection, request CompiledPromptRequest) (
 	messages = append([]openAIMessage{{Role: "system", Content: request.Shape.Instructions}}, messages...)
 	var format *responseFormat
 	// json_object conflicts with tool calling on many providers; only force it when no tools.
-	if (request.Shape.Lane == PromptLaneRespond || request.Shape.Lane == PromptLaneParticipate) && len(request.Tools) == 0 {
+	if (request.Shape.Lane == PromptLaneRespond || request.Shape.Lane == PromptLaneParticipate || request.Shape.Lane == PromptLaneSocialLearn || request.Shape.Lane == PromptLaneSocialFeedback) && len(request.Tools) == 0 {
 		format = &responseFormat{Type: "json_object"}
 	}
 	return chatCompletionsRequestBody{

@@ -45,10 +45,13 @@ type CompanionService struct {
 	identities        OwnerIdentityPort
 	emitMu            sync.Mutex
 	emit              EventEmitter
+	emitParticipation ParticipationEventEmitter
 	messageTelemetry  MessageTelemetry
 	ambient           *AmbientInbox
 	turns             *TurnEngine
 	participation     *ParticipationEngine
+	socialLearning    *SocialLearningEngine
+	socialFeedback    *SocialFeedbackEngine
 }
 
 type MessageTelemetry interface {
@@ -194,6 +197,8 @@ func NewCompanionServiceWithRuntime(root string, memory MemoryPort, model ModelP
 		service.cfg = config.NewReader(root)
 	}
 	service.ambient = newAmbientInbox(context.Background(), service)
+	service.socialLearning = newSocialLearningEngine(service, socialLearningQueueCapacity)
+	service.socialFeedback = newSocialFeedbackEngine(service, socialFeedbackQueueCapacity)
 	service.wireEngines()
 	return service
 }
@@ -326,6 +331,12 @@ func (s *CompanionService) Close() error {
 	}
 	if s.ambient != nil {
 		s.ambient.Close()
+	}
+	if s.socialLearning != nil {
+		s.socialLearning.Close()
+	}
+	if s.socialFeedback != nil {
+		s.socialFeedback.Close()
 	}
 	s.cancelActiveTurns()
 	s.cancelExtractionTimers()

@@ -15,11 +15,13 @@ type ReplyChain struct {
 }
 
 type SubmitTurnRequest struct {
-	ConversationID string `json:"conversationId"`
-	Input          string `json:"input"`
-	SpeechEnabled  bool   `json:"speechEnabled"`
-	TraceID        string `json:"-"`
-	MessageSource  string `json:"-"`
+	ConversationID    string       `json:"conversationId"`
+	Input             string       `json:"input"`
+	SpeechEnabled     bool         `json:"speechEnabled"`
+	TraceID           string       `json:"-"`
+	MessageSource     string       `json:"-"`
+	ReplyIntent       *ReplyIntent `json:"-"`
+	RecentTargetReply string       `json:"-"`
 }
 
 type SubmitCompiledTurnRequest struct {
@@ -30,6 +32,8 @@ type SubmitCompiledTurnRequest struct {
 	AvailableVisualStates []VisualState `json:"availableVisualStates"`
 	TraceID               string        `json:"-"`
 	MessageSource         string        `json:"-"`
+	ReplyIntent           *ReplyIntent  `json:"-"`
+	RecentTargetReply     string        `json:"-"`
 }
 
 type TurnOutcome struct {

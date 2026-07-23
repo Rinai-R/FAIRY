@@ -176,6 +176,25 @@ var schemaConstraints = []schemaConstraint{
 	{"owner_identities", "owner_identities_namespace_check", "CHECK (namespace ~ '^[a-z0-9._-]{1,64}$')"},
 	{"owner_identities", "owner_identities_digest_check", "CHECK (subject_digest ~ '^[0-9a-f]{64}$')"},
 	{"owner_identities", "owner_identities_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
+	{"social_memory_entries", "social_memory_entries_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
+	{"social_memory_entries", "social_memory_entries_kind_check", "CHECK (kind IN ('episode', 'expression', 'behavior'))"},
+	{"social_memory_entries", "social_memory_entries_situation_check", "CHECK (situation <> '')"},
+	{"social_memory_entries", "social_memory_entries_content_check", "CHECK (content <> '')"},
+	{"social_memory_entries", "social_memory_entries_recall_cue_check", "CHECK (recall_cue <> '')"},
+	{"social_memory_entries", "social_memory_entries_hash_check", "CHECK (content_hash ~ '^[0-9a-f]{64}$')"},
+	{"social_memory_entries", "social_memory_entries_status_check", "CHECK (status IN ('active', 'suppressed'))"},
+	{"social_memory_entries", "social_memory_entries_source_range_check", "CHECK (source_start_ms > 0 AND source_end_ms >= source_start_ms)"},
+	{"social_memory_entries", "social_memory_entries_counts_check", "CHECK (use_count >= 0 AND positive_count >= 0 AND negative_count >= 0 AND unknown_count >= 0)"},
+	{"social_memory_entries", "social_memory_entries_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
+	{"social_memory_entries", "social_memory_entries_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
+	{"social_memory_entries", "social_memory_entries_scope_hash_key", "UNIQUE (conversation_id, kind, content_hash)"},
+	{"social_reply_feedback", "social_reply_feedback_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
+	{"social_reply_feedback", "social_reply_feedback_turn_fk", "FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE CASCADE"},
+	{"social_reply_feedback", "social_reply_feedback_outcome_check", "CHECK (outcome IN ('positive', 'negative', 'unknown'))"},
+	{"social_reply_feedback", "social_reply_feedback_entry_ids_check", "CHECK (jsonb_typeof(entry_ids_json) = 'array')"},
+	{"social_reply_feedback", "social_reply_feedback_observed_count_check", "CHECK (observed_message_count >= 0)"},
+	{"social_reply_feedback", "social_reply_feedback_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
+	{"social_reply_feedback", "social_reply_feedback_turn_key", "UNIQUE (turn_id)"},
 }
 
 var schemaIndexes = []schemaIndex{
@@ -200,6 +219,11 @@ var schemaIndexes = []schemaIndex{
 	{"vector_rebuild_runs_status", "CREATE INDEX IF NOT EXISTS vector_rebuild_runs_status ON vector_rebuild_runs(status, updated_at_ms DESC, id ASC)"},
 	{"vector_reconciliation_runs_status", "CREATE INDEX IF NOT EXISTS vector_reconciliation_runs_status ON vector_reconciliation_runs(status, updated_at_ms DESC, id ASC)"},
 	{"endpoint_conversations_conversation", "CREATE INDEX IF NOT EXISTS endpoint_conversations_conversation ON endpoint_conversations(conversation_id)"},
+	{"social_memory_entries_scope_kind", "CREATE INDEX IF NOT EXISTS social_memory_entries_scope_kind ON social_memory_entries(character_id, conversation_id, kind, status, updated_at_ms DESC, id ASC)"},
+	{"social_memory_entries_situation_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_situation_trgm ON social_memory_entries USING gin (situation public.gin_trgm_ops)"},
+	{"social_memory_entries_content_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_content_trgm ON social_memory_entries USING gin (content public.gin_trgm_ops)"},
+	{"social_memory_entries_recall_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_recall_trgm ON social_memory_entries USING gin (recall_cue public.gin_trgm_ops)"},
+	{"social_reply_feedback_scope_created", "CREATE INDEX IF NOT EXISTS social_reply_feedback_scope_created ON social_reply_feedback(character_id, conversation_id, created_at_ms DESC, id ASC)"},
 }
 
 func Migrate(ctx context.Context, pool *Pool) error {

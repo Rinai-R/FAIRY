@@ -132,7 +132,7 @@ func TestModelServiceExecuteRequestUsesStoredSecretWithoutReturningIt(t *testing
 	if events[1].Type != "usage" || events[1].Usage.PromptTokens != 3 || events[1].Usage.CompletionTokens != 1 {
 		t.Fatalf("usage event = %#v", events[1])
 	}
-	if events[2].Type != "completed" {
+	if events[2].Type != "completed" || events[2].FinishReason != "stop" {
 		t.Fatalf("completed event = %#v", events[2])
 	}
 }

@@ -16,6 +16,7 @@ type Usage struct {
 type StreamEvent struct {
 	Type          string         `json:"type"`
 	Data          string         `json:"data,omitempty"`
+	FinishReason  string         `json:"finishReason,omitempty"`
 	Usage         *Usage         `json:"usage,omitempty"`
 	FunctionCalls []FunctionCall `json:"functionCalls,omitempty"`
 }

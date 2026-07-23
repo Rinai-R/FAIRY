@@ -19,8 +19,12 @@ func TestInteractionMemoryPolicySelectsToolsAndInstructions(t *testing.T) {
 		t.Fatalf("public tools = %#v", tools)
 	}
 	instructions := RespondInstructionsForInteraction(true, public)
-	if strings.Contains(instructions, "personal memories") || !strings.Contains(instructions, toolPublicMemorySearch) {
+	if strings.Contains(instructions, "personal memories") || !strings.Contains(instructions, toolPublicMemorySearch) || !strings.Contains(instructions, "PUBLIC GROUP IDENTITY OVERRIDE") || !strings.Contains(instructions, "high-performance robot") {
 		t.Fatalf("public instructions violate memory policy: %s", instructions)
+	}
+	privateInstructions := RespondInstructionsForInteraction(true, desktopResolved())
+	if strings.Contains(privateInstructions, "PUBLIC GROUP IDENTITY OVERRIDE") {
+		t.Fatalf("private instructions inherited public identity boundary: %s", privateInstructions)
 	}
 	for _, tool := range RespondToolSpecsForInteraction(true, desktopResolved()) {
 		if tool.Name == toolMemorySearch {
@@ -120,12 +124,12 @@ func TestPublicPromptAndCompactionOmitPrivateProfile(t *testing.T) {
 
 func TestBindResolveInteractionAndMissingBindingFailure(t *testing.T) {
 	service := NewCompanionService()
-	service.memory = participationMemory{binding: publicAmbientBinding(), found: true}
+	service.memory = &participationMemory{binding: publicAmbientBinding(), found: true}
 	resolved, err := service.ResolveInteraction("conv-durable")
 	if err != nil || resolved != publicAmbientResolved() {
 		t.Fatalf("resolved = %#v, %v", resolved, err)
 	}
-	service.memory = participationMemory{}
+	service.memory = &participationMemory{}
 	resolved, err = service.ResolveInteraction("conv-durable")
 	if err != nil || resolved != publicAmbientResolved() {
 		t.Fatalf("cached resolved = %#v, %v", resolved, err)
@@ -133,7 +137,7 @@ func TestBindResolveInteractionAndMissingBindingFailure(t *testing.T) {
 	if _, err := service.ResolveInteraction("missing"); err == nil || !strings.Contains(err.Error(), "no interaction binding") {
 		t.Fatalf("missing binding error = %v", err)
 	}
-	service.memory = participationMemory{lookupErr: errors.New("db down")}
+	service.memory = &participationMemory{lookupErr: errors.New("db down")}
 	if _, err := service.ResolveInteraction("db-error"); err == nil || !strings.Contains(err.Error(), "db down") {
 		t.Fatalf("lookup error = %v", err)
 	}

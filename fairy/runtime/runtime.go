@@ -50,15 +50,16 @@ type Dependencies struct {
 
 // Runtime owns long-lived Core services for the HTTP/SSE Session Core.
 type Runtime struct {
-	ConfigRoot  string
-	Logger      *zap.Logger
-	Events      *EventHub
-	Logs        *observability.LogStore
-	HTTPMetrics *observability.HTTPMetrics
-	Messages    *observability.MessageMetrics
-	StartedAt   time.Time
-	Database    *pgstore.Pool
-	VectorIndex *vectorindex.Client
+	ConfigRoot    string
+	Logger        *zap.Logger
+	Events        *EventHub
+	Participation *ParticipationHub
+	Logs          *observability.LogStore
+	HTTPMetrics   *observability.HTTPMetrics
+	Messages      *observability.MessageMetrics
+	StartedAt     time.Time
+	Database      *pgstore.Pool
+	VectorIndex   *vectorindex.Client
 
 	MemoryStore  *memory.Store
 	Identity     *identity.Store
@@ -158,27 +159,28 @@ func Open(options Options) (*Runtime, error) {
 	messageMetrics := observability.NewMessageMetrics()
 
 	rt := &Runtime{
-		ConfigRoot:   configRoot,
-		Logger:       logger,
-		Events:       NewEventHub(),
-		Logs:         logStore,
-		HTTPMetrics:  httpMetrics,
-		Messages:     messageMetrics,
-		StartedAt:    time.Now(),
-		Database:     database,
-		VectorIndex:  vectorClient,
-		MemoryStore:  memoryStore,
-		Identity:     identityStore,
-		Memory:       memory.NewMemoryServiceWithStore(configRoot, memoryStore),
-		Secret:       secretStore,
-		Model:        modelService,
-		Companion:    companionService,
-		Character:    characterService,
-		Config:       configService,
-		ConfigReader: configReader,
-		Speech:       speechService,
-		Profile:      profileService,
-		WebSearch:    webSearch,
+		ConfigRoot:    configRoot,
+		Logger:        logger,
+		Events:        NewEventHub(),
+		Participation: NewParticipationHub(),
+		Logs:          logStore,
+		HTTPMetrics:   httpMetrics,
+		Messages:      messageMetrics,
+		StartedAt:     time.Now(),
+		Database:      database,
+		VectorIndex:   vectorClient,
+		MemoryStore:   memoryStore,
+		Identity:      identityStore,
+		Memory:        memory.NewMemoryServiceWithStore(configRoot, memoryStore),
+		Secret:        secretStore,
+		Model:         modelService,
+		Companion:     companionService,
+		Character:     characterService,
+		Config:        configService,
+		ConfigReader:  configReader,
+		Speech:        speechService,
+		Profile:       profileService,
+		WebSearch:     webSearch,
 		Bootstrap: NewBootstrapService(BootstrapOptions{
 			AppName:                "FAIRY",
 			MigrationStage:         "session-core",
@@ -216,6 +218,7 @@ func Open(options Options) (*Runtime, error) {
 			fmt.Println(string(line))
 		}
 	})
+	companion.AttachParticipationEventEmitter(companionService, rt.Participation.Publish)
 
 	keepDependencies = true
 	return rt, nil
@@ -228,6 +231,7 @@ func (rt *Runtime) Close() error {
 	rt.closeOnce.Do(func() {
 		rt.closeErr = rt.Companion.Close()
 		rt.Events.Close()
+		rt.Participation.Close()
 		rt.Messages.Close()
 		rt.Logs.Close()
 		if rt.ownVector && rt.VectorIndex != nil {

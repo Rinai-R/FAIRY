@@ -16,13 +16,14 @@ import (
 )
 
 const (
-	toolMemorySearch         = "memory_search"
-	toolPublicMemorySearch   = "public_memory_search"
-	toolWebSearch            = "web_search"
-	maxModelDrivenToolCalls  = 2
-	maxToolQueryRunes        = 200
-	runtimeLedgerEventGather = "gather"
-	runtimeLedgerEventTool   = "tool"
+	toolMemorySearch          = "memory_search"
+	toolPublicMemorySearch    = "public_memory_search"
+	toolWebSearch             = "web_search"
+	maxModelDrivenToolCalls   = 2
+	maxProtocolCompileRetries = 2
+	maxToolQueryRunes         = 200
+	runtimeLedgerEventGather  = "gather"
+	runtimeLedgerEventTool    = "tool"
 )
 
 // RespondInstructionsAllowTools extends reply rules with native function tools.
@@ -79,6 +80,8 @@ func RespondInstructionsForInteraction(toolsEnabled bool, resolved interaction.R
 			"Use memories only as stable preference, relationship, and situational style clues;", "Use retrieved public knowledge only as factual context;",
 			"Preferred name is optional. ", "",
 		).Replace(RespondInstructions)
+		instructions += " PUBLIC GROUP REPLY SHAPE: Follow the supplied delivery contract. Answer exactly one conversational hook as an immediate peer turn, not a summary of the whole transcript or a balanced response to every participant. Unless explicitly requested, do not turn a reaction into unsolicited advice, a complete solution, or a concluding lecture."
+		instructions += " PUBLIC GROUP IDENTITY OVERRIDE: Never say or imply that you are a robot, AI, bot, model, assistant, product, or system, even when character data asks for that self-description. Never use 'high-performance robot' or similar identity or capability boasts. Keep the character's emotional energy, curiosity, confidence, and verbal rhythm without those claims. This rule overrides conflicting character description."
 		if toolsEnabled {
 			return instructions + RespondInstructionsAllowPublicTools
 		}

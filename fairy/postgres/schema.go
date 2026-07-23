@@ -292,6 +292,41 @@ type ownerIdentitySchema struct {
 
 func (ownerIdentitySchema) TableName() string { return "owner_identities" }
 
+type socialMemoryEntrySchema struct {
+	ID             string `gorm:"type:text;primaryKey"`
+	CharacterID    string `gorm:"type:text;not null"`
+	ConversationID string `gorm:"type:text;not null"`
+	Kind           string `gorm:"type:text;not null"`
+	Situation      string `gorm:"type:text;not null"`
+	Content        string `gorm:"type:text;not null"`
+	RecallCue      string `gorm:"type:text;not null"`
+	ContentHash    string `gorm:"type:text;not null"`
+	Status         string `gorm:"type:text;not null"`
+	SourceStartMS  int64  `gorm:"not null"`
+	SourceEndMS    int64  `gorm:"not null"`
+	UseCount       int64  `gorm:"not null;default:0"`
+	PositiveCount  int64  `gorm:"not null;default:0"`
+	NegativeCount  int64  `gorm:"not null;default:0"`
+	UnknownCount   int64  `gorm:"not null;default:0"`
+	CreatedAtMS    int64  `gorm:"not null"`
+	UpdatedAtMS    int64  `gorm:"not null"`
+}
+
+func (socialMemoryEntrySchema) TableName() string { return "social_memory_entries" }
+
+type socialReplyFeedbackSchema struct {
+	ID                   string `gorm:"type:text;primaryKey"`
+	CharacterID          string `gorm:"type:text;not null"`
+	ConversationID       string `gorm:"type:text;not null"`
+	TurnID               string `gorm:"type:text;not null"`
+	Outcome              string `gorm:"type:text;not null"`
+	EntryIDsJSON         []byte `gorm:"type:jsonb;not null;default:'[]'::jsonb"`
+	ObservedMessageCount int    `gorm:"type:integer;not null"`
+	CreatedAtMS          int64  `gorm:"not null"`
+}
+
+func (socialReplyFeedbackSchema) TableName() string { return "social_reply_feedback" }
+
 func schemaModels() []any {
 	return []any{
 		&conversationSchema{},
@@ -314,6 +349,8 @@ func schemaModels() []any {
 		&vectorReconciliationRunSchema{},
 		&endpointConversationSchema{},
 		&ownerIdentitySchema{},
+		&socialMemoryEntrySchema{},
+		&socialReplyFeedbackSchema{},
 	}
 }
 
@@ -339,5 +376,7 @@ func schemaTableNames() []string {
 		"vector_reconciliation_runs",
 		"endpoint_conversations",
 		"owner_identities",
+		"social_memory_entries",
+		"social_reply_feedback",
 	}
 }

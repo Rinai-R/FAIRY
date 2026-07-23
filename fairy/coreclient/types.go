@@ -2,6 +2,7 @@ package coreclient
 
 import (
 	"encoding/json"
+	"time"
 
 	"fairy/interaction"
 	"fairy/observability"
@@ -98,6 +99,35 @@ type TurnEvent struct {
 	Sequence       uint64          `json:"sequence"`
 	State          string          `json:"state"`
 	Payload        json.RawMessage `json:"payload"`
+}
+
+type ParticipationEvent struct {
+	ConversationID   string           `json:"conversationId"`
+	Generation       uint64           `json:"generation"`
+	EvaluationReason string           `json:"evaluationReason"`
+	Action           string           `json:"action"`
+	TargetMessageID  string           `json:"targetMessageId,omitempty"`
+	WaitSeconds      int              `json:"waitSeconds,omitempty"`
+	Usage            []LaneModelUsage `json:"usage,omitempty"`
+	ObservedAt       time.Time        `json:"observedAt"`
+}
+
+type CachedTokenObservation struct {
+	Status string  `json:"status"`
+	Tokens *uint64 `json:"tokens,omitempty"`
+}
+
+type LaneUsage struct {
+	InputTokens       *uint64                `json:"inputTokens"`
+	OutputTokens      *uint64                `json:"outputTokens"`
+	CachedInputTokens CachedTokenObservation `json:"cachedInputTokens"`
+	CacheWriteTokens  CachedTokenObservation `json:"cacheWriteTokens"`
+}
+
+type LaneModelUsage struct {
+	Lane          string    `json:"lane"`
+	HistoryWindow uint64    `json:"historyWindow"`
+	Usage         LaneUsage `json:"usage"`
 }
 
 type CharacterRecord struct {

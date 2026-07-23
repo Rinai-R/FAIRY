@@ -83,7 +83,7 @@ func TestAmbientInboxSerializesAndKeepsLatestTwenty(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := receiveAmbientBatch(t, started)
-	for i := 1; i <= maxAmbientObservations+5; i++ {
+	for i := 1; i <= maxAmbientCacheObservations+5; i++ {
 		if err := service.ObserveAmbient("c1", testAmbientObservation(i)); err != nil {
 			t.Fatal(err)
 		}
@@ -91,8 +91,11 @@ func TestAmbientInboxSerializesAndKeepsLatestTwenty(t *testing.T) {
 	target := first.messages[0].MessageID
 	release <- ParticipationResult{Action: ParticipationReply, TargetMessageID: &target}
 	latest := receiveAmbientBatch(t, started)
-	if len(latest.messages) != maxAmbientObservations || latest.messages[0].MessageID != "m6" || latest.messages[len(latest.messages)-1].MessageID != "m25" {
+	if len(latest.messages) != maxAmbientObservations || latest.messages[0].MessageID != "m26" || latest.messages[len(latest.messages)-1].MessageID != "m45" {
 		t.Fatalf("latest messages = %#v", latest.messages)
+	}
+	if len(latest.cacheMessages) != maxAmbientObservations+5 || latest.cacheMessages[0].MessageID != "m21" || latest.cacheMessages[len(latest.cacheMessages)-1].MessageID != "m45" {
+		t.Fatalf("cache messages = %#v", latest.cacheMessages)
 	}
 	release <- ParticipationResult{Action: ParticipationSilent}
 	deadline := time.Now().Add(time.Second)
@@ -154,12 +157,15 @@ func TestAmbientInboxDoesNotCancelActiveReplyTurn(t *testing.T) {
 	service.ambient.decideHook = func(_ context.Context, batch ambientBatch) (ParticipationResult, error) {
 		if calls.Add(1) == 1 {
 			target := batch.messages[0].MessageID
-			return ParticipationResult{Action: ParticipationReply, TargetMessageID: &target}, nil
+			return ParticipationResult{Action: ParticipationReply, TargetMessageID: &target, Intent: &ReplyIntent{ReplyAct: "接话", Tone: "自然", RelationshipSignal: "群友", ReplyMode: "brief", Focus: "当前消息", ExpressionQuery: "轻松接话"}}, nil
 		}
 		latest <- batch
 		return ParticipationResult{Action: ParticipationSilent}, nil
 	}
-	service.ambient.submitHook = func(SubmitTurnRequest) (TurnOutcome, error) {
+	service.ambient.submitHook = func(request SubmitTurnRequest) (TurnOutcome, error) {
+		if request.ReplyIntent == nil || request.ReplyIntent.ReplyAct != "接话" {
+			t.Errorf("reply intent was not propagated: %#v", request.ReplyIntent)
+		}
 		close(replyStarted)
 		<-releaseReply
 		return TurnOutcome{}, nil
@@ -186,6 +192,77 @@ func TestAmbientInboxDoesNotCancelActiveReplyTurn(t *testing.T) {
 	batch := receiveAmbientBatch(t, latest)
 	if batch.generation != 2 || len(batch.messages) != 2 || batch.messages[1].MessageID != "m2" {
 		t.Fatalf("post-reply batch = %#v", batch)
+	}
+}
+
+func TestAmbientInboxSuppliesRecentReplyOnlyForSameSender(t *testing.T) {
+	service := NewCompanionService()
+	bindAmbientInteraction(t, service)
+	defer service.Close()
+	service.ambient.decideHook = func(_ context.Context, batch ambientBatch) (ParticipationResult, error) {
+		target := batch.messages[len(batch.messages)-1].MessageID
+		return ParticipationResult{Action: ParticipationReply, TargetMessageID: &target, Intent: &ReplyIntent{
+			ReplyAct: "接话", Tone: "自然", RelationshipSignal: "群友", ReplyMode: "brief", Focus: "新消息", ExpressionQuery: "自然接话",
+		}}, nil
+	}
+	requests := make(chan SubmitTurnRequest, 3)
+	service.ambient.submitHook = func(request SubmitTurnRequest) (TurnOutcome, error) {
+		requests <- request
+		return TurnOutcome{ResponseText: "上一条已经说过的内容"}, nil
+	}
+	if err := service.ObserveAmbient("c1", testAmbientObservation(1)); err != nil {
+		t.Fatal(err)
+	}
+	first := receiveSubmitTurnRequest(t, requests)
+	if first.RecentTargetReply != "" {
+		t.Fatalf("first recent reply = %q", first.RecentTargetReply)
+	}
+	waitForAmbientRecentReply(t, service, "u1")
+	if err := service.ObserveAmbient("c1", testAmbientObservation(2)); err != nil {
+		t.Fatal(err)
+	}
+	second := receiveSubmitTurnRequest(t, requests)
+	if second.RecentTargetReply != "上一条已经说过的内容" {
+		t.Fatalf("same-sender recent reply = %q", second.RecentTargetReply)
+	}
+	other := testAmbientObservation(3)
+	other.SenderID = "u2"
+	if err := service.ObserveAmbient("c1", other); err != nil {
+		t.Fatal(err)
+	}
+	third := receiveSubmitTurnRequest(t, requests)
+	if third.RecentTargetReply != "" {
+		t.Fatalf("different-sender recent reply = %q", third.RecentTargetReply)
+	}
+}
+
+func waitForAmbientRecentReply(t *testing.T, service *CompanionService, senderID string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		service.ambient.mu.Lock()
+		state := service.ambient.states["c1"]
+		value := ""
+		if state != nil {
+			value = state.recentRepliesBySender[senderID]
+		}
+		service.ambient.mu.Unlock()
+		if value != "" {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("timed out waiting for recent reply state")
+}
+
+func receiveSubmitTurnRequest(t *testing.T, ch <-chan SubmitTurnRequest) SubmitTurnRequest {
+	t.Helper()
+	select {
+	case request := <-ch:
+		return request
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for submit request")
+		return SubmitTurnRequest{}
 	}
 }
 

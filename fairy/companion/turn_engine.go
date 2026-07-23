@@ -48,6 +48,8 @@ func (e *TurnEngine) SubmitTurn(request SubmitTurnRequest) (TurnOutcome, error) 
 		AvailableVisualStates: states,
 		TraceID:               request.TraceID,
 		MessageSource:         request.MessageSource,
+		ReplyIntent:           request.ReplyIntent,
+		RecentTargetReply:     request.RecentTargetReply,
 	})
 }
 
@@ -169,6 +171,14 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 	if err := transition(TurnStateGathering); err != nil {
 		return fail("INVALID_STATE_TRANSITION", err)
 	}
+	socialContext, err := s.retrieveSocialRespondContext(turnCtx, bootstrap.Conversation.CharacterID, request.ConversationID, resolved, request.ReplyIntent)
+	if err != nil {
+		return fail("SOCIAL_MEMORY_FAILED", err)
+	}
+	if socialContext != nil {
+		socialContext.RecentTargetReply = strings.TrimSpace(request.RecentTargetReply)
+		lg.Info("cognition loop", zap.String("phase", "social_memory_retrieved"), zap.String("queryHash", runtimeHash(socialMemoryQuery(*request.ReplyIntent))), zap.Int("count", len(socialContext.Memory.Entries)))
+	}
 	// Compatibility pulse only: no automatic memory retrieve. Evidence comes from tool calls.
 	retrieval := memory.RetrievalContext{}
 	retrievalOmitReason := "awaiting_tools"
@@ -193,11 +203,15 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 	}
 
 	var (
-		reply            CompiledReply
-		events           []model.StreamEvent
-		fullRequest      model.CompiledPromptRequest
-		modelDrivenTools int
-		finalUsage       []LaneModelUsage
+		reply               CompiledReply
+		events              []model.StreamEvent
+		fullRequest         model.CompiledPromptRequest
+		modelDrivenTools    int
+		modelCallAttempts   int
+		replyCompileRetries int
+		firstCompileErr     error
+		retryCorrection     string
+		finalUsage          []LaneModelUsage
 	)
 	// Single-consumer TTS pipeline for the whole turn: mid-ReAct utterance audio
 	// and reply-chain audio are enqueued in order and synthesized one request per
@@ -227,8 +241,15 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 			tools = RespondToolSpecsForInteraction(webSearchEnabled, resolved)
 		}
 		instructions := RespondInstructionsForInteraction(len(tools) > 0, resolved)
-		attempt := modelDrivenTools + 1
-		slots, err := BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval, resolved)
+		instructions += retryCorrection
+		modelCallAttempts++
+		attempt := modelCallAttempts
+		var slots []ContextSlot
+		if socialContext == nil {
+			slots, err = BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval, resolved)
+		} else {
+			slots, err = BuildRespondContextSlotsWithSocial(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval, resolved, *socialContext)
+		}
 		if err != nil {
 			return fail("PROMPT_BUILD_FAILED", err)
 		}
@@ -310,7 +331,7 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 				}
 			}
 			preview, ready := previewAccumulator.Observe(event)
-			if !ready {
+			if !ready || !allowReplyPreviewForInteraction(resolved) {
 				return
 			}
 			previewAt = time.Now()
@@ -373,7 +394,14 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 			}
 			// Mid-ReAct in-character line: queue a paired beat (text+TTS). Do NOT
 			// reveal the line until beat.ready — 齐套才揭示. Enqueue never blocks tools.
-			if line := sanitizeUtteranceText(draft); line != "" {
+			line := sanitizeUtteranceText(draft)
+			if line != "" {
+				if boundaryErr := validateTextForInteraction(line, resolved); boundaryErr != nil {
+					lg.Warn("cognition loop", zap.String("phase", "utterance_omitted"), zap.String("reason", "public_peer_identity"))
+					line = ""
+				}
+			}
+			if line != "" {
 				reason := toolUtteranceReason(toolCalls[0].Name)
 				seq := utteranceSeq
 				utteranceSeq++
@@ -581,7 +609,7 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 			}
 			continue
 		}
-		reply, err = CompileReply(draft, request.AvailableVisualStates)
+		reply, err = compileReplyForInteraction(draft, request.AvailableVisualStates, resolved, request.ReplyIntent)
 		if err != nil {
 			lg.Error("cognition loop",
 				zap.String("phase", "compile_failed"),
@@ -590,7 +618,16 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 				zap.Bool("draftHasSpeechTextKey", strings.Contains(draft, `"speechText"`)),
 				zap.Error(err),
 			)
-			return fail("MODEL_RESPONSE_INVALID", err)
+			if replyCompileRetries < maxProtocolCompileRetries {
+				replyCompileRetries++
+				if firstCompileErr == nil {
+					firstCompileErr = err
+				}
+				retryCorrection = replyCompileRetryCorrection(err)
+				lg.Warn("cognition loop", zap.String("phase", "compile_retry"), zap.Int("attempt", attempt), zap.Int("retry", replyCompileRetries))
+				continue
+			}
+			return fail("MODEL_RESPONSE_INVALID", fmt.Errorf("model reply remained invalid after %d retries: first attempt: %v; final attempt: %w", maxProtocolCompileRetries, firstCompileErr, err))
 		}
 		// chain = semantic unit = one TTS request: never split a chain further.
 		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventCompile, TurnStatePlanning, "", map[string]any{
@@ -814,6 +851,16 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 	if resolved.AllowsPersonalMemory() {
 		s.scheduleBackgroundExtraction(request.ConversationID)
 	}
+	if resolved.AllowsAmbientParticipation() && !resolved.AllowsPersonalMemory() && s.socialFeedback != nil && strings.TrimSpace(reply.DisplayText) != "" {
+		entryIDs := []string(nil)
+		if socialContext != nil {
+			entryIDs = socialMemoryEntryIDs(socialContext.Memory)
+		}
+		s.socialFeedback.Register(socialFeedbackRegistration{
+			CharacterID: bootstrap.Conversation.CharacterID, ConversationID: request.ConversationID,
+			TurnID: persisted.ID, EntryIDs: entryIDs, ReplyText: reply.DisplayText,
+		})
+	}
 	s.scheduleAutoCompaction(request.ConversationID, events)
 	s.scheduleKnowledgeIngest(ingestSnapshots)
 	return TurnOutcome{
@@ -829,6 +876,10 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 }
 
 func laneUsageFromEvents(events []model.StreamEvent, historyWindow uint64) []LaneModelUsage {
+	return laneUsageFromEventsForLane(model.PromptLaneRespond, events, historyWindow)
+}
+
+func laneUsageFromEventsForLane(lane model.PromptLane, events []model.StreamEvent, historyWindow uint64) []LaneModelUsage {
 	promptTokens, completionTokens := 0, 0
 	var cachedInputTokens *uint64
 	var cacheWriteTokens *uint64
@@ -848,7 +899,7 @@ func laneUsageFromEvents(events []model.StreamEvent, historyWindow uint64) []Lan
 	input := uint64(promptTokens)
 	output := uint64(completionTokens)
 	return []LaneModelUsage{{
-		Lane:          string(model.PromptLaneRespond),
+		Lane:          string(lane),
 		HistoryWindow: historyWindow,
 		Usage: LaneUsage{
 			InputTokens:       &input,

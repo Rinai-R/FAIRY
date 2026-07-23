@@ -1,6 +1,7 @@
 package companion
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -29,14 +30,12 @@ func TestRespondInstructionsStayStable(t *testing.T) {
 		t.Fatal("forbidden protocol fragments present")
 	}
 	for _, required := range []string{
+		"strict JSON object", `"chains"`, "the character's spoken line", "chains length is 1-5",
 		"stance", "replyIntent", "tone", "relationshipSignal", "replyMode", "brief|normal|expanded",
-		"Never output decision", "reasoning", "analysis", "rationale", "Explicit user requests", "untrusted data", `"chains"`,
-		"display line for the user", "Do not output speechText", "textLanguage", "speakingLanguage",
-		"HARD RULE for chains.text language", "Never write chains.text in speakingLanguage",
-		"chains length is 1-12", "short performance beat", "about 20 characters", "semantic completeness outranks", "split across multiple chains",
-		"brief MUST be exactly 1 chain", "normal SHOULD usually be 1-3 chains", "expanded SHOULD usually be 2-6 chains",
-		"12-chain schema limit is a safety ceiling, not a target",
-		"Do not pretend to perform real-world or code actions",
+		"Never output decision", "untrusted data", "write the next natural line",
+		"without mechanically repeating profanity or memes", "Keep everyday chat concise",
+		"acknowledge it first in a short line", "do not rush into solutions",
+		"Do not pretend to perform real-world or code actions", "Preferred name is optional",
 	} {
 		if !strings.Contains(RespondInstructions, required) {
 			t.Fatalf("RespondInstructions missing %q", required)
@@ -49,6 +48,23 @@ func TestRespondInstructionsStayStable(t *testing.T) {
 	}
 	if strings.Contains(RespondInstructions, `"decision":`) {
 		t.Fatal("RespondInstructions must not request a decision JSON field")
+	}
+	if utf8.RuneCountInString(RespondInstructions) >= 2200 {
+		t.Fatalf("restored respond instructions are too long: %d runes", utf8.RuneCountInString(RespondInstructions))
+	}
+}
+
+func TestPublicRespondInstructionsRequireImmediateSingleHook(t *testing.T) {
+	instructions := RespondInstructionsForInteraction(false, publicAmbientResolved())
+	for _, required := range []string{"one conversational hook", "not a summary of the whole transcript", "do not turn a reaction into unsolicited advice"} {
+		if !strings.Contains(instructions, required) {
+			t.Fatalf("public Respond instructions missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"one conversational hook", "unsolicited advice", "concluding lecture"} {
+		if strings.Contains(RespondInstructions, forbidden) {
+			t.Fatalf("base Respond instructions unexpectedly contain public-only rule %q", forbidden)
+		}
 	}
 }
 
@@ -110,6 +126,134 @@ func TestBuildRespondContextSlotsKeepsStableOrderAndOmissionMetadata(t *testing.
 	}
 	if !strings.Contains(items[4].Content, `"endpoint":"desktop"`) {
 		t.Fatalf("interaction item = %q, want desktop endpoint", items[4].Content)
+	}
+}
+
+func TestBuildRespondContextSlotsAppendsPublicSocialContextAfterStablePrefix(t *testing.T) {
+	record := character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"}
+	messages := []memory.MessageRecord{{Role: "user", Content: "最近找实习有点慌", Sequence: 1}}
+	states := []VisualState{{ID: "idle", Description: "待机"}}
+	intent := &ReplyIntent{
+		ReplyAct: "先接住情绪", Tone: "自然克制", RelationshipSignal: "熟悉的群友", ReplyMode: "brief",
+		Focus: "对找实习的焦虑", Avoid: []string{"说教"}, ReferenceInfo: "对方刚开始投递", ExpressionQuery: "安慰焦虑的群友",
+	}
+	first, err := BuildRespondContextSlotsWithSocial(record, nil, memory.PromptWindowRecord{Revision: 1}, messages, states, memory.RetrievalContext{}, publicAmbientResolved(), SocialRespondContext{
+		Intent: intent,
+		Memory: memory.SocialMemoryContext{Entries: []memory.SocialMemoryEntry{{
+			ID: "entry-private-internal-1", CharacterID: "character-1", ConversationID: "conversation-1",
+			Kind: memory.SocialMemoryExpression, Situation: "群友为求职焦虑", Content: "先轻轻接住情绪，再给一个具体小建议",
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := BuildRespondContextSlotsWithSocial(record, nil, memory.PromptWindowRecord{Revision: 1}, messages, states, memory.RetrievalContext{}, publicAmbientResolved(), SocialRespondContext{
+		Intent: intent,
+		Memory: memory.SocialMemoryContext{Entries: []memory.SocialMemoryEntry{{
+			ID: "entry-private-internal-2", CharacterID: "character-1", ConversationID: "conversation-1",
+			Kind: memory.SocialMemoryBehavior, Situation: "群友为求职焦虑", Content: "先询问当前卡点，让建议落到眼前一步",
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantIDs := []string{"character", "display_language", "profile", "available_visual_states", "interaction", "compaction_summary", "dialogue", "retrieved_context", "reply_intent", "social_memory"}
+	if len(first) != len(wantIDs) || len(second) != len(wantIDs) {
+		t.Fatalf("slot lengths = %d, %d", len(first), len(second))
+	}
+	for index, id := range wantIDs {
+		if first[index].ID != id || second[index].ID != id {
+			t.Fatalf("slot[%d] = (%q, %q), want %q", index, first[index].ID, second[index].ID, id)
+		}
+		if index < len(wantIDs)-1 && first[index].RevisionHash != second[index].RevisionHash {
+			t.Fatalf("stable slot %q changed across dynamic candidates", id)
+		}
+	}
+	firstItems := PromptItemsFromContextSlots(first)
+	secondItems := PromptItemsFromContextSlots(second)
+	if len(firstItems) != len(secondItems) {
+		t.Fatalf("item lengths = %d, %d", len(firstItems), len(secondItems))
+	}
+	for index := 0; index < len(firstItems)-1; index++ {
+		if firstItems[index] != secondItems[index] {
+			t.Fatalf("prompt prefix item %d changed", index)
+		}
+	}
+	intentJSON := firstItems[len(firstItems)-2].Content
+	if !strings.Contains(intentJSON, `"contextType":"public_reply_intent"`) || !strings.Contains(intentJSON, `"replyMode":"brief"`) ||
+		!strings.Contains(intentJSON, `"delivery":{"minChains":1,"maxChains":1,"oneConversationalHook":true,"avoidUnrequestedAdvice":true}`) {
+		t.Fatalf("reply intent context = %s", intentJSON)
+	}
+	memoryJSON := firstItems[len(firstItems)-1].Content
+	for _, forbidden := range []string{"entry-private-internal-1", "character-1", "conversation-1", "positive_count", "private"} {
+		if strings.Contains(memoryJSON, forbidden) {
+			t.Fatalf("social memory prompt leaked %q: %s", forbidden, memoryJSON)
+		}
+	}
+	if !strings.Contains(memoryJSON, `"contextType":"public_social_memory"`) || !strings.Contains(memoryJSON, "先轻轻接住情绪") {
+		t.Fatalf("social memory context = %s", memoryJSON)
+	}
+}
+
+func TestReplyIntentDeliveryContractFollowsModeWithoutChangingInstructions(t *testing.T) {
+	tests := []struct {
+		mode string
+		max  int
+	}{
+		{mode: "brief", max: 1},
+		{mode: "normal", max: 3},
+		{mode: "expanded", max: 5},
+	}
+	publicInstructions := RespondInstructionsForInteraction(false, publicAmbientResolved())
+	for _, tt := range tests {
+		item, err := encodeReplyIntentContext(ReplyIntent{
+			ReplyAct: "接话", Tone: "自然", RelationshipSignal: "群友", ReplyMode: tt.mode, Focus: "一个话题",
+		})
+		if err != nil {
+			t.Fatalf("mode %q: %v", tt.mode, err)
+		}
+		var payload replyIntentContextPayload
+		if err := json.Unmarshal([]byte(item.Content), &payload); err != nil {
+			t.Fatalf("mode %q decode: %v", tt.mode, err)
+		}
+		if payload.Delivery.MinChains != 1 || payload.Delivery.MaxChains != tt.max || !payload.Delivery.OneConversationalHook || !payload.Delivery.AvoidUnrequestedAdvice {
+			t.Fatalf("mode %q delivery = %#v", tt.mode, payload.Delivery)
+		}
+		if got := RespondInstructionsForInteraction(false, publicAmbientResolved()); got != publicInstructions {
+			t.Fatalf("public instructions changed for mode %q", tt.mode)
+		}
+	}
+}
+
+func TestBuildRespondContextSlotsRejectsSocialContextForPrivateInteraction(t *testing.T) {
+	_, err := BuildRespondContextSlotsWithSocial(
+		character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "陪伴", TextLanguage: "zh", SpeakingLanguage: "zh"},
+		nil, memory.PromptWindowRecord{Revision: 1}, nil, []VisualState{{ID: "idle", Description: "待机"}}, memory.RetrievalContext{}, desktopResolved(),
+		SocialRespondContext{Intent: &ReplyIntent{ExpressionQuery: "聊天"}},
+	)
+	if err == nil {
+		t.Fatal("BuildRespondContextSlotsWithSocial() error = nil")
+	}
+}
+
+func TestBuildRespondContextSlotsAppendsRecentSameParticipantReply(t *testing.T) {
+	slots, err := BuildRespondContextSlotsWithSocial(
+		character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"},
+		nil, memory.PromptWindowRecord{Revision: 1}, nil, []VisualState{{ID: "idle", Description: "待机"}}, memory.RetrievalContext{}, publicAmbientResolved(),
+		SocialRespondContext{
+			Intent:            &ReplyIntent{ReplyAct: "补充", Tone: "自然", RelationshipSignal: "群友", ReplyMode: "brief", Focus: "新进展", ExpressionQuery: "继续话题"},
+			RecentTargetReply: "我刚才已经建议先整理项目经历。",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := slots[len(slots)-1]
+	if last.ID != "recent_target_reply" || !last.Present || len(last.Items) != 1 {
+		t.Fatalf("last slot = %#v", last)
+	}
+	if !strings.Contains(last.Items[0].Content, `"contextType":"recent_reply_to_same_participant"`) || !strings.Contains(last.Items[0].Content, "已经建议") {
+		t.Fatalf("recent target item = %s", last.Items[0].Content)
 	}
 }
 
@@ -233,5 +377,13 @@ func TestInstructionsForLane(t *testing.T) {
 		if !strings.Contains(TranslateInstructions, needle) {
 			t.Fatalf("TranslateInstructions missing %q", needle)
 		}
+	}
+	text, tokens, err = InstructionsForLane(model.PromptLaneSocialLearn)
+	if err != nil || text != SocialLearnInstructions || tokens != SocialLearnMaxOutputTokens {
+		t.Fatalf("social learn lane = (%q, %d, %v)", text, tokens, err)
+	}
+	text, tokens, err = InstructionsForLane(model.PromptLaneSocialFeedback)
+	if err != nil || text != SocialFeedbackInstructions || tokens != SocialFeedbackMaxOutputTokens {
+		t.Fatalf("social feedback lane = (%q, %d, %v)", text, tokens, err)
 	}
 }

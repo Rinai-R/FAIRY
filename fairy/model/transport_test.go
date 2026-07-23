@@ -172,8 +172,30 @@ func TestExecuteRequestParsesChatCompletionsSSE(t *testing.T) {
 	if events[2].Type != "usage" || events[2].Usage.PromptTokens != 3 || events[2].Usage.CompletionTokens != 2 {
 		t.Fatalf("usage event = %#v", events[2])
 	}
-	if events[3].Type != "completed" {
+	if events[3].Type != "completed" || events[3].FinishReason != "stop" {
 		t.Fatalf("completed event = %#v", events[3])
+	}
+}
+
+func TestExecuteRequestPreservesChatCompletionsLengthReasonWithoutContent(t *testing.T) {
+	events, err := executeWithServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"reasoning_content":"private reasoning"},"finish_reason":"length"}],"usage":{"prompt_tokens":900,"completion_tokens":2048}}`+"\n\n")
+	}, ProtocolChatCompletions, AuthRequirementNone)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(events) != 2 || events[0].Type != "usage" || events[0].Usage == nil {
+		t.Fatalf("events = %#v", events)
+	}
+	if events[0].Usage.CompletionTokens != 2048 {
+		t.Fatalf("usage = %#v", events[0].Usage)
+	}
+	if events[1].Type != "completed" || events[1].FinishReason != "length" {
+		t.Fatalf("completed event = %#v", events[1])
+	}
+	if strings.Contains(fmt.Sprintf("%#v", events), "private reasoning") {
+		t.Fatalf("events leaked reasoning content: %#v", events)
 	}
 }
 

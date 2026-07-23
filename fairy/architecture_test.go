@@ -168,3 +168,34 @@ func TestCompanionLogsDoNotEmitConversationTextFields(t *testing.T) {
 		})
 	}
 }
+
+func TestProductionGraphHasNoGroupEvaluator(t *testing.T) {
+	cmd := exec.Command("go", "list", "-deps", "./...")
+	dependencies, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go list -deps ./...: %v\n%s", err, dependencies)
+	}
+	for _, marker := range []string{"fairy/groupeval", "group-eval"} {
+		if strings.Contains(string(dependencies), marker) {
+			t.Fatalf("production dependency graph contains local evaluator marker %q", marker)
+		}
+	}
+	files, err := filepath.Glob("cmd/*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, filename := range files {
+		if strings.HasSuffix(filename, "_test.go") {
+			continue
+		}
+		source, err := os.ReadFile(filename)
+		if err != nil {
+			t.Fatalf("read %s: %v", filename, err)
+		}
+		for _, marker := range []string{`Use: "eval`, "groupeval", "group-eval"} {
+			if strings.Contains(string(source), marker) {
+				t.Fatalf("production CLI source %s contains local evaluator marker %q", filename, marker)
+			}
+		}
+	}
+}

@@ -19,6 +19,10 @@
 *.log
 logs.txt
 /fairy/fairy
+/fairy/artifacts/group-eval/
+/fairy/groupeval/
+/fairy/cmd/eval.go
+/fairy/cmd/eval_test.go
 /web/node_modules/
 /web/dist/
 /node_modules/
