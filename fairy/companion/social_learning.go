@@ -47,7 +47,8 @@ type SocialLearningEngine struct {
 }
 
 type socialLearnPayload struct {
-	Entries json.RawMessage `json:"entries"`
+	Entries     json.RawMessage `json:"entries"`
+	PersonNotes json.RawMessage `json:"personNotes"`
 }
 
 type socialLearnEntryDraft struct {
@@ -56,6 +57,23 @@ type socialLearnEntryDraft struct {
 	Content          string   `json:"content"`
 	RecallCue        string   `json:"recallCue"`
 	SourceMessageIDs []string `json:"sourceMessageIds"`
+}
+
+type socialLearnPersonNoteDraft struct {
+	SenderID         string   `json:"senderId"`
+	Note             string   `json:"note"`
+	SourceMessageIDs []string `json:"sourceMessageIds"`
+}
+
+type socialLearnCompiled struct {
+	Entries []memory.SocialMemoryEntryInput
+	Notes   []socialLearnCompiledPersonNote
+}
+
+type socialLearnCompiledPersonNote struct {
+	SenderID   string
+	SenderName string
+	Note       string
 }
 
 type socialLearnObservationPayload struct {
@@ -180,18 +198,29 @@ func (e *SocialLearningEngine) process(ctx context.Context, snapshot socialLearn
 	if strings.TrimSpace(draft) == "" {
 		return emptySocialLearningResultError(events)
 	}
-	entries, err := compileSocialLearning(draft, snapshot.Messages)
+	compiled, err := compileSocialLearning(draft, snapshot.Messages)
 	if err != nil {
 		return err
 	}
-	if len(entries) == 0 {
+	if len(compiled.Entries) == 0 && len(compiled.Notes) == 0 {
 		return nil
 	}
-	_, err = e.host.memoryPort().StoreSocialMemoryEntries(ctx, memory.SocialMemoryBatchInput{
-		CharacterID: bootstrap.Conversation.CharacterID, ConversationID: snapshot.ConversationID, Entries: entries,
-	})
-	if err != nil {
-		return fmt.Errorf("storing social learning entries: %w", err)
+	if len(compiled.Entries) > 0 {
+		_, err = e.host.memoryPort().StoreSocialMemoryEntries(ctx, memory.SocialMemoryBatchInput{
+			CharacterID: bootstrap.Conversation.CharacterID, ConversationID: snapshot.ConversationID, Entries: compiled.Entries,
+		})
+		if err != nil {
+			return fmt.Errorf("storing social learning entries: %w", err)
+		}
+	}
+	for _, note := range compiled.Notes {
+		_, err = e.host.memoryPort().UpsertSocialPersonNote(ctx, memory.SocialPersonNoteInput{
+			CharacterID: bootstrap.Conversation.CharacterID, ConversationID: snapshot.ConversationID,
+			SenderID: note.SenderID, SenderName: note.SenderName, Note: note.Note,
+		})
+		if err != nil {
+			return fmt.Errorf("upserting social person note: %w", err)
+		}
 	}
 	return nil
 }
@@ -253,27 +282,27 @@ func buildSocialLearningInput(record character.Record, resolved interaction.Reso
 	return items, nil
 }
 
-func compileSocialLearning(draft string, messages []AmbientObservation) ([]memory.SocialMemoryEntryInput, error) {
+func compileSocialLearning(draft string, messages []AmbientObservation) (socialLearnCompiled, error) {
 	decoder := json.NewDecoder(strings.NewReader(strings.TrimSpace(draft)))
 	decoder.DisallowUnknownFields()
 	var payload socialLearnPayload
 	if err := decoder.Decode(&payload); err != nil {
-		return nil, fmt.Errorf("decoding social learning result: %w", err)
+		return socialLearnCompiled{}, fmt.Errorf("decoding social learning result: %w", err)
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return nil, errors.New("social learning result contains trailing data")
+		return socialLearnCompiled{}, errors.New("social learning result contains trailing data")
 	}
 	if len(payload.Entries) == 0 || string(payload.Entries) == "null" {
-		return nil, errors.New("social learning result requires an entries array")
+		return socialLearnCompiled{}, errors.New("social learning result requires an entries array")
 	}
 	entryDecoder := json.NewDecoder(strings.NewReader(string(payload.Entries)))
 	entryDecoder.DisallowUnknownFields()
 	var drafts []socialLearnEntryDraft
 	if err := entryDecoder.Decode(&drafts); err != nil {
-		return nil, fmt.Errorf("decoding social learning entries: %w", err)
+		return socialLearnCompiled{}, fmt.Errorf("decoding social learning entries: %w", err)
 	}
 	if len(drafts) > maxSocialLearningEntries {
-		return nil, fmt.Errorf("social learning result must contain at most %d entries", maxSocialLearningEntries)
+		return socialLearnCompiled{}, fmt.Errorf("social learning result must contain at most %d entries", maxSocialLearningEntries)
 	}
 	messageByID := make(map[string]AmbientObservation, len(messages))
 	for _, message := range messages {
@@ -283,11 +312,106 @@ func compileSocialLearning(draft string, messages []AmbientObservation) ([]memor
 	for index, item := range drafts {
 		entry, err := compileSocialLearningEntry(index, item, messageByID)
 		if err != nil {
-			return nil, err
+			return socialLearnCompiled{}, err
 		}
 		entries = append(entries, entry)
 	}
-	return entries, nil
+	notes, err := compileSocialLearningPersonNotes(payload.PersonNotes, messageByID)
+	if err != nil {
+		return socialLearnCompiled{}, err
+	}
+	return socialLearnCompiled{Entries: entries, Notes: notes}, nil
+}
+
+func compileSocialLearningPersonNotes(raw json.RawMessage, messages map[string]AmbientObservation) ([]socialLearnCompiledPersonNote, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if string(raw) == "null" {
+		return nil, errors.New("social learning result personNotes must not be null")
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	var drafts []socialLearnPersonNoteDraft
+	if err := decoder.Decode(&drafts); err != nil {
+		return nil, fmt.Errorf("decoding social learning personNotes: %w", err)
+	}
+	if len(drafts) > maxSocialLearningPersonNotes {
+		return nil, fmt.Errorf("social learning result must contain at most %d personNotes", maxSocialLearningPersonNotes)
+	}
+	senders := make(map[string]string, len(messages))
+	for _, message := range messages {
+		if message.SenderID == "" {
+			continue
+		}
+		if _, exists := senders[message.SenderID]; !exists {
+			senders[message.SenderID] = message.SenderName
+		}
+	}
+	notes := make([]socialLearnCompiledPersonNote, 0, len(drafts))
+	seenSender := make(map[string]struct{}, len(drafts))
+	for index, item := range drafts {
+		note, err := compileSocialLearningPersonNote(index, item, messages, senders)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := seenSender[note.SenderID]; exists {
+			return nil, fmt.Errorf("social learning personNote %d duplicates senderId", index)
+		}
+		seenSender[note.SenderID] = struct{}{}
+		notes = append(notes, note)
+	}
+	return notes, nil
+}
+
+func compileSocialLearningPersonNote(
+	index int,
+	item socialLearnPersonNoteDraft,
+	messages map[string]AmbientObservation,
+	senders map[string]string,
+) (socialLearnCompiledPersonNote, error) {
+	senderID := strings.TrimSpace(item.SenderID)
+	if senderID == "" || senderID != item.SenderID {
+		return socialLearnCompiledPersonNote{}, fmt.Errorf("social learning personNote %d senderId is invalid", index)
+	}
+	senderName, known := senders[senderID]
+	if !known {
+		return socialLearnCompiledPersonNote{}, fmt.Errorf("social learning personNote %d references an unknown sender", index)
+	}
+	note := strings.TrimSpace(item.Note)
+	if note == "" || note != item.Note || utf8.RuneCountInString(note) > memory.MaxSocialPersonNoteRunes {
+		return socialLearnCompiledPersonNote{}, fmt.Errorf("social learning personNote %d note is invalid", index)
+	}
+	for _, r := range note {
+		if unicode.IsControl(r) {
+			return socialLearnCompiledPersonNote{}, fmt.Errorf("social learning personNote %d note contains control characters", index)
+		}
+	}
+	if len(item.SourceMessageIDs) == 0 || len(item.SourceMessageIDs) > maxSocialLearningSourceIDs {
+		return socialLearnCompiledPersonNote{}, fmt.Errorf("social learning personNote %d sourceMessageIds count is invalid", index)
+	}
+	seen := make(map[string]struct{}, len(item.SourceMessageIDs))
+	fromSender := false
+	for _, id := range item.SourceMessageIDs {
+		if _, exists := seen[id]; exists {
+			return socialLearnCompiledPersonNote{}, fmt.Errorf("social learning personNote %d contains duplicate source IDs", index)
+		}
+		seen[id] = struct{}{}
+		message, exists := messages[id]
+		if !exists {
+			return socialLearnCompiledPersonNote{}, fmt.Errorf("social learning personNote %d references an unknown source message", index)
+		}
+		if message.SenderID == senderID {
+			fromSender = true
+		}
+		if containsLongSocialQuote(note, message.Text) {
+			return socialLearnCompiledPersonNote{}, fmt.Errorf("social learning personNote %d copies a long source passage", index)
+		}
+	}
+	if !fromSender {
+		return socialLearnCompiledPersonNote{}, fmt.Errorf("social learning personNote %d must cite at least one message from the sender", index)
+	}
+	return socialLearnCompiledPersonNote{SenderID: senderID, SenderName: senderName, Note: note}, nil
 }
 
 func compileSocialLearningEntry(index int, item socialLearnEntryDraft, messages map[string]AmbientObservation) (memory.SocialMemoryEntryInput, error) {

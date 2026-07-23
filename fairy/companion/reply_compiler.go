@@ -242,11 +242,6 @@ func validateDraft(draft string) error {
 	if containsDisallowedControl(draft) {
 		return errors.New("model reply contains disallowed control characters")
 	}
-	for _, character := range draft {
-		if isEmoji(character) {
-			return errors.New("model reply contains unsuitable emoji")
-		}
-	}
 	return nil
 }
 
@@ -279,10 +274,6 @@ func containsDisallowedControl(value string) bool {
 		}
 	}
 	return false
-}
-
-func isEmoji(character rune) bool {
-	return character >= 0x1F000 && character <= 0x1FAFF || character >= 0x2600 && character <= 0x26FF || character >= 0x2700 && character <= 0x27BF || character >= 0xFE00 && character <= 0xFE0F
 }
 
 func fillSameLanguageSpeech(reply CompiledReply) (CompiledReply, error) {

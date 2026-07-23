@@ -50,6 +50,7 @@ func (e *TurnEngine) SubmitTurn(request SubmitTurnRequest) (TurnOutcome, error) 
 		MessageSource:         request.MessageSource,
 		ReplyIntent:           request.ReplyIntent,
 		RecentTargetReply:     request.RecentTargetReply,
+		PersonNoteSenderIDs:   append([]string(nil), request.PersonNoteSenderIDs...),
 	})
 }
 
@@ -171,7 +172,7 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 	if err := transition(TurnStateGathering); err != nil {
 		return fail("INVALID_STATE_TRANSITION", err)
 	}
-	socialContext, err := s.retrieveSocialRespondContext(turnCtx, bootstrap.Conversation.CharacterID, request.ConversationID, resolved, request.ReplyIntent)
+	socialContext, err := s.retrieveSocialRespondContext(turnCtx, bootstrap.Conversation.CharacterID, request.ConversationID, resolved, request.ReplyIntent, request.PersonNoteSenderIDs)
 	if err != nil {
 		return fail("SOCIAL_MEMORY_FAILED", err)
 	}
@@ -223,7 +224,7 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 		ingestSnapshots []memory.KnowledgeIngestSnapshot
 	)
 	if request.SpeechEnabled && s.speech != nil {
-		capacity := maxReplyChains + maxModelDrivenToolCalls + 2
+		capacity := maxReplyChains + modelDrivenToolBudget(resolved) + 2
 		speechFlow = newSpeechPipeline(turnCtx, s.speech, capacity, func(res speechPipelineResult) {
 			s.handleSpeechResult(life, request.ConversationID, persisted.ID, finalDelivery, res)
 		})
@@ -234,8 +235,9 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 	if settings, err := s.configSource().WebSearchSettings(); err == nil {
 		webSearchEnabled = settings.Enabled
 	}
+	toolBudget := modelDrivenToolBudget(resolved)
 	for {
-		allowTools := modelDrivenTools < maxModelDrivenToolCalls
+		allowTools := modelDrivenTools < toolBudget
 		tools := []model.ToolSpec(nil)
 		if allowTools {
 			tools = RespondToolSpecsForInteraction(webSearchEnabled, resolved)
@@ -448,7 +450,7 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 				}
 			}
 			for _, call := range toolCalls {
-				if modelDrivenTools >= maxModelDrivenToolCalls {
+				if modelDrivenTools >= toolBudget {
 					lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("reason", "budget_exhausted"), zap.String("tool", call.Name))
 					return fail("MODEL_RESPONSE_INVALID", errors.New("tool budget exhausted"))
 				}
@@ -534,6 +536,52 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 						"status":           status,
 						"queryHash":        runtimeHash(query),
 						"personalCount":    len(extra.PersonalMemories),
+						"knowledgeCount":   len(extra.Knowledge),
+						"modelDrivenIndex": modelDrivenTools,
+					})
+				case toolSocialContextSearch:
+					if resolved.AllowsPersonalMemory() || !resolved.AllowsAmbientParticipation() {
+						return fail("MODEL_RESPONSE_INVALID", errors.New("social_context_search is available only for public ambient interactions"))
+					}
+					extra, toolErr := s.selectSocialContextForTool(turnCtx, bootstrap.Conversation.CharacterID, request.ConversationID, query)
+					status := "ok"
+					if toolErr != nil {
+						status = "failed"
+						lg.Warn("cognition loop", zap.String("phase", "tool_failed"), zap.String("tool", call.Name), zap.Error(toolErr))
+						retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
+					} else {
+						retrieval = mergeRetrievalContext(retrieval, extra)
+					}
+					retrievalOmitReason = ""
+					modelDrivenTools++
+					s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+						"tool":             call.Name,
+						"phase":            "model_driven",
+						"status":           status,
+						"queryHash":        runtimeHash(query),
+						"knowledgeCount":   len(extra.Knowledge),
+						"modelDrivenIndex": modelDrivenTools,
+					})
+				case toolSocialExpressionSelect:
+					if resolved.AllowsPersonalMemory() || !resolved.AllowsAmbientParticipation() {
+						return fail("MODEL_RESPONSE_INVALID", errors.New("social_expression_select is available only for public ambient interactions"))
+					}
+					extra, toolErr := s.selectSocialExpressionsForTool(turnCtx, bootstrap.Conversation.CharacterID, request.ConversationID, query)
+					status := "ok"
+					if toolErr != nil {
+						status = "failed"
+						lg.Warn("cognition loop", zap.String("phase", "tool_failed"), zap.String("tool", call.Name), zap.Error(toolErr))
+						retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
+					} else {
+						retrieval = mergeRetrievalContext(retrieval, extra)
+					}
+					retrievalOmitReason = ""
+					modelDrivenTools++
+					s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+						"tool":             call.Name,
+						"phase":            "model_driven",
+						"status":           status,
+						"queryHash":        runtimeHash(query),
 						"knowledgeCount":   len(extra.Knowledge),
 						"modelDrivenIndex": modelDrivenTools,
 					})

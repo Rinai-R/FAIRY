@@ -29,6 +29,8 @@ type MemoryPort interface {
 	StoreSocialMemoryEntries(context.Context, memory.SocialMemoryBatchInput) ([]memory.SocialMemoryEntry, error)
 	RetrieveSocialMemoryContext(context.Context, string, string, string) (memory.SocialMemoryContext, error)
 	RecordSocialReplyFeedback(context.Context, memory.SocialReplyFeedbackInput) (memory.SocialReplyFeedback, error)
+	UpsertSocialPersonNote(context.Context, memory.SocialPersonNoteInput) (memory.SocialPersonNote, error)
+	ListSocialPersonNotes(context.Context, string, string, []string) ([]memory.SocialPersonNote, error)
 	AppendTurnRuntimeEvent(input memory.TurnRuntimeEventInput) (memory.TurnRuntimeEventRecord, error)
 	SaveLaneContinuation(record memory.LaneContinuationRecord) (memory.LaneContinuationRecord, error)
 	LoadLaneContinuation(conversationID string, lane string) (memory.LaneContinuationRecord, bool, error)

@@ -84,7 +84,6 @@ func TestCompileReplyRejectsInvalidOutput(t *testing.T) {
 		states []VisualState
 	}{
 		{name: "empty", draft: "", states: visualStates("idle")},
-		{name: "emoji", draft: testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "我在🙂。"}), states: visualStates("idle")},
 		{name: "pure bracketed action", draft: testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "（安静地看着你）"}), states: visualStates("idle")},
 		{name: "undeclared state", draft: testRespondEnvelope(testReplyChain{VisualState: "angry", Text: "我在。"}), states: visualStates("idle", "happy")},
 		{name: "bad visual state", draft: testRespondEnvelope(testReplyChain{VisualState: "Bad", Text: "我在。"}), states: visualStates("idle")},
@@ -98,6 +97,16 @@ func TestCompileReplyRejectsInvalidOutput(t *testing.T) {
 				t.Fatal("CompileReply() error = nil, want error")
 			}
 		})
+	}
+}
+
+func TestCompileReplyAllowsEmojiWithoutRetryTax(t *testing.T) {
+	reply, err := CompileReply(testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "摸摸，辛苦了🙂"}), visualStates("idle"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply.DisplayText != "摸摸，辛苦了🙂" {
+		t.Fatalf("reply = %#v", reply)
 	}
 }
 

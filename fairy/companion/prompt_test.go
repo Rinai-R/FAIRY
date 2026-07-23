@@ -157,15 +157,16 @@ func TestBuildRespondContextSlotsAppendsPublicSocialContextAfterStablePrefix(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantIDs := []string{"character", "display_language", "profile", "available_visual_states", "interaction", "compaction_summary", "dialogue", "retrieved_context", "reply_intent", "social_memory"}
+	wantIDs := []string{"character", "display_language", "profile", "available_visual_states", "interaction", "compaction_summary", "dialogue", "retrieved_context", "reply_intent", "social_memory", "person_notes"}
 	if len(first) != len(wantIDs) || len(second) != len(wantIDs) {
 		t.Fatalf("slot lengths = %d, %d", len(first), len(second))
 	}
+	stableUntil := 9 // reply_intent is last shared control slot before dynamic social payloads
 	for index, id := range wantIDs {
 		if first[index].ID != id || second[index].ID != id {
 			t.Fatalf("slot[%d] = (%q, %q), want %q", index, first[index].ID, second[index].ID, id)
 		}
-		if index < len(wantIDs)-1 && first[index].RevisionHash != second[index].RevisionHash {
+		if index < stableUntil && first[index].RevisionHash != second[index].RevisionHash {
 			t.Fatalf("stable slot %q changed across dynamic candidates", id)
 		}
 	}

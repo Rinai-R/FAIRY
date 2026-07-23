@@ -15,13 +15,14 @@ type ReplyChain struct {
 }
 
 type SubmitTurnRequest struct {
-	ConversationID    string       `json:"conversationId"`
-	Input             string       `json:"input"`
-	SpeechEnabled     bool         `json:"speechEnabled"`
-	TraceID           string       `json:"-"`
-	MessageSource     string       `json:"-"`
-	ReplyIntent       *ReplyIntent `json:"-"`
-	RecentTargetReply string       `json:"-"`
+	ConversationID      string       `json:"conversationId"`
+	Input               string       `json:"input"`
+	SpeechEnabled       bool         `json:"speechEnabled"`
+	TraceID             string       `json:"-"`
+	MessageSource       string       `json:"-"`
+	ReplyIntent         *ReplyIntent `json:"-"`
+	RecentTargetReply   string       `json:"-"`
+	PersonNoteSenderIDs []string     `json:"-"`
 }
 
 type SubmitCompiledTurnRequest struct {
@@ -34,6 +35,7 @@ type SubmitCompiledTurnRequest struct {
 	MessageSource         string        `json:"-"`
 	ReplyIntent           *ReplyIntent  `json:"-"`
 	RecentTargetReply     string        `json:"-"`
+	PersonNoteSenderIDs   []string      `json:"-"`
 }
 
 type TurnOutcome struct {

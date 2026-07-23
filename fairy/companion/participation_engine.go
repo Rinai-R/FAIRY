@@ -58,6 +58,17 @@ func (e *ParticipationEngine) DecideParticipation(ctx context.Context, request P
 	if behaviorItem != nil {
 		input = append(input, *behaviorItem)
 	}
+	notes, err := s.memoryPort().ListSocialPersonNotes(ctx, bootstrap.Conversation.CharacterID, request.ConversationID, ambientSenderIDs(request.Messages))
+	if err != nil {
+		return ParticipationResult{}, fmt.Errorf("listing social person notes: %w", err)
+	}
+	if len(notes) > 0 {
+		notesItem, notesErr := encodeSocialPersonNotes(notes)
+		if notesErr != nil {
+			return ParticipationResult{}, notesErr
+		}
+		input = append(input, notesItem)
+	}
 	connection, err := s.configSource().ModelConnection()
 	if err != nil {
 		return ParticipationResult{}, err
@@ -139,18 +150,28 @@ func (s *CompanionService) participationBehaviorContext(ctx context.Context, cha
 }
 
 func participationBehaviorQuery(messages []AmbientObservation) string {
-	for index := len(messages) - 1; index >= 0; index-- {
+	const maxMessages = 3
+	const maxRunesPerMessage = 60
+	parts := make([]string, 0, maxMessages)
+	for index := len(messages) - 1; index >= 0 && len(parts) < maxMessages; index-- {
 		text := strings.TrimSpace(messages[index].Text)
 		if text == "" {
 			continue
 		}
 		runes := []rune(text)
-		if len(runes) > 80 {
-			return string(runes[:80])
+		if len(runes) > maxRunesPerMessage {
+			text = string(runes[:maxRunesPerMessage])
 		}
-		return text
+		parts = append(parts, text)
 	}
-	return ""
+	if len(parts) == 0 {
+		return ""
+	}
+	// Reverse so older → newer order for a stable situation cue.
+	for left, right := 0, len(parts)-1; left < right; left, right = left+1, right-1 {
+		parts[left], parts[right] = parts[right], parts[left]
+	}
+	return strings.Join(parts, " ")
 }
 
 func isNewParticipationTarget(messages []AmbientObservation, targetMessageID string) bool {

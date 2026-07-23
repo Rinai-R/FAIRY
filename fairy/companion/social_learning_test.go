@@ -12,6 +12,7 @@ import (
 
 	"fairy/character"
 	"fairy/config"
+	"fairy/interaction"
 	"fairy/memory"
 	"fairy/model"
 )
@@ -115,12 +116,48 @@ type socialLearnPayloadForTest struct {
 }
 
 func TestCompileSocialLearningAcceptsEmptyEntries(t *testing.T) {
-	entries, err := compileSocialLearning(`{"entries":[]}`, socialLearningObservations())
+	compiled, err := compileSocialLearning(`{"entries":[]}`, socialLearningObservations())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("entries = %#v", entries)
+	if len(compiled.Entries) != 0 || len(compiled.Notes) != 0 {
+		t.Fatalf("compiled = %#v", compiled)
+	}
+}
+
+func TestCompileSocialLearningAcceptsPersonNotes(t *testing.T) {
+	draft := `{"entries":[],"personNotes":[{"senderId":"u1","note":"常在群里聊求职焦虑","sourceMessageIds":["m1"]}]}`
+	compiled, err := compileSocialLearning(draft, socialLearningObservations())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compiled.Entries) != 0 || len(compiled.Notes) != 1 {
+		t.Fatalf("compiled = %#v", compiled)
+	}
+	if compiled.Notes[0].SenderID != "u1" || compiled.Notes[0].SenderName != "甲" || compiled.Notes[0].Note != "常在群里聊求职焦虑" {
+		t.Fatalf("note = %#v", compiled.Notes[0])
+	}
+}
+
+func TestCompileSocialLearningRejectsInvalidPersonNotes(t *testing.T) {
+	messages := socialLearningObservations()
+	tests := []struct {
+		name  string
+		draft string
+	}{
+		{name: "null personNotes", draft: `{"entries":[],"personNotes":null}`},
+		{name: "unknown personNote field", draft: `{"entries":[],"personNotes":[{"senderId":"u1","note":"常发言","sourceMessageIds":["m1"],"diagnosis":"焦虑"}]}`},
+		{name: "unknown sender", draft: `{"entries":[],"personNotes":[{"senderId":"missing","note":"常发言","sourceMessageIds":["m1"]}]}`},
+		{name: "source not from sender", draft: `{"entries":[],"personNotes":[{"senderId":"u1","note":"常发言","sourceMessageIds":["m2"]}]}`},
+		{name: "duplicate sender", draft: `{"entries":[],"personNotes":[{"senderId":"u1","note":"常发言","sourceMessageIds":["m1"]},{"senderId":"u1","note":"爱开玩笑","sourceMessageIds":["m1"]}]}`},
+		{name: "oversized note", draft: `{"entries":[],"personNotes":[{"senderId":"u1","note":"` + strings.Repeat("话", memory.MaxSocialPersonNoteRunes+1) + `","sourceMessageIds":["m1"]}]}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := compileSocialLearning(test.draft, messages); err == nil {
+				t.Fatal("compileSocialLearning() error = nil")
+			}
+		})
 	}
 }
 
@@ -177,6 +214,8 @@ type socialLearningMemory struct {
 	mu                     sync.Mutex
 	stored                 []memory.SocialMemoryBatchInput
 	storeErr               error
+	upserted               []memory.SocialPersonNoteInput
+	upsertErr              error
 	retrieved              memory.SocialMemoryContext
 	retrieveErr            error
 	retrieveCharacterID    string
@@ -223,6 +262,26 @@ func (m *socialLearningMemory) RecordSocialReplyFeedback(_ context.Context, inpu
 	}
 	m.feedback = append(m.feedback, input)
 	return memory.SocialReplyFeedback{ID: "feedback-1", Outcome: input.Outcome}, nil
+}
+
+func (m *socialLearningMemory) UpsertSocialPersonNote(_ context.Context, input memory.SocialPersonNoteInput) (memory.SocialPersonNote, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.upsertErr != nil {
+		return memory.SocialPersonNote{}, m.upsertErr
+	}
+	m.upserted = append(m.upserted, input)
+	return memory.SocialPersonNote{ID: "note-1", CharacterID: input.CharacterID, ConversationID: input.ConversationID, SenderID: input.SenderID, SenderName: input.SenderName, Note: input.Note}, nil
+}
+
+func (m *socialLearningMemory) upsertedNotes() []memory.SocialPersonNoteInput {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]memory.SocialPersonNoteInput(nil), m.upserted...)
+}
+
+func (m *socialLearningMemory) ListSocialPersonNotes(context.Context, string, string, []string) ([]memory.SocialPersonNote, error) {
+	return nil, nil
 }
 
 func (m *socialLearningMemory) feedbackInputs() []memory.SocialReplyFeedbackInput {
@@ -350,6 +409,62 @@ func TestSocialLearningEmptyEntriesDoesNotInventMemory(t *testing.T) {
 	if memoryPort.storedCount() != 0 {
 		t.Fatalf("storedCount() = %d", memoryPort.storedCount())
 	}
+	if len(memoryPort.upsertedNotes()) != 0 {
+		t.Fatalf("upsertedNotes() = %#v", memoryPort.upsertedNotes())
+	}
+}
+
+func TestSocialLearningProcessUpsertsPersonNotesWithoutEntries(t *testing.T) {
+	memoryPort := &socialLearningMemory{}
+	draft := `{"entries":[],"personNotes":[{"senderId":"u1","note":"常在群里聊求职焦虑","sourceMessageIds":["m1"]}]}`
+	service := newSocialLearningTestService(memoryPort, &socialLearningModel{draft: draft})
+	engine := &SocialLearningEngine{host: service}
+	if err := engine.process(t.Context(), socialLearningSnapshot{ConversationID: "conversation-1", Messages: socialLearningObservations()}); err != nil {
+		t.Fatal(err)
+	}
+	if memoryPort.storedCount() != 0 {
+		t.Fatalf("storedCount() = %d", memoryPort.storedCount())
+	}
+	notes := memoryPort.upsertedNotes()
+	if len(notes) != 1 {
+		t.Fatalf("upsertedNotes() = %#v", notes)
+	}
+	if notes[0].CharacterID != "character-1" || notes[0].ConversationID != "conversation-1" || notes[0].SenderID != "u1" || notes[0].Note != "常在群里聊求职焦虑" {
+		t.Fatalf("note = %#v", notes[0])
+	}
+}
+
+func TestSocialLearningInvalidPersonNoteMakesWholeBatchZeroWrite(t *testing.T) {
+	memoryPort := &socialLearningMemory{}
+	draft := `{"entries":[{"kind":"episode","situation":"群友谈论求职准备","content":"群内会交换整理项目经历的建议","recallCue":"求职或实习准备","sourceMessageIds":["m1","m2"]}],` +
+		`"personNotes":[{"senderId":"missing","note":"常发言","sourceMessageIds":["m1"]}]}`
+	service := newSocialLearningTestService(memoryPort, &socialLearningModel{draft: draft})
+	engine := &SocialLearningEngine{host: service}
+	if err := engine.process(t.Context(), socialLearningSnapshot{ConversationID: "conversation-1", Messages: socialLearningObservations()}); err == nil {
+		t.Fatal("process() error = nil")
+	}
+	if memoryPort.storedCount() != 0 || len(memoryPort.upsertedNotes()) != 0 {
+		t.Fatalf("stored=%d notes=%#v", memoryPort.storedCount(), memoryPort.upsertedNotes())
+	}
+}
+
+func TestSocialLearningPrivatePathDoesNotWritePersonNotes(t *testing.T) {
+	memoryPort := &socialLearningMemory{}
+	draft := `{"entries":[],"personNotes":[{"senderId":"u1","note":"常发言","sourceMessageIds":["m1"]}]}`
+	service := newSocialLearningTestService(memoryPort, &socialLearningModel{draft: draft})
+	service.interactions["conversation-1"] = interaction.Binding{
+		Endpoint: interaction.EndpointDesktop,
+		Facts: interaction.Facts{
+			Audience: interaction.AudienceSingle, Initiation: interaction.InitiationDirect, Presentation: interaction.PresentationEmbodied,
+		},
+	}
+	engine := &SocialLearningEngine{host: service}
+	if err := engine.process(t.Context(), socialLearningSnapshot{ConversationID: "conversation-1", Messages: socialLearningObservations()}); err == nil {
+		t.Fatal("process() error = nil")
+	}
+	if memoryPort.storedCount() != 0 || len(memoryPort.upsertedNotes()) != 0 {
+		t.Fatalf("stored=%d notes=%#v", memoryPort.storedCount(), memoryPort.upsertedNotes())
+	}
 }
 
 func TestSocialLearningEmptyDraftReportsSafeProviderMetadata(t *testing.T) {
@@ -381,32 +496,51 @@ func TestSocialLearningEmptyDraftReportsSafeProviderMetadata(t *testing.T) {
 }
 
 func TestRetrieveSocialRespondContextUsesPublicConversationScope(t *testing.T) {
-	memoryPort := &socialLearningMemory{retrieved: memory.SocialMemoryContext{Entries: []memory.SocialMemoryEntry{{ID: "entry-1", Kind: memory.SocialMemoryExpression}}}}
+	memoryPort := &socialLearningMemory{retrieved: memory.SocialMemoryContext{Entries: []memory.SocialMemoryEntry{
+		{ID: "entry-1", Kind: memory.SocialMemoryEpisode, Situation: "实习", Content: "群内讨论实习进度", RecallCue: "实习"},
+		{ID: "entry-2", Kind: memory.SocialMemoryExpression, Situation: "安慰", Content: "先短句接住", RecallCue: "安慰"},
+	}}}
 	service := newSocialLearningTestService(memoryPort, &socialLearningModel{})
 	intent := &ReplyIntent{MemoryQuery: "之前的实习讨论", ExpressionQuery: "安慰焦虑的群友"}
-	context, err := service.retrieveSocialRespondContext(t.Context(), "character-1", "conversation-1", publicAmbientResolved(), intent)
+	context, err := service.retrieveSocialRespondContext(t.Context(), "character-1", "conversation-1", publicAmbientResolved(), intent, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if context == nil || len(context.Memory.Entries) != 1 {
+	if context == nil || len(context.Memory.Entries) != 1 || context.Memory.Entries[0].Kind != memory.SocialMemoryEpisode {
 		t.Fatalf("context = %#v", context)
 	}
 	if memoryPort.retrieveCharacterID != "character-1" || memoryPort.retrieveConversationID != "conversation-1" {
 		t.Fatalf("scope = (%q, %q)", memoryPort.retrieveCharacterID, memoryPort.retrieveConversationID)
 	}
-	if memoryPort.retrieveQuery != "之前的实习讨论 安慰焦虑的群友" {
+	if memoryPort.retrieveQuery != "之前的实习讨论" {
 		t.Fatalf("query = %q", memoryPort.retrieveQuery)
 	}
-	privateContext, err := service.retrieveSocialRespondContext(t.Context(), "character-1", "conversation-1", desktopResolved(), intent)
+	privateContext, err := service.retrieveSocialRespondContext(t.Context(), "character-1", "conversation-1", desktopResolved(), intent, nil)
 	if err != nil || privateContext != nil {
 		t.Fatalf("private context = %#v, error = %v", privateContext, err)
 	}
 }
 
+func TestRetrieveSocialRespondContextAllowsExpressionOnlyIntent(t *testing.T) {
+	memoryPort := &socialLearningMemory{}
+	service := newSocialLearningTestService(memoryPort, &socialLearningModel{})
+	intent := &ReplyIntent{ExpressionQuery: "安慰焦虑的群友"}
+	context, err := service.retrieveSocialRespondContext(t.Context(), "character-1", "conversation-1", publicAmbientResolved(), intent, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if context == nil || len(context.Memory.Entries) != 0 {
+		t.Fatalf("context = %#v", context)
+	}
+	if memoryPort.retrieveQuery != "" {
+		t.Fatalf("unexpected retrieve query %q", memoryPort.retrieveQuery)
+	}
+}
+
 func TestRetrieveSocialRespondContextReturnsStorageFailure(t *testing.T) {
 	service := newSocialLearningTestService(&socialLearningMemory{retrieveErr: errors.New("database failed")}, &socialLearningModel{})
-	intent := &ReplyIntent{ExpressionQuery: "接住焦虑"}
-	if _, err := service.retrieveSocialRespondContext(t.Context(), "character-1", "conversation-1", publicAmbientResolved(), intent); err == nil {
+	intent := &ReplyIntent{MemoryQuery: "接住焦虑"}
+	if _, err := service.retrieveSocialRespondContext(t.Context(), "character-1", "conversation-1", publicAmbientResolved(), intent, nil); err == nil {
 		t.Fatal("retrieveSocialRespondContext() error = nil")
 	}
 }

@@ -8,32 +8,52 @@ import (
 	"strings"
 
 	"fairy/interaction"
+	"fairy/memory"
 )
 
 func socialMemoryQuery(intent ReplyIntent) string {
-	parts := make([]string, 0, 2)
-	if query := strings.TrimSpace(intent.MemoryQuery); query != "" {
-		parts = append(parts, query)
-	}
-	if query := strings.TrimSpace(intent.ExpressionQuery); query != "" {
-		parts = append(parts, query)
-	}
-	return strings.Join(parts, " ")
+	return strings.TrimSpace(intent.MemoryQuery)
 }
 
-func (s *CompanionService) retrieveSocialRespondContext(ctx context.Context, characterID, conversationID string, resolved interaction.Resolved, intent *ReplyIntent) (*SocialRespondContext, error) {
+func (s *CompanionService) retrieveSocialRespondContext(ctx context.Context, characterID, conversationID string, resolved interaction.Resolved, intent *ReplyIntent, senderIDs []string) (*SocialRespondContext, error) {
 	if intent == nil || !resolved.AllowsAmbientParticipation() || resolved.AllowsPersonalMemory() {
 		return nil, nil
 	}
-	query := socialMemoryQuery(*intent)
-	if query == "" {
-		return nil, errors.New("public reply intent requires a social memory query")
+	memoryQuery := strings.TrimSpace(intent.MemoryQuery)
+	expressionQuery := strings.TrimSpace(intent.ExpressionQuery)
+	if memoryQuery == "" && expressionQuery == "" {
+		return nil, errors.New("public reply intent requires a social memory or expression query")
 	}
-	context, err := s.memoryPort().RetrieveSocialMemoryContext(ctx, characterID, conversationID, query)
+	var socialMemory memory.SocialMemoryContext
+	if memoryQuery != "" {
+		retrieved, err := s.memoryPort().RetrieveSocialMemoryContext(ctx, characterID, conversationID, memoryQuery)
+		if err != nil {
+			return nil, err
+		}
+		socialMemory.Entries = filterSocialMemoryKinds(retrieved.Entries, memory.SocialMemoryEpisode, memory.SocialMemoryBehavior)
+	}
+	notes, err := s.memoryPort().ListSocialPersonNotes(ctx, characterID, conversationID, senderIDs)
 	if err != nil {
 		return nil, err
 	}
-	return &SocialRespondContext{Intent: intent, Memory: context}, nil
+	return &SocialRespondContext{Intent: intent, Memory: socialMemory, PersonNotes: notes}, nil
+}
+
+func filterSocialMemoryKinds(entries []memory.SocialMemoryEntry, kinds ...string) []memory.SocialMemoryEntry {
+	if len(entries) == 0 || len(kinds) == 0 {
+		return nil
+	}
+	allowed := make(map[string]struct{}, len(kinds))
+	for _, kind := range kinds {
+		allowed[kind] = struct{}{}
+	}
+	out := make([]memory.SocialMemoryEntry, 0, len(entries))
+	for _, entry := range entries {
+		if _, ok := allowed[entry.Kind]; ok {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 var errPublicPeerIdentity = errors.New("public reply violates peer identity boundary")

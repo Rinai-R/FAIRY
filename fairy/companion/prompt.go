@@ -64,15 +64,19 @@ type retrievedContextPayload struct {
 }
 
 type replyIntentContextPayload struct {
-	ContextType   string                `json:"contextType"`
-	ReplyAct      string                `json:"replyAct"`
-	Tone          string                `json:"tone"`
-	Relationship  string                `json:"relationshipSignal"`
-	ReplyMode     string                `json:"replyMode"`
-	Focus         string                `json:"focus"`
-	Avoid         []string              `json:"avoid"`
-	ReferenceInfo string                `json:"referenceInfo,omitempty"`
-	Delivery      replyDeliveryContract `json:"delivery"`
+	ContextType      string                `json:"contextType"`
+	ReplyAct         string                `json:"replyAct"`
+	Tone             string                `json:"tone"`
+	Relationship     string                `json:"relationshipSignal"`
+	ReplyMode        string                `json:"replyMode"`
+	Focus            string                `json:"focus"`
+	Avoid            []string              `json:"avoid"`
+	ReferenceInfo    string                `json:"referenceInfo,omitempty"`
+	DriftLevel       string                `json:"driftLevel"`
+	AnchorPolicy     string                `json:"anchorPolicy"`
+	DriftGuidance    string                `json:"driftGuidance"`
+	AnchorGuidance   string                `json:"anchorGuidance"`
+	Delivery         replyDeliveryContract `json:"delivery"`
 }
 
 type replyDeliveryContract struct {
@@ -96,6 +100,7 @@ type socialMemoryContextPayload struct {
 type SocialRespondContext struct {
 	Intent            *ReplyIntent
 	Memory            memory.SocialMemoryContext
+	PersonNotes       []memory.SocialPersonNote
 	RecentTargetReply string
 }
 
@@ -242,6 +247,15 @@ func buildRespondContextSlots(
 			}
 			slots = append(slots, presentContextSlot("social_memory", false, "untrusted_context_data", "tail", []model.PromptItem{memoryItem}, social.Memory))
 		}
+		if len(social.PersonNotes) == 0 {
+			slots = append(slots, omittedContextSlot("person_notes", false, "untrusted_context_data", "tail", "empty"))
+		} else {
+			notesItem, err := encodeSocialPersonNotes(social.PersonNotes)
+			if err != nil {
+				return nil, err
+			}
+			slots = append(slots, presentContextSlot("person_notes", false, "untrusted_context_data", "tail", []model.PromptItem{notesItem}, social.PersonNotes))
+		}
 		if social.RecentTargetReply != "" {
 			recentItem, err := encodeRecentTargetReply(social.RecentTargetReply)
 			if err != nil {
@@ -266,10 +280,14 @@ func encodeReplyIntentContext(intent ReplyIntent) (model.PromptItem, error) {
 	if err != nil {
 		return model.PromptItem{}, err
 	}
+	driftLevel := normalizeDriftLevel(intent.DriftLevel)
+	anchorPolicy := normalizeAnchorPolicy(intent.AnchorPolicy)
+	driftGuidance, anchorGuidance := attentionDriftGuidance(driftLevel, anchorPolicy)
 	payload, err := json.Marshal(replyIntentContextPayload{
 		ContextType: "public_reply_intent", ReplyAct: intent.ReplyAct, Tone: intent.Tone,
 		Relationship: intent.RelationshipSignal, ReplyMode: intent.ReplyMode, Focus: intent.Focus,
 		Avoid: append([]string(nil), intent.Avoid...), ReferenceInfo: intent.ReferenceInfo,
+		DriftLevel: driftLevel, AnchorPolicy: anchorPolicy, DriftGuidance: driftGuidance, AnchorGuidance: anchorGuidance,
 		Delivery: replyDeliveryContract{MinChains: shape.minChains, MaxChains: shape.maxChains, OneConversationalHook: true, AvoidUnrequestedAdvice: true},
 	})
 	if err != nil {
@@ -286,6 +304,20 @@ func encodeSocialMemoryContext(context memory.SocialMemoryContext) (model.Prompt
 	payload, err := json.Marshal(socialMemoryContextPayload{ContextType: "public_social_memory", Entries: entries})
 	if err != nil {
 		return model.PromptItem{}, fmt.Errorf("serializing social memory context: %w", err)
+	}
+	return model.PromptItem{Type: model.PromptItemContextData, Content: string(payload)}, nil
+}
+
+func encodeSocialPersonNotes(notes []memory.SocialPersonNote) (model.PromptItem, error) {
+	entries := make([]map[string]string, 0, len(notes))
+	for _, note := range notes {
+		entries = append(entries, map[string]string{
+			"senderId": note.SenderID, "senderName": note.SenderName, "note": note.Note,
+		})
+	}
+	payload, err := json.Marshal(map[string]any{"contextType": "public_person_notes", "notes": entries})
+	if err != nil {
+		return model.PromptItem{}, fmt.Errorf("serializing social person notes: %w", err)
 	}
 	return model.PromptItem{Type: model.PromptItemContextData, Content: string(payload)}, nil
 }

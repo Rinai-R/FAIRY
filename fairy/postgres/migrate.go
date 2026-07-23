@@ -195,6 +195,11 @@ var schemaConstraints = []schemaConstraint{
 	{"social_reply_feedback", "social_reply_feedback_observed_count_check", "CHECK (observed_message_count >= 0)"},
 	{"social_reply_feedback", "social_reply_feedback_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
 	{"social_reply_feedback", "social_reply_feedback_turn_key", "UNIQUE (turn_id)"},
+	{"social_person_notes", "social_person_notes_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
+	{"social_person_notes", "social_person_notes_note_check", "CHECK (note <> '')"},
+	{"social_person_notes", "social_person_notes_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
+	{"social_person_notes", "social_person_notes_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
+	{"social_person_notes", "social_person_notes_scope_sender_key", "UNIQUE (character_id, conversation_id, sender_id)"},
 }
 
 var schemaIndexes = []schemaIndex{
@@ -224,6 +229,7 @@ var schemaIndexes = []schemaIndex{
 	{"social_memory_entries_content_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_content_trgm ON social_memory_entries USING gin (content public.gin_trgm_ops)"},
 	{"social_memory_entries_recall_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_recall_trgm ON social_memory_entries USING gin (recall_cue public.gin_trgm_ops)"},
 	{"social_reply_feedback_scope_created", "CREATE INDEX IF NOT EXISTS social_reply_feedback_scope_created ON social_reply_feedback(character_id, conversation_id, created_at_ms DESC, id ASC)"},
+	{"social_person_notes_scope_sender", "CREATE INDEX IF NOT EXISTS social_person_notes_scope_sender ON social_person_notes(character_id, conversation_id, sender_id, updated_at_ms DESC, id ASC)"},
 }
 
 func Migrate(ctx context.Context, pool *Pool) error {

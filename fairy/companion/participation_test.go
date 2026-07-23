@@ -338,6 +338,10 @@ func (m *participationMemory) RetrieveSocialMemoryContext(context.Context, strin
 	return m.retrieved, nil
 }
 
+func (m *participationMemory) ListSocialPersonNotes(context.Context, string, string, []string) ([]memory.SocialPersonNote, error) {
+	return nil, nil
+}
+
 type participationCatalog struct{ record character.Record }
 
 func (c participationCatalog) List() (character.Catalog, error) {

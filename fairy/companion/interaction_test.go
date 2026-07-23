@@ -15,11 +15,11 @@ import (
 func TestInteractionMemoryPolicySelectsToolsAndInstructions(t *testing.T) {
 	public := publicAmbientResolved()
 	tools := RespondToolSpecsForInteraction(true, public)
-	if len(tools) != 2 || tools[0].Name != toolPublicMemorySearch || tools[1].Name != toolWebSearch {
+	if len(tools) != 4 || tools[0].Name != toolPublicMemorySearch || tools[1].Name != toolSocialContextSearch || tools[2].Name != toolSocialExpressionSelect || tools[3].Name != toolWebSearch {
 		t.Fatalf("public tools = %#v", tools)
 	}
 	instructions := RespondInstructionsForInteraction(true, public)
-	if strings.Contains(instructions, "personal memories") || !strings.Contains(instructions, toolPublicMemorySearch) || !strings.Contains(instructions, "PUBLIC GROUP IDENTITY OVERRIDE") || !strings.Contains(instructions, "high-performance robot") {
+	if strings.Contains(instructions, "personal memories") || !strings.Contains(instructions, toolPublicMemorySearch) || !strings.Contains(instructions, toolSocialContextSearch) || !strings.Contains(instructions, toolSocialExpressionSelect) || !strings.Contains(instructions, "PUBLIC GROUP IDENTITY OVERRIDE") || !strings.Contains(instructions, "high-performance robot") || !strings.Contains(instructions, "Keep emoji light") {
 		t.Fatalf("public instructions violate memory policy: %s", instructions)
 	}
 	privateInstructions := RespondInstructionsForInteraction(true, desktopResolved())

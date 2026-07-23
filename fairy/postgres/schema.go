@@ -327,6 +327,19 @@ type socialReplyFeedbackSchema struct {
 
 func (socialReplyFeedbackSchema) TableName() string { return "social_reply_feedback" }
 
+type socialPersonNoteSchema struct {
+	ID             string `gorm:"type:text;primaryKey"`
+	CharacterID    string `gorm:"type:text;not null"`
+	ConversationID string `gorm:"type:text;not null"`
+	SenderID       string `gorm:"type:text;not null"`
+	SenderName     string `gorm:"type:text;not null;default:''"`
+	Note           string `gorm:"type:text;not null"`
+	CreatedAtMS    int64  `gorm:"not null"`
+	UpdatedAtMS    int64  `gorm:"not null"`
+}
+
+func (socialPersonNoteSchema) TableName() string { return "social_person_notes" }
+
 func schemaModels() []any {
 	return []any{
 		&conversationSchema{},
@@ -351,6 +364,7 @@ func schemaModels() []any {
 		&ownerIdentitySchema{},
 		&socialMemoryEntrySchema{},
 		&socialReplyFeedbackSchema{},
+		&socialPersonNoteSchema{},
 	}
 }
 
@@ -378,5 +392,6 @@ func schemaTableNames() []string {
 		"owner_identities",
 		"social_memory_entries",
 		"social_reply_feedback",
+		"social_person_notes",
 	}
 }

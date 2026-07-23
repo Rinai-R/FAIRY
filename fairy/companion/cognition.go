@@ -16,20 +16,25 @@ import (
 )
 
 const (
-	toolMemorySearch          = "memory_search"
-	toolPublicMemorySearch    = "public_memory_search"
-	toolWebSearch             = "web_search"
-	maxModelDrivenToolCalls   = 2
-	maxProtocolCompileRetries = 2
-	maxToolQueryRunes         = 200
-	runtimeLedgerEventGather  = "gather"
-	runtimeLedgerEventTool    = "tool"
+	toolMemorySearch           = "memory_search"
+	toolPublicMemorySearch     = "public_memory_search"
+	toolWebSearch              = "web_search"
+	toolSocialExpressionSelect = "social_expression_select"
+	toolSocialContextSearch    = "social_context_search"
+	maxModelDrivenToolCalls    = 2
+	maxPublicModelDrivenToolCalls = 3
+	maxProtocolCompileRetries  = 2
+	maxToolQueryRunes          = 200
+	maxExpressionSelectResults = 5
+	maxSocialContextResults    = 5
+	runtimeLedgerEventGather   = "gather"
+	runtimeLedgerEventTool     = "tool"
 )
 
 // RespondInstructionsAllowTools extends reply rules with native function tools.
 const RespondInstructionsAllowTools = RespondInstructions + ` When personal memories or public facts in context are insufficient, call function tools instead of guessing. Available tools: memory_search for profile, preference, experience, current-character relationship, and confirmed local knowledge; web_search (when provided) for timely public topics such as anime, games, versions, or news. When you call a tool, you MAY put one short in-character line for the user in the assistant content (plain text in textLanguage, not JSON) so you stay present while the tool runs—keep it to a single natural sentence in this character's voice, and never mention tool names, searches, retrieval, reasoning, or system internals. If you have nothing natural to say, leave content empty; never invent filler. After tool results appear in retrieved context, output chains only. Never output a gather JSON object.`
 
-const RespondInstructionsAllowPublicTools = ` When verified public knowledge or timely public facts are insufficient, call function tools instead of guessing. Available tools: public_memory_search for verified confirmed local knowledge only; web_search (when provided) for timely public topics. When you call a tool, you MAY put one short public in-character line in assistant content (plain text in textLanguage, not JSON). Never mention tools, searches, retrieval, reasoning, private memories, or system internals. After tool results appear, output chains only. Never output a gather JSON object.`
+const RespondInstructionsAllowPublicTools = ` When verified public knowledge or timely public facts are insufficient, call function tools instead of guessing. Available tools: public_memory_search for verified confirmed local knowledge only; social_context_search for reusable public group situation and behavior patterns from this conversation; social_expression_select for reusable public speaking-style patterns from this group conversation; web_search (when provided) for timely public topics. When you call a tool, you MAY put one short public in-character line in assistant content (plain text in textLanguage, not JSON). Never mention tools, searches, retrieval, reasoning, private memories, or system internals. After tool results appear, output chains only. Never output a gather JSON object.`
 
 type toolQueryArgs struct {
 	Query string `json:"query"`
@@ -41,11 +46,21 @@ func RespondToolSpecs(webSearchEnabled bool) []model.ToolSpec {
 
 func RespondToolSpecsForInteraction(webSearchEnabled bool, resolved interaction.Resolved) []model.ToolSpec {
 	querySchema := json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"Short search query"}},"required":["query"],"additionalProperties":false}`)
-	tools := make([]model.ToolSpec, 0, 2)
+	tools := make([]model.ToolSpec, 0, 3)
 	if !resolved.AllowsPersonalMemory() {
 		tools = append(tools, model.ToolSpec{
 			Name:        toolPublicMemorySearch,
 			Description: "Search verified confirmed local knowledge only. This tool never returns user profile, preferences, experiences, or relationship memories.",
+			Parameters:  querySchema,
+		})
+		tools = append(tools, model.ToolSpec{
+			Name:        toolSocialContextSearch,
+			Description: "Search reusable public group situation context and behavior patterns for this conversation only. Pass a short situation query (often from memoryQuery). Returns abstract episode/behavior guides; never private memories or speaking-style expressions.",
+			Parameters:  querySchema,
+		})
+		tools = append(tools, model.ToolSpec{
+			Name:        toolSocialExpressionSelect,
+			Description: "Select reusable public speaking-style expression patterns for this group conversation only. Pass a short situation query (often from expressionQuery). Returns up to five abstract style guides; never private memories.",
 			Parameters:  querySchema,
 		})
 	} else {
@@ -72,6 +87,13 @@ func RespondInstructionsForTools(toolsEnabled bool) string {
 	return RespondInstructions
 }
 
+func modelDrivenToolBudget(resolved interaction.Resolved) int {
+	if resolved.AllowsAmbientParticipation() && !resolved.AllowsPersonalMemory() {
+		return maxPublicModelDrivenToolCalls
+	}
+	return maxModelDrivenToolCalls
+}
+
 func RespondInstructionsForInteraction(toolsEnabled bool, resolved interaction.Resolved) string {
 	if !resolved.AllowsPersonalMemory() {
 		instructions := strings.NewReplacer(
@@ -80,7 +102,7 @@ func RespondInstructionsForInteraction(toolsEnabled bool, resolved interaction.R
 			"Use memories only as stable preference, relationship, and situational style clues;", "Use retrieved public knowledge only as factual context;",
 			"Preferred name is optional. ", "",
 		).Replace(RespondInstructions)
-		instructions += " PUBLIC GROUP REPLY SHAPE: Follow the supplied delivery contract. Answer exactly one conversational hook as an immediate peer turn, not a summary of the whole transcript or a balanced response to every participant. Unless explicitly requested, do not turn a reaction into unsolicited advice, a complete solution, or a concluding lecture."
+		instructions += " PUBLIC GROUP REPLY SHAPE: Follow the supplied delivery contract. Answer exactly one conversational hook as an immediate peer turn, not a summary of the whole transcript or a balanced response to every participant. Unless explicitly requested, do not turn a reaction into unsolicited advice, a complete solution, or a concluding lecture. Keep emoji light."
 		instructions += " PUBLIC GROUP IDENTITY OVERRIDE: Never say or imply that you are a robot, AI, bot, model, assistant, product, or system, even when character data asks for that self-description. Never use 'high-performance robot' or similar identity or capability boasts. Keep the character's emotional energy, curiosity, confidence, and verbal rhythm without those claims. This rule overrides conflicting character description."
 		if toolsEnabled {
 			return instructions + RespondInstructionsAllowPublicTools
@@ -124,6 +146,59 @@ func (s *CompanionService) retrievePublicKnowledgeForTool(ctx context.Context, q
 		return memory.RetrievalContext{}, errors.New("memory store is unavailable")
 	}
 	return s.memory.RetrievePublicKnowledgeContext(ctx, query)
+}
+
+func (s *CompanionService) selectSocialExpressionsForTool(ctx context.Context, characterID, conversationID, query string) (memory.RetrievalContext, error) {
+	return s.selectSocialMemoryKindsForTool(ctx, characterID, conversationID, query, []string{memory.SocialMemoryExpression}, "social_expression", maxExpressionSelectResults)
+}
+
+func (s *CompanionService) selectSocialContextForTool(ctx context.Context, characterID, conversationID, query string) (memory.RetrievalContext, error) {
+	return s.selectSocialMemoryKindsForTool(ctx, characterID, conversationID, query, []string{memory.SocialMemoryEpisode, memory.SocialMemoryBehavior}, "social_context", maxSocialContextResults)
+}
+
+func (s *CompanionService) selectSocialMemoryKindsForTool(
+	ctx context.Context,
+	characterID, conversationID, query string,
+	kinds []string,
+	layerPrefix string,
+	limit int,
+) (memory.RetrievalContext, error) {
+	if s == nil || s.memoryPort() == nil {
+		return memory.RetrievalContext{}, errors.New("memory store is unavailable")
+	}
+	retrieved, err := s.memoryPort().RetrieveSocialMemoryContext(ctx, characterID, conversationID, query)
+	if err != nil {
+		return memory.RetrievalContext{}, err
+	}
+	allowed := make(map[string]struct{}, len(kinds))
+	for _, kind := range kinds {
+		allowed[kind] = struct{}{}
+	}
+	now := time.Now().UnixMilli()
+	knowledge := make([]memory.RetrievedKnowledge, 0, limit)
+	for _, entry := range retrieved.Entries {
+		if _, ok := allowed[entry.Kind]; !ok {
+			continue
+		}
+		layer := "social_" + entry.Kind
+		if layerPrefix == "social_expression" {
+			layer = "social_expression"
+		}
+		knowledge = append(knowledge, memory.RetrievedKnowledge{
+			ID:                    entry.ID,
+			Layer:                 layer,
+			Topic:                 entry.Situation,
+			Statement:             entry.Content,
+			VerificationBasis:     layerPrefix,
+			ConfidenceBasisPoints: 6000,
+			UpdatedAtUnixMS:       now,
+		})
+		if len(knowledge) >= limit {
+			break
+		}
+	}
+	// Social memory is trigram-only today; do not claim vector semantic fusion.
+	return memory.RetrievalContext{Knowledge: knowledge, SemanticStatus: "unavailable"}, nil
 }
 
 func mergeRetrievalContext(base memory.RetrievalContext, extra memory.RetrievalContext) memory.RetrievalContext {
