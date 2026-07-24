@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -247,13 +246,10 @@ func (rt *Runtime) Close() error {
 }
 
 func openDependencies(ctx context.Context, injected *Dependencies, runtimeProfile Profile) (*pgstore.Pool, *memory.Store, *secret.Store, *vectorindex.Client, bool, bool, error) {
+	if err := validateInjectedDependencies(injected); err != nil {
+		return nil, nil, nil, nil, false, false, err
+	}
 	if injected != nil {
-		if injected.MemoryStore == nil {
-			return nil, nil, nil, nil, false, false, errors.New("injected memory store is required")
-		}
-		if injected.SecretStore == nil {
-			return nil, nil, nil, nil, false, false, errors.New("injected secret store is required")
-		}
 		return injected.Database, injected.MemoryStore, injected.SecretStore, injected.VectorIndex, false, false, nil
 	}
 	databaseConfig, err := pgstore.ConfigFromEnv(os.Getenv)

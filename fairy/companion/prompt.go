@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"fairy/character"
 	"fairy/interaction"
@@ -64,19 +65,19 @@ type retrievedContextPayload struct {
 }
 
 type replyIntentContextPayload struct {
-	ContextType      string                `json:"contextType"`
-	ReplyAct         string                `json:"replyAct"`
-	Tone             string                `json:"tone"`
-	Relationship     string                `json:"relationshipSignal"`
-	ReplyMode        string                `json:"replyMode"`
-	Focus            string                `json:"focus"`
-	Avoid            []string              `json:"avoid"`
-	ReferenceInfo    string                `json:"referenceInfo,omitempty"`
-	DriftLevel       string                `json:"driftLevel"`
-	AnchorPolicy     string                `json:"anchorPolicy"`
-	DriftGuidance    string                `json:"driftGuidance"`
-	AnchorGuidance   string                `json:"anchorGuidance"`
-	Delivery         replyDeliveryContract `json:"delivery"`
+	ContextType    string                `json:"contextType"`
+	ReplyAct       string                `json:"replyAct"`
+	Tone           string                `json:"tone"`
+	Relationship   string                `json:"relationshipSignal"`
+	ReplyMode      string                `json:"replyMode"`
+	Focus          string                `json:"focus"`
+	Avoid          []string              `json:"avoid"`
+	ReferenceInfo  string                `json:"referenceInfo,omitempty"`
+	DriftLevel     string                `json:"driftLevel"`
+	AnchorPolicy   string                `json:"anchorPolicy"`
+	DriftGuidance  string                `json:"driftGuidance"`
+	AnchorGuidance string                `json:"anchorGuidance"`
+	Delivery       replyDeliveryContract `json:"delivery"`
 }
 
 type replyDeliveryContract struct {
@@ -97,11 +98,21 @@ type socialMemoryContextPayload struct {
 	Entries     []socialMemoryPromptEntry `json:"entries"`
 }
 
+type continuityContextPayload struct {
+	ContextType string `json:"contextType"`
+	Cue         string `json:"cue,omitempty"`
+	Feedback    string `json:"recentFeedback,omitempty"`
+}
+
 type SocialRespondContext struct {
 	Intent            *ReplyIntent
 	Memory            memory.SocialMemoryContext
 	PersonNotes       []memory.SocialPersonNote
 	RecentTargetReply string
+	// ContinuityCue and RecentFeedback are bounded, untrusted summaries. They
+	// let the model keep a natural thread without exposing internal decisions.
+	ContinuityCue  string
+	RecentFeedback string
 }
 
 type fairyContextEnvelope struct {
@@ -263,8 +274,40 @@ func buildRespondContextSlots(
 			}
 			slots = append(slots, presentContextSlot("recent_target_reply", false, "untrusted_context_data", "tail", []model.PromptItem{recentItem}, social.RecentTargetReply))
 		}
+		if strings.TrimSpace(social.ContinuityCue) != "" || strings.TrimSpace(social.RecentFeedback) != "" {
+			continuityItem, err := encodeContinuityContext(social.ContinuityCue, social.RecentFeedback)
+			if err != nil {
+				return nil, err
+			}
+			slots = append(slots, presentContextSlot("continuity", false, "untrusted_context_data", "tail", []model.PromptItem{continuityItem}, map[string]string{
+				"cue": social.ContinuityCue, "feedback": social.RecentFeedback,
+			}))
+		}
 	}
 	return slots, nil
+}
+
+func encodeContinuityContext(cue, feedback string) (model.PromptItem, error) {
+	const maxContinuityRunes = 240
+	cue = truncatePromptContext(cue, maxContinuityRunes)
+	feedback = truncatePromptContext(feedback, maxContinuityRunes)
+	payload, err := json.Marshal(continuityContextPayload{
+		ContextType: "conversation_continuity",
+		Cue:         cue,
+		Feedback:    feedback,
+	})
+	if err != nil {
+		return model.PromptItem{}, fmt.Errorf("serializing continuity context: %w", err)
+	}
+	return model.PromptItem{Type: model.PromptItemContextData, Content: string(payload)}, nil
+}
+
+func truncatePromptContext(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if len([]rune(value)) <= limit {
+		return value
+	}
+	return string([]rune(value)[:limit])
 }
 
 func encodeRecentTargetReply(reply string) (model.PromptItem, error) {

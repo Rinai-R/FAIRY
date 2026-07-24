@@ -50,6 +50,37 @@ func TestNoPackageImportsWails(t *testing.T) {
 	}
 }
 
+func TestDomainPackagesDoNotImportCompositionOrTransport(t *testing.T) {
+	domains := []string{"./companion", "./memory", "./model", "./profile", "./character", "./config"}
+	forbidden := map[string]struct{}{
+		"fairy/api": {}, "fairy/cmd": {}, "fairy/core": {}, "fairy/coreclient": {}, "fairy/runtime": {},
+	}
+
+	args := append([]string{"list", "-json"}, domains...)
+	out, err := exec.Command("go", args...).Output()
+	if err != nil {
+		t.Fatalf("go list domain packages: %v", err)
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(out)))
+	for {
+		var pkg struct {
+			ImportPath string
+			Imports    []string
+		}
+		if err := decoder.Decode(&pkg); err != nil {
+			if err == io.EOF {
+				break
+			}
+			t.Fatalf("decode domain package: %v", err)
+		}
+		for _, imported := range pkg.Imports {
+			if _, found := forbidden[imported]; found {
+				t.Fatalf("domain package %s imports composition/transport package %s", pkg.ImportPath, imported)
+			}
+		}
+	}
+}
+
 func TestSessionCoreHasNoDesktopPackage(t *testing.T) {
 	if _, err := os.Stat("desktop"); err == nil {
 		t.Fatal("fairy/desktop must not exist; desktop shell is not part of Session Core")

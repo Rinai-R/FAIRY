@@ -258,6 +258,35 @@ func TestBuildRespondContextSlotsAppendsRecentSameParticipantReply(t *testing.T)
 	}
 }
 
+func TestBuildRespondContextSlotsAddsBoundedUntrustedContinuity(t *testing.T) {
+	longCue := strings.Repeat("连续", 200)
+	slots, err := BuildRespondContextSlotsWithSocial(
+		character.Record{CharacterID: "character-1", Revision: 1, Name: "角色", TextLanguage: "zh", SpeakingLanguage: "zh"},
+		nil,
+		memory.PromptWindowRecord{Revision: 1}, nil,
+		[]VisualState{{ID: "idle", Description: "待机"}}, memory.RetrievalContext{}, publicAmbientResolved(),
+		SocialRespondContext{Intent: &ReplyIntent{ReplyMode: "normal"}, ContinuityCue: longCue, RecentFeedback: "positive"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var continuity ContextSlot
+	for _, slot := range slots {
+		if slot.ID == "continuity" {
+			continuity = slot
+		}
+	}
+	if !continuity.Present || continuity.Trust != "untrusted_context_data" || continuity.CachePolicy != "tail" {
+		t.Fatalf("continuity slot = %#v", continuity)
+	}
+	if len(continuity.Items) != 1 || len([]rune(continuity.Items[0].Content)) > 600 {
+		t.Fatalf("continuity payload was not bounded: %#v", continuity.Items)
+	}
+	if strings.Contains(continuity.Items[0].Content, "decision") {
+		t.Fatalf("continuity payload exposed internal decision metadata: %s", continuity.Items[0].Content)
+	}
+}
+
 func TestBuildRespondInputKeepsPersonaOutOfInstructions(t *testing.T) {
 	style := "日常短句"
 	name := "Rinai"

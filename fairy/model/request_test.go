@@ -167,6 +167,27 @@ func TestBuildResponsesRequestDraftMatchesOpenAICompatibleShape(t *testing.T) {
 	}
 }
 
+func TestResponsesRequestDraftBuildsRevisionScopedPromptCacheKey(t *testing.T) {
+	req := request()
+	req.Shape.PromptCacheKey = "legacy-seed"
+	req.CacheInput = &CacheKeyInput{
+		Lane: PromptLaneRespond, Model: "deepseek-v4-flash", ConversationID: "conversation-1",
+		CharacterRevision: 2, ProfileRevision: 3, PromptRevision: 4,
+	}
+	draft, err := BuildRequestDraft(connection(ProtocolResponses), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := bodyMap(t, draft)
+	key, ok := body["prompt_cache_key"].(string)
+	if !ok || !strings.HasPrefix(key, "fairy:v2:") {
+		t.Fatalf("prompt_cache_key = %#v", body["prompt_cache_key"])
+	}
+	if key == req.Shape.PromptCacheKey {
+		t.Fatal("revision-scoped key ignored CacheInput")
+	}
+}
+
 func TestParticipationLaneUsesJSONResponseFormatForChatCompletions(t *testing.T) {
 	req := request()
 	req.Shape.Lane = PromptLaneParticipate

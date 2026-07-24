@@ -72,6 +72,9 @@ type CompiledPromptRequest struct {
 	Input              []PromptItem      `json:"input"`
 	PreviousResponseID string            `json:"previousResponseId,omitempty"`
 	Tools              []ToolSpec        `json:"tools,omitempty"`
+	// CacheInput is local metadata used to derive a stable provider key. It is
+	// intentionally excluded from the wire representation.
+	CacheInput *CacheKeyInput `json:"-"`
 }
 
 type RequestDraft struct {
@@ -304,12 +307,9 @@ func responsesBody(connection Connection, request CompiledPromptRequest) (respon
 	if err != nil {
 		return responsesRequestBody{}, err
 	}
-	promptCacheKey := ""
-	if connection.Capabilities.PromptCacheKey {
-		if request.Shape.PromptCacheKey == "" {
-			return responsesRequestBody{}, errors.New("responses request requires prompt cache key")
-		}
-		promptCacheKey = request.Shape.PromptCacheKey
+	promptCacheKey, err := promptCacheKeyFor(connection, request)
+	if err != nil {
+		return responsesRequestBody{}, err
 	}
 	return responsesRequestBody{
 		Model:              connection.Model,
@@ -323,6 +323,23 @@ func responsesBody(connection Connection, request CompiledPromptRequest) (respon
 		PromptCacheKey:     promptCacheKey,
 		Tools:              responsesToolDefinitions(request.Tools),
 	}, nil
+}
+
+func promptCacheKeyFor(connection Connection, request CompiledPromptRequest) (string, error) {
+	if !connection.Capabilities.PromptCacheKey {
+		return "", nil
+	}
+	if request.CacheInput != nil {
+		key, err := BuildPromptCacheKey(*request.CacheInput)
+		if err != nil {
+			return "", fmt.Errorf("building prompt cache key: %w", err)
+		}
+		return key, nil
+	}
+	if request.Shape.PromptCacheKey == "" {
+		return "", errors.New("responses request requires prompt cache key")
+	}
+	return request.Shape.PromptCacheKey, nil
 }
 
 type chatCompletionsRequestBody struct {

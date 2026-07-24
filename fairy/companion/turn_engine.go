@@ -270,6 +270,14 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 			},
 			Input: input,
 			Tools: tools,
+			CacheInput: &model.CacheKeyInput{
+				Lane:              model.PromptLaneRespond,
+				Model:             connectionConfig.Model,
+				ConversationID:    request.ConversationID,
+				CharacterRevision: characterRecord.Revision,
+				ProfileRevision:   profileRevisionValue(userProfile),
+				PromptRevision:    bootstrap.PromptWindow.Revision,
+			},
 		}
 		var executeRequest model.CompiledPromptRequest
 		continuationMode := "decide"
@@ -963,6 +971,13 @@ func cacheObservationFromProvider(tokens *uint64) CachedTokenObservation {
 		return CacheMissing()
 	}
 	return CacheObserved(*tokens)
+}
+
+func profileRevisionValue(snapshot *profile.Snapshot) uint64 {
+	if snapshot == nil {
+		return 0
+	}
+	return snapshot.Revision
 }
 
 func (e *TurnEngine) CancelTurn(conversationID string, turnID string) error {

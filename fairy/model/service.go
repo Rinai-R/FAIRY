@@ -72,6 +72,13 @@ func (s *ModelService) ExecuteRequestContextStream(ctx context.Context, request 
 	if err != nil {
 		return err
 	}
+	if connection.Capabilities.PromptCacheKey && request.CacheInput == nil && request.Shape.PromptCacheKey != "" {
+		request.CacheInput = &CacheKeyInput{
+			Lane:  request.Shape.Lane,
+			Model: request.Shape.Model,
+			Seed:  request.Shape.PromptCacheKey,
+		}
+	}
 	draft, err := BuildRequestDraft(connection, request)
 	if err != nil {
 		return fmt.Errorf("building model request draft: %w", err)
@@ -84,7 +91,7 @@ func (s *ModelService) ExecuteRequestContextStream(ctx context.Context, request 
 }
 
 func LaneCacheKey(conversationID string, lane PromptLane) string {
-	return "fairy:" + conversationID + ":" + string(lane)
+	return BuildLegacyLaneCacheKey(conversationID, lane)
 }
 
 func (s *ModelService) ExecutePrompt(lane PromptLane, instructions string, maxOutputTokens uint32, input []PromptItem, promptCacheKey string) ([]StreamEvent, error) {
@@ -108,6 +115,13 @@ func (s *ModelService) ExecutePrompt(lane PromptLane, instructions string, maxOu
 			PromptCacheKey:  cacheKey,
 		},
 		Input: input,
+	}
+	if connectionConfig.Capabilities.PromptCacheKey {
+		request.CacheInput = &CacheKeyInput{
+			Lane:  lane,
+			Model: connectionConfig.Model,
+			Seed:  promptCacheKey,
+		}
 	}
 	return s.ExecuteRequest(request)
 }

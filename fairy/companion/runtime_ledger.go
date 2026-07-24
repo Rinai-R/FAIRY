@@ -83,6 +83,10 @@ func runtimePromptLedgerMetadata(
 		"retrievedPersonalCount":     len(retrieval.PersonalMemories),
 		"retrievedKnowledgeCount":    len(retrieval.Knowledge),
 		"contextSlots":               runtimeContextSlotMetadata(slots),
+		"prefixCache": map[string]any{
+			"version":               model.PromptCacheKeyVersion,
+			"dynamicInputsExcluded": true,
+		},
 	}
 	return metadata
 }
