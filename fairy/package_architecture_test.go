@@ -104,7 +104,7 @@ func TestIndependentSurfacesDoNotImportCoreInternals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, surface := range []string{"desktop", "macos", "qq-onebot", "turnclient"} {
+	for _, surface := range []string{"desktop", "qq-onebot", "turnclient"} {
 		directory := filepath.Join(root, "surfaces", surface)
 		if _, err := os.Stat(directory); err != nil {
 			if os.IsNotExist(err) {

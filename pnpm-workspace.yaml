@@ -1,5 +1,5 @@
 packages:
   - "web"
-  - "surfaces/macos/frontend"
+  - "surfaces/desktop/frontend"
 allowBuilds:
   esbuild: true

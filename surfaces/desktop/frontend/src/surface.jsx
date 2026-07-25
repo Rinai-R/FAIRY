@@ -46,9 +46,8 @@ function CompanionSurface() {
 
   useEffect(() => Events.On("desktop:turn", (event) => {
     const turn = event?.data ?? event;
-    // Waiting / planning / responding must keep the current standee (see
-    // pixelCharacterState: "dialogue lifecycle keeps the current image while waiting").
-    // Reply expression is applied only when the turn completes.
+    // Waiting / planning / responding keep the current standee; reply expression
+    // is applied only when the turn completes.
     if (turn.type === "beat.ready" && turn.beat?.visualState) {
       pendingVisualRef.current = turn.beat.visualState;
     }
