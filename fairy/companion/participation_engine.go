@@ -2,183 +2,120 @@ package companion
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"strings"
-	"time"
 
-	"fairy/interaction"
+	"fairy/character"
+	"fairy/config"
+	"fairy/internal/app/participation"
 	"fairy/memory"
 	"fairy/model"
+
+	domain "fairy/internal/domain/interaction"
 )
 
-// ParticipationEngine owns public ambient reply|wait|silent decisions.
-type ParticipationEngine struct {
-	host *CompanionService
+type (
+	AmbientObservation            = participation.AmbientObservation
+	ParticipationEvaluationReason = participation.ParticipationEvaluationReason
+	ParticipationRequest          = participation.ParticipationRequest
+	ParticipationAction           = participation.ParticipationAction
+	ReplyIntent                   = participation.ReplyIntent
+	RecentPresence                = participation.RecentPresence
+	ParticipationSignals          = participation.ParticipationSignals
+	ParticipationResult           = participation.ParticipationResult
+)
+
+const (
+	ParticipationInstructions      = participation.ParticipationInstructions
+	ParticipationMaxOutputTokens   = participation.ParticipationMaxOutputTokens
+	ParticipationReasonMessage     = participation.ParticipationReasonMessage
+	ParticipationReasonWaitElapsed = participation.ParticipationReasonWaitElapsed
+	ParticipationReply             = participation.ParticipationReply
+	ParticipationWait              = participation.ParticipationWait
+	ParticipationSilent            = participation.ParticipationSilent
+)
+
+var (
+	ValidateParticipationRequest       = participation.ValidateParticipationRequest
+	DeriveParticipationSignals         = participation.DeriveParticipationSignals
+	DeriveRecentPresence               = participation.DeriveRecentPresence
+	BuildParticipationInput            = participation.BuildParticipationInput
+	BuildParticipationInputWithSignals = participation.BuildParticipationInputWithSignals
+	CompileParticipation               = participation.CompileParticipation
+)
+
+type ParticipationEngine = participation.Engine
+
+func newParticipationEngine(service *CompanionService) *ParticipationEngine {
+	return participation.NewEngine(participationHost{service: service})
 }
 
-func (e *ParticipationEngine) DecideParticipation(ctx context.Context, request ParticipationRequest) (ParticipationResult, error) {
-	s := e.host
-	if ctx == nil {
-		return ParticipationResult{}, errors.New("context is required")
+type participationHost struct {
+	service *CompanionService
+}
+
+var _ participation.DecisionHost = participationHost{}
+
+func (h participationHost) LoadConversation(conversationID string) (memory.ConversationBootstrap, error) {
+	if h.service == nil || h.service.memoryPort() == nil {
+		return memory.ConversationBootstrap{}, ErrRespondRuntimeNotMigrated
 	}
-	if err := ValidateParticipationRequest(request); err != nil {
-		return ParticipationResult{}, err
+	return h.service.memoryPort().LoadConversation(conversationID)
+}
+
+func (h participationHost) ResolveInteraction(conversationID string) (domain.Resolved, error) {
+	if h.service == nil {
+		return domain.Resolved{}, ErrRespondRuntimeNotMigrated
 	}
-	if s == nil || s.memoryPort() == nil || s.modelPort() == nil || s.characterCatalog() == nil || s.configSource() == nil {
-		return ParticipationResult{}, ErrRespondRuntimeNotMigrated
+	return h.service.ResolveInteraction(conversationID)
+}
+
+func (h participationHost) ActiveCharacter(characterID string) (character.Record, error) {
+	if h.service == nil || h.service.characterCatalog() == nil {
+		return character.Record{}, ErrRespondRuntimeNotMigrated
 	}
-	resolved, err := s.ResolveInteraction(request.ConversationID)
-	if err != nil {
-		return ParticipationResult{}, err
+	return h.service.activeCharacter(characterID)
+}
+
+func (h participationHost) ListSocialPersonNotes(ctx context.Context, characterID, conversationID string, senderIDs []string) ([]memory.SocialPersonNote, error) {
+	if h.service == nil || h.service.memoryPort() == nil {
+		return nil, ErrRespondRuntimeNotMigrated
 	}
-	if resolved.Memory != interaction.MemoryPublic || !resolved.AllowsAmbientParticipation() {
-		return ParticipationResult{}, errors.New("participation requires a public ambient interaction")
+	return h.service.memoryPort().ListSocialPersonNotes(ctx, characterID, conversationID, senderIDs)
+}
+
+func (h participationHost) RetrieveSocialMemoryContext(ctx context.Context, characterID, conversationID, query string) (memory.SocialMemoryContext, error) {
+	if h.service == nil || h.service.memoryPort() == nil {
+		return memory.SocialMemoryContext{}, ErrRespondRuntimeNotMigrated
 	}
-	bootstrap, err := s.memoryPort().LoadConversation(request.ConversationID)
-	if err != nil {
-		return ParticipationResult{}, fmt.Errorf("loading ambient conversation: %w", err)
+	return h.service.memoryPort().RetrieveSocialMemoryContext(ctx, characterID, conversationID, query)
+}
+
+func (h participationHost) ModelConnection() (config.ModelConnection, error) {
+	if h.service == nil || h.service.configSource() == nil {
+		return config.ModelConnection{}, ErrRespondRuntimeNotMigrated
 	}
-	record, err := s.activeCharacter(bootstrap.Conversation.CharacterID)
-	if err != nil {
-		return ParticipationResult{}, err
+	return h.service.configSource().ModelConnection()
+}
+
+func (h participationHost) ExecuteRequest(ctx context.Context, request model.CompiledPromptRequest) ([]model.StreamEvent, error) {
+	if h.service == nil || h.service.modelPort() == nil {
+		return nil, ErrRespondRuntimeNotMigrated
 	}
-	presence, err := DeriveRecentPresence(bootstrap.Messages, time.Now().UnixMilli())
-	if err != nil {
-		return ParticipationResult{}, err
-	}
-	input, err := BuildParticipationInputWithSignals(record, resolved, request.EvaluationReason, request.Messages, request.CacheMessages, presence, time.Now().UnixMilli(), bootstrap.Messages)
-	if err != nil {
-		return ParticipationResult{}, err
-	}
-	behaviorItem, err := s.participationBehaviorContext(ctx, bootstrap.Conversation.CharacterID, request.ConversationID, request.Messages)
-	if err != nil {
-		return ParticipationResult{}, err
-	}
-	if behaviorItem != nil {
-		input = append(input, *behaviorItem)
-	}
-	notes, err := s.memoryPort().ListSocialPersonNotes(ctx, bootstrap.Conversation.CharacterID, request.ConversationID, ambientSenderIDs(request.Messages))
-	if err != nil {
-		return ParticipationResult{}, fmt.Errorf("listing social person notes: %w", err)
-	}
-	if len(notes) > 0 {
-		notesItem, notesErr := encodeSocialPersonNotes(notes)
-		if notesErr != nil {
-			return ParticipationResult{}, notesErr
-		}
-		input = append(input, notesItem)
-	}
-	connection, err := s.configSource().ModelConnection()
-	if err != nil {
-		return ParticipationResult{}, err
-	}
-	cacheKey := ""
-	if connection.Capabilities.PromptCacheKey {
-		cacheKey = model.LaneCacheKey(request.ConversationID, model.PromptLaneParticipate)
-	}
-	compiledRequest := model.CompiledPromptRequest{
-		Shape: model.ModelRequestShape{
-			Lane: model.PromptLaneParticipate, Model: connection.Model,
-			Instructions: ParticipationInstructions, MaxOutputTokens: ParticipationMaxOutputTokens,
-			PromptCacheKey: cacheKey,
-		},
-		Input: input,
-	}
-	var (
-		firstCompileErr error
-		usage           []LaneModelUsage
-	)
-	for attempt := 1; attempt <= maxProtocolCompileRetries+1; attempt++ {
-		events, executeErr := s.modelPort().ExecuteRequestContext(ctx, compiledRequest)
-		if executeErr != nil {
-			return ParticipationResult{}, fmt.Errorf("executing participation decision: %w", executeErr)
-		}
-		if len(model.FunctionCallsFromEvents(events)) != 0 {
-			return ParticipationResult{}, errors.New("participation decision returned tool calls")
-		}
-		usage = append(usage, laneUsageFromEventsForLane(model.PromptLaneParticipate, events, 0)...)
-		result, compileErr := CompileParticipation(model.CollectTextFromEvents(events), request.Messages)
-		if compileErr == nil {
-			if result.Action == ParticipationReply && request.EvaluationReason == ParticipationReasonMessage && (result.TargetMessageID == nil || !isNewParticipationTarget(request.Messages, *result.TargetMessageID)) {
-				return ParticipationResult{Action: ParticipationSilent, Usage: usage}, nil
-			}
-			result.Usage = usage
-			return result, nil
-		}
-		if attempt == 1 {
-			firstCompileErr = compileErr
-		}
-		if attempt <= maxProtocolCompileRetries {
-			continue
-		}
-		return ParticipationResult{}, fmt.Errorf("participation decision remained invalid after %d retries: first attempt: %v; final attempt: %w", maxProtocolCompileRetries, firstCompileErr, compileErr)
-	}
-	return ParticipationResult{}, errors.New("participation decision retry loop exhausted")
+	return h.service.modelPort().ExecuteRequestContext(ctx, request)
 }
 
 func (s *CompanionService) participationBehaviorContext(ctx context.Context, characterID, conversationID string, messages []AmbientObservation) (*model.PromptItem, error) {
 	if s == nil || s.memoryPort() == nil {
 		return nil, nil
 	}
-	query := participationBehaviorQuery(messages)
+	query := participation.BehaviorQuery(messages)
 	if query == "" {
 		query = "群聊互动"
 	}
 	retrieved, err := s.memoryPort().RetrieveSocialMemoryContext(ctx, characterID, conversationID, query)
 	if err != nil {
-		return nil, fmt.Errorf("retrieving participation social behavior: %w", err)
-	}
-	behaviors := make([]memory.SocialMemoryEntry, 0, 3)
-	for _, entry := range retrieved.Entries {
-		if entry.Kind != memory.SocialMemoryBehavior {
-			continue
-		}
-		behaviors = append(behaviors, entry)
-		if len(behaviors) >= 3 {
-			break
-		}
-	}
-	if len(behaviors) == 0 {
-		return nil, nil
-	}
-	item, err := encodeSocialMemoryContext(memory.SocialMemoryContext{Entries: behaviors})
-	if err != nil {
 		return nil, err
 	}
-	return &item, nil
+	return participation.BehaviorItem(retrieved)
 }
 
-func participationBehaviorQuery(messages []AmbientObservation) string {
-	const maxMessages = 3
-	const maxRunesPerMessage = 60
-	parts := make([]string, 0, maxMessages)
-	for index := len(messages) - 1; index >= 0 && len(parts) < maxMessages; index-- {
-		text := strings.TrimSpace(messages[index].Text)
-		if text == "" {
-			continue
-		}
-		runes := []rune(text)
-		if len(runes) > maxRunesPerMessage {
-			text = string(runes[:maxRunesPerMessage])
-		}
-		parts = append(parts, text)
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	// Reverse so older → newer order for a stable situation cue.
-	for left, right := 0, len(parts)-1; left < right; left, right = left+1, right-1 {
-		parts[left], parts[right] = parts[right], parts[left]
-	}
-	return strings.Join(parts, " ")
-}
-
-func isNewParticipationTarget(messages []AmbientObservation, targetMessageID string) bool {
-	for _, message := range messages {
-		if message.IsNew && message.MessageID == targetMessageID {
-			return true
-		}
-	}
-	return false
-}
+var participationBehaviorQuery = participation.BehaviorQuery

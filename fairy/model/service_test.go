@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"fairy/config"
 	"fairy/secret"
 )
 
@@ -72,6 +73,28 @@ func modelServiceRequest() CompiledPromptRequest {
 	}
 }
 
+func TestNormalizeCacheInputUpgradesLegacyIdentity(t *testing.T) {
+	request := modelServiceRequest()
+	request.Shape.PromptCacheKey = "fairy:conversation-1:respond"
+	normalized := normalizeCacheInput(request)
+	if normalized.CacheInput == nil || normalized.CacheInput.Seed != request.Shape.PromptCacheKey || normalized.CacheInput.StablePromptHash == "" {
+		t.Fatalf("cache input = %#v", normalized.CacheInput)
+	}
+	request.Input[0].Content = "different dynamic dialogue"
+	second := normalizeCacheInput(request)
+	firstKey, err := BuildPromptCacheKey(*normalized.CacheInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondKey, err := BuildPromptCacheKey(*second.CacheInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstKey != secondKey {
+		t.Fatalf("dynamic input changed cache identity: %q != %q", firstKey, secondKey)
+	}
+}
+
 func TestModelServiceBuildRequestDraftUsesStoredConnection(t *testing.T) {
 	root := t.TempDir()
 	writeModelConnection(t, root, "chat_completions")
@@ -92,6 +115,49 @@ func TestModelServiceBuildRequestDraftUsesStoredConnection(t *testing.T) {
 	}
 	if strings.Contains(draft.BodyJSON, "sk-") || strings.Contains(strings.ToLower(draft.BodyJSON), "authorization") {
 		t.Fatalf("BodyJSON leaked secret-shaped data: %s", draft.BodyJSON)
+	}
+}
+
+func TestModelServiceReadsSynchronousConfigUpdatesWithoutRestart(t *testing.T) {
+	root := t.TempDir()
+	serviceConfig := config.NewConfigService(root, secret.NewTestStore())
+	if _, err := serviceConfig.SaveModelConnection(config.ModelConnectionInput{
+		Protocol:            "chat_completions",
+		Endpoint:            "https://first.example",
+		Model:               "first-model",
+		ContextWindowTokens: 8192,
+		AuthMode:            "no_auth",
+	}, nil); err != nil {
+		t.Fatalf("initial SaveModelConnection() error = %v", err)
+	}
+	service := NewModelService(root, nil)
+	firstRequest := modelServiceRequest()
+	firstRequest.Shape.Model = "first-model"
+	first, err := service.BuildRequestDraft(firstRequest)
+	if err != nil {
+		t.Fatalf("first BuildRequestDraft() error = %v", err)
+	}
+	if !strings.Contains(first.BodyJSON, `"model":"first-model"`) {
+		t.Fatalf("first draft model missing: %s", first.BodyJSON)
+	}
+
+	if _, err := serviceConfig.SaveModelConnection(config.ModelConnectionInput{
+		Protocol:            "chat_completions",
+		Endpoint:            "https://second.example",
+		Model:               "second-model",
+		ContextWindowTokens: 16384,
+		AuthMode:            "no_auth",
+	}, nil); err != nil {
+		t.Fatalf("updated SaveModelConnection() error = %v", err)
+	}
+	secondRequest := modelServiceRequest()
+	secondRequest.Shape.Model = "second-model"
+	second, err := service.BuildRequestDraft(secondRequest)
+	if err != nil {
+		t.Fatalf("second BuildRequestDraft() error = %v", err)
+	}
+	if second.URL != "https://second.example/chat/completions" || !strings.Contains(second.BodyJSON, `"model":"second-model"`) {
+		t.Fatalf("updated draft did not observe durable config: url=%q body=%s", second.URL, second.BodyJSON)
 	}
 }
 

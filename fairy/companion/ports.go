@@ -6,29 +6,34 @@ import (
 	"fairy/character"
 	"fairy/config"
 	"fairy/identity"
-	"fairy/interaction"
 	"fairy/memory"
 	"fairy/memory/semantic"
 	"fairy/model"
 	"fairy/profile"
+
+	contracts "fairy/contracts/interaction"
 )
 
 // MemoryPort is the persistence + retrieval surface Companion needs from the memory domain.
 // Implemented by *memory.Store (service+store merged in the memory package).
 type MemoryPort interface {
 	LoadConversation(conversationID string) (memory.ConversationBootstrap, error)
-	LookupEndpointForConversation(conversationID string) (interaction.Binding, bool, error)
+	LookupEndpointForConversation(conversationID string) (contracts.Binding, bool, error)
 	BeginTurn(conversationID string, userMessage string) (memory.PersistedTurn, error)
+	BeginInitiationTurn(conversationID string, evidenceIDs []string) (memory.PersistedTurn, error)
 	CompleteTurn(conversationID string, turnID string, assistantMessage string) (memory.MessageRecord, error)
 	InterruptTurn(conversationID string, turnID string, publishedPrefix string) (*memory.MessageRecord, error)
 	FailTurn(conversationID string, turnID string, code string, message string, retryable bool) error
-	CommitPromptWindow(conversationID string, expectedRevision uint64, summary string) (memory.CompactionResult, error)
+	CommitCompaction(conversationID string, expectedRevision uint64, summary string, contextWindow memory.ContextWindowRecord, clearLane string) (memory.CompactionResult, error)
 	Retrieve(characterID string, query string) (memory.RetrievalContext, error)
 	RetrieveWithSemanticVectorIndex(context.Context, string, string, semantic.Embedder, memory.SemanticVectorIndex) (memory.RetrievalContext, error)
 	RetrievePublicKnowledgeContext(context.Context, string) (memory.RetrievalContext, error)
+	CompanionPortraitContext(context.Context, string) (memory.RetrievalContext, error)
 	StoreSocialMemoryEntries(context.Context, memory.SocialMemoryBatchInput) ([]memory.SocialMemoryEntry, error)
 	RetrieveSocialMemoryContext(context.Context, string, string, string) (memory.SocialMemoryContext, error)
+	RetrieveCharacterSocialMemoryContext(context.Context, string, string) (memory.SocialMemoryContext, error)
 	RecordSocialReplyFeedback(context.Context, memory.SocialReplyFeedbackInput) (memory.SocialReplyFeedback, error)
+	RecentSocialFeedbackSummary(context.Context, string, string) (memory.RecentSocialFeedbackSummary, error)
 	UpsertSocialPersonNote(context.Context, memory.SocialPersonNoteInput) (memory.SocialPersonNote, error)
 	ListSocialPersonNotes(context.Context, string, string, []string) ([]memory.SocialPersonNote, error)
 	AppendTurnRuntimeEvent(input memory.TurnRuntimeEventInput) (memory.TurnRuntimeEventRecord, error)

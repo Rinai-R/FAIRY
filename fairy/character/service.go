@@ -1,8 +1,6 @@
 package character
 
 import (
-	"fairy/notify"
-
 	"go.uber.org/zap"
 )
 
@@ -10,7 +8,6 @@ type CharacterService struct {
 	root   string
 	store  *Store
 	logger *zap.Logger
-	emit   notify.ConfigEmitter
 }
 
 func NewCharacterService(root string) *CharacterService {
@@ -38,20 +35,6 @@ func AttachLogger(s *CharacterService, logger *zap.Logger) {
 	s.logger = logger
 }
 
-// AttachConfigEmitter wires configuration-change delivery from main.
-func AttachConfigEmitter(s *CharacterService, emit notify.ConfigEmitter) {
-	if s == nil {
-		return
-	}
-	s.emit = emit
-}
-
-func (s *CharacterService) emitChange(change notify.ConfigurationChange) {
-	if s != nil && s.emit != nil {
-		s.emit(change)
-	}
-}
-
 func (s *CharacterService) ListCharacters() (Catalog, error) {
 	catalog, err := s.store.List()
 	if err != nil {
@@ -71,7 +54,6 @@ func (s *CharacterService) CreateCharacter(brief Brief, visualPackID string) (Re
 	if err != nil {
 		return Record{}, err
 	}
-	s.emitChange(notify.CharacterChanged(record.Revision))
 	return record, nil
 }
 
@@ -80,7 +62,6 @@ func (s *CharacterService) UpdateCharacter(characterID string, brief Brief) (Rec
 	if err != nil {
 		return Record{}, err
 	}
-	s.emitChange(notify.CharacterChanged(record.Revision))
 	return record, nil
 }
 
@@ -89,7 +70,6 @@ func (s *CharacterService) SetCharacterAppearance(characterID string, visualPack
 	if err != nil {
 		return Record{}, err
 	}
-	s.emitChange(notify.CharacterChanged(record.Revision))
 	return record, nil
 }
 
@@ -98,7 +78,6 @@ func (s *CharacterService) ActivateCharacter(characterID string, revision uint64
 	if err != nil {
 		return Record{}, err
 	}
-	s.emitChange(notify.CharacterChanged(record.Revision))
 	return record, nil
 }
 
@@ -107,7 +86,6 @@ func (s *CharacterService) ImportCharacterPackage(packagePath string) (Record, e
 	if err != nil {
 		return Record{}, err
 	}
-	s.emitChange(notify.CharacterChanged(record.Revision))
 	return record, nil
 }
 

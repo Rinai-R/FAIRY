@@ -112,6 +112,16 @@ func (c *Client) ObserveAmbient(ctx context.Context, conversationID string, mess
 	})
 }
 
+func (c *Client) ObserveDesktop(ctx context.Context, conversationID string, observation DesktopObservation) (DesktopObservationResponse, error) {
+	var result DesktopObservationResponse
+	err := c.sessionRPC(ctx, c.timeout, func(ctx context.Context, socket *SessionSocket) error {
+		var err error
+		result, err = socket.ObserveDesktop(ctx, conversationID, observation)
+		return err
+	})
+	return result, err
+}
+
 func DecodeTurnEvent(event SSEEvent) (TurnEvent, error) {
 	var result TurnEvent
 	if err := json.Unmarshal(event.Data, &result); err != nil {

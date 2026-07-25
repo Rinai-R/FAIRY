@@ -7,15 +7,16 @@ import (
 	"regexp"
 	"strings"
 
-	"fairy/interaction"
 	"fairy/memory"
+
+	domain "fairy/internal/domain/interaction"
 )
 
 func socialMemoryQuery(intent ReplyIntent) string {
 	return strings.TrimSpace(intent.MemoryQuery)
 }
 
-func (s *CompanionService) retrieveSocialRespondContext(ctx context.Context, characterID, conversationID string, resolved interaction.Resolved, intent *ReplyIntent, senderIDs []string) (*SocialRespondContext, error) {
+func (s *CompanionService) retrieveSocialRespondContext(ctx context.Context, characterID, conversationID string, resolved domain.Resolved, intent *ReplyIntent, senderIDs []string) (*SocialRespondContext, error) {
 	if intent == nil || !resolved.AllowsAmbientParticipation() || resolved.AllowsPersonalMemory() {
 		return nil, nil
 	}
@@ -36,7 +37,35 @@ func (s *CompanionService) retrieveSocialRespondContext(ctx context.Context, cha
 	if err != nil {
 		return nil, err
 	}
-	return &SocialRespondContext{Intent: intent, Memory: socialMemory, PersonNotes: notes}, nil
+	feedback, err := s.memoryPort().RecentSocialFeedbackSummary(ctx, characterID, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	feedbackCue, err := formatRecentSocialFeedback(feedback)
+	if err != nil {
+		return nil, err
+	}
+	return &SocialRespondContext{Intent: intent, Memory: socialMemory, PersonNotes: notes, RecentFeedback: feedbackCue}, nil
+}
+
+func formatRecentSocialFeedback(summary memory.RecentSocialFeedbackSummary) (string, error) {
+	if summary.Empty() {
+		return "", nil
+	}
+	if summary.SampleCount != summary.PositiveCount+summary.NegativeCount+summary.UnknownCount {
+		return "", errors.New("recent social feedback counts are inconsistent")
+	}
+	if summary.LatestOutcome != memory.SocialFeedbackPositive && summary.LatestOutcome != memory.SocialFeedbackNegative && summary.LatestOutcome != memory.SocialFeedbackUnknown {
+		return "", errors.New("recent social feedback latest outcome is invalid")
+	}
+	if summary.ObservedMessageCount < 0 {
+		return "", errors.New("recent social feedback observation count is invalid")
+	}
+	return fmt.Sprintf(
+		"sample=%d;positive=%d;negative=%d;unknown=%d;latest=%s;observedMessages=%d",
+		summary.SampleCount, summary.PositiveCount, summary.NegativeCount, summary.UnknownCount,
+		summary.LatestOutcome, summary.ObservedMessageCount,
+	), nil
 }
 
 func filterSocialMemoryKinds(entries []memory.SocialMemoryEntry, kinds ...string) []memory.SocialMemoryEntry {
@@ -91,13 +120,14 @@ var publicPeerIdentityPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(i am|i'm|as an?|being an?)\s+(an?\s+)?(ai|bot|robot|model|assistant|system)\b`),
 	regexp.MustCompile(`(?i)(私は|僕は|俺は|として)[^、。！？\n]{0,8}(ai|bot|ロボット|モデル|アシスタント|システム)`),
 	regexp.MustCompile(`高性能[^，。！？\n]{0,8}(机器人|模块|模式|学习成果|判断|可不是白叫|不是白叫)`),
+	regexp.MustCompile(`高性能(?:的我|的好奇心|发呆模式|机器人(?:也|都|批准|陪聊|申请|学到)?|地处理好自己的)`),
 	regexp.MustCompile(`我的(判断|情感|分析|消音|学习)?模块`),
 	regexp.MustCompile(`(我的|我这边的?)[^，。！？\n]{0,4}(数据库|处理器|核心存储器|内存|缓存)`),
 	regexp.MustCompile(`我(数据库|核心存储器|内存|缓存)里`),
 	regexp.MustCompile(`我[^，。！？\n]{0,12}(回收进|写进|存进|记到)(数据库|核心存储器|内存|缓存)`),
 }
 
-func compileReplyForInteraction(draft string, availableVisualStates []VisualState, resolved interaction.Resolved, intent *ReplyIntent) (CompiledReply, error) {
+func compileReplyForInteraction(draft string, availableVisualStates []VisualState, resolved domain.Resolved, intent *ReplyIntent) (CompiledReply, error) {
 	reply, err := CompileReply(draft, availableVisualStates)
 	if err != nil {
 		return CompiledReply{}, err
@@ -108,8 +138,8 @@ func compileReplyForInteraction(draft string, availableVisualStates []VisualStat
 	return reply, nil
 }
 
-func validateReplyForInteraction(reply CompiledReply, resolved interaction.Resolved, intent *ReplyIntent) error {
-	if resolved.Memory == interaction.MemoryPublic && intent != nil {
+func validateReplyForInteraction(reply CompiledReply, resolved domain.Resolved, intent *ReplyIntent) error {
+	if resolved.Memory == domain.MemoryPublic && intent != nil {
 		shape, err := publicReplyShapeForMode(intent.ReplyMode)
 		if err != nil {
 			return err
@@ -126,8 +156,8 @@ func validateReplyForInteraction(reply CompiledReply, resolved interaction.Resol
 	return nil
 }
 
-func validateTextForInteraction(text string, resolved interaction.Resolved) error {
-	if resolved.Memory != interaction.MemoryPublic {
+func validateTextForInteraction(text string, resolved domain.Resolved) error {
+	if resolved.Memory != domain.MemoryPublic {
 		return nil
 	}
 	return validatePublicPeerText(text)
@@ -153,6 +183,6 @@ func replyCompileRetryCorrection(err error) string {
 	return " RETRY CORRECTION: The previous reply did not satisfy the strict reply protocol. Return a newly generated reply as exactly one valid JSON object matching the required schema, with no prose, Markdown, unknown fields, or trailing data."
 }
 
-func allowReplyPreviewForInteraction(resolved interaction.Resolved) bool {
-	return resolved.Memory == interaction.MemoryPersonal
+func allowReplyPreviewForInteraction(resolved domain.Resolved) bool {
+	return resolved.Memory == domain.MemoryPersonal
 }

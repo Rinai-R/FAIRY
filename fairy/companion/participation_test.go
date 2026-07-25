@@ -11,9 +11,11 @@ import (
 
 	"fairy/character"
 	"fairy/config"
-	"fairy/interaction"
+	"fairy/internal/app/participation"
 	"fairy/memory"
 	"fairy/model"
+
+	contracts "fairy/contracts/interaction"
 )
 
 func validAmbientObservation() AmbientObservation {
@@ -124,7 +126,7 @@ func TestValidateParticipationBoundsAndReason(t *testing.T) {
 	if err := ValidateParticipationRequest(invalidWait); err == nil {
 		t.Fatal("wait_elapsed with new observation accepted")
 	}
-	request.Messages[0].Text = strings.Repeat("群", maxAmbientTextRunes+1)
+	request.Messages[0].Text = strings.Repeat("群", participation.MaxAmbientTextRunes+1)
 	if err := ValidateParticipationRequest(request); err == nil {
 		t.Fatal("oversized text accepted")
 	}
@@ -133,7 +135,7 @@ func TestValidateParticipationBoundsAndReason(t *testing.T) {
 	if err := ValidateParticipationRequest(request); err == nil {
 		t.Fatal("duplicate message ID accepted")
 	}
-	request.Messages = make([]AmbientObservation, maxAmbientObservations+1)
+	request.Messages = make([]AmbientObservation, participation.MaxAmbientObservations+1)
 	if err := ValidateParticipationRequest(request); err == nil {
 		t.Fatal("oversized window accepted")
 	}
@@ -240,8 +242,8 @@ func TestBuildParticipationInputKeepsCachePrefixStableAfterRollingWindowSlides(t
 	record := character.Record{
 		CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "自然参与群聊", TextLanguage: "zh", SpeakingLanguage: "zh",
 	}
-	cacheBefore := make([]AmbientObservation, 0, maxAmbientObservations)
-	for i := 1; i <= maxAmbientObservations; i++ {
+	cacheBefore := make([]AmbientObservation, 0, participation.MaxAmbientObservations)
+	for i := 1; i <= participation.MaxAmbientObservations; i++ {
 		cacheBefore = append(cacheBefore, AmbientObservation{
 			MessageID: fmt.Sprintf("m%d", i), SenderID: fmt.Sprintf("u%d", i%6), SenderName: fmt.Sprintf("群友%d", i%6),
 			Text: fmt.Sprintf("第%d条群聊观察", i), TimestampUnixMS: now + int64(i),
@@ -265,7 +267,7 @@ func TestBuildParticipationInputKeepsCachePrefixStableAfterRollingWindowSlides(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(before) != maxAmbientObservations+3 || len(after) != maxAmbientObservations+4 {
+	if len(before) != participation.MaxAmbientObservations+3 || len(after) != participation.MaxAmbientObservations+4 {
 		t.Fatalf("input lengths before=%d after=%d", len(before), len(after))
 	}
 	for index := 0; index < len(before)-1; index++ {
@@ -314,21 +316,21 @@ func TestDeriveParticipationSignalsContainsOnlyObjectiveTimingAndPresenceFacts(t
 
 type participationMemory struct {
 	MemoryPort
-	bootstrap      memory.ConversationBootstrap
-	binding        interaction.Binding
-	found          bool
-	lookupErr      error
-	retrieveCalls  int
-	retrieved      memory.SocialMemoryContext
+	bootstrap     memory.ConversationBootstrap
+	binding       contracts.Binding
+	found         bool
+	lookupErr     error
+	retrieveCalls int
+	retrieved     memory.SocialMemoryContext
 }
 
 func (m *participationMemory) LoadConversation(string) (memory.ConversationBootstrap, error) {
 	return m.bootstrap, nil
 }
 
-func (m *participationMemory) LookupEndpointForConversation(string) (interaction.Binding, bool, error) {
+func (m *participationMemory) LookupEndpointForConversation(string) (contracts.Binding, bool, error) {
 	if m.lookupErr != nil {
-		return interaction.Binding{}, false, m.lookupErr
+		return contracts.Binding{}, false, m.lookupErr
 	}
 	return m.binding, m.found, nil
 }
@@ -460,6 +462,9 @@ func TestDecideParticipationRequiresAmbientPublicAndPropagatesContext(t *testing
 	if modelPort.request.Shape.Lane != model.PromptLaneParticipate || modelPort.request.Shape.PromptCacheKey != "fairy:c1:participate" || modelPort.request.Shape.MaxOutputTokens != ParticipationMaxOutputTokens {
 		t.Fatalf("request shape = %#v", modelPort.request.Shape)
 	}
+	if modelPort.request.CacheInput == nil || modelPort.request.CacheInput.Lane != model.PromptLaneParticipate || modelPort.request.CacheInput.CharacterRevision != 1 || modelPort.request.CacheInput.StablePromptHash == "" {
+		t.Fatalf("cache input = %#v", modelPort.request.CacheInput)
+	}
 	if len(result.Usage) != 1 || result.Usage[0].Lane != string(model.PromptLaneParticipate) {
 		t.Fatalf("usage = %#v", result.Usage)
 	}
@@ -517,11 +522,11 @@ func TestDecideParticipationSkipsSocialMemoryForPersonalInteraction(t *testing.T
 	service.model = &participationModel{draft: `{"action":"silent"}`}
 	service.characters = participationCatalog{record: character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "桌面", TextLanguage: "zh", SpeakingLanguage: "zh"}}
 	service.cfg = participationConfig{}
-	if err := service.BindInteraction("c1", interaction.Binding{
-		Endpoint: interaction.EndpointDesktop,
-		Facts: interaction.Facts{
-			Audience: interaction.AudienceSingle, Initiation: interaction.InitiationDirect,
-			Presentation: interaction.PresentationEmbodied,
+	if err := service.BindInteraction("c1", contracts.Binding{
+		Endpoint: contracts.EndpointDesktop,
+		Facts: contracts.Facts{
+			Audience: contracts.AudienceSingle, Initiation: contracts.InitiationDirect,
+			Presentation: contracts.PresentationEmbodied,
 		},
 	}); err != nil {
 		t.Fatal(err)

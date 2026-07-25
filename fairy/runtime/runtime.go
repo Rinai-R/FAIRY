@@ -13,7 +13,8 @@ import (
 	"fairy/companion"
 	"fairy/config"
 	"fairy/identity"
-	"fairy/logx"
+	"fairy/internal/bootstrap"
+	platformtelemetry "fairy/internal/platform/telemetry"
 	"fairy/memory"
 	"fairy/model"
 	"fairy/observability"
@@ -22,9 +23,8 @@ import (
 	"fairy/search"
 	"fairy/secret"
 	"fairy/speech"
-	"fairy/vectorindex"
+	vectorindex "fairy/internal/adapters/memory/qdrant"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
 // Options configures a Session Core process.
@@ -38,13 +38,6 @@ type Options struct {
 	Profile Profile
 	// LogEventsJSONL prints turn events to stdout (optional local debugging).
 	LogEventsJSONL bool
-}
-
-type Dependencies struct {
-	Database    *pgstore.Pool
-	MemoryStore *memory.Store
-	SecretStore *secret.Store
-	VectorIndex *vectorindex.Client
 }
 
 // Runtime owns long-lived Core services for the HTTP/SSE Session Core.
@@ -84,19 +77,12 @@ type Runtime struct {
 func Open(options Options) (*Runtime, error) {
 	logStore := options.LogStore
 	if logStore == nil {
-		logStore = observability.NewLogStore(observability.DefaultLogCapacity)
+		logStore = platformtelemetry.NewLogStore(platformtelemetry.DefaultLogCapacity)
 	}
-	logger := options.Logger
-	if logger == nil {
-		logger = logx.New(observability.NewLogCore(logStore, logx.LevelFromEnv()))
-	} else {
-		logger = logger.WithOptions(zap.WrapCore(func(core zapcore.Core) zapcore.Core {
-			return zapcore.NewTee(core, observability.NewLogCore(logStore, logx.LevelFromEnv()))
-		}))
-	}
+	logger := platformtelemetry.NewLogger(logStore, options.Logger)
 	httpMetrics := options.HTTPMetrics
 	if httpMetrics == nil {
-		httpMetrics = observability.NewHTTPMetrics()
+		httpMetrics = platformtelemetry.NewHTTPMetrics()
 	}
 	configRoot := options.ConfigRoot
 	if configRoot == "" {
@@ -121,7 +107,7 @@ func Open(options Options) (*Runtime, error) {
 		runtimeProfile = parsed
 	}
 
-	database, memoryStore, secretStore, vectorClient, ownDatabase, ownVector, err := openDependencies(context.Background(), options.Dependencies, runtimeProfile)
+	opened, err := bootstrap.OpenDependencies(context.Background(), options.Dependencies, runtimeProfile)
 	if err != nil {
 		return nil, err
 	}
@@ -130,32 +116,14 @@ func Open(options Options) (*Runtime, error) {
 		if keepDependencies {
 			return
 		}
-		if ownVector && vectorClient != nil {
-			_ = vectorClient.Close()
-		}
-		if ownDatabase && database != nil {
-			database.Close()
-		}
+		opened.CloseOwned()
 	}()
 
-	webSettings, err := config.ReadWebSearchSettings(configRoot)
+	services, err := bootstrap.WireCoreServices(configRoot, opened.Database, opened.MemoryStore, opened.SecretStore)
 	if err != nil {
 		return nil, err
 	}
-	webSearch := search.NewServiceFromEnv(webSettings.BaseURL)
-	modelService := model.NewModelService(configRoot, secretStore)
-	companionService := companion.NewCompanionServiceWithRuntime(configRoot, memoryStore, modelService, webSearch)
-	identityStore, err := identity.NewStore(database)
-	if err != nil {
-		return nil, err
-	}
-	companion.AttachOwnerIdentityStore(companionService, identityStore)
-	characterService := character.NewCharacterService(configRoot)
-	configService := config.NewConfigService(configRoot, secretStore)
-	speechService := speech.NewSpeechService(configRoot, secretStore)
-	profileService := profile.NewProfileService(configRoot)
-	configReader := config.NewReader(configRoot)
-	messageMetrics := observability.NewMessageMetrics()
+	messageMetrics := platformtelemetry.NewMessageMetrics()
 
 	rt := &Runtime{
 		ConfigRoot:    configRoot,
@@ -166,44 +134,44 @@ func Open(options Options) (*Runtime, error) {
 		HTTPMetrics:   httpMetrics,
 		Messages:      messageMetrics,
 		StartedAt:     time.Now(),
-		Database:      database,
-		VectorIndex:   vectorClient,
-		MemoryStore:   memoryStore,
-		Identity:      identityStore,
-		Memory:        memory.NewMemoryServiceWithStore(configRoot, memoryStore),
-		Secret:        secretStore,
-		Model:         modelService,
-		Companion:     companionService,
-		Character:     characterService,
-		Config:        configService,
-		ConfigReader:  configReader,
-		Speech:        speechService,
-		Profile:       profileService,
-		WebSearch:     webSearch,
+		Database:      opened.Database,
+		VectorIndex:   opened.VectorIndex,
+		MemoryStore:   opened.MemoryStore,
+		Identity:      services.Identity,
+		Memory:        services.Memory,
+		Secret:        opened.SecretStore,
+		Model:         services.Model,
+		Companion:     services.Companion,
+		Character:     services.Character,
+		Config:        services.Config,
+		ConfigReader:  services.ConfigReader,
+		Speech:        services.Speech,
+		Profile:       services.Profile,
+		WebSearch:     services.WebSearch,
 		Bootstrap: NewBootstrapService(BootstrapOptions{
 			AppName:                "FAIRY",
 			MigrationStage:         "session-core",
 			CoreVersion:            "0.1.0",
 			RespondRuntimeMigrated: true,
 		}),
-		ownDatabase: ownDatabase,
-		ownVector:   ownVector,
+		ownDatabase: opened.OwnDatabase,
+		ownVector:   opened.OwnVector,
 	}
 
-	companion.AttachLogger(companionService, logger.Named("companion"))
-	companion.AttachMessageTelemetry(companionService, messageMetrics)
-	companion.AttachCharacterStore(companionService, characterService.CatalogStore())
-	companion.AttachProfileStore(companionService, profileService.ProfileStore())
-	companion.AttachConfigReader(companionService, configReader)
-	companion.AttachSpeechSynthesizer(companionService, companionSpeechAdapter{service: speechService})
-	attachSemanticEmbedder(companionService, modelService, configReader, logger.Named("semantic"))
-	if vectorClient != nil {
-		companion.AttachVectorIndex(companionService, vectorClient)
+	companion.AttachLogger(services.Companion, logger.Named("companion"))
+	companion.AttachMessageTelemetry(services.Companion, messageMetrics)
+	companion.AttachCharacterStore(services.Companion, services.Character.CatalogStore())
+	companion.AttachProfileStore(services.Companion, services.Profile.ProfileStore())
+	companion.AttachConfigReader(services.Companion, services.ConfigReader)
+	companion.AttachSpeechSynthesizer(services.Companion, companionSpeechAdapter{service: services.Speech})
+	attachSemanticEmbedder(services.Companion, services.Model, services.ConfigReader, logger.Named("semantic"))
+	if opened.VectorIndex != nil {
+		companion.AttachVectorIndex(services.Companion, opened.VectorIndex)
 	}
-	character.AttachLogger(characterService, logger.Named("character"))
-	search.AttachLogger(webSearch, logger.Named("openserp"))
+	character.AttachLogger(services.Character, logger.Named("character"))
+	search.AttachLogger(services.WebSearch, logger.Named("openserp"))
 
-	companion.AttachEventEmitter(companionService, func(event companion.TurnEvent) {
+	companion.AttachEventEmitter(services.Companion, func(event companion.TurnEvent) {
 		rt.eventMu.Lock()
 		rt.events = append(rt.events, event)
 		rt.eventMu.Unlock()
@@ -217,7 +185,7 @@ func Open(options Options) (*Runtime, error) {
 			fmt.Println(string(line))
 		}
 	})
-	companion.AttachParticipationEventEmitter(companionService, rt.Participation.Publish)
+	companion.AttachParticipationEventEmitter(services.Companion, rt.Participation.Publish)
 
 	keepDependencies = true
 	return rt, nil
@@ -243,81 +211,6 @@ func (rt *Runtime) Close() error {
 		}
 	})
 	return rt.closeErr
-}
-
-func openDependencies(ctx context.Context, injected *Dependencies, runtimeProfile Profile) (*pgstore.Pool, *memory.Store, *secret.Store, *vectorindex.Client, bool, bool, error) {
-	if err := validateInjectedDependencies(injected); err != nil {
-		return nil, nil, nil, nil, false, false, err
-	}
-	if injected != nil {
-		return injected.Database, injected.MemoryStore, injected.SecretStore, injected.VectorIndex, false, false, nil
-	}
-	databaseConfig, err := pgstore.ConfigFromEnv(os.Getenv)
-	if err != nil {
-		return nil, nil, nil, nil, false, false, fmt.Errorf("database configuration: %w", err)
-	}
-	database, err := pgstore.Open(ctx, databaseConfig)
-	if err != nil {
-		return nil, nil, nil, nil, false, false, err
-	}
-	if _, err := pgstore.VerifySchema(ctx, database); err != nil {
-		database.Close()
-		return nil, nil, nil, nil, false, false, fmt.Errorf("database schema: %w", err)
-	}
-
-	var vectorClient *vectorindex.Client
-	ownVector := false
-	vectorConfig, vectorErr := vectorindex.ConfigFromEnv(os.Getenv)
-	switch {
-	case vectorErr == nil:
-		client, openErr := vectorindex.Open(ctx, vectorConfig)
-		if openErr != nil {
-			if runtimeProfile.RequiresVectorIndex() {
-				database.Close()
-				return nil, nil, nil, nil, false, false, openErr
-			}
-			break
-		}
-		if _, verifyErr := client.VerifyCollection(ctx); verifyErr != nil {
-			_ = client.Close()
-			if runtimeProfile.RequiresVectorIndex() {
-				database.Close()
-				return nil, nil, nil, nil, false, false, fmt.Errorf("qdrant collection: %w", verifyErr)
-			}
-			break
-		}
-		vectorClient = client
-		ownVector = true
-	case runtimeProfile.RequiresVectorIndex():
-		database.Close()
-		return nil, nil, nil, nil, false, false, fmt.Errorf("qdrant configuration: %w", vectorErr)
-	}
-
-	secretCipher, err := secret.CipherFromEnv(os.Getenv)
-	if err != nil {
-		if ownVector && vectorClient != nil {
-			_ = vectorClient.Close()
-		}
-		database.Close()
-		return nil, nil, nil, nil, false, false, fmt.Errorf("secret master key: %w", err)
-	}
-	secretStore, err := secret.NewPostgresStore(database, secretCipher)
-	if err != nil {
-		if ownVector && vectorClient != nil {
-			_ = vectorClient.Close()
-		}
-		database.Close()
-		return nil, nil, nil, nil, false, false, err
-	}
-	memoryStore, err := memory.NewStoreFromPool(database)
-	if err != nil {
-		if ownVector && vectorClient != nil {
-			_ = vectorClient.Close()
-		}
-		database.Close()
-		return nil, nil, nil, nil, false, false, err
-	}
-	return database, memoryStore, secretStore, vectorClient, true, ownVector, nil
 }
 
 func (rt *Runtime) DrainEvents() []companion.TurnEvent {

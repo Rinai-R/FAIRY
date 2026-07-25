@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"fairy/pkg/statemachine"
 )
 
 // Turn lifecycle and turn events mirror crates/fairy-domain/src/conversation.rs.
@@ -22,59 +24,28 @@ const (
 	TurnStateFailed       TurnState = "failed"
 )
 
-func (s TurnState) canTransitionTo(next TurnState) bool {
-	switch s {
-	case TurnStateIdle:
-		return next == TurnStateInterpreting
-	case TurnStateInterpreting:
-		return next == TurnStateGathering || next == TurnStateInterrupted || next == TurnStateFailed
-	case TurnStateGathering:
-		return next == TurnStatePlanning || next == TurnStateInterrupted || next == TurnStateFailed
-	case TurnStatePlanning:
-		return next == TurnStateResponding || next == TurnStateInterrupted || next == TurnStateFailed
-	case TurnStateResponding:
-		return next == TurnStateCompleted || next == TurnStateInterrupted || next == TurnStateFailed
-	default:
-		return false
-	}
-}
+var turnStateTransitions = statemachine.MustTable(
+	statemachine.Edge[TurnState]{From: TurnStateIdle, To: TurnStateInterpreting},
+	statemachine.Edge[TurnState]{From: TurnStateInterpreting, To: TurnStateGathering},
+	statemachine.Edge[TurnState]{From: TurnStateInterpreting, To: TurnStateInterrupted},
+	statemachine.Edge[TurnState]{From: TurnStateInterpreting, To: TurnStateFailed},
+	statemachine.Edge[TurnState]{From: TurnStateGathering, To: TurnStatePlanning},
+	statemachine.Edge[TurnState]{From: TurnStateGathering, To: TurnStateInterrupted},
+	statemachine.Edge[TurnState]{From: TurnStateGathering, To: TurnStateFailed},
+	statemachine.Edge[TurnState]{From: TurnStatePlanning, To: TurnStateResponding},
+	statemachine.Edge[TurnState]{From: TurnStatePlanning, To: TurnStateInterrupted},
+	statemachine.Edge[TurnState]{From: TurnStatePlanning, To: TurnStateFailed},
+	statemachine.Edge[TurnState]{From: TurnStateResponding, To: TurnStateCompleted},
+	statemachine.Edge[TurnState]{From: TurnStateResponding, To: TurnStateInterrupted},
+	statemachine.Edge[TurnState]{From: TurnStateResponding, To: TurnStateFailed},
+)
+
+func (s TurnState) canTransitionTo(next TurnState) bool { return turnStateTransitions.Allows(s, next) }
 
 type WireError struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
 	Retryable bool   `json:"retryable"`
-}
-
-// CachedTokenObservation mirrors fairy-domain CachedTokenObservation wire JSON:
-// unsupported/missing → {"status":"..."} ; observed → {"status":"observed","tokens":N}.
-type CachedTokenObservation struct {
-	Status string  `json:"status"`
-	Tokens *uint64 `json:"tokens,omitempty"`
-}
-
-func CacheUnsupported() CachedTokenObservation {
-	return CachedTokenObservation{Status: "unsupported"}
-}
-
-func CacheMissing() CachedTokenObservation {
-	return CachedTokenObservation{Status: "missing"}
-}
-
-func CacheObserved(tokens uint64) CachedTokenObservation {
-	return CachedTokenObservation{Status: "observed", Tokens: &tokens}
-}
-
-type LaneUsage struct {
-	InputTokens       *uint64                `json:"inputTokens"`
-	OutputTokens      *uint64                `json:"outputTokens"`
-	CachedInputTokens CachedTokenObservation `json:"cachedInputTokens"`
-	CacheWriteTokens  CachedTokenObservation `json:"cacheWriteTokens"`
-}
-
-type LaneModelUsage struct {
-	Lane          string    `json:"lane"`
-	HistoryWindow uint64    `json:"historyWindow"`
-	Usage         LaneUsage `json:"usage"`
 }
 
 type stateChangedPayload struct {
@@ -127,22 +98,6 @@ type beatReadyPayload struct {
 	MimeType             string `json:"mimeType,omitempty"`
 	Format               string `json:"format,omitempty"`
 	DataURL              string `json:"dataUrl,omitempty"`
-}
-
-// BeatReadyCompletion is the lifecycle input for a paired beat delivery.
-type BeatReadyCompletion struct {
-	BeatID               string
-	Kind                 string
-	Index                uint8
-	ChainIndex           int
-	DisplayText          string
-	SpeechText           string
-	VisualState          string
-	TargetIntervalMS     int64
-	PaceWaitMS           int64
-	PublishedPrefixCount int
-	Reason               string
-	Audio                *SpeechSynthesisResult
 }
 
 type completedPayload struct {

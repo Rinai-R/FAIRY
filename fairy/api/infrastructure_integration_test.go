@@ -17,9 +17,9 @@ import (
 	"time"
 
 	"fairy/api"
+	vectorindex "fairy/internal/adapters/memory/qdrant"
 	pgstore "fairy/postgres"
 	fairyruntime "fairy/runtime"
-	"fairy/vectorindex"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -93,6 +93,63 @@ func TestProductionInfrastructureStatusAndMetrics(t *testing.T) {
 	snapshot := qdrantMetrics["snapshot"].(map[string]any)
 	if snapshot["pointCount"] != collection["pointsCount"] {
 		t.Fatalf("qdrant metrics=%#v collection=%#v", snapshot, collection)
+	}
+}
+
+func TestProductionPersonalMemoryContentLimitReturnsBadRequest(t *testing.T) {
+	databaseURL, cleanup := isolatedAPISchema(t)
+	defer cleanup()
+	qdrantURL := apiTestQdrantURL()
+	ensureAPIQdrantCollection(t, qdrantURL)
+	masterKey := base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789"))
+	setAPIProductionEnv(t, databaseURL, qdrantURL, masterKey)
+
+	rt, err := fairyruntime.Open(fairyruntime.Options{ConfigRoot: t.TempDir(), Logger: zap.NewNop()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+	bootstrap, err := rt.MemoryStore.OpenOrCreateCharacterConversationContext(t.Context(), "character-api-memory-limit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := rt.MemoryStore.BeginTurnContext(t.Context(), bootstrap.Conversation.ID, "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.MemoryStore.CompleteTurnContext(t.Context(), bootstrap.Conversation.ID, turn.ID, "reply"); err != nil {
+		t.Fatal(err)
+	}
+
+	baseURL, token := startProductionAPIServer(t, rt)
+	body := fmt.Sprintf(`{"kind":"preference","scope":{"type":"global"},"content":%q,"confidenceBasisPoints":9000}`, strings.Repeat("界", 2401))
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/memories/personal", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusBadRequest || !strings.Contains(string(responseBody), "2400 Unicode characters") {
+		t.Fatalf("oversized memory response = %d %s", response.StatusCode, responseBody)
+	}
+	if strings.Contains(string(responseBody), masterKey) || strings.Contains(string(responseBody), "fairy_test_password") {
+		t.Fatalf("oversized memory error leaked secret: %s", responseBody)
+	}
+	var count int
+	if err := rt.Database.Raw().QueryRow(t.Context(), "SELECT count(*) FROM personal_memories").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("personal memory count = %d, want 0", count)
 	}
 }
 

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ClockIcon, Cross2Icon, GearIcon, PaperPlaneIcon, StopIcon } from "@radix-ui/react-icons";
 import { Card, Flex, IconButton, Text, TextArea, TextField } from "@radix-ui/themes";
 import { Events } from "@wailsio/runtime";
-import { Cancel, CloseControlPanel, CloseHistory, Connect, HideSpeechBubble, OpenControlPanel, OpenHistory, RecentMessages, SaveConnection, Send } from "../bindings/fairy-desktop/coreservice.js";
+import { Cancel, CloseControlPanel, CloseHistory, Connect, DisableDesktopObservation, EnableDesktopObservation, HideSpeechBubble, OpenControlPanel, OpenHistory, RecentMessages, SaveConnection, Send, SetDesktopObservationPrivacy } from "../bindings/fairy-desktop/coreservice.js";
 import { CharacterSpeechBubble } from "./components/CharacterSpeechBubble.jsx";
 import { PixelCharacter } from "./components/PixelCharacter.jsx";
 import { resolveChatKeyboardAction } from "./companionViewState.mjs";
@@ -184,6 +184,10 @@ function SettingsSurface() {
   const [endpointKey, setEndpointKey] = useState(storedKey);
   const [token, setToken] = useState("");
   const [status, setStatus] = useState("");
+  const [observationEnabled, setObservationEnabled] = useState(() => localStorage.getItem("fairy.observation.enabled") === "true");
+  const [privacy, setPrivacy] = useState(() => localStorage.getItem("fairy.observation.privacy") || "normal");
+  const [observationInterval, setObservationInterval] = useState(() => Number(localStorage.getItem("fairy.observation.interval") || 5));
+  const [idleThreshold, setIdleThreshold] = useState(() => Number(localStorage.getItem("fairy.observation.idle") || 10));
   async function save(event) {
     event.preventDefault();
     try {
@@ -193,7 +197,19 @@ function SettingsSurface() {
       setEndpoint(settings.endpoint); setEndpointKey(settings.endpointKey); setToken(""); setStatus("已保存到 macOS Keychain，并已准备重连。");
     } catch (cause) { setStatus(cause?.message || "保存失败"); }
   }
-  return <main className="cp-stage"><Card className="cp-shell"><div className="cp-drag-region" /><header className="cp-header"><Text as="h1" size="3" weight="medium">Core 设置</Text><IconButton type="button" size="1" variant="ghost" color="gray" aria-label="关闭设置" onClick={() => CloseControlPanel()}><Cross2Icon /></IconButton></header><section className="cp-page"><form className="cp-form" onSubmit={save}><label className="cp-field"><Text size="1" weight="medium">Core 地址</Text><TextField.Root size="1" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} /></label><label className="cp-field"><Text size="1" weight="medium">访问令牌</Text><TextField.Root size="1" type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="留空则保留已有令牌" /></label><button className="cp-save" type="submit">保存并连接</button>{status ? <Text size="1" color="gray">{status}</Text> : null}</form></section></Card></main>;
+  async function applyObservation() {
+    try {
+      await SetDesktopObservationPrivacy(privacy);
+      if (observationEnabled) await EnableDesktopObservation(observationInterval, idleThreshold);
+      else await DisableDesktopObservation();
+      localStorage.setItem("fairy.observation.enabled", String(observationEnabled));
+      localStorage.setItem("fairy.observation.privacy", privacy);
+      localStorage.setItem("fairy.observation.interval", String(observationInterval));
+      localStorage.setItem("fairy.observation.idle", String(idleThreshold));
+      setStatus(observationEnabled ? "桌面观察已启用。" : "桌面观察已关闭。");
+    } catch (cause) { setStatus(cause?.message || "观察设置失败"); }
+  }
+  return <main className="cp-stage"><Card className="cp-shell"><div className="cp-drag-region" /><header className="cp-header"><Text as="h1" size="3" weight="medium">Core 设置</Text><IconButton type="button" size="1" variant="ghost" color="gray" aria-label="关闭设置" onClick={() => CloseControlPanel()}><Cross2Icon /></IconButton></header><section className="cp-page"><form className="cp-form" onSubmit={save}><label className="cp-field"><Text size="1" weight="medium">Core 地址</Text><TextField.Root size="1" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} /></label><label className="cp-field"><Text size="1" weight="medium">访问令牌</Text><TextField.Root size="1" type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="留空则保留已有令牌" /></label><button className="cp-save" type="submit">保存并连接</button></form><div className="cp-form"><label className="cp-field cp-field--inline"><input type="checkbox" checked={observationEnabled} onChange={(event) => setObservationEnabled(event.target.checked)} /><Text size="1" weight="medium">定期观察</Text></label><label className="cp-field"><Text size="1" weight="medium">隐私状态</Text><select value={privacy} onChange={(event) => setPrivacy(event.target.value)}><option value="normal">正常</option><option value="locked">已锁屏</option><option value="meeting">会议中</option><option value="do_not_disturb">勿扰</option><option value="protected">受保护</option></select></label><label className="cp-field"><Text size="1" weight="medium">采样间隔（分钟）</Text><input type="number" min="1" max="60" value={observationInterval} onChange={(event) => setObservationInterval(Number(event.target.value))} /></label><label className="cp-field"><Text size="1" weight="medium">离开阈值（分钟）</Text><input type="number" min="1" max="240" value={idleThreshold} onChange={(event) => setIdleThreshold(Number(event.target.value))} /></label><button className="cp-save" type="button" onClick={applyObservation}>应用观察设置</button>{status ? <Text size="1" color="gray">{status}</Text> : null}</div></section></Card></main>;
 }
 
 function SpeechSurface() {

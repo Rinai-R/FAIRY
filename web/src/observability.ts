@@ -39,6 +39,15 @@ export type UsageLane = {
   callCount: number;
 };
 
+export type UsageTurn = {
+  conversationId: string;
+  turnId: string;
+  characterId: string;
+  createdAtUnixMs: number;
+  status: string;
+  lanes: UsageLane[];
+};
+
 export type MessageLatency = {
   observations: number;
   totalDurationMs: number;
@@ -99,7 +108,7 @@ export type MetricsSnapshot = {
     recent: MessageTrace[];
   };
   runtime: { activeBackgroundJobs: number; eventSubscribers: number };
-  usage: { overall: UsageLane[]; turns: unknown[]; turnCount: number; truncated: boolean };
+  usage: { overall: UsageLane[]; turns: UsageTurn[]; turnCount: number; truncated: boolean };
 };
 
 type SSEEvent = { id: string; event: string; data: string };
@@ -196,7 +205,7 @@ export function parseMetrics(value: unknown): MetricsSnapshot {
     },
     usage: {
       overall: usage.overall.map(parseUsageLane),
-      turns: usage.turns,
+      turns: usage.turns.map(parseUsageTurn),
       turnCount: requiredNonNegativeInteger(usage, "turnCount"),
       truncated: requiredBoolean(usage, "truncated"),
     },
@@ -366,6 +375,19 @@ function parseUsageLane(value: unknown): UsageLane {
     cachedObservedInputTokens: requiredNonNegativeInteger(lane, "cachedObservedInputTokens"),
     cacheWriteTokens: requiredNonNegativeInteger(lane, "cacheWriteTokens"),
     callCount: requiredNonNegativeInteger(lane, "callCount"),
+  };
+}
+
+function parseUsageTurn(value: unknown): UsageTurn {
+  const turn = asRecord(value, "usage turn");
+  if (!Array.isArray(turn.lanes)) throw new Error("usage turn lanes 必须是数组");
+  return {
+    conversationId: requiredString(turn, "conversationId"),
+    turnId: requiredString(turn, "turnId"),
+    characterId: requiredString(turn, "characterId"),
+    createdAtUnixMs: requiredPositiveInteger(turn, "createdAtUnixMs"),
+    status: requiredString(turn, "status"),
+    lanes: turn.lanes.map(parseUsageLane),
   };
 }
 

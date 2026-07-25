@@ -1,40 +1,16 @@
 package runtime
 
-import (
-	"fmt"
-	"os"
-	"strings"
-)
+import "fairy/internal/bootstrap"
 
 const (
-	EnvRuntimeProfile          = "FAIRY_RUNTIME_PROFILE"
-	ProfileFull        Profile = "full"
-	ProfileDesktopLite Profile = "desktop-lite"
+	EnvRuntimeProfile          = bootstrap.EnvRuntimeProfile
+	ProfileFull        Profile = bootstrap.ProfileFull
+	ProfileDesktopLite Profile = bootstrap.ProfileDesktopLite
 )
 
-// Profile selects production dependency strictness.
-type Profile string
+type Profile = bootstrap.Profile
 
-func ParseProfile(raw string) (Profile, error) {
-	value := strings.ToLower(strings.TrimSpace(raw))
-	if value == "" {
-		return ProfileFull, nil
-	}
-	switch Profile(value) {
-	case ProfileFull, ProfileDesktopLite:
-		return Profile(value), nil
-	default:
-		return "", fmt.Errorf("FAIRY_RUNTIME_PROFILE must be %q or %q", ProfileFull, ProfileDesktopLite)
-	}
-}
-
-func ProfileFromEnv(getenv func(string) string) (Profile, error) {
-	if getenv == nil {
-		getenv = os.Getenv
-	}
-	return ParseProfile(getenv(EnvRuntimeProfile))
-}
-
-func (p Profile) RequiresVectorIndex() bool {
-	return p != ProfileDesktopLite
-}
+var (
+	ParseProfile   = bootstrap.ParseProfile
+	ProfileFromEnv = bootstrap.ProfileFromEnv
+)

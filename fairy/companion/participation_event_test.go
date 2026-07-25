@@ -17,7 +17,7 @@ func TestParticipationEventJSONIsDiagnosticOnly(t *testing.T) {
 		Action: "reply", TargetMessageID: "m4", ObservedAt: time.Unix(1, 0).UTC(),
 		Usage: []LaneModelUsage{{
 			Lane:  string(model.PromptLaneParticipate),
-			Usage: LaneUsage{InputTokens: &inputTokens, CachedInputTokens: CachedTokenObservation{Status: "observed", Tokens: &cachedTokens}},
+			Usage: LaneUsage{InputTokens: &inputTokens, CachedInputTokens: model.CachedTokenObservation{Status: "observed", Tokens: &cachedTokens}},
 		}},
 	})
 	if err != nil {

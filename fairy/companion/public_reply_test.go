@@ -4,7 +4,29 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"fairy/memory"
 )
+
+func TestFormatRecentSocialFeedbackRejectsInvalidAggregate(t *testing.T) {
+	valid := memory.RecentSocialFeedbackSummary{
+		SampleCount: 2, PositiveCount: 1, NegativeCount: 1,
+		LatestOutcome: memory.SocialFeedbackNegative, ObservedMessageCount: 3,
+	}
+	if cue, err := formatRecentSocialFeedback(valid); err != nil || !strings.Contains(cue, "latest=negative") {
+		t.Fatalf("formatRecentSocialFeedback(valid) = %q, %v", cue, err)
+	}
+	invalidCounts := valid
+	invalidCounts.SampleCount++
+	if _, err := formatRecentSocialFeedback(invalidCounts); err == nil {
+		t.Fatal("inconsistent feedback counts accepted")
+	}
+	invalidOutcome := valid
+	invalidOutcome.LatestOutcome = "successful"
+	if _, err := formatRecentSocialFeedback(invalidOutcome); err == nil {
+		t.Fatal("invalid latest feedback outcome accepted")
+	}
+}
 
 func TestCompileReplyForInteractionEnforcesOnlyPublicIdentityBoundary(t *testing.T) {
 	draft := testRespondEnvelope(testReplyChain{VisualState: "happy", Text: "哼哼，我可是高性能机器人！"})
@@ -26,6 +48,10 @@ func TestValidateReplyForInteractionRejectsPublicMachineSelfIdentity(t *testing.
 		"这个比喻我要记到核心存储器里。",
 		"我不能把说过的话回收进数据库。",
 		"高性能发呆模式启动。",
+		"高性能的我也替你生气了。",
+		"高性能机器人也申请加入云发呆。",
+		"高性能地处理好自己的心情才是最重要的。",
+		"高性能的好奇心已经启动了！",
 		"I'm an AI assistant, so I can help.",
 		"私は高性能ロボットです。",
 	}

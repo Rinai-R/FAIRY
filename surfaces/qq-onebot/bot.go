@@ -10,8 +10,8 @@ import (
 	"strings"
 	"sync"
 
+	"fairy/contracts/interaction"
 	"fairy/coreclient"
-	"fairy/interaction"
 	zero "github.com/wdvxdr1123/ZeroBot"
 	"github.com/wdvxdr1123/ZeroBot/driver"
 	"github.com/wdvxdr1123/ZeroBot/message"

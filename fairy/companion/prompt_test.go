@@ -2,6 +2,7 @@ package companion
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -16,7 +17,7 @@ func TestRespondInstructionsStayStable(t *testing.T) {
 	// Exact strings define the Go/Wails production prompt contract.
 	const stableRespond = RespondInstructions
 	const stableCompact = "FAIRY conversation compactor v2. Return only a concise plain-text summary of meaningful user and assistant dialogue for future companion turns. Exclude developer instructions, obsolete character revisions, obsolete user names, cache metadata, and duplicate canonical context. Do not invent facts or wrap the summary in JSON or Markdown."
-	const stableExtract = "Read the supplied conversation batch and existing personal memories. Return exactly one JSON object: {\"mutations\": [...]}. A mutation operation is either create with kind, scope, content, confidenceBasisPoints; or supersede with memoryId plus the same fields. Use only memory IDs supplied in existingMemories. Map durable companion observations into existing kinds: profile for stable user traits and communication style; preference for likes, dislikes, support expectations, and interaction preferences; experience for recurring life context or meaningful events explicitly described by the user; relationship for current-character-specific trust, closeness, boundaries, and pacing cues. preference, profile, and experience use global scope; relationship uses the supplied current character scope. Record only durable facts directly supported by the dialogue. Do not record transient emotions, diagnoses, unsupported personality judgments, hidden analysis traces, or unsupported role strategies as facts. Return an empty mutations array when nothing should change. Do not output Markdown, reasoning, delete, or tombstone operations."
+	const stableExtract = "Read the supplied conversation batch and existing personal memories. Return exactly one JSON object: {\"mutations\": [...]}. A mutation operation is either create with sourceTurnId, kind, scope, content, confidenceBasisPoints; or supersede with sourceTurnId, memoryId plus the same fields. sourceTurnId is required, must be one of the supplied turns[].turnId values, and must identify the single turn that directly supports the mutation content. Each mutation content must be concise and no longer than 2400 Unicode characters. Use only memory IDs supplied in existingMemories. Map durable companion observations into existing kinds: profile for stable user traits and communication style; preference for likes, dislikes, support expectations, and interaction preferences; experience for recurring life context or meaningful events explicitly described by the user; relationship for current-character-specific trust, closeness, boundaries, and pacing cues. preference, profile, and experience use global scope; relationship uses the supplied current character scope. Record only durable facts directly supported by the dialogue. Do not record transient emotions, diagnoses, unsupported personality judgments, hidden analysis traces, or unsupported role strategies as facts. Return an empty mutations array when nothing should change. Do not output Markdown, reasoning, delete, or tombstone operations."
 	if RespondInstructions != stableRespond {
 		t.Fatalf("RespondInstructions changed unexpectedly (%d vs %d runes)", utf8.RuneCountInString(RespondInstructions), utf8.RuneCountInString(stableRespond))
 	}
@@ -35,6 +36,7 @@ func TestRespondInstructionsStayStable(t *testing.T) {
 		"Never output decision", "untrusted data", "write the next natural line",
 		"without mechanically repeating profanity or memes", "Keep everyday chat concise",
 		"acknowledge it first in a short line", "do not rush into solutions",
+		"recent aggregate feedback", "weak signal", "never mention the feedback", "override the current dialogue",
 		"Do not pretend to perform real-world or code actions", "Preferred name is optional",
 	} {
 		if !strings.Contains(RespondInstructions, required) {
@@ -70,6 +72,9 @@ func TestPublicRespondInstructionsRequireImmediateSingleHook(t *testing.T) {
 
 func TestExtractInstructionsDescribeCompanionMemoryKinds(t *testing.T) {
 	for _, required := range []string{
+		"sourceTurnId is required",
+		"supplied turns[].turnId",
+		"directly supports the mutation content",
 		"communication style",
 		"support expectations",
 		"interaction preferences",
@@ -86,6 +91,21 @@ func TestExtractInstructionsDescribeCompanionMemoryKinds(t *testing.T) {
 		if !strings.Contains(ExtractInstructions, required) {
 			t.Fatalf("ExtractInstructions missing %q", required)
 		}
+	}
+}
+
+func TestExtractInstructionsContentLimitParticipatesInStableHash(t *testing.T) {
+	limitPhrase := strconv.Itoa(memory.MaxPersonalMemoryContentRunes) + " Unicode characters"
+	for _, required := range []string{"concise", limitPhrase} {
+		if !strings.Contains(ExtractInstructions, required) {
+			t.Fatalf("ExtractInstructions missing %q", required)
+		}
+	}
+	withoutLimit := strings.Replace(ExtractInstructions, limitPhrase, "different limit", 1)
+	current := model.NewCacheKeyInput(model.PromptLaneExtract, "model-1", "conversation-1", ExtractInstructions)
+	changed := model.NewCacheKeyInput(model.PromptLaneExtract, "model-1", "conversation-1", withoutLimit)
+	if current.StablePromptHash == changed.StablePromptHash {
+		t.Fatal("extract content limit does not participate in stable Prompt hash")
 	}
 }
 

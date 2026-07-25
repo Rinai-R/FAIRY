@@ -5,8 +5,9 @@ import (
 	"net/http"
 
 	"fairy/identity"
-	"fairy/interaction"
 	"github.com/cloudwego/hertz/pkg/app"
+
+	contracts "fairy/contracts/interaction"
 )
 
 func (s *Server) registerIdentityRoutes() {
@@ -37,7 +38,7 @@ func (s *Server) handleBindOwnerIdentity(ctx context.Context, c *app.RequestCont
 		writeErr(c, http.StatusBadRequest, err)
 		return
 	}
-	principal := interaction.PrincipalRef{Namespace: body.Namespace, Subject: body.Subject}
+	principal := contracts.PrincipalRef{Namespace: body.Namespace, Subject: body.Subject}
 	digest, err := s.rt.Secret.DigestPrincipal(principal)
 	if err != nil {
 		writeErr(c, http.StatusBadRequest, err)
@@ -56,7 +57,7 @@ func (s *Server) handleUnbindOwnerIdentity(ctx context.Context, c *app.RequestCo
 		writeErr(c, http.StatusBadRequest, err)
 		return
 	}
-	principal := interaction.PrincipalRef{Namespace: body.Namespace, Subject: body.Subject}
+	principal := contracts.PrincipalRef{Namespace: body.Namespace, Subject: body.Subject}
 	digest, err := s.rt.Secret.DigestPrincipal(principal)
 	if err != nil {
 		writeErr(c, http.StatusBadRequest, err)

@@ -3,9 +3,9 @@ package api
 import (
 	"context"
 
+	vectorindex "fairy/internal/adapters/memory/qdrant"
 	"fairy/memory"
 	pgstore "fairy/postgres"
-	"fairy/vectorindex"
 )
 
 type databaseStatus struct {

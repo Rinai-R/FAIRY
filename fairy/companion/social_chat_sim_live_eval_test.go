@@ -13,8 +13,11 @@ import (
 	"time"
 
 	"fairy/config"
+	"fairy/internal/app/participation"
 	"fairy/memory"
 	"fairy/model"
+
+	obs "fairy/contracts/observation"
 )
 
 func TestLiveSimulateSREGroupChat(t *testing.T) {
@@ -243,12 +246,12 @@ func runLiveGroupChatSimulation(t *testing.T, scenario liveGroupChatScenario) {
 	if len(all) == 0 {
 		t.Fatal("empty scenario")
 	}
-	if len(all) > maxAmbientCacheObservations {
-		t.Fatalf("scenario has %d messages, cache max is %d", len(all), maxAmbientCacheObservations)
+	if len(all) > participation.MaxAmbientCacheObservations {
+		t.Fatalf("scenario has %d messages, cache max is %d", len(all), participation.MaxAmbientCacheObservations)
 	}
 	window := all
-	if len(window) > maxAmbientObservations {
-		window = window[len(window)-maxAmbientObservations:]
+	if len(window) > participation.MaxAmbientObservations {
+		window = window[len(window)-participation.MaxAmbientObservations:]
 	}
 	newTail := scenario.newTail
 	if newTail < 1 {
@@ -325,8 +328,8 @@ func observationTextByID(messages []AmbientObservation, id string) string {
 
 func sreGroupChatObservations() []AmbientObservation {
 	all := sreGroupChatObservationsFull()
-	if len(all) > maxAmbientObservations {
-		return all[len(all)-maxAmbientObservations:]
+	if len(all) > participation.MaxAmbientObservations {
+		return all[len(all)-participation.MaxAmbientObservations:]
 	}
 	return all
 }

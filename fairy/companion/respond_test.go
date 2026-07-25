@@ -39,6 +39,34 @@ func TestValidateSubmitCompiledTurnRequestRequiresVisualStates(t *testing.T) {
 	}
 }
 
+func TestValidateSubmitCompiledTurnRequestAcceptsInitiationWithoutInput(t *testing.T) {
+	err := ValidateSubmitCompiledTurnRequest(SubmitCompiledTurnRequest{
+		ConversationID: "conversation-1", MaxOutputTokens: 160, AvailableVisualStates: visualStates("idle"),
+		Initiation: &DesktopInitiationContext{ObservationEvidenceIDs: []string{"obs-1"}, Trigger: "lifecycle", Lifecycle: "returned"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	both := SubmitCompiledTurnRequest{
+		ConversationID: "conversation-1", Input: "fabricated", MaxOutputTokens: 160, AvailableVisualStates: visualStates("idle"),
+		Initiation: &DesktopInitiationContext{ObservationEvidenceIDs: []string{"obs-1"}, Trigger: "lifecycle"},
+	}
+	if err := ValidateSubmitCompiledTurnRequest(both); err == nil {
+		t.Fatal("validator accepted both user input and initiation context")
+	}
+}
+
+func TestValidateDesktopInitiationRequestRequiresEvidenceWithoutInput(t *testing.T) {
+	if err := ValidateDesktopInitiationRequest(DesktopInitiationRequest{ConversationID: "conversation-1", ObservationEvidenceIDs: []string{"obs-1"}}); err != nil {
+		t.Fatalf("valid initiation request: %v", err)
+	}
+	for _, request := range []DesktopInitiationRequest{{}, {ConversationID: "conversation-1"}, {ConversationID: "conversation-1", ObservationEvidenceIDs: []string{" "}}} {
+		if err := ValidateDesktopInitiationRequest(request); err == nil {
+			t.Fatalf("ValidateDesktopInitiationRequest(%#v) error = nil", request)
+		}
+	}
+}
+
 func TestValidateReplyChainsAcceptsMissingSpeechText(t *testing.T) {
 	if err := ValidateReplyChains([]ReplyChain{{Text: "我在。", VisualState: "idle"}}); err != nil {
 		t.Fatalf("ValidateReplyChains() error = %v", err)

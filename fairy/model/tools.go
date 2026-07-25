@@ -12,13 +12,6 @@ type ToolSpec struct {
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
-// FunctionCall is a model-requested tool invocation.
-type FunctionCall struct {
-	CallID    string `json:"callId"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-}
-
 func FunctionCallsFromEvents(events []StreamEvent) []FunctionCall {
 	out := make([]FunctionCall, 0)
 	for _, event := range events {

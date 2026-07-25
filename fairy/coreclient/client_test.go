@@ -14,7 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"fairy/interaction"
+	"fairy/contracts/interaction"
+	"fairy/contracts/observation"
 	"github.com/gorilla/websocket"
 )
 
@@ -95,6 +96,34 @@ func TestDecideParticipationUsesTypedSessionEndpoint(t *testing.T) {
 	}}})
 	if err != nil || response.Action != "wait" || response.WaitSeconds == nil || *response.WaitSeconds != 7 {
 		t.Fatalf("response=%#v err=%v", response, err)
+	}
+}
+
+func TestObserveDesktopUsesTypedSessionFrame(t *testing.T) {
+	server := newSessionWSServer(t, func(conn *websocket.Conn) {
+		var frame sessionClientFrame
+		if err := conn.ReadJSON(&frame); err != nil {
+			t.Fatal(err)
+		}
+		if frame.Type != "desktop.observe" || frame.ConversationID != "c1" || frame.DesktopObservation == nil {
+			t.Fatalf("frame = %#v", frame)
+		}
+		if frame.DesktopObservation.ObservationID != "obs-1" || frame.DesktopObservation.Activity != observation.DesktopActivityWorking || frame.DesktopObservation.Privacy != observation.DesktopPrivacyNormal {
+			t.Fatalf("observation = %#v", frame.DesktopObservation)
+		}
+		_ = conn.WriteJSON(sessionServerFrame{Type: "result", RequestID: frame.RequestID, Payload: json.RawMessage(`{"action":"silent","nodes":[]}`)})
+	})
+	defer server.Close()
+	client, err := New(Options{Endpoint: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.ObserveDesktop(t.Context(), "c1", DesktopObservation{
+		ObservationID: "obs-1", TimestampUnixMS: time.Now().UnixMilli(), Trigger: observation.DesktopTriggerPeriodic,
+		Activity: observation.DesktopActivityWorking, Lifecycle: observation.DesktopLifecycleNone, Privacy: observation.DesktopPrivacyNormal,
+	})
+	if err != nil || result.Action != "silent" {
+		t.Fatalf("result=%#v err=%v", result, err)
 	}
 }
 

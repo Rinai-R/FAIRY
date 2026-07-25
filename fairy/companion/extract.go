@@ -1,30 +1,21 @@
 package companion
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"strings"
 	"time"
 
+	"fairy/internal/app/extraction"
 	"fairy/memory"
 	"fairy/model"
 )
 
-// Constants match companion runtime.
 const (
-	extractionThreshold   uint64 = 6
-	extractionBatchLimit         = memory.DefaultExtractionBatchLimit
-	extractionIdleSeconds        = 30
-	embeddingJobPassLimit        = 8
+	extractionThreshold   = extraction.Threshold
+	extractionBatchLimit  = extraction.BatchLimit
+	extractionIdleSeconds = extraction.IdleSeconds
+	embeddingJobPassLimit = extraction.EmbeddingPassLimit
 )
-
-type extractionBatchPromptPayload struct {
-	Type  string                      `json:"type"`
-	Input memory.ExtractionBatchInput `json:"input"`
-}
 
 func (s *CompanionService) scheduleBackgroundExtraction(conversationID string) {
 	if s == nil || !s.RespondRuntimeMigrated() {
@@ -104,13 +95,27 @@ func (s *CompanionService) executeExtractionBatch(batch *memory.ExtractionBatchI
 	if err != nil {
 		return err
 	}
-	events, err := s.model.ExecutePrompt(
-		model.PromptLaneExtract,
-		ExtractInstructions,
-		ExtractMaxOutputTokens,
-		input,
-		model.LaneCacheKey(batch.ConversationID, model.PromptLaneExtract),
-	)
+	record, err := s.activeCharacter(batch.CharacterID)
+	if err != nil {
+		return err
+	}
+	connection, err := s.configSource().ModelConnection()
+	if err != nil {
+		return err
+	}
+	cacheKey := ""
+	if connection.Capabilities.PromptCacheKey {
+		cacheKey = model.LaneCacheKey(batch.ConversationID, model.PromptLaneExtract)
+	}
+	cacheInput := model.NewCacheKeyInput(model.PromptLaneExtract, connection.Model, batch.ConversationID, ExtractInstructions)
+	cacheInput.CharacterRevision = record.Revision
+	events, err := s.model.ExecuteRequestContext(context.Background(), model.CompiledPromptRequest{
+		Shape: model.ModelRequestShape{
+			Lane: model.PromptLaneExtract, Model: connection.Model, Instructions: ExtractInstructions,
+			MaxOutputTokens: ExtractMaxOutputTokens, PromptCacheKey: cacheKey,
+		},
+		Input: input, CacheInput: &cacheInput,
+	})
 	if err != nil {
 		return err
 	}
@@ -159,45 +164,9 @@ func (s *CompanionService) clearBackgroundError() {
 }
 
 func BuildExtractInput(batch memory.ExtractionBatchInput) ([]model.PromptItem, error) {
-	payload, err := json.Marshal(struct {
-		FairyContextData extractionBatchPromptPayload `json:"fairy_context_data"`
-	}{
-		FairyContextData: extractionBatchPromptPayload{
-			Type:  "extraction_batch",
-			Input: batch,
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("serializing extraction batch: %w", err)
-	}
-	return []model.PromptItem{{
-		Type:    model.PromptItemContextData,
-		Content: string(payload),
-	}}, nil
+	return extraction.BuildInput(batch)
 }
 
 func ParseMemoryMutationOutput(raw string) (memory.MemoryMutationOutput, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return memory.MemoryMutationOutput{}, errors.New("extraction model returned empty output")
-	}
-	decoder := json.NewDecoder(bytes.NewReader([]byte(trimmed)))
-	decoder.DisallowUnknownFields()
-	var output memory.MemoryMutationOutput
-	if err := decoder.Decode(&output); err != nil {
-		return memory.MemoryMutationOutput{}, errors.New("extraction model did not return strict MemoryMutationOutput JSON")
-	}
-	if decoder.More() {
-		return memory.MemoryMutationOutput{}, errors.New("extraction model returned trailing JSON")
-	}
-	if len(output.Mutations) > memory.MaxMemoryMutationsPerBatch {
-		return memory.MemoryMutationOutput{}, errors.New("extraction batch exceeds memory mutation limit")
-	}
-	for i := range output.Mutations {
-		operation := output.Mutations[i].Operation
-		if operation != "create" && operation != "supersede" {
-			return memory.MemoryMutationOutput{}, fmt.Errorf("unsupported memory mutation operation %q", operation)
-		}
-	}
-	return output, nil
+	return extraction.ParseMutationOutput(raw)
 }

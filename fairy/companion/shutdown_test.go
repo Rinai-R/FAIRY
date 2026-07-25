@@ -3,6 +3,8 @@ package companion
 import (
 	"context"
 	"testing"
+
+	"fairy/internal/app/sociallearning"
 )
 
 func TestCloseCancelsActiveTurn(t *testing.T) {
@@ -62,5 +64,21 @@ func TestCloseIdempotentAndSafeWithoutRuntime(t *testing.T) {
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("second Close() error = %v", err)
+	}
+}
+
+func TestCloseClosesSocialLearningOwners(t *testing.T) {
+	s := NewCompanionServiceWithRuntime("", nil, nil, nil)
+	if s.socialLearning == nil || s.socialFeedback == nil {
+		t.Fatal("social learning owners were not wired")
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if s.socialLearning.Enqueue(sociallearning.LearningSnapshot{ConversationID: "conversation-1", Messages: []sociallearning.Observation{{MessageID: "m1"}}}) {
+		t.Fatal("learning enqueue accepted after CompanionService.Close")
+	}
+	if s.socialFeedback.Register(sociallearning.FeedbackRegistration{ConversationID: "conversation-1", TurnID: "turn-1", ReplyText: "reply"}) {
+		t.Fatal("feedback registration accepted after CompanionService.Close")
 	}
 }

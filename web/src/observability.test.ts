@@ -38,6 +38,29 @@ describe("observability parsers", () => {
     expect(() => parseMetrics({ ...validMetrics(), messages: {} })).toThrow();
   });
 
+  it("projects usage turns through a safe whitelist", () => {
+    const input = validMetrics();
+    input.usage.turns = [{
+      conversationId: "conversation-1",
+      turnId: "turn-1",
+      characterId: "character-1",
+      createdAtUnixMs: 1,
+      status: "completed",
+      lanes: [],
+      decision: "private internal decision",
+    }];
+    const parsed = parseMetrics(input);
+    expect(parsed.usage.turns).toEqual([{
+      conversationId: "conversation-1",
+      turnId: "turn-1",
+      characterId: "character-1",
+      createdAtUnixMs: 1,
+      status: "completed",
+      lanes: [],
+    }]);
+    expect(JSON.stringify(parsed)).not.toContain("private internal decision");
+  });
+
   it("accepts legacy metrics without message telemetry", () => {
     const { messages: _messages, ...legacyMetrics } = validMetrics();
     const metrics = parseMetrics(legacyMetrics);

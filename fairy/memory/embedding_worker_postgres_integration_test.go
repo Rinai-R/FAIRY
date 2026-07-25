@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
+	vectorindex "fairy/internal/adapters/memory/qdrant"
 	"fairy/memory/semantic"
 	pgstore "fairy/postgres"
-	"fairy/vectorindex"
 
 	"github.com/google/uuid"
 )

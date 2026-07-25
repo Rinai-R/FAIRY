@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"fairy/interaction"
+	"fairy/contracts/interaction"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
@@ -30,18 +30,19 @@ var (
 )
 
 type sessionClientFrame struct {
-	Type             string                   `json:"type"`
-	RequestID        string                   `json:"requestId,omitempty"`
-	Endpoint         interaction.EndpointKind `json:"endpoint,omitempty"`
-	EndpointKey      string                   `json:"endpointKey,omitempty"`
-	Interaction      interaction.Context      `json:"interaction,omitempty"`
-	ConversationID   string                   `json:"conversationId,omitempty"`
-	EvaluationReason string                   `json:"evaluationReason,omitempty"`
-	Messages         []AmbientObservation     `json:"messages,omitempty"`
-	Message          *AmbientObservation      `json:"message,omitempty"`
-	Input            string                   `json:"input,omitempty"`
-	SpeechEnabled    bool                     `json:"speechEnabled,omitempty"`
-	TurnID           string                   `json:"turnId,omitempty"`
+	Type               string                   `json:"type"`
+	RequestID          string                   `json:"requestId,omitempty"`
+	Endpoint           interaction.EndpointKind `json:"endpoint,omitempty"`
+	EndpointKey        string                   `json:"endpointKey,omitempty"`
+	Interaction        interaction.Context      `json:"interaction,omitempty"`
+	ConversationID     string                   `json:"conversationId,omitempty"`
+	EvaluationReason   string                   `json:"evaluationReason,omitempty"`
+	Messages           []AmbientObservation     `json:"messages,omitempty"`
+	Message            *AmbientObservation      `json:"message,omitempty"`
+	DesktopObservation *DesktopObservation      `json:"desktopObservation,omitempty"`
+	Input              string                   `json:"input,omitempty"`
+	SpeechEnabled      bool                     `json:"speechEnabled,omitempty"`
+	TurnID             string                   `json:"turnId,omitempty"`
 }
 
 type sessionServerFrame struct {
@@ -435,6 +436,18 @@ func (s *SessionSocket) ObserveAmbient(ctx context.Context, conversationID strin
 		Type: "ambient.observe", ConversationID: conversationID, Message: &message,
 	}, "ack")
 	return err
+}
+
+func (s *SessionSocket) ObserveDesktop(ctx context.Context, conversationID string, observation DesktopObservation) (DesktopObservationResponse, error) {
+	reply, err := s.request(ctx, sessionClientFrame{Type: "desktop.observe", ConversationID: conversationID, DesktopObservation: &observation}, "result")
+	if err != nil {
+		return DesktopObservationResponse{}, err
+	}
+	var result DesktopObservationResponse
+	if err := json.Unmarshal(reply.Payload, &result); err != nil {
+		return DesktopObservationResponse{}, err
+	}
+	return result, nil
 }
 
 func (s *SessionSocket) DecideParticipation(ctx context.Context, conversationID string, request ParticipationRequest) (ParticipationResponse, error) {

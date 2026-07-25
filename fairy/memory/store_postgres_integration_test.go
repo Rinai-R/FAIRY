@@ -8,14 +8,15 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	vectorindex "fairy/internal/adapters/memory/qdrant"
 	pgstore "fairy/postgres"
-	"fairy/vectorindex"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -97,6 +98,58 @@ func TestPostgresStoreSummaryHonorsCanceledContext(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("acquired connections = %d, want %d", pool.Stats().AcquiredConns, before)
+}
+
+func TestPostgresDesktopInitiationTurnDoesNotFabricateUserMessage(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := pgstore.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStoreFromPool(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := store.OpenOrCreateCharacterConversationContext(ctx, "character-desktop-initiation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := store.BeginInitiationTurnContext(ctx, bootstrap.Conversation.ID, []string{"obs-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var origin, extractionState string
+	var messageCount int
+	if err := pool.Raw().QueryRow(ctx, "SELECT origin, extraction_state FROM conversation_turns WHERE id = $1", turn.ID).Scan(&origin, &extractionState); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM conversation_messages WHERE turn_id = $1", turn.ID).Scan(&messageCount); err != nil {
+		t.Fatal(err)
+	}
+	if origin != "desktop_initiation" || extractionState != "ineligible" || messageCount != 0 {
+		t.Fatalf("origin=%q extraction=%q messages=%d", origin, extractionState, messageCount)
+	}
+	var evidenceID string
+	if err := pool.Raw().QueryRow(ctx, "SELECT evidence_id FROM conversation_turn_evidence WHERE turn_id = $1", turn.ID).Scan(&evidenceID); err != nil {
+		t.Fatal(err)
+	}
+	if evidenceID != "obs-1" {
+		t.Fatalf("evidence_id = %q", evidenceID)
+	}
+	if _, err := store.CompleteTurnContext(ctx, bootstrap.Conversation.ID, turn.ID, "欢迎回来。"); err != nil {
+		t.Fatal(err)
+	}
+	var status, role, content string
+	if err := pool.Raw().QueryRow(ctx, "SELECT status, extraction_state FROM conversation_turns WHERE id = $1", turn.ID).Scan(&status, &extractionState); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Raw().QueryRow(ctx, "SELECT role, content FROM conversation_messages WHERE turn_id = $1", turn.ID).Scan(&role, &content); err != nil {
+		t.Fatal(err)
+	}
+	if status != "completed" || extractionState != "ineligible" || role != "assistant" || content != "欢迎回来。" {
+		t.Fatalf("status=%q extraction=%q role=%q content=%q", status, extractionState, role, content)
+	}
 }
 
 func TestPostgresConversationFailedTurnPreservesUserOnly(t *testing.T) {
@@ -641,6 +694,170 @@ func TestPostgresPersonalMemoryRollsBackWhenOutboxWriteFails(t *testing.T) {
 	}
 }
 
+func TestPostgresPersonalMemoryContentLimitPreservesWritesAndRejectsOversizedHistory(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := pgstore.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStoreFromPool(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := store.OpenOrCreateCharacterConversationContext(ctx, "character-content-limit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := store.BeginTurnContext(ctx, bootstrap.Conversation.ID, "memory content source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteTurnContext(ctx, bootstrap.Conversation.ID, turn.ID, "memory content reply"); err != nil {
+		t.Fatal(err)
+	}
+
+	exact := strings.Repeat("界", MaxPersonalMemoryContentRunes)
+	created, err := store.CreatePersonalMemoryContext(ctx, "preference", MemoryScope{Type: "global"}, exact, 9000)
+	if err != nil {
+		t.Fatalf("creating exact-limit memory: %v", err)
+	}
+	assertPostgresEmbeddingOutbox(t, ctx, pool, vectorindex.ItemKindPersonalMemory, created.ID, exact)
+	reviseSource, err := store.CreatePersonalMemoryContext(ctx, "profile", MemoryScope{Type: "global"}, "revise source", 8000)
+	if err != nil {
+		t.Fatalf("creating exact-limit revise source: %v", err)
+	}
+	revisedExact, err := store.RevisePersonalMemoryContext(ctx, reviseSource.ID, exact, 9100)
+	if err != nil {
+		t.Fatalf("revising to exact-limit memory: %v", err)
+	}
+	if revisedExact.SupersedesID == nil || *revisedExact.SupersedesID != reviseSource.ID {
+		t.Fatalf("exact-limit revision = %#v", revisedExact)
+	}
+	assertPostgresEmbeddingOutbox(t, ctx, pool, vectorindex.ItemKindPersonalMemory, revisedExact.ID, exact)
+	tooLong := exact + "界"
+	if _, err := store.CreatePersonalMemoryContext(ctx, "preference", MemoryScope{Type: "global"}, tooLong, 9000); err == nil || !strings.Contains(err.Error(), "2400") {
+		t.Fatalf("oversized create error = %v", err)
+	}
+	if _, err := store.RevisePersonalMemoryContext(ctx, created.ID, tooLong, 9000); err == nil || !strings.Contains(err.Error(), "2400") {
+		t.Fatalf("oversized revise error = %v", err)
+	}
+	var createdStatus string
+	if err := pool.Raw().QueryRow(ctx, "SELECT status FROM personal_memories WHERE id = $1", created.ID).Scan(&createdStatus); err != nil || createdStatus != "active" {
+		t.Fatalf("created status after rejected revise = %q, %v", createdStatus, err)
+	}
+
+	_, exactTurnID, exactBatchID := seedPostgresRunningExtractionBatch(t, ctx, pool, store, "character-content-limit")
+	exactResult, err := store.CommitMemoryMutationsContext(ctx, exactBatchID, "character-content-limit", nil, []MemoryMutation{{
+		Operation: "create", SourceTurnID: exactTurnID, Kind: "experience", Scope: MemoryScope{Type: "global"}, Content: exact, ConfidenceBasisPoints: 8500,
+	}})
+	if err != nil || len(exactResult) != 1 || exactResult[0].Status != "applied" {
+		t.Fatalf("exact-limit extraction result = %#v, %v", exactResult, err)
+	}
+	assertPostgresEmbeddingOutbox(t, ctx, pool, vectorindex.ItemKindPersonalMemory, exactResult[0].MemoryID, exact)
+
+	_, rollbackTurnID, rollbackBatchID := seedPostgresRunningExtractionBatch(t, ctx, pool, store, "character-content-limit")
+	_, err = store.CommitMemoryMutationsContext(ctx, rollbackBatchID, "character-content-limit", nil, []MemoryMutation{
+		{Operation: "create", SourceTurnID: rollbackTurnID, Kind: "profile", Scope: MemoryScope{Type: "global"}, Content: "valid-before-oversized", ConfidenceBasisPoints: 8000},
+		{Operation: "create", SourceTurnID: rollbackTurnID, Kind: "experience", Scope: MemoryScope{Type: "global"}, Content: tooLong, ConfidenceBasisPoints: 8000},
+	})
+	if err == nil || !strings.Contains(err.Error(), "2400") {
+		t.Fatalf("oversized extraction error = %v", err)
+	}
+	var leakedMemories, leakedItems, leakedJobs int
+	var rollbackBatchStatus, rollbackTurnState string
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM personal_memories WHERE content = 'valid-before-oversized'").Scan(&leakedMemories); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM memory_embedding_items WHERE item_id IN (SELECT id FROM personal_memories WHERE content = 'valid-before-oversized')").Scan(&leakedItems); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM memory_embedding_jobs WHERE item_id IN (SELECT id FROM personal_memories WHERE content = 'valid-before-oversized')").Scan(&leakedJobs); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Raw().QueryRow(ctx, "SELECT status FROM extraction_batches WHERE id = $1", rollbackBatchID).Scan(&rollbackBatchStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Raw().QueryRow(ctx, "SELECT extraction_state FROM conversation_turns WHERE id = $1", rollbackTurnID).Scan(&rollbackTurnState); err != nil {
+		t.Fatal(err)
+	}
+	if leakedMemories != 0 || leakedItems != 0 || leakedJobs != 0 || rollbackBatchStatus != "running" || rollbackTurnState != "claimed" {
+		t.Fatalf("oversized extraction leaked memory=%d item=%d job=%d batch=%q turn=%q", leakedMemories, leakedItems, leakedJobs, rollbackBatchStatus, rollbackTurnState)
+	}
+
+	legacyID := "legacy-oversized-content"
+	insertOversizedPersonalMemory(t, ctx, pool, legacyID, "relationship", "unassigned_legacy", nil, "needs_review", tooLong, bootstrap.Conversation.ID, turn.ID)
+	if _, err := store.AssignLegacyRelationshipContext(ctx, legacyID, "character-content-limit"); err == nil || !strings.Contains(err.Error(), "2400") {
+		t.Fatalf("oversized legacy assignment error = %v", err)
+	}
+	var legacyStatus, legacyReview string
+	if err := pool.Raw().QueryRow(ctx, "SELECT status, review_status FROM personal_memories WHERE id = $1", legacyID).Scan(&legacyStatus, &legacyReview); err != nil {
+		t.Fatal(err)
+	}
+	if legacyStatus != "active" || legacyReview != "needs_review" {
+		t.Fatalf("legacy after rejected assignment = (%q, %q)", legacyStatus, legacyReview)
+	}
+
+	historyID := "history-oversized-content"
+	insertOversizedPersonalMemory(t, ctx, pool, historyID, "profile", "global", nil, "ready", "历史超限标记"+tooLong, bootstrap.Conversation.ID, turn.ID)
+	catalog, err := store.PersonalMemoryCatalogContext(ctx, "character-content-limit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsPersonalMemoryRecordID(catalog.Global, historyID) || !containsPersonalMemoryRecordID(catalog.NeedsReview, legacyID) {
+		t.Fatalf("catalog omitted oversized repair records: %#v", catalog)
+	}
+	if _, err := store.RetrieveContext(ctx, "character-content-limit", "历史超限标记"); err == nil || !strings.Contains(err.Error(), historyID) || !strings.Contains(err.Error(), "2400") {
+		t.Fatalf("text retrieval oversized history error = %v", err)
+	}
+	if _, err := store.CompanionPortraitContext(ctx, "character-content-limit"); err == nil || !strings.Contains(err.Error(), historyID) || !strings.Contains(err.Error(), "2400") {
+		t.Fatalf("portrait oversized history error = %v", err)
+	}
+	pointID, err := vectorindex.PointID(vectorindex.ItemKindPersonalMemory, historyID, SemanticEmbeddingModelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Raw().Exec(ctx, `
+INSERT INTO memory_embedding_items(id, item_kind, item_id, model_id, dimensions, point_id, content_hash, status, embedded_at_ms, created_at_ms, updated_at_ms)
+VALUES ($1, 'personal_memory', $2, $3, $4, $5, $6, 'embedded', 1, 1, 1)`, newID(), historyID, SemanticEmbeddingModelID, SemanticEmbeddingDimensions, pointID, semanticContentHash("历史超限标记"+tooLong)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.truthCheckPersonalVectorHits(ctx, "character-content-limit", []string{historyID}); err == nil || !strings.Contains(err.Error(), historyID) || !strings.Contains(err.Error(), "2400") {
+		t.Fatalf("semantic truth oversized history error = %v", err)
+	}
+
+	revised, err := store.RevisePersonalMemoryContext(ctx, historyID, "历史记录已修复", 9200)
+	if err != nil {
+		t.Fatalf("repairing oversized history: %v", err)
+	}
+	if revised.SupersedesID == nil || *revised.SupersedesID != historyID {
+		t.Fatalf("repaired history = %#v", revised)
+	}
+	if err := store.TombstonePersonalMemoryContext(ctx, legacyID); err != nil {
+		t.Fatalf("tombstoning oversized legacy history: %v", err)
+	}
+}
+
+func insertOversizedPersonalMemory(t *testing.T, ctx context.Context, pool *pgstore.Pool, id, kind, scopeKind string, characterID *string, reviewStatus, content, conversationID, turnID string) {
+	t.Helper()
+	if _, err := pool.Raw().Exec(ctx, `
+INSERT INTO personal_memories(
+  id, kind, scope_kind, character_id, review_status, content, status,
+  confidence_basis_points, source_conversation_id, source_turn_id, created_at_ms, updated_at_ms
+) VALUES ($1, $2, $3, $4, $5, $6, 'active', 10000, $7, $8, 1, 1)`, id, kind, scopeKind, characterID, reviewStatus, content, conversationID, turnID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func containsPersonalMemoryRecordID(records []PersonalMemoryRecord, id string) bool {
+	for _, record := range records {
+		if record.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func TestPostgresKnowledgeLifecyclePreservesSourcesAndOutbox(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
@@ -802,6 +1019,65 @@ func TestPostgresPromptWindowCommitPreservesRevisionAndCutoff(t *testing.T) {
 	}
 }
 
+func TestPostgresCommitCompactionAtomicallySwitchesWindowAndContinuation(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := pgstore.Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store, err := NewStoreFromPool(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := store.OpenOrCreateCharacterConversationContext(ctx, "character-atomic-compaction")
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := store.BeginTurnContext(ctx, bootstrap.Conversation.ID, "用户消息")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteTurnContext(ctx, bootstrap.Conversation.ID, turn.ID, "助手消息"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveLaneContinuationContext(ctx, LaneContinuationRecord{
+		ConversationID:     bootstrap.Conversation.ID,
+		Lane:               PromptLaneRespond,
+		PreviousResponseID: "resp-atomic",
+		RequestShapeHash:   strings.Repeat("a", 64),
+		InputPrefixHash:    strings.Repeat("b", 64),
+		ResponseItemHash:   strings.Repeat("c", 64),
+		WindowRevision:     1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	windowID := "window-atomic"
+	result, err := store.CommitCompactionContext(ctx, bootstrap.Conversation.ID, 1, "摘要", ContextWindowRecord{
+		ConversationID:       bootstrap.Conversation.ID,
+		Lane:                 PromptLaneRespond,
+		WindowNumber:         1,
+		FirstWindowID:        windowID,
+		WindowID:             windowID,
+		LastTrigger:          "compaction_committed",
+		PromptWindowRevision: 2,
+	}, PromptLaneRespond)
+	if err != nil || result.WindowRevision != 2 {
+		t.Fatalf("CommitCompactionContext() = %#v, %v", result, err)
+	}
+	updated, err := store.LoadConversationContext(ctx, bootstrap.Conversation.ID)
+	if err != nil || updated.PromptWindow.Revision != 2 || updated.PromptWindow.Summary == nil || *updated.PromptWindow.Summary != "摘要" {
+		t.Fatalf("prompt window after atomic commit = %#v, %v", updated.PromptWindow, err)
+	}
+	if _, ok, err := store.LoadLaneContinuationContext(ctx, bootstrap.Conversation.ID, PromptLaneRespond); err != nil || ok {
+		t.Fatalf("continuation after atomic commit = (%v, %v)", ok, err)
+	}
+	contextWindow, ok, err := store.LoadContextWindowContext(ctx, bootstrap.Conversation.ID, PromptLaneRespond)
+	if err != nil || !ok || contextWindow.PromptWindowRevision != 2 {
+		t.Fatalf("context window after atomic commit = %#v, (%v, %v)", contextWindow, ok, err)
+	}
+}
+
 func TestPostgresCommitMemoryMutationsCommitsRowsAndOutboxAtomically(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
@@ -815,8 +1091,8 @@ func TestPostgresCommitMemoryMutationsCommitsRowsAndOutboxAtomically(t *testing.
 	}
 	conversationID, turnID, batchID := seedPostgresRunningExtractionBatch(t, ctx, pool, store, "character-mutation-success")
 	results, err := store.CommitMemoryMutationsContext(ctx, batchID, "character-mutation-success", nil, []MemoryMutation{
-		{Operation: "create", Kind: "preference", Scope: MemoryScope{Type: "global"}, Content: "喜欢爵士乐", ConfidenceBasisPoints: 9000},
-		{Operation: "create", Kind: "relationship", Scope: MemoryScope{Type: "character", CharacterID: "character-mutation-success"}, Content: "愿意分享近况", ConfidenceBasisPoints: 8500},
+		{Operation: "create", SourceTurnID: turnID, Kind: "preference", Scope: MemoryScope{Type: "global"}, Content: "喜欢爵士乐", ConfidenceBasisPoints: 9000},
+		{Operation: "create", SourceTurnID: turnID, Kind: "relationship", Scope: MemoryScope{Type: "character", CharacterID: "character-mutation-success"}, Content: "愿意分享近况", ConfidenceBasisPoints: 8500},
 	})
 	if err != nil {
 		t.Fatalf("CommitMemoryMutationsContext: %v", err)
@@ -838,6 +1114,87 @@ func TestPostgresCommitMemoryMutationsCommitsRowsAndOutboxAtomically(t *testing.
 	}
 }
 
+func TestPostgresCommitMemoryMutationsPreservesPerMutationSourceTurn(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := pgstore.Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store, err := NewStoreFromPool(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, turnIDs, batchID := seedPostgresRunningExtractionBatchWithTurns(t, ctx, pool, store, "character-mutation-evidence", 2)
+	results, err := store.CommitMemoryMutationsContext(ctx, batchID, "character-mutation-evidence", nil, []MemoryMutation{
+		{Operation: "create", SourceTurnID: turnIDs[0], Kind: "preference", Scope: MemoryScope{Type: "global"}, Content: "第一条证据喜欢爵士乐", ConfidenceBasisPoints: 9000},
+		{Operation: "create", SourceTurnID: turnIDs[1], Kind: "experience", Scope: MemoryScope{Type: "global"}, Content: "第二条证据准备搬家", ConfidenceBasisPoints: 8500},
+	})
+	if err != nil {
+		t.Fatalf("CommitMemoryMutationsContext: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results = %#v", results)
+	}
+	for index, result := range results {
+		var sourceTurnID string
+		if err := pool.Raw().QueryRow(ctx, "SELECT source_turn_id FROM personal_memories WHERE id = $1", result.MemoryID).Scan(&sourceTurnID); err != nil {
+			t.Fatal(err)
+		}
+		if sourceTurnID != turnIDs[index] {
+			t.Fatalf("memory %d source turn = %q, want %q", index, sourceTurnID, turnIDs[index])
+		}
+	}
+}
+
+func TestPostgresCommitMemoryMutationsCopiesObservationEvidenceProvenance(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := pgstore.Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store, err := NewStoreFromPool(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, turnID, batchID := seedPostgresRunningExtractionBatch(t, ctx, pool, store, "character-memory-observation-provenance")
+	if _, err := pool.Raw().Exec(ctx, `INSERT INTO conversation_turn_evidence(turn_id, evidence_id, created_at_ms) VALUES ($1, $2, $3), ($1, $4, $3)`, turnID, "observation-a", 1, "observation-b"); err != nil {
+		t.Fatalf("seed evidence: %v", err)
+	}
+	results, err := store.CommitMemoryMutationsContext(ctx, batchID, "character-memory-observation-provenance", nil, []MemoryMutation{{
+		Operation: "create", SourceTurnID: turnID, Kind: "preference", Scope: MemoryScope{Type: "global"}, Content: "观察到的长期偏好", ConfidenceBasisPoints: 9000,
+	}})
+	if err != nil {
+		t.Fatalf("commit mutation: %v", err)
+	}
+	if len(results) != 1 || results[0].MemoryID == "" {
+		t.Fatalf("results = %#v", results)
+	}
+	rows, err := pool.Raw().Query(ctx, "SELECT turn_id, evidence_id FROM personal_memory_evidence WHERE memory_id = $1 ORDER BY evidence_id", results[0].MemoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var sourceTurn, evidenceID string
+		if err := rows.Scan(&sourceTurn, &evidenceID); err != nil {
+			t.Fatal(err)
+		}
+		if sourceTurn != turnID {
+			t.Fatalf("provenance turn = %q, want %q", sourceTurn, turnID)
+		}
+		got = append(got, evidenceID)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, []string{"observation-a", "observation-b"}) {
+		t.Fatalf("provenance evidence = %#v", got)
+	}
+}
+
 func TestPostgresCommitMemoryMutationsRollsBackEarlierMutationOnLaterFailure(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
@@ -851,8 +1208,8 @@ func TestPostgresCommitMemoryMutationsRollsBackEarlierMutationOnLaterFailure(t *
 	}
 	_, turnID, batchID := seedPostgresRunningExtractionBatch(t, ctx, pool, store, "character-mutation-rollback")
 	_, err = store.CommitMemoryMutationsContext(ctx, batchID, "character-mutation-rollback", nil, []MemoryMutation{
-		{Operation: "create", Kind: "preference", Scope: MemoryScope{Type: "global"}, Content: "must rollback", ConfidenceBasisPoints: 9000},
-		{Operation: "supersede", MemoryID: "not-allowed-memory", Kind: "profile", Scope: MemoryScope{Type: "global"}, Content: "later failure", ConfidenceBasisPoints: 8000},
+		{Operation: "create", SourceTurnID: turnID, Kind: "preference", Scope: MemoryScope{Type: "global"}, Content: "must rollback", ConfidenceBasisPoints: 9000},
+		{Operation: "supersede", SourceTurnID: turnID, MemoryID: "not-allowed-memory", Kind: "profile", Scope: MemoryScope{Type: "global"}, Content: "later failure", ConfidenceBasisPoints: 8000},
 	})
 	if err == nil || !strings.Contains(err.Error(), "not provided to the batch") {
 		t.Fatalf("CommitMemoryMutationsContext error = %v", err)
@@ -890,8 +1247,8 @@ func TestPostgresCommitMemoryMutationsPreservesNoChangeAndSupersedeSemantics(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, initialBatchID := seedPostgresRunningExtractionBatch(t, ctx, pool, store, "character-mutation-parity")
-	initialResults, err := store.CommitMemoryMutationsContext(ctx, initialBatchID, "character-mutation-parity", nil, []MemoryMutation{{Operation: "create", Kind: "preference", Scope: MemoryScope{Type: "global"}, Content: "喜欢安静", ConfidenceBasisPoints: 9000}})
+	_, initialTurnID, initialBatchID := seedPostgresRunningExtractionBatch(t, ctx, pool, store, "character-mutation-parity")
+	initialResults, err := store.CommitMemoryMutationsContext(ctx, initialBatchID, "character-mutation-parity", nil, []MemoryMutation{{Operation: "create", SourceTurnID: initialTurnID, Kind: "preference", Scope: MemoryScope{Type: "global"}, Content: "喜欢安静", ConfidenceBasisPoints: 9000}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -899,10 +1256,10 @@ func TestPostgresCommitMemoryMutationsPreservesNoChangeAndSupersedeSemantics(t *
 		t.Fatalf("initial results = %#v", initialResults)
 	}
 	initialID := initialResults[0].MemoryID
-	_, _, batchID := seedPostgresRunningExtractionBatch(t, ctx, pool, store, "character-mutation-parity")
+	_, turnID, batchID := seedPostgresRunningExtractionBatch(t, ctx, pool, store, "character-mutation-parity")
 	results, err := store.CommitMemoryMutationsContext(ctx, batchID, "character-mutation-parity", []string{initialID}, []MemoryMutation{
-		{Operation: "create", Kind: "preference", Scope: MemoryScope{Type: "global"}, Content: "喜欢安静", ConfidenceBasisPoints: 9000},
-		{Operation: "supersede", MemoryID: initialID, Kind: "preference", Scope: MemoryScope{Type: "global"}, Content: "喜欢清晨散步", ConfidenceBasisPoints: 9300},
+		{Operation: "create", SourceTurnID: turnID, Kind: "preference", Scope: MemoryScope{Type: "global"}, Content: "喜欢安静", ConfidenceBasisPoints: 9000},
+		{Operation: "supersede", SourceTurnID: turnID, MemoryID: initialID, Kind: "preference", Scope: MemoryScope{Type: "global"}, Content: "喜欢清晨散步", ConfidenceBasisPoints: 9300},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -914,13 +1271,54 @@ func TestPostgresCommitMemoryMutationsPreservesNoChangeAndSupersedeSemantics(t *
 	if err := pool.Raw().QueryRow(ctx, "SELECT status FROM personal_memories WHERE id = $1", initialID).Scan(&oldStatus); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.Raw().QueryRow(ctx, "SELECT status, supersedes_id FROM personal_memories WHERE id = $1", results[1].MemoryID).Scan(&newStatus, &supersedesID); err != nil {
+	var newSourceTurnID string
+	if err := pool.Raw().QueryRow(ctx, "SELECT status, supersedes_id, source_turn_id FROM personal_memories WHERE id = $1", results[1].MemoryID).Scan(&newStatus, &supersedesID, &newSourceTurnID); err != nil {
 		t.Fatal(err)
 	}
-	if oldStatus != "superseded" || newStatus != "active" || supersedesID != initialID {
-		t.Fatalf("old=%q new=%q supersedes=%q", oldStatus, newStatus, supersedesID)
+	if oldStatus != "superseded" || newStatus != "active" || supersedesID != initialID || newSourceTurnID != turnID {
+		t.Fatalf("old=%q new=%q supersedes=%q source=%q", oldStatus, newStatus, supersedesID, newSourceTurnID)
 	}
 	assertPostgresEmbeddingOutbox(t, ctx, pool, vectorindex.ItemKindPersonalMemory, results[1].MemoryID, "喜欢清晨散步")
+}
+
+func TestPostgresCommitMemoryMutationsRejectsBatchExternalTurnAndKeepsEmptyCompletion(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := pgstore.Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store, err := NewStoreFromPool(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, externalTurnID, _ := seedPostgresRunningExtractionBatch(t, ctx, pool, store, "character-mutation-external-source")
+	_, allowedTurnID, batchID := seedPostgresRunningExtractionBatch(t, ctx, pool, store, "character-mutation-external")
+	_, err = store.CommitMemoryMutationsContext(ctx, batchID, "character-mutation-external", nil, []MemoryMutation{{
+		Operation: "create", SourceTurnID: externalTurnID, Kind: "preference", Scope: MemoryScope{Type: "global"}, Content: "外部证据", ConfidenceBasisPoints: 9000,
+	}})
+	if err == nil || !strings.Contains(err.Error(), "source turn is not provided") {
+		t.Fatalf("external evidence error = %v", err)
+	}
+	var status, extractionState string
+	if err := pool.Raw().QueryRow(ctx, "SELECT status FROM extraction_batches WHERE id = $1", batchID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Raw().QueryRow(ctx, "SELECT extraction_state FROM conversation_turns WHERE id = $1", allowedTurnID).Scan(&extractionState); err != nil {
+		t.Fatal(err)
+	}
+	if status != "running" || extractionState != "claimed" {
+		t.Fatalf("external evidence changed batch state: status=%q turn=%q", status, extractionState)
+	}
+	if _, err := store.CommitMemoryMutationsContext(ctx, batchID, "character-mutation-external", nil, nil); err != nil {
+		t.Fatalf("empty mutation completion: %v", err)
+	}
+	if err := pool.Raw().QueryRow(ctx, "SELECT status FROM extraction_batches WHERE id = $1", batchID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "succeeded" {
+		t.Fatalf("empty mutation batch status = %q", status)
+	}
 }
 
 func seedPostgresRunningExtractionBatch(t *testing.T, ctx context.Context, pool *pgstore.Pool, store *Store, characterID string) (string, string, string) {
@@ -950,6 +1348,35 @@ VALUES ($1, $2, $3, 'running', 1, 1, $4, 9999999999999, 1, 1, 1)`, batchID, boot
 		t.Fatal(err)
 	}
 	return bootstrap.Conversation.ID, turn.ID, batchID
+}
+
+func seedPostgresRunningExtractionBatchWithTurns(t *testing.T, ctx context.Context, pool *pgstore.Pool, store *Store, characterID string, count int) (string, []string, string) {
+	t.Helper()
+	if count < 1 {
+		t.Fatal("extraction batch must contain at least one turn")
+	}
+	conversationID, firstTurnID, batchID := seedPostgresRunningExtractionBatch(t, ctx, pool, store, characterID)
+	turnIDs := []string{firstTurnID}
+	for index := 2; index <= count; index++ {
+		turn, err := store.BeginTurnContext(ctx, conversationID, fmt.Sprintf("batch source %d", index))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.CompleteTurnContext(ctx, conversationID, turn.ID, fmt.Sprintf("batch reply %d", index)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Raw().Exec(ctx, "INSERT INTO extraction_batch_turns(batch_id, turn_id, turn_sequence) VALUES ($1, $2, $3)", batchID, turn.ID, index); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Raw().Exec(ctx, "UPDATE conversation_turns SET extraction_state = 'claimed' WHERE id = $1", turn.ID); err != nil {
+			t.Fatal(err)
+		}
+		turnIDs = append(turnIDs, turn.ID)
+	}
+	if _, err := pool.Raw().Exec(ctx, "UPDATE extraction_batches SET last_turn_sequence = $2 WHERE id = $1", batchID, count); err != nil {
+		t.Fatal(err)
+	}
+	return conversationID, turnIDs, batchID
 }
 
 func TestPostgresExtractionLeasePreventsDuplicateClaimAndRecoversExpiredOwner(t *testing.T) {
@@ -1050,6 +1477,105 @@ func TestPostgresExtractionLeasePreventsDuplicateClaimAndRecoversExpiredOwner(t 
 	}
 	if processed != 3 {
 		t.Fatalf("processed = %d, want 3", processed)
+	}
+}
+
+func TestPostgresExtractionProjectionBoundsLookupAndPreservesEvidence(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := pgstore.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	first, err := newStoreFromPoolWithLease(pool, "worker-projection-first", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := newStoreFromPoolWithLease(pool, "worker-projection-second", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := first.OpenOrCreateCharacterConversationContext(ctx, "character-projection")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type sourceTurn struct {
+		user      string
+		assistant string
+	}
+	sources := []sourceTurn{
+		{user: strings.Repeat("前序长文本", 550) + "\n喜欢晚间散步", assistant: "我会记住这件事\t一起慢慢聊"},
+		{user: "第二轮\r\n后序检索标记", assistant: "收到了后序检索标记"},
+		{user: "第三轮继续补充", assistant: strings.Repeat("回复内容", 250)},
+	}
+	for _, source := range sources {
+		turn, err := first.BeginTurnContext(ctx, bootstrap.Conversation.ID, source.user)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := first.CompleteTurnContext(ctx, bootstrap.Conversation.ID, turn.ID, source.assistant); err != nil {
+			t.Fatal(err)
+		}
+	}
+	global, err := first.CreatePersonalMemoryContext(ctx, "preference", MemoryScope{Type: "global"}, "后序检索标记", 9000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := first.CreatePersonalMemoryContext(ctx, "relationship", MemoryScope{Type: "character", CharacterID: "character-projection"}, "后序检索标记", 9000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherConversation, err := first.OpenOrCreateCharacterConversationContext(ctx, "character-projection-other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherTurn, err := first.BeginTurnContext(ctx, otherConversation.Conversation.ID, "other source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.CompleteTurnContext(ctx, otherConversation.Conversation.ID, otherTurn.ID, "other reply"); err != nil {
+		t.Fatal(err)
+	}
+	other, err := first.CreatePersonalMemoryContext(ctx, "relationship", MemoryScope{Type: "character", CharacterID: "character-projection-other"}, "后序检索标记", 9000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := first.ClaimExtractionBatchContext(ctx, bootstrap.Conversation.ID, DefaultExtractionBatchLimit)
+	if err != nil || claimed == nil {
+		t.Fatalf("claim = %#v, %v", claimed, err)
+	}
+	if len(claimed.Turns) != len(sources) {
+		t.Fatalf("claimed turns = %d, want %d", len(claimed.Turns), len(sources))
+	}
+	for index, source := range sources {
+		if claimed.Turns[index].UserMessage != source.user || claimed.Turns[index].AssistantMessage != source.assistant {
+			t.Fatalf("claimed turn %d does not preserve complete evidence: %#v", index, claimed.Turns[index])
+		}
+	}
+	seen := make(map[string]bool, len(claimed.ExistingMemories))
+	for _, item := range claimed.ExistingMemories {
+		seen[item.ID] = true
+	}
+	if !seen[global.ID] {
+		t.Fatalf("global memory %q was not retrieved from bounded projection: %#v", global.ID, claimed.ExistingMemories)
+	}
+	if !seen[current.ID] {
+		t.Fatalf("current-character relationship memory %q was not retrieved from bounded projection: %#v", current.ID, claimed.ExistingMemories)
+	}
+	if seen[other.ID] {
+		t.Fatalf("other-character relationship memory %q leaked into extraction lookup", other.ID)
+	}
+
+	if _, err := pool.Raw().Exec(ctx, "UPDATE extraction_batches SET lease_expires_at_ms = $2 WHERE id = $1", claimed.BatchID, nowUnixMS()-1); err != nil {
+		t.Fatal(err)
+	}
+	reclaimed, err := second.ClaimExtractionBatchContext(ctx, bootstrap.Conversation.ID, DefaultExtractionBatchLimit)
+	if err != nil || reclaimed == nil {
+		t.Fatalf("reclaim = %#v, %v", reclaimed, err)
+	}
+	if reclaimed.BatchID != claimed.BatchID || !reflect.DeepEqual(reclaimed.Turns, claimed.Turns) || !reflect.DeepEqual(reclaimed.ExistingMemories, claimed.ExistingMemories) {
+		t.Fatalf("reclaimed batch differs from initial claim:\ninitial: %#v\nreclaimed: %#v", claimed, reclaimed)
 	}
 }
 

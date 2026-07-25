@@ -4,10 +4,34 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"fairy/internal/app/reply"
+	"fairy/memory"
+	"fairy/model"
 )
 
+func TestRuntimePromptLedgerRecordsOnlyCacheIdentityDiagnostics(t *testing.T) {
+	cacheInput := model.NewCacheKeyInput(model.PromptLaneRespond, "model-1", "conversation-secret", "stable instructions")
+	metadata := runtimePromptLedgerMetadata(nil, nil, memory.PromptWindowRecord{}, nil, nil, memory.RetrievalContext{}, cacheInput, true)
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := string(raw)
+	for _, required := range []string{`"version":"v2"`, `"supported":true`, `"identityHash":`, `"stablePromptHashPresent":true`, `"dynamicInputsExcluded":true`} {
+		if !strings.Contains(wire, required) {
+			t.Fatalf("metadata missing %s: %s", required, wire)
+		}
+	}
+	for _, forbidden := range []string{"conversation-secret", "stable instructions", cacheInput.StablePromptHash} {
+		if strings.Contains(wire, forbidden) {
+			t.Fatalf("metadata leaked %q: %s", forbidden, wire)
+		}
+	}
+}
+
 func TestRuntimeBeatDeliveryLedgerMetadataContainsOnlyDiagnostics(t *testing.T) {
-	metadata := runtimeBeatDeliveryLedgerMetadata("published", beatKindFinal, 1, 2, 920, 370, 2)
+	metadata := runtimeBeatDeliveryLedgerMetadata("published", reply.BeatKindFinal, 1, 2, 920, 370, 2)
 	raw, err := json.Marshal(metadata)
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)

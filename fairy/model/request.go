@@ -9,40 +9,27 @@ import (
 	"strings"
 
 	"fairy/config"
+	domainmodel "fairy/internal/domain/model"
 )
 
-type Protocol string
+type PromptLane = domainmodel.PromptLane
 
 const (
-	ProtocolResponses       Protocol = "responses"
-	ProtocolChatCompletions Protocol = "chat_completions"
+	PromptLaneRespond        = domainmodel.PromptLaneRespond
+	PromptLaneParticipate    = domainmodel.PromptLaneParticipate
+	PromptLaneCompact        = domainmodel.PromptLaneCompact
+	PromptLaneExtract        = domainmodel.PromptLaneExtract
+	PromptLaneTranslate      = domainmodel.PromptLaneTranslate
+	PromptLaneSocialLearn    = domainmodel.PromptLaneSocialLearn
+	PromptLaneSocialFeedback = domainmodel.PromptLaneSocialFeedback
 )
 
-type AuthRequirement string
+type PromptItemType = domainmodel.PromptItemType
 
 const (
-	AuthRequirementBearerKey AuthRequirement = "bearer_key_required"
-	AuthRequirementNone      AuthRequirement = "none"
-)
-
-type PromptLane string
-
-const (
-	PromptLaneRespond        PromptLane = "respond"
-	PromptLaneParticipate    PromptLane = "participate"
-	PromptLaneCompact        PromptLane = "compact"
-	PromptLaneExtract        PromptLane = "extract"
-	PromptLaneTranslate      PromptLane = "translate"
-	PromptLaneSocialLearn    PromptLane = "social_learn"
-	PromptLaneSocialFeedback PromptLane = "social_feedback"
-)
-
-type PromptItemType string
-
-const (
-	PromptItemUserMessage      PromptItemType = "user_message"
-	PromptItemAssistantMessage PromptItemType = "assistant_message"
-	PromptItemContextData      PromptItemType = "context_data"
+	PromptItemUserMessage      = domainmodel.PromptItemUserMessage
+	PromptItemAssistantMessage = domainmodel.PromptItemAssistantMessage
+	PromptItemContextData      = domainmodel.PromptItemContextData
 )
 
 type Connection struct {
@@ -54,18 +41,8 @@ type Connection struct {
 	Capabilities        config.GatewayCapabilities
 }
 
-type ModelRequestShape struct {
-	Lane            PromptLane `json:"lane"`
-	Model           string     `json:"model"`
-	Instructions    string     `json:"instructions"`
-	MaxOutputTokens uint32     `json:"maxOutputTokens"`
-	PromptCacheKey  string     `json:"promptCacheKey,omitempty"`
-}
-
-type PromptItem struct {
-	Type    PromptItemType `json:"type"`
-	Content string         `json:"content"`
-}
+type ModelRequestShape = domainmodel.ModelRequestShape
+type PromptItem = domainmodel.PromptItem
 
 type CompiledPromptRequest struct {
 	Shape              ModelRequestShape `json:"shape"`
@@ -75,15 +52,6 @@ type CompiledPromptRequest struct {
 	// CacheInput is local metadata used to derive a stable provider key. It is
 	// intentionally excluded from the wire representation.
 	CacheInput *CacheKeyInput `json:"-"`
-}
-
-type RequestDraft struct {
-	Protocol        Protocol        `json:"protocol"`
-	Method          string          `json:"method"`
-	URL             string          `json:"url"`
-	ContentType     string          `json:"contentType"`
-	AuthRequirement AuthRequirement `json:"authRequirement"`
-	BodyJSON        string          `json:"bodyJSON"`
 }
 
 func ConnectionFromStatus(status config.ModelConnectionStatus) (Connection, error) {
@@ -155,6 +123,14 @@ func BuildRequestDraft(connection Connection, request CompiledPromptRequest) (Re
 	}
 	if err := validateLane(request.Shape.Lane); err != nil {
 		return RequestDraft{}, err
+	}
+	if request.CacheInput != nil {
+		if request.CacheInput.Lane != request.Shape.Lane {
+			return RequestDraft{}, errors.New("cache key lane does not match request lane")
+		}
+		if request.CacheInput.Model != request.Shape.Model {
+			return RequestDraft{}, errors.New("cache key model does not match request model")
+		}
 	}
 	endpoint, err := protocolURL(connection.Endpoint, connection.Protocol)
 	if err != nil {

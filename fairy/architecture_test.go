@@ -51,7 +51,20 @@ func TestNoPackageImportsWails(t *testing.T) {
 }
 
 func TestDomainPackagesDoNotImportCompositionOrTransport(t *testing.T) {
-	domains := []string{"./companion", "./memory", "./model", "./profile", "./character", "./config"}
+	domains := []string{
+		"./companion",
+		"./internal/domain/persona",
+		"./internal/app/participation",
+		"./internal/app/reply",
+		"./internal/app/sociallearning",
+		"./internal/app/observation",
+		"./internal/domain/interaction",
+		"./memory",
+		"./model",
+		"./profile",
+		"./character",
+		"./config",
+	}
 	forbidden := map[string]struct{}{
 		"fairy/api": {}, "fairy/cmd": {}, "fairy/core": {}, "fairy/coreclient": {}, "fairy/runtime": {},
 	}
@@ -77,6 +90,50 @@ func TestDomainPackagesDoNotImportCompositionOrTransport(t *testing.T) {
 			if _, found := forbidden[imported]; found {
 				t.Fatalf("domain package %s imports composition/transport package %s", pkg.ImportPath, imported)
 			}
+		}
+	}
+}
+
+func TestModelCallSitesProvideExplicitCacheIdentity(t *testing.T) {
+	for _, directory := range []string{"companion", "internal/app/participation", "internal/app/sociallearning"} {
+		files, err := filepath.Glob(filepath.Join(directory, "*.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, filename := range files {
+			if strings.HasSuffix(filename, "_test.go") {
+				continue
+			}
+			file, err := parser.ParseFile(token.NewFileSet(), filename, nil, 0)
+			if err != nil {
+				t.Fatalf("parse %s: %v", filename, err)
+			}
+			ast.Inspect(file, func(node ast.Node) bool {
+				switch value := node.(type) {
+				case *ast.CallExpr:
+					selector, ok := value.Fun.(*ast.SelectorExpr)
+					if ok && selector.Sel.Name == "ExecutePrompt" {
+						t.Errorf("%s uses legacy ExecutePrompt instead of an explicit CompiledPromptRequest cache identity", filename)
+					}
+				case *ast.CompositeLit:
+					selector, ok := value.Type.(*ast.SelectorExpr)
+					if !ok || selector.Sel.Name != "CompiledPromptRequest" {
+						return true
+					}
+					for _, element := range value.Elts {
+						field, ok := element.(*ast.KeyValueExpr)
+						if !ok {
+							continue
+						}
+						name, ok := field.Key.(*ast.Ident)
+						if ok && name.Name == "CacheInput" {
+							return true
+						}
+					}
+					t.Errorf("%s constructs CompiledPromptRequest without CacheInput", filename)
+				}
+				return true
+			})
 		}
 	}
 }

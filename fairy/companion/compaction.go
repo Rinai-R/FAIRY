@@ -6,78 +6,31 @@ import (
 	"unicode/utf8"
 
 	"fairy/character"
-	"fairy/interaction"
+	"fairy/internal/app/compaction"
 	"fairy/memory"
 	"fairy/model"
 	"fairy/profile"
+
+	domain "fairy/internal/domain/interaction"
 )
 
-const (
-	defaultModelContextWindowTokens    uint64 = 1_048_576
-	autoCompactionThresholdBasisPoints uint64 = 8_000
-	basisPointsDenominator             uint64 = 10_000
-	respondOutputReserveTokens         uint64 = 640
-	compactionFailureBreakerThreshold  uint64 = 3
-	estimatedPromptCharsPerToken       uint64 = 4
-	maxCompactionSummaryChars                 = 12_000
-)
-
-type CompactionPolicy struct {
-	AutoInputTokenThreshold *uint64
-}
-
-type CompactionTrigger int
+type CompactionPolicy = compaction.Policy
+type CompactionTrigger = compaction.Trigger
 
 const (
-	CompactionTriggerManual CompactionTrigger = iota
-	CompactionTriggerAfterCompletedTurn
-	CompactionTriggerPreTurnPredictive
+	CompactionTriggerManual             = compaction.TriggerManual
+	CompactionTriggerAfterCompletedTurn = compaction.TriggerAfterCompletedTurn
+	CompactionTriggerPreTurnPredictive  = compaction.TriggerPreTurnPredictive
+	estimatedPromptCharsPerToken        = compaction.EstimatedPromptCharsPerToken
+	maxCompactionSummaryChars           = compaction.MaxSummaryChars
 )
 
 func CompactionPolicyFromContextWindow(contextWindowTokens uint64) CompactionPolicy {
-	if contextWindowTokens == 0 {
-		contextWindowTokens = defaultModelContextWindowTokens
-	}
-	raw := contextWindowTokens * autoCompactionThresholdBasisPoints / basisPointsDenominator
-	threshold := uint64(0)
-	if raw > respondOutputReserveTokens {
-		threshold = raw - respondOutputReserveTokens
-	}
-	return CompactionPolicy{AutoInputTokenThreshold: &threshold}
-}
-
-func (p CompactionPolicy) ShouldCompact(trigger CompactionTrigger, promptTokens uint64, usageKnown bool) bool {
-	switch trigger {
-	case CompactionTriggerManual:
-		return true
-	case CompactionTriggerAfterCompletedTurn:
-		if p.AutoInputTokenThreshold == nil || !usageKnown || promptTokens == 0 {
-			return false
-		}
-		return promptTokens >= *p.AutoInputTokenThreshold
-	case CompactionTriggerPreTurnPredictive:
-		if p.AutoInputTokenThreshold == nil || promptTokens == 0 {
-			return false
-		}
-		return promptTokens >= *p.AutoInputTokenThreshold
-	default:
-		return false
-	}
-}
-
-func (p CompactionPolicy) ShouldCompactAfterTurn(promptTokens uint64) bool {
-	return p.ShouldCompact(CompactionTriggerAfterCompletedTurn, promptTokens, promptTokens > 0)
-}
-
-func (p CompactionPolicy) ShouldCompactWindow(trigger CompactionTrigger, promptTokens uint64, usageKnown bool, window *memory.ContextWindowRecord) bool {
-	if trigger != CompactionTriggerManual && contextWindowBreakerOpen(window) {
-		return false
-	}
-	return p.ShouldCompact(trigger, promptTokens, usageKnown)
+	return compaction.PolicyFromContextWindow(contextWindowTokens)
 }
 
 func contextWindowBreakerOpen(window *memory.ContextWindowRecord) bool {
-	return window != nil && window.FailureCount >= compactionFailureBreakerThreshold
+	return compaction.ContextWindowBreakerOpen(window)
 }
 
 func estimatePromptPrefillTokens(instructions string, input []model.PromptItem) uint64 {
@@ -90,42 +43,15 @@ func estimatePromptPrefillTokens(instructions string, input []model.PromptItem) 
 	if chars == 0 {
 		return 0
 	}
-	return (chars + estimatedPromptCharsPerToken - 1) / estimatedPromptCharsPerToken
+	return compaction.EstimatePromptTokens(chars)
 }
 
 func normalizeCompactionSummary(summary string) (string, error) {
 	value := strings.TrimSpace(summary)
-	length := utf8.RuneCountInString(value)
-	if length == 0 || length > maxCompactionSummaryChars {
+	if err := compaction.ValidateSummary(value); err != nil {
 		return "", errors.New("compaction summary must be 1-12000 characters")
 	}
 	return value, nil
-}
-
-// BuildStablePrefixItems returns the respond/compact shared cacheable prefix:
-// character → display_language → profile → available_visual_states.
-func BuildStablePrefixItems(
-	record character.Record,
-	userProfile *profile.Snapshot,
-	states []VisualState,
-) ([]model.PromptItem, error) {
-	characterItem, err := encodeCharacterContext(record)
-	if err != nil {
-		return nil, err
-	}
-	displayLanguageItem, err := encodeDisplayLanguageConstraint(record)
-	if err != nil {
-		return nil, err
-	}
-	profileItem, err := encodeUserProfileContext(userProfile)
-	if err != nil {
-		return nil, err
-	}
-	visualItem, err := encodeAvailableVisualStates(states)
-	if err != nil {
-		return nil, err
-	}
-	return []model.PromptItem{characterItem, displayLanguageItem, profileItem, visualItem}, nil
 }
 
 // BuildCompactInput mirrors respond's stable prefix, then window summary/dialogue,
@@ -136,7 +62,7 @@ func BuildCompactInput(
 	promptWindow memory.PromptWindowRecord,
 	messages []memory.MessageRecord,
 	states []VisualState,
-	resolved interaction.Resolved,
+	resolved domain.Resolved,
 ) ([]model.PromptItem, error) {
 	windowed := messagesAfterCutoff(messages, promptWindow.CutoffMessageSequence)
 	prefix, err := BuildStablePrefixItems(record, userProfile, states)
@@ -230,14 +156,20 @@ func (s *CompanionService) maybeCompactBeforeTurn(request SubmitCompiledTurnRequ
 		}
 	}
 	estimatedMessages := append([]memory.MessageRecord(nil), bootstrap.Messages...)
-	estimatedMessages = append(estimatedMessages, memory.MessageRecord{
-		Role:     "user",
-		Content:  request.Input,
-		Sequence: uint64(len(estimatedMessages) + 1),
-	})
+	if request.Initiation == nil {
+		estimatedMessages = append(estimatedMessages, memory.MessageRecord{
+			Role: "user", Content: request.Input, Sequence: uint64(len(estimatedMessages) + 1),
+		})
+	}
 	slots, err := BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, estimatedMessages, request.AvailableVisualStates, memory.RetrievalContext{}, resolved)
 	if err != nil {
 		return err
+	}
+	if request.Initiation != nil {
+		slots, err = AppendDesktopInitiationContext(slots, *request.Initiation)
+		if err != nil {
+			return err
+		}
 	}
 	estimatedTokens := estimatePromptPrefillTokens(RespondInstructions, PromptItemsFromContextSlots(slots))
 	window, err := s.recordEstimatedContextWindow(request.ConversationID, bootstrap.PromptWindow.Revision, estimatedTokens)

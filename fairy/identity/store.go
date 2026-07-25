@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"fairy/interaction"
+	contracts "fairy/contracts/interaction"
 	pgstore "fairy/postgres"
 )
 
@@ -128,10 +128,10 @@ SELECT EXISTS(
 }
 
 func validateIdentity(namespace, principalDigest string) error {
-	if err := interaction.ValidateNamespace(namespace); err != nil {
+	if err := contracts.ValidateNamespace(namespace); err != nil {
 		return err
 	}
-	if err := interaction.ValidateDigest(principalDigest); err != nil {
+	if err := contracts.ValidateDigest(principalDigest); err != nil {
 		return err
 	}
 	return nil

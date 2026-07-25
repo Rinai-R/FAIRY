@@ -1,17 +1,8 @@
 package companion
 
-import "time"
+import "fairy/internal/app/participation"
 
-type ParticipationEvent struct {
-	ConversationID   string                        `json:"conversationId"`
-	Generation       uint64                        `json:"generation"`
-	EvaluationReason ParticipationEvaluationReason `json:"evaluationReason"`
-	Action           string                        `json:"action"`
-	TargetMessageID  string                        `json:"targetMessageId,omitempty"`
-	WaitSeconds      int                           `json:"waitSeconds,omitempty"`
-	Usage            []LaneModelUsage              `json:"usage,omitempty"`
-	ObservedAt       time.Time                     `json:"observedAt"`
-}
+type ParticipationEvent = participation.Event
 
 type ParticipationEventEmitter func(ParticipationEvent)
 

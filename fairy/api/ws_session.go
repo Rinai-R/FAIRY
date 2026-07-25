@@ -10,12 +10,14 @@ import (
 	"time"
 
 	"fairy/companion"
-	"fairy/interaction"
 	fairyruntime "fairy/runtime"
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/common/adaptor"
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
+
+	contracts "fairy/contracts/interaction"
+	obs "fairy/contracts/observation"
 )
 
 const (
@@ -61,18 +63,19 @@ func isLocalConsoleOrigin(origin string) bool {
 }
 
 type wsClientFrame struct {
-	Type             string                                  `json:"type"`
-	RequestID        string                                  `json:"requestId,omitempty"`
-	Endpoint         interaction.EndpointKind                `json:"endpoint,omitempty"`
-	EndpointKey      string                                  `json:"endpointKey,omitempty"`
-	Interaction      interaction.Context                     `json:"interaction,omitempty"`
-	ConversationID   string                                  `json:"conversationId,omitempty"`
-	EvaluationReason companion.ParticipationEvaluationReason `json:"evaluationReason,omitempty"`
-	Messages         []companion.AmbientObservation          `json:"messages,omitempty"`
-	Message          *companion.AmbientObservation           `json:"message,omitempty"`
-	Input            string                                  `json:"input,omitempty"`
-	SpeechEnabled    bool                                    `json:"speechEnabled,omitempty"`
-	TurnID           string                                  `json:"turnId,omitempty"`
+	Type               string                                  `json:"type"`
+	RequestID          string                                  `json:"requestId,omitempty"`
+	Endpoint           contracts.EndpointKind                  `json:"endpoint,omitempty"`
+	EndpointKey        string                                  `json:"endpointKey,omitempty"`
+	Interaction        contracts.Context                       `json:"interaction,omitempty"`
+	ConversationID     string                                  `json:"conversationId,omitempty"`
+	EvaluationReason   companion.ParticipationEvaluationReason `json:"evaluationReason,omitempty"`
+	Messages           []companion.AmbientObservation          `json:"messages,omitempty"`
+	Message            *companion.AmbientObservation           `json:"message,omitempty"`
+	DesktopObservation *obs.DesktopObservation                 `json:"desktopObservation,omitempty"`
+	Input              string                                  `json:"input,omitempty"`
+	SpeechEnabled      bool                                    `json:"speechEnabled,omitempty"`
+	TurnID             string                                  `json:"turnId,omitempty"`
 }
 
 type wsServerFrame struct {
@@ -81,7 +84,7 @@ type wsServerFrame struct {
 	ConversationID string                        `json:"conversationId,omitempty"`
 	CharacterID    string                        `json:"characterId,omitempty"`
 	MessageCount   int                           `json:"messageCount,omitempty"`
-	Endpoint       interaction.EndpointKind      `json:"endpoint,omitempty"`
+	Endpoint       contracts.EndpointKind        `json:"endpoint,omitempty"`
 	Error          string                        `json:"error,omitempty"`
 	Payload        json.RawMessage               `json:"payload,omitempty"`
 	Event          *companion.TurnEvent          `json:"event,omitempty"`
@@ -177,6 +180,8 @@ func (c *sessionConn) dispatch(ctx context.Context, frame wsClientFrame) {
 		c.handleWatch(frame)
 	case "ambient.observe":
 		c.handleObserve(frame)
+	case "desktop.observe":
+		c.handleDesktopObserve(frame)
 	case "participation.decide":
 		c.handleParticipate(ctx, frame)
 	case "turn.submit":
@@ -296,6 +301,24 @@ func (c *sessionConn) handleObserve(frame wsClientFrame) {
 	_ = c.write(wsServerFrame{Type: "ack", RequestID: frame.RequestID, ConversationID: strings.TrimSpace(frame.ConversationID)})
 }
 
+func (c *sessionConn) handleDesktopObserve(frame wsClientFrame) {
+	if frame.DesktopObservation == nil {
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "desktopObservation is required"})
+		return
+	}
+	plan, err := c.server.rt.Companion.ObserveDesktop(frame.ConversationID, *frame.DesktopObservation)
+	if err != nil {
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
+		return
+	}
+	payload, err := json.Marshal(plan)
+	if err != nil {
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "encoding desktop observation result"})
+		return
+	}
+	_ = c.write(wsServerFrame{Type: "result", RequestID: frame.RequestID, ConversationID: strings.TrimSpace(frame.ConversationID), Payload: payload})
+}
+
 func (c *sessionConn) handleParticipate(ctx context.Context, frame wsClientFrame) {
 	result, err := c.server.rt.Companion.DecideParticipation(ctx, companion.ParticipationRequest{
 		ConversationID:   frame.ConversationID,
@@ -387,10 +410,10 @@ type openSessionResult struct {
 	ConversationID string
 	CharacterID    string
 	MessageCount   int
-	Endpoint       interaction.EndpointKind
+	Endpoint       contracts.EndpointKind
 }
 
-func (s *Server) openSession(ctx context.Context, endpoint interaction.EndpointKind, endpointKey string, interactionContext interaction.Context) (openSessionResult, error) {
+func (s *Server) openSession(ctx context.Context, endpoint contracts.EndpointKind, endpointKey string, interactionContext contracts.Context) (openSessionResult, error) {
 	if err := interactionContext.Validate(endpoint); err != nil {
 		return openSessionResult{}, err
 	}
@@ -408,7 +431,7 @@ func (s *Server) openSession(ctx context.Context, endpoint interaction.EndpointK
 			return openSessionResult{}, err
 		}
 	}
-	binding, err := interaction.NewBinding(endpoint, interactionContext, principalDigest)
+	binding, err := contracts.NewBinding(endpoint, interactionContext, principalDigest)
 	if err != nil {
 		return openSessionResult{}, err
 	}

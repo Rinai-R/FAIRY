@@ -7,10 +7,13 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"fairy/character"
 	"fairy/config"
-	"fairy/interaction"
+	"fairy/internal/app/proactive"
+	"fairy/internal/app/reply"
+	"fairy/internal/app/sociallearning"
 	"fairy/memory"
 	"fairy/memory/semantic"
 	"fairy/model"
@@ -18,6 +21,10 @@ import (
 	"fairy/search"
 
 	"go.uber.org/zap"
+
+	contracts "fairy/contracts/interaction"
+	obs "fairy/contracts/observation"
+	appobs "fairy/internal/app/observation"
 )
 
 type CompanionService struct {
@@ -41,7 +48,7 @@ type CompanionService struct {
 	gateMu            sync.Mutex
 	gates             map[string]*conversationGate
 	interactionMu     sync.RWMutex
-	interactions      map[string]interaction.Binding
+	interactions      map[string]contracts.Binding
 	identities        OwnerIdentityPort
 	emitMu            sync.Mutex
 	emit              EventEmitter
@@ -50,8 +57,10 @@ type CompanionService struct {
 	ambient           *AmbientInbox
 	turns             *TurnEngine
 	participation     *ParticipationEngine
-	socialLearning    *SocialLearningEngine
-	socialFeedback    *SocialFeedbackEngine
+	desktopAttention  *proactive.AttentionEvaluator
+	desktopEvidence   *proactive.EvidenceRegistry
+	socialLearning    *sociallearning.LearningEngine
+	socialFeedback    *sociallearning.FeedbackEngine
 }
 
 type MessageTelemetry interface {
@@ -121,7 +130,7 @@ func (s *CompanionService) publishLife(life *TurnLifecycle, produce func() (Turn
 }
 
 func messageTelemetryStage(event TurnEvent) string {
-	if beat, ok := event.Payload.(beatReadyPayload); ok && beat.Kind == beatKindFinal {
+	if beat, ok := event.Payload.(beatReadyPayload); ok && beat.Kind == reply.BeatKindFinal {
 		return "first_beat"
 	}
 	switch event.State {
@@ -169,9 +178,11 @@ func NewCompanionService() *CompanionService {
 		logger:         zap.NewNop(),
 		extractionIdle: make(map[string]context.CancelFunc),
 		gates:          make(map[string]*conversationGate),
-		interactions:   make(map[string]interaction.Binding),
+		interactions:   make(map[string]contracts.Binding),
 	}
 	service.ambient = newAmbientInbox(context.Background(), service)
+	service.desktopAttention = proactive.NewAttentionEvaluator()
+	service.desktopEvidence = proactive.NewEvidenceRegistry()
 	service.wireEngines()
 	return service
 }
@@ -189,7 +200,7 @@ func NewCompanionServiceWithRuntime(root string, memory MemoryPort, model ModelP
 		logger:         zap.NewNop(),
 		extractionIdle: make(map[string]context.CancelFunc),
 		gates:          make(map[string]*conversationGate),
-		interactions:   make(map[string]interaction.Binding),
+		interactions:   make(map[string]contracts.Binding),
 	}
 	if strings.TrimSpace(root) != "" {
 		service.characters = character.NewStore(root)
@@ -197,8 +208,10 @@ func NewCompanionServiceWithRuntime(root string, memory MemoryPort, model ModelP
 		service.cfg = config.NewReader(root)
 	}
 	service.ambient = newAmbientInbox(context.Background(), service)
-	service.socialLearning = newSocialLearningEngine(service, socialLearningQueueCapacity)
-	service.socialFeedback = newSocialFeedbackEngine(service, socialFeedbackQueueCapacity)
+	service.desktopAttention = proactive.NewAttentionEvaluator()
+	service.desktopEvidence = proactive.NewEvidenceRegistry()
+	service.socialLearning = sociallearning.NewLearningEngine(socialLearningHost{service: service}, sociallearning.LearningQueueCapacity)
+	service.socialFeedback = sociallearning.NewFeedbackEngine(socialLearningHost{service: service}, sociallearning.FeedbackQueueCapacity)
 	service.wireEngines()
 	return service
 }
@@ -380,7 +393,7 @@ func (s *CompanionService) wireEngines() {
 		return
 	}
 	s.turns = &TurnEngine{host: s}
-	s.participation = &ParticipationEngine{host: s}
+	s.participation = newParticipationEngine(s)
 }
 
 func (s *CompanionService) SubmitTurn(request SubmitTurnRequest) (TurnOutcome, error) {
@@ -397,6 +410,13 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	return s.turns.SubmitCompiledTurn(request)
 }
 
+func (s *CompanionService) SubmitDesktopInitiation(request DesktopInitiationRequest, observation DesktopObservation) (TurnOutcome, error) {
+	if s == nil || s.turns == nil {
+		return TurnOutcome{}, ErrRespondRuntimeNotMigrated
+	}
+	return s.turns.SubmitDesktopInitiation(request, observation)
+}
+
 func (s *CompanionService) CancelTurn(conversationID string, turnID string) error {
 	if s == nil || s.turns == nil {
 		return ErrRespondRuntimeNotMigrated
@@ -407,6 +427,25 @@ func (s *CompanionService) CancelTurn(conversationID string, turnID string) erro
 func (s *CompanionService) DecideParticipation(ctx context.Context, request ParticipationRequest) (ParticipationResult, error) {
 	if s == nil || s.participation == nil {
 		return ParticipationResult{}, ErrRespondRuntimeNotMigrated
+	}
+	if err := ValidateParticipationRequest(request); err != nil {
+		return ParticipationResult{}, err
+	}
+	resolved, err := s.ResolveInteraction(request.ConversationID)
+	if err != nil {
+		return ParticipationResult{}, err
+	}
+	messageID := request.Messages[len(request.Messages)-1].MessageID
+	now := time.Now()
+	route, err := appobs.RouteCoreTrigger(appobs.TriggerEnvelope{
+		Kind: appobs.TriggerPublicAmbient, ConversationID: request.ConversationID, Resolved: resolved,
+		Payload: appobs.PublicAmbientTrigger{MessageID: messageID}, EvidenceIDs: []string{messageID}, CreatedAt: now,
+	}, obs.DesktopPrivacyNormal, true, now)
+	if err != nil {
+		return ParticipationResult{}, err
+	}
+	if route.Pipeline != appobs.PipelineParticipation {
+		return ParticipationResult{}, errors.New("public ambient trigger selected an invalid entry graph")
 	}
 	return s.participation.DecideParticipation(ctx, request)
 }
@@ -445,7 +484,7 @@ func (s *CompanionService) terminalPersistenceFailure(life *TurnLifecycle, conve
 // lifecycle lock, so emitting from here stays serialized with the main goroutine
 // and preserves monotonic sequence numbers. Skipped and ordinary failed TTS jobs
 // deliver text-only beats; cancelled jobs are discarded by the turn delivery owner.
-func (s *CompanionService) handleSpeechResult(life *TurnLifecycle, conversationID string, turnID string, delivery *replyDelivery, res speechPipelineResult) {
+func (s *CompanionService) handleSpeechResult(life *TurnLifecycle, conversationID string, turnID string, delivery *reply.Delivery, res reply.SpeechResult) {
 	display := strings.TrimSpace(res.DisplayText)
 	if display == "" {
 		display = strings.TrimSpace(res.Text)
@@ -467,10 +506,10 @@ func (s *CompanionService) handleSpeechResult(life *TurnLifecycle, conversationI
 	}
 	kind := res.Kind
 	if kind == "" {
-		if res.ChainIndex == chainIndexUtterance {
-			kind = beatKindUtterance
+		if res.ChainIndex == reply.ChainIndexUtterance {
+			kind = reply.BeatKindUtterance
 		} else {
-			kind = beatKindFinal
+			kind = reply.BeatKindFinal
 		}
 	}
 	beatID := res.BeatID
@@ -578,15 +617,19 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 		return memory.CompactionResult{}, err
 	}
 	if connectionConfig.Capabilities.PromptCacheKey {
-		cacheKey = model.LaneCacheKey(conversationID, model.PromptLaneRespond)
+		cacheKey = model.LaneCacheKey(conversationID, model.PromptLaneCompact)
 	}
-	events, err := s.model.ExecutePrompt(
-		model.PromptLaneCompact,
-		CompactInstructions,
-		CompactMaxOutputTokens,
-		input,
-		cacheKey,
-	)
+	cacheInput := model.NewCacheKeyInput(model.PromptLaneCompact, connectionConfig.Model, conversationID, CompactInstructions)
+	cacheInput.CharacterRevision = characterRecord.Revision
+	cacheInput.ProfileRevision = profileRevisionValue(userProfile)
+	cacheInput.PromptRevision = bootstrap.PromptWindow.Revision
+	events, err := s.model.ExecuteRequestContext(context.Background(), model.CompiledPromptRequest{
+		Shape: model.ModelRequestShape{
+			Lane: model.PromptLaneCompact, Model: connectionConfig.Model, Instructions: CompactInstructions,
+			MaxOutputTokens: CompactMaxOutputTokens, PromptCacheKey: cacheKey,
+		},
+		Input: input, CacheInput: &cacheInput,
+	})
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
@@ -594,17 +637,27 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
-	result, err := s.memory.CommitPromptWindow(conversationID, bootstrap.PromptWindow.Revision, summary)
+	existingWindow, foundWindow, err := s.memory.LoadContextWindow(conversationID, string(model.PromptLaneRespond))
+	if err != nil {
+		return memory.CompactionResult{}, err
+	}
+	contextWindow := nextCompactionCommittedContextWindowRecord(
+		conversationID,
+		bootstrap.PromptWindow.Revision+1,
+		existingWindow,
+		foundWindow,
+	)
+	result, err := s.memory.CommitCompaction(
+		conversationID,
+		bootstrap.PromptWindow.Revision,
+		summary,
+		contextWindow,
+		string(model.PromptLaneRespond),
+	)
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
 	result.RetainedDialogueItems = len(windowed)
-	if _, err := s.advanceContextWindowAfterCompaction(conversationID, result.WindowRevision); err != nil {
-		return memory.CompactionResult{}, err
-	}
-	if err := s.clearContinuationState(conversationID); err != nil {
-		return memory.CompactionResult{}, err
-	}
 	return result, nil
 }
 

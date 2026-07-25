@@ -1,9 +1,8 @@
 package runtime
 
 import (
-	"errors"
-
 	"fairy/companion"
+	"fairy/internal/bootstrap"
 	"fairy/model"
 )
 
@@ -18,7 +17,13 @@ type Domain struct {
 }
 
 var coreDomains = []Domain{
-	{Name: "companion", Owns: "conversation turns, participation, prompt compilation", DependsOn: []string{"memory", "model"}},
+	{Name: "companion", Owns: "conversation turn lifecycle, orchestration and background personal-memory jobs", DependsOn: []string{"persona", "participation", "reply", "sociallearning", "memory", "model"}},
+	{Name: "persona", Owns: "prompt instructions, context slots and stable-prefix compilation", DependsOn: []string{"memory", "model", "reply"}},
+	{Name: "reply", Owns: "compiled replies, pacing, delivery and speech pipeline"},
+	{Name: "participation", Owns: "ambient participation decisions, inbox state and participation events", DependsOn: []string{"persona", "memory", "model"}},
+	{Name: "sociallearning", Owns: "public observation learning and reply feedback attribution", DependsOn: []string{"persona", "participation", "memory", "model"}},
+	{Name: "observation", Owns: "desktop observation graph and trigger routing"},
+	{Name: "interaction", Owns: "interaction policy resolution from durable facts"},
 	{Name: "memory", Owns: "conversation, profile evidence, knowledge and feedback persistence"},
 	{Name: "model", Owns: "provider request compilation and transport"},
 	{Name: "runtime", Owns: "lifecycle and cross-domain construction", Composition: true},
@@ -34,17 +39,6 @@ func Domains() []Domain {
 	return result
 }
 
-func validateInjectedDependencies(deps *Dependencies) error {
-	if deps == nil {
-		return nil
-	}
-	if deps.MemoryStore == nil {
-		return errors.New("injected memory store is required")
-	}
-	if deps.SecretStore == nil {
-		return errors.New("injected secret store is required")
-	}
-	return nil
-}
+type Dependencies = bootstrap.Dependencies
 
 var _ companion.ModelPort = (*model.ModelService)(nil)

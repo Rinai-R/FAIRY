@@ -188,6 +188,27 @@ func TestResponsesRequestDraftBuildsRevisionScopedPromptCacheKey(t *testing.T) {
 	}
 }
 
+func TestBuildRequestDraftRejectsCacheIdentityShapeMismatch(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*CacheKeyInput)
+	}{
+		{name: "lane", mutate: func(input *CacheKeyInput) { input.Lane = PromptLaneCompact }},
+		{name: "model", mutate: func(input *CacheKeyInput) { input.Model = "other-model" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := request()
+			cacheInput := NewCacheKeyInput(req.Shape.Lane, req.Shape.Model, "conversation-1", req.Shape.Instructions)
+			test.mutate(&cacheInput)
+			req.CacheInput = &cacheInput
+			if _, err := BuildRequestDraft(connection(ProtocolResponses), req); err == nil {
+				t.Fatal("BuildRequestDraft() accepted mismatched cache identity")
+			}
+		})
+	}
+}
+
 func TestParticipationLaneUsesJSONResponseFormatForChatCompletions(t *testing.T) {
 	req := request()
 	req.Shape.Lane = PromptLaneParticipate

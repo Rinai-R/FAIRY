@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"fairy/interaction"
+	contracts "fairy/contracts/interaction"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -62,5 +62,5 @@ func newIdentityCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 }
 
 func validateIdentityFlags(namespace, subject string) error {
-	return (&interaction.PrincipalRef{Namespace: namespace, Subject: subject}).Validate()
+	return (&contracts.PrincipalRef{Namespace: namespace, Subject: subject}).Validate()
 }

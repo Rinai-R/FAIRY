@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"sync"
+
+	"fairy/internal/app/reply"
 )
 
 var (
 	ErrTurnInProgress  = errors.New("TURN_IN_PROGRESS: companion turn or compaction already in progress")
-	ErrTurnInterrupted = errors.New("TURN_INTERRUPTED: companion turn was cancelled")
+	ErrTurnInterrupted = reply.ErrInterrupted
 	ErrTurnNotActive   = errors.New("TURN_NOT_ACTIVE: no matching active turn to cancel")
 )
 

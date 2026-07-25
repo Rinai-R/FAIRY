@@ -1,7 +1,6 @@
 package companion
 
 import (
-	"context"
 	"sync"
 	"testing"
 	"time"
@@ -52,15 +51,9 @@ func TestAmbientInboxReportsAcceptedObservationAndSilentDecision(t *testing.T) {
 	t.Cleanup(func() { _ = service.Close() })
 	telemetry := newFakeMessageTelemetry()
 	AttachMessageTelemetry(service, telemetry)
-	service.ambient.decideHook = func(context.Context, ambientBatch) (ParticipationResult, error) {
-		return ParticipationResult{Action: ParticipationSilent}, nil
-	}
-
-	if err := service.ambient.Observe("c1", AmbientObservation{
-		MessageID: "m1", SenderID: "u1", SenderName: "user", Text: "hello", TimestampUnixMS: time.Now().UnixMilli(),
-	}); err != nil {
-		t.Fatal(err)
-	}
+	host := ambientHost{service: service}
+	traceID := host.BeginMessageTrace("ambient", "c1", "")
+	host.RecordParticipation([]string{traceID}, "", "silent")
 	begin := receiveTelemetryCall(t, telemetry.calls)
 	decision := receiveTelemetryCall(t, telemetry.calls)
 	if begin.kind != "begin" || decision.kind != "participation" || decision.action != "silent" {

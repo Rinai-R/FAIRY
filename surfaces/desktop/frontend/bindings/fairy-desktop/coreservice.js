@@ -47,6 +47,22 @@ export function Connect(endpoint, endpointKey) {
 }
 
 /**
+ * @returns {$CancellablePromise<void>}
+ */
+export function DisableDesktopObservation() {
+    return $Call.ByID(3188836008);
+}
+
+/**
+ * @param {number} intervalMinutes
+ * @param {number} idleMinutes
+ * @returns {$CancellablePromise<void>}
+ */
+export function EnableDesktopObservation(intervalMinutes, idleMinutes) {
+    return $Call.ByID(1036422411, intervalMinutes, idleMinutes);
+}
+
+/**
  * HideSpeechBubble is called after the WebView finishes its local fade-out.
  * @returns {$CancellablePromise<void>}
  */
@@ -112,6 +128,14 @@ export function SaveConnection(endpoint, token, endpointKey) {
  */
 export function Send(input, speechEnabled) {
     return $Call.ByID(3644580932, input, speechEnabled);
+}
+
+/**
+ * @param {string} value
+ * @returns {$CancellablePromise<void>}
+ */
+export function SetDesktopObservationPrivacy(value) {
+    return $Call.ByID(2769179032, value);
 }
 
 // Private type creation functions

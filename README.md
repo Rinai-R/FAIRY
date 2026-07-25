@@ -100,7 +100,11 @@ go test -C fairy ./... -count=1
 go test -C surfaces/qq-onebot ./... -race -count=1
 go vet -C surfaces/qq-onebot ./...
 go build -C surfaces/qq-onebot .
-FAIRY_TEST_DATABASE_URL=... FAIRY_TEST_QDRANT_GRPC_URL=... go test -C fairy ./... -tags integration -count=1
+docker compose -f docker-compose.integration.yml up -d --wait
+FAIRY_TEST_DATABASE_URL='postgres://fairy:fairy_test_password@127.0.0.1:15432/fairy_test?sslmode=disable' \
+FAIRY_TEST_QDRANT_GRPC_URL='http://127.0.0.1:16334' \
+go test -C fairy ./... -tags integration -count=1
+docker compose -f docker-compose.integration.yml down
 pnpm --filter @fairy/web test
 pnpm --filter @fairy/web build
 docker compose up -d --build --wait

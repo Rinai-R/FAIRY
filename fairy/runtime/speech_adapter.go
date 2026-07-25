@@ -1,7 +1,7 @@
 package runtime
 
 import (
-	"fairy/companion"
+	"fairy/internal/app/reply"
 	"fairy/speech"
 )
 
@@ -9,12 +9,12 @@ type companionSpeechAdapter struct {
 	service *speech.SpeechService
 }
 
-func (a companionSpeechAdapter) SynthesizeSpeech(request companion.SpeechSynthesisRequest) (companion.SpeechSynthesisResult, error) {
+func (a companionSpeechAdapter) SynthesizeSpeech(request reply.SpeechSynthesisRequest) (reply.SpeechSynthesisResult, error) {
 	result, err := a.service.SynthesizeSpeech(speech.SynthesizeSpeechRequest{Text: request.Text, SpeakerID: request.SpeakerID})
 	if err != nil {
-		return companion.SpeechSynthesisResult{}, err
+		return reply.SpeechSynthesisResult{}, err
 	}
-	return companion.SpeechSynthesisResult{
+	return reply.SpeechSynthesisResult{
 		SpeakerID: result.SpeakerID,
 		MimeType:  result.MimeType,
 		Format:    result.Format,

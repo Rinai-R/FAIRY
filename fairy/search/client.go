@@ -20,10 +20,10 @@ import (
 const (
 	defaultSearchLimit = 5
 	// OpenSERP HTTP path segment is "duck"; response meta still says "duckduckgo".
-	defaultEngine        = "duck"
-	defaultBaseURL       = "http://127.0.0.1:7000"
-	healthTimeout        = 5 * time.Second
-	envOpenSERPBaseURL   = "FAIRY_OPENSERP_URL"
+	defaultEngine      = "duck"
+	defaultBaseURL     = "http://127.0.0.1:7000"
+	healthTimeout      = 5 * time.Second
+	envOpenSERPBaseURL = "FAIRY_OPENSERP_URL"
 )
 
 var (

@@ -1,6 +1,8 @@
 package runtime
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestDomainsDescribeRuntimeAsOnlyCompositionRoot(t *testing.T) {
 	domains := Domains()
@@ -23,6 +25,9 @@ func TestDomainsDescribeRuntimeAsOnlyCompositionRoot(t *testing.T) {
 	}
 	if compositionRoots != 1 {
 		t.Fatalf("composition roots = %d, want 1", compositionRoots)
+	}
+	if !seen["sociallearning"] {
+		t.Fatal("sociallearning domain is missing")
 	}
 
 	domains[0].DependsOn[0] = "mutated"

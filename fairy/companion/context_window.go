@@ -86,22 +86,6 @@ func (s *CompanionService) recordContextWindowFailure(conversationID string) err
 	return err
 }
 
-func (s *CompanionService) advanceContextWindowAfterCompaction(conversationID string, promptWindowRevision uint64) (*memory.ContextWindowRecord, error) {
-	if s == nil || s.memory == nil || promptWindowRevision == 0 {
-		return nil, nil
-	}
-	existing, found, err := s.memory.LoadContextWindow(conversationID, string(model.PromptLaneRespond))
-	if err != nil {
-		return nil, err
-	}
-	record := nextCompactionCommittedContextWindowRecord(conversationID, promptWindowRevision, existing, found)
-	saved, err := s.memory.SaveContextWindow(record)
-	if err != nil {
-		return nil, err
-	}
-	return &saved, nil
-}
-
 func nextObservedContextWindowRecord(
 	conversationID string,
 	promptWindowRevision uint64,

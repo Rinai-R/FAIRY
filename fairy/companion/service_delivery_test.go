@@ -6,6 +6,8 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"fairy/internal/app/reply"
+
 	"go.uber.org/zap"
 )
 
@@ -25,14 +27,14 @@ func TestHandleFinalSpeechCancellationDoesNotPublishTextOnlyBeat(t *testing.T) {
 	service.logger = zap.NewNop()
 	life := respondingLifecycle(t)
 	var published []BeatReadyCompletion
-	delivery := newReplyDelivery(t.Context(), 1, func(completion BeatReadyCompletion) error {
+	delivery := reply.NewDelivery(t.Context(), 1, func(completion BeatReadyCompletion) error {
 		published = append(published, completion)
 		return nil
 	}, nil)
 
-	service.handleSpeechResult(life, "conversation", "turn", delivery, speechPipelineResult{
+	service.handleSpeechResult(life, "conversation", "turn", delivery, reply.SpeechResult{
 		BeatID:      "final-0",
-		Kind:        beatKindFinal,
+		Kind:        reply.BeatKindFinal,
 		PlayIndex:   0,
 		ChainIndex:  0,
 		DisplayText: "不应发布",
@@ -53,14 +55,14 @@ func TestHandleFinalSpeechProviderFailurePublishesTextOnlyBeat(t *testing.T) {
 	service.logger = zap.NewNop()
 	life := respondingLifecycle(t)
 	var published []BeatReadyCompletion
-	delivery := newReplyDelivery(t.Context(), 1, func(completion BeatReadyCompletion) error {
+	delivery := reply.NewDelivery(t.Context(), 1, func(completion BeatReadyCompletion) error {
 		published = append(published, completion)
 		return nil
 	}, nil)
 
-	service.handleSpeechResult(life, "conversation", "turn", delivery, speechPipelineResult{
+	service.handleSpeechResult(life, "conversation", "turn", delivery, reply.SpeechResult{
 		BeatID:      "final-0",
-		Kind:        beatKindFinal,
+		Kind:        reply.BeatKindFinal,
 		PlayIndex:   0,
 		ChainIndex:  0,
 		DisplayText: "仍然显示",
@@ -83,25 +85,25 @@ func TestSpeechPipelineKeepsSkippedFinalBeatInOrder(t *testing.T) {
 		service.logger = zap.NewNop()
 		life := respondingLifecycle(t)
 		var published []BeatReadyCompletion
-		delivery := newReplyDelivery(t.Context(), 2, func(completion BeatReadyCompletion) error {
+		delivery := reply.NewDelivery(t.Context(), 2, func(completion BeatReadyCompletion) error {
 			published = append(published, completion)
 			return nil
 		}, nil)
-		pipeline := newSpeechPipeline(t.Context(), &recordingSynth{}, 2, func(result speechPipelineResult) {
+		pipeline := reply.NewSpeechPipeline(t.Context(), &recordingSynth{}, 2, func(result reply.SpeechResult) {
 			service.handleSpeechResult(life, "conversation", "turn", delivery, result)
 		})
-		pipeline.Enqueue(speechPipelineJob{
+		pipeline.Enqueue(reply.SpeechJob{
 			BeatID:      "final-0",
-			Kind:        beatKindFinal,
+			Kind:        reply.BeatKindFinal,
 			PlayIndex:   0,
 			ChainIndex:  0,
 			DisplayText: "第一拍",
 			VisualState: "idle",
 			Resolve:     func() (string, error) { return "第一拍", nil },
 		})
-		pipeline.Enqueue(speechPipelineJob{
+		pipeline.Enqueue(reply.SpeechJob{
 			BeatID:      "final-1",
-			Kind:        beatKindFinal,
+			Kind:        reply.BeatKindFinal,
 			PlayIndex:   1,
 			ChainIndex:  1,
 			DisplayText: "第二拍",

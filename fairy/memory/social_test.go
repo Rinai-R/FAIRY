@@ -44,19 +44,6 @@ func TestValidateSocialMemoryBatchRejectsRawOrInvalidCandidates(t *testing.T) {
 	}
 }
 
-func TestSocialMemoryContentHashIsStableAndKindSeparated(t *testing.T) {
-	entry := validSocialMemoryBatch().Entries[0]
-	first := socialMemoryContentHash(entry)
-	entry.Content = "用一小句顺着反讽接话，不解释梗"
-	if second := socialMemoryContentHash(entry); second != first {
-		t.Fatalf("stable hash changed: %s != %s", second, first)
-	}
-	entry.Kind = SocialMemoryBehavior
-	if socialMemoryContentHash(entry) == first {
-		t.Fatal("different social memory kinds shared a hash")
-	}
-}
-
 func TestValidateSocialReplyFeedbackAllowsEmptyEntries(t *testing.T) {
 	input := SocialReplyFeedbackInput{
 		CharacterID: "character-1", ConversationID: "conversation-1", TurnID: "turn-1",
@@ -66,4 +53,3 @@ func TestValidateSocialReplyFeedbackAllowsEmptyEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-

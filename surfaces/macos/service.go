@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"fairy/contracts/interaction"
 	"fairy/coreclient"
-	"fairy/interaction"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 

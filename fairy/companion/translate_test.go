@@ -1,6 +1,7 @@
 package companion
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -43,6 +44,23 @@ func TestBuildTranslateInputIncludesCharacterSpeechPrefix(t *testing.T) {
 	}
 	if strings.Contains(items[1].Content, `"contextType":"speech_translate"`) {
 		t.Fatalf("task should not use opaque speech_translate JSON blob: %s", items[1].Content)
+	}
+}
+
+func TestTranslateDisplayTextUsesStableCacheIdentity(t *testing.T) {
+	modelPort := &socialLearningModel{draft: "うん、わかった。"}
+	service := NewCompanionService()
+	service.model = modelPort
+	record := character.Record{
+		CharacterID: "character-1", Revision: 7, Name: "亚托莉", Description: "认真听用户说话。",
+		TextLanguage: "zh", SpeakingLanguage: "ja",
+	}
+	if _, err := service.translateDisplayText(context.Background(), record, "嗯，我懂。", "zh", "ja", "conversation-1", "model-1"); err != nil {
+		t.Fatal(err)
+	}
+	cache := modelPort.request.CacheInput
+	if cache == nil || cache.Lane != model.PromptLaneTranslate || cache.CharacterRevision != 7 || cache.StablePromptHash == "" {
+		t.Fatalf("cache input = %#v", cache)
 	}
 }
 

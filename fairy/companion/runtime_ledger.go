@@ -8,6 +8,11 @@ import (
 	"fairy/model"
 )
 
+type (
+	LaneUsage      = model.LaneUsage
+	LaneModelUsage = model.LaneModelUsage
+)
+
 const (
 	runtimeLedgerEventTransition    = "transition"
 	runtimeLedgerEventPrompt        = "prompt"
@@ -18,6 +23,7 @@ const (
 	runtimeLedgerEventSpeech        = "speech"
 	runtimeLedgerEventBeatDelivery  = "beat_delivery"
 	runtimeLedgerEventTerminal      = "terminal"
+	runtimeLedgerEventNode          = "node"
 )
 
 func (s *CompanionService) appendRuntimeLedger(conversationID string, turnID string, eventType string, state TurnState, code string, metadata map[string]any) {
@@ -72,6 +78,8 @@ func runtimePromptLedgerMetadata(
 	messages []memory.MessageRecord,
 	visualStates []VisualState,
 	retrieval memory.RetrievalContext,
+	cacheInput model.CacheKeyInput,
+	cacheSupported bool,
 ) map[string]any {
 	metadata := map[string]any{
 		"promptInputHash":            runtimeHash(input),
@@ -84,8 +92,11 @@ func runtimePromptLedgerMetadata(
 		"retrievedKnowledgeCount":    len(retrieval.Knowledge),
 		"contextSlots":               runtimeContextSlotMetadata(slots),
 		"prefixCache": map[string]any{
-			"version":               model.PromptCacheKeyVersion,
-			"dynamicInputsExcluded": true,
+			"version":                 model.PromptCacheKeyVersion,
+			"supported":               cacheSupported,
+			"identityHash":            runtimeHash(cacheInput),
+			"stablePromptHashPresent": cacheInput.StablePromptHash != "",
+			"dynamicInputsExcluded":   true,
 		},
 	}
 	return metadata

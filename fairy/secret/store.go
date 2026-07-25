@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"fairy/interaction"
+	contracts "fairy/contracts/interaction"
 	pgstore "fairy/postgres"
 
 	"github.com/jackc/pgx/v5"
@@ -91,14 +91,14 @@ func (s *Store) Encrypted() bool {
 	return s != nil && s.pool != nil && s.pool.Raw() != nil && s.cipher != nil && s.cipher.aead != nil
 }
 
-func (s *Store) DigestEndpointKey(endpoint interaction.EndpointKind, rawKey string) (string, error) {
+func (s *Store) DigestEndpointKey(endpoint contracts.EndpointKind, rawKey string) (string, error) {
 	if s == nil || s.cipher == nil {
 		return "", ErrCipherRequired
 	}
 	return s.cipher.DigestEndpointKey(endpoint, rawKey)
 }
 
-func (s *Store) DigestPrincipal(principal interaction.PrincipalRef) (string, error) {
+func (s *Store) DigestPrincipal(principal contracts.PrincipalRef) (string, error) {
 	if s == nil || s.cipher == nil {
 		return "", ErrCipherRequired
 	}

@@ -14,6 +14,7 @@ type conversationTurnSchema struct {
 	ConversationID  string  `gorm:"type:text;not null"`
 	Sequence        int64   `gorm:"not null"`
 	Status          string  `gorm:"type:text;not null"`
+	Origin          string  `gorm:"type:text;not null;default:user"`
 	ErrorCode       *string `gorm:"type:text"`
 	ErrorMessage    *string `gorm:"type:text"`
 	ErrorRetryable  *bool
@@ -23,6 +24,14 @@ type conversationTurnSchema struct {
 }
 
 func (conversationTurnSchema) TableName() string { return "conversation_turns" }
+
+type conversationTurnEvidenceSchema struct {
+	TurnID      string `gorm:"type:text;primaryKey"`
+	EvidenceID  string `gorm:"type:text;primaryKey"`
+	CreatedAtMS int64  `gorm:"not null"`
+}
+
+func (conversationTurnEvidenceSchema) TableName() string { return "conversation_turn_evidence" }
 
 type conversationMessageSchema struct {
 	ID             string `gorm:"type:text;primaryKey"`
@@ -107,6 +116,15 @@ type personalMemorySchema struct {
 }
 
 func (personalMemorySchema) TableName() string { return "personal_memories" }
+
+type personalMemoryEvidenceSchema struct {
+	MemoryID    string `gorm:"type:text;primaryKey"`
+	TurnID      string `gorm:"type:text;primaryKey"`
+	EvidenceID  string `gorm:"type:text;primaryKey"`
+	CreatedAtMS int64  `gorm:"not null"`
+}
+
+func (personalMemoryEvidenceSchema) TableName() string { return "personal_memory_evidence" }
 
 type knowledgeEntrySchema struct {
 	ID                    string  `gorm:"type:text;primaryKey"`
@@ -344,12 +362,14 @@ func schemaModels() []any {
 	return []any{
 		&conversationSchema{},
 		&conversationTurnSchema{},
+		&conversationTurnEvidenceSchema{},
 		&conversationMessageSchema{},
 		&promptWindowSchema{},
 		&turnRuntimeEventSchema{},
 		&laneContinuationSchema{},
 		&contextWindowSchema{},
 		&personalMemorySchema{},
+		&personalMemoryEvidenceSchema{},
 		&knowledgeEntrySchema{},
 		&knowledgeSourceSchema{},
 		&extractionBatchSchema{},
@@ -372,12 +392,14 @@ func schemaTableNames() []string {
 	return []string{
 		"conversations",
 		"conversation_turns",
+		"conversation_turn_evidence",
 		"conversation_messages",
 		"prompt_windows",
 		"turn_runtime_events",
 		"lane_continuations",
 		"context_windows",
 		"personal_memories",
+		"personal_memory_evidence",
 		"knowledge_entries",
 		"knowledge_sources",
 		"extraction_batches",

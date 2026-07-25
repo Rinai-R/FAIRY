@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"testing"
+
+	"fairy/internal/app/reply"
+	"fairy/model"
 )
 
 func TestTurnLifecycleHappyPathJSONShape(t *testing.T) {
@@ -117,7 +120,7 @@ func TestBeatReadyIncludesPacingFields(t *testing.T) {
 	}
 	event, err := life.BeatReady(BeatReadyCompletion{
 		BeatID:               "final-1",
-		Kind:                 beatKindFinal,
+		Kind:                 reply.BeatKindFinal,
 		Index:                1,
 		ChainIndex:           1,
 		DisplayText:          "第二拍",
@@ -171,8 +174,8 @@ func TestCompletedUsageWireShapeMatchesFrontendContract(t *testing.T) {
 			Usage: LaneUsage{
 				InputTokens:       &input,
 				OutputTokens:      &output,
-				CachedInputTokens: CacheMissing(),
-				CacheWriteTokens:  CacheMissing(),
+				CachedInputTokens: model.CacheMissing(),
+				CacheWriteTokens:  model.CacheMissing(),
 			},
 		}},
 	})

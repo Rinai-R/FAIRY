@@ -34,6 +34,7 @@ func (s *ModelService) BuildRequestDraft(request CompiledPromptRequest) (Request
 	if err != nil {
 		return RequestDraft{}, err
 	}
+	request = normalizeCacheInput(request)
 	draft, err := BuildRequestDraft(connection, request)
 	if err != nil {
 		return RequestDraft{}, fmt.Errorf("building model request draft: %w", err)
@@ -72,13 +73,7 @@ func (s *ModelService) ExecuteRequestContextStream(ctx context.Context, request 
 	if err != nil {
 		return err
 	}
-	if connection.Capabilities.PromptCacheKey && request.CacheInput == nil && request.Shape.PromptCacheKey != "" {
-		request.CacheInput = &CacheKeyInput{
-			Lane:  request.Shape.Lane,
-			Model: request.Shape.Model,
-			Seed:  request.Shape.PromptCacheKey,
-		}
-	}
+	request = normalizeCacheInput(request)
 	draft, err := BuildRequestDraft(connection, request)
 	if err != nil {
 		return fmt.Errorf("building model request draft: %w", err)
@@ -117,13 +112,29 @@ func (s *ModelService) ExecutePrompt(lane PromptLane, instructions string, maxOu
 		Input: input,
 	}
 	if connectionConfig.Capabilities.PromptCacheKey {
-		request.CacheInput = &CacheKeyInput{
-			Lane:  lane,
-			Model: connectionConfig.Model,
-			Seed:  promptCacheKey,
-		}
+		cacheInput := NewCacheKeyInput(lane, connectionConfig.Model, "", instructions)
+		cacheInput.Seed = promptCacheKey
+		request.CacheInput = &cacheInput
 	}
 	return s.ExecuteRequest(request)
+}
+
+func normalizeCacheInput(request CompiledPromptRequest) CompiledPromptRequest {
+	if request.CacheInput != nil {
+		input := *request.CacheInput
+		if input.StablePromptHash == "" {
+			input.StablePromptHash = NewCacheKeyInput(input.Lane, input.Model, input.ConversationID, request.Shape.Instructions).StablePromptHash
+		}
+		request.CacheInput = &input
+		return request
+	}
+	if request.Shape.PromptCacheKey == "" {
+		return request
+	}
+	input := NewCacheKeyInput(request.Shape.Lane, request.Shape.Model, "", request.Shape.Instructions)
+	input.Seed = request.Shape.PromptCacheKey
+	request.CacheInput = &input
+	return request
 }
 
 func (s *ModelService) bearerCredential(connection config.ModelConnection) (string, error) {

@@ -2,10 +2,9 @@ package secret
 
 import (
 	"encoding/base64"
+	contracts "fairy/contracts/interaction"
 	"strings"
 	"testing"
-
-	"fairy/interaction"
 )
 
 func TestDigestEndpointKeyIsStableAndDomainSeparated(t *testing.T) {
@@ -14,15 +13,15 @@ func TestDigestEndpointKeyIsStableAndDomainSeparated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := ciphertext.DigestEndpointKey(interaction.EndpointIM, "onebot-group:123")
+	first, err := ciphertext.DigestEndpointKey(contracts.EndpointIM, "onebot-group:123")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := ciphertext.DigestEndpointKey(interaction.EndpointIM, "onebot-group:123")
+	second, err := ciphertext.DigestEndpointKey(contracts.EndpointIM, "onebot-group:123")
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherEndpoint, err := ciphertext.DigestEndpointKey(interaction.EndpointDesktop, "onebot-group:123")
+	otherEndpoint, err := ciphertext.DigestEndpointKey(contracts.EndpointDesktop, "onebot-group:123")
 	if err != nil {
 		t.Fatal(err)
 	}

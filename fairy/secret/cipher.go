@@ -14,7 +14,7 @@ import (
 	"os"
 	"strings"
 
-	"fairy/interaction"
+	contracts "fairy/contracts/interaction"
 	"golang.org/x/crypto/hkdf"
 )
 
@@ -97,11 +97,11 @@ func deriveHMACKey(key []byte, info string) ([]byte, error) {
 	return derived, nil
 }
 
-func (c *Cipher) DigestEndpointKey(endpoint interaction.EndpointKind, rawKey string) (string, error) {
+func (c *Cipher) DigestEndpointKey(endpoint contracts.EndpointKind, rawKey string) (string, error) {
 	if c == nil || len(c.endpointHMACKey) == 0 {
 		return "", ErrCipherRequired
 	}
-	if err := interaction.ValidateEndpoint(endpoint); err != nil {
+	if err := contracts.ValidateEndpoint(endpoint); err != nil {
 		return "", err
 	}
 	if err := ValidateEndpointKey(rawKey); err != nil {
@@ -114,7 +114,7 @@ func (c *Cipher) DigestEndpointKey(endpoint interaction.EndpointKind, rawKey str
 	return hex.EncodeToString(mac.Sum(nil)), nil
 }
 
-func (c *Cipher) DigestPrincipal(principal interaction.PrincipalRef) (string, error) {
+func (c *Cipher) DigestPrincipal(principal contracts.PrincipalRef) (string, error) {
 	if c == nil || len(c.principalHMACKey) == 0 {
 		return "", ErrCipherRequired
 	}

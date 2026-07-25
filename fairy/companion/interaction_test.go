@@ -6,10 +6,12 @@ import (
 	"testing"
 
 	"fairy/character"
-	"fairy/interaction"
 	"fairy/memory"
 	"fairy/model"
 	"fairy/profile"
+
+	contracts "fairy/contracts/interaction"
+	domain "fairy/internal/domain/interaction"
 )
 
 func TestInteractionMemoryPolicySelectsToolsAndInstructions(t *testing.T) {
@@ -47,10 +49,10 @@ func TestInteractionPresentationAndMemoryAreIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if desktop.Presentation != interaction.PresentationEmbodied || ownerIM.Presentation != interaction.PresentationChat {
+	if desktop.Presentation != contracts.PresentationEmbodied || ownerIM.Presentation != contracts.PresentationChat {
 		t.Fatalf("presentations = %#v / %#v", desktop, ownerIM)
 	}
-	if desktop.MemoryPolicy != interaction.MemoryPersonal || ownerIM.MemoryPolicy != interaction.MemoryPersonal || publicIM.MemoryPolicy != interaction.MemoryPublic {
+	if desktop.MemoryPolicy != domain.MemoryPersonal || ownerIM.MemoryPolicy != domain.MemoryPersonal || publicIM.MemoryPolicy != domain.MemoryPublic {
 		t.Fatalf("memory policies = %q/%q/%q", desktop.MemoryPolicy, ownerIM.MemoryPolicy, publicIM.MemoryPolicy)
 	}
 	if desktop.PresenceProjection != presencePrivateCompanion || ownerIM.PresenceProjection != presencePrivateCompanion {
@@ -61,6 +63,9 @@ func TestInteractionPresentationAndMemoryAreIndependent(t *testing.T) {
 	}
 	if !strings.Contains(desktop.PresenceGuidance, "private owner interaction") || !strings.Contains(publicIM.PresenceGuidance, "public social setting") {
 		t.Fatalf("presence guidance private=%q public=%q", desktop.PresenceGuidance, publicIM.PresenceGuidance)
+	}
+	if !strings.Contains(desktop.MemoryVisibilityHint, "public social history") || !strings.Contains(publicIM.MemoryVisibilityHint, "this group") {
+		t.Fatalf("memory visibility hints private=%q public=%q", desktop.MemoryVisibilityHint, publicIM.MemoryVisibilityHint)
 	}
 }
 
@@ -158,18 +163,18 @@ func assertPrivateNameProjection(t *testing.T, public, personal []model.PromptIt
 	t.Fatal("personal prompt lost profile")
 }
 
-func desktopResolved() interaction.Resolved {
-	return interaction.Resolved{Endpoint: interaction.EndpointDesktop, Facts: interaction.Facts{Audience: interaction.AudienceSingle, Initiation: interaction.InitiationDirect, Presentation: interaction.PresentationEmbodied}, Principal: interaction.PrincipalOwner, Memory: interaction.MemoryPersonal}
+func desktopResolved() domain.Resolved {
+	return domain.Resolved{Endpoint: contracts.EndpointDesktop, Facts: contracts.Facts{Audience: contracts.AudienceSingle, Initiation: contracts.InitiationDirect, Presentation: contracts.PresentationEmbodied}, Principal: domain.PrincipalOwner, Memory: domain.MemoryPersonal}
 }
 
-func ownerIMResolved() interaction.Resolved {
-	return interaction.Resolved{Endpoint: interaction.EndpointIM, Facts: interaction.Facts{Audience: interaction.AudienceSingle, Initiation: interaction.InitiationDirect, Presentation: interaction.PresentationChat, PrincipalNamespace: "qq.onebot", PrincipalDigest: strings.Repeat("a", 64)}, Principal: interaction.PrincipalOwner, Memory: interaction.MemoryPersonal}
+func ownerIMResolved() domain.Resolved {
+	return domain.Resolved{Endpoint: contracts.EndpointIM, Facts: contracts.Facts{Audience: contracts.AudienceSingle, Initiation: contracts.InitiationDirect, Presentation: contracts.PresentationChat, PrincipalNamespace: "qq.onebot", PrincipalDigest: strings.Repeat("a", 64)}, Principal: domain.PrincipalOwner, Memory: domain.MemoryPersonal}
 }
 
-func publicAmbientBinding() interaction.Binding {
-	return interaction.Binding{Endpoint: interaction.EndpointIM, Facts: interaction.Facts{Audience: interaction.AudienceMulti, Initiation: interaction.InitiationAmbient, Presentation: interaction.PresentationChat}}
+func publicAmbientBinding() contracts.Binding {
+	return contracts.Binding{Endpoint: contracts.EndpointIM, Facts: contracts.Facts{Audience: contracts.AudienceMulti, Initiation: contracts.InitiationAmbient, Presentation: contracts.PresentationChat}}
 }
 
-func publicAmbientResolved() interaction.Resolved {
-	return interaction.Resolved{Endpoint: interaction.EndpointIM, Facts: publicAmbientBinding().Facts, Principal: interaction.PrincipalNone, Memory: interaction.MemoryPublic}
+func publicAmbientResolved() domain.Resolved {
+	return domain.Resolved{Endpoint: contracts.EndpointIM, Facts: publicAmbientBinding().Facts, Principal: domain.PrincipalNone, Memory: domain.MemoryPublic}
 }

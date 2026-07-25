@@ -2,17 +2,56 @@ package companion
 
 import (
 	"errors"
-	"fmt"
 	"strings"
+	"time"
+
+	"fairy/internal/app/reply"
 )
 
-var ErrRespondRuntimeNotMigrated = errors.New("companion respond runtime is not migrated to Go")
+type (
+	VisualState            = reply.VisualState
+	ReplyChain             = reply.ReplyChain
+	CompiledReply          = reply.CompiledReply
+	SpeechSynthesisRequest = reply.SpeechSynthesisRequest
+	SpeechSynthesisResult  = reply.SpeechSynthesisResult
+	SpeechSynthesizer      = reply.SpeechSynthesizer
+	BeatReadyCompletion    = reply.BeatReadyCompletion
+)
 
-type ReplyChain struct {
-	Text        string `json:"text"`
-	SpeechText  string `json:"speechText"`
-	VisualState string `json:"visualState"`
+var (
+	CompileReply        = reply.CompileReply
+	ValidateReplyChains = reply.ValidateReplyChains
+)
+
+func validateAvailableVisualStates(states []VisualState) error {
+	return reply.ValidateAvailableVisualStates(states)
 }
+
+func compiledReplyFromChains(chains []ReplyChain) (CompiledReply, error) {
+	return reply.CompiledReplyFromChains(chains)
+}
+
+func fillSameLanguageSpeech(compiled CompiledReply) (CompiledReply, error) {
+	return reply.FillSameLanguageSpeech(compiled)
+}
+
+func applyTranslatedSpeech(compiled CompiledReply, speech string) (CompiledReply, error) {
+	return reply.ApplyTranslatedSpeech(compiled, speech)
+}
+
+func sanitizeDisplayText(value string) string { return reply.SanitizeDisplayText(value) }
+func sanitizeSpeechText(value string) string  { return reply.SanitizeSpeechText(value) }
+func validateSpeech(value string) error       { return reply.ValidateSpeech(value) }
+
+func speechExceedsSoftLimit(value string) bool {
+	return reply.SpeechExceedsSoftLimit(value)
+}
+
+func targetReplyInterval(previous, current string) time.Duration {
+	return reply.TargetInterval(previous, current)
+}
+
+var ErrRespondRuntimeNotMigrated = errors.New("companion respond runtime is not migrated to Go")
 
 type SubmitTurnRequest struct {
 	ConversationID      string       `json:"conversationId"`
@@ -26,16 +65,32 @@ type SubmitTurnRequest struct {
 }
 
 type SubmitCompiledTurnRequest struct {
-	ConversationID        string        `json:"conversationId"`
-	Input                 string        `json:"input"`
-	SpeechEnabled         bool          `json:"speechEnabled"`
-	MaxOutputTokens       uint32        `json:"maxOutputTokens"`
-	AvailableVisualStates []VisualState `json:"availableVisualStates"`
-	TraceID               string        `json:"-"`
-	MessageSource         string        `json:"-"`
-	ReplyIntent           *ReplyIntent  `json:"-"`
-	RecentTargetReply     string        `json:"-"`
-	PersonNoteSenderIDs   []string      `json:"-"`
+	ConversationID        string                    `json:"conversationId"`
+	Input                 string                    `json:"input"`
+	SpeechEnabled         bool                      `json:"speechEnabled"`
+	MaxOutputTokens       uint32                    `json:"maxOutputTokens"`
+	AvailableVisualStates []VisualState             `json:"availableVisualStates"`
+	TraceID               string                    `json:"-"`
+	MessageSource         string                    `json:"-"`
+	ReplyIntent           *ReplyIntent              `json:"-"`
+	RecentTargetReply     string                    `json:"-"`
+	PersonNoteSenderIDs   []string                  `json:"-"`
+	Initiation            *DesktopInitiationContext `json:"-"`
+}
+
+type DesktopInitiationContext struct {
+	ObservationEvidenceIDs []string
+	Trigger                string
+	Activity               string
+	Lifecycle              string
+}
+
+// DesktopInitiationRequest is Core-owned. It intentionally carries no user
+// dialogue text: the eventual persistence path must not fabricate a user turn.
+type DesktopInitiationRequest struct {
+	ConversationID         string   `json:"conversationId"`
+	ObservationEvidenceIDs []string `json:"-"`
+	SpeechEnabled          bool     `json:"speechEnabled"`
 }
 
 type TurnOutcome struct {
@@ -50,22 +105,6 @@ type TurnOutcome struct {
 	MigrationMessage string       `json:"migrationMessage"`
 }
 
-type SpeechSynthesisRequest struct {
-	Text      string
-	SpeakerID string
-}
-
-type SpeechSynthesisResult struct {
-	SpeakerID string
-	MimeType  string
-	Format    string
-	DataURL   string
-}
-
-type SpeechSynthesizer interface {
-	SynthesizeSpeech(request SpeechSynthesisRequest) (SpeechSynthesisResult, error)
-}
-
 func ValidateSubmitTurnRequest(request SubmitTurnRequest) error {
 	if strings.TrimSpace(request.ConversationID) == "" {
 		return errors.New("conversation_id is required")
@@ -76,12 +115,34 @@ func ValidateSubmitTurnRequest(request SubmitTurnRequest) error {
 	return nil
 }
 
+func validateDesktopInitiationContext(context DesktopInitiationContext) error {
+	if strings.TrimSpace(context.Trigger) == "" {
+		return errors.New("desktop initiation trigger is required")
+	}
+	if len(context.ObservationEvidenceIDs) == 0 || len(context.ObservationEvidenceIDs) > 8 {
+		return errors.New("desktop initiation evidence count is invalid")
+	}
+	for _, id := range context.ObservationEvidenceIDs {
+		if strings.TrimSpace(id) == "" {
+			return errors.New("desktop initiation evidence id is invalid")
+		}
+	}
+	return nil
+}
+
 func ValidateSubmitCompiledTurnRequest(request SubmitCompiledTurnRequest) error {
 	if strings.TrimSpace(request.ConversationID) == "" {
 		return errors.New("conversation_id is required")
 	}
-	if strings.TrimSpace(request.Input) == "" {
-		return errors.New("companion input is required")
+	hasInput := strings.TrimSpace(request.Input) != ""
+	hasInitiation := request.Initiation != nil
+	if hasInput == hasInitiation {
+		return errors.New("compiled turn requires exactly one of input or initiation context")
+	}
+	if hasInitiation {
+		if err := validateDesktopInitiationContext(*request.Initiation); err != nil {
+			return err
+		}
 	}
 	if request.MaxOutputTokens == 0 {
 		return errors.New("max_output_tokens is required")
@@ -89,19 +150,16 @@ func ValidateSubmitCompiledTurnRequest(request SubmitCompiledTurnRequest) error 
 	return validateAvailableVisualStates(request.AvailableVisualStates)
 }
 
-func ValidateReplyChains(chains []ReplyChain) error {
-	if len(chains) == 0 {
-		return errors.New("reply chains must contain at least one chain")
+func ValidateDesktopInitiationRequest(request DesktopInitiationRequest) error {
+	if strings.TrimSpace(request.ConversationID) == "" {
+		return errors.New("conversation_id is required")
 	}
-	if len(chains) > maxReplyChains {
-		return fmt.Errorf("reply chains must contain at most %d chains", maxReplyChains)
+	if len(request.ObservationEvidenceIDs) == 0 || len(request.ObservationEvidenceIDs) > 8 {
+		return errors.New("desktop initiation evidence count is invalid")
 	}
-	for i, chain := range chains {
-		if strings.TrimSpace(chain.Text) == "" {
-			return fmt.Errorf("reply chain %d text is required", i)
-		}
-		if strings.TrimSpace(chain.VisualState) == "" {
-			return fmt.Errorf("reply chain %d visual_state is required", i)
+	for _, id := range request.ObservationEvidenceIDs {
+		if strings.TrimSpace(id) == "" {
+			return errors.New("desktop initiation evidence id is invalid")
 		}
 	}
 	return nil

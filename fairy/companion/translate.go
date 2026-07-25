@@ -140,6 +140,8 @@ func (s *CompanionService) translateDisplayText(
 	if err != nil {
 		return "", err
 	}
+	cacheInput := model.NewCacheKeyInput(model.PromptLaneTranslate, connectionModel, conversationID, TranslateInstructions)
+	cacheInput.CharacterRevision = record.Revision
 	request := model.CompiledPromptRequest{
 		Shape: model.ModelRequestShape{
 			Lane:            model.PromptLaneTranslate,
@@ -148,7 +150,8 @@ func (s *CompanionService) translateDisplayText(
 			MaxOutputTokens: TranslateMaxOutputTokens,
 			PromptCacheKey:  model.LaneCacheKey(conversationID, model.PromptLaneTranslate),
 		},
-		Input: input,
+		Input:      input,
+		CacheInput: &cacheInput,
 	}
 	events, err := s.model.ExecuteRequestContext(ctx, request)
 	if err != nil {

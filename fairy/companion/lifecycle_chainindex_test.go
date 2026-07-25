@@ -3,6 +3,8 @@ package companion
 import (
 	"encoding/json"
 	"testing"
+
+	"fairy/internal/app/reply"
 )
 
 func TestSpeechSynthesizedCarriesChainIndexAndPlaybackIndex(t *testing.T) {
@@ -20,7 +22,7 @@ func TestSpeechSynthesizedCarriesChainIndexAndPlaybackIndex(t *testing.T) {
 	// Utterance audio: playback index 0, chainIndex -1.
 	event, err := life.SpeechSynthesized(SpeechSynthesisCompletion{
 		Index:      0,
-		ChainIndex: chainIndexUtterance,
+		ChainIndex: reply.ChainIndexUtterance,
 		Text:       "让我看看",
 		Result:     SpeechSynthesisResult{SpeakerID: "spk", MimeType: "audio/mpeg", Format: "mp3", DataURL: "data:audio/mpeg;base64,AA"},
 	})

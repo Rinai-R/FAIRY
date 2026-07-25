@@ -14,11 +14,12 @@ import (
 
 	"fairy/character"
 	"fairy/coreclient"
-	"fairy/interaction"
 	fairyruntime "fairy/runtime"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
+
+	contracts "fairy/contracts/interaction"
 )
 
 func TestEndpointSessionIsolatesKeysAndPersistsNoRawKeyIntegration(t *testing.T) {
@@ -42,24 +43,21 @@ func TestEndpointSessionIsolatesKeysAndPersistsNoRawKeyIntegration(t *testing.T)
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = rt.Close() })
-	baseURL := startProductionAPIServer(t, rt)
-	assetResponse, err := http.Get(baseURL + "/v1/visual-assets/fairy.endpoint/idle.png")
-	if err != nil {
-		t.Fatal(err)
-	}
+	baseURL, token := startProductionAPIServer(t, rt)
+	assetResponse := doRequest(t, http.MethodGet, baseURL+"/v1/visual-assets/fairy.endpoint/idle.png", token)
 	assetBytes, err := io.ReadAll(assetResponse.Body)
 	assetResponse.Body.Close()
 	if err != nil || assetResponse.StatusCode != http.StatusOK || string(assetBytes) != "png" {
 		t.Fatalf("asset status=%d body=%q err=%v", assetResponse.StatusCode, assetBytes, err)
 	}
 
-	client, err := coreclient.New(coreclient.Options{Endpoint: baseURL})
+	client, err := coreclient.New(coreclient.Options{Endpoint: baseURL, Token: token})
 	if err != nil {
 		t.Fatal(err)
 	}
-	imContext := interaction.Context{Audience: interaction.AudienceMulti, Initiation: interaction.InitiationAmbient, Presentation: interaction.PresentationChat}
+	imContext := contracts.Context{Audience: contracts.AudienceMulti, Initiation: contracts.InitiationAmbient, Presentation: contracts.PresentationChat}
 	open := func(key string) coreclient.OpenSessionResponse {
-		result, err := client.OpenSession(context.Background(), coreclient.OpenSessionRequest{Endpoint: interaction.EndpointIM, EndpointKey: key, Interaction: imContext})
+		result, err := client.OpenSession(context.Background(), coreclient.OpenSessionRequest{Endpoint: contracts.EndpointIM, EndpointKey: key, Interaction: imContext})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -72,8 +70,8 @@ func TestEndpointSessionIsolatesKeysAndPersistsNoRawKeyIntegration(t *testing.T)
 		t.Fatalf("conversation bindings = %#v %#v %#v", groupA, groupA2, groupB)
 	}
 	desktop, err := client.OpenSession(context.Background(), coreclient.OpenSessionRequest{
-		Endpoint: interaction.EndpointDesktop, EndpointKey: "desktop-installation",
-		Interaction: interaction.Context{Audience: interaction.AudienceSingle, Initiation: interaction.InitiationDirect, Presentation: interaction.PresentationEmbodied},
+		Endpoint: contracts.EndpointDesktop, EndpointKey: "desktop-installation",
+		Interaction: contracts.Context{Audience: contracts.AudienceSingle, Initiation: contracts.InitiationDirect, Presentation: contracts.PresentationEmbodied},
 	})
 	if err != nil || desktop.ConversationID == groupA.ConversationID || desktop.ConversationID == groupB.ConversationID {
 		t.Fatalf("desktop binding = %#v, %v", desktop, err)

@@ -4,6 +4,7 @@ package companion
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -15,7 +16,7 @@ import (
 
 	"fairy/character"
 	"fairy/config"
-	"fairy/interaction"
+	"fairy/internal/app/reply"
 	"fairy/memory"
 	"fairy/model"
 	pgstore "fairy/postgres"
@@ -25,6 +26,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	contracts "fairy/contracts/interaction"
+	obs "fairy/contracts/observation"
+	appobs "fairy/internal/app/observation"
 )
 
 var (
@@ -60,6 +65,35 @@ type retryingReplyIntegrationModel struct {
 	requests []model.CompiledPromptRequest
 }
 
+type retryingPublicShapeIntegrationModel struct {
+	mu       sync.Mutex
+	requests []model.CompiledPromptRequest
+}
+
+func (m *retryingPublicShapeIntegrationModel) ExecuteRequestContext(_ context.Context, request model.CompiledPromptRequest) ([]model.StreamEvent, error) {
+	m.mu.Lock()
+	m.requests = append(m.requests, request)
+	call := len(m.requests)
+	m.mu.Unlock()
+	if call == 1 {
+		return companionIntegrationModel{chains: []ReplyChain{
+			{VisualState: "idle", Text: "第一拍"},
+			{VisualState: "idle", Text: "违规第二拍"},
+		}}.ExecuteRequestContext(context.Background(), request)
+	}
+	return companionIntegrationModel{chains: []ReplyChain{{VisualState: "idle", Text: "重试后的即时接话。"}}}.ExecuteRequestContext(context.Background(), request)
+}
+
+func (m *retryingPublicShapeIntegrationModel) ExecutePrompt(model.PromptLane, string, uint32, []model.PromptItem, string) ([]model.StreamEvent, error) {
+	return []model.StreamEvent{{Type: "text_delta", Data: "摘要"}}, nil
+}
+
+func (m *retryingPublicShapeIntegrationModel) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.requests)
+}
+
 func (m *retryingReplyIntegrationModel) ExecuteRequestContext(_ context.Context, request model.CompiledPromptRequest) ([]model.StreamEvent, error) {
 	m.mu.Lock()
 	m.requests = append(m.requests, request)
@@ -93,6 +127,9 @@ func (m *capturingIntegrationModel) ExecuteRequestContext(_ context.Context, req
 	m.mu.Lock()
 	m.request = request
 	m.mu.Unlock()
+	if request.Shape.Lane == model.PromptLaneCompact {
+		return []model.StreamEvent{{Type: "text_delta", Data: "群聊摘要"}, {Type: "usage", Usage: &model.Usage{PromptTokens: 2, CompletionTokens: 1}}}, nil
+	}
 	return companionIntegrationModel{chains: []ReplyChain{{VisualState: "idle", Text: "群聊回复。"}}}.ExecuteRequestContext(context.Background(), request)
 }
 
@@ -132,6 +169,18 @@ func (companionIntegrationConfig) ModelConnection() (config.ModelConnection, err
 
 func (companionIntegrationConfig) WebSearchSettings() (config.WebSearchSettings, error) {
 	return config.WebSearchSettings{SchemaVersion: 1, Enabled: false}, nil
+}
+
+type cacheEnabledCompanionIntegrationConfig struct{ companionIntegrationConfig }
+
+func (cacheEnabledCompanionIntegrationConfig) ModelConnection() (config.ModelConnection, error) {
+	connection, err := (companionIntegrationConfig{}).ModelConnection()
+	if err != nil {
+		return config.ModelConnection{}, err
+	}
+	connection.Protocol = "responses"
+	connection.Capabilities.PromptCacheKey = true
+	return connection, nil
 }
 
 type groupWebIntegrationConfig struct{ companionIntegrationConfig }
@@ -178,11 +227,11 @@ type terminalFailureMemory struct {
 
 func mustBindDesktopInteraction(t *testing.T, service *CompanionService, conversationID string) {
 	t.Helper()
-	err := service.BindInteraction(conversationID, interaction.Binding{
-		Endpoint: interaction.EndpointDesktop,
-		Facts: interaction.Facts{
-			Audience: interaction.AudienceSingle, Initiation: interaction.InitiationDirect,
-			Presentation: interaction.PresentationEmbodied,
+	err := service.BindInteraction(conversationID, contracts.Binding{
+		Endpoint: contracts.EndpointDesktop,
+		Facts: contracts.Facts{
+			Audience: contracts.AudienceSingle, Initiation: contracts.InitiationDirect,
+			Presentation: contracts.PresentationEmbodied,
 		},
 	})
 	if err != nil {
@@ -256,6 +305,163 @@ func TestPostgresCompanionMultiBeatCompletesWithPacing(t *testing.T) {
 	}
 }
 
+func TestPostgresDesktopInitiationUsesContextWithoutFabricatedUserMessage(t *testing.T) {
+	store, pool, cleanup := openCompanionIntegrationStore(t)
+	defer cleanup()
+	bootstrap, err := store.OpenOrCreateCharacterConversation("character-initiation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &capturingIntegrationModel{}
+	service := newCompanionIntegrationService(store, "character-initiation", provider)
+	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
+
+	now := time.Now()
+	observation := DesktopObservation{
+		ObservationID: "obs-1", TimestampUnixMS: now.UnixMilli(), Trigger: obs.DesktopTriggerLifecycle,
+		Activity: obs.DesktopActivityIdle, Lifecycle: obs.DesktopLifecycleReturned, Privacy: obs.DesktopPrivacyNormal,
+	}
+	if err := service.desktopEvidence.Accept(observation, now); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := service.SubmitDesktopInitiation(DesktopInitiationRequest{
+		ConversationID: bootstrap.Conversation.ID, ObservationEvidenceIDs: []string{"obs-1"},
+	}, observation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := store.LoadConversation(bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Messages) != 1 || reloaded.Messages[0].Role != "assistant" || reloaded.Messages[0].Content != outcome.ResponseText {
+		t.Fatalf("messages = %#v", reloaded.Messages)
+	}
+	var origin, extractionState string
+	if err := pool.QueryRow(context.Background(), "SELECT origin, extraction_state FROM conversation_turns WHERE id = $1", outcome.TurnID).Scan(&origin, &extractionState); err != nil {
+		t.Fatal(err)
+	}
+	if origin != "desktop_initiation" || extractionState != "ineligible" {
+		t.Fatalf("origin=%q extraction=%q", origin, extractionState)
+	}
+
+	provider.mu.Lock()
+	request := provider.request
+	provider.mu.Unlock()
+	foundInitiation := false
+	for _, item := range request.Input {
+		if item.Type == model.PromptItemUserMessage {
+			t.Fatalf("fabricated user message in model input: %#v", request.Input)
+		}
+		if item.Type == model.PromptItemContextData && strings.Contains(item.Content, `"contextType":"desktop_initiation"`) {
+			foundInitiation = true
+			if strings.Contains(item.Content, "obs-1") {
+				t.Fatalf("evidence ID leaked to model input: %s", item.Content)
+			}
+		}
+	}
+	if !foundInitiation {
+		t.Fatalf("desktop initiation context missing: %#v", request.Input)
+	}
+}
+
+func TestPostgresDesktopObservationGraphSchedulesInitiation(t *testing.T) {
+	store, pool, cleanup := openCompanionIntegrationStore(t)
+	defer cleanup()
+	bootstrap, err := store.OpenOrCreateCharacterConversation("character-observation-graph")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := newCompanionIntegrationService(store, "character-observation-graph", &capturingIntegrationModel{})
+	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
+	completed := make(chan TurnEvent, 1)
+	AttachEventEmitter(service, func(event TurnEvent) {
+		if event.State == TurnStateCompleted {
+			select {
+			case completed <- event:
+			default:
+			}
+		}
+	})
+
+	now := time.Now()
+	plan, err := service.ObserveDesktop(bootstrap.Conversation.ID, DesktopObservation{
+		ObservationID: "obs-graph", TimestampUnixMS: now.UnixMilli(), Trigger: obs.DesktopTriggerLifecycle,
+		Activity: obs.DesktopActivityIdle, Lifecycle: obs.DesktopLifecycleReturned, Privacy: obs.DesktopPrivacyNormal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Action != appobs.DesktopActionInitiate {
+		t.Fatalf("plan action = %q", plan.Action)
+	}
+	foundInitiate := false
+	for _, diagnostic := range plan.Diagnostics {
+		if diagnostic.Node == "initiate" && diagnostic.Status == "completed" {
+			foundInitiate = true
+		}
+	}
+	if !foundInitiate {
+		t.Fatalf("initiate diagnostic missing: %#v", plan.Diagnostics)
+	}
+
+	var event TurnEvent
+	select {
+	case event = <-completed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("desktop initiation did not complete")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for service.backgroundJobs.Load() != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if service.backgroundJobs.Load() != 0 {
+		t.Fatal("desktop initiation background job did not finish")
+	}
+	var origin string
+	if err := pool.QueryRow(context.Background(), "SELECT origin FROM conversation_turns WHERE id = $1", event.TurnID).Scan(&origin); err != nil {
+		t.Fatal(err)
+	}
+	if origin != "desktop_initiation" {
+		t.Fatalf("origin = %q", origin)
+	}
+	reloaded, err := store.LoadConversation(bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Messages) != 1 || reloaded.Messages[0].Role != "assistant" {
+		t.Fatalf("messages = %#v", reloaded.Messages)
+	}
+	ledger, err := store.ListTurnRuntimeEvents(bootstrap.Conversation.ID, event.TurnID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeEvents := 0
+	nodeNames := make(map[string]int)
+	for _, record := range ledger {
+		if record.EventType != runtimeLedgerEventNode {
+			continue
+		}
+		nodeEvents++
+		var metadata map[string]any
+		if err := json.Unmarshal([]byte(record.MetadataJSON), &metadata); err != nil {
+			t.Fatal(err)
+		}
+		if len(metadata) != 3 || metadata["node"] == nil || metadata["kind"] == nil || metadata["status"] == nil {
+			t.Fatalf("node metadata = %#v", metadata)
+		}
+		nodeNames[metadata["node"].(string)]++
+	}
+	if nodeEvents != 10 {
+		t.Fatalf("node event count = %d, want 10", nodeEvents)
+	}
+	for _, node := range []string{"interpreting", "gathering", "planning", "responding", "persist"} {
+		if nodeNames[node] != 2 {
+			t.Fatalf("node %q events = %d, all = %#v", node, nodeNames[node], nodeNames)
+		}
+	}
+}
+
 func TestPostgresCompanionRetriesOneInvalidReplyWithoutDuplicatingTurn(t *testing.T) {
 	store, _, cleanup := openCompanionIntegrationStore(t)
 	defer cleanup()
@@ -300,6 +506,41 @@ func TestPostgresCompanionRetriesOneInvalidReplyWithoutDuplicatingTurn(t *testin
 	}
 }
 
+func TestPostgresCompanionRegeneratesInvalidPublicReplyShape(t *testing.T) {
+	store, _, cleanup := openCompanionIntegrationStore(t)
+	defer cleanup()
+	bootstrap, err := store.OpenOrCreateCharacterConversation("character-public-shape-retry")
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation: %v", err)
+	}
+	provider := &retryingPublicShapeIntegrationModel{}
+	service := newCompanionIntegrationService(store, "character-public-shape-retry", provider)
+	if err := service.BindInteraction(bootstrap.Conversation.ID, publicAmbientBinding()); err != nil {
+		t.Fatalf("BindInteraction: %v", err)
+	}
+	intent := &ReplyIntent{ReplyAct: "接话", Tone: "自然", RelationshipSignal: "群友", ReplyMode: "brief", Focus: "当前消息", ExpressionQuery: "自然接话"}
+	outcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+		ConversationID:        bootstrap.Conversation.ID,
+		Input:                 "刚才那件事有点焦虑",
+		ReplyIntent:           intent,
+		MaxOutputTokens:       160,
+		AvailableVisualStates: []VisualState{{ID: "idle", Description: "idle"}},
+	})
+	if err != nil {
+		t.Fatalf("SubmitCompiledTurn: %v", err)
+	}
+	if provider.callCount() != 2 || outcome.ResponseText != "重试后的即时接话。" {
+		t.Fatalf("calls=%d outcome=%#v", provider.callCount(), outcome)
+	}
+	reloaded, err := store.LoadConversation(bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Messages) != 2 || reloaded.Messages[1].Content != "重试后的即时接话。" {
+		t.Fatalf("messages=%#v", reloaded.Messages)
+	}
+}
+
 func TestPostgresCompanionCancelAfterFirstBeatPersistsPrefix(t *testing.T) {
 	store, pool, cleanup := openCompanionIntegrationStore(t)
 	defer cleanup()
@@ -320,7 +561,7 @@ func TestPostgresCompanionCancelAfterFirstBeatPersistsPrefix(t *testing.T) {
 		mu.Lock()
 		events = append(events, event)
 		mu.Unlock()
-		if payload, ok := event.Payload.(beatReadyPayload); ok && payload.Kind == beatKindFinal && payload.ChainIndex == 0 {
+		if payload, ok := event.Payload.(beatReadyPayload); ok && payload.Kind == reply.BeatKindFinal && payload.ChainIndex == 0 {
 			cancelErr = service.CancelTurn(event.ConversationID, event.TurnID)
 		}
 	})
@@ -443,6 +684,7 @@ func TestPostgresGroupTurnExcludesPrivateMemoryJobsAndKeepsCompaction(t *testing
 	before := groupPrivacyJobCounts(t, pool)
 	provider := &capturingIntegrationModel{}
 	service := newCompanionIntegrationService(store, characterID, provider)
+	AttachConfigSource(service, cacheEnabledCompanionIntegrationConfig{})
 	AttachProfileSource(service, rejectingGroupProfile{})
 	if err := service.BindInteraction(bootstrap.Conversation.ID, publicAmbientBinding()); err != nil {
 		t.Fatalf("BindInteraction: %v", err)
@@ -458,13 +700,17 @@ func TestPostgresGroupTurnExcludesPrivateMemoryJobsAndKeepsCompaction(t *testing
 	provider.mu.Lock()
 	request := provider.request
 	provider.mu.Unlock()
+	toolNames := make(map[string]bool, len(request.Tools))
 	for _, tool := range request.Tools {
+		toolNames[tool.Name] = true
 		if tool.Name == toolMemorySearch {
 			t.Fatalf("group request exposes %q: %#v", toolMemorySearch, request.Tools)
 		}
 	}
-	if len(request.Tools) != 1 || request.Tools[0].Name != toolPublicMemorySearch {
-		t.Fatalf("group request tools = %#v, want public memory only", request.Tools)
+	for _, name := range []string{toolPublicMemorySearch, toolSocialContextSearch, toolSocialExpressionSelect} {
+		if !toolNames[name] {
+			t.Fatalf("group request tools = %#v, missing %q", request.Tools, name)
+		}
 	}
 	for _, item := range request.Input {
 		if strings.Contains(item.Content, privateFixture) {
@@ -478,6 +724,15 @@ func TestPostgresGroupTurnExcludesPrivateMemoryJobsAndKeepsCompaction(t *testing
 	if err != nil {
 		t.Fatalf("CompactConversation(group): %v", err)
 	}
+	provider.mu.Lock()
+	compactRequest := provider.request
+	provider.mu.Unlock()
+	if compactRequest.Shape.Lane != model.PromptLaneCompact || compactRequest.CacheInput == nil || compactRequest.CacheInput.Lane != model.PromptLaneCompact {
+		t.Fatalf("compact cache identity = shape:%q input:%#v", compactRequest.Shape.Lane, compactRequest.CacheInput)
+	}
+	if want := model.LaneCacheKey(bootstrap.Conversation.ID, model.PromptLaneCompact); compactRequest.Shape.PromptCacheKey != want {
+		t.Fatalf("compact compatibility cache key = %q, want %q", compactRequest.Shape.PromptCacheKey, want)
+	}
 	if result.WindowRevision < 2 || result.RetainedDialogueItems == 0 {
 		t.Fatalf("group compaction result = %#v", result)
 	}
@@ -487,6 +742,135 @@ func TestPostgresGroupTurnExcludesPrivateMemoryJobsAndKeepsCompaction(t *testing
 	}
 	if reloaded.PromptWindow.Summary == nil || *reloaded.PromptWindow.Summary != "群聊摘要" || reloaded.PromptWindow.CutoffMessageSequence == 0 {
 		t.Fatalf("group prompt window after compaction = %#v", reloaded.PromptWindow)
+	}
+}
+
+func TestPostgresPrivateTurnSeesCrossGroupSocialMemoryButPublicTurnDoesNot(t *testing.T) {
+	store, _, cleanup := openCompanionIntegrationStore(t)
+	defer cleanup()
+	const characterID = "character-cross-group-memory"
+	privateConversation, err := store.OpenOrCreateCharacterConversation(characterID)
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation: %v", err)
+	}
+	groupConversation, err := store.OpenOrCreateEndpointConversation(characterID, publicAmbientBinding(), strings.Repeat("b", 64))
+	if err != nil {
+		t.Fatalf("OpenOrCreateEndpointConversation: %v", err)
+	}
+	if _, err := store.StoreSocialMemoryEntries(context.Background(), memory.SocialMemoryBatchInput{
+		CharacterID: characterID, ConversationID: groupConversation.Conversation.ID,
+		Entries: []memory.SocialMemoryEntryInput{{
+			Kind: memory.SocialMemoryEpisode, Situation: "群里讨论实习焦虑", Content: "大家先听完项目经历再给建议", RecallCue: "实习焦虑 项目经历",
+			SourceStartUnixMS: 10, SourceEndUnixMS: 20,
+		}},
+	}); err != nil {
+		t.Fatalf("StoreSocialMemoryEntries: %v", err)
+	}
+
+	privateProvider := &capturingIntegrationModel{}
+	privateService := newCompanionIntegrationService(store, characterID, privateProvider)
+	mustBindDesktopInteraction(t, privateService, privateConversation.Conversation.ID)
+	if _, err := privateService.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+		ConversationID: privateConversation.Conversation.ID, Input: "我最近有点实习焦虑", MaxOutputTokens: 160,
+		AvailableVisualStates: []VisualState{{ID: "idle", Description: "idle"}},
+	}); err != nil {
+		t.Fatalf("private SubmitCompiledTurn: %v", err)
+	}
+	privateProvider.mu.Lock()
+	privateRequest := privateProvider.request
+	privateProvider.mu.Unlock()
+	if !compiledPromptContains(privateRequest, "大家先听完项目经历再给建议") {
+		t.Fatal("private prompt did not include cross-group social memory")
+	}
+
+	publicProvider := &capturingIntegrationModel{}
+	publicService := newCompanionIntegrationService(store, characterID, publicProvider)
+	if err := publicService.BindInteraction(groupConversation.Conversation.ID, publicAmbientBinding()); err != nil {
+		t.Fatalf("BindInteraction(public): %v", err)
+	}
+	if _, err := publicService.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+		ConversationID: groupConversation.Conversation.ID, Input: "大家好", MaxOutputTokens: 160,
+		AvailableVisualStates: []VisualState{{ID: "idle", Description: "idle"}},
+	}); err != nil {
+		t.Fatalf("public SubmitCompiledTurn: %v", err)
+	}
+	publicProvider.mu.Lock()
+	publicRequest := publicProvider.request
+	publicProvider.mu.Unlock()
+	if compiledPromptContains(publicRequest, "大家先听完项目经历再给建议") {
+		t.Fatal("public prompt leaked cross-group social memory")
+	}
+}
+
+func TestPostgresPublicTurnNaturalSocialQueryStaysInCurrentConversation(t *testing.T) {
+	store, _, cleanup := openCompanionIntegrationStore(t)
+	defer cleanup()
+	const characterID = "character-public-natural-social"
+	current, err := store.OpenOrCreateEndpointConversation(characterID, publicAmbientBinding(), strings.Repeat("c", 64))
+	if err != nil {
+		t.Fatalf("OpenOrCreateEndpointConversation(current): %v", err)
+	}
+	other, err := store.OpenOrCreateEndpointConversation(characterID, publicAmbientBinding(), strings.Repeat("d", 64))
+	if err != nil {
+		t.Fatalf("OpenOrCreateEndpointConversation(other): %v", err)
+	}
+	const currentFixture = "当前群的项目经历线索-9ac1"
+	const otherFixture = "另一个群的项目经历线索-4de7"
+	const privateFixture = "私人记忆绝不进入公共提示-78be"
+	for _, fixture := range []struct {
+		conversationID string
+		content        string
+	}{
+		{conversationID: current.Conversation.ID, content: currentFixture},
+		{conversationID: other.Conversation.ID, content: otherFixture},
+	} {
+		if _, err := store.StoreSocialMemoryEntries(context.Background(), memory.SocialMemoryBatchInput{
+			CharacterID: characterID, ConversationID: fixture.conversationID,
+			Entries: []memory.SocialMemoryEntryInput{{
+				Kind: memory.SocialMemoryEpisode, Situation: "群里聊实习和项目经历", Content: fixture.content, RecallCue: "实习焦虑 项目经历",
+				SourceStartUnixMS: 10, SourceEndUnixMS: 20,
+			}},
+		}); err != nil {
+			t.Fatalf("StoreSocialMemoryEntries(%s): %v", fixture.conversationID, err)
+		}
+	}
+	privateConversation, err := store.OpenOrCreateCharacterConversation(characterID)
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation(private fixture): %v", err)
+	}
+	privateTurn, err := store.BeginTurn(privateConversation.Conversation.ID, "私人上下文")
+	if err != nil {
+		t.Fatalf("BeginTurn(private fixture): %v", err)
+	}
+	if _, err := store.CompleteTurn(privateConversation.Conversation.ID, privateTurn.ID, "私人回复"); err != nil {
+		t.Fatalf("CompleteTurn(private fixture): %v", err)
+	}
+	if _, err := store.CreatePersonalMemory("preference", memory.MemoryScope{Type: "global"}, privateFixture, 9000); err != nil {
+		t.Fatalf("CreatePersonalMemory: %v", err)
+	}
+
+	provider := &capturingIntegrationModel{}
+	service := newCompanionIntegrationService(store, characterID, provider)
+	if err := service.BindInteraction(current.Conversation.ID, publicAmbientBinding()); err != nil {
+		t.Fatalf("BindInteraction: %v", err)
+	}
+	if _, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+		ConversationID: current.Conversation.ID, Input: "我最近有点实习焦虑", MaxOutputTokens: 160,
+		ReplyIntent:           &ReplyIntent{ReplyAct: "接话", Tone: "自然", RelationshipSignal: "群友", ReplyMode: "brief", Focus: "当前消息", MemoryQuery: "我最近有点实习焦虑", ExpressionQuery: "实习焦虑"},
+		AvailableVisualStates: []VisualState{{ID: "idle", Description: "idle"}},
+	}); err != nil {
+		t.Fatalf("SubmitCompiledTurn: %v", err)
+	}
+	provider.mu.Lock()
+	request := provider.request
+	provider.mu.Unlock()
+	if !compiledPromptContains(request, currentFixture) {
+		t.Fatal("public prompt did not include current-conversation social memory")
+	}
+	for _, forbidden := range []string{otherFixture, privateFixture} {
+		if compiledPromptContains(request, forbidden) {
+			t.Fatalf("public prompt leaked %q", forbidden)
+		}
 	}
 }
 
@@ -578,7 +962,7 @@ func newCompanionIntegrationService(memoryPort MemoryPort, characterID string, s
 func finalBeatEvents(events []TurnEvent) []beatReadyPayload {
 	result := make([]beatReadyPayload, 0)
 	for _, event := range events {
-		if payload, ok := event.Payload.(beatReadyPayload); ok && payload.Kind == beatKindFinal {
+		if payload, ok := event.Payload.(beatReadyPayload); ok && payload.Kind == reply.BeatKindFinal {
 			result = append(result, payload)
 		}
 	}

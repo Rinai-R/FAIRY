@@ -1,0 +1,174 @@
+package memory
+
+type AssistantSource struct {
+	Title           string `json:"title"`
+	URL             string `json:"url"`
+	Snippet         string `json:"snippet"`
+	Rank            uint8  `json:"rank"`
+	FetchedAtUnixMS int64  `json:"fetchedAtUnixMs"`
+}
+
+type KnowledgeRecord struct {
+	ID                    string            `json:"id"`
+	Topic                 string            `json:"topic"`
+	Statement             string            `json:"statement"`
+	Status                string            `json:"status"`
+	VerificationBasis     string            `json:"verificationBasis"`
+	ConfidenceBasisPoints uint16            `json:"confidenceBasisPoints"`
+	SourceConversationID  string            `json:"sourceConversationId"`
+	SourceTurnID          string            `json:"sourceTurnId"`
+	SupersedesID          *string           `json:"supersedesId"`
+	Sources               []AssistantSource `json:"sources"`
+	CreatedAtUnixMS       int64             `json:"createdAtUnixMs"`
+	UpdatedAtUnixMS       int64             `json:"updatedAtUnixMs"`
+}
+
+type KnowledgeCatalog struct {
+	Candidates []KnowledgeRecord `json:"candidates"`
+	Verified   []KnowledgeRecord `json:"verified"`
+}
+
+type WireError struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Retryable bool   `json:"retryable"`
+}
+
+type ExtractionBatchRecord struct {
+	ID                string     `json:"id"`
+	ConversationID    string     `json:"conversationId"`
+	CharacterID       string     `json:"characterId"`
+	Status            string     `json:"status"`
+	FirstTurnSequence uint64     `json:"firstTurnSequence"`
+	LastTurnSequence  uint64     `json:"lastTurnSequence"`
+	Error             *WireError `json:"error"`
+	CreatedAtUnixMS   int64      `json:"createdAtUnixMs"`
+	UpdatedAtUnixMS   int64      `json:"updatedAtUnixMs"`
+}
+
+type ExtractionBatchCatalog struct {
+	Running []ExtractionBatchRecord `json:"running"`
+	Failed  []ExtractionBatchRecord `json:"failed"`
+}
+
+type RetrievedKnowledge struct {
+	ID                    string            `json:"id"`
+	Layer                 string            `json:"layer"`
+	Topic                 string            `json:"topic"`
+	Statement             string            `json:"statement"`
+	VerificationBasis     string            `json:"verificationBasis"`
+	ConfidenceBasisPoints uint16            `json:"confidenceBasisPoints"`
+	Sources               []AssistantSource `json:"sources"`
+	UpdatedAtUnixMS       int64             `json:"updatedAtUnixMs"`
+}
+
+type RetrievalContext struct {
+	PersonalMemories []RetrievedPersonalMemory `json:"personalMemories"`
+	Knowledge        []RetrievedKnowledge      `json:"knowledge"`
+	SocialMemories   SocialMemoryContext       `json:"socialMemories,omitempty"`
+	// SemanticStatus is non-secret metadata for callers; empty means legacy FTS-only.
+	SemanticStatus string `json:"semanticStatus,omitempty"`
+}
+
+func (c RetrievalContext) Empty() bool {
+	return len(c.PersonalMemories) == 0 && len(c.Knowledge) == 0 && c.SocialMemories.Empty()
+}
+
+type SocialPersonNoteInput struct {
+	CharacterID    string
+	ConversationID string
+	SenderID       string
+	SenderName     string
+	Note           string
+}
+
+type SocialPersonNote struct {
+	ID              string
+	CharacterID     string
+	ConversationID  string
+	SenderID        string
+	SenderName      string
+	Note            string
+	UpdatedAtUnixMS int64
+}
+
+type TurnRuntimeEventInput struct {
+	ConversationID string  `json:"conversationId"`
+	TurnID         string  `json:"turnId"`
+	EventType      string  `json:"eventType"`
+	State          *string `json:"state,omitempty"`
+	Code           *string `json:"code,omitempty"`
+	MetadataJSON   string  `json:"metadataJson"`
+}
+
+type TurnRuntimeEventRecord struct {
+	ID              string  `json:"id"`
+	ConversationID  string  `json:"conversationId"`
+	TurnID          string  `json:"turnId"`
+	Sequence        uint64  `json:"sequence"`
+	EventType       string  `json:"eventType"`
+	State           *string `json:"state,omitempty"`
+	Code            *string `json:"code,omitempty"`
+	MetadataJSON    string  `json:"metadataJson"`
+	CreatedAtUnixMS int64   `json:"createdAtUnixMs"`
+}
+
+type LaneContinuationRecord struct {
+	ConversationID     string `json:"conversationId"`
+	Lane               string `json:"lane"`
+	PreviousResponseID string `json:"previousResponseId"`
+	RequestShapeHash   string `json:"requestShapeHash"`
+	InputPrefixHash    string `json:"inputPrefixHash"`
+	ResponseItemHash   string `json:"responseItemHash"`
+	WindowRevision     uint64 `json:"windowRevision"`
+	UpdatedAtUnixMS    int64  `json:"updatedAtUnixMs"`
+}
+
+type Summary struct {
+	Conversations           int64 `json:"conversations"`
+	ActiveGlobalMemories    int64 `json:"activeGlobalMemories"`
+	ActiveCharacterMemories int64 `json:"activeCharacterMemories"`
+	NeedsReviewMemories     int64 `json:"needsReviewMemories"`
+	PendingExtractionTurns  int64 `json:"pendingExtractionTurns"`
+	RunningBatches          int64 `json:"runningBatches"`
+	FailedBatches           int64 `json:"failedBatches"`
+	CandidateKnowledge      int64 `json:"candidateKnowledge"`
+	VerifiedKnowledge       int64 `json:"verifiedKnowledge"`
+	ReadOnly                bool  `json:"readOnly"`
+}
+
+type MessagePage struct {
+	Messages           []MessageRecord `json:"messages"`
+	NextBeforeSequence *uint64         `json:"nextBeforeSequence,omitempty"`
+}
+
+type KnowledgeIngestSnapshot struct {
+	ConversationID  string
+	TurnID          string
+	Query           string
+	Title           string
+	URL             string
+	Snippet         string
+	Rank            uint8
+	FetchedAtUnixMS int64
+}
+
+type EmbeddingJobMetrics struct {
+	Pending   int64 `json:"pending"`
+	Running   int64 `json:"running"`
+	Succeeded int64 `json:"succeeded"`
+	Failed    int64 `json:"failed"`
+	Embedded  int64 `json:"embeddedItems"`
+}
+
+type ReconciliationMetrics struct {
+	Observed      bool  `json:"observed"`
+	MissingPoints int64 `json:"missingPoints"`
+	StalePoints   int64 `json:"stalePoints"`
+	OrphanPoints  int64 `json:"orphanPoints"`
+}
+
+type VectorMetrics struct {
+	EmbeddingJobs  EmbeddingJobMetrics   `json:"embeddingJobs"`
+	Reconciliation ReconciliationMetrics `json:"reconciliation"`
+}

@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"fairy/identity"
-	"fairy/interaction"
 	pgstore "fairy/postgres"
 	"fairy/secret"
 )
@@ -52,7 +51,7 @@ func TestEndpointConversationIsolationAndImmutableFactsIntegration(t *testing.T)
 	}
 
 	mismatch := binding
-	mismatch.Facts.Presentation = interaction.PresentationEmbodied
+	mismatch.Facts.Presentation = contracts.PresentationEmbodied
 	if _, err := store.OpenOrCreateEndpointConversation("character-endpoint", mismatch, digestA); !errors.Is(err, ErrEndpointBindingMismatch) {
 		t.Fatalf("mismatched reopen error = %v", err)
 	}
@@ -140,7 +139,7 @@ func TestOwnerIdentityLifecycleDoesNotPersistRawSubjectIntegration(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal := interaction.PrincipalRef{Namespace: "qq.onebot", Subject: "raw-user-123456"}
+	principal := contracts.PrincipalRef{Namespace: "qq.onebot", Subject: "raw-user-123456"}
 	digest, err := cipher.DigestPrincipal(principal)
 	if err != nil {
 		t.Fatal(err)
@@ -185,12 +184,12 @@ SELECT
 	}
 }
 
-func multiIMBinding() interaction.Binding {
-	return interaction.Binding{
-		Endpoint: interaction.EndpointIM,
-		Facts: interaction.Facts{
-			Audience: interaction.AudienceMulti, Initiation: interaction.InitiationAmbient,
-			Presentation: interaction.PresentationChat,
+func multiIMBinding() contracts.Binding {
+	return contracts.Binding{
+		Endpoint: contracts.EndpointIM,
+		Facts: contracts.Facts{
+			Audience: contracts.AudienceMulti, Initiation: contracts.InitiationAmbient,
+			Presentation: contracts.PresentationChat,
 		},
 	}
 }

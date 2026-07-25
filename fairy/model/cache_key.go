@@ -19,7 +19,20 @@ type CacheKeyInput struct {
 	CharacterRevision uint64
 	ProfileRevision   uint64
 	PromptRevision    uint64
+	StablePromptHash  string
 	Seed              string
+}
+
+// NewCacheKeyInput identifies a lane's stable instructions without including
+// transcript, retrieval, feedback, tool results, or other dynamic input.
+func NewCacheKeyInput(lane PromptLane, modelName, conversationID, instructions string) CacheKeyInput {
+	digest := sha256.Sum256([]byte(instructions))
+	return CacheKeyInput{
+		Lane:             lane,
+		Model:            modelName,
+		ConversationID:   conversationID,
+		StablePromptHash: hex.EncodeToString(digest[:16]),
+	}
 }
 
 // BuildPromptCacheKey returns a deterministic, opaque key suitable for a
@@ -36,6 +49,7 @@ func BuildPromptCacheKey(input CacheKeyInput) (string, error) {
 		strconv.FormatUint(input.CharacterRevision, 10),
 		strconv.FormatUint(input.ProfileRevision, 10),
 		strconv.FormatUint(input.PromptRevision, 10),
+		input.StablePromptHash,
 		input.Seed,
 	}
 	var material strings.Builder
