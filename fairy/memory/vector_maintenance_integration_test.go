@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	vectorindex "fairy/internal/adapters/memory/qdrant"
 	"fairy/memory/semantic"
 	pgstore "fairy/postgres"
+	vectorindex "fairy/vectorindex"
 
 	"github.com/google/uuid"
 )

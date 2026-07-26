@@ -2,6 +2,8 @@ package companion
 
 import (
 	"testing"
+
+	"fairy/reply"
 )
 
 func TestValidateSubmitTurnRequestRejectsInvalidInput(t *testing.T) {
@@ -68,13 +70,13 @@ func TestValidateDesktopInitiationRequestRequiresEvidenceWithoutInput(t *testing
 }
 
 func TestValidateReplyChainsAcceptsMissingSpeechText(t *testing.T) {
-	if err := ValidateReplyChains([]ReplyChain{{Text: "我在。", VisualState: "idle"}}); err != nil {
+	if err := reply.ValidateReplyChains([]ReplyChain{{Text: "我在。", VisualState: "idle"}}); err != nil {
 		t.Fatalf("ValidateReplyChains() error = %v", err)
 	}
 }
 
 func TestValidateReplyChainsAcceptsStructuredChains(t *testing.T) {
-	err := ValidateReplyChains([]ReplyChain{
+	err := reply.ValidateReplyChains([]ReplyChain{
 		{Text: "你好", VisualState: "happy"},
 		{Text: "我在这里。", VisualState: "idle"},
 	})
@@ -109,7 +111,7 @@ func TestValidateReplyChainsRejectsInvalidChains(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := ValidateReplyChains(tt.chains); err == nil {
+			if err := reply.ValidateReplyChains(tt.chains); err == nil {
 				t.Fatal("ValidateReplyChains() error = nil, want error")
 			}
 		})

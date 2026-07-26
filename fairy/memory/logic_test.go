@@ -6,7 +6,7 @@ import (
 )
 
 func TestBuildFTSQueryUsesTrigramsAndRejectsShortRuns(t *testing.T) {
-	query, err := buildFTSQuery("太甜的饮料推荐")
+	query, err := BuildFTSQuery("太甜的饮料推荐")
 	if err != nil {
 		t.Fatalf("buildFTSQuery() error = %v", err)
 	}
@@ -15,7 +15,7 @@ func TestBuildFTSQueryUsesTrigramsAndRejectsShortRuns(t *testing.T) {
 			t.Fatalf("query = %q, missing %s", query, part)
 		}
 	}
-	empty, err := buildFTSQuery("饮料")
+	empty, err := BuildFTSQuery("饮料")
 	if err != nil {
 		t.Fatalf("short buildFTSQuery() error = %v", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"fairy/model"
+	"fairy/reply"
 )
 
 // streamPreviewAccumulator only releases a preview after the complete strict
@@ -23,7 +24,7 @@ func (a *streamPreviewAccumulator) Observe(event model.StreamEvent) (CompiledRep
 		return CompiledReply{}, false
 	}
 	a.text.WriteString(event.Data)
-	preview, err := CompileReply(a.text.String(), a.states)
+	preview, err := reply.CompileReply(a.text.String(), a.states)
 	if err != nil {
 		return CompiledReply{}, false
 	}

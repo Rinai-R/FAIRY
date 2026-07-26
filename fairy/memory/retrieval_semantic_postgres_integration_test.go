@@ -8,9 +8,9 @@ import (
 	"reflect"
 	"testing"
 
-	vectorindex "fairy/internal/adapters/memory/qdrant"
 	"fairy/memory/semantic"
 	pgstore "fairy/postgres"
+	vectorindex "fairy/vectorindex"
 )
 
 type failingSemanticIndex struct{}

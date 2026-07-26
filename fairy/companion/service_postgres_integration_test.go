@@ -16,11 +16,11 @@ import (
 
 	"fairy/character"
 	"fairy/config"
-	"fairy/internal/app/reply"
 	"fairy/memory"
 	"fairy/model"
 	pgstore "fairy/postgres"
 	"fairy/profile"
+	"fairy/reply"
 	"fairy/search"
 	"fairy/visual"
 
@@ -29,7 +29,7 @@ import (
 
 	contracts "fairy/contracts/interaction"
 	obs "fairy/contracts/observation"
-	appobs "fairy/internal/app/observation"
+	appobs "fairy/observation"
 )
 
 var (

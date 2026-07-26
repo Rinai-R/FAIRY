@@ -15,12 +15,23 @@ import (
 	"testing"
 	"time"
 
-	vectorindex "fairy/internal/adapters/memory/qdrant"
 	pgstore "fairy/postgres"
+	vectorindex "fairy/vectorindex"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+type staticSemanticIndex struct {
+	hits []vectorindex.SearchHit
+}
+
+func (s staticSemanticIndex) Ready(context.Context) error { return nil }
+
+func (s staticSemanticIndex) Search(context.Context, []float32, string, string, int) ([]vectorindex.SearchHit, error) {
+	return append([]vectorindex.SearchHit(nil), s.hits...), nil
+}
 
 func TestPostgresStoreSummaryUsesInjectedPool(t *testing.T) {
 	ctx := context.Background()
@@ -819,10 +830,16 @@ func TestPostgresPersonalMemoryContentLimitPreservesWritesAndRejectsOversizedHis
 	}
 	if _, err := pool.Raw().Exec(ctx, `
 INSERT INTO memory_embedding_items(id, item_kind, item_id, model_id, dimensions, point_id, content_hash, status, embedded_at_ms, created_at_ms, updated_at_ms)
-VALUES ($1, 'personal_memory', $2, $3, $4, $5, $6, 'embedded', 1, 1, 1)`, newID(), historyID, SemanticEmbeddingModelID, SemanticEmbeddingDimensions, pointID, semanticContentHash("历史超限标记"+tooLong)); err != nil {
+VALUES ($1, 'personal_memory', $2, $3, $4, $5, $6, 'embedded', 1, 1, 1)`, uuid.NewString(), historyID, SemanticEmbeddingModelID, SemanticEmbeddingDimensions, pointID, semanticContentHash("历史超限标记"+tooLong)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.truthCheckPersonalVectorHits(ctx, "character-content-limit", []string{historyID}); err == nil || !strings.Contains(err.Error(), historyID) || !strings.Contains(err.Error(), "2400") {
+	vector := make([]float32, SemanticEmbeddingDimensions)
+	vector[0] = 1
+	_, err = store.RetrieveWithSemanticVectorIndex(ctx, "character-content-limit", "历史超限标记", postgresWorkerEmbedder{vector: vector}, staticSemanticIndex{hits: []vectorindex.SearchHit{{
+		PointID: pointID, ItemKind: vectorindex.ItemKindPersonalMemory, ItemID: historyID,
+		ModelID: SemanticEmbeddingModelID, ScopeType: "global", ContentHash: semanticContentHash("历史超限标记" + tooLong), Score: 1,
+	}}})
+	if err == nil || !strings.Contains(err.Error(), historyID) || !strings.Contains(err.Error(), "2400") {
 		t.Fatalf("semantic truth oversized history error = %v", err)
 	}
 
@@ -1321,7 +1338,7 @@ func TestPostgresCommitMemoryMutationsRejectsBatchExternalTurnAndKeepsEmptyCompl
 	}
 }
 
-func seedPostgresRunningExtractionBatch(t *testing.T, ctx context.Context, pool *pgstore.Pool, store *Store, characterID string) (string, string, string) {
+func seedPostgresRunningExtractionBatch(t *testing.T, ctx context.Context, _ *pgstore.Pool, store *Store, characterID string) (string, string, string) {
 	t.Helper()
 	bootstrap, err := store.OpenOrCreateCharacterConversationContext(ctx, characterID)
 	if err != nil {
@@ -1334,49 +1351,38 @@ func seedPostgresRunningExtractionBatch(t *testing.T, ctx context.Context, pool 
 	if _, err := store.CompleteTurnContext(ctx, bootstrap.Conversation.ID, turn.ID, "batch reply"); err != nil {
 		t.Fatal(err)
 	}
-	batchID := newID()
-	_, err = pool.Raw().Exec(ctx, `
-INSERT INTO extraction_batches(id, conversation_id, character_id, status, first_turn_sequence, last_turn_sequence, lease_owner, lease_expires_at_ms, attempt_count, created_at_ms, updated_at_ms)
-VALUES ($1, $2, $3, 'running', 1, 1, $4, 9999999999999, 1, 1, 1)`, batchID, bootstrap.Conversation.ID, characterID, store.workerID)
-	if err != nil {
-		t.Fatal(err)
+	batch, err := store.ClaimExtractionBatchContext(ctx, bootstrap.Conversation.ID, 1)
+	if err != nil || batch == nil {
+		t.Fatalf("claiming seeded extraction batch = %#v, %v", batch, err)
 	}
-	if _, err := pool.Raw().Exec(ctx, "INSERT INTO extraction_batch_turns(batch_id, turn_id, turn_sequence) VALUES ($1, $2, 1)", batchID, turn.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Raw().Exec(ctx, "UPDATE conversation_turns SET extraction_state = 'claimed' WHERE id = $1", turn.ID); err != nil {
-		t.Fatal(err)
-	}
-	return bootstrap.Conversation.ID, turn.ID, batchID
+	return bootstrap.Conversation.ID, turn.ID, batch.BatchID
 }
 
-func seedPostgresRunningExtractionBatchWithTurns(t *testing.T, ctx context.Context, pool *pgstore.Pool, store *Store, characterID string, count int) (string, []string, string) {
+func seedPostgresRunningExtractionBatchWithTurns(t *testing.T, ctx context.Context, _ *pgstore.Pool, store *Store, characterID string, count int) (string, []string, string) {
 	t.Helper()
 	if count < 1 {
 		t.Fatal("extraction batch must contain at least one turn")
 	}
-	conversationID, firstTurnID, batchID := seedPostgresRunningExtractionBatch(t, ctx, pool, store, characterID)
-	turnIDs := []string{firstTurnID}
-	for index := 2; index <= count; index++ {
-		turn, err := store.BeginTurnContext(ctx, conversationID, fmt.Sprintf("batch source %d", index))
+	bootstrap, err := store.OpenOrCreateCharacterConversationContext(ctx, characterID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turnIDs := make([]string, 0, count)
+	for index := 1; index <= count; index++ {
+		turn, err := store.BeginTurnContext(ctx, bootstrap.Conversation.ID, fmt.Sprintf("batch source %d", index))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.CompleteTurnContext(ctx, conversationID, turn.ID, fmt.Sprintf("batch reply %d", index)); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := pool.Raw().Exec(ctx, "INSERT INTO extraction_batch_turns(batch_id, turn_id, turn_sequence) VALUES ($1, $2, $3)", batchID, turn.ID, index); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := pool.Raw().Exec(ctx, "UPDATE conversation_turns SET extraction_state = 'claimed' WHERE id = $1", turn.ID); err != nil {
+		if _, err := store.CompleteTurnContext(ctx, bootstrap.Conversation.ID, turn.ID, fmt.Sprintf("batch reply %d", index)); err != nil {
 			t.Fatal(err)
 		}
 		turnIDs = append(turnIDs, turn.ID)
 	}
-	if _, err := pool.Raw().Exec(ctx, "UPDATE extraction_batches SET last_turn_sequence = $2 WHERE id = $1", batchID, count); err != nil {
-		t.Fatal(err)
+	batch, err := store.ClaimExtractionBatchContext(ctx, bootstrap.Conversation.ID, count)
+	if err != nil || batch == nil {
+		t.Fatalf("claiming seeded extraction batch = %#v, %v", batch, err)
 	}
-	return conversationID, turnIDs, batchID
+	return bootstrap.Conversation.ID, turnIDs, batch.BatchID
 }
 
 func TestPostgresExtractionLeasePreventsDuplicateClaimAndRecoversExpiredOwner(t *testing.T) {
@@ -1386,11 +1392,11 @@ func TestPostgresExtractionLeasePreventsDuplicateClaimAndRecoversExpiredOwner(t 
 	if err := pgstore.Migrate(ctx, pool); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	first, err := newStoreFromPoolWithLease(pool, "worker-first", time.Minute)
+	first, err := NewStoreFromPoolWithLease(pool, "worker-first", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := newStoreFromPoolWithLease(pool, "worker-second", time.Minute)
+	second, err := NewStoreFromPoolWithLease(pool, "worker-second", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1440,8 +1446,10 @@ func TestPostgresExtractionLeasePreventsDuplicateClaimAndRecoversExpiredOwner(t 
 	}
 	ownerStore := first
 	otherStore := second
-	if owner == second.workerID {
+	otherID := "worker-second"
+	if owner == "worker-second" {
 		ownerStore, otherStore = second, first
+		otherID = "worker-first"
 	}
 	if attempts != 1 {
 		t.Fatalf("attempts = %d, want 1", attempts)
@@ -1449,7 +1457,7 @@ func TestPostgresExtractionLeasePreventsDuplicateClaimAndRecoversExpiredOwner(t 
 	if err := otherStore.CompleteExtractionBatchContext(ctx, claimed.BatchID); err == nil {
 		t.Fatal("wrong owner completion error = nil")
 	}
-	if _, err := pool.Raw().Exec(ctx, "UPDATE extraction_batches SET lease_expires_at_ms = $2 WHERE id = $1", claimed.BatchID, nowUnixMS()-1); err != nil {
+	if _, err := pool.Raw().Exec(ctx, "UPDATE extraction_batches SET lease_expires_at_ms = $2 WHERE id = $1", claimed.BatchID, time.Now().UnixMilli()-1); err != nil {
 		t.Fatal(err)
 	}
 	reclaimed, err := otherStore.ClaimExtractionBatchContext(ctx, bootstrap.Conversation.ID, 3)
@@ -1462,7 +1470,7 @@ func TestPostgresExtractionLeasePreventsDuplicateClaimAndRecoversExpiredOwner(t 
 	if err := pool.Raw().QueryRow(ctx, "SELECT lease_owner, attempt_count FROM extraction_batches WHERE id = $1", claimed.BatchID).Scan(&owner, &attempts); err != nil {
 		t.Fatal(err)
 	}
-	if owner != otherStore.workerID || attempts != 2 {
+	if owner != otherID || attempts != 2 {
 		t.Fatalf("owner=%q attempts=%d", owner, attempts)
 	}
 	if err := ownerStore.FailExtractionBatchContext(ctx, claimed.BatchID, "WRONG_OWNER", "must fail", false); err == nil {
@@ -1487,11 +1495,11 @@ func TestPostgresExtractionProjectionBoundsLookupAndPreservesEvidence(t *testing
 	if err := pgstore.Migrate(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	first, err := newStoreFromPoolWithLease(pool, "worker-projection-first", time.Minute)
+	first, err := NewStoreFromPoolWithLease(pool, "worker-projection-first", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := newStoreFromPoolWithLease(pool, "worker-projection-second", time.Minute)
+	second, err := NewStoreFromPoolWithLease(pool, "worker-projection-second", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1567,7 +1575,7 @@ func TestPostgresExtractionProjectionBoundsLookupAndPreservesEvidence(t *testing
 		t.Fatalf("other-character relationship memory %q leaked into extraction lookup", other.ID)
 	}
 
-	if _, err := pool.Raw().Exec(ctx, "UPDATE extraction_batches SET lease_expires_at_ms = $2 WHERE id = $1", claimed.BatchID, nowUnixMS()-1); err != nil {
+	if _, err := pool.Raw().Exec(ctx, "UPDATE extraction_batches SET lease_expires_at_ms = $2 WHERE id = $1", claimed.BatchID, time.Now().UnixMilli()-1); err != nil {
 		t.Fatal(err)
 	}
 	reclaimed, err := second.ClaimExtractionBatchContext(ctx, bootstrap.Conversation.ID, DefaultExtractionBatchLimit)
@@ -1586,7 +1594,7 @@ func TestPostgresExtractionFailedCatalogAndRetryReleaseTurns(t *testing.T) {
 	if err := pgstore.Migrate(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	store, err := newStoreFromPoolWithLease(pool, "worker-retry", time.Minute)
+	store, err := NewStoreFromPoolWithLease(pool, "worker-retry", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1641,11 +1649,11 @@ func TestPostgresKnowledgeIngestWorkersClaimDisjointJobs(t *testing.T) {
 	if err := pgstore.Migrate(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	first, err := newStoreFromPoolWithLease(pool, "ingest-first", time.Minute)
+	first, err := NewStoreFromPoolWithLease(pool, "ingest-first", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := newStoreFromPoolWithLease(pool, "ingest-second", time.Minute)
+	second, err := NewStoreFromPoolWithLease(pool, "ingest-second", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1713,11 +1721,7 @@ func TestPostgresKnowledgeIngestExpiredLeaseReclaimsAndRejectsOldOwner(t *testin
 	if err := pgstore.Migrate(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	first, err := newStoreFromPoolWithLease(pool, "ingest-owner-first", time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := newStoreFromPoolWithLease(pool, "ingest-owner-second", time.Minute)
+	first, err := NewStoreFromPoolWithLease(pool, "ingest-owner-first", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1735,33 +1739,33 @@ func TestPostgresKnowledgeIngestExpiredLeaseReclaimsAndRejectsOldOwner(t *testin
 	if err := first.EnqueueKnowledgeIngestSnapshotsContext(ctx, []KnowledgeIngestSnapshot{{ConversationID: bootstrap.Conversation.ID, TurnID: turn.ID, Query: "game", Title: "topic", URL: "https://example.test", Snippet: "这是一条足够长的待处理知识摘要。", Rank: 1}}); err != nil {
 		t.Fatal(err)
 	}
-	now := nowUnixMS()
-	claimed, err := first.claimKnowledgeIngestJobsPostgres(ctx, 1, now)
+	now := time.Now().UnixMilli()
+	claimed, err := ClaimKnowledgeIngestJobs(ctx, pool.Raw(), 1, now, "ingest-owner-first", now+time.Minute.Milliseconds())
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("first claim = %#v, %v", claimed, err)
 	}
-	if blocked, err := second.claimKnowledgeIngestJobsPostgres(ctx, 1, now+1); err != nil || len(blocked) != 0 {
+	if blocked, err := ClaimKnowledgeIngestJobs(ctx, pool.Raw(), 1, now+1, "ingest-owner-second", now+1+time.Minute.Milliseconds()); err != nil || len(blocked) != 0 {
 		t.Fatalf("unexpired second claim = %#v, %v", blocked, err)
 	}
-	if _, err := pool.Raw().Exec(ctx, "UPDATE knowledge_ingest_jobs SET lease_expires_at_ms = $2 WHERE id = $1", claimed[0].id, now-1); err != nil {
+	if _, err := pool.Raw().Exec(ctx, "UPDATE knowledge_ingest_jobs SET lease_expires_at_ms = $2 WHERE id = $1", claimed[0].ID, now-1); err != nil {
 		t.Fatal(err)
 	}
-	reclaimed, err := second.claimKnowledgeIngestJobsPostgres(ctx, 1, now+2)
-	if err != nil || len(reclaimed) != 1 || reclaimed[0].id != claimed[0].id {
+	reclaimed, err := ClaimKnowledgeIngestJobs(ctx, pool.Raw(), 1, now+2, "ingest-owner-second", now+2+time.Minute.Milliseconds())
+	if err != nil || len(reclaimed) != 1 || reclaimed[0].ID != claimed[0].ID {
 		t.Fatalf("reclaim = %#v, %v", reclaimed, err)
 	}
 	var attempts int
 	var owner string
-	if err := pool.Raw().QueryRow(ctx, "SELECT attempt_count, lease_owner FROM knowledge_ingest_jobs WHERE id = $1", claimed[0].id).Scan(&attempts, &owner); err != nil {
+	if err := pool.Raw().QueryRow(ctx, "SELECT attempt_count, lease_owner FROM knowledge_ingest_jobs WHERE id = $1", claimed[0].ID).Scan(&attempts, &owner); err != nil {
 		t.Fatal(err)
 	}
-	if attempts != 2 || owner != second.workerID {
+	if attempts != 2 || owner != "ingest-owner-second" {
 		t.Fatalf("attempts=%d owner=%q", attempts, owner)
 	}
-	if err := first.finishKnowledgeIngestJobPostgres(ctx, claimed[0].id, "succeeded", ""); err == nil {
+	if err := FinishKnowledgeIngestJob(ctx, pool.Raw(), claimed[0].ID, "ingest-owner-first", "succeeded", "", time.Now().UnixMilli()); err == nil {
 		t.Fatal("old owner completion error = nil")
 	}
-	if err := second.finishKnowledgeIngestJobPostgres(ctx, claimed[0].id, "dropped", ""); err != nil {
+	if err := FinishKnowledgeIngestJob(ctx, pool.Raw(), claimed[0].ID, "ingest-owner-second", "dropped", "", time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1824,11 +1828,7 @@ func TestPostgresEmbeddingLeaseClaimAndConditionalCompletion(t *testing.T) {
 	if err := pgstore.Migrate(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	first, err := newStoreFromPoolWithLease(pool, "embedding-first", time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := newStoreFromPoolWithLease(pool, "embedding-second", time.Minute)
+	first, err := NewStoreFromPoolWithLease(pool, "embedding-first", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1849,16 +1849,17 @@ func TestPostgresEmbeddingLeaseClaimAndConditionalCompletion(t *testing.T) {
 	}
 	start := make(chan struct{})
 	type embeddingClaim struct {
-		store *Store
-		jobs  []embeddingJob
-		err   error
+		workerID string
+		jobs     []EmbeddingJob
+		err      error
 	}
 	claims := make(chan embeddingClaim, 2)
-	for _, store := range []*Store{first, second} {
+	for _, workerID := range []string{"embedding-first", "embedding-second"} {
 		go func() {
 			<-start
-			jobs, err := store.claimEmbeddingJobsPostgres(ctx, 1, nowUnixMS())
-			claims <- embeddingClaim{store: store, jobs: jobs, err: err}
+			now := time.Now().UnixMilli()
+			jobs, err := ClaimEmbeddingJobs(ctx, pool.Raw(), SemanticEmbeddingModelID, SemanticEmbeddingDimensions, now, 1, workerID, now+time.Minute.Milliseconds())
+			claims <- embeddingClaim{workerID: workerID, jobs: jobs, err: err}
 		}()
 	}
 	close(start)
@@ -1876,24 +1877,25 @@ func TestPostgresEmbeddingLeaseClaimAndConditionalCompletion(t *testing.T) {
 		t.Fatalf("claims = %#v, %#v", claimA.jobs, claimB.jobs)
 	}
 	job := ownerClaim.jobs[0]
-	content, err := ownerClaim.store.embeddingJobContentPostgres(ctx, job)
-	if err != nil || content != "embedding content" {
-		t.Fatalf("content = %q, %v", content, err)
+	payload, err := LoadEmbeddingJobPayload(ctx, pool.Raw(), job, "personal_memory", "knowledge")
+	if err != nil || payload.Content != "embedding content" {
+		t.Fatalf("content = %q, %v", payload.Content, err)
 	}
-	if err := otherClaim.store.finishEmbeddingJobSucceededPostgres(ctx, job, nowUnixMS()); !errors.Is(err, errEmbeddingJobStaleCompletion) {
+	if err := finishEmbeddingJobSucceeded(ctx, pool, job, otherClaim.workerID); !errors.Is(err, ErrEmbeddingJobStaleCompletion) {
 		t.Fatalf("wrong owner completion error = %v", err)
 	}
-	if _, err := pool.Raw().Exec(ctx, "UPDATE memory_embedding_jobs SET lease_expires_at_ms = $2 WHERE id = $1", job.ID, nowUnixMS()-1); err != nil {
+	if _, err := pool.Raw().Exec(ctx, "UPDATE memory_embedding_jobs SET lease_expires_at_ms = $2 WHERE id = $1", job.ID, time.Now().UnixMilli()-1); err != nil {
 		t.Fatal(err)
 	}
-	reclaimed, err := otherClaim.store.claimEmbeddingJobsPostgres(ctx, 1, nowUnixMS())
+	now := time.Now().UnixMilli()
+	reclaimed, err := ClaimEmbeddingJobs(ctx, pool.Raw(), SemanticEmbeddingModelID, SemanticEmbeddingDimensions, now, 1, otherClaim.workerID, now+time.Minute.Milliseconds())
 	if err != nil || len(reclaimed) != 1 || reclaimed[0].ID != job.ID {
 		t.Fatalf("reclaimed = %#v, %v", reclaimed, err)
 	}
-	if err := ownerClaim.store.finishEmbeddingJobFailedPostgres(ctx, job, "STALE", "old owner", false, nowUnixMS()); !errors.Is(err, errEmbeddingJobStaleCompletion) {
+	if err := finishEmbeddingJobFailed(ctx, pool, job, ownerClaim.workerID, "STALE", "old owner", false); !errors.Is(err, ErrEmbeddingJobStaleCompletion) {
 		t.Fatalf("old owner failure completion error = %v", err)
 	}
-	if err := otherClaim.store.finishEmbeddingJobSucceededPostgres(ctx, reclaimed[0], nowUnixMS()); err != nil {
+	if err := finishEmbeddingJobSucceeded(ctx, pool, reclaimed[0], otherClaim.workerID); err != nil {
 		t.Fatalf("new owner completion: %v", err)
 	}
 	var itemStatus, jobStatus string
@@ -1916,7 +1918,7 @@ func TestPostgresEmbeddingStaleContentCannotMarkNewItemEmbedded(t *testing.T) {
 	if err := pgstore.Migrate(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	store, err := newStoreFromPoolWithLease(pool, "embedding-stale", time.Minute)
+	store, err := NewStoreFromPoolWithLease(pool, "embedding-stale", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1935,7 +1937,8 @@ func TestPostgresEmbeddingStaleContentCannotMarkNewItemEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	jobs, err := store.claimEmbeddingJobsPostgres(ctx, 1, nowUnixMS())
+	now := time.Now().UnixMilli()
+	jobs, err := ClaimEmbeddingJobs(ctx, pool.Raw(), SemanticEmbeddingModelID, SemanticEmbeddingDimensions, now, 1, "embedding-stale", now+time.Minute.Milliseconds())
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("claim = %#v, %v", jobs, err)
 	}
@@ -1943,7 +1946,7 @@ func TestPostgresEmbeddingStaleContentCannotMarkNewItemEmbedded(t *testing.T) {
 	if _, err := pool.Raw().Exec(ctx, "UPDATE memory_embedding_items SET content_hash = $2, status = 'pending', embedded_at_ms = NULL WHERE item_id = $1", created.ID, newHash); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.finishEmbeddingJobSucceededPostgres(ctx, jobs[0], nowUnixMS()); !errors.Is(err, errEmbeddingJobStaleCompletion) {
+	if err := finishEmbeddingJobSucceeded(ctx, pool, jobs[0], "embedding-stale"); !errors.Is(err, ErrEmbeddingJobStaleCompletion) {
 		t.Fatalf("stale completion error = %v", err)
 	}
 	var itemHash, itemStatus, jobStatus string
@@ -1956,6 +1959,30 @@ func TestPostgresEmbeddingStaleContentCannotMarkNewItemEmbedded(t *testing.T) {
 	if itemHash != newHash || itemStatus != "pending" || jobStatus != "running" {
 		t.Fatalf("itemHash=%q itemStatus=%q jobStatus=%q", itemHash, itemStatus, jobStatus)
 	}
+}
+
+func finishEmbeddingJobSucceeded(ctx context.Context, pool *pgstore.Pool, job EmbeddingJob, workerID string) error {
+	tx, err := pool.Raw().Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := FinishEmbeddingJobSucceeded(ctx, tx, job, workerID, time.Now().UnixMilli()); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func finishEmbeddingJobFailed(ctx context.Context, pool *pgstore.Pool, job EmbeddingJob, workerID, code, message string, retryable bool) error {
+	tx, err := pool.Raw().Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := FinishEmbeddingJobFailed(ctx, tx, job, workerID, code, message, retryable, time.Now().UnixMilli()); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func TestPostgresTrigramRetrievalPreservesScopeLimitsAndStableOrder(t *testing.T) {

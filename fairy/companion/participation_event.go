@@ -1,6 +1,6 @@
 package companion
 
-import "fairy/internal/app/participation"
+import "fairy/participation"
 
 type ParticipationEvent = participation.Event
 

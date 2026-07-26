@@ -13,8 +13,7 @@ import (
 	"fairy/companion"
 	"fairy/config"
 	"fairy/identity"
-	"fairy/internal/bootstrap"
-	platformtelemetry "fairy/internal/platform/telemetry"
+	"fairy/logx"
 	"fairy/memory"
 	"fairy/model"
 	"fairy/observability"
@@ -23,8 +22,9 @@ import (
 	"fairy/search"
 	"fairy/secret"
 	"fairy/speech"
-	vectorindex "fairy/internal/adapters/memory/qdrant"
+	vectorindex "fairy/vectorindex"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // Options configures a Session Core process.
@@ -77,12 +77,19 @@ type Runtime struct {
 func Open(options Options) (*Runtime, error) {
 	logStore := options.LogStore
 	if logStore == nil {
-		logStore = platformtelemetry.NewLogStore(platformtelemetry.DefaultLogCapacity)
+		logStore = observability.NewLogStore(observability.DefaultLogCapacity)
 	}
-	logger := platformtelemetry.NewLogger(logStore, options.Logger)
+	logger := options.Logger
+	if logger == nil {
+		logger = logx.New(observability.NewLogCore(logStore, logx.LevelFromEnv()))
+	} else {
+		logger = logger.WithOptions(zap.WrapCore(func(core zapcore.Core) zapcore.Core {
+			return zapcore.NewTee(core, observability.NewLogCore(logStore, logx.LevelFromEnv()))
+		}))
+	}
 	httpMetrics := options.HTTPMetrics
 	if httpMetrics == nil {
-		httpMetrics = platformtelemetry.NewHTTPMetrics()
+		httpMetrics = observability.NewHTTPMetrics()
 	}
 	configRoot := options.ConfigRoot
 	if configRoot == "" {
@@ -107,7 +114,7 @@ func Open(options Options) (*Runtime, error) {
 		runtimeProfile = parsed
 	}
 
-	opened, err := bootstrap.OpenDependencies(context.Background(), options.Dependencies, runtimeProfile)
+	opened, err := openDependencies(context.Background(), options.Dependencies, runtimeProfile)
 	if err != nil {
 		return nil, err
 	}
@@ -116,14 +123,14 @@ func Open(options Options) (*Runtime, error) {
 		if keepDependencies {
 			return
 		}
-		opened.CloseOwned()
+		opened.closeOwned()
 	}()
 
-	services, err := bootstrap.WireCoreServices(configRoot, opened.Database, opened.MemoryStore, opened.SecretStore)
+	services, err := wireCoreServices(configRoot, opened.Database, opened.MemoryStore, opened.SecretStore)
 	if err != nil {
 		return nil, err
 	}
-	messageMetrics := platformtelemetry.NewMessageMetrics()
+	messageMetrics := observability.NewMessageMetrics()
 
 	rt := &Runtime{
 		ConfigRoot:    configRoot,
@@ -160,9 +167,9 @@ func Open(options Options) (*Runtime, error) {
 
 	companion.AttachLogger(services.Companion, logger.Named("companion"))
 	companion.AttachMessageTelemetry(services.Companion, messageMetrics)
-	companion.AttachCharacterStore(services.Companion, services.Character.CatalogStore())
-	companion.AttachProfileStore(services.Companion, services.Profile.ProfileStore())
-	companion.AttachConfigReader(services.Companion, services.ConfigReader)
+	companion.AttachCharacterCatalog(services.Companion, services.Character.CatalogStore())
+	companion.AttachProfileSource(services.Companion, services.Profile.ProfileStore())
+	companion.AttachConfigSource(services.Companion, services.ConfigReader)
 	companion.AttachSpeechSynthesizer(services.Companion, companionSpeechAdapter{service: services.Speech})
 	attachSemanticEmbedder(services.Companion, services.Model, services.ConfigReader, logger.Named("semantic"))
 	if opened.VectorIndex != nil {

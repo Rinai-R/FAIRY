@@ -1,7 +1,7 @@
 package runtime
 
 import (
-	"fairy/internal/app/reply"
+	"fairy/reply"
 	"fairy/speech"
 )
 

@@ -9,11 +9,11 @@ import (
 	"strings"
 
 	"fairy/config"
-	vectorindex "fairy/internal/adapters/memory/qdrant"
 	"fairy/memory"
 	"fairy/model"
 	pgstore "fairy/postgres"
 	"fairy/secret"
+	vectorindex "fairy/vectorindex"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"

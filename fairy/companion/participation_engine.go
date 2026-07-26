@@ -5,11 +5,11 @@ import (
 
 	"fairy/character"
 	"fairy/config"
-	"fairy/internal/app/participation"
 	"fairy/memory"
 	"fairy/model"
+	"fairy/participation"
 
-	domain "fairy/internal/domain/interaction"
+	domain "fairy/interaction"
 )
 
 type (
@@ -31,15 +31,6 @@ const (
 	ParticipationReply             = participation.ParticipationReply
 	ParticipationWait              = participation.ParticipationWait
 	ParticipationSilent            = participation.ParticipationSilent
-)
-
-var (
-	ValidateParticipationRequest       = participation.ValidateParticipationRequest
-	DeriveParticipationSignals         = participation.DeriveParticipationSignals
-	DeriveRecentPresence               = participation.DeriveRecentPresence
-	BuildParticipationInput            = participation.BuildParticipationInput
-	BuildParticipationInputWithSignals = participation.BuildParticipationInputWithSignals
-	CompileParticipation               = participation.CompileParticipation
 )
 
 type ParticipationEngine = participation.Engine

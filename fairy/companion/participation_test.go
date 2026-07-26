@@ -11,9 +11,9 @@ import (
 
 	"fairy/character"
 	"fairy/config"
-	"fairy/internal/app/participation"
 	"fairy/memory"
 	"fairy/model"
+	"fairy/participation"
 
 	contracts "fairy/contracts/interaction"
 )
@@ -54,7 +54,7 @@ func TestCompileParticipationIsStrict(t *testing.T) {
 		{"```json\n{\"action\":\"wait\",\"waitSeconds\":3}\n```", ParticipationWait},
 	}
 	for _, test := range tests {
-		result, err := CompileParticipation(test.draft, messages)
+		result, err := participation.CompileParticipation(test.draft, messages)
 		if err != nil || result.Action != test.action {
 			t.Fatalf("draft %q: result=%#v err=%v", test.draft, result, err)
 		}
@@ -79,7 +79,7 @@ func TestCompileParticipationIsStrict(t *testing.T) {
 		`{"action":"silent"} trailing`,
 		``,
 	} {
-		if _, err := CompileParticipation(invalid, messages); err == nil {
+		if _, err := participation.CompileParticipation(invalid, messages); err == nil {
 			t.Fatalf("invalid participation accepted: %q", invalid)
 		}
 	}
@@ -105,38 +105,38 @@ func TestReplyIntentIsNotSerializedAcrossSurfaceContracts(t *testing.T) {
 
 func TestValidateParticipationBoundsAndReason(t *testing.T) {
 	request := validParticipationRequest()
-	if err := ValidateParticipationRequest(request); err != nil {
+	if err := participation.ValidateParticipationRequest(request); err != nil {
 		t.Fatal(err)
 	}
 	waitRequest := request
 	waitRequest.EvaluationReason = ParticipationReasonWaitElapsed
 	waitRequest.Messages = append([]AmbientObservation(nil), request.Messages...)
 	waitRequest.Messages[0].IsNew = false
-	if err := ValidateParticipationRequest(waitRequest); err != nil {
+	if err := participation.ValidateParticipationRequest(waitRequest); err != nil {
 		t.Fatal(err)
 	}
 	invalidMessage := request
 	invalidMessage.Messages = append([]AmbientObservation(nil), request.Messages...)
 	invalidMessage.Messages[0].IsNew = false
-	if err := ValidateParticipationRequest(invalidMessage); err == nil {
+	if err := participation.ValidateParticipationRequest(invalidMessage); err == nil {
 		t.Fatal("message reason without new observation accepted")
 	}
 	invalidWait := request
 	invalidWait.EvaluationReason = ParticipationReasonWaitElapsed
-	if err := ValidateParticipationRequest(invalidWait); err == nil {
+	if err := participation.ValidateParticipationRequest(invalidWait); err == nil {
 		t.Fatal("wait_elapsed with new observation accepted")
 	}
 	request.Messages[0].Text = strings.Repeat("群", participation.MaxAmbientTextRunes+1)
-	if err := ValidateParticipationRequest(request); err == nil {
+	if err := participation.ValidateParticipationRequest(request); err == nil {
 		t.Fatal("oversized text accepted")
 	}
 	request = validParticipationRequest()
 	request.Messages = append(request.Messages, request.Messages[0])
-	if err := ValidateParticipationRequest(request); err == nil {
+	if err := participation.ValidateParticipationRequest(request); err == nil {
 		t.Fatal("duplicate message ID accepted")
 	}
 	request.Messages = make([]AmbientObservation, participation.MaxAmbientObservations+1)
-	if err := ValidateParticipationRequest(request); err == nil {
+	if err := participation.ValidateParticipationRequest(request); err == nil {
 		t.Fatal("oversized window accepted")
 	}
 }
@@ -151,7 +151,7 @@ func TestDeriveRecentPresenceUsesInclusiveWindows(t *testing.T) {
 		{Role: "assistant", CreatedAtUnixMS: now - 30*time.Minute.Milliseconds() - 1},
 		{Role: "user", CreatedAtUnixMS: now},
 	}
-	presence, err := DeriveRecentPresence(messages, now)
+	presence, err := participation.DeriveRecentPresence(messages, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,18 +161,18 @@ func TestDeriveRecentPresenceUsesInclusiveWindows(t *testing.T) {
 	if presence.SecondsSinceLastReply == nil || *presence.SecondsSinceLastReply != 60 {
 		t.Fatalf("seconds since last reply = %#v", presence.SecondsSinceLastReply)
 	}
-	empty, err := DeriveRecentPresence(nil, now)
+	empty, err := participation.DeriveRecentPresence(nil, now)
 	if err != nil || empty.SecondsSinceLastReply != nil {
 		t.Fatalf("empty presence = %#v, %v", empty, err)
 	}
-	if _, err := DeriveRecentPresence([]memory.MessageRecord{{Role: "assistant", CreatedAtUnixMS: now + 1}}, now); err == nil {
+	if _, err := participation.DeriveRecentPresence([]memory.MessageRecord{{Role: "assistant", CreatedAtUnixMS: now + 1}}, now); err == nil {
 		t.Fatal("future assistant timestamp accepted")
 	}
 }
 
 func TestBuildParticipationInputHasPolicyPresenceAndNoProfile(t *testing.T) {
 	seconds := int64(12)
-	input, err := BuildParticipationInput(character.Record{
+	input, err := participation.BuildParticipationInput(character.Record{
 		CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "自然参与群聊", TextLanguage: "zh", SpeakingLanguage: "zh",
 	}, publicAmbientResolved(), ParticipationReasonMessage, []AmbientObservation{validAmbientObservation()}, RecentPresence{
 		AssistantReplies5Minutes: 2, AssistantReplies30Minutes: 4, SecondsSinceLastReply: &seconds,
@@ -202,7 +202,7 @@ func TestBuildParticipationInputKeepsAcceptedObservationPrefixStable(t *testing.
 	first := AmbientObservation{
 		MessageID: "m1", SenderID: "u1", SenderName: "甲", Text: "你们觉得呢？", DirectedToBot: true, IsNew: true, TimestampUnixMS: now - 1000,
 	}
-	before, err := BuildParticipationInputWithSignals(record, publicAmbientResolved(), ParticipationReasonMessage, []AmbientObservation{first}, nil, RecentPresence{}, now, nil)
+	before, err := participation.BuildParticipationInputWithSignals(record, publicAmbientResolved(), ParticipationReasonMessage, []AmbientObservation{first}, nil, RecentPresence{}, now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestBuildParticipationInputKeepsAcceptedObservationPrefixStable(t *testing.
 	second := AmbientObservation{
 		MessageID: "m2", SenderID: "u2", SenderName: "乙", Text: "我觉得可以", IsNew: true, TimestampUnixMS: now,
 	}
-	after, err := BuildParticipationInputWithSignals(record, publicAmbientResolved(), ParticipationReasonMessage, []AmbientObservation{first, second}, nil, RecentPresence{}, now, nil)
+	after, err := participation.BuildParticipationInputWithSignals(record, publicAmbientResolved(), ParticipationReasonMessage, []AmbientObservation{first, second}, nil, RecentPresence{}, now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func TestBuildParticipationInputKeepsAcceptedObservationPrefixStable(t *testing.
 	if !strings.Contains(after[len(after)-1].Content, `"newMessageIds":["m2"]`) {
 		t.Fatalf("dynamic decision context missing new message IDs: %s", after[len(after)-1].Content)
 	}
-	waitInput, err := BuildParticipationInputWithSignals(record, publicAmbientResolved(), ParticipationReasonWaitElapsed, []AmbientObservation{first}, nil, RecentPresence{}, now, nil)
+	waitInput, err := participation.BuildParticipationInputWithSignals(record, publicAmbientResolved(), ParticipationReasonWaitElapsed, []AmbientObservation{first}, nil, RecentPresence{}, now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +251,7 @@ func TestBuildParticipationInputKeepsCachePrefixStableAfterRollingWindowSlides(t
 	}
 	windowBefore := append([]AmbientObservation(nil), cacheBefore...)
 	windowBefore[len(windowBefore)-1].IsNew = true
-	before, err := BuildParticipationInputWithSignals(record, publicAmbientResolved(), ParticipationReasonMessage, windowBefore, cacheBefore, RecentPresence{}, now+100, nil)
+	before, err := participation.BuildParticipationInputWithSignals(record, publicAmbientResolved(), ParticipationReasonMessage, windowBefore, cacheBefore, RecentPresence{}, now+100, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestBuildParticipationInputKeepsCachePrefixStableAfterRollingWindowSlides(t
 	})
 	windowAfter := append([]AmbientObservation(nil), cacheAfter[1:]...)
 	windowAfter[len(windowAfter)-1].IsNew = true
-	after, err := BuildParticipationInputWithSignals(record, publicAmbientResolved(), ParticipationReasonMessage, windowAfter, cacheAfter, RecentPresence{}, now+200, nil)
+	after, err := participation.BuildParticipationInputWithSignals(record, publicAmbientResolved(), ParticipationReasonMessage, windowAfter, cacheAfter, RecentPresence{}, now+200, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +293,7 @@ func TestDeriveParticipationSignalsContainsOnlyObjectiveTimingAndPresenceFacts(t
 		{MessageID: "m1", SenderID: "u1", SenderName: "甲", Text: "你觉得呢？", DirectedToBot: true, IsNew: true, TimestampUnixMS: now - 5*int64(time.Second.Milliseconds())},
 		{MessageID: "m2", SenderID: "u2", SenderName: "乙", Text: "你觉得呢？", IsNew: true, TimestampUnixMS: now},
 	}
-	signals, err := DeriveParticipationSignals(messages, []memory.MessageRecord{{Role: "assistant", CreatedAtUnixMS: now - 2*int64(time.Minute.Milliseconds())}, {Role: "user", CreatedAtUnixMS: now - int64(time.Minute.Milliseconds())}}, now)
+	signals, err := participation.DeriveParticipationSignals(messages, []memory.MessageRecord{{Role: "assistant", CreatedAtUnixMS: now - 2*int64(time.Minute.Milliseconds())}, {Role: "user", CreatedAtUnixMS: now - int64(time.Minute.Milliseconds())}}, now)
 	if err != nil {
 		t.Fatalf("DeriveParticipationSignals() error = %v", err)
 	}

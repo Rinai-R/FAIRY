@@ -13,7 +13,7 @@ import (
 	"fairy/model"
 	"fairy/search"
 
-	domain "fairy/internal/domain/interaction"
+	domain "fairy/interaction"
 )
 
 const (

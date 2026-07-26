@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"fairy/internal/app/participation"
+	"fairy/participation"
 )
 
 func TestEncodeReplyIntentContextIncludesDriftGuidance(t *testing.T) {

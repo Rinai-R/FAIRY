@@ -9,27 +9,6 @@ import (
 	"strings"
 
 	"fairy/config"
-	domainmodel "fairy/internal/domain/model"
-)
-
-type PromptLane = domainmodel.PromptLane
-
-const (
-	PromptLaneRespond        = domainmodel.PromptLaneRespond
-	PromptLaneParticipate    = domainmodel.PromptLaneParticipate
-	PromptLaneCompact        = domainmodel.PromptLaneCompact
-	PromptLaneExtract        = domainmodel.PromptLaneExtract
-	PromptLaneTranslate      = domainmodel.PromptLaneTranslate
-	PromptLaneSocialLearn    = domainmodel.PromptLaneSocialLearn
-	PromptLaneSocialFeedback = domainmodel.PromptLaneSocialFeedback
-)
-
-type PromptItemType = domainmodel.PromptItemType
-
-const (
-	PromptItemUserMessage      = domainmodel.PromptItemUserMessage
-	PromptItemAssistantMessage = domainmodel.PromptItemAssistantMessage
-	PromptItemContextData      = domainmodel.PromptItemContextData
 )
 
 type Connection struct {
@@ -40,9 +19,6 @@ type Connection struct {
 	AuthMode            string
 	Capabilities        config.GatewayCapabilities
 }
-
-type ModelRequestShape = domainmodel.ModelRequestShape
-type PromptItem = domainmodel.PromptItem
 
 type CompiledPromptRequest struct {
 	Shape              ModelRequestShape `json:"shape"`

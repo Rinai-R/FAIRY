@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"fairy/internal/app/reply"
+	"fairy/reply"
 )
 
 func TestSpeechSynthesizedCarriesChainIndexAndPlaybackIndex(t *testing.T) {

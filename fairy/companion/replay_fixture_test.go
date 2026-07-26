@@ -8,6 +8,7 @@ import (
 	"fairy/character"
 	"fairy/memory"
 	"fairy/model"
+	"fairy/persona"
 )
 
 // TestReplayFixture keeps the production prompt/reply boundary deterministic
@@ -21,7 +22,7 @@ func TestReplayFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	items := PromptItemsFromContextSlots(slots)
+	items := persona.PromptItemsFromContextSlots(slots)
 	if got := contextSlotIDs(slots); !strings.Contains(got, "character,display_language") || len(slots) < 9 || slots[8].ID != "reply_intent" {
 		t.Fatalf("replay slot order = %s", got)
 	}

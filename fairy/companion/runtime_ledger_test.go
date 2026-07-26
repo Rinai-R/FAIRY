@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"fairy/internal/app/reply"
 	"fairy/memory"
 	"fairy/model"
+	"fairy/reply"
 )
 
 func TestRuntimePromptLedgerRecordsOnlyCacheIdentityDiagnostics(t *testing.T) {

@@ -4,7 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"fairy/internal/app/sociallearning"
+	"fairy/participation"
+	"fairy/sociallearning"
 )
 
 func TestCloseCancelsActiveTurn(t *testing.T) {
@@ -75,7 +76,7 @@ func TestCloseClosesSocialLearningOwners(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if s.socialLearning.Enqueue(sociallearning.LearningSnapshot{ConversationID: "conversation-1", Messages: []sociallearning.Observation{{MessageID: "m1"}}}) {
+	if s.socialLearning.Enqueue(sociallearning.LearningSnapshot{ConversationID: "conversation-1", Messages: []participation.AmbientObservation{{MessageID: "m1"}}}) {
 		t.Fatal("learning enqueue accepted after CompanionService.Close")
 	}
 	if s.socialFeedback.Register(sociallearning.FeedbackRegistration{ConversationID: "conversation-1", TurnID: "turn-1", ReplyText: "reply"}) {

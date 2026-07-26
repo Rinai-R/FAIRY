@@ -5,11 +5,11 @@ import (
 	"errors"
 	"time"
 
-	"fairy/internal/app/proactive"
 	"fairy/pkg/nodegraph"
+	"fairy/proactive"
 
 	obs "fairy/contracts/observation"
-	appobs "fairy/internal/app/observation"
+	appobs "fairy/observation"
 )
 
 type DesktopObservation = obs.DesktopObservation

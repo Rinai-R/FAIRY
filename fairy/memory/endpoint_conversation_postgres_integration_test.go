@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	contracts "fairy/contracts/interaction"
 	"fairy/identity"
 	pgstore "fairy/postgres"
 	"fairy/secret"

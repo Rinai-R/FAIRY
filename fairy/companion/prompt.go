@@ -4,13 +4,13 @@ import (
 	"fmt"
 
 	"fairy/character"
-	"fairy/internal/app/participation"
-	"fairy/internal/app/sociallearning"
-	domain "fairy/internal/domain/interaction"
-	"fairy/internal/domain/persona"
+	domain "fairy/interaction"
 	"fairy/memory"
 	"fairy/model"
+	"fairy/participation"
+	"fairy/persona"
 	"fairy/profile"
+	"fairy/sociallearning"
 )
 
 const (
@@ -49,11 +49,6 @@ type replyDeliveryContract struct {
 type replyIntentContextPayload struct {
 	Delivery replyDeliveryContract `json:"delivery"`
 }
-
-var BuildRespondInput = persona.BuildRespondInput
-var BuildRespondContextSlots = persona.BuildRespondContextSlots
-var PromptItemsFromContextSlots = persona.PromptItemsFromContextSlots
-var BuildStablePrefixItems = persona.BuildStablePrefixItems
 
 func AppendDesktopInitiationContext(slots []ContextSlot, context DesktopInitiationContext) ([]ContextSlot, error) {
 	return persona.AppendDesktopInitiationContext(slots, persona.DesktopInitiationContext{
@@ -135,14 +130,6 @@ func messagesAfterCutoff(messages []memory.MessageRecord, cutoff uint64) []memor
 
 func encodeCompactionSummary(summary string) (model.PromptItem, error) {
 	return persona.EncodeCompactionSummary(summary)
-}
-
-func encodeSocialMemoryContext(context memory.SocialMemoryContext) (model.PromptItem, error) {
-	return persona.EncodeSocialMemoryContext(context)
-}
-
-func encodeSocialPersonNotes(notes []memory.SocialPersonNote) (model.PromptItem, error) {
-	return persona.EncodeSocialPersonNotes(notes)
 }
 
 func setContextSlotOmitReason(slots []ContextSlot, id string, reason string) {

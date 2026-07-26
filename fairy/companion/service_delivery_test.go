@@ -6,7 +6,7 @@ import (
 	"testing"
 	"testing/synctest"
 
-	"fairy/internal/app/reply"
+	"fairy/reply"
 
 	"go.uber.org/zap"
 )

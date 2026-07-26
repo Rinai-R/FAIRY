@@ -11,20 +11,21 @@ import (
 
 	"fairy/character"
 	"fairy/config"
-	"fairy/internal/app/proactive"
-	"fairy/internal/app/reply"
-	"fairy/internal/app/sociallearning"
 	"fairy/memory"
 	"fairy/memory/semantic"
 	"fairy/model"
+	"fairy/participation"
+	"fairy/proactive"
 	"fairy/profile"
+	"fairy/reply"
 	"fairy/search"
+	"fairy/sociallearning"
 
 	"go.uber.org/zap"
 
 	contracts "fairy/contracts/interaction"
 	obs "fairy/contracts/observation"
-	appobs "fairy/internal/app/observation"
+	appobs "fairy/observation"
 )
 
 type CompanionService struct {
@@ -232,11 +233,6 @@ func AttachCharacterCatalog(s *CompanionService, catalog CharacterCatalog) {
 	s.characters = catalog
 }
 
-// AttachCharacterStore is retained for call-site compatibility; prefer AttachCharacterCatalog.
-func AttachCharacterStore(s *CompanionService, store *character.Store) {
-	AttachCharacterCatalog(s, store)
-}
-
 // AttachProfileSource injects the user-profile source from the composition root.
 func AttachProfileSource(s *CompanionService, source ProfileSource) {
 	if s == nil || source == nil {
@@ -252,22 +248,12 @@ func AttachOwnerIdentityStore(s *CompanionService, store OwnerIdentityPort) {
 	s.identities = store
 }
 
-// AttachProfileStore is retained for call-site compatibility; prefer AttachProfileSource.
-func AttachProfileStore(s *CompanionService, store *profile.Store) {
-	AttachProfileSource(s, store)
-}
-
 // AttachConfigSource injects durable config reads from the composition root.
 func AttachConfigSource(s *CompanionService, source ConfigSource) {
 	if s == nil || source == nil {
 		return
 	}
 	s.cfg = source
-}
-
-// AttachConfigReader is retained for call-site compatibility; prefer AttachConfigSource.
-func AttachConfigReader(s *CompanionService, reader *config.Reader) {
-	AttachConfigSource(s, reader)
 }
 
 // AttachSpeechSynthesizer injects the optional speech backend from main.
@@ -428,7 +414,7 @@ func (s *CompanionService) DecideParticipation(ctx context.Context, request Part
 	if s == nil || s.participation == nil {
 		return ParticipationResult{}, ErrRespondRuntimeNotMigrated
 	}
-	if err := ValidateParticipationRequest(request); err != nil {
+	if err := participation.ValidateParticipationRequest(request); err != nil {
 		return ParticipationResult{}, err
 	}
 	resolved, err := s.ResolveInteraction(request.ConversationID)
@@ -457,12 +443,6 @@ func (s *CompanionService) RespondRuntimeMigrated() bool {
 		s.characters != nil &&
 		s.profiles != nil &&
 		s.cfg != nil
-}
-
-func (s *CompanionService) emitSpeechFailure(life *TurnLifecycle, conversationID string, turnID string, code string, message string, retryable bool) {
-	_, _ = s.publishLife(life, func() (TurnEvent, error) {
-		return life.SpeechFailed(code, message, retryable)
-	})
 }
 
 func (s *CompanionService) terminalPersistenceFailure(life *TurnLifecycle, conversationID, turnID string, cause, persistenceErr error) (TurnOutcome, error) {

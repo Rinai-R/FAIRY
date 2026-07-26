@@ -53,21 +53,32 @@ func TestPkgPackagesAreBusinessNeutral(t *testing.T) {
 	}
 }
 
-func TestInternalLayerDependenciesPointInward(t *testing.T) {
+func TestApplicationPackagesDoNotImportInternalLayers(t *testing.T) {
 	for _, pkg := range listPackages(t, "./...") {
-		if !strings.HasPrefix(pkg.ImportPath, "fairy/internal/") {
-			continue
-		}
 		for _, imported := range pkg.Imports {
-			switch {
-			case strings.HasPrefix(pkg.ImportPath, "fairy/internal/domain/"):
-				if strings.HasPrefix(imported, "fairy/internal/app/") || strings.HasPrefix(imported, "fairy/internal/adapters/") || strings.HasPrefix(imported, "fairy/internal/bootstrap") {
-					t.Errorf("domain package %s imports outer package %s", pkg.ImportPath, imported)
-				}
-			case strings.HasPrefix(pkg.ImportPath, "fairy/internal/app/"):
-				if strings.HasPrefix(imported, "fairy/internal/adapters/") || strings.HasPrefix(imported, "fairy/internal/bootstrap") || imported == "fairy/api" || imported == "fairy/cmd" || imported == "fairy/coreclient" {
-					t.Errorf("application package %s imports outer package %s", pkg.ImportPath, imported)
-				}
+			if strings.HasPrefix(imported, "fairy/internal/") {
+				t.Errorf("application package %s imports obsolete internal layer %s", pkg.ImportPath, imported)
+			}
+		}
+	}
+}
+
+func TestTopLevelDomainPackagesDoNotImportInfrastructure(t *testing.T) {
+	domains := []string{
+		"./compaction",
+		"./extraction",
+		"./interaction",
+		"./observation",
+		"./participation",
+		"./persona",
+		"./proactive",
+		"./reply",
+		"./sociallearning",
+	}
+	for _, pkg := range listPackages(t, domains...) {
+		for _, imported := range pkg.Imports {
+			if imported == "fairy/api" || imported == "fairy/cmd" || imported == "fairy/coreclient" || imported == "fairy/runtime" {
+				t.Errorf("domain package %s imports infrastructure/composition package %s", pkg.ImportPath, imported)
 			}
 		}
 	}
@@ -78,11 +89,11 @@ func TestThirdPartySDKImportsMatchMigrationInventory(t *testing.T) {
 		"github.com/jackc/pgx/": {
 			"fairy/postgres",
 			"fairy/secret",
-			"fairy/internal/adapters/memory/postgres",
+			"fairy/memory",
 		},
 		"gorm.io/":                     {"fairy/postgres"},
-		"github.com/qdrant/":           {"fairy/internal/adapters/memory/qdrant"},
-		"github.com/openai/":           {"fairy/internal/adapters/model/openai"},
+		"github.com/qdrant/":           {"fairy/vectorindex"},
+		"github.com/openai/":           {"fairy/model"},
 		"github.com/cloudwego/hertz/":  {"fairy/api"},
 		"github.com/gorilla/websocket": {"fairy/api", "fairy/coreclient"},
 		"github.com/spf13/cobra":       {"fairy/cmd"},
@@ -143,44 +154,4 @@ func TestIndependentSurfacesDoNotImportCoreInternals(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-}
-
-func TestAdaptersAreOrganizedByDomain(t *testing.T) {
-	root := filepath.Join("internal", "adapters")
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	forbiddenTopLevel := map[string]bool{
-		"postgres": true, "qdrant": true, "openai": true, "embedding": true,
-		"http": true, "grpc": true, "sdk": true,
-	}
-	allowedDomains := map[string]bool{"memory": true, "model": true}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if forbiddenTopLevel[name] {
-			t.Errorf("adapter technology package %s must live under adapters/<domain>/%s, not as a top-level adapter", name, name)
-		}
-		if !allowedDomains[name] {
-			t.Errorf("unexpected top-level adapter domain %s; expected domain-first layout under %v", name, keys(allowedDomains))
-		}
-	}
-	for domain := range allowedDomains {
-		domainDir := filepath.Join(root, domain)
-		if _, err := os.Stat(domainDir); err != nil {
-			t.Errorf("expected adapter domain directory %s: %v", domainDir, err)
-		}
-	}
-}
-
-func keys(values map[string]bool) []string {
-	out := make([]string, 0, len(values))
-	for key := range values {
-		out = append(out, key)
-	}
-	slices.Sort(out)
-	return out
 }

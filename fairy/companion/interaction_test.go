@@ -8,10 +8,11 @@ import (
 	"fairy/character"
 	"fairy/memory"
 	"fairy/model"
+	"fairy/persona"
 	"fairy/profile"
 
 	contracts "fairy/contracts/interaction"
-	domain "fairy/internal/domain/interaction"
+	domain "fairy/interaction"
 )
 
 func TestInteractionMemoryPolicySelectsToolsAndInstructions(t *testing.T) {
@@ -72,15 +73,15 @@ func TestInteractionPresentationAndMemoryAreIndependent(t *testing.T) {
 func TestStablePrefixAndProfileProjectionFollowResolvedInteraction(t *testing.T) {
 	record := character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "认真听用户说话。", TextLanguage: "zh", SpeakingLanguage: "zh"}
 	states := []VisualState{{ID: "idle", Description: "待机"}}
-	prefix, err := BuildStablePrefixItems(record, nil, states)
+	prefix, err := persona.BuildStablePrefixItems(record, nil, states)
 	if err != nil {
 		t.Fatal(err)
 	}
-	personal, err := BuildRespondContextSlots(record, nil, memory.PromptWindowRecord{Revision: 1}, nil, states, memory.RetrievalContext{}, desktopResolved())
+	personal, err := persona.BuildRespondContextSlots(record, nil, memory.PromptWindowRecord{Revision: 1}, nil, states, memory.RetrievalContext{}, desktopResolved())
 	if err != nil {
 		t.Fatal(err)
 	}
-	public, err := BuildRespondContextSlots(record, nil, memory.PromptWindowRecord{Revision: 1}, nil, states, memory.RetrievalContext{}, publicAmbientResolved())
+	public, err := persona.BuildRespondContextSlots(record, nil, memory.PromptWindowRecord{Revision: 1}, nil, states, memory.RetrievalContext{}, publicAmbientResolved())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,11 +106,11 @@ func TestPublicPromptAndCompactionOmitPrivateProfile(t *testing.T) {
 	record := character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"}
 	profileSnapshot := &profile.Snapshot{Revision: 1, PreferredName: &name}
 	states := []VisualState{{ID: "idle", Description: "待机"}}
-	public, err := BuildRespondInput(record, profileSnapshot, memory.PromptWindowRecord{}, nil, states, memory.RetrievalContext{}, publicAmbientResolved())
+	public, err := persona.BuildRespondInput(record, profileSnapshot, memory.PromptWindowRecord{}, nil, states, memory.RetrievalContext{}, publicAmbientResolved())
 	if err != nil {
 		t.Fatal(err)
 	}
-	personal, err := BuildRespondInput(record, profileSnapshot, memory.PromptWindowRecord{}, nil, states, memory.RetrievalContext{}, ownerIMResolved())
+	personal, err := persona.BuildRespondInput(record, profileSnapshot, memory.PromptWindowRecord{}, nil, states, memory.RetrievalContext{}, ownerIMResolved())
 	if err != nil {
 		t.Fatal(err)
 	}

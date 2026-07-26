@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sync"
 
-	"fairy/internal/app/reply"
+	"fairy/reply"
 )
 
 var (

@@ -14,7 +14,7 @@ import (
 	"time"
 
 	pgstore "fairy/postgres"
-	vectorindex "fairy/internal/adapters/memory/qdrant"
+	vectorindex "fairy/vectorindex"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"

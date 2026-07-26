@@ -5,13 +5,13 @@ import (
 
 	"fairy/character"
 	"fairy/config"
-	"fairy/internal/app/sociallearning"
 	"fairy/memory"
 	"fairy/model"
+	"fairy/sociallearning"
 
 	"go.uber.org/zap"
 
-	domain "fairy/internal/domain/interaction"
+	domain "fairy/interaction"
 )
 
 type socialLearningHost struct {

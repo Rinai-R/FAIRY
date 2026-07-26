@@ -14,7 +14,7 @@ import (
 
 	"go.uber.org/zap"
 
-	domain "fairy/internal/domain/interaction"
+	domain "fairy/interaction"
 )
 
 type turnGraphState struct {

@@ -21,7 +21,7 @@ func TestNewMemoryServiceFromStoreRequiresStore(t *testing.T) {
 }
 
 func TestNewStoreFromPoolLeaseValidationRunsAfterPoolValidation(t *testing.T) {
-	store, err := newStoreFromPoolWithLease(nil, "worker-1", time.Second)
+	store, err := NewStoreFromPoolWithLease(nil, "worker-1", time.Second)
 	if store != nil || !errors.Is(err, ErrDatabasePoolEmpty) {
 		t.Fatalf("newStoreFromPoolWithLease(nil) = (%v, %v)", store, err)
 	}

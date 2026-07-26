@@ -3,9 +3,8 @@ package companion
 import (
 	"errors"
 	"strings"
-	"time"
 
-	"fairy/internal/app/reply"
+	"fairy/reply"
 )
 
 type (
@@ -16,11 +15,6 @@ type (
 	SpeechSynthesisResult  = reply.SpeechSynthesisResult
 	SpeechSynthesizer      = reply.SpeechSynthesizer
 	BeatReadyCompletion    = reply.BeatReadyCompletion
-)
-
-var (
-	CompileReply        = reply.CompileReply
-	ValidateReplyChains = reply.ValidateReplyChains
 )
 
 func validateAvailableVisualStates(states []VisualState) error {
@@ -35,20 +29,12 @@ func fillSameLanguageSpeech(compiled CompiledReply) (CompiledReply, error) {
 	return reply.FillSameLanguageSpeech(compiled)
 }
 
-func applyTranslatedSpeech(compiled CompiledReply, speech string) (CompiledReply, error) {
-	return reply.ApplyTranslatedSpeech(compiled, speech)
-}
-
 func sanitizeDisplayText(value string) string { return reply.SanitizeDisplayText(value) }
 func sanitizeSpeechText(value string) string  { return reply.SanitizeSpeechText(value) }
 func validateSpeech(value string) error       { return reply.ValidateSpeech(value) }
 
 func speechExceedsSoftLimit(value string) bool {
 	return reply.SpeechExceedsSoftLimit(value)
-}
-
-func targetReplyInterval(previous, current string) time.Duration {
-	return reply.TargetInterval(previous, current)
 }
 
 var ErrRespondRuntimeNotMigrated = errors.New("companion respond runtime is not migrated to Go")

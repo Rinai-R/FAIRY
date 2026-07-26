@@ -6,12 +6,13 @@ import (
 	"unicode/utf8"
 
 	"fairy/character"
-	"fairy/internal/app/compaction"
+	"fairy/compaction"
 	"fairy/memory"
 	"fairy/model"
+	"fairy/persona"
 	"fairy/profile"
 
-	domain "fairy/internal/domain/interaction"
+	domain "fairy/interaction"
 )
 
 type CompactionPolicy = compaction.Policy
@@ -24,14 +25,6 @@ const (
 	estimatedPromptCharsPerToken        = compaction.EstimatedPromptCharsPerToken
 	maxCompactionSummaryChars           = compaction.MaxSummaryChars
 )
-
-func CompactionPolicyFromContextWindow(contextWindowTokens uint64) CompactionPolicy {
-	return compaction.PolicyFromContextWindow(contextWindowTokens)
-}
-
-func contextWindowBreakerOpen(window *memory.ContextWindowRecord) bool {
-	return compaction.ContextWindowBreakerOpen(window)
-}
 
 func estimatePromptPrefillTokens(instructions string, input []model.PromptItem) uint64 {
 	chars := uint64(utf8.RuneCountInString(instructions))
@@ -65,7 +58,7 @@ func BuildCompactInput(
 	resolved domain.Resolved,
 ) ([]model.PromptItem, error) {
 	windowed := messagesAfterCutoff(messages, promptWindow.CutoffMessageSequence)
-	prefix, err := BuildStablePrefixItems(record, userProfile, states)
+	prefix, err := persona.BuildStablePrefixItems(record, userProfile, states)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +94,7 @@ func (s *CompanionService) scheduleAutoCompaction(conversationID string, events 
 	if err != nil {
 		return
 	}
-	policy := CompactionPolicyFromContextWindow(connection.ContextWindowTokens)
+	policy := compaction.PolicyFromContextWindow(connection.ContextWindowTokens)
 	window, found, err := s.memory.LoadContextWindow(conversationID, string(model.PromptLaneRespond))
 	if err != nil {
 		s.setBackgroundError(err)
@@ -161,7 +154,7 @@ func (s *CompanionService) maybeCompactBeforeTurn(request SubmitCompiledTurnRequ
 			Role: "user", Content: request.Input, Sequence: uint64(len(estimatedMessages) + 1),
 		})
 	}
-	slots, err := BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, estimatedMessages, request.AvailableVisualStates, memory.RetrievalContext{}, resolved)
+	slots, err := persona.BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, estimatedMessages, request.AvailableVisualStates, memory.RetrievalContext{}, resolved)
 	if err != nil {
 		return err
 	}
@@ -171,7 +164,7 @@ func (s *CompanionService) maybeCompactBeforeTurn(request SubmitCompiledTurnRequ
 			return err
 		}
 	}
-	estimatedTokens := estimatePromptPrefillTokens(RespondInstructions, PromptItemsFromContextSlots(slots))
+	estimatedTokens := estimatePromptPrefillTokens(RespondInstructions, persona.PromptItemsFromContextSlots(slots))
 	window, err := s.recordEstimatedContextWindow(request.ConversationID, bootstrap.PromptWindow.Revision, estimatedTokens)
 	if err != nil {
 		return err
@@ -180,7 +173,7 @@ func (s *CompanionService) maybeCompactBeforeTurn(request SubmitCompiledTurnRequ
 	if err != nil {
 		return err
 	}
-	policy := CompactionPolicyFromContextWindow(connection.ContextWindowTokens)
+	policy := compaction.PolicyFromContextWindow(connection.ContextWindowTokens)
 	if !policy.ShouldCompactWindow(CompactionTriggerPreTurnPredictive, estimatedTokens, true, window) {
 		return nil
 	}

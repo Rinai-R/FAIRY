@@ -10,6 +10,7 @@ import (
 	"fairy/character"
 	"fairy/memory"
 	"fairy/model"
+	"fairy/persona"
 	"fairy/profile"
 )
 
@@ -110,7 +111,7 @@ func TestExtractInstructionsContentLimitParticipatesInStableHash(t *testing.T) {
 }
 
 func TestBuildRespondContextSlotsKeepsStableOrderAndOmissionMetadata(t *testing.T) {
-	slots, err := BuildRespondContextSlots(
+	slots, err := persona.BuildRespondContextSlots(
 		character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "认真听用户说话。", TextLanguage: character.DefaultTextLanguage, SpeakingLanguage: character.DefaultSpeakingLanguage},
 		nil,
 		memory.PromptWindowRecord{Revision: 1},
@@ -140,7 +141,7 @@ func TestBuildRespondContextSlotsKeepsStableOrderAndOmissionMetadata(t *testing.
 	if slots[7].Present || slots[7].OmitReason != "empty" {
 		t.Fatalf("retrieved_context slot = %#v, want omitted empty", slots[7])
 	}
-	items := PromptItemsFromContextSlots(slots)
+	items := persona.PromptItemsFromContextSlots(slots)
 	if len(items) != 6 {
 		t.Fatalf("items len = %d, want 6: %#v", len(items), items)
 	}
@@ -190,8 +191,8 @@ func TestBuildRespondContextSlotsAppendsPublicSocialContextAfterStablePrefix(t *
 			t.Fatalf("stable slot %q changed across dynamic candidates", id)
 		}
 	}
-	firstItems := PromptItemsFromContextSlots(first)
-	secondItems := PromptItemsFromContextSlots(second)
+	firstItems := persona.PromptItemsFromContextSlots(first)
+	secondItems := persona.PromptItemsFromContextSlots(second)
 	if len(firstItems) != len(secondItems) {
 		t.Fatalf("item lengths = %d, %d", len(firstItems), len(secondItems))
 	}
@@ -310,7 +311,7 @@ func TestBuildRespondContextSlotsAddsBoundedUntrustedContinuity(t *testing.T) {
 func TestBuildRespondInputKeepsPersonaOutOfInstructions(t *testing.T) {
 	style := "日常短句"
 	name := "Rinai"
-	items, err := BuildRespondInput(
+	items, err := persona.BuildRespondInput(
 		character.Record{
 			CharacterID:      "character-1",
 			Revision:         2,
@@ -379,7 +380,7 @@ func TestBuildRespondInputKeepsPersonaOutOfInstructions(t *testing.T) {
 
 func TestBuildRespondInputAppliesPromptWindowSummaryAndCutoff(t *testing.T) {
 	summary := "此前用户打过招呼。"
-	items, err := BuildRespondInput(
+	items, err := persona.BuildRespondInput(
 		character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "认真听用户说话。", TextLanguage: "zh", SpeakingLanguage: "zh"},
 		nil,
 		memory.PromptWindowRecord{Revision: 2, Summary: &summary, CutoffMessageSequence: 2},

@@ -13,9 +13,11 @@ import (
 	"time"
 
 	"fairy/config"
-	"fairy/internal/app/participation"
 	"fairy/memory"
 	"fairy/model"
+	"fairy/participation"
+	"fairy/persona"
+	replypkg "fairy/reply"
 
 	obs "fairy/contracts/observation"
 )
@@ -132,7 +134,7 @@ func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 			return TurnOutcome{}, err
 		}
 		display := draft
-		if compiled, compileErr := CompileReply(draft, []VisualState{{ID: "idle", Description: "待机"}}); compileErr == nil {
+		if compiled, compileErr := replypkg.CompileReply(draft, []VisualState{{ID: "idle", Description: "待机"}}); compileErr == nil {
 			display = compiled.DisplayText
 		}
 		mu.Lock()
@@ -310,7 +312,7 @@ func runLiveGroupChatSimulation(t *testing.T, scenario liveGroupChatScenario) {
 	}
 	t.Logf("respond tools=%v", tools)
 	t.Logf("respond draft=%s", reply)
-	if compiled, compileErr := CompileReply(reply, []VisualState{{ID: "idle", Description: "待机"}}); compileErr != nil {
+	if compiled, compileErr := replypkg.CompileReply(reply, []VisualState{{ID: "idle", Description: "待机"}}); compileErr != nil {
 		t.Logf("compile note: %v", compileErr)
 	} else {
 		t.Logf("respond display=%q", compiled.DisplayText)
@@ -474,7 +476,7 @@ func livePublicRespondWithTools(
 	phases := make([]string, 0, 6)
 	retrieval := memory.RetrievalContext{}
 	socialStarted := time.Now()
-	social, err := service.retrieveSocialRespondContext(ctx, "character-1", "conversation-1", resolved, intent, ambientSenderIDs(messages))
+	social, err := service.retrieveSocialRespondContext(ctx, "character-1", "conversation-1", resolved, intent, participation.SenderIDs(messages))
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -514,7 +516,7 @@ func livePublicRespondWithTools(
 			{Type: model.PromptItemContextData, Content: `{"contextType":"available_visual_states","states":[{"id":"idle","description":"待机"}]}`},
 		}
 		if social != nil && !social.Memory.Empty() {
-			item, encErr := encodeSocialMemoryContext(social.Memory)
+			item, encErr := persona.EncodeSocialMemoryContext(social.Memory)
 			if encErr != nil {
 				return "", nil, nil, encErr
 			}

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"fairy/internal/app/extraction"
+	"fairy/extraction"
 	"fairy/memory"
 	"fairy/model"
 )

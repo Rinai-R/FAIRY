@@ -1,15 +1,12 @@
 package companion
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
-	"fairy/model"
-
 	contracts "fairy/contracts/interaction"
-	domain "fairy/internal/domain/interaction"
+	domain "fairy/interaction"
 )
 
 type interactionContextPayload struct {
@@ -74,18 +71,6 @@ func interactionSegment(resolved domain.Resolved) (interactionContextPayload, er
 		payload.MemoryVisibilityHint = "Only verified public knowledge and public social context from this group may be used. Never reveal or imply private profile, preference, experience, or relationship memory."
 	}
 	return payload, nil
-}
-
-func encodeInteractionContext(resolved domain.Resolved) (model.PromptItem, error) {
-	segment, err := interactionSegment(resolved)
-	if err != nil {
-		return model.PromptItem{}, err
-	}
-	payload, err := json.Marshal(segment)
-	if err != nil {
-		return model.PromptItem{}, fmt.Errorf("serializing interaction context: %w", err)
-	}
-	return model.PromptItem{Type: model.PromptItemContextData, Content: string(payload)}, nil
 }
 
 func (s *CompanionService) BindInteraction(conversationID string, binding contracts.Binding) error {

@@ -3,7 +3,7 @@ package runtime
 import (
 	"errors"
 
-	"fairy/internal/app/participation"
+	"fairy/participation"
 	"fairy/pkg/eventstream"
 )
 

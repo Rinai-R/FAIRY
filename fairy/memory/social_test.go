@@ -18,7 +18,7 @@ func validSocialMemoryBatch() SocialMemoryBatchInput {
 
 func TestValidateSocialMemoryBatchRejectsRawOrInvalidCandidates(t *testing.T) {
 	valid := validSocialMemoryBatch()
-	if err := validateSocialMemoryBatch(valid); err != nil {
+	if err := ValidateSocialMemoryBatch(valid); err != nil {
 		t.Fatal(err)
 	}
 	tests := []struct {
@@ -37,7 +37,7 @@ func TestValidateSocialMemoryBatchRejectsRawOrInvalidCandidates(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			input := validSocialMemoryBatch()
 			test.mutate(&input)
-			if err := validateSocialMemoryBatch(input); err == nil {
+			if err := ValidateSocialMemoryBatch(input); err == nil {
 				t.Fatal("invalid social memory batch accepted")
 			}
 		})
@@ -49,7 +49,7 @@ func TestValidateSocialReplyFeedbackAllowsEmptyEntries(t *testing.T) {
 		CharacterID: "character-1", ConversationID: "conversation-1", TurnID: "turn-1",
 		Outcome: SocialFeedbackUnknown,
 	}
-	if err := validateSocialReplyFeedback(input); err != nil {
+	if err := ValidateSocialReplyFeedback(input); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 
-	"fairy/internal/app/participation"
-	"fairy/internal/app/sociallearning"
+	"fairy/participation"
+	"fairy/sociallearning"
 
 	"go.uber.org/zap"
 
-	domain "fairy/internal/domain/interaction"
+	domain "fairy/interaction"
 )
 
 type AmbientInbox = participation.Inbox
@@ -34,9 +34,6 @@ func (s *CompanionService) ObserveAmbient(conversationID string, observation Amb
 	}
 	return s.ambient.Observe(conversationID, observation)
 }
-
-var FormatAmbientTurnInput = participation.FormatAmbientTurnInput
-var ambientSenderIDs = participation.SenderIDs
 
 type ambientHost struct {
 	service *CompanionService
@@ -88,12 +85,7 @@ func (h ambientHost) EmitParticipation(event participation.Event) {
 	if h.service == nil {
 		return
 	}
-	h.service.emitParticipationEvent(ParticipationEvent{
-		ConversationID: event.ConversationID, Generation: event.Generation,
-		EvaluationReason: event.EvaluationReason, Action: event.Action,
-		TargetMessageID: event.TargetMessageID, WaitSeconds: event.WaitSeconds,
-		Usage: event.Usage, ObservedAt: event.ObservedAt,
-	})
+	h.service.emitParticipationEvent(ParticipationEvent(event))
 }
 
 func (h ambientHost) RecordParticipation(traceIDs []string, targetTraceID, action string) {

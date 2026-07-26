@@ -6,7 +6,7 @@ import (
 
 	"fairy/memory"
 
-	domain "fairy/internal/domain/interaction"
+	domain "fairy/interaction"
 )
 
 func (s *CompanionService) retrieveCompanionPortrait(ctx context.Context, characterID, query string, resolved domain.Resolved) (memory.RetrievalContext, error) {

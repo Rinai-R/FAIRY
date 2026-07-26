@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"fairy/companion"
-	"fairy/internal/bootstrap"
 	"fairy/model"
 )
 
@@ -38,7 +37,5 @@ func Domains() []Domain {
 	}
 	return result
 }
-
-type Dependencies = bootstrap.Dependencies
 
 var _ companion.ModelPort = (*model.ModelService)(nil)

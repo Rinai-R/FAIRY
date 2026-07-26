@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"fairy/internal/app/reply"
 	"fairy/model"
+	"fairy/reply"
 )
 
 func TestTurnLifecycleHappyPathJSONShape(t *testing.T) {

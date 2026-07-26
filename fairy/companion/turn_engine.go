@@ -11,18 +11,19 @@ import (
 
 	"fairy/character"
 	"fairy/config"
-	replyapp "fairy/internal/app/reply"
-	"fairy/internal/app/sociallearning"
 	"fairy/memory"
 	"fairy/model"
+	"fairy/persona"
 	"fairy/profile"
+	replyapp "fairy/reply"
 	"fairy/search"
+	"fairy/sociallearning"
 
 	"go.uber.org/zap"
 
 	contracts "fairy/contracts/interaction"
 	obs "fairy/contracts/observation"
-	appobs "fairy/internal/app/observation"
+	appobs "fairy/observation"
 )
 
 // TurnEngine owns direct/ambient turn submission and cancellation.
@@ -302,7 +303,7 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 			attempt := modelCallAttempts
 			var slots []ContextSlot
 			if socialContext == nil {
-				slots, err = BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval, resolved)
+				slots, err = persona.BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval, resolved)
 			} else {
 				slots, err = BuildRespondContextSlotsWithSocial(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval, resolved, *socialContext)
 			}
@@ -318,7 +319,7 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 			if retrievalOmitReason != "" && retrieval.Empty() {
 				setContextSlotOmitReason(slots, "retrieved_context", retrievalOmitReason)
 			}
-			input := PromptItemsFromContextSlots(slots)
+			input := persona.PromptItemsFromContextSlots(slots)
 			cacheInput := model.NewCacheKeyInput(model.PromptLaneRespond, connectionConfig.Model, request.ConversationID, instructions)
 			cacheInput.CharacterRevision = characterRecord.Revision
 			cacheInput.ProfileRevision = profileRevisionValue(userProfile)
@@ -337,7 +338,7 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 				CacheInput: &cacheInput,
 			}
 			var executeRequest model.CompiledPromptRequest
-			continuationMode := "decide"
+			var continuationMode string
 			if modelDrivenTools > 0 {
 				// Retrieval changed mid-turn after tools; always full request.
 				var matErr error

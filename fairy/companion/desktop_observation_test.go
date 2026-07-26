@@ -3,7 +3,7 @@ package companion
 import (
 	contracts "fairy/contracts/interaction"
 	obs "fairy/contracts/observation"
-	appobs "fairy/internal/app/observation"
+	appobs "fairy/observation"
 	"testing"
 	"time"
 )

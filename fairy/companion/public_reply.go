@@ -8,8 +8,9 @@ import (
 	"strings"
 
 	"fairy/memory"
+	"fairy/reply"
 
-	domain "fairy/internal/domain/interaction"
+	domain "fairy/interaction"
 )
 
 func socialMemoryQuery(intent ReplyIntent) string {
@@ -128,7 +129,7 @@ var publicPeerIdentityPatterns = []*regexp.Regexp{
 }
 
 func compileReplyForInteraction(draft string, availableVisualStates []VisualState, resolved domain.Resolved, intent *ReplyIntent) (CompiledReply, error) {
-	reply, err := CompileReply(draft, availableVisualStates)
+	reply, err := reply.CompileReply(draft, availableVisualStates)
 	if err != nil {
 		return CompiledReply{}, err
 	}

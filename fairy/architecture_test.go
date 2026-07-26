@@ -53,12 +53,15 @@ func TestNoPackageImportsWails(t *testing.T) {
 func TestDomainPackagesDoNotImportCompositionOrTransport(t *testing.T) {
 	domains := []string{
 		"./companion",
-		"./internal/domain/persona",
-		"./internal/app/participation",
-		"./internal/app/reply",
-		"./internal/app/sociallearning",
-		"./internal/app/observation",
-		"./internal/domain/interaction",
+		"./compaction",
+		"./extraction",
+		"./observation",
+		"./participation",
+		"./proactive",
+		"./reply",
+		"./sociallearning",
+		"./persona",
+		"./interaction",
 		"./memory",
 		"./model",
 		"./profile",
@@ -95,7 +98,7 @@ func TestDomainPackagesDoNotImportCompositionOrTransport(t *testing.T) {
 }
 
 func TestModelCallSitesProvideExplicitCacheIdentity(t *testing.T) {
-	for _, directory := range []string{"companion", "internal/app/participation", "internal/app/sociallearning"} {
+	for _, directory := range []string{"companion", "participation", "sociallearning"} {
 		files, err := filepath.Glob(filepath.Join(directory, "*.go"))
 		if err != nil {
 			t.Fatal(err)

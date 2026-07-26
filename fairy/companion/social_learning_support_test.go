@@ -9,9 +9,9 @@ import (
 
 	"fairy/character"
 	"fairy/config"
-	"fairy/internal/app/sociallearning"
 	"fairy/memory"
 	"fairy/model"
+	"fairy/sociallearning"
 )
 
 func socialLearningObservations() []AmbientObservation {
@@ -40,16 +40,13 @@ func TestParticipationBehaviorContextKeepsOnlyBehaviorEntries(t *testing.T) {
 type socialLearningMemory struct {
 	MemoryPort
 	mu                     sync.Mutex
-	stored                 []memory.SocialMemoryBatchInput
 	storeErr               error
-	upserted               []memory.SocialPersonNoteInput
 	upsertErr              error
 	retrieved              memory.SocialMemoryContext
 	retrieveErr            error
 	retrieveCharacterID    string
 	retrieveConversationID string
 	retrieveQuery          string
-	feedback               []memory.SocialReplyFeedbackInput
 	feedbackErr            error
 	feedbackSummary        memory.RecentSocialFeedbackSummary
 	feedbackSummaryErr     error
@@ -66,14 +63,7 @@ func (m *socialLearningMemory) StoreSocialMemoryEntries(_ context.Context, input
 	if m.storeErr != nil {
 		return nil, m.storeErr
 	}
-	m.stored = append(m.stored, input)
 	return []memory.SocialMemoryEntry{{ID: "entry-1"}}, nil
-}
-
-func (m *socialLearningMemory) storedCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.stored)
 }
 
 func (m *socialLearningMemory) RetrieveSocialMemoryContext(_ context.Context, characterID, conversationID, query string) (memory.SocialMemoryContext, error) {
@@ -91,7 +81,6 @@ func (m *socialLearningMemory) RecordSocialReplyFeedback(_ context.Context, inpu
 	if m.feedbackErr != nil {
 		return memory.SocialReplyFeedback{}, m.feedbackErr
 	}
-	m.feedback = append(m.feedback, input)
 	return memory.SocialReplyFeedback{ID: "feedback-1", Outcome: input.Outcome}, nil
 }
 
@@ -108,24 +97,11 @@ func (m *socialLearningMemory) UpsertSocialPersonNote(_ context.Context, input m
 	if m.upsertErr != nil {
 		return memory.SocialPersonNote{}, m.upsertErr
 	}
-	m.upserted = append(m.upserted, input)
 	return memory.SocialPersonNote{ID: "note-1", CharacterID: input.CharacterID, ConversationID: input.ConversationID, SenderID: input.SenderID, SenderName: input.SenderName, Note: input.Note}, nil
-}
-
-func (m *socialLearningMemory) upsertedNotes() []memory.SocialPersonNoteInput {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return append([]memory.SocialPersonNoteInput(nil), m.upserted...)
 }
 
 func (m *socialLearningMemory) ListSocialPersonNotes(context.Context, string, string, []string) ([]memory.SocialPersonNote, error) {
 	return nil, nil
-}
-
-func (m *socialLearningMemory) feedbackInputs() []memory.SocialReplyFeedbackInput {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return append([]memory.SocialReplyFeedbackInput(nil), m.feedback...)
 }
 
 type socialLearningModel struct {
@@ -184,10 +160,6 @@ func newSocialLearningTestService(memoryPort MemoryPort, modelPort ModelPort) *C
 	service.cfg = socialLearningConfig{}
 	service.interactions["conversation-1"] = publicAmbientBinding()
 	return service
-}
-
-func validSocialLearningDraft() string {
-	return `{"entries":[{"kind":"episode","situation":"群友谈论求职准备","content":"群内会交换整理项目经历的建议","recallCue":"求职或实习准备","sourceMessageIds":["m1","m2"]}]}`
 }
 
 func TestRetrieveSocialRespondContextUsesPublicConversationScope(t *testing.T) {

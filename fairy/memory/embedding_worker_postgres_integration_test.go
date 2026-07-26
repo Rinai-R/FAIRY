@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	vectorindex "fairy/internal/adapters/memory/qdrant"
 	"fairy/memory/semantic"
 	pgstore "fairy/postgres"
+	vectorindex "fairy/vectorindex"
 
 	"github.com/google/uuid"
 )
@@ -101,17 +101,18 @@ func TestPostgresEmbeddingWorkerReclaimsAfterQdrantUpsertCrash(t *testing.T) {
 	if err := pgstore.Migrate(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	store, err := newStoreFromPoolWithLease(pool, "worker-crash", time.Minute)
+	store, err := NewStoreFromPoolWithLease(pool, "worker-crash", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	index := openIsolatedWorkerVectorIndex(t, ctx)
 	record := seedPostgresEmbeddingMemory(t, ctx, store, "worker-crash", "需要幂等写入的记忆")
-	jobs, err := store.claimEmbeddingJobsPostgres(ctx, 1, nowUnixMS())
+	now := time.Now().UnixMilli()
+	jobs, err := ClaimEmbeddingJobs(ctx, pool.Raw(), SemanticEmbeddingModelID, SemanticEmbeddingDimensions, now, 1, "worker-crash", now+time.Minute.Milliseconds())
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("claim = %#v, %v", jobs, err)
 	}
-	payload, err := store.embeddingJobPayloadPostgres(ctx, jobs[0])
+	payload, err := LoadEmbeddingJobPayload(ctx, pool.Raw(), jobs[0], "personal_memory", "knowledge")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +128,7 @@ func TestPostgresEmbeddingWorkerReclaimsAfterQdrantUpsertCrash(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Raw().Exec(ctx, "UPDATE memory_embedding_jobs SET lease_expires_at_ms = $2 WHERE id = $1", jobs[0].ID, nowUnixMS()-1); err != nil {
+	if _, err := pool.Raw().Exec(ctx, "UPDATE memory_embedding_jobs SET lease_expires_at_ms = $2 WHERE id = $1", jobs[0].ID, time.Now().UnixMilli()-1); err != nil {
 		t.Fatal(err)
 	}
 	result, err := store.ProcessEmbeddingJobsWithVectorIndex(ctx, postgresWorkerEmbedder{vector: vector}, index, 1)
@@ -202,7 +203,7 @@ func TestPostgresEmbeddingWorkerRejectsNonFiniteVectorBeforeUpsert(t *testing.T)
 	if err := pool.Raw().QueryRow(ctx, "SELECT status, error_code, retryable FROM memory_embedding_jobs WHERE item_id = $1", record.ID).Scan(&status, &code, &retryable); err != nil {
 		t.Fatal(err)
 	}
-	if status != "failed" || code != embeddingJobErrorInvalidVector || retryable {
+	if status != "failed" || code != "invalid_vector" || retryable {
 		t.Fatalf("status=%q code=%q retryable=%v", status, code, retryable)
 	}
 }

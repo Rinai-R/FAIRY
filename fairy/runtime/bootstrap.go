@@ -2,27 +2,50 @@ package runtime
 
 import (
 	"errors"
-
-	"fairy/internal/bootstrap"
 )
 
-type (
-	BootstrapOptions = bootstrap.StatusOptions
-	BootstrapStatus  = bootstrap.Status
-)
+// BootstrapOptions configures the Core process identity reported by /v1/status.
+type BootstrapOptions struct {
+	AppName                string
+	MigrationStage         string
+	CoreVersion            string
+	RespondRuntimeMigrated bool
+}
 
-// BootstrapService exposes immutable Core bootstrap status via the runtime facade.
+// BootstrapStatus is returned by GET /v1/status.
+type BootstrapStatus struct {
+	AppName                string `json:"appName"`
+	MigrationStage         string `json:"migrationStage"`
+	CoreVersion            string `json:"coreVersion"`
+	RespondRuntimeMigrated bool   `json:"respondRuntimeMigrated"`
+}
+
+// BootstrapService exposes immutable Core bootstrap status.
 type BootstrapService struct {
-	inner *bootstrap.StatusService
+	status BootstrapStatus
 }
 
 func NewBootstrapService(options BootstrapOptions) *BootstrapService {
-	return &BootstrapService{inner: bootstrap.NewStatusService(options)}
+	return &BootstrapService{status: BootstrapStatus{
+		AppName:                options.AppName,
+		MigrationStage:         options.MigrationStage,
+		CoreVersion:            options.CoreVersion,
+		RespondRuntimeMigrated: options.RespondRuntimeMigrated,
+	}}
 }
 
 func (s *BootstrapService) Status() (BootstrapStatus, error) {
-	if s == nil || s.inner == nil {
+	if s == nil {
 		return BootstrapStatus{}, errors.New("bootstrap service is not initialised")
 	}
-	return s.inner.Snapshot()
+	if s.status.AppName == "" {
+		return BootstrapStatus{}, errors.New("bootstrap status missing app name")
+	}
+	if s.status.MigrationStage == "" {
+		return BootstrapStatus{}, errors.New("bootstrap status missing migration stage")
+	}
+	if s.status.CoreVersion == "" {
+		return BootstrapStatus{}, errors.New("bootstrap status missing core version")
+	}
+	return s.status, nil
 }
