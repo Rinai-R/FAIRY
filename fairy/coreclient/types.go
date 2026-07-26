@@ -40,6 +40,8 @@ type (
 	AmbientObservation    = session.AmbientObservation
 	ParticipationRequest  = session.ParticipationRequest
 	ParticipationResponse = session.ParticipationResponse
+	DesktopCaptureRequest = session.DesktopCaptureRequest
+	DesktopCaptureResult  = session.DesktopCaptureResult
 	SubmitTurnRequest     = turn.SubmitRequest
 	TurnOutcome           = turn.Outcome
 	SubmitTurnResponse    = turn.SubmitResponse

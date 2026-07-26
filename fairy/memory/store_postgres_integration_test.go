@@ -1355,7 +1355,10 @@ func seedPostgresRunningExtractionBatch(t *testing.T, ctx context.Context, _ *pg
 	if err != nil || batch == nil {
 		t.Fatalf("claiming seeded extraction batch = %#v, %v", batch, err)
 	}
-	return bootstrap.Conversation.ID, turn.ID, batch.BatchID
+	if len(batch.Turns) != 1 {
+		t.Fatalf("seeded extraction batch turns = %#v, want one", batch.Turns)
+	}
+	return bootstrap.Conversation.ID, batch.Turns[0].TurnID, batch.BatchID
 }
 
 func seedPostgresRunningExtractionBatchWithTurns(t *testing.T, ctx context.Context, _ *pgstore.Pool, store *Store, characterID string, count int) (string, []string, string) {
@@ -1381,6 +1384,13 @@ func seedPostgresRunningExtractionBatchWithTurns(t *testing.T, ctx context.Conte
 	batch, err := store.ClaimExtractionBatchContext(ctx, bootstrap.Conversation.ID, count)
 	if err != nil || batch == nil {
 		t.Fatalf("claiming seeded extraction batch = %#v, %v", batch, err)
+	}
+	if len(batch.Turns) != count {
+		t.Fatalf("seeded extraction batch turns = %#v, want %d", batch.Turns, count)
+	}
+	turnIDs = turnIDs[:0]
+	for _, batchTurn := range batch.Turns {
+		turnIDs = append(turnIDs, batchTurn.TurnID)
 	}
 	return bootstrap.Conversation.ID, turnIDs, batch.BatchID
 }

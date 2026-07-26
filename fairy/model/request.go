@@ -108,6 +108,12 @@ func BuildRequestDraft(connection Connection, request CompiledPromptRequest) (Re
 			return RequestDraft{}, errors.New("cache key model does not match request model")
 		}
 	}
+	if err := validatePromptItems(connection, request.Input); err != nil {
+		return RequestDraft{}, err
+	}
+	if request.PreviousResponseID != "" && promptItemsContainToolResult(request.Input) {
+		return RequestDraft{}, errors.New("tool result requires a full request rebuild")
+	}
 	endpoint, err := protocolURL(connection.Endpoint, connection.Protocol)
 	if err != nil {
 		return RequestDraft{}, err
@@ -197,35 +203,21 @@ func requestBody(connection Connection, request CompiledPromptRequest) (any, err
 }
 
 type openAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string         `json:"role"`
+	Content    any            `json:"content,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
 }
 
-func mapPromptItems(items []PromptItem, lane PromptLane) ([]openAIMessage, error) {
-	messages := make([]openAIMessage, 0, len(items))
-	for _, item := range items {
-		switch item.Type {
-		case PromptItemUserMessage, PromptItemContextData:
-			messages = append(messages, openAIMessage{Role: "user", Content: item.Content})
-		case PromptItemAssistantMessage:
-			content := item.Content
-			if lane == PromptLaneRespond {
-				encoded, err := json.Marshal(struct {
-					Chains []replyChain `json:"chains"`
-				}{
-					Chains: []replyChain{{VisualState: "idle", Text: item.Content}},
-				})
-				if err != nil {
-					return nil, fmt.Errorf("serializing assistant reply chain history: %w", err)
-				}
-				content = string(encoded)
-			}
-			messages = append(messages, openAIMessage{Role: "assistant", Content: content})
-		default:
-			return nil, fmt.Errorf("prompt item type %q is not supported", item.Type)
-		}
-	}
-	return messages, nil
+type chatToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function chatToolFunction `json:"function"`
+}
+
+type chatToolFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 type replyChain struct {
@@ -236,7 +228,7 @@ type replyChain struct {
 type responsesRequestBody struct {
 	Model              string           `json:"model"`
 	Instructions       string           `json:"instructions"`
-	Input              []openAIMessage  `json:"input"`
+	Input              []any            `json:"input"`
 	PreviousResponseID string           `json:"previous_response_id,omitempty"`
 	MaxOutputTokens    uint32           `json:"max_output_tokens"`
 	Store              bool             `json:"store"`
@@ -255,7 +247,7 @@ type textFormat struct {
 }
 
 func responsesBody(connection Connection, request CompiledPromptRequest) (responsesRequestBody, error) {
-	input, err := mapPromptItems(request.Input, request.Shape.Lane)
+	input, err := mapResponsesPromptItems(request.Input, request.Shape.Lane)
 	if err != nil {
 		return responsesRequestBody{}, err
 	}
@@ -316,7 +308,7 @@ func chatCompletionsBody(connection Connection, request CompiledPromptRequest) (
 	if request.PreviousResponseID != "" {
 		return chatCompletionsRequestBody{}, errors.New("chat completions does not support previous response id")
 	}
-	messages, err := mapPromptItems(request.Input, request.Shape.Lane)
+	messages, err := mapChatPromptItems(request.Input, request.Shape.Lane)
 	if err != nil {
 		return chatCompletionsRequestBody{}, err
 	}

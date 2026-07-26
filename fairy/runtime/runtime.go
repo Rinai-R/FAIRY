@@ -46,6 +46,7 @@ type Runtime struct {
 	Logger        *zap.Logger
 	Events        *EventHub
 	Participation *ParticipationHub
+	Captures      *CaptureHub
 	Logs          *observability.LogStore
 	HTTPMetrics   *observability.HTTPMetrics
 	Messages      *observability.MessageMetrics
@@ -137,6 +138,7 @@ func Open(options Options) (*Runtime, error) {
 		Logger:        logger,
 		Events:        NewEventHub(),
 		Participation: NewParticipationHub(),
+		Captures:      NewCaptureHub(opened.MemoryStore),
 		Logs:          logStore,
 		HTTPMetrics:   httpMetrics,
 		Messages:      messageMetrics,
@@ -164,12 +166,16 @@ func Open(options Options) (*Runtime, error) {
 		ownDatabase: opened.OwnDatabase,
 		ownVector:   opened.OwnVector,
 	}
+	if err := rt.Captures.SettleRecovered(context.Background()); err != nil {
+		return nil, fmt.Errorf("settling recovered desktop captures: %w", err)
+	}
 
 	companion.AttachLogger(services.Companion, logger.Named("companion"))
 	companion.AttachMessageTelemetry(services.Companion, messageMetrics)
 	companion.AttachCharacterCatalog(services.Companion, services.Character.CatalogStore())
 	companion.AttachProfileSource(services.Companion, services.Profile.ProfileStore())
 	companion.AttachConfigSource(services.Companion, services.ConfigReader)
+	companion.AttachDesktopToolCoordinator(services.Companion, rt.Captures)
 	companion.AttachSpeechSynthesizer(services.Companion, companionSpeechAdapter{service: services.Speech})
 	attachSemanticEmbedder(services.Companion, services.Model, services.ConfigReader, logger.Named("semantic"))
 	if opened.VectorIndex != nil {
@@ -206,6 +212,7 @@ func (rt *Runtime) Close() error {
 		rt.closeErr = rt.Companion.Close()
 		rt.Events.Close()
 		rt.Participation.Close()
+		rt.Captures.Close()
 		rt.Messages.Close()
 		rt.Logs.Close()
 		if rt.ownVector && rt.VectorIndex != nil {

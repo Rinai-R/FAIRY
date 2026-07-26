@@ -60,6 +60,7 @@ type CompanionService struct {
 	participation     *ParticipationEngine
 	desktopAttention  *proactive.AttentionEvaluator
 	desktopEvidence   *proactive.EvidenceRegistry
+	desktopTool       DesktopToolCoordinator
 	socialLearning    *sociallearning.LearningEngine
 	socialFeedback    *sociallearning.FeedbackEngine
 }
@@ -401,6 +402,13 @@ func (s *CompanionService) SubmitDesktopInitiation(request DesktopInitiationRequ
 		return TurnOutcome{}, ErrRespondRuntimeNotMigrated
 	}
 	return s.turns.SubmitDesktopInitiation(request, observation)
+}
+
+func (s *CompanionService) SubmitDesktopVisionInitiation(request DesktopVisionInitiationRequest) (TurnOutcome, error) {
+	if s == nil || s.turns == nil {
+		return TurnOutcome{}, ErrRespondRuntimeNotMigrated
+	}
+	return s.turns.SubmitDesktopVisionInitiation(request)
 }
 
 func (s *CompanionService) CancelTurn(conversationID string, turnID string) error {

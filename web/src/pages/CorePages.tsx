@@ -321,6 +321,7 @@ export function ModelPage({ onToast }: { onToast: (m: string, e?: boolean) => vo
   const [model, setModel] = useState("");
   const [contextWindowTokens, setCtx] = useState("1048576");
   const [authMode, setAuthMode] = useState("bearer_key");
+  const [visionInput, setVisionInput] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [configured, setConfigured] = useState(false);
 
@@ -333,6 +334,7 @@ export function ModelPage({ onToast }: { onToast: (m: string, e?: boolean) => vo
       setModel(s.model || "");
       setCtx(String(s.contextWindowTokens || 1048576));
       setAuthMode(s.authMode || "bearer_key");
+      setVisionInput(Boolean(s.capabilities?.visionInput));
     }
   }
 
@@ -383,6 +385,9 @@ export function ModelPage({ onToast }: { onToast: (m: string, e?: boolean) => vo
         <Field label="API Key" hint="留空则保留已保存的密钥。">
           <TextField.Root type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
         </Field>
+        <Field label="视觉输入" hint="仅在确认当前模型支持图片输入时启用。">
+          <Switch checked={visionInput} onCheckedChange={setVisionInput} aria-label="视觉输入" />
+        </Field>
         <div className="form-actions">
           <Button
             color="tomato"
@@ -406,6 +411,7 @@ export function ModelPage({ onToast }: { onToast: (m: string, e?: boolean) => vo
                 model,
                 contextWindowTokens: Number(contextWindowTokens),
                 authMode,
+                visionInput,
               };
               if (apiKey.trim()) body.apiKey = apiKey.trim();
               void api("/config/model", { method: "PUT", body: JSON.stringify(body) })

@@ -189,6 +189,49 @@ func (groupWebIntegrationConfig) WebSearchSettings() (config.WebSearchSettings, 
 	return config.WebSearchSettings{SchemaVersion: 1, Enabled: true}, nil
 }
 
+type visionCompanionIntegrationConfig struct{ companionIntegrationConfig }
+
+func (visionCompanionIntegrationConfig) ModelConnection() (config.ModelConnection, error) {
+	connection, err := (companionIntegrationConfig{}).ModelConnection()
+	connection.Capabilities.VisionInput = true
+	return connection, err
+}
+
+type desktopToolIntegrationCoordinator struct {
+	available bool
+	calls     int
+}
+
+func (coordinator *desktopToolIntegrationCoordinator) Available(string) bool {
+	return coordinator.available
+}
+func (coordinator *desktopToolIntegrationCoordinator) CancelTurn(context.Context, string, string) error {
+	return nil
+}
+func (coordinator *desktopToolIntegrationCoordinator) Observe(_ context.Context, request DesktopToolRequest) (DesktopToolEvidence, error) {
+	coordinator.calls++
+	return DesktopToolEvidence{
+		ExecutionID: "execution-1", MediaType: "image/png", Width: 1, Height: 1,
+		DataURL: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+	}, nil
+}
+
+type desktopToolIntegrationModel struct {
+	requests []model.CompiledPromptRequest
+}
+
+func (provider *desktopToolIntegrationModel) ExecuteRequestContext(_ context.Context, request model.CompiledPromptRequest) ([]model.StreamEvent, error) {
+	provider.requests = append(provider.requests, request)
+	if len(provider.requests) == 1 {
+		return []model.StreamEvent{{Type: "function_calls", FunctionCalls: []model.FunctionCall{{CallID: "desktop-call-1", Name: toolDesktopObserve, Arguments: `{}`}}}}, nil
+	}
+	return companionIntegrationModel{chains: []ReplyChain{{VisualState: "idle", Text: "我看到了，我们继续。"}}}.ExecuteRequestContext(context.Background(), request)
+}
+
+func (*desktopToolIntegrationModel) ExecutePrompt(model.PromptLane, string, uint32, []model.PromptItem, string) ([]model.StreamEvent, error) {
+	return nil, errors.New("unexpected ExecutePrompt")
+}
+
 type groupWebIntegrationModel struct {
 	mu       sync.Mutex
 	requests []model.CompiledPromptRequest
@@ -302,6 +345,105 @@ func TestPostgresCompanionMultiBeatCompletesWithPacing(t *testing.T) {
 	}
 	if !hasRuntimeLedgerType(ledger, runtimeLedgerEventBeatDelivery) {
 		t.Fatalf("ledger missing beat_delivery: %#v", ledger)
+	}
+}
+
+func TestPostgresDesktopToolResumesSameTurnWithFullMultimodalRequest(t *testing.T) {
+	store, pool, cleanup := openCompanionIntegrationStore(t)
+	defer cleanup()
+	bootstrap, err := store.OpenOrCreateCharacterConversation("character-desktop-tool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &desktopToolIntegrationModel{}
+	coordinator := &desktopToolIntegrationCoordinator{available: true}
+	service := newCompanionIntegrationService(store, "character-desktop-tool", provider)
+	AttachConfigSource(service, visionCompanionIntegrationConfig{})
+	AttachDesktopToolCoordinator(service, coordinator)
+	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
+	outcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+		ConversationID: bootstrap.Conversation.ID, Input: "看看我屏幕上的内容",
+		MaxOutputTokens: 160, AvailableVisualStates: []VisualState{{ID: "idle", Description: "idle"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if coordinator.calls != 1 || len(provider.requests) != 2 {
+		t.Fatalf("tool calls=%d model requests=%d", coordinator.calls, len(provider.requests))
+	}
+	firstTools := provider.requests[0].Tools
+	if len(firstTools) == 0 || firstTools[len(firstTools)-1].Name != toolDesktopObserve {
+		t.Fatalf("first request tools = %#v", firstTools)
+	}
+	second := provider.requests[1]
+	if second.PreviousResponseID != "" {
+		t.Fatalf("post-tool request reused previous response %q", second.PreviousResponseID)
+	}
+	var toolCall, toolResult, image bool
+	for _, item := range second.Input {
+		switch item.Type {
+		case model.PromptItemToolCall:
+			toolCall = item.ToolCallID == "desktop-call-1" && item.ToolName == toolDesktopObserve
+		case model.PromptItemToolResult:
+			toolResult = item.ToolCallID == "desktop-call-1"
+			if item.Parts != nil {
+				for _, part := range *item.Parts {
+					image = image || part.Type == model.PromptContentImage
+				}
+			}
+		}
+	}
+	if !toolCall || !toolResult || !image {
+		t.Fatalf("post-tool input missing correlated multimodal result: %#v", second.Input)
+	}
+	reloaded, err := store.LoadConversation(bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Messages) != 2 || reloaded.Messages[1].TurnID != outcome.TurnID {
+		t.Fatalf("same-turn transcript = %#v", reloaded.Messages)
+	}
+	ledger, err := store.ListTurnRuntimeEvents(outcome.ConversationID, outcome.TurnID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range ledger {
+		if strings.Contains(event.MetadataJSON, "data:image/") || strings.Contains(event.MetadataJSON, "iVBOR") {
+			t.Fatalf("runtime ledger persisted capture content: %s", event.MetadataJSON)
+		}
+	}
+	assertPostgresDoesNotContain(t, pool, "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB")
+}
+
+func TestPostgresDesktopVisionInitiationCreatesZeroMessageTurn(t *testing.T) {
+	store, _, cleanup := openCompanionIntegrationStore(t)
+	defer cleanup()
+	bootstrap, err := store.OpenOrCreateCharacterConversation("character-proactive-desktop-tool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &desktopToolIntegrationModel{}
+	coordinator := &desktopToolIntegrationCoordinator{available: true}
+	service := newCompanionIntegrationService(store, "character-proactive-desktop-tool", provider)
+	AttachConfigSource(service, visionCompanionIntegrationConfig{})
+	AttachDesktopToolCoordinator(service, coordinator)
+	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
+	outcome, err := service.SubmitDesktopVisionInitiation(DesktopVisionInitiationRequest{ConversationID: bootstrap.Conversation.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := store.LoadConversation(bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Messages) != 1 || reloaded.Messages[0].Role != "assistant" || reloaded.Messages[0].TurnID != outcome.TurnID {
+		t.Fatalf("zero-message transcript = %#v", reloaded.Messages)
+	}
+	if coordinator.calls != 1 || len(provider.requests) != 2 {
+		t.Fatalf("proactive tool calls=%d model requests=%d", coordinator.calls, len(provider.requests))
+	}
+	if !strings.Contains(provider.requests[0].Shape.Instructions, "private zero-message turn") {
+		t.Fatalf("proactive instructions = %q", provider.requests[0].Shape.Instructions)
 	}
 }
 
@@ -1001,6 +1143,43 @@ func hasRuntimeLedgerType(events []memory.TurnRuntimeEventRecord, eventType stri
 		}
 	}
 	return false
+}
+
+func assertPostgresDoesNotContain(t *testing.T, pool *pgxpool.Pool, fixture string) {
+	t.Helper()
+	rows, err := pool.Query(t.Context(), `
+SELECT table_name, column_name
+FROM information_schema.columns
+WHERE table_schema = current_schema()
+  AND data_type IN ('text', 'character varying', 'json', 'jsonb')
+ORDER BY table_name, ordinal_position`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	type column struct{ table, name string }
+	columns := make([]column, 0)
+	for rows.Next() {
+		var current column
+		if err := rows.Scan(&current.table, &current.name); err != nil {
+			t.Fatal(err)
+		}
+		columns = append(columns, current)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	for _, current := range columns {
+		tableID := pgx.Identifier{current.table}.Sanitize()
+		columnID := pgx.Identifier{current.name}.Sanitize()
+		var count int
+		if err := pool.QueryRow(t.Context(), "SELECT count(*) FROM "+tableID+" WHERE "+columnID+"::text LIKE $1", "%"+fixture+"%").Scan(&count); err != nil {
+			t.Fatalf("scan %s.%s: %v", current.table, current.name, err)
+		}
+		if count != 0 {
+			t.Fatalf("database persisted raw desktop fixture in %s.%s", current.table, current.name)
+		}
+	}
 }
 
 func openCompanionIntegrationStore(t *testing.T) (*memory.Store, *pgxpool.Pool, func()) {

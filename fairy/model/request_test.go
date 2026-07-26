@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -386,4 +387,84 @@ func TestNonRespondChatRequestStaysPlainText(t *testing.T) {
 	if messages[2].(map[string]any)["content"] != "我在" {
 		t.Fatalf("non-respond assistant history should remain plain text: %#v", messages[2])
 	}
+}
+
+func TestBuildChatCompletionsRequestMapsMultimodalToolResult(t *testing.T) {
+	conn := connection(ProtocolChatCompletions)
+	conn.Capabilities.VisionInput = true
+	req := multimodalToolRequest()
+	draft, err := BuildRequestDraft(conn, req)
+	if err != nil {
+		t.Fatalf("BuildRequestDraft() error = %v", err)
+	}
+	messages := bodyMap(t, draft)["messages"].([]any)
+	if len(messages) != 4 {
+		t.Fatalf("messages length = %d, want system + assistant call + tool result + image user", len(messages))
+	}
+	assistant := messages[1].(map[string]any)
+	toolCalls := assistant["tool_calls"].([]any)
+	if assistant["role"] != "assistant" || toolCalls[0].(map[string]any)["id"] != "call-desktop-1" {
+		t.Fatalf("assistant tool call = %#v", assistant)
+	}
+	tool := messages[2].(map[string]any)
+	if tool["role"] != "tool" || tool["tool_call_id"] != "call-desktop-1" || !strings.Contains(tool["content"].(string), "desktop capture") {
+		t.Fatalf("tool result = %#v", tool)
+	}
+	imageUser := messages[3].(map[string]any)
+	parts := imageUser["content"].([]any)
+	if imageUser["role"] != "user" || parts[1].(map[string]any)["type"] != "image_url" {
+		t.Fatalf("image user message = %#v", imageUser)
+	}
+}
+
+func TestBuildResponsesRequestMapsMultimodalToolResult(t *testing.T) {
+	conn := connection(ProtocolResponses)
+	conn.Capabilities.VisionInput = true
+	draft, err := BuildRequestDraft(conn, multimodalToolRequest())
+	if err != nil {
+		t.Fatalf("BuildRequestDraft() error = %v", err)
+	}
+	input := bodyMap(t, draft)["input"].([]any)
+	if len(input) != 3 {
+		t.Fatalf("input length = %d, want function call + output + image message", len(input))
+	}
+	call := input[0].(map[string]any)
+	if call["type"] != "function_call" || call["call_id"] != "call-desktop-1" {
+		t.Fatalf("function call = %#v", call)
+	}
+	output := input[1].(map[string]any)
+	if output["type"] != "function_call_output" || output["call_id"] != "call-desktop-1" {
+		t.Fatalf("function output = %#v", output)
+	}
+	imageMessage := input[2].(map[string]any)
+	parts := imageMessage["content"].([]any)
+	if parts[1].(map[string]any)["type"] != "input_image" {
+		t.Fatalf("image message = %#v", imageMessage)
+	}
+}
+
+func TestBuildRequestRejectsContinuationWithToolResult(t *testing.T) {
+	conn := connection(ProtocolResponses)
+	conn.Capabilities.VisionInput = true
+	req := multimodalToolRequest()
+	req.PreviousResponseID = "resp_before_tool"
+	if _, err := BuildRequestDraft(conn, req); err == nil || !strings.Contains(err.Error(), "full request rebuild") {
+		t.Fatalf("BuildRequestDraft() error = %v", err)
+	}
+}
+
+func multimodalToolRequest() CompiledPromptRequest {
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("desktop image"))
+	req := request()
+	req.Input = []PromptItem{
+		{Type: PromptItemToolCall, ToolCallID: "call-desktop-1", ToolName: "desktop_observe", ToolArguments: `{}`},
+		{
+			Type: PromptItemToolResult, ToolCallID: "call-desktop-1",
+			Parts: promptContentParts(
+				PromptContentPart{Type: PromptContentText, Text: "desktop capture completed"},
+				PromptContentPart{Type: PromptContentImage, ImageDataURL: dataURL, ImageMIME: "image/png", ImagePurpose: "desktop_observation"},
+			),
+		},
+	}
+	return req
 }

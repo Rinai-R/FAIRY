@@ -69,6 +69,29 @@ type turnRuntimeEventSchema struct {
 
 func (turnRuntimeEventSchema) TableName() string { return "turn_runtime_events" }
 
+type toolExecutionSchema struct {
+	ID                 string `gorm:"type:text;primaryKey"`
+	ConversationID     string `gorm:"type:text;not null"`
+	TurnID             string `gorm:"type:text;not null"`
+	CallID             string `gorm:"type:text;not null"`
+	ToolName           string `gorm:"type:text;not null"`
+	Status             string `gorm:"type:text;not null"`
+	DeadlineAtMS       int64  `gorm:"not null"`
+	AttemptCount       int    `gorm:"type:integer;not null;default:0"`
+	LastDispatchedAtMS *int64
+	ErrorCode          *string `gorm:"type:text"`
+	ErrorMessage       *string `gorm:"type:text"`
+	ResultMediaType    *string `gorm:"type:text"`
+	ResultWidth        *int
+	ResultHeight       *int
+	ResultByteCount    *int
+	ResultSHA256       *string `gorm:"type:text"`
+	CreatedAtMS        int64   `gorm:"not null"`
+	UpdatedAtMS        int64   `gorm:"not null"`
+}
+
+func (toolExecutionSchema) TableName() string { return "tool_executions" }
+
 type laneContinuationSchema struct {
 	ConversationID     string `gorm:"type:text;primaryKey"`
 	Lane               string `gorm:"type:text;primaryKey"`
@@ -366,6 +389,7 @@ func schemaModels() []any {
 		&conversationMessageSchema{},
 		&promptWindowSchema{},
 		&turnRuntimeEventSchema{},
+		&toolExecutionSchema{},
 		&laneContinuationSchema{},
 		&contextWindowSchema{},
 		&personalMemorySchema{},
@@ -396,6 +420,7 @@ func schemaTableNames() []string {
 		"conversation_messages",
 		"prompt_windows",
 		"turn_runtime_events",
+		"tool_executions",
 		"lane_continuations",
 		"context_windows",
 		"personal_memories",

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"fairy/contracts/interaction"
+	contractsession "fairy/contracts/session"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
@@ -30,32 +31,34 @@ var (
 )
 
 type sessionClientFrame struct {
-	Type               string                   `json:"type"`
-	RequestID          string                   `json:"requestId,omitempty"`
-	Endpoint           interaction.EndpointKind `json:"endpoint,omitempty"`
-	EndpointKey        string                   `json:"endpointKey,omitempty"`
-	Interaction        interaction.Context      `json:"interaction,omitempty"`
-	ConversationID     string                   `json:"conversationId,omitempty"`
-	EvaluationReason   string                   `json:"evaluationReason,omitempty"`
-	Messages           []AmbientObservation     `json:"messages,omitempty"`
-	Message            *AmbientObservation      `json:"message,omitempty"`
-	DesktopObservation *DesktopObservation      `json:"desktopObservation,omitempty"`
-	Input              string                   `json:"input,omitempty"`
-	SpeechEnabled      bool                     `json:"speechEnabled,omitempty"`
-	TurnID             string                   `json:"turnId,omitempty"`
+	Type               string                                `json:"type"`
+	RequestID          string                                `json:"requestId,omitempty"`
+	Endpoint           interaction.EndpointKind              `json:"endpoint,omitempty"`
+	EndpointKey        string                                `json:"endpointKey,omitempty"`
+	Interaction        interaction.Context                   `json:"interaction,omitempty"`
+	ConversationID     string                                `json:"conversationId,omitempty"`
+	EvaluationReason   string                                `json:"evaluationReason,omitempty"`
+	Messages           []AmbientObservation                  `json:"messages,omitempty"`
+	Message            *AmbientObservation                   `json:"message,omitempty"`
+	DesktopObservation *DesktopObservation                   `json:"desktopObservation,omitempty"`
+	Input              string                                `json:"input,omitempty"`
+	SpeechEnabled      bool                                  `json:"speechEnabled,omitempty"`
+	TurnID             string                                `json:"turnId,omitempty"`
+	CaptureResult      *contractsession.DesktopCaptureResult `json:"captureResult,omitempty"`
 }
 
 type sessionServerFrame struct {
-	Type           string                   `json:"type"`
-	RequestID      string                   `json:"requestId,omitempty"`
-	ConversationID string                   `json:"conversationId,omitempty"`
-	CharacterID    string                   `json:"characterId,omitempty"`
-	MessageCount   int                      `json:"messageCount,omitempty"`
-	Endpoint       interaction.EndpointKind `json:"endpoint,omitempty"`
-	Error          string                   `json:"error,omitempty"`
-	Payload        json.RawMessage          `json:"payload,omitempty"`
-	Event          *TurnEvent               `json:"event,omitempty"`
-	Participation  *ParticipationEvent      `json:"participation,omitempty"`
+	Type           string                                 `json:"type"`
+	RequestID      string                                 `json:"requestId,omitempty"`
+	ConversationID string                                 `json:"conversationId,omitempty"`
+	CharacterID    string                                 `json:"characterId,omitempty"`
+	MessageCount   int                                    `json:"messageCount,omitempty"`
+	Endpoint       interaction.EndpointKind               `json:"endpoint,omitempty"`
+	Error          string                                 `json:"error,omitempty"`
+	Payload        json.RawMessage                        `json:"payload,omitempty"`
+	Event          *TurnEvent                             `json:"event,omitempty"`
+	Participation  *ParticipationEvent                    `json:"participation,omitempty"`
+	CaptureRequest *contractsession.DesktopCaptureRequest `json:"captureRequest,omitempty"`
 	cause          error
 }
 
@@ -68,6 +71,9 @@ type SessionSocket struct {
 	pending             map[string]chan sessionServerFrame
 	turnEvents          map[string]chan TurnEvent
 	participationEvents map[string]chan ParticipationEvent
+	openedConversations map[string]interaction.EndpointKind
+	captureHandler      func(context.Context, DesktopCaptureRequest) DesktopCaptureResult
+	captureSlot         chan struct{}
 	done                chan struct{}
 	connOnce            sync.Once
 	connErr             error
@@ -108,6 +114,8 @@ func (c *Client) DialSession(ctx context.Context) (*SessionSocket, error) {
 		pending:             make(map[string]chan sessionServerFrame),
 		turnEvents:          make(map[string]chan TurnEvent),
 		participationEvents: make(map[string]chan ParticipationEvent),
+		openedConversations: make(map[string]interaction.EndpointKind),
+		captureSlot:         make(chan struct{}, 1),
 		done:                make(chan struct{}),
 	}
 	conn.SetReadLimit(maxWSFrameBytes)
@@ -224,11 +232,33 @@ func (s *SessionSocket) readLoop() {
 				return
 			}
 			s.mu.Unlock()
+		case "desktop.capture.request":
+			if frame.CaptureRequest == nil || frame.CaptureRequest.Validate() != nil {
+				continue
+			}
+			request := *frame.CaptureRequest
+			s.mu.Lock()
+			handler := s.captureHandler
+			endpoint, opened := s.openedConversations[request.ConversationID]
+			s.mu.Unlock()
+			if !opened || endpoint != interaction.EndpointDesktop {
+				go s.submitAutomaticCaptureFailure(request, "session_mismatch")
+				continue
+			}
+			select {
+			case s.captureSlot <- struct{}{}:
+				go s.handleCaptureRequest(request, handler)
+			default:
+				go s.submitAutomaticCaptureFailure(request, "capture_busy")
+			}
 		default:
 			if frame.RequestID == "" {
 				continue
 			}
 			s.mu.Lock()
+			if frame.Type == "session.opened" && frame.ConversationID != "" && frame.Endpoint != "" {
+				s.openedConversations[frame.ConversationID] = frame.Endpoint
+			}
 			ch := s.pending[frame.RequestID]
 			s.mu.Unlock()
 			if ch == nil {
@@ -239,6 +269,40 @@ func (s *SessionSocket) readLoop() {
 			default:
 			}
 		}
+	}
+}
+
+func (s *SessionSocket) handleCaptureRequest(request DesktopCaptureRequest, handler func(context.Context, DesktopCaptureRequest) DesktopCaptureResult) {
+	defer func() { <-s.captureSlot }()
+	if handler == nil {
+		s.submitAutomaticCaptureFailure(request, "capture_unavailable")
+		return
+	}
+	deadline := time.UnixMilli(request.DeadlineUnixMS)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	result := handler(ctx, request)
+	result.ExecutionID = request.ExecutionID
+	result.ConversationID = request.ConversationID
+	result.TurnID = request.TurnID
+	result.CallID = request.CallID
+	if err := result.ValidateShape(); err != nil {
+		result = captureFailureFor(request, "invalid_capture_result")
+	}
+	_ = s.SubmitCaptureResult(ctx, result)
+}
+
+func (s *SessionSocket) submitAutomaticCaptureFailure(request DesktopCaptureRequest, code string) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.UnixMilli(request.DeadlineUnixMS))
+	defer cancel()
+	_ = s.SubmitCaptureResult(ctx, captureFailureFor(request, code))
+}
+
+func captureFailureFor(request DesktopCaptureRequest, code string) DesktopCaptureResult {
+	return DesktopCaptureResult{
+		ExecutionID: request.ExecutionID, ConversationID: request.ConversationID,
+		TurnID: request.TurnID, CallID: request.CallID, Status: "failed",
+		ErrorCode: code, ErrorMessage: "desktop capture failed",
 	}
 }
 
@@ -275,6 +339,7 @@ func (s *SessionSocket) finish(err error) {
 		close(ch)
 		delete(s.participationEvents, id)
 	}
+	clear(s.openedConversations)
 	close(s.done)
 }
 
@@ -384,6 +449,29 @@ func (s *SessionSocket) OpenSession(ctx context.Context, request OpenSessionRequ
 		return OpenSessionResponse{}, errors.New("open session response is missing required fields")
 	}
 	return result, nil
+}
+
+// SetDesktopCaptureHandler installs the callback for authenticated Core push requests.
+// The callback is serialized per SessionSocket and must honor its deadline context.
+func (s *SessionSocket) SetDesktopCaptureHandler(handler func(context.Context, DesktopCaptureRequest) DesktopCaptureResult) error {
+	if s == nil {
+		return errors.New("session websocket is not open")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.closing {
+		return errSessionSocketClosed
+	}
+	s.captureHandler = handler
+	return nil
+}
+
+func (s *SessionSocket) SubmitCaptureResult(ctx context.Context, result DesktopCaptureResult) error {
+	if err := result.ValidateShape(); err != nil {
+		return err
+	}
+	_, err := s.request(ctx, sessionClientFrame{Type: "desktop.capture.result", ConversationID: result.ConversationID, CaptureResult: &result}, "ack")
+	return err
 }
 
 func (s *SessionSocket) Watch(ctx context.Context, conversationID string) (<-chan TurnEvent, error) {

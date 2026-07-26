@@ -55,11 +55,18 @@ type CoreService struct {
 	activeTurnID string
 	emit         func(string, any)
 	observation  *desktopObservationRuntime
+	capture      *desktopCaptureRuntime
 	privacy      obs.DesktopPrivacyState
 }
 
 func NewCoreService() *CoreService {
-	return &CoreService{tokens: systemTokenStore{}, newCache: newVisualCache, privacy: obs.DesktopPrivacyProtected}
+	service := &CoreService{tokens: systemTokenStore{}, newCache: newVisualCache, privacy: obs.DesktopPrivacyProtected}
+	service.capture, _ = newDesktopCaptureRuntime(newPlatformDesktopCapturer(), func() obs.DesktopPrivacyState {
+		service.mu.Lock()
+		defer service.mu.Unlock()
+		return service.privacy
+	})
+	return service
 }
 
 // attachWindows is called only from the composition root after all product
@@ -388,6 +395,17 @@ func (s *CoreService) Connect(endpoint, endpointKey string) (CoreSession, error)
 	}
 	socket, err := client.DialSession(ctx)
 	if err != nil {
+		return CoreSession{}, err
+	}
+	if err := socket.SetDesktopCaptureHandler(func(ctx context.Context, request coreclient.DesktopCaptureRequest) coreclient.DesktopCaptureResult {
+		s.mu.Lock()
+		capture := s.capture
+		s.mu.Unlock()
+		if capture == nil {
+			return failedCaptureResult("capture_unavailable")
+		}
+		return capture.Handle(ctx, request)
+	}); err != nil {
 		return CoreSession{}, err
 	}
 	closeSocket := true

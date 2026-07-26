@@ -82,7 +82,7 @@ func runtimePromptLedgerMetadata(
 	cacheSupported bool,
 ) map[string]any {
 	metadata := map[string]any{
-		"promptInputHash":            runtimeHash(input),
+		"promptInputHash":            runtimeHash(redactPromptImagesForLedger(input)),
 		"promptItemCount":            len(input),
 		"promptWindowRevision":       promptWindow.Revision,
 		"promptWindowSummaryPresent": promptWindow.Summary != nil,
@@ -130,7 +130,7 @@ func runtimeContinuationLedgerMetadata(cacheRetention bool, previous *memory.Lan
 		"previousStatePresent":    previous != nil,
 		"previousStateSource":     "sqlite_lane_continuations",
 		"requestShapeHash":        runtimeHash(fullRequest.Shape),
-		"fullInputHash":           runtimeHash(fullRequest.Input),
+		"fullInputHash":           runtimeHash(redactPromptImagesForLedger(fullRequest.Input)),
 		"fullInputItemCount":      len(fullRequest.Input),
 		"executeInputItemCount":   len(executeRequest.Input),
 	}
@@ -142,7 +142,7 @@ func runtimeContinuationLedgerMetadata(cacheRetention bool, previous *memory.Lan
 	}
 	if continuation.Incremental {
 		metadata["newItemCount"] = len(continuation.NewItems)
-		metadata["newItemsHash"] = runtimeHash(continuation.NewItems)
+		metadata["newItemsHash"] = runtimeHash(redactPromptImagesForLedger(continuation.NewItems))
 		metadata["previousResponseIDPresent"] = continuation.PreviousResponseID != ""
 		metadata["previousResponseIDHash"] = runtimeHash(continuation.PreviousResponseID)
 	} else if previous != nil {
@@ -150,6 +150,23 @@ func runtimeContinuationLedgerMetadata(cacheRetention bool, previous *memory.Lan
 		metadata["previousResponseIDHash"] = runtimeHash(previous.PreviousResponseID)
 	}
 	return metadata
+}
+
+func redactPromptImagesForLedger(items []model.PromptItem) []model.PromptItem {
+	redacted := append([]model.PromptItem(nil), items...)
+	for index := range redacted {
+		if redacted[index].Parts == nil {
+			continue
+		}
+		parts := append(model.PromptContentParts(nil), (*redacted[index].Parts)...)
+		for partIndex := range parts {
+			if parts[partIndex].Type == model.PromptContentImage {
+				parts[partIndex].ImageDataURL = "<ephemeral-image>"
+			}
+		}
+		redacted[index].Parts = &parts
+	}
+	return redacted
 }
 
 func runtimeModelLedgerMetadata(events []model.StreamEvent, usage []LaneModelUsage) map[string]any {

@@ -69,6 +69,7 @@ type DesktopInitiationContext struct {
 	Trigger                string
 	Activity               string
 	Lifecycle              string
+	VisionRequested        bool
 }
 
 // DesktopInitiationRequest is Core-owned. It intentionally carries no user
@@ -77,6 +78,11 @@ type DesktopInitiationRequest struct {
 	ConversationID         string   `json:"conversationId"`
 	ObservationEvidenceIDs []string `json:"-"`
 	SpeechEnabled          bool     `json:"speechEnabled"`
+}
+
+type DesktopVisionInitiationRequest struct {
+	ConversationID string `json:"conversationId"`
+	SpeechEnabled  bool   `json:"speechEnabled"`
 }
 
 type TurnOutcome struct {

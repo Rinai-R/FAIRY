@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -24,6 +25,7 @@ const (
 	ContinuationRequestShapeChanged        ContinuationFullRequestReason = "request_shape_changed"
 	ContinuationPrefixMismatch             ContinuationFullRequestReason = "prefix_mismatch"
 	ContinuationInputNotExtended           ContinuationFullRequestReason = "input_not_extended"
+	ContinuationToolResult                 ContinuationFullRequestReason = "tool_result"
 )
 
 type ContinuationDecision struct {
@@ -34,6 +36,9 @@ type ContinuationDecision struct {
 }
 
 func DecideContinuation(continuationSupported bool, previous *ContinuationState, current CompiledPromptRequest) ContinuationDecision {
+	if promptItemsContainToolResult(current.Input) {
+		return fullContinuation(ContinuationToolResult)
+	}
 	if !continuationSupported {
 		return fullContinuation(ContinuationCapabilityUnsupported)
 	}
@@ -108,9 +113,25 @@ func promptItemsHavePrefix(items []PromptItem, prefix []PromptItem) bool {
 		return false
 	}
 	for i := range prefix {
-		if items[i] != prefix[i] {
+		if !promptItemEqual(items[i], prefix[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+func promptItemEqual(left, right PromptItem) bool {
+	return left.Type == right.Type &&
+		left.Content == right.Content &&
+		left.ToolCallID == right.ToolCallID &&
+		left.ToolName == right.ToolName &&
+		left.ToolArguments == right.ToolArguments &&
+		promptContentPartsEqual(left.Parts, right.Parts)
+}
+
+func promptContentPartsEqual(left, right *PromptContentParts) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return slices.Equal(*left, *right)
 }

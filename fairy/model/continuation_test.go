@@ -111,6 +111,29 @@ func TestMaterializeContinuationRequest(t *testing.T) {
 	}
 }
 
+func TestDecideContinuationForcesFullRequestAfterToolResult(t *testing.T) {
+	previous := ContinuationState{
+		PreviousResponseID: "resp_1",
+		PreviousRequest:    testContinuationRequest("model", []PromptItem{testContinuationItem("first")}),
+		ResponseComplete:   true,
+	}
+	current := testContinuationRequest("model", []PromptItem{{
+		Type: PromptItemToolResult, ToolCallID: "call-1",
+		Parts: promptContentParts(PromptContentPart{Type: PromptContentText, Text: "completed"}),
+	}})
+	decision := DecideContinuation(true, &previous, current)
+	if decision.Incremental || decision.FullReason != ContinuationToolResult {
+		t.Fatalf("decision = %#v", decision)
+	}
+	materialized, err := MaterializeContinuationRequest(current, decision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if materialized.PreviousResponseID != "" || len(materialized.Input) != 1 {
+		t.Fatalf("materialized = %#v", materialized)
+	}
+}
+
 func TestMaterializeContinuationRejectsInvalidState(t *testing.T) {
 	current := testContinuationRequest("model", []PromptItem{testContinuationItem("first"), testContinuationItem("second")})
 	if _, err := MaterializeContinuationRequest(current, ContinuationDecision{

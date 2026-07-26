@@ -19,6 +19,7 @@ import (
 	"fairy/search"
 	"fairy/sociallearning"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	contracts "fairy/contracts/interaction"
@@ -29,6 +30,39 @@ import (
 // TurnEngine owns direct/ambient turn submission and cancellation.
 type TurnEngine struct {
 	host *CompanionService
+}
+
+func (e *TurnEngine) SubmitDesktopVisionInitiation(request DesktopVisionInitiationRequest) (TurnOutcome, error) {
+	s := e.host
+	if strings.TrimSpace(request.ConversationID) == "" {
+		return TurnOutcome{}, errors.New("conversation_id is required")
+	}
+	if s == nil || !s.RespondRuntimeMigrated() {
+		return TurnOutcome{}, ErrRespondRuntimeNotMigrated
+	}
+	resolved, err := s.ResolveInteraction(request.ConversationID)
+	if err != nil {
+		return TurnOutcome{}, err
+	}
+	connection, err := s.configSource().ModelConnection()
+	if err != nil {
+		return TurnOutcome{}, err
+	}
+	if !desktopToolAllowed(connection.Capabilities.VisionInput, resolved, s.desktopTool, request.ConversationID) {
+		return TurnOutcome{}, errors.New("desktop vision initiation is unavailable")
+	}
+	states, err := s.availableVisualStatesForConversation(request.ConversationID)
+	if err != nil {
+		return TurnOutcome{}, err
+	}
+	requestID := uuid.NewString()
+	return e.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+		ConversationID: request.ConversationID, SpeechEnabled: request.SpeechEnabled,
+		MaxOutputTokens: RespondMaxOutputTokens, AvailableVisualStates: states, MessageSource: "desktop_vision_initiation",
+		Initiation: &DesktopInitiationContext{
+			ObservationEvidenceIDs: []string{requestID}, Trigger: "on_demand_vision", VisionRequested: true,
+		},
+	})
 }
 
 func (e *TurnEngine) SubmitDesktopInitiation(request DesktopInitiationRequest, observation DesktopObservation) (TurnOutcome, error) {
@@ -269,6 +303,8 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 			replyCompileRetries int
 			firstCompileErr     error
 			retryCorrection     string
+			toolPromptItems     []model.PromptItem
+			desktopToolUsed     bool
 		)
 		// Single-consumer TTS pipeline for the whole turn: mid-ReAct utterance audio
 		// and reply-chain audio are enqueued in order and synthesized one request per
@@ -291,12 +327,20 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 		for {
 			allowTools := modelDrivenTools < toolBudget
 			tools := []model.ToolSpec(nil)
+			desktopEnabled := allowTools && !desktopToolUsed && desktopToolAllowed(connectionConfig.Capabilities.VisionInput, resolved, s.desktopTool, request.ConversationID)
 			if allowTools {
-				tools = RespondToolSpecsForInteraction(webSearchEnabled, resolved)
+				tools = respondToolSpecsForRuntime(webSearchEnabled, resolved, desktopEnabled)
 			}
 			instructions := RespondInstructionsForInteraction(len(tools) > 0, resolved)
+			if desktopEnabled {
+				instructions += " The desktop_observe tool provides one fresh main-display image when the current request genuinely requires visible screen context. Use it at most once, only when needed, and never claim to see anything not visible in its result."
+			}
 			if request.Initiation != nil {
-				instructions += " This is a Core-initiated private companion turn, not a user message. Use the desktop_initiation context only as a coarse timing cue. Speak only if a brief natural check-in fits; never claim to see screen content, infer hidden activity, mention monitoring, or expose evidence IDs."
+				if request.Initiation.VisionRequested {
+					instructions += " This is a Core-initiated private zero-message turn, not a user message. Decide whether a fresh desktop capture is necessary; use desktop_observe when visual evidence is required. Speak only if a brief natural check-in fits, never expose request evidence IDs, and never claim to see screen content unless the tool succeeds."
+				} else {
+					instructions += " This is a Core-initiated private companion turn, not a user message. Use the desktop_initiation context only as a coarse timing cue. Speak only if a brief natural check-in fits; never claim to see screen content, infer hidden activity, mention monitoring, or expose evidence IDs."
+				}
 			}
 			instructions += retryCorrection
 			modelCallAttempts++
@@ -320,6 +364,7 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 				setContextSlotOmitReason(slots, "retrieved_context", retrievalOmitReason)
 			}
 			input := persona.PromptItemsFromContextSlots(slots)
+			input = append(input, toolPromptItems...)
 			cacheInput := model.NewCacheKeyInput(model.PromptLaneRespond, connectionConfig.Model, request.ConversationID, instructions)
 			cacheInput.CharacterRevision = characterRecord.Revision
 			cacheInput.ProfileRevision = profileRevisionValue(userProfile)
@@ -520,7 +565,13 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 						lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("reason", "budget_exhausted"), zap.String("tool", call.Name))
 						return fail("MODEL_RESPONSE_INVALID", errors.New("tool budget exhausted"))
 					}
-					query, queryErr := parseToolQuery(call.Arguments)
+					query := ""
+					var queryErr error
+					if call.Name == toolDesktopObserve {
+						queryErr = validateDesktopToolArguments(call.Arguments)
+					} else {
+						query, queryErr = parseToolQuery(call.Arguments)
+					}
 					if queryErr != nil {
 						lg.Warn("cognition loop", zap.String("phase", "tool_args_invalid"), zap.String("tool", call.Name), zap.Error(queryErr))
 						retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, queryErr))
@@ -542,6 +593,38 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 						zap.String("queryHash", runtimeHash(query)),
 					)
 					switch call.Name {
+					case toolDesktopObserve:
+						if desktopToolUsed || !desktopToolAllowed(connectionConfig.Capabilities.VisionInput, resolved, s.desktopTool, request.ConversationID) {
+							return fail("MODEL_RESPONSE_INVALID", errors.New("desktop_observe is unavailable for this interaction"))
+						}
+						desktopToolUsed = true
+						deadline := time.Now().Add(desktopToolTimeout)
+						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+							"tool": call.Name, "phase": "awaiting_tool", "status": "pending", "modelDrivenIndex": modelDrivenTools + 1,
+						})
+						evidence, toolErr := s.desktopTool.Observe(turnCtx, DesktopToolRequest{
+							ConversationID: request.ConversationID, TurnID: persisted.ID, CallID: call.CallID, Deadline: deadline,
+						})
+						if turnCtx.Err() != nil {
+							return fail("TURN_INTERRUPTED", ErrTurnInterrupted)
+						}
+						if toolErr != nil {
+							code := "capture_failed"
+							var typed *DesktopToolError
+							if errors.As(toolErr, &typed) && strings.TrimSpace(typed.Code) != "" {
+								code = typed.Code
+							}
+							toolPromptItems = append(toolPromptItems, desktopToolFailurePromptItems(call.CallID, call.Arguments, code)...)
+							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, code, map[string]any{
+								"tool": call.Name, "phase": "awaiting_tool", "status": "failed", "modelDrivenIndex": modelDrivenTools + 1,
+							})
+						} else {
+							toolPromptItems = append(toolPromptItems, desktopToolPromptItems(call.CallID, call.Arguments, evidence)...)
+							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+								"tool": call.Name, "phase": "awaiting_tool", "status": "completed", "executionId": evidence.ExecutionID,
+								"mediaType": evidence.MediaType, "width": evidence.Width, "height": evidence.Height, "modelDrivenIndex": modelDrivenTools + 1,
+							})
+						}
 					case toolMemorySearch:
 						if !resolved.AllowsPersonalMemory() {
 							return fail("MODEL_RESPONSE_INVALID", errors.New("memory_search is unavailable for public interactions"))
@@ -1066,6 +1149,14 @@ func (e *TurnEngine) CancelTurn(conversationID string, turnID string) error {
 	defer gate.mu.Unlock()
 	if gate.activeTurn == nil || gate.activeTurn.turnID != turnID {
 		return ErrTurnNotActive
+	}
+	if s.desktopTool != nil {
+		cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := s.desktopTool.CancelTurn(cancelCtx, conversationID, turnID)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("cancelling desktop tool execution: %w", err)
+		}
 	}
 	gate.activeTurn.cancel()
 	return nil

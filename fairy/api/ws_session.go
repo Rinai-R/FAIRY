@@ -18,10 +18,11 @@ import (
 
 	contracts "fairy/contracts/interaction"
 	obs "fairy/contracts/observation"
+	sessioncontract "fairy/contracts/session"
 )
 
 const (
-	wsReadLimit      = 1 << 20
+	wsReadLimit      = sessioncontract.DesktopCaptureMaxFrameBytes
 	wsWriteWait      = 10 * time.Second
 	wsPingInterval   = 30 * time.Second
 	wsPongWait       = 60 * time.Second
@@ -76,19 +77,21 @@ type wsClientFrame struct {
 	Input              string                                  `json:"input,omitempty"`
 	SpeechEnabled      bool                                    `json:"speechEnabled,omitempty"`
 	TurnID             string                                  `json:"turnId,omitempty"`
+	CaptureResult      *sessioncontract.DesktopCaptureResult   `json:"captureResult,omitempty"`
 }
 
 type wsServerFrame struct {
-	Type           string                        `json:"type"`
-	RequestID      string                        `json:"requestId,omitempty"`
-	ConversationID string                        `json:"conversationId,omitempty"`
-	CharacterID    string                        `json:"characterId,omitempty"`
-	MessageCount   int                           `json:"messageCount,omitempty"`
-	Endpoint       contracts.EndpointKind        `json:"endpoint,omitempty"`
-	Error          string                        `json:"error,omitempty"`
-	Payload        json.RawMessage               `json:"payload,omitempty"`
-	Event          *companion.TurnEvent          `json:"event,omitempty"`
-	Participation  *companion.ParticipationEvent `json:"participation,omitempty"`
+	Type           string                                 `json:"type"`
+	RequestID      string                                 `json:"requestId,omitempty"`
+	ConversationID string                                 `json:"conversationId,omitempty"`
+	CharacterID    string                                 `json:"characterId,omitempty"`
+	MessageCount   int                                    `json:"messageCount,omitempty"`
+	Endpoint       contracts.EndpointKind                 `json:"endpoint,omitempty"`
+	Error          string                                 `json:"error,omitempty"`
+	Payload        json.RawMessage                        `json:"payload,omitempty"`
+	Event          *companion.TurnEvent                   `json:"event,omitempty"`
+	Participation  *companion.ParticipationEvent          `json:"participation,omitempty"`
+	CaptureRequest *sessioncontract.DesktopCaptureRequest `json:"captureRequest,omitempty"`
 }
 
 func (s *Server) handleSessionWebSocket() app.HandlerFunc {
@@ -107,18 +110,24 @@ func (s *Server) handleSessionWebSocket() app.HandlerFunc {
 			s.logger.Warn("session websocket upgrade", zap.Error(err))
 			return
 		}
-		session := &sessionConn{server: s, conn: conn, watches: make(map[string]func())}
+		session := &sessionConn{server: s, conn: conn, watches: make(map[string]func()), captureRoutes: make(map[string]captureRegistration)}
 		session.run(r.Context())
 	}))
 }
 
 type sessionConn struct {
-	server    *Server
-	conn      *websocket.Conn
-	writeMu   sync.Mutex
-	watchMu   sync.Mutex
-	watches   map[string]func()
-	closeOnce sync.Once
+	server        *Server
+	conn          *websocket.Conn
+	writeMu       sync.Mutex
+	watchMu       sync.Mutex
+	watches       map[string]func()
+	captureRoutes map[string]captureRegistration
+	closeOnce     sync.Once
+}
+
+type captureRegistration struct {
+	id         string
+	unregister func()
 }
 
 func (c *sessionConn) run(parent context.Context) {
@@ -139,13 +148,13 @@ func (c *sessionConn) run(parent context.Context) {
 		if err != nil {
 			return
 		}
-		if len(raw) > maxWSRequestJSON {
-			_ = c.write(wsServerFrame{Type: "error", Error: "request body exceeds 1 MiB"})
-			continue
-		}
 		var frame wsClientFrame
 		if err := json.Unmarshal(raw, &frame); err != nil {
 			_ = c.write(wsServerFrame{Type: "error", Error: "invalid JSON frame"})
+			continue
+		}
+		if len(raw) > maxWSRequestJSON && frame.Type != "desktop.capture.result" {
+			_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "request body exceeds 1 MiB"})
 			continue
 		}
 		c.dispatch(ctx, frame)
@@ -188,6 +197,8 @@ func (c *sessionConn) dispatch(ctx context.Context, frame wsClientFrame) {
 		c.handleSubmitTurn(frame)
 	case "turn.cancel":
 		c.handleCancelTurn(frame)
+	case "desktop.capture.result":
+		c.handleCaptureResult(ctx, frame)
 	default:
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "unknown frame type"})
 	}
@@ -199,11 +210,47 @@ func (c *sessionConn) handleOpen(ctx context.Context, frame wsClientFrame) {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 		return
 	}
+	if frame.Endpoint == contracts.EndpointDesktop && frame.Interaction.Audience == contracts.AudienceSingle && frame.Interaction.Presentation == contracts.PresentationEmbodied {
+		registrationID, unregister, registerErr := c.server.rt.Captures.Register(result.ConversationID, frame.Endpoint, frame.Interaction, func(request sessioncontract.DesktopCaptureRequest) error {
+			requestCopy := request
+			return c.write(wsServerFrame{Type: "desktop.capture.request", ConversationID: request.ConversationID, CaptureRequest: &requestCopy})
+		})
+		if registerErr != nil {
+			_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: registerErr.Error()})
+			return
+		}
+		c.watchMu.Lock()
+		if previous, ok := c.captureRoutes[result.ConversationID]; ok {
+			previous.unregister()
+		}
+		c.captureRoutes[result.ConversationID] = captureRegistration{id: registrationID, unregister: unregister}
+		c.watchMu.Unlock()
+	}
 	_ = c.write(wsServerFrame{
 		Type: "session.opened", RequestID: frame.RequestID,
 		ConversationID: result.ConversationID, CharacterID: result.CharacterID,
 		MessageCount: result.MessageCount, Endpoint: result.Endpoint,
 	})
+}
+
+func (c *sessionConn) handleCaptureResult(ctx context.Context, frame wsClientFrame) {
+	if frame.CaptureResult == nil {
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "captureResult is required"})
+		return
+	}
+	result := *frame.CaptureResult
+	c.watchMu.Lock()
+	registration, ok := c.captureRoutes[result.ConversationID]
+	c.watchMu.Unlock()
+	if !ok {
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: fairyruntime.ErrDesktopCaptureResultRejected.Error()})
+		return
+	}
+	if err := c.server.rt.Captures.AcceptResult(ctx, registration.id, result); err != nil {
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
+		return
+	}
+	_ = c.write(wsServerFrame{Type: "ack", RequestID: frame.RequestID, ConversationID: result.ConversationID})
 }
 
 func (c *sessionConn) handleWatch(frame wsClientFrame) {
@@ -398,9 +445,17 @@ func (c *sessionConn) shutdown(reason error) {
 			unsubscribes = append(unsubscribes, unsubscribe)
 			delete(c.watches, id)
 		}
+		captureUnregisters := make([]func(), 0, len(c.captureRoutes))
+		for id, registration := range c.captureRoutes {
+			captureUnregisters = append(captureUnregisters, registration.unregister)
+			delete(c.captureRoutes, id)
+		}
 		c.watchMu.Unlock()
 		for _, unsubscribe := range unsubscribes {
 			unsubscribe()
+		}
+		for _, unregister := range captureUnregisters {
+			unregister()
 		}
 		_ = c.conn.Close()
 	})

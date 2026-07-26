@@ -290,3 +290,68 @@ func TestProductionGraphHasNoGroupEvaluator(t *testing.T) {
 		}
 	}
 }
+
+func TestDesktopCapturePersistenceBoundary(t *testing.T) {
+	for _, directory := range []string{"memory", "postgres", "observability"} {
+		files, err := filepath.Glob(filepath.Join(directory, "*.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, filename := range files {
+			if strings.HasSuffix(filename, "_test.go") {
+				continue
+			}
+			source, err := os.ReadFile(filename)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, marker := range []string{"ImageDataURL", "DataURL", "data:image/"} {
+				if strings.Contains(string(source), marker) {
+					t.Fatalf("persistence/observability source %s contains raw capture marker %q", filename, marker)
+				}
+			}
+		}
+	}
+	schema, err := os.ReadFile("postgres/schema.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lower := strings.ToLower(string(schema))
+	start := strings.Index(lower, "type toolexecutionschema struct {")
+	if start < 0 {
+		t.Fatal("tool_executions schema is missing")
+	}
+	end := strings.Index(lower[start:], "\n}")
+	if end < 0 {
+		t.Fatal("tool_executions schema is incomplete")
+	}
+	table := lower[start : start+end]
+	for _, marker := range []string{"[]byte", "dataurl", "payload", "content"} {
+		if strings.Contains(table, marker) {
+			t.Fatalf("tool_executions persists forbidden raw evidence column marker %q", marker)
+		}
+	}
+}
+
+func TestDesktopSurfaceDependencyBoundary(t *testing.T) {
+	cmd := exec.Command("go", "list", "-json", ".")
+	cmd.Dir = filepath.Join("..", "surfaces", "desktop")
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			t.Fatalf("go list desktop: %v\n%s", err, exitErr.Stderr)
+		}
+		t.Fatal(err)
+	}
+	var pkg struct{ Imports []string }
+	if err := json.Unmarshal(out, &pkg); err != nil {
+		t.Fatal(err)
+	}
+	for _, imported := range pkg.Imports {
+		for _, forbidden := range []string{"fairy/companion", "fairy/memory", "fairy/model", "fairy/runtime", "github.com/wailsapp/wails/v2"} {
+			if imported == forbidden || strings.HasPrefix(imported, forbidden+"/") {
+				t.Fatalf("desktop Surface imports forbidden package %s", imported)
+			}
+		}
+	}
+}

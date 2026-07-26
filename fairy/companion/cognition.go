@@ -81,6 +81,14 @@ func RespondToolSpecsForInteraction(webSearchEnabled bool, resolved domain.Resol
 	return tools
 }
 
+func respondToolSpecsForRuntime(webSearchEnabled bool, resolved domain.Resolved, desktopEnabled bool) []model.ToolSpec {
+	tools := RespondToolSpecsForInteraction(webSearchEnabled, resolved)
+	if desktopEnabled {
+		tools = append(tools, desktopToolSpec())
+	}
+	return tools
+}
+
 func RespondInstructionsForTools(toolsEnabled bool) string {
 	if toolsEnabled {
 		return RespondInstructionsAllowTools

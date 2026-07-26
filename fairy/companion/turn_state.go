@@ -86,6 +86,11 @@ func (s *CompanionService) cancelTurnBeforeDelivery(conversationID string) bool 
 	if gate.activeTurn == nil || gate.activeTurn.delivering {
 		return false
 	}
+	if s.desktopTool != nil && gate.activeTurn.turnID != "" {
+		if err := s.desktopTool.CancelTurn(context.Background(), conversationID, gate.activeTurn.turnID); err != nil {
+			s.setBackgroundError(err)
+		}
+	}
 	gate.activeTurn.cancel()
 	return true
 }

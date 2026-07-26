@@ -41,6 +41,7 @@ type ModelConnectionInput struct {
 	Model               string `json:"model"`
 	ContextWindowTokens uint64 `json:"contextWindowTokens"`
 	AuthMode            string `json:"authMode"`
+	VisionInput         bool   `json:"visionInput"`
 }
 
 type GatewayCapabilities struct {
@@ -49,6 +50,7 @@ type GatewayCapabilities struct {
 	ExplicitBreakpoints   bool `json:"explicitBreakpoints"`
 	CacheRetention        bool `json:"cacheRetention"`
 	WebsocketContinuation bool `json:"websocketContinuation"`
+	VisionInput           bool `json:"visionInput"`
 }
 
 type modelConnectionDocument struct {
@@ -73,6 +75,7 @@ type storedGatewayCapabilities struct {
 	ExplicitBreakpoints   bool `json:"explicit_breakpoints"`
 	CacheRetention        bool `json:"cache_retention"`
 	WebsocketContinuation bool `json:"websocket_continuation"`
+	VisionInput           bool `json:"vision_input"`
 }
 
 func (c storedGatewayCapabilities) public() GatewayCapabilities {
@@ -82,6 +85,7 @@ func (c storedGatewayCapabilities) public() GatewayCapabilities {
 		ExplicitBreakpoints:   c.ExplicitBreakpoints,
 		CacheRetention:        c.CacheRetention,
 		WebsocketContinuation: c.WebsocketContinuation,
+		VisionInput:           c.VisionInput,
 	}
 }
 
@@ -232,8 +236,8 @@ func ParseModelConnection(data []byte) (ModelConnection, error) {
 		return ModelConnection{}, fmt.Errorf("model connection document schema_version = %d, want 1", document.SchemaVersion)
 	}
 	config := document.Data
-	if config.SchemaVersion != 3 {
-		return ModelConnection{}, fmt.Errorf("model connection schema_version = %d, want 3", config.SchemaVersion)
+	if config.SchemaVersion != 3 && config.SchemaVersion != 4 {
+		return ModelConnection{}, fmt.Errorf("model connection schema_version = %d, want 3 or 4", config.SchemaVersion)
 	}
 	if config.ConnectionID == "" {
 		return ModelConnection{}, errors.New("model connection_id is required")
@@ -296,6 +300,7 @@ func compileModelConnection(connectionID string, input ModelConnectionInput) (Mo
 			ExplicitBreakpoints:   false,
 			CacheRetention:        false,
 			WebsocketContinuation: false,
+			VisionInput:           input.VisionInput,
 		},
 	}, nil
 }
@@ -304,7 +309,7 @@ func writeModelConnection(root string, connection ModelConnection) error {
 	document := modelConnectionDocument{
 		SchemaVersion: 1,
 		Data: modelConnectionConfig{
-			SchemaVersion:       3,
+			SchemaVersion:       4,
 			ConnectionID:        connection.ConnectionID,
 			Protocol:            connection.Protocol,
 			Endpoint:            connection.Endpoint,
@@ -317,6 +322,7 @@ func writeModelConnection(root string, connection ModelConnection) error {
 				ExplicitBreakpoints:   connection.Capabilities.ExplicitBreakpoints,
 				CacheRetention:        connection.Capabilities.CacheRetention,
 				WebsocketContinuation: connection.Capabilities.WebsocketContinuation,
+				VisionInput:           connection.Capabilities.VisionInput,
 			},
 		},
 	}

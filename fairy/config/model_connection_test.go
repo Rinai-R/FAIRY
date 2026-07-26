@@ -39,6 +39,9 @@ func TestParseModelConnectionStatusRedactsSecretState(t *testing.T) {
 	if !status.Capabilities.CachedTokensUsage {
 		t.Fatal("CachedTokensUsage = false, want true")
 	}
+	if status.Capabilities.VisionInput {
+		t.Fatal("VisionInput = true for legacy schema, want false")
+	}
 	if !status.SecretStorageMigrated {
 		t.Fatal("SecretStorageMigrated = false, want true for Go secret ownership")
 	}
@@ -80,7 +83,7 @@ func TestParseModelConnectionStatusRejectsInvalidInput(t *testing.T) {
 		{
 			name: "bad connection schema",
 			edit: func(source string) string {
-				return strings.Replace(source, `"schema_version":3`, `"schema_version":4`, 1)
+				return strings.Replace(source, `"schema_version":3`, `"schema_version":5`, 1)
 			},
 			wantErr: "connection schema_version",
 		},
@@ -153,11 +156,12 @@ func TestSaveModelConnectionWritesConfigAndSecret(t *testing.T) {
 		Model:               "deepseek-v4-flash",
 		ContextWindowTokens: 1048576,
 		AuthMode:            "bearer_key",
+		VisionInput:         true,
 	}, &apiKey, secrets)
 	if err != nil {
 		t.Fatalf("SaveModelConnection() error = %v", err)
 	}
-	if !status.Configured || status.AuthMode != "bearer_key" || !status.SecretStorageMigrated {
+	if !status.Configured || status.AuthMode != "bearer_key" || !status.SecretStorageMigrated || !status.Capabilities.VisionInput {
 		t.Fatalf("status = %#v", status)
 	}
 	connection, err := ReadModelConnection(root)
@@ -170,6 +174,13 @@ func TestSaveModelConnectionWritesConfigAndSecret(t *testing.T) {
 	}
 	if !ok || value.Expose() != "sk-test-secret" {
 		t.Fatalf("secret = (%v, %q)", ok, value.Expose())
+	}
+	data, err := os.ReadFile(filepath.Join(root, modelConnectionPath))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if !strings.Contains(string(data), `"schema_version":4`) || !strings.Contains(string(data), `"vision_input":true`) {
+		t.Fatalf("saved model connection = %s", data)
 	}
 }
 
