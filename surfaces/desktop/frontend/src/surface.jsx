@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ClockIcon, Cross2Icon, GearIcon, PaperPlaneIcon, StopIcon } from "@radix-ui/react-icons";
 import { Card, Flex, IconButton, Text, TextArea, TextField } from "@radix-ui/themes";
 import { Events } from "@wailsio/runtime";
-import { Cancel, CloseControlPanel, CloseHistory, Connect, DisableDesktopObservation, EnableDesktopObservation, HideSpeechBubble, OpenControlPanel, OpenHistory, RecentMessages, SaveConnection, Send, SetDesktopObservationPrivacy } from "../bindings/fairy-desktop/coreservice.js";
+import { Cancel, CloseControlPanel, CloseHistory, Connect, ConnectionSettings, DisableDesktopObservation, EnableDesktopObservation, HideSpeechBubble, OpenControlPanel, OpenHistory, RecentMessages, SaveConnection, Send, SetDesktopObservationPrivacy } from "../bindings/fairy-desktop/coreservice.js";
 import { CharacterSpeechBubble } from "./components/CharacterSpeechBubble.jsx";
 import { PixelCharacter } from "./components/PixelCharacter.jsx";
 import { resolveChatKeyboardAction } from "./companionViewState.mjs";
@@ -10,8 +10,6 @@ import { resolveChatKeyboardAction } from "./companionViewState.mjs";
 const FOOT_INPUT_MAX_HEIGHT = 88;
 
 const defaultEndpoint = "http://127.0.0.1:8787";
-function storedEndpoint() { return localStorage.getItem("fairy.endpoint") || defaultEndpoint; }
-function storedKey() { return localStorage.getItem("fairy.endpointKey") || ""; }
 
 function renderableVisual(visual) {
   if (!visual?.packId || !Array.isArray(visual.states) || !visual.frame || !visual.anchor) return null;
@@ -19,8 +17,6 @@ function renderableVisual(visual) {
 }
 
 function CompanionSurface() {
-  const [endpoint, setEndpoint] = useState(storedEndpoint);
-  const [endpointKey, setEndpointKey] = useState(storedKey);
   const [session, setSession] = useState(null);
   const [dockOpen, setDockOpen] = useState(false);
   const [draft, setDraft] = useState("");
@@ -34,15 +30,12 @@ function CompanionSurface() {
 
   useEffect(() => {
     let cancelled = false;
-    Connect(endpoint, endpointKey).then((next) => {
+    Connect().then((next) => {
       if (cancelled) return;
       setSession(next);
-      setEndpointKey(next.settings.endpointKey);
-      localStorage.setItem("fairy.endpoint", next.settings.endpoint);
-      localStorage.setItem("fairy.endpointKey", next.settings.endpointKey);
     }).catch((cause) => { if (!cancelled) setError(cause?.message || "Core 未连接"); });
     return () => { cancelled = true; };
-  }, [endpoint, endpointKey]);
+  }, []);
 
   useEffect(() => Events.On("desktop:turn", (event) => {
     const turn = event?.data ?? event;
@@ -179,21 +172,32 @@ function HistorySurface() {
 }
 
 function SettingsSurface() {
-  const [endpoint, setEndpoint] = useState(storedEndpoint);
-  const [endpointKey, setEndpointKey] = useState(storedKey);
+  const [endpoint, setEndpoint] = useState(defaultEndpoint);
+  const [endpointKey, setEndpointKey] = useState("");
   const [token, setToken] = useState("");
   const [status, setStatus] = useState("");
   const [observationEnabled, setObservationEnabled] = useState(() => localStorage.getItem("fairy.observation.enabled") === "true");
   const [privacy, setPrivacy] = useState(() => localStorage.getItem("fairy.observation.privacy") || "normal");
   const [observationInterval, setObservationInterval] = useState(() => Number(localStorage.getItem("fairy.observation.interval") || 5));
   const [idleThreshold, setIdleThreshold] = useState(() => Number(localStorage.getItem("fairy.observation.idle") || 10));
+
+  useEffect(() => {
+    let cancelled = false;
+    ConnectionSettings().then((settings) => {
+      if (cancelled) return;
+      setEndpoint(settings.endpoint || defaultEndpoint);
+      setEndpointKey(settings.endpointKey || "");
+    }).catch((cause) => {
+      if (!cancelled) setStatus(cause?.message || "无法读取 Core 连接配置");
+    });
+    return () => { cancelled = true; };
+  }, []);
+
   async function save(event) {
     event.preventDefault();
     try {
       const settings = await SaveConnection(endpoint, token, endpointKey);
-      localStorage.setItem("fairy.endpoint", settings.endpoint);
-      localStorage.setItem("fairy.endpointKey", settings.endpointKey);
-      setEndpoint(settings.endpoint); setEndpointKey(settings.endpointKey); setToken(""); setStatus("已保存到 macOS Keychain，并已准备重连。");
+      setEndpoint(settings.endpoint); setEndpointKey(settings.endpointKey); setToken(""); setStatus("已保存到当前用户的本地连接文件，重启后将自动连接。");
     } catch (cause) { setStatus(cause?.message || "保存失败"); }
   }
   async function applyObservation() {

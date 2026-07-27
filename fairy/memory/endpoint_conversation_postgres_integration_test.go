@@ -10,9 +10,10 @@ import (
 	"sync"
 	"testing"
 
+	dbschema "fairy/coredb/schema"
+
 	contracts "fairy/contracts/interaction"
 	"fairy/identity"
-	pgstore "fairy/postgres"
 	"fairy/secret"
 )
 
@@ -20,7 +21,7 @@ func TestEndpointConversationIsolationAndImmutableFactsIntegration(t *testing.T)
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -73,7 +74,7 @@ func TestEndpointConversationConcurrentOpenCreatesOneBindingIntegration(t *testi
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -124,7 +125,7 @@ func TestOwnerIdentityLifecycleDoesNotPersistRawSubjectIntegration(t *testing.T)
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	identityStore, err := identity.NewStore(pool)

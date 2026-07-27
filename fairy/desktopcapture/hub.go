@@ -1,4 +1,4 @@
-package runtime
+package desktopcapture
 
 import (
 	"bytes"
@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"fairy/companion"
 	"fairy/contracts/interaction"
 	"fairy/contracts/session"
 	"fairy/memory"
@@ -26,6 +25,32 @@ var (
 	ErrDesktopCaptureSurfaceUnavailable = errors.New("desktop capture surface is unavailable")
 	ErrDesktopCaptureResultRejected     = errors.New("desktop capture result was rejected")
 )
+
+type ToolRequest struct {
+	ConversationID string
+	TurnID         string
+	CallID         string
+	Deadline       time.Time
+}
+
+type Evidence struct {
+	ExecutionID string
+	MediaType   string
+	Width       int
+	Height      int
+	DataURL     string
+}
+
+type ToolError struct {
+	Code string
+}
+
+func (err *ToolError) Error() string {
+	if err == nil || strings.TrimSpace(err.Code) == "" {
+		return "desktop observation failed"
+	}
+	return "desktop observation failed: " + err.Code
+}
 
 type captureExecutionStore interface {
 	CreateToolExecution(context.Context, memory.CreateToolExecutionInput) (memory.ToolExecutionRecord, error)
@@ -63,22 +88,22 @@ func (h *CaptureHub) SettleRecovered(ctx context.Context) error {
 	return nil
 }
 
-func (h *CaptureHub) Observe(ctx context.Context, request companion.DesktopToolRequest) (companion.DesktopToolEvidence, error) {
+func (h *CaptureHub) Observe(ctx context.Context, request ToolRequest) (Evidence, error) {
 	if h == nil || h.store == nil || ctx == nil {
-		return companion.DesktopToolEvidence{}, &companion.DesktopToolError{Code: "capture_unavailable"}
+		return Evidence{}, &ToolError{Code: "capture_unavailable"}
 	}
 	if !h.Available(request.ConversationID) {
-		return companion.DesktopToolEvidence{}, &companion.DesktopToolError{Code: "surface_unavailable"}
+		return Evidence{}, &ToolError{Code: "surface_unavailable"}
 	}
 	if request.Deadline.IsZero() || !request.Deadline.After(time.Now()) {
-		return companion.DesktopToolEvidence{}, &companion.DesktopToolError{Code: "deadline_exceeded"}
+		return Evidence{}, &ToolError{Code: "deadline_exceeded"}
 	}
 	record, err := h.store.CreateToolExecution(ctx, memory.CreateToolExecutionInput{
 		ConversationID: request.ConversationID, TurnID: request.TurnID, CallID: request.CallID,
 		ToolName: memory.ToolNameDesktopObserve, DeadlineAtUnixMS: request.Deadline.UnixMilli(),
 	})
 	if err != nil {
-		return companion.DesktopToolEvidence{}, err
+		return Evidence{}, err
 	}
 	h.mu.Lock()
 	h.turns[record.ID] = captureTurnRef{conversationID: record.ConversationID, turnID: record.TurnID}
@@ -86,11 +111,12 @@ func (h *CaptureHub) Observe(ctx context.Context, request companion.DesktopToolR
 	defer func() {
 		h.mu.Lock()
 		delete(h.turns, record.ID)
+		delete(h.evidence, record.ID)
 		h.mu.Unlock()
 	}()
 	if err := h.Dispatch(ctx, DefaultDesktopCaptureRequest(record)); err != nil {
 		_, _, _ = h.store.FailToolExecution(context.Background(), record.ID, "dispatch_failed", "desktop capture dispatch failed")
-		return companion.DesktopToolEvidence{}, &companion.DesktopToolError{Code: "dispatch_failed"}
+		return Evidence{}, &ToolError{Code: "dispatch_failed"}
 	}
 	waitCtx, cancel := context.WithDeadline(ctx, request.Deadline)
 	err = h.Wait(waitCtx, record.ID)
@@ -98,25 +124,25 @@ func (h *CaptureHub) Observe(ctx context.Context, request companion.DesktopToolR
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			_, _ = h.store.CancelToolExecutionsForTurn(context.Background(), request.ConversationID, request.TurnID, "turn_cancelled", "turn was cancelled")
-			return companion.DesktopToolEvidence{}, err
+			return Evidence{}, err
 		}
 		_, _, _ = h.store.FailToolExecution(context.Background(), record.ID, "deadline_exceeded", "desktop capture deadline exceeded")
-		return companion.DesktopToolEvidence{}, &companion.DesktopToolError{Code: "deadline_exceeded"}
+		return Evidence{}, &ToolError{Code: "deadline_exceeded"}
 	}
 	settled, ok, err := h.store.LoadToolExecution(context.Background(), record.ID)
 	if err != nil {
-		return companion.DesktopToolEvidence{}, err
+		return Evidence{}, err
 	}
 	if !ok {
-		return companion.DesktopToolEvidence{}, &companion.DesktopToolError{Code: "execution_missing"}
+		return Evidence{}, &ToolError{Code: "execution_missing"}
 	}
 	switch settled.Status {
 	case memory.ToolExecutionCompleted:
 		evidence, ok := h.TakeEvidence(record.ID)
 		if !ok {
-			return companion.DesktopToolEvidence{}, &companion.DesktopToolError{Code: "evidence_lost"}
+			return Evidence{}, &ToolError{Code: "evidence_lost"}
 		}
-		return companion.DesktopToolEvidence{
+		return Evidence{
 			ExecutionID: evidence.ExecutionID, MediaType: evidence.MediaType,
 			Width: evidence.Width, Height: evidence.Height, DataURL: evidence.DataURL(),
 		}, nil
@@ -125,9 +151,9 @@ func (h *CaptureHub) Observe(ctx context.Context, request companion.DesktopToolR
 		if settled.ErrorCode != nil && *settled.ErrorCode != "" {
 			code = *settled.ErrorCode
 		}
-		return companion.DesktopToolEvidence{}, &companion.DesktopToolError{Code: code}
+		return Evidence{}, &ToolError{Code: code}
 	default:
-		return companion.DesktopToolEvidence{}, &companion.DesktopToolError{Code: "execution_unsettled"}
+		return Evidence{}, &ToolError{Code: "execution_unsettled"}
 	}
 }
 
@@ -302,23 +328,23 @@ func (h *CaptureHub) AcceptResult(ctx context.Context, registrationID string, re
 	if err != nil {
 		return err
 	}
-	h.mu.Lock()
-	h.evidence[result.ExecutionID] = evidence
-	h.mu.Unlock()
 	_, changed, err := h.store.CompleteToolExecution(ctx, memory.CompleteToolExecutionInput{
 		ID: result.ExecutionID, ConversationID: result.ConversationID, TurnID: result.TurnID, CallID: result.CallID,
 		ResultMediaType: result.MediaType, ResultWidth: result.Width, ResultHeight: result.Height,
 		ResultByteCount: result.ByteCount, ResultSHA256: result.SHA256,
 	})
 	if err != nil || !changed {
-		h.mu.Lock()
-		delete(h.evidence, result.ExecutionID)
-		h.mu.Unlock()
 		if err != nil {
 			return err
 		}
 		return ErrDesktopCaptureResultRejected
 	}
+	h.mu.Lock()
+	active, activeOK := h.turns[result.ExecutionID]
+	if activeOK && active.conversationID == result.ConversationID && active.turnID == result.TurnID {
+		h.evidence[result.ExecutionID] = evidence
+	}
+	h.mu.Unlock()
 	h.notify(result.ExecutionID)
 	return nil
 }

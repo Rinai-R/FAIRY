@@ -17,7 +17,8 @@ import (
 	"time"
 
 	"fairy/api"
-	pgstore "fairy/postgres"
+	"fairy/coredb"
+	dbschema "fairy/coredb/schema"
 	fairyruntime "fairy/runtime"
 	vectorindex "fairy/vectorindex"
 
@@ -161,7 +162,7 @@ func assertReadyDependency(t *testing.T, payload map[string]any, name string) {
 	}
 }
 
-func insertPendingEmbeddingMetric(t *testing.T, pool *pgstore.Pool) {
+func insertPendingEmbeddingMetric(t *testing.T, pool *coredb.Pool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -228,11 +229,11 @@ func isolatedAPISchema(t *testing.T) (string, func()) {
 	values.Set("search_path", schema)
 	parsed.RawQuery = values.Encode()
 	databaseURL := parsed.String()
-	pool, err := pgstore.Open(ctx, pgstore.ShortTimeoutConfig(databaseURL))
+	pool, err := coredb.Open(ctx, coredb.ShortTimeoutConfig(databaseURL))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		pool.Close()
 		t.Fatal(err)
 	}
@@ -266,11 +267,11 @@ func ensureAPIQdrantCollection(t *testing.T, rawURL string) {
 
 func setAPIProductionEnv(t *testing.T, databaseURL, qdrantURL, masterKey string) {
 	t.Helper()
-	t.Setenv(pgstore.EnvDatabaseURL, databaseURL)
-	t.Setenv(pgstore.EnvMaxConns, "4")
-	t.Setenv(pgstore.EnvMinConns, "0")
-	t.Setenv(pgstore.EnvConnectTimeout, "2s")
-	t.Setenv(pgstore.EnvQueryTimeout, "2s")
+	t.Setenv(coredb.EnvDatabaseURL, databaseURL)
+	t.Setenv(coredb.EnvMaxConns, "4")
+	t.Setenv(coredb.EnvMinConns, "0")
+	t.Setenv(coredb.EnvConnectTimeout, "2s")
+	t.Setenv(coredb.EnvQueryTimeout, "2s")
 	t.Setenv(vectorindex.EnvURL, qdrantURL)
 	t.Setenv(vectorindex.EnvTimeout, "2s")
 	t.Setenv("FAIRY_SECRET_MASTER_KEY", masterKey)

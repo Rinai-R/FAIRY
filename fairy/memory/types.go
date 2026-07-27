@@ -41,6 +41,22 @@ type ConversationBootstrap struct {
 	PromptWindow PromptWindowRecord `json:"promptWindow"`
 }
 
+// ConversationPromptContext is the active dialogue projection used to build
+// model prompts. Messages contains only rows after the PromptWindow cutoff.
+type ConversationPromptContext struct {
+	Conversation ConversationRecord `json:"conversation"`
+	Messages     []MessageRecord    `json:"messages"`
+	PromptWindow PromptWindowRecord `json:"promptWindow"`
+}
+
+type ConversationActivity struct {
+	Conversation                 ConversationRecord `json:"conversation"`
+	AssistantMessages5Minutes    uint64             `json:"assistantMessages5Minutes"`
+	AssistantMessages30Minutes   uint64             `json:"assistantMessages30Minutes"`
+	UserMessages30Minutes        uint64             `json:"userMessages30Minutes"`
+	LastAssistantMessageAtUnixMS *int64             `json:"lastAssistantMessageAtUnixMs,omitempty"`
+}
+
 type PersistedTurn struct {
 	ID             string        `json:"id"`
 	ConversationID string        `json:"conversationId"`

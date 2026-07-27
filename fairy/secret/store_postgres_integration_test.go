@@ -12,7 +12,8 @@ import (
 	"testing"
 	"time"
 
-	pgstore "fairy/postgres"
+	"fairy/coredb"
+	dbschema "fairy/coredb/schema"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,7 +23,7 @@ func TestPostgresStoreEncryptsRoundTripsRotatesNonceAndRejectsWrongKey(t *testin
 	ctx := context.Background()
 	pool := openIsolatedSecretPool(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	cipher, err := newCipher(bytesOf(1, keyBytes), bytes.NewReader(ascendingBytes(48)))
@@ -81,7 +82,7 @@ func TestPostgresStoreEncryptsRoundTripsRotatesNonceAndRejectsWrongKey(t *testin
 	}
 }
 
-func readEncryptedRow(t *testing.T, ctx context.Context, pool *pgstore.Pool, namespace, name string) ([]byte, []byte) {
+func readEncryptedRow(t *testing.T, ctx context.Context, pool *coredb.Pool, namespace, name string) ([]byte, []byte) {
 	t.Helper()
 	var keyVersion int
 	var nonce, ciphertext []byte
@@ -95,7 +96,7 @@ func readEncryptedRow(t *testing.T, ctx context.Context, pool *pgstore.Pool, nam
 	return nonce, ciphertext
 }
 
-func openIsolatedSecretPool(t *testing.T, ctx context.Context) *pgstore.Pool {
+func openIsolatedSecretPool(t *testing.T, ctx context.Context) *coredb.Pool {
 	t.Helper()
 	databaseURL := os.Getenv("FAIRY_TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -128,7 +129,7 @@ func openIsolatedSecretPool(t *testing.T, ctx context.Context) *pgstore.Pool {
 	values := parsed.Query()
 	values.Set("search_path", schema)
 	parsed.RawQuery = values.Encode()
-	pool, err := pgstore.Open(ctx, pgstore.ShortTimeoutConfig(parsed.String()))
+	pool, err := coredb.Open(ctx, coredb.ShortTimeoutConfig(parsed.String()))
 	if err != nil {
 		t.Fatal(err)
 	}

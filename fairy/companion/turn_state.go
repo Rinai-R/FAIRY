@@ -2,129 +2,67 @@ package companion
 
 import (
 	"context"
-	"errors"
-	"sync"
-
 	"fairy/reply"
+	turnruntime "fairy/turn"
 )
 
 var (
-	ErrTurnInProgress  = errors.New("TURN_IN_PROGRESS: companion turn or compaction already in progress")
+	ErrTurnInProgress  = turnruntime.ErrInProgress
 	ErrTurnInterrupted = reply.ErrInterrupted
-	ErrTurnNotActive   = errors.New("TURN_NOT_ACTIVE: no matching active turn to cancel")
+	ErrTurnNotActive   = turnruntime.ErrNotActive
 )
-
-type activeTurn struct {
-	turnID     string
-	cancel     context.CancelFunc
-	delivering bool
-}
-
-type conversationGate struct {
-	mu         sync.Mutex
-	activeTurn *activeTurn
-	compacting bool
-}
-
-func (s *CompanionService) gateFor(conversationID string) *conversationGate {
-	s.gateMu.Lock()
-	defer s.gateMu.Unlock()
-	if s.gates == nil {
-		s.gates = make(map[string]*conversationGate)
-	}
-	gate := s.gates[conversationID]
-	if gate == nil {
-		gate = &conversationGate{}
-		s.gates[conversationID] = gate
-	}
-	return gate
-}
 
 // reserveTurn acquires the conversation turn slot before persistence so concurrent
 // SubmitCompiledTurn calls fail with TURN_IN_PROGRESS without writing a second user turn.
 func (s *CompanionService) reserveTurn(conversationID string) (context.Context, error) {
-	gate := s.gateFor(conversationID)
-	gate.mu.Lock()
-	defer gate.mu.Unlock()
-	if gate.activeTurn != nil || gate.compacting {
-		return nil, ErrTurnInProgress
+	if s == nil || s.turnRegistry == nil {
+		return nil, ErrRespondRuntimeNotMigrated
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	gate.activeTurn = &activeTurn{cancel: cancel}
-	return ctx, nil
+	return s.turnRegistry.Reserve(conversationID)
 }
 
 func (s *CompanionService) bindTurn(conversationID string, turnID string) {
-	gate := s.gateFor(conversationID)
-	gate.mu.Lock()
-	defer gate.mu.Unlock()
-	if gate.activeTurn != nil {
-		gate.activeTurn.turnID = turnID
+	if s != nil && s.turnRegistry != nil {
+		s.turnRegistry.Bind(conversationID, turnID)
 	}
 }
 
 func (s *CompanionService) markTurnDelivering(conversationID, turnID string) {
-	gate := s.gateFor(conversationID)
-	gate.mu.Lock()
-	defer gate.mu.Unlock()
-	if gate.activeTurn != nil && gate.activeTurn.turnID == turnID {
-		gate.activeTurn.delivering = true
+	if s != nil && s.turnRegistry != nil {
+		s.turnRegistry.MarkDelivering(conversationID, turnID)
 	}
 }
 
 // cancelTurnBeforeDelivery invalidates model generation when newer ambient
 // input arrives, but never interrupts a turn that has entered final delivery.
 func (s *CompanionService) cancelTurnBeforeDelivery(conversationID string) bool {
-	s.gateMu.Lock()
-	gate := s.gates[conversationID]
-	s.gateMu.Unlock()
-	if gate == nil {
+	if s == nil || s.turnRegistry == nil {
 		return false
 	}
-	gate.mu.Lock()
-	defer gate.mu.Unlock()
-	if gate.activeTurn == nil || gate.activeTurn.delivering {
-		return false
+	canceled, err := s.turnRegistry.CancelBeforeDelivery(conversationID)
+	if err != nil {
+		s.setBackgroundError(err)
 	}
-	if s.desktopTool != nil && gate.activeTurn.turnID != "" {
-		if err := s.desktopTool.CancelTurn(context.Background(), conversationID, gate.activeTurn.turnID); err != nil {
-			s.setBackgroundError(err)
-		}
-	}
-	gate.activeTurn.cancel()
-	return true
+	return canceled
 }
 
 func (s *CompanionService) endTurn(conversationID string, turnID string) {
-	gate := s.gateFor(conversationID)
-	gate.mu.Lock()
-	defer gate.mu.Unlock()
-	if gate.activeTurn == nil {
-		return
+	if s != nil && s.turnRegistry != nil {
+		s.turnRegistry.End(conversationID, turnID)
 	}
-	if turnID != "" && gate.activeTurn.turnID != "" && gate.activeTurn.turnID != turnID {
-		return
-	}
-	gate.activeTurn.cancel()
-	gate.activeTurn = nil
 }
 
 func (s *CompanionService) beginCompaction(conversationID string) error {
-	gate := s.gateFor(conversationID)
-	gate.mu.Lock()
-	defer gate.mu.Unlock()
-	if gate.activeTurn != nil || gate.compacting {
-		return ErrTurnInProgress
+	if s == nil || s.turnRegistry == nil {
+		return ErrRespondRuntimeNotMigrated
 	}
-	gate.compacting = true
-	return nil
+	return s.turnRegistry.BeginCompaction(conversationID)
 }
 
 func (s *CompanionService) endCompaction(conversationID string) {
-	gate := s.gateFor(conversationID)
-	gate.mu.Lock()
-	defer gate.mu.Unlock()
-	gate.compacting = false
+	if s != nil && s.turnRegistry != nil {
+		s.turnRegistry.EndCompaction(conversationID)
+	}
 }
 
 // CancelTurn cancels an in-flight compiled turn for the conversation.

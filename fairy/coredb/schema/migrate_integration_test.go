@@ -1,9 +1,10 @@
 //go:build integration
 
-package postgres
+package schema
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/url"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fairy/coredb"
 )
 
 func TestMigrateAndVerifySchemaIntegration(t *testing.T) {
@@ -35,13 +38,13 @@ func TestMigrateAndVerifySchemaIntegration(t *testing.T) {
 		t.Fatalf("status = %#v", status)
 	}
 	for _, table := range schemaTableNames() {
-		assertRegclass(t, ctx, pool.Raw(), table, true)
+		assertRegclass(t, ctx, pool, table, true)
 	}
 	for _, index := range schemaIndexes {
-		assertRegclass(t, ctx, pool.Raw(), index.Name, true)
+		assertRegclass(t, ctx, pool, index.Name, true)
 	}
-	assertRegclass(t, ctx, pool.Raw(), "fairy_schema_migrations", false)
-	assertRegclass(t, ctx, pool.Raw(), "sqlite_import_runs", false)
+	assertRegclass(t, ctx, pool, "fairy_schema_migrations", false)
+	assertRegclass(t, ctx, pool, "sqlite_import_runs", false)
 	for _, column := range [][2]string{
 		{"extraction_batches", "attempt_count"},
 		{"knowledge_entries", "confidence_basis_points"},
@@ -49,11 +52,11 @@ func TestMigrateAndVerifySchemaIntegration(t *testing.T) {
 		{"memory_embedding_items", "dimensions"},
 		{"secret_values", "key_version"},
 	} {
-		assertColumnType(t, ctx, pool.Raw(), column[0], column[1], "integer")
+		assertColumnType(t, ctx, pool, column[0], column[1], "integer")
 	}
 
 	var hasTrgm bool
-	if err := pool.Raw().QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')").Scan(&hasTrgm); err != nil {
+	if err := pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')").Scan(&hasTrgm); err != nil {
 		t.Fatalf("checking pg_trgm: %v", err)
 	}
 	if !hasTrgm {
@@ -68,14 +71,14 @@ func TestMigrateIsIdempotentIntegration(t *testing.T) {
 	if err := Migrate(ctx, pool); err != nil {
 		t.Fatalf("first Migrate() error = %v", err)
 	}
-	if _, err := pool.Raw().Exec(ctx, "INSERT INTO conversations(id, character_id, created_at_ms, updated_at_ms) VALUES ('sentinel', 'character', 1, 1)"); err != nil {
+	if _, err := pool.Exec(ctx, "INSERT INTO conversations(id, character_id, created_at_ms, updated_at_ms) VALUES ('sentinel', 'character', 1, 1)"); err != nil {
 		t.Fatalf("insert sentinel: %v", err)
 	}
 	if err := Migrate(ctx, pool); err != nil {
 		t.Fatalf("second Migrate() error = %v", err)
 	}
 	var count int
-	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM conversations WHERE id = 'sentinel'").Scan(&count); err != nil {
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM conversations WHERE id = 'sentinel'").Scan(&count); err != nil {
 		t.Fatalf("count sentinel: %v", err)
 	}
 	if count != 1 {
@@ -117,11 +120,11 @@ func TestMigratePreservesDomainConstraintsIntegration(t *testing.T) {
 	if err := Migrate(ctx, pool); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
-	_, err := pool.Raw().Exec(ctx, "INSERT INTO conversations(id, character_id, created_at_ms, updated_at_ms) VALUES ('invalid', 'character', -1, -1)")
+	_, err := pool.Exec(ctx, "INSERT INTO conversations(id, character_id, created_at_ms, updated_at_ms) VALUES ('invalid', 'character', -1, -1)")
 	if err == nil {
 		t.Fatal("negative conversation timestamps must be rejected")
 	}
-	_, err = pool.Raw().Exec(ctx, "INSERT INTO secret_values(namespace, name, key_version, nonce, ciphertext, aad, created_at_ms, updated_at_ms) VALUES ('model', 'key', 1, $1, $2, 'model:key', 1, 1)", []byte("short"), []byte("ciphertext"))
+	_, err = pool.Exec(ctx, "INSERT INTO secret_values(namespace, name, key_version, nonce, ciphertext, aad, created_at_ms, updated_at_ms) VALUES ('model', 'key', 1, $1, $2, 'model:key', 1, 1)", []byte("short"), []byte("ciphertext"))
 	if err == nil {
 		t.Fatal("invalid secret nonce length must be rejected")
 	}
@@ -131,9 +134,10 @@ func TestVerifySchemaReportsPartialObjectsWithoutMutatingIntegration(t *testing.
 	ctx := t.Context()
 	pool := openIsolatedPool(t, ctx)
 	defer pool.Close()
-	if _, err := pool.Raw().Exec(ctx, "CREATE TABLE conversations (id text PRIMARY KEY)"); err != nil {
+	if _, err := pool.Exec(ctx, "CREATE TABLE conversations (id text PRIMARY KEY)"); err != nil {
 		t.Fatalf("create partial table: %v", err)
 	}
+	fingerprintBefore := catalogFingerprint(t, ctx, pool)
 	status, err := VerifySchema(ctx, pool)
 	if !errors.Is(err, ErrSchemaNotCurrent) {
 		t.Fatalf("VerifySchema() err = %v, want ErrSchemaNotCurrent", err)
@@ -141,7 +145,10 @@ func TestVerifySchemaReportsPartialObjectsWithoutMutatingIntegration(t *testing.
 	if status.Current || len(status.MissingObjects) == 0 || status.MissingObjects[0] != "column:conversations.character_id" {
 		t.Fatalf("partial status = %#v", status)
 	}
-	assertRegclass(t, ctx, pool.Raw(), "conversation_turns", false)
+	if fingerprintAfter := catalogFingerprint(t, ctx, pool); fingerprintAfter != fingerprintBefore {
+		t.Fatalf("VerifySchema mutated partial catalog: before %s, after %s", fingerprintBefore, fingerprintAfter)
+	}
+	assertRegclass(t, ctx, pool, "conversation_turns", false)
 	if err := Migrate(ctx, pool); !errors.Is(err, ErrSchemaNotCurrent) {
 		t.Fatalf("Migrate(partial schema) err = %v, want ErrSchemaNotCurrent", err)
 	}
@@ -154,9 +161,10 @@ func TestMigrateRejectsLegacyTablesIntegration(t *testing.T) {
 	if err := Migrate(ctx, pool); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
-	if _, err := pool.Raw().Exec(ctx, "CREATE TABLE fairy_schema_migrations (version integer PRIMARY KEY)"); err != nil {
+	if _, err := pool.Exec(ctx, "CREATE TABLE fairy_schema_migrations (version integer PRIMARY KEY)"); err != nil {
 		t.Fatalf("create legacy table: %v", err)
 	}
+	fingerprintBefore := catalogFingerprint(t, ctx, pool)
 	status, err := VerifySchema(ctx, pool)
 	if !errors.Is(err, ErrSchemaNotCurrent) {
 		t.Fatalf("VerifySchema() err = %v, want ErrSchemaNotCurrent", err)
@@ -164,18 +172,29 @@ func TestMigrateRejectsLegacyTablesIntegration(t *testing.T) {
 	if len(status.UnexpectedObjects) != 1 || status.UnexpectedObjects[0] != "table:fairy_schema_migrations" {
 		t.Fatalf("status = %#v", status)
 	}
+	if fingerprintAfter := catalogFingerprint(t, ctx, pool); fingerprintAfter != fingerprintBefore {
+		t.Fatalf("VerifySchema mutated unexpected catalog: before %s, after %s", fingerprintBefore, fingerprintAfter)
+	}
 	if err := Migrate(ctx, pool); !errors.Is(err, ErrSchemaNotCurrent) {
 		t.Fatalf("Migrate(legacy schema) err = %v, want ErrSchemaNotCurrent", err)
 	}
 }
 
-func openIsolatedPool(t *testing.T, ctx context.Context) *Pool {
+func TestVerifySchemaFailsWhenPoolIsClosedIntegration(t *testing.T) {
+	pool := openIsolatedPool(t, t.Context())
+	pool.Close()
+	if _, err := VerifySchema(t.Context(), pool); err == nil {
+		t.Fatal("VerifySchema on a closed pool succeeded")
+	}
+}
+
+func openIsolatedPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	t.Helper()
 	databaseURL := os.Getenv("FAIRY_TEST_DATABASE_URL")
 	if databaseURL == "" {
 		databaseURL = "postgres://fairy:fairy_test_password@127.0.0.1:15432/fairy_test?sslmode=disable"
 	}
-	adminConfig := ShortTimeoutConfig(databaseURL)
+	adminConfig := coredb.ShortTimeoutConfig(databaseURL)
 	admin, err := pgxpool.New(ctx, adminConfig.URL)
 	if err != nil {
 		t.Fatalf("open admin pool: %v", err)
@@ -197,12 +216,12 @@ func openIsolatedPool(t *testing.T, ctx context.Context) *Pool {
 		defer cleanupPool.Close()
 		_, _ = cleanupPool.Exec(cleanupCtx, "DROP SCHEMA IF EXISTS "+quoted+" CASCADE")
 	})
-	config := ShortTimeoutConfig(withSearchPath(t, databaseURL, schema))
-	pool, err := Open(ctx, config)
+	config := coredb.ShortTimeoutConfig(withSearchPath(t, databaseURL, schema))
+	database, err := coredb.Open(ctx, config)
 	if err != nil {
 		t.Fatalf("open isolated pool: %v", err)
 	}
-	return pool
+	return database.Raw()
 }
 
 func withSearchPath(t *testing.T, rawURL string, schema string) string {
@@ -238,4 +257,25 @@ WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2`,
 	if got != want {
 		t.Fatalf("%s.%s type = %s, want %s", table, column, got, want)
 	}
+}
+
+func catalogFingerprint(t *testing.T, ctx context.Context, pool *pgxpool.Pool) string {
+	t.Helper()
+	rows, err := pool.Query(ctx, schemaCatalogQuery)
+	if err != nil {
+		t.Fatalf("read catalog fingerprint: %v", err)
+	}
+	defer rows.Close()
+	hash := sha256.New()
+	for rows.Next() {
+		var kind, owner, name string
+		if err := rows.Scan(&kind, &owner, &name); err != nil {
+			t.Fatalf("scan catalog fingerprint: %v", err)
+		}
+		_, _ = fmt.Fprintf(hash, "%s\x00%s\x00%s\n", kind, owner, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate catalog fingerprint: %v", err)
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil))
 }

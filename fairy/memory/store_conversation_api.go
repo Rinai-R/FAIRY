@@ -49,6 +49,30 @@ func (s *Store) LoadConversationContext(ctx context.Context, conversationID stri
 	return s.loadConversationPostgres(ctx, conversationID)
 }
 
+func (s *Store) LoadConversationRecord(conversationID string) (ConversationRecord, error) {
+	return s.LoadConversationRecordContext(context.Background(), conversationID)
+}
+
+func (s *Store) LoadConversationRecordContext(ctx context.Context, conversationID string) (ConversationRecord, error) {
+	return s.loadConversationRecordPostgres(ctx, conversationID)
+}
+
+func (s *Store) LoadConversationActivity(conversationID string, nowUnixMS int64) (ConversationActivity, error) {
+	return s.LoadConversationActivityContext(context.Background(), conversationID, nowUnixMS)
+}
+
+func (s *Store) LoadConversationActivityContext(ctx context.Context, conversationID string, nowUnixMS int64) (ConversationActivity, error) {
+	return s.loadConversationActivityPostgres(ctx, conversationID, nowUnixMS)
+}
+
+func (s *Store) LoadConversationPrompt(conversationID string) (ConversationPromptContext, error) {
+	return s.LoadConversationPromptContext(context.Background(), conversationID)
+}
+
+func (s *Store) LoadConversationPromptContext(ctx context.Context, conversationID string) (ConversationPromptContext, error) {
+	return s.loadConversationPromptContextPostgres(ctx, conversationID)
+}
+
 func (s *Store) BeginTurn(conversationID string, userMessage string) (PersistedTurn, error) {
 	return s.BeginTurnContext(context.Background(), conversationID, userMessage)
 }

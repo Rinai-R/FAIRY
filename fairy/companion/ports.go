@@ -10,45 +10,156 @@ import (
 	"fairy/memory/semantic"
 	"fairy/model"
 	"fairy/profile"
+	"fairy/retention"
 
 	contracts "fairy/contracts/interaction"
 )
 
-// MemoryPort is the persistence + retrieval surface Companion needs from the memory domain.
-// Implemented by *memory.Store (service+store merged in the memory package).
-type MemoryPort interface {
-	LoadConversation(conversationID string) (memory.ConversationBootstrap, error)
+type InteractionBindingStore interface {
 	LookupEndpointForConversation(conversationID string) (contracts.Binding, bool, error)
+}
+
+type ConversationActivityStore interface {
+	LoadConversationActivity(conversationID string, nowUnixMS int64) (memory.ConversationActivity, error)
+}
+
+type ConversationMetadataStore interface {
+	LoadConversationRecord(conversationID string) (memory.ConversationRecord, error)
+}
+
+// PromptContextStore reads only the active dialogue required to build model
+// prompts. Full conversation history is not part of Companion's production ports.
+type PromptContextStore interface {
+	LoadConversationPrompt(conversationID string) (memory.ConversationPromptContext, error)
+}
+
+// TurnStore owns the durable turn lifecycle writes consumed by TurnEngine.
+type TurnStore interface {
 	BeginTurn(conversationID string, userMessage string) (memory.PersistedTurn, error)
 	BeginInitiationTurn(conversationID string, evidenceIDs []string) (memory.PersistedTurn, error)
 	CompleteTurn(conversationID string, turnID string, assistantMessage string) (memory.MessageRecord, error)
 	InterruptTurn(conversationID string, turnID string, publishedPrefix string) (*memory.MessageRecord, error)
 	FailTurn(conversationID string, turnID string, code string, message string, retryable bool) error
-	CommitCompaction(conversationID string, expectedRevision uint64, summary string, contextWindow memory.ContextWindowRecord, clearLane string) (memory.CompactionResult, error)
+}
+
+// MemoryRetrievalStore is the model-tool read surface for private and verified
+// public memory.
+type MemoryRetrievalStore interface {
 	Retrieve(characterID string, query string) (memory.RetrievalContext, error)
 	RetrieveWithSemanticVectorIndex(context.Context, string, string, semantic.Embedder, memory.SemanticVectorIndex) (memory.RetrievalContext, error)
 	RetrievePublicKnowledgeContext(context.Context, string) (memory.RetrievalContext, error)
-	CompanionPortraitContext(context.Context, string) (memory.RetrievalContext, error)
-	StoreSocialMemoryEntries(context.Context, memory.SocialMemoryBatchInput) ([]memory.SocialMemoryEntry, error)
-	RetrieveSocialMemoryContext(context.Context, string, string, string) (memory.SocialMemoryContext, error)
 	RetrieveCharacterSocialMemoryContext(context.Context, string, string) (memory.SocialMemoryContext, error)
-	RecordSocialReplyFeedback(context.Context, memory.SocialReplyFeedbackInput) (memory.SocialReplyFeedback, error)
-	RecentSocialFeedbackSummary(context.Context, string, string) (memory.RecentSocialFeedbackSummary, error)
-	UpsertSocialPersonNote(context.Context, memory.SocialPersonNoteInput) (memory.SocialPersonNote, error)
-	ListSocialPersonNotes(context.Context, string, string, []string) ([]memory.SocialPersonNote, error)
+}
+
+// PortraitStore reads the bounded private companion portrait projection.
+type PortraitStore interface {
+	CompanionPortraitContext(context.Context, string) (memory.RetrievalContext, error)
+	RetrieveCharacterSocialMemoryContext(context.Context, string, string) (memory.SocialMemoryContext, error)
+}
+
+// SocialRetrievalStore reads public social context within one conversation.
+type SocialRetrievalStore interface {
+	RetrieveSocialMemoryContext(context.Context, string, string, string) (memory.SocialMemoryContext, error)
+}
+
+// RuntimeStateStore owns prompt continuation, context-window, compaction, and
+// privacy-safe runtime ledger state.
+type RuntimeStateStore interface {
+	CommitCompaction(conversationID string, expectedRevision uint64, summary string, contextWindow memory.ContextWindowRecord, clearLane string) (memory.CompactionResult, error)
 	AppendTurnRuntimeEvent(input memory.TurnRuntimeEventInput) (memory.TurnRuntimeEventRecord, error)
 	SaveLaneContinuation(record memory.LaneContinuationRecord) (memory.LaneContinuationRecord, error)
 	LoadLaneContinuation(conversationID string, lane string) (memory.LaneContinuationRecord, bool, error)
 	ClearLaneContinuation(conversationID string, lane string) error
 	SaveContextWindow(record memory.ContextWindowRecord) (memory.ContextWindowRecord, error)
 	LoadContextWindow(conversationID string, lane string) (memory.ContextWindowRecord, bool, error)
-	PendingExtractionTurnCount(conversationID string) (uint64, error)
-	ClaimExtractionBatch(conversationID string, limit int) (*memory.ExtractionBatchInput, error)
-	FailExtractionBatch(batchID, code, message string, retryable bool) error
-	CommitMemoryMutations(batchID string, characterID string, allowedMemoryIDs []string, mutations []memory.MemoryMutation) ([]memory.MemoryMutationResult, error)
-	ProcessEmbeddingJobsWithVectorIndex(context.Context, semantic.Embedder, memory.VectorIndex, int) (memory.EmbeddingJobResult, error)
-	EnqueueKnowledgeIngestSnapshots(snapshots []memory.KnowledgeIngestSnapshot) error
-	ProcessKnowledgeIngestJobs(limit int) (int, error)
+}
+
+// ExtractionStore owns bounded extraction and embedding jobs coordinated after
+// a turn.
+type ExtractionStore = retention.ExtractionStore
+
+// KnowledgeIngestStore owns the independent verified-knowledge ingest queue.
+type KnowledgeIngestStore = retention.KnowledgeIngestStore
+
+// SocialContextStore reads public feedback and person-note context.
+type SocialContextStore interface {
+	RecentSocialFeedbackSummary(context.Context, string, string) (memory.RecentSocialFeedbackSummary, error)
+	ListSocialPersonNotes(context.Context, string, string, []string) ([]memory.SocialPersonNote, error)
+}
+
+// SocialLearningStore owns public learning, feedback, and person-note writes.
+type SocialLearningStore interface {
+	StoreSocialMemoryEntries(context.Context, memory.SocialMemoryBatchInput) ([]memory.SocialMemoryEntry, error)
+	RecordSocialReplyFeedback(context.Context, memory.SocialReplyFeedbackInput) (memory.SocialReplyFeedback, error)
+	UpsertSocialPersonNote(context.Context, memory.SocialPersonNoteInput) (memory.SocialPersonNote, error)
+}
+
+type turnMemoryPorts struct {
+	promptContext   PromptContextStore
+	turns           TurnStore
+	memoryRetrieval MemoryRetrievalStore
+	portrait        PortraitStore
+	runtimeState    RuntimeStateStore
+}
+
+type ambientMemoryPorts struct {
+	bindings        InteractionBindingStore
+	activity        ConversationActivityStore
+	metadata        ConversationMetadataStore
+	socialRetrieval SocialRetrievalStore
+	socialContext   SocialContextStore
+	socialLearning  SocialLearningStore
+}
+
+type retentionMemoryPorts struct {
+	extraction ExtractionStore
+	knowledge  KnowledgeIngestStore
+}
+
+type memoryPorts struct {
+	turn      turnMemoryPorts
+	ambient   ambientMemoryPorts
+	retention retentionMemoryPorts
+}
+
+func memoryPortsFromStore(store *memory.Store) memoryPorts {
+	if store == nil {
+		return memoryPorts{}
+	}
+	return memoryPorts{
+		turn: turnMemoryPorts{
+			promptContext:   store,
+			turns:           store,
+			memoryRetrieval: store,
+			portrait:        store,
+			runtimeState:    store,
+		},
+		ambient: ambientMemoryPorts{
+			bindings:        store,
+			activity:        store,
+			metadata:        store,
+			socialRetrieval: store,
+			socialContext:   store,
+			socialLearning:  store,
+		},
+		retention: retentionMemoryPorts{extraction: store, knowledge: store},
+	}
+}
+
+func (p memoryPorts) ready() bool {
+	return p.turn.promptContext != nil &&
+		p.turn.turns != nil &&
+		p.turn.memoryRetrieval != nil &&
+		p.turn.portrait != nil &&
+		p.turn.runtimeState != nil &&
+		p.ambient.bindings != nil &&
+		p.ambient.activity != nil &&
+		p.ambient.metadata != nil &&
+		p.ambient.socialRetrieval != nil &&
+		p.ambient.socialContext != nil &&
+		p.ambient.socialLearning != nil &&
+		p.retention.extraction != nil &&
+		p.retention.knowledge != nil
 }
 
 type OwnerIdentityPort interface {
@@ -68,10 +179,11 @@ type StreamingModelPort interface {
 	ExecuteRequestContextStream(ctx context.Context, request model.CompiledPromptRequest, onEvent func(model.StreamEvent)) error
 }
 
-// CharacterCatalog lists character records for persona + visual states.
+// CharacterLookup reads the one conversation character needed for persona and
+// visual states without enumerating the management catalog.
 // Implemented by *character.Store.
-type CharacterCatalog interface {
-	List() (character.Catalog, error)
+type CharacterLookup interface {
+	Lookup(characterID string) (character.Record, bool, error)
 }
 
 // ProfileSource reads the current user profile snapshot.
@@ -89,10 +201,22 @@ type ConfigSource interface {
 
 // Compile-time assertions that domain stores satisfy companion ports.
 var (
-	_ MemoryPort        = (*memory.Store)(nil)
-	_ ModelPort         = (*model.ModelService)(nil)
-	_ CharacterCatalog  = (*character.Store)(nil)
-	_ ProfileSource     = (*profile.Store)(nil)
-	_ ConfigSource      = (*config.Reader)(nil)
-	_ OwnerIdentityPort = (*identity.Store)(nil)
+	_ InteractionBindingStore   = (*memory.Store)(nil)
+	_ ConversationActivityStore = (*memory.Store)(nil)
+	_ ConversationMetadataStore = (*memory.Store)(nil)
+	_ PromptContextStore        = (*memory.Store)(nil)
+	_ TurnStore                 = (*memory.Store)(nil)
+	_ MemoryRetrievalStore      = (*memory.Store)(nil)
+	_ PortraitStore             = (*memory.Store)(nil)
+	_ SocialRetrievalStore      = (*memory.Store)(nil)
+	_ RuntimeStateStore         = (*memory.Store)(nil)
+	_ ExtractionStore           = (*memory.Store)(nil)
+	_ KnowledgeIngestStore      = (*memory.Store)(nil)
+	_ SocialContextStore        = (*memory.Store)(nil)
+	_ SocialLearningStore       = (*memory.Store)(nil)
+	_ ModelPort                 = (*model.ModelService)(nil)
+	_ CharacterLookup           = (*character.Store)(nil)
+	_ ProfileSource             = (*profile.Store)(nil)
+	_ ConfigSource              = (*config.Reader)(nil)
+	_ OwnerIdentityPort         = (*identity.Store)(nil)
 )

@@ -95,7 +95,7 @@ func (s *CompanionService) scheduleAutoCompaction(conversationID string, events 
 		return
 	}
 	policy := compaction.PolicyFromContextWindow(connection.ContextWindowTokens)
-	window, found, err := s.memory.LoadContextWindow(conversationID, string(model.PromptLaneRespond))
+	window, found, err := s.memory.turn.runtimeState.LoadContextWindow(conversationID, string(model.PromptLaneRespond))
 	if err != nil {
 		s.setBackgroundError(err)
 		return
@@ -107,9 +107,7 @@ func (s *CompanionService) scheduleAutoCompaction(conversationID string, events 
 	if !policy.ShouldCompactWindow(CompactionTriggerAfterCompletedTurn, promptTokens, true, windowPtr) {
 		return
 	}
-	go func() {
-		s.backgroundJobs.Add(1)
-		defer s.backgroundJobs.Add(-1)
+	if s.retention == nil || !s.retention.Run(func() {
 		if _, err := s.CompactConversation(conversationID); err != nil {
 			if recordErr := s.recordContextWindowFailure(conversationID); recordErr != nil {
 				s.setBackgroundError(recordErr)
@@ -119,33 +117,60 @@ func (s *CompanionService) scheduleAutoCompaction(conversationID string, events 
 			return
 		}
 		s.clearBackgroundError()
-	}()
+	}) {
+		return
+	}
 }
 
-func (s *CompanionService) maybeCompactBeforeTurn(request SubmitCompiledTurnRequest) error {
+type preTurnPreparation struct {
+	visualStates  []VisualState
+	compactionErr error
+}
+
+func (s *CompanionService) prepareBeforeTurn(
+	request SubmitCompiledTurnRequest,
+	resolved domain.Resolved,
+	deriveVisualStates bool,
+) (preTurnPreparation, error) {
+	result := preTurnPreparation{visualStates: request.AvailableVisualStates}
 	if s == nil || !s.RespondRuntimeMigrated() {
-		return nil
+		return result, nil
 	}
-	bootstrap, err := s.memory.LoadConversation(request.ConversationID)
+	bootstrap, err := s.memory.turn.promptContext.LoadConversationPrompt(request.ConversationID)
 	if err != nil {
-		return err
+		if deriveVisualStates {
+			return result, err
+		}
+		result.compactionErr = err
+		return result, nil
 	}
-	if len(messagesAfterCutoff(bootstrap.Messages, bootstrap.PromptWindow.CutoffMessageSequence)) == 0 {
-		return nil
+	windowed := messagesAfterCutoff(bootstrap.Messages, bootstrap.PromptWindow.CutoffMessageSequence)
+	if len(windowed) == 0 && !deriveVisualStates {
+		return result, nil
 	}
 	characterRecord, err := s.activeCharacter(bootstrap.Conversation.CharacterID)
 	if err != nil {
-		return err
+		if deriveVisualStates {
+			return result, err
+		}
+		result.compactionErr = err
+		return result, nil
 	}
-	resolved, err := s.ResolveInteraction(request.ConversationID)
-	if err != nil {
-		return err
+	if deriveVisualStates {
+		result.visualStates, err = visualStatesFromCharacter(characterRecord)
+		if err != nil {
+			return result, err
+		}
+	}
+	if len(windowed) == 0 {
+		return result, nil
 	}
 	var userProfile *profile.Snapshot
 	if resolved.AllowsPersonalMemory() {
 		userProfile, err = s.profileSource().Current()
 		if err != nil {
-			return err
+			result.compactionErr = err
+			return result, nil
 		}
 	}
 	estimatedMessages := append([]memory.MessageRecord(nil), bootstrap.Messages...)
@@ -154,40 +179,46 @@ func (s *CompanionService) maybeCompactBeforeTurn(request SubmitCompiledTurnRequ
 			Role: "user", Content: request.Input, Sequence: uint64(len(estimatedMessages) + 1),
 		})
 	}
-	slots, err := persona.BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, estimatedMessages, request.AvailableVisualStates, memory.RetrievalContext{}, resolved)
+	slots, err := persona.BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, estimatedMessages, result.visualStates, memory.RetrievalContext{}, resolved)
 	if err != nil {
-		return err
+		result.compactionErr = err
+		return result, nil
 	}
 	if request.Initiation != nil {
 		slots, err = AppendDesktopInitiationContext(slots, *request.Initiation)
 		if err != nil {
-			return err
+			result.compactionErr = err
+			return result, nil
 		}
 	}
 	estimatedTokens := estimatePromptPrefillTokens(RespondInstructions, persona.PromptItemsFromContextSlots(slots))
 	window, err := s.recordEstimatedContextWindow(request.ConversationID, bootstrap.PromptWindow.Revision, estimatedTokens)
 	if err != nil {
-		return err
+		result.compactionErr = err
+		return result, nil
 	}
 	connection, err := s.configSource().ModelConnection()
 	if err != nil {
-		return err
+		result.compactionErr = err
+		return result, nil
 	}
 	policy := compaction.PolicyFromContextWindow(connection.ContextWindowTokens)
 	if !policy.ShouldCompactWindow(CompactionTriggerPreTurnPredictive, estimatedTokens, true, window) {
-		return nil
+		return result, nil
 	}
 	if _, err := s.CompactConversation(request.ConversationID); err != nil {
 		if errors.Is(err, ErrTurnInProgress) {
-			return nil
+			return result, nil
 		}
 		if recordErr := s.recordContextWindowFailure(request.ConversationID); recordErr != nil {
-			return recordErr
+			result.compactionErr = recordErr
+			return result, nil
 		}
-		return err
+		result.compactionErr = err
+		return result, nil
 	}
 	s.clearBackgroundError()
-	return nil
+	return result, nil
 }
 
 func lastPromptTokens(events []model.StreamEvent) (uint64, bool) {

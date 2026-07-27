@@ -167,11 +167,11 @@ func (e *LearningEngine) process(ctx context.Context, snapshot LearningSnapshot)
 	if !resolved.AllowsAmbientParticipation() || resolved.Memory != domain.MemoryPublic {
 		return errors.New("social learning requires a public ambient interaction")
 	}
-	bootstrap, err := e.host.LoadConversation(snapshot.ConversationID)
+	conversation, err := e.host.LoadConversationRecord(snapshot.ConversationID)
 	if err != nil {
-		return fmt.Errorf("loading social learning conversation: %w", err)
+		return fmt.Errorf("loading social learning conversation metadata: %w", err)
 	}
-	record, err := e.host.ActiveCharacter(bootstrap.Conversation.CharacterID)
+	record, err := e.host.ActiveCharacter(conversation.CharacterID)
 	if err != nil {
 		return err
 	}
@@ -214,7 +214,7 @@ func (e *LearningEngine) process(ctx context.Context, snapshot LearningSnapshot)
 	}
 	if len(compiled.Entries) > 0 {
 		_, err = e.host.StoreSocialMemoryEntries(ctx, memory.SocialMemoryBatchInput{
-			CharacterID: bootstrap.Conversation.CharacterID, ConversationID: snapshot.ConversationID, Entries: compiled.Entries,
+			CharacterID: conversation.CharacterID, ConversationID: snapshot.ConversationID, Entries: compiled.Entries,
 		})
 		if err != nil {
 			return fmt.Errorf("storing social learning entries: %w", err)
@@ -222,7 +222,7 @@ func (e *LearningEngine) process(ctx context.Context, snapshot LearningSnapshot)
 	}
 	for _, note := range compiled.Notes {
 		_, err = e.host.UpsertSocialPersonNote(ctx, memory.SocialPersonNoteInput{
-			CharacterID: bootstrap.Conversation.CharacterID, ConversationID: snapshot.ConversationID,
+			CharacterID: conversation.CharacterID, ConversationID: snapshot.ConversationID,
 			SenderID: note.SenderID, SenderName: note.SenderName, Note: note.Note,
 		})
 		if err != nil {

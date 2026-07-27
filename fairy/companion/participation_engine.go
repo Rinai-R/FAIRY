@@ -45,11 +45,11 @@ type participationHost struct {
 
 var _ participation.DecisionHost = participationHost{}
 
-func (h participationHost) LoadConversation(conversationID string) (memory.ConversationBootstrap, error) {
-	if h.service == nil || h.service.memoryPort() == nil {
-		return memory.ConversationBootstrap{}, ErrRespondRuntimeNotMigrated
+func (h participationHost) LoadConversationActivity(conversationID string, nowUnixMS int64) (memory.ConversationActivity, error) {
+	if h.service == nil || h.service.memory.ambient.activity == nil {
+		return memory.ConversationActivity{}, ErrRespondRuntimeNotMigrated
 	}
-	return h.service.memoryPort().LoadConversation(conversationID)
+	return h.service.memory.ambient.activity.LoadConversationActivity(conversationID, nowUnixMS)
 }
 
 func (h participationHost) ResolveInteraction(conversationID string) (domain.Resolved, error) {
@@ -60,24 +60,24 @@ func (h participationHost) ResolveInteraction(conversationID string) (domain.Res
 }
 
 func (h participationHost) ActiveCharacter(characterID string) (character.Record, error) {
-	if h.service == nil || h.service.characterCatalog() == nil {
+	if h.service == nil || h.service.characterLookup == nil {
 		return character.Record{}, ErrRespondRuntimeNotMigrated
 	}
 	return h.service.activeCharacter(characterID)
 }
 
 func (h participationHost) ListSocialPersonNotes(ctx context.Context, characterID, conversationID string, senderIDs []string) ([]memory.SocialPersonNote, error) {
-	if h.service == nil || h.service.memoryPort() == nil {
+	if h.service == nil || h.service.memory.ambient.socialContext == nil {
 		return nil, ErrRespondRuntimeNotMigrated
 	}
-	return h.service.memoryPort().ListSocialPersonNotes(ctx, characterID, conversationID, senderIDs)
+	return h.service.memory.ambient.socialContext.ListSocialPersonNotes(ctx, characterID, conversationID, senderIDs)
 }
 
 func (h participationHost) RetrieveSocialMemoryContext(ctx context.Context, characterID, conversationID, query string) (memory.SocialMemoryContext, error) {
-	if h.service == nil || h.service.memoryPort() == nil {
+	if h.service == nil || h.service.memory.ambient.socialRetrieval == nil {
 		return memory.SocialMemoryContext{}, ErrRespondRuntimeNotMigrated
 	}
-	return h.service.memoryPort().RetrieveSocialMemoryContext(ctx, characterID, conversationID, query)
+	return h.service.memory.ambient.socialRetrieval.RetrieveSocialMemoryContext(ctx, characterID, conversationID, query)
 }
 
 func (h participationHost) ModelConnection() (config.ModelConnection, error) {
@@ -95,14 +95,14 @@ func (h participationHost) ExecuteRequest(ctx context.Context, request model.Com
 }
 
 func (s *CompanionService) participationBehaviorContext(ctx context.Context, characterID, conversationID string, messages []AmbientObservation) (*model.PromptItem, error) {
-	if s == nil || s.memoryPort() == nil {
+	if s == nil || s.memory.ambient.socialRetrieval == nil {
 		return nil, nil
 	}
 	query := participation.BehaviorQuery(messages)
 	if query == "" {
 		query = "群聊互动"
 	}
-	retrieved, err := s.memoryPort().RetrieveSocialMemoryContext(ctx, characterID, conversationID, query)
+	retrieved, err := s.memory.ambient.socialRetrieval.RetrieveSocialMemoryContext(ctx, characterID, conversationID, query)
 	if err != nil {
 		return nil, err
 	}

@@ -8,8 +8,9 @@ import (
 	"reflect"
 	"testing"
 
+	dbschema "fairy/coredb/schema"
+
 	"fairy/memory/semantic"
-	pgstore "fairy/postgres"
 	vectorindex "fairy/vectorindex"
 )
 
@@ -24,7 +25,7 @@ func TestPostgresSemanticRetrievalEnforcesRelationshipScopeAndTruth(t *testing.T
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -103,7 +104,7 @@ func TestPostgresSemanticRetrievalFallsBackToTrigramWhenQdrantFails(t *testing.T
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)

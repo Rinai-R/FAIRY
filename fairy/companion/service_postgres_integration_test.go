@@ -11,14 +11,16 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"fairy/character"
 	"fairy/config"
+	"fairy/coredb"
+	dbschema "fairy/coredb/schema"
 	"fairy/memory"
 	"fairy/model"
-	pgstore "fairy/postgres"
 	"fairy/profile"
 	"fairy/reply"
 	"fairy/search"
@@ -137,12 +139,91 @@ func (m *capturingIntegrationModel) ExecutePrompt(model.PromptLane, string, uint
 	return []model.StreamEvent{{Type: "text_delta", Data: "群聊摘要"}, {Type: "usage", Usage: &model.Usage{PromptTokens: 2, CompletionTokens: 1}}}, nil
 }
 
-type companionIntegrationCatalog struct {
+type companionIntegrationCharacterLookup struct {
 	record character.Record
 }
 
-func (c companionIntegrationCatalog) List() (character.Catalog, error) {
-	return character.Catalog{Characters: []character.Record{c.record}}, nil
+func (c companionIntegrationCharacterLookup) Lookup(characterID string) (character.Record, bool, error) {
+	return c.record, c.record.CharacterID == characterID, nil
+}
+
+type countingPromptContextStore struct {
+	base      PromptContextStore
+	loadCalls atomic.Int64
+}
+
+func (s *countingPromptContextStore) LoadConversationPrompt(conversationID string) (memory.ConversationPromptContext, error) {
+	s.loadCalls.Add(1)
+	return s.base.LoadConversationPrompt(conversationID)
+}
+
+type countingCharacterLookup struct {
+	record      character.Record
+	lookupCalls atomic.Int64
+}
+
+func (c *countingCharacterLookup) Lookup(characterID string) (character.Record, bool, error) {
+	c.lookupCalls.Add(1)
+	return c.record, c.record.CharacterID == characterID, nil
+}
+
+type countingOwnerIdentity struct {
+	lookups atomic.Int64
+}
+
+func (o *countingOwnerIdentity) IsOwner(string, string) (bool, error) {
+	o.lookups.Add(1)
+	return true, nil
+}
+
+type preparationCallSnapshot struct {
+	promptContextLoads int64
+	characterLookups   int64
+	ownerLookups       int64
+}
+
+type preparationCountingModel struct {
+	promptContext *countingPromptContextStore
+	characters    *countingCharacterLookup
+	owner         *countingOwnerIdentity
+	mu            sync.Mutex
+	first         *preparationCallSnapshot
+}
+
+func (m *preparationCountingModel) ExecuteRequestContext(ctx context.Context, request model.CompiledPromptRequest) ([]model.StreamEvent, error) {
+	m.mu.Lock()
+	if m.first == nil {
+		snapshot := preparationCallSnapshot{
+			promptContextLoads: m.promptContext.loadCalls.Load(),
+			characterLookups:   m.characters.lookupCalls.Load(),
+		}
+		if m.owner != nil {
+			snapshot.ownerLookups = m.owner.lookups.Load()
+		}
+		m.first = &snapshot
+	}
+	m.mu.Unlock()
+	if request.Shape.Lane == model.PromptLaneCompact {
+		return []model.StreamEvent{
+			{Type: "text_delta", Data: "压缩后的对话摘要"},
+			{Type: "usage", Usage: &model.Usage{PromptTokens: 8, CompletionTokens: 4}},
+		}, nil
+	}
+	return companionIntegrationModel{chains: []ReplyChain{{VisualState: "idle", Text: "收到。"}}}.ExecuteRequestContext(ctx, request)
+}
+
+func (*preparationCountingModel) ExecutePrompt(model.PromptLane, string, uint32, []model.PromptItem, string) ([]model.StreamEvent, error) {
+	return nil, errors.New("unexpected ExecutePrompt")
+}
+
+func (m *preparationCountingModel) firstSnapshot(t *testing.T) preparationCallSnapshot {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.first == nil {
+		t.Fatal("model boundary did not capture preparation calls")
+	}
+	return *m.first
 }
 
 type companionIntegrationProfile struct{}
@@ -262,8 +343,8 @@ func (groupWebSearchStub) Search(context.Context, string, int) ([]search.Hit, er
 
 func (groupWebSearchStub) Close() error { return nil }
 
-type terminalFailureMemory struct {
-	MemoryPort
+type terminalFailureTurnStore struct {
+	base         TurnStore
 	completeErr  error
 	interruptErr error
 }
@@ -282,12 +363,99 @@ func mustBindDesktopInteraction(t *testing.T, service *CompanionService, convers
 	}
 }
 
-func (m terminalFailureMemory) CompleteTurn(string, string, string) (memory.MessageRecord, error) {
+func (m terminalFailureTurnStore) BeginTurn(conversationID, userMessage string) (memory.PersistedTurn, error) {
+	return m.base.BeginTurn(conversationID, userMessage)
+}
+
+func (m terminalFailureTurnStore) BeginInitiationTurn(conversationID string, evidenceIDs []string) (memory.PersistedTurn, error) {
+	return m.base.BeginInitiationTurn(conversationID, evidenceIDs)
+}
+
+func (m terminalFailureTurnStore) CompleteTurn(string, string, string) (memory.MessageRecord, error) {
 	return memory.MessageRecord{}, m.completeErr
 }
 
-func (m terminalFailureMemory) InterruptTurn(string, string, string) (*memory.MessageRecord, error) {
+func (m terminalFailureTurnStore) InterruptTurn(string, string, string) (*memory.MessageRecord, error) {
 	return nil, m.interruptErr
+}
+
+func (m terminalFailureTurnStore) FailTurn(conversationID, turnID, code, message string, retryable bool) error {
+	return m.base.FailTurn(conversationID, turnID, code, message, retryable)
+}
+
+func TestPostgresDirectTurnPreparationCallBounds(t *testing.T) {
+	store, _, cleanup := openCompanionIntegrationStore(t)
+	defer cleanup()
+	const characterID = "character-preparation-counts"
+	bootstrap, err := store.OpenOrCreateCharacterConversation(characterID)
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation: %v", err)
+	}
+	ports := memoryPortsFromStore(store)
+	promptContext := &countingPromptContextStore{base: ports.turn.promptContext}
+	ports.turn.promptContext = promptContext
+	characters := &countingCharacterLookup{record: companionIntegrationCharacter(characterID)}
+	owner := &countingOwnerIdentity{}
+	provider := &preparationCountingModel{promptContext: promptContext, characters: characters, owner: owner}
+	service := newCompanionServiceWithPorts("", ports, provider, nil)
+	t.Cleanup(func() { _ = service.Close() })
+	AttachCharacterLookup(service, characters)
+	AttachProfileSource(service, companionIntegrationProfile{})
+	AttachConfigSource(service, companionIntegrationConfig{})
+	AttachOwnerIdentityStore(service, owner)
+	binding := contracts.Binding{Endpoint: contracts.EndpointIM, Facts: contracts.Facts{
+		Audience: contracts.AudienceSingle, Initiation: contracts.InitiationDirect,
+		Presentation: contracts.PresentationChat, PrincipalNamespace: "qq.onebot",
+		PrincipalDigest: strings.Repeat("a", 64),
+	}}
+	if err := service.BindInteraction(bootstrap.Conversation.ID, binding); err != nil {
+		t.Fatalf("BindInteraction: %v", err)
+	}
+	if _, err := service.SubmitTurn(SubmitTurnRequest{
+		ConversationID: bootstrap.Conversation.ID,
+		Input:          "测试准备阶段读取次数",
+	}); err != nil {
+		t.Fatalf("SubmitTurn: %v", err)
+	}
+	want := preparationCallSnapshot{promptContextLoads: 2, characterLookups: 2, ownerLookups: 1}
+	if got := provider.firstSnapshot(t); got != want {
+		t.Fatalf("direct pre-model preparation calls = %#v, want %#v", got, want)
+	}
+}
+
+func TestPostgresCompactionPreparationCallBounds(t *testing.T) {
+	store, _, cleanup := openCompanionIntegrationStore(t)
+	defer cleanup()
+	const characterID = "character-compaction-counts"
+	bootstrap, err := store.OpenOrCreateCharacterConversation(characterID)
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation: %v", err)
+	}
+	seed, err := store.BeginTurn(bootstrap.Conversation.ID, "需要压缩的历史消息")
+	if err != nil {
+		t.Fatalf("BeginTurn: %v", err)
+	}
+	if _, err := store.CompleteTurn(bootstrap.Conversation.ID, seed.ID, "历史回复"); err != nil {
+		t.Fatalf("CompleteTurn: %v", err)
+	}
+	ports := memoryPortsFromStore(store)
+	promptContext := &countingPromptContextStore{base: ports.turn.promptContext}
+	ports.turn.promptContext = promptContext
+	characters := &countingCharacterLookup{record: companionIntegrationCharacter(characterID)}
+	provider := &preparationCountingModel{promptContext: promptContext, characters: characters}
+	service := newCompanionServiceWithPorts("", ports, provider, nil)
+	t.Cleanup(func() { _ = service.Close() })
+	AttachCharacterLookup(service, characters)
+	AttachProfileSource(service, companionIntegrationProfile{})
+	AttachConfigSource(service, companionIntegrationConfig{})
+	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
+	if _, err := service.CompactConversation(bootstrap.Conversation.ID); err != nil {
+		t.Fatalf("CompactConversation: %v", err)
+	}
+	want := preparationCallSnapshot{promptContextLoads: 1, characterLookups: 1}
+	if got := provider.firstSnapshot(t); got != want {
+		t.Fatalf("compaction pre-model preparation calls = %#v, want %#v", got, want)
+	}
 }
 
 func TestPostgresCompanionMultiBeatCompletesWithPacing(t *testing.T) {
@@ -554,10 +722,10 @@ func TestPostgresDesktopObservationGraphSchedulesInitiation(t *testing.T) {
 		t.Fatal("desktop initiation did not complete")
 	}
 	deadline := time.Now().Add(5 * time.Second)
-	for service.backgroundJobs.Load() != 0 && time.Now().Before(deadline) {
+	for service.ActiveBackgroundJobs() != 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if service.backgroundJobs.Load() != 0 {
+	if service.ActiveBackgroundJobs() != 0 {
 		t.Fatal("desktop initiation background job did not finish")
 	}
 	var origin string
@@ -747,7 +915,9 @@ func TestPostgresCompanionTerminalPersistenceFailureEmitsFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation: %v", err)
 	}
-	service := newCompanionIntegrationService(terminalFailureMemory{MemoryPort: store, completeErr: errCompletePersistence}, "character-terminal-failure", companionIntegrationModel{chains: []ReplyChain{
+	ports := memoryPortsFromStore(store)
+	ports.turn.turns = terminalFailureTurnStore{base: store, completeErr: errCompletePersistence}
+	service := newCompanionIntegrationServiceWithPorts(ports, "character-terminal-failure", companionIntegrationModel{chains: []ReplyChain{
 		{VisualState: "idle", Text: "已发布但无法保存"},
 	}})
 	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
@@ -778,7 +948,9 @@ func TestPostgresCompanionInterruptPersistenceFailureEmitsFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation: %v", err)
 	}
-	service := newCompanionIntegrationService(terminalFailureMemory{MemoryPort: store, interruptErr: errInterruptPersistence}, "character-interrupt-failure", companionIntegrationModel{chains: []ReplyChain{
+	ports := memoryPortsFromStore(store)
+	ports.turn.turns = terminalFailureTurnStore{base: store, interruptErr: errInterruptPersistence}
+	service := newCompanionIntegrationServiceWithPorts(ports, "character-interrupt-failure", companionIntegrationModel{chains: []ReplyChain{
 		{VisualState: "idle", Text: "第一拍"},
 		{VisualState: "idle", Text: "第二拍"},
 	}})
@@ -1082,8 +1254,20 @@ func groupPrivacyJobCounts(t *testing.T, pool *pgxpool.Pool) privacyJobCounts {
 	return counts
 }
 
-func newCompanionIntegrationService(memoryPort MemoryPort, characterID string, scripted ModelPort) *CompanionService {
-	record := character.Record{
+func newCompanionIntegrationService(store *memory.Store, characterID string, scripted ModelPort) *CompanionService {
+	return newCompanionIntegrationServiceWithPorts(memoryPortsFromStore(store), characterID, scripted)
+}
+
+func newCompanionIntegrationServiceWithPorts(ports memoryPorts, characterID string, scripted ModelPort) *CompanionService {
+	service := newCompanionServiceWithPorts("", ports, scripted, nil)
+	AttachCharacterLookup(service, companionIntegrationCharacterLookup{record: companionIntegrationCharacter(characterID)})
+	AttachProfileSource(service, companionIntegrationProfile{})
+	AttachConfigSource(service, companionIntegrationConfig{})
+	return service
+}
+
+func companionIntegrationCharacter(characterID string) character.Record {
+	return character.Record{
 		CharacterID:      characterID,
 		Revision:         1,
 		Name:             "Fairy",
@@ -1094,11 +1278,6 @@ func newCompanionIntegrationService(memoryPort MemoryPort, characterID string, s
 			ID: "idle", Description: "idle", ImagePath: "states/idle.png",
 		}}}},
 	}
-	service := NewCompanionServiceWithRuntime("", memoryPort, scripted, nil)
-	AttachCharacterCatalog(service, companionIntegrationCatalog{record: record})
-	AttachProfileSource(service, companionIntegrationProfile{})
-	AttachConfigSource(service, companionIntegrationConfig{})
-	return service
 }
 
 func finalBeatEvents(events []TurnEvent) []beatReadyPayload {
@@ -1208,11 +1387,11 @@ func openCompanionIntegrationStore(t *testing.T) (*memory.Store, *pgxpool.Pool, 
 	query := parsed.Query()
 	query.Set("search_path", schema)
 	parsed.RawQuery = query.Encode()
-	pool, err := pgstore.Open(ctx, pgstore.ShortTimeoutConfig(parsed.String()))
+	pool, err := coredb.Open(ctx, coredb.ShortTimeoutConfig(parsed.String()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		pool.Close()
 		t.Fatal(err)
 	}

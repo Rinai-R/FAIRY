@@ -9,22 +9,25 @@ import (
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+
 	"fairy/character"
 	"fairy/companion"
 	"fairy/config"
+	"fairy/coredb"
+	"fairy/desktopcapture"
 	"fairy/identity"
 	"fairy/logx"
 	"fairy/memory"
 	"fairy/model"
 	"fairy/observability"
-	pgstore "fairy/postgres"
 	"fairy/profile"
 	"fairy/search"
 	"fairy/secret"
 	"fairy/speech"
+	turnruntime "fairy/turn"
 	vectorindex "fairy/vectorindex"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
 // Options configures a Session Core process.
@@ -46,12 +49,12 @@ type Runtime struct {
 	Logger        *zap.Logger
 	Events        *EventHub
 	Participation *ParticipationHub
-	Captures      *CaptureHub
+	Captures      *desktopcapture.CaptureHub
 	Logs          *observability.LogStore
 	HTTPMetrics   *observability.HTTPMetrics
 	Messages      *observability.MessageMetrics
 	StartedAt     time.Time
-	Database      *pgstore.Pool
+	Database      *coredb.Pool
 	VectorIndex   *vectorindex.Client
 
 	MemoryStore  *memory.Store
@@ -67,8 +70,6 @@ type Runtime struct {
 	Profile      *profile.ProfileService
 	WebSearch    *search.Service
 	Bootstrap    *BootstrapService
-	eventMu      sync.Mutex
-	events       []companion.TurnEvent
 	ownDatabase  bool
 	ownVector    bool
 	closeOnce    sync.Once
@@ -138,7 +139,7 @@ func Open(options Options) (*Runtime, error) {
 		Logger:        logger,
 		Events:        NewEventHub(),
 		Participation: NewParticipationHub(),
-		Captures:      NewCaptureHub(opened.MemoryStore),
+		Captures:      desktopcapture.NewCaptureHub(opened.MemoryStore),
 		Logs:          logStore,
 		HTTPMetrics:   httpMetrics,
 		Messages:      messageMetrics,
@@ -172,7 +173,7 @@ func Open(options Options) (*Runtime, error) {
 
 	companion.AttachLogger(services.Companion, logger.Named("companion"))
 	companion.AttachMessageTelemetry(services.Companion, messageMetrics)
-	companion.AttachCharacterCatalog(services.Companion, services.Character.CatalogStore())
+	companion.AttachCharacterLookup(services.Companion, services.Character.CatalogStore())
 	companion.AttachProfileSource(services.Companion, services.Profile.ProfileStore())
 	companion.AttachConfigSource(services.Companion, services.ConfigReader)
 	companion.AttachDesktopToolCoordinator(services.Companion, rt.Captures)
@@ -184,10 +185,7 @@ func Open(options Options) (*Runtime, error) {
 	character.AttachLogger(services.Character, logger.Named("character"))
 	search.AttachLogger(services.WebSearch, logger.Named("openserp"))
 
-	companion.AttachEventEmitter(services.Companion, func(event companion.TurnEvent) {
-		rt.eventMu.Lock()
-		rt.events = append(rt.events, event)
-		rt.eventMu.Unlock()
+	companion.AttachEventEmitter(services.Companion, func(event turnruntime.TurnEvent) {
 		rt.Events.Publish(event)
 		if options.LogEventsJSONL {
 			line, err := json.Marshal(event)
@@ -225,15 +223,4 @@ func (rt *Runtime) Close() error {
 		}
 	})
 	return rt.closeErr
-}
-
-func (rt *Runtime) DrainEvents() []companion.TurnEvent {
-	if rt == nil {
-		return nil
-	}
-	rt.eventMu.Lock()
-	defer rt.eventMu.Unlock()
-	out := append([]companion.TurnEvent(nil), rt.events...)
-	rt.events = nil
-	return out
 }

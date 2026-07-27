@@ -1,6 +1,6 @@
 //go:build integration
 
-package postgres
+package coredb
 
 import (
 	"context"

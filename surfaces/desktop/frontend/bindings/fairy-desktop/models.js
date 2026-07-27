@@ -8,6 +8,9 @@ import { Create as $Create } from "/wails/runtime.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as session$0 from "../fairy/contracts/session/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as coreclient$0 from "../fairy/coreclient/models.js";
 
 export class CoreSession {
@@ -116,5 +119,5 @@ export class CoreSettings {
 // Private type creation functions
 const $$createType0 = CoreSettings.createFrom;
 const $$createType1 = coreclient$0.CharacterRecord.createFrom;
-const $$createType2 = coreclient$0.MessageRecord.createFrom;
+const $$createType2 = session$0.MessageRecord.createFrom;
 const $$createType3 = $Create.Array($$createType2);

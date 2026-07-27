@@ -15,7 +15,8 @@ import (
 	"testing"
 	"time"
 
-	pgstore "fairy/postgres"
+	"fairy/coredb"
+	dbschema "fairy/coredb/schema"
 	vectorindex "fairy/vectorindex"
 
 	"github.com/google/uuid"
@@ -37,7 +38,7 @@ func TestPostgresStoreSummaryUsesInjectedPool(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	_, err := pool.Raw().Exec(ctx, `
@@ -88,7 +89,7 @@ func TestPostgresStoreSummaryHonorsCanceledContext(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -111,11 +112,446 @@ func TestPostgresStoreSummaryHonorsCanceledContext(t *testing.T) {
 	t.Fatalf("acquired connections = %d, want %d", pool.Stats().AcquiredConns, before)
 }
 
+func TestPostgresConversationPromptContextBoundsHistoryMaterialization(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	const (
+		activeCount  = 4
+		contentBytes = 128
+	)
+	for _, fixture := range []struct {
+		name           string
+		conversationID string
+		compactedCount int
+	}{
+		{name: "zero_cutoff", conversationID: "conversation-prompt-context-zero", compactedCount: 0},
+		{name: "small_history", conversationID: "conversation-prompt-context-small", compactedCount: 8},
+		{name: "large_history", conversationID: "conversation-prompt-context-large", compactedCount: 4000},
+	} {
+		fixture := fixture
+		t.Run(fixture.name, func(t *testing.T) {
+			seedPostgresPromptContextFixture(t, ctx, pool, fixture.conversationID, fixture.compactedCount, activeCount, contentBytes)
+			store, err := NewStoreFromPool(pool)
+			if err != nil {
+				t.Fatalf("NewStoreFromPool: %v", err)
+			}
+			bootstrap, err := store.LoadConversationContext(ctx, fixture.conversationID)
+			if err != nil {
+				t.Fatalf("LoadConversationContext: %v", err)
+			}
+			if got, want := len(bootstrap.Messages), fixture.compactedCount+activeCount; got != want {
+				t.Fatalf("full loader messages = %d, want %d", got, want)
+			}
+			promptContext, err := store.LoadConversationPromptContext(ctx, fixture.conversationID)
+			if err != nil {
+				t.Fatalf("LoadConversationPromptContext: %v", err)
+			}
+			if promptContext.Conversation != bootstrap.Conversation || !reflect.DeepEqual(promptContext.PromptWindow, bootstrap.PromptWindow) {
+				t.Fatalf("prompt context metadata = %#v/%#v, want %#v/%#v", promptContext.Conversation, promptContext.PromptWindow, bootstrap.Conversation, bootstrap.PromptWindow)
+			}
+			materializedBytes := 0
+			for index, message := range promptContext.Messages {
+				materializedBytes += len(message.Content)
+				wantSequence := uint64(fixture.compactedCount + index + 1)
+				if message.Sequence != wantSequence {
+					t.Fatalf("active message %d sequence = %d, want %d", index, message.Sequence, wantSequence)
+				}
+			}
+			if got, want := len(promptContext.Messages), activeCount; got != want {
+				t.Fatalf("active loader messages = %d, want %d", got, want)
+			}
+			if got, want := materializedBytes, activeCount*contentBytes; got != want {
+				t.Fatalf("active loader content bytes = %d, want %d", got, want)
+			}
+			t.Logf("full messages=%d active messages=%d active contentBytes=%d", len(bootstrap.Messages), len(promptContext.Messages), materializedBytes)
+		})
+	}
+}
+
+func seedPostgresPromptContextFixture(t testing.TB, ctx context.Context, pool *coredb.Pool, conversationID string, compactedCount, activeCount, contentBytes int) {
+	t.Helper()
+	totalCount := compactedCount + activeCount
+	if _, err := pool.Raw().Exec(ctx, `
+INSERT INTO conversations(id, character_id, created_at_ms, updated_at_ms)
+VALUES ($1, 'character-prompt-context', 1, $2)`, conversationID, totalCount); err != nil {
+		t.Fatalf("seed prompt context conversation: %v", err)
+	}
+	if _, err := pool.Raw().Exec(ctx, `
+INSERT INTO prompt_windows(conversation_id, revision, summary, cutoff_message_sequence, updated_at_ms)
+VALUES ($1, 2, '已压缩历史', $2, $3)`, conversationID, compactedCount, totalCount); err != nil {
+		t.Fatalf("seed prompt window: %v", err)
+	}
+	if _, err := pool.Raw().Exec(ctx, `
+INSERT INTO conversation_turns(id, conversation_id, sequence, status, origin, extraction_state, created_at_ms, updated_at_ms)
+SELECT $1 || '-turn-' || sequence, $1, sequence, 'completed', 'user', 'ineligible', sequence, sequence
+FROM generate_series(1, $2) AS sequence`, conversationID, totalCount); err != nil {
+		t.Fatalf("seed prompt context turns: %v", err)
+	}
+	if _, err := pool.Raw().Exec(ctx, `
+INSERT INTO conversation_messages(id, conversation_id, turn_id, sequence, role, content, created_at_ms)
+SELECT $1 || '-message-' || sequence, $1, $1 || '-turn-' || sequence, sequence,
+       CASE WHEN sequence % 2 = 0 THEN 'assistant' ELSE 'user' END,
+       repeat('x', $3), sequence
+FROM generate_series(1, $2) AS sequence`, conversationID, totalCount, contentBytes); err != nil {
+		t.Fatalf("seed prompt context messages: %v", err)
+	}
+}
+
+var benchmarkConversationPromptContextMessages []MessageRecord
+
+func BenchmarkPostgresConversationPromptContextHistoryGrowth(b *testing.B) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(b, ctx)
+	defer pool.Close()
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+		b.Fatalf("migrate: %v", err)
+	}
+	store, err := NewStoreFromPool(pool)
+	if err != nil {
+		b.Fatalf("NewStoreFromPool: %v", err)
+	}
+	const (
+		activeCount  = 4
+		contentBytes = 128
+	)
+	fixtures := []struct {
+		name           string
+		conversationID string
+		compactedCount int
+	}{
+		{name: "small", conversationID: "benchmark-prompt-context-small", compactedCount: 8},
+		{name: "large", conversationID: "benchmark-prompt-context-large", compactedCount: 4000},
+	}
+	for _, fixture := range fixtures {
+		seedPostgresPromptContextFixture(b, ctx, pool, fixture.conversationID, fixture.compactedCount, activeCount, contentBytes)
+	}
+	for _, mode := range []string{"full", "active"} {
+		for _, fixture := range fixtures {
+			mode := mode
+			fixture := fixture
+			b.Run(mode+"/"+fixture.name, func(b *testing.B) {
+				b.ReportAllocs()
+				var messages []MessageRecord
+				b.ResetTimer()
+				for range b.N {
+					if mode == "full" {
+						loaded, loadErr := store.LoadConversationContext(ctx, fixture.conversationID)
+						if loadErr != nil {
+							b.Fatal(loadErr)
+						}
+						messages = loaded.Messages
+						continue
+					}
+					loaded, loadErr := store.LoadConversationPromptContext(ctx, fixture.conversationID)
+					if loadErr != nil {
+						b.Fatal(loadErr)
+					}
+					messages = loaded.Messages
+				}
+				b.StopTimer()
+				materializedBytes := 0
+				for _, message := range messages {
+					materializedBytes += len(message.Content)
+				}
+				b.ReportMetric(float64(len(messages)), "rows/op")
+				b.ReportMetric(float64(materializedBytes), "content-bytes/op")
+				benchmarkConversationPromptContextMessages = messages
+			})
+		}
+	}
+}
+
+func TestPostgresConversationActivityBoundsExpiredHistory(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store, err := NewStoreFromPool(pool)
+	if err != nil {
+		t.Fatalf("NewStoreFromPool: %v", err)
+	}
+	const nowUnixMS = int64(1_800_000_000_000)
+	for _, fixture := range []struct {
+		name           string
+		conversationID string
+		expiredCount   int
+	}{
+		{name: "small_history", conversationID: "conversation-activity-small", expiredCount: 8},
+		{name: "large_history", conversationID: "conversation-activity-large", expiredCount: 4000},
+	} {
+		fixture := fixture
+		t.Run(fixture.name, func(t *testing.T) {
+			seedPostgresConversationActivityFixture(t, ctx, pool, fixture.conversationID, fixture.expiredCount, nowUnixMS)
+			full, err := store.LoadConversationContext(ctx, fixture.conversationID)
+			if err != nil {
+				t.Fatalf("LoadConversationContext: %v", err)
+			}
+			if got, want := len(full.Messages), fixture.expiredCount+7; got != want {
+				t.Fatalf("full messages = %d, want %d", got, want)
+			}
+			activity, err := store.LoadConversationActivityContext(ctx, fixture.conversationID, nowUnixMS)
+			if err != nil {
+				t.Fatalf("LoadConversationActivityContext: %v", err)
+			}
+			if activity.Conversation != full.Conversation {
+				t.Fatalf("activity conversation = %#v, want %#v", activity.Conversation, full.Conversation)
+			}
+			if activity.AssistantMessages5Minutes != 2 || activity.AssistantMessages30Minutes != 4 || activity.UserMessages30Minutes != 2 {
+				t.Fatalf("activity counts = %#v", activity)
+			}
+			wantLatest := nowUnixMS - time.Minute.Milliseconds()
+			if activity.LastAssistantMessageAtUnixMS == nil || *activity.LastAssistantMessageAtUnixMS != wantLatest {
+				t.Fatalf("latest assistant = %#v, want %d", activity.LastAssistantMessageAtUnixMS, wantLatest)
+			}
+			record, err := store.LoadConversationRecordContext(ctx, fixture.conversationID)
+			if err != nil || record != full.Conversation {
+				t.Fatalf("LoadConversationRecordContext = %#v, %v", record, err)
+			}
+			t.Logf("full messages=%d activity rows=1 recent assistant=%d/%d recent user=%d", len(full.Messages), activity.AssistantMessages5Minutes, activity.AssistantMessages30Minutes, activity.UserMessages30Minutes)
+		})
+	}
+
+	if _, err := store.LoadConversationActivityContext(ctx, "conversation-activity-large", 0); err == nil {
+		t.Fatal("zero activity evaluation time accepted")
+	}
+	if _, err := pool.Raw().Exec(ctx, `
+UPDATE conversation_messages
+SET created_at_ms = $2
+WHERE conversation_id = $1 AND sequence = 4007`, "conversation-activity-large", nowUnixMS+1); err != nil {
+		t.Fatalf("seed future assistant timestamp: %v", err)
+	}
+	if _, err := store.LoadConversationActivityContext(ctx, "conversation-activity-large", nowUnixMS); err == nil {
+		t.Fatal("future assistant timestamp accepted")
+	}
+
+	tx, err := pool.Raw().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SET LOCAL enable_seqscan = off"); err != nil {
+		t.Fatal(err)
+	}
+	plan := explainPostgresPlan(t, ctx, tx, "EXPLAIN (COSTS OFF) "+conversationActivityQuery,
+		"conversation-activity-small",
+		nowUnixMS-30*time.Minute.Milliseconds(),
+		nowUnixMS-5*time.Minute.Milliseconds(),
+	)
+	if !strings.Contains(plan, "conversation_messages_conversation_role_created") {
+		t.Fatalf("activity plan does not use role/time index:\n%s", plan)
+	}
+}
+
+func TestPostgresConversationRecordDoesNotRequireTranscriptTables(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if _, err := pool.Raw().Exec(ctx, "INSERT INTO conversations(id, character_id, created_at_ms, updated_at_ms) VALUES ('metadata-only', 'character-metadata', 1, 2)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Raw().Exec(ctx, "DROP TABLE prompt_windows, conversation_messages CASCADE"); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStoreFromPool(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.LoadConversationRecordContext(ctx, "metadata-only")
+	if err != nil {
+		t.Fatalf("LoadConversationRecordContext: %v", err)
+	}
+	if record.ID != "metadata-only" || record.CharacterID != "character-metadata" || record.CreatedAtUnixMS != 1 || record.UpdatedAtUnixMS != 2 {
+		t.Fatalf("record = %#v", record)
+	}
+}
+
+func TestPostgresConversationActivityKeepsOldLatestAndEmptyHistory(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store, err := NewStoreFromPool(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const nowUnixMS = int64(1_800_000_000_000)
+	if _, err := pool.Raw().Exec(ctx, `
+INSERT INTO conversations(id, character_id, created_at_ms, updated_at_ms)
+VALUES ('activity-empty', 'character-activity', 1, $1),
+	       ('activity-old-latest', 'character-activity', 1, $1)`, nowUnixMS); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Raw().Exec(ctx, `
+INSERT INTO conversation_turns(id, conversation_id, sequence, status, origin, extraction_state, created_at_ms, updated_at_ms)
+	VALUES ('activity-old-latest-turn', 'activity-old-latest', 1, 'completed', 'user', 'ineligible', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Raw().Exec(ctx, `
+INSERT INTO conversation_messages(id, conversation_id, turn_id, sequence, role, content, created_at_ms)
+	VALUES ('activity-old-latest-message', 'activity-old-latest', 'activity-old-latest-turn', 1, 'assistant', 'old', $1)`, nowUnixMS-40*time.Minute.Milliseconds()); err != nil {
+		t.Fatal(err)
+	}
+	empty, err := store.LoadConversationActivityContext(ctx, "activity-empty", nowUnixMS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.AssistantMessages5Minutes != 0 || empty.AssistantMessages30Minutes != 0 || empty.UserMessages30Minutes != 0 || empty.LastAssistantMessageAtUnixMS != nil {
+		t.Fatalf("empty activity = %#v", empty)
+	}
+	oldLatest, err := store.LoadConversationActivityContext(ctx, "activity-old-latest", nowUnixMS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLatest := nowUnixMS - 40*time.Minute.Milliseconds()
+	if oldLatest.AssistantMessages5Minutes != 0 || oldLatest.AssistantMessages30Minutes != 0 || oldLatest.UserMessages30Minutes != 0 || oldLatest.LastAssistantMessageAtUnixMS == nil || *oldLatest.LastAssistantMessageAtUnixMS != wantLatest {
+		t.Fatalf("old latest activity = %#v, want latest %d", oldLatest, wantLatest)
+	}
+}
+
+func seedPostgresConversationActivityFixture(t testing.TB, ctx context.Context, pool *coredb.Pool, conversationID string, expiredCount int, nowUnixMS int64) {
+	t.Helper()
+	const recentCount = 7
+	totalCount := expiredCount + recentCount
+	if _, err := pool.Raw().Exec(ctx, "INSERT INTO conversations(id, character_id, created_at_ms, updated_at_ms) VALUES ($1, 'character-activity', 1, $2)", conversationID, nowUnixMS); err != nil {
+		t.Fatalf("seed activity conversation: %v", err)
+	}
+	if _, err := pool.Raw().Exec(ctx, "INSERT INTO prompt_windows(conversation_id, revision, summary, cutoff_message_sequence, updated_at_ms) VALUES ($1, 1, NULL, 0, $2)", conversationID, nowUnixMS); err != nil {
+		t.Fatalf("seed activity prompt window: %v", err)
+	}
+	if _, err := pool.Raw().Exec(ctx, `
+INSERT INTO conversation_turns(id, conversation_id, sequence, status, origin, extraction_state, created_at_ms, updated_at_ms)
+SELECT $1 || '-turn-' || sequence, $1, sequence, 'completed', 'user', 'ineligible', sequence, sequence
+FROM generate_series(1, $2) AS sequence`, conversationID, totalCount); err != nil {
+		t.Fatalf("seed activity turns: %v", err)
+	}
+	if expiredCount > 0 {
+		if _, err := pool.Raw().Exec(ctx, `
+INSERT INTO conversation_messages(id, conversation_id, turn_id, sequence, role, content, created_at_ms)
+SELECT $1 || '-message-' || sequence, $1, $1 || '-turn-' || sequence, sequence,
+       CASE WHEN sequence % 2 = 0 THEN 'assistant' ELSE 'user' END,
+       repeat('x', 128), $3::bigint - $4::bigint - sequence
+FROM generate_series(1, $2) AS sequence`, conversationID, expiredCount, nowUnixMS, 31*time.Minute.Milliseconds()); err != nil {
+			t.Fatalf("seed expired activity messages: %v", err)
+		}
+	}
+	if _, err := pool.Raw().Exec(ctx, `
+INSERT INTO conversation_messages(id, conversation_id, turn_id, sequence, role, content, created_at_ms)
+SELECT $1 || '-message-' || ($2 + recent.sequence_offset), $1, $1 || '-turn-' || ($2 + recent.sequence_offset), $2 + recent.sequence_offset,
+       recent.role, repeat('r', 128), recent.created_at_ms
+FROM (VALUES
+    (1, 'assistant', $3::bigint - $4::bigint - 1),
+    (2, 'user',      $3::bigint - $4::bigint),
+    (3, 'assistant', $3::bigint - $4::bigint),
+    (4, 'assistant', $3::bigint - $5::bigint - 1),
+    (5, 'assistant', $3::bigint - $5::bigint),
+    (6, 'user',      $3::bigint - $6::bigint),
+    (7, 'assistant', $3::bigint - $7::bigint)
+) AS recent(sequence_offset, role, created_at_ms)`,
+		conversationID,
+		expiredCount,
+		nowUnixMS,
+		30*time.Minute.Milliseconds(),
+		5*time.Minute.Milliseconds(),
+		10*time.Minute.Milliseconds(),
+		time.Minute.Milliseconds(),
+	); err != nil {
+		t.Fatalf("seed recent activity messages: %v", err)
+	}
+}
+
+var (
+	benchmarkConversationActivity       ConversationActivity
+	benchmarkConversationActivityRecord ConversationRecord
+)
+
+func BenchmarkPostgresConversationActivityHistoryGrowth(b *testing.B) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(b, ctx)
+	defer pool.Close()
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+		b.Fatalf("migrate: %v", err)
+	}
+	store, err := NewStoreFromPool(pool)
+	if err != nil {
+		b.Fatal(err)
+	}
+	const nowUnixMS = int64(1_800_000_000_000)
+	fixtures := []struct {
+		name           string
+		conversationID string
+		expiredCount   int
+	}{
+		{name: "small", conversationID: "benchmark-activity-small", expiredCount: 8},
+		{name: "large", conversationID: "benchmark-activity-large", expiredCount: 4000},
+	}
+	for _, fixture := range fixtures {
+		seedPostgresConversationActivityFixture(b, ctx, pool, fixture.conversationID, fixture.expiredCount, nowUnixMS)
+	}
+	for _, mode := range []string{"full", "activity", "metadata"} {
+		for _, fixture := range fixtures {
+			mode := mode
+			fixture := fixture
+			b.Run(mode+"/"+fixture.name, func(b *testing.B) {
+				b.ReportAllocs()
+				var messages []MessageRecord
+				var activity ConversationActivity
+				var record ConversationRecord
+				b.ResetTimer()
+				for range b.N {
+					switch mode {
+					case "full":
+						loaded, loadErr := store.LoadConversationContext(ctx, fixture.conversationID)
+						if loadErr != nil {
+							b.Fatal(loadErr)
+						}
+						messages = loaded.Messages
+					case "activity":
+						activity, err = store.LoadConversationActivityContext(ctx, fixture.conversationID, nowUnixMS)
+						if err != nil {
+							b.Fatal(err)
+						}
+					case "metadata":
+						record, err = store.LoadConversationRecordContext(ctx, fixture.conversationID)
+						if err != nil {
+							b.Fatal(err)
+						}
+					}
+				}
+				b.StopTimer()
+				materializedBytes := 0
+				for _, message := range messages {
+					materializedBytes += len(message.Content)
+				}
+				rows := len(messages)
+				if mode != "full" {
+					rows = 1
+				}
+				b.ReportMetric(float64(rows), "rows/op")
+				b.ReportMetric(float64(materializedBytes), "content-bytes/op")
+				benchmarkConversationPromptContextMessages = messages
+				benchmarkConversationActivity = activity
+				benchmarkConversationActivityRecord = record
+			})
+		}
+	}
+}
+
 func TestPostgresDesktopInitiationTurnDoesNotFabricateUserMessage(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -167,7 +603,7 @@ func TestPostgresConversationFailedTurnPreservesUserOnly(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -209,7 +645,7 @@ func TestPostgresConversationInterruptedTurnWithoutPrefixPreservesUserOnly(t *te
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -238,7 +674,7 @@ func TestPostgresConversationInterruptedTurnPersistsPublishedPrefix(t *testing.T
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -271,7 +707,7 @@ func TestPostgresConversationInterruptRollbackOnAssistantConflict(t *testing.T) 
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -337,7 +773,7 @@ func TestPostgresConversationConcurrentSequencesAreUnique(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -382,7 +818,7 @@ func TestPostgresConversationConcurrentOpenReusesCharacterConversation(t *testin
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -434,7 +870,7 @@ func TestPostgresRuntimeLedgerAndWindowRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -516,7 +952,7 @@ func TestPostgresUsageLedgerPreservesAggregation(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -556,7 +992,7 @@ func TestPostgresUsageLedgerPreservesCrossConversationFailureAndTruncation(t *te
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -601,7 +1037,7 @@ func TestPostgresPersonalMemoryLifecycleQueuesDeterministicOutbox(t *testing.T) 
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -669,7 +1105,7 @@ func TestPostgresPersonalMemoryRollsBackWhenOutboxWriteFails(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -709,7 +1145,7 @@ func TestPostgresPersonalMemoryContentLimitPreservesWritesAndRejectsOversizedHis
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -855,7 +1291,7 @@ VALUES ($1, 'personal_memory', $2, $3, $4, $5, $6, 'embedded', 1, 1, 1)`, uuid.N
 	}
 }
 
-func insertOversizedPersonalMemory(t *testing.T, ctx context.Context, pool *pgstore.Pool, id, kind, scopeKind string, characterID *string, reviewStatus, content, conversationID, turnID string) {
+func insertOversizedPersonalMemory(t *testing.T, ctx context.Context, pool *coredb.Pool, id, kind, scopeKind string, characterID *string, reviewStatus, content, conversationID, turnID string) {
 	t.Helper()
 	if _, err := pool.Raw().Exec(ctx, `
 INSERT INTO personal_memories(
@@ -879,7 +1315,7 @@ func TestPostgresKnowledgeLifecyclePreservesSourcesAndOutbox(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -946,7 +1382,7 @@ func TestPostgresKnowledgeConfirmationRollsBackWhenOutboxWriteFails(t *testing.T
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -990,7 +1426,7 @@ func TestPostgresPromptWindowCommitPreservesRevisionAndCutoff(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1040,7 +1476,7 @@ func TestPostgresCommitCompactionAtomicallySwitchesWindowAndContinuation(t *test
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1099,7 +1535,7 @@ func TestPostgresCommitMemoryMutationsCommitsRowsAndOutboxAtomically(t *testing.
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1135,7 +1571,7 @@ func TestPostgresCommitMemoryMutationsPreservesPerMutationSourceTurn(t *testing.
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1168,7 +1604,7 @@ func TestPostgresCommitMemoryMutationsCopiesObservationEvidenceProvenance(t *tes
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1216,7 +1652,7 @@ func TestPostgresCommitMemoryMutationsRollsBackEarlierMutationOnLaterFailure(t *
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1257,7 +1693,7 @@ func TestPostgresCommitMemoryMutationsPreservesNoChangeAndSupersedeSemantics(t *
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1302,7 +1738,7 @@ func TestPostgresCommitMemoryMutationsRejectsBatchExternalTurnAndKeepsEmptyCompl
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1338,7 +1774,7 @@ func TestPostgresCommitMemoryMutationsRejectsBatchExternalTurnAndKeepsEmptyCompl
 	}
 }
 
-func seedPostgresRunningExtractionBatch(t *testing.T, ctx context.Context, _ *pgstore.Pool, store *Store, characterID string) (string, string, string) {
+func seedPostgresRunningExtractionBatch(t *testing.T, ctx context.Context, _ *coredb.Pool, store *Store, characterID string) (string, string, string) {
 	t.Helper()
 	bootstrap, err := store.OpenOrCreateCharacterConversationContext(ctx, characterID)
 	if err != nil {
@@ -1361,7 +1797,7 @@ func seedPostgresRunningExtractionBatch(t *testing.T, ctx context.Context, _ *pg
 	return bootstrap.Conversation.ID, batch.Turns[0].TurnID, batch.BatchID
 }
 
-func seedPostgresRunningExtractionBatchWithTurns(t *testing.T, ctx context.Context, _ *pgstore.Pool, store *Store, characterID string, count int) (string, []string, string) {
+func seedPostgresRunningExtractionBatchWithTurns(t *testing.T, ctx context.Context, _ *coredb.Pool, store *Store, characterID string, count int) (string, []string, string) {
 	t.Helper()
 	if count < 1 {
 		t.Fatal("extraction batch must contain at least one turn")
@@ -1399,7 +1835,7 @@ func TestPostgresExtractionLeasePreventsDuplicateClaimAndRecoversExpiredOwner(t 
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	first, err := NewStoreFromPoolWithLease(pool, "worker-first", time.Minute)
@@ -1502,7 +1938,7 @@ func TestPostgresExtractionProjectionBoundsLookupAndPreservesEvidence(t *testing
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	first, err := NewStoreFromPoolWithLease(pool, "worker-projection-first", time.Minute)
@@ -1601,7 +2037,7 @@ func TestPostgresExtractionFailedCatalogAndRetryReleaseTurns(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPoolWithLease(pool, "worker-retry", time.Minute)
@@ -1656,7 +2092,7 @@ func TestPostgresKnowledgeIngestWorkersClaimDisjointJobs(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	first, err := NewStoreFromPoolWithLease(pool, "ingest-first", time.Minute)
@@ -1728,7 +2164,7 @@ func TestPostgresKnowledgeIngestExpiredLeaseReclaimsAndRejectsOldOwner(t *testin
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	first, err := NewStoreFromPoolWithLease(pool, "ingest-owner-first", time.Minute)
@@ -1784,7 +2220,7 @@ func TestPostgresKnowledgeIngestDropsStructuralJunkAndValidatesLimits(t *testing
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1835,7 +2271,7 @@ func TestPostgresEmbeddingLeaseClaimAndConditionalCompletion(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	first, err := NewStoreFromPoolWithLease(pool, "embedding-first", time.Minute)
@@ -1925,7 +2361,7 @@ func TestPostgresEmbeddingStaleContentCannotMarkNewItemEmbedded(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPoolWithLease(pool, "embedding-stale", time.Minute)
@@ -1971,7 +2407,7 @@ func TestPostgresEmbeddingStaleContentCannotMarkNewItemEmbedded(t *testing.T) {
 	}
 }
 
-func finishEmbeddingJobSucceeded(ctx context.Context, pool *pgstore.Pool, job EmbeddingJob, workerID string) error {
+func finishEmbeddingJobSucceeded(ctx context.Context, pool *coredb.Pool, job EmbeddingJob, workerID string) error {
 	tx, err := pool.Raw().Begin(ctx)
 	if err != nil {
 		return err
@@ -1983,7 +2419,7 @@ func finishEmbeddingJobSucceeded(ctx context.Context, pool *pgstore.Pool, job Em
 	return tx.Commit(ctx)
 }
 
-func finishEmbeddingJobFailed(ctx context.Context, pool *pgstore.Pool, job EmbeddingJob, workerID, code, message string, retryable bool) error {
+func finishEmbeddingJobFailed(ctx context.Context, pool *coredb.Pool, job EmbeddingJob, workerID, code, message string, retryable bool) error {
 	tx, err := pool.Raw().Begin(ctx)
 	if err != nil {
 		return err
@@ -1999,7 +2435,7 @@ func TestPostgresTrigramRetrievalPreservesScopeLimitsAndStableOrder(t *testing.T
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -2133,7 +2569,7 @@ func TestPostgresTrigramQueriesUseGINIndexes(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := pool.Raw().Begin(ctx)
@@ -2167,9 +2603,9 @@ func containsRetrievedPersonalID(records []RetrievedPersonalMemory, id string) b
 	return false
 }
 
-func explainPostgresPlan(t *testing.T, ctx context.Context, tx pgx.Tx, query string, arg string) string {
+func explainPostgresPlan(t *testing.T, ctx context.Context, tx pgx.Tx, query string, args ...any) string {
 	t.Helper()
-	rows, err := tx.Query(ctx, query, arg)
+	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2188,7 +2624,7 @@ func explainPostgresPlan(t *testing.T, ctx context.Context, tx pgx.Tx, query str
 	return strings.Join(lines, "\n")
 }
 
-func assertPostgresEmbeddingOutbox(t *testing.T, ctx context.Context, pool *pgstore.Pool, itemKind, itemID, content string) {
+func assertPostgresEmbeddingOutbox(t *testing.T, ctx context.Context, pool *coredb.Pool, itemKind, itemID, content string) {
 	t.Helper()
 	wantPointID, err := vectorindex.PointID(itemKind, itemID, SemanticEmbeddingModelID)
 	if err != nil {
@@ -2208,7 +2644,7 @@ func assertPostgresEmbeddingOutbox(t *testing.T, ctx context.Context, pool *pgst
 	}
 }
 
-func openIsolatedPostgresStore(t *testing.T, ctx context.Context) *pgstore.Pool {
+func openIsolatedPostgresStore(t testing.TB, ctx context.Context) *coredb.Pool {
 	t.Helper()
 	databaseURL := os.Getenv("FAIRY_TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -2235,14 +2671,14 @@ func openIsolatedPostgresStore(t *testing.T, ctx context.Context) *pgstore.Pool 
 		defer cleanup.Close()
 		_, _ = cleanup.Exec(cleanupCtx, "DROP SCHEMA IF EXISTS "+quoted+" CASCADE")
 	})
-	pool, err := pgstore.Open(ctx, pgstore.ShortTimeoutConfig(withPostgresSearchPath(t, databaseURL, schema)))
+	pool, err := coredb.Open(ctx, coredb.ShortTimeoutConfig(withPostgresSearchPath(t, databaseURL, schema)))
 	if err != nil {
 		t.Fatalf("open postgres store pool: %v", err)
 	}
 	return pool
 }
 
-func withPostgresSearchPath(t *testing.T, rawURL string, schema string) string {
+func withPostgresSearchPath(t testing.TB, rawURL string, schema string) string {
 	t.Helper()
 	parsed, err := url.Parse(rawURL)
 	if err != nil {

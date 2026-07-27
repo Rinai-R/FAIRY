@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"fairy/character"
@@ -18,8 +17,10 @@ import (
 	"fairy/proactive"
 	"fairy/profile"
 	"fairy/reply"
+	"fairy/retention"
 	"fairy/search"
 	"fairy/sociallearning"
+	turnruntime "fairy/turn"
 
 	"go.uber.org/zap"
 
@@ -30,24 +31,19 @@ import (
 
 type CompanionService struct {
 	root              string
-	memory            MemoryPort
+	memory            memoryPorts
 	semanticEmbedder  semantic.Embedder
 	vectorIndex       VectorIndex
 	model             ModelPort
 	webSearch         WebSearchBackend
 	speech            SpeechSynthesizer
-	characters        CharacterCatalog
+	characterLookup   CharacterLookup
 	profiles          ProfileSource
 	cfg               ConfigSource
 	logger            *zap.Logger
-	backgroundJobs    atomic.Int64
-	extractionMu      sync.Mutex
-	extractionIdle    map[string]context.CancelFunc
 	backgroundErrorMu sync.Mutex
 	backgroundError   error
 	loopMetrics       agentLoopMetrics
-	gateMu            sync.Mutex
-	gates             map[string]*conversationGate
 	interactionMu     sync.RWMutex
 	interactions      map[string]contracts.Binding
 	identities        OwnerIdentityPort
@@ -56,6 +52,8 @@ type CompanionService struct {
 	emitParticipation ParticipationEventEmitter
 	messageTelemetry  MessageTelemetry
 	ambient           *AmbientInbox
+	turnRegistry      *turnruntime.Registry
+	retention         *retention.Engine
 	turns             *TurnEngine
 	participation     *ParticipationEngine
 	desktopAttention  *proactive.AttentionEvaluator
@@ -113,22 +111,22 @@ func (s *CompanionService) publishLife(life *TurnLifecycle, produce func() (Turn
 	if life == nil {
 		return TurnEvent{}, errors.New("nil turn lifecycle")
 	}
-	life.mu.Lock()
-	defer life.mu.Unlock()
-	event, err := produce()
-	if err != nil {
-		return TurnEvent{}, err
-	}
-	s.emitEvent(event)
-	s.emitMu.Lock()
-	telemetry := s.messageTelemetry
-	s.emitMu.Unlock()
-	if telemetry != nil {
-		if stage := messageTelemetryStage(event); stage != "" {
-			telemetry.TurnStage(event.ConversationID, event.TurnID, stage)
+	return life.Publish(func() (TurnEvent, error) {
+		event, err := produce()
+		if err != nil {
+			return TurnEvent{}, err
 		}
-	}
-	return event, nil
+		s.emitEvent(event)
+		s.emitMu.Lock()
+		telemetry := s.messageTelemetry
+		s.emitMu.Unlock()
+		if telemetry != nil {
+			if stage := messageTelemetryStage(event); stage != "" {
+				telemetry.TurnStage(event.ConversationID, event.TurnID, stage)
+			}
+		}
+		return event, nil
+	})
 }
 
 func messageTelemetryStage(event TurnEvent) string {
@@ -177,10 +175,8 @@ func (s *CompanionService) endMessageTrace(traceID, status string) {
 
 func NewCompanionService() *CompanionService {
 	service := &CompanionService{
-		logger:         zap.NewNop(),
-		extractionIdle: make(map[string]context.CancelFunc),
-		gates:          make(map[string]*conversationGate),
-		interactions:   make(map[string]contracts.Binding),
+		logger:       zap.NewNop(),
+		interactions: make(map[string]contracts.Binding),
 	}
 	service.ambient = newAmbientInbox(context.Background(), service)
 	service.desktopAttention = proactive.NewAttentionEvaluator()
@@ -193,19 +189,21 @@ func NewCompanionService() *CompanionService {
 // by the composition root; pass nil when search is unavailable.
 // When root is non-empty, character/profile/config ports are bound to that root;
 // runtime Open may still replace them via Attach* with shared store handles.
-func NewCompanionServiceWithRuntime(root string, memory MemoryPort, model ModelPort, webSearch WebSearchBackend) *CompanionService {
+func NewCompanionServiceWithRuntime(root string, store *memory.Store, model ModelPort, webSearch WebSearchBackend) *CompanionService {
+	return newCompanionServiceWithPorts(root, memoryPortsFromStore(store), model, webSearch)
+}
+
+func newCompanionServiceWithPorts(root string, ports memoryPorts, model ModelPort, webSearch WebSearchBackend) *CompanionService {
 	service := &CompanionService{
-		root:           root,
-		memory:         memory,
-		model:          model,
-		webSearch:      webSearch,
-		logger:         zap.NewNop(),
-		extractionIdle: make(map[string]context.CancelFunc),
-		gates:          make(map[string]*conversationGate),
-		interactions:   make(map[string]contracts.Binding),
+		root:         root,
+		memory:       ports,
+		model:        model,
+		webSearch:    webSearch,
+		logger:       zap.NewNop(),
+		interactions: make(map[string]contracts.Binding),
 	}
 	if strings.TrimSpace(root) != "" {
-		service.characters = character.NewStore(root)
+		service.characterLookup = character.NewStore(root)
 		service.profiles = profile.NewStore(root)
 		service.cfg = config.NewReader(root)
 	}
@@ -226,12 +224,13 @@ func AttachLogger(s *CompanionService, logger *zap.Logger) {
 	s.logger = logger
 }
 
-// AttachCharacterCatalog injects the character catalog from the composition root.
-func AttachCharacterCatalog(s *CompanionService, catalog CharacterCatalog) {
-	if s == nil || catalog == nil {
+// AttachCharacterLookup injects ID-addressed character reads from the
+// composition root.
+func AttachCharacterLookup(s *CompanionService, lookup CharacterLookup) {
+	if s == nil || lookup == nil {
 		return
 	}
-	s.characters = catalog
+	s.characterLookup = lookup
 }
 
 // AttachProfileSource injects the user-profile source from the composition root.
@@ -287,13 +286,6 @@ func AttachVectorIndex(s *CompanionService, index VectorIndex) {
 	s.vectorIndex = index
 }
 
-func (s *CompanionService) characterCatalog() CharacterCatalog {
-	if s != nil {
-		return s.characters
-	}
-	return nil
-}
-
 func (s *CompanionService) profileSource() ProfileSource {
 	if s != nil {
 		return s.profiles
@@ -304,13 +296,6 @@ func (s *CompanionService) profileSource() ProfileSource {
 func (s *CompanionService) configSource() ConfigSource {
 	if s != nil {
 		return s.cfg
-	}
-	return nil
-}
-
-func (s *CompanionService) memoryPort() MemoryPort {
-	if s != nil {
-		return s.memory
 	}
 	return nil
 }
@@ -338,8 +323,10 @@ func (s *CompanionService) Close() error {
 	if s.socialFeedback != nil {
 		s.socialFeedback.Close()
 	}
+	if s.retention != nil {
+		s.retention.Close()
+	}
 	s.cancelActiveTurns()
-	s.cancelExtractionTimers()
 	if s.webSearch == nil {
 		return nil
 	}
@@ -347,31 +334,8 @@ func (s *CompanionService) Close() error {
 }
 
 func (s *CompanionService) cancelActiveTurns() {
-	s.gateMu.Lock()
-	gates := make([]*conversationGate, 0, len(s.gates))
-	for _, gate := range s.gates {
-		gates = append(gates, gate)
-	}
-	s.gateMu.Unlock()
-	for _, gate := range gates {
-		gate.mu.Lock()
-		if gate.activeTurn != nil {
-			gate.activeTurn.cancel()
-			gate.activeTurn = nil
-		}
-		gate.mu.Unlock()
-	}
-}
-
-func (s *CompanionService) cancelExtractionTimers() {
-	s.extractionMu.Lock()
-	timers := s.extractionIdle
-	s.extractionIdle = make(map[string]context.CancelFunc)
-	s.extractionMu.Unlock()
-	for _, cancel := range timers {
-		if cancel != nil {
-			cancel()
-		}
+	if s != nil && s.turnRegistry != nil {
+		s.turnRegistry.CancelAll()
 	}
 }
 
@@ -379,6 +343,13 @@ func (s *CompanionService) wireEngines() {
 	if s == nil {
 		return
 	}
+	s.turnRegistry = turnruntime.NewRegistry(func(ctx context.Context, conversationID, turnID string) error {
+		if s.desktopTool == nil {
+			return nil
+		}
+		return s.desktopTool.CancelTurn(ctx, conversationID, turnID)
+	})
+	s.retention = retention.NewEngine(retentionHost{service: s})
 	s.turns = &TurnEngine{host: s}
 	s.participation = newParticipationEngine(s)
 }
@@ -446,9 +417,9 @@ func (s *CompanionService) DecideParticipation(ctx context.Context, request Part
 
 func (s *CompanionService) RespondRuntimeMigrated() bool {
 	return s != nil &&
-		s.memory != nil &&
+		s.memory.ready() &&
 		s.model != nil &&
-		s.characters != nil &&
+		s.characterLookup != nil &&
 		s.profiles != nil &&
 		s.cfg != nil
 }
@@ -568,7 +539,7 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 	}
 	defer s.endCompaction(conversationID)
 
-	bootstrap, err := s.memory.LoadConversation(conversationID)
+	bootstrap, err := s.memory.turn.promptContext.LoadConversationPrompt(conversationID)
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
@@ -591,7 +562,7 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 	if len(windowed) == 0 {
 		return memory.CompactionResult{}, errors.New("compaction requires dialogue after the current prompt window cutoff")
 	}
-	states, err := s.availableVisualStatesForConversation(conversationID)
+	states, err := visualStatesFromCharacter(characterRecord)
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
@@ -625,7 +596,7 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
-	existingWindow, foundWindow, err := s.memory.LoadContextWindow(conversationID, string(model.PromptLaneRespond))
+	existingWindow, foundWindow, err := s.memory.turn.runtimeState.LoadContextWindow(conversationID, string(model.PromptLaneRespond))
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
@@ -635,7 +606,7 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 		existingWindow,
 		foundWindow,
 	)
-	result, err := s.memory.CommitCompaction(
+	result, err := s.memory.turn.runtimeState.CommitCompaction(
 		conversationID,
 		bootstrap.PromptWindow.Revision,
 		summary,
@@ -650,33 +621,20 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 }
 
 func (s *CompanionService) activeCharacter(characterID string) (character.Record, error) {
-	catalogPort := s.characterCatalog()
-	if catalogPort == nil {
-		return character.Record{}, errors.New("character catalog is not configured")
+	if s == nil || s.characterLookup == nil {
+		return character.Record{}, errors.New("character lookup is not configured")
 	}
-	catalog, err := catalogPort.List()
+	record, found, err := s.characterLookup.Lookup(characterID)
 	if err != nil {
 		return character.Record{}, err
 	}
-	for _, record := range catalog.Characters {
-		if record.CharacterID == characterID {
-			return record, nil
-		}
+	if !found {
+		return character.Record{}, errors.New("character is not available")
 	}
-	return character.Record{}, errors.New("character is not available")
+	return record, nil
 }
 
-// availableVisualStatesForConversation mirrors Tauri IPC active_visual_states:
-// load the conversation character appearance and expose prompt-safe state entries.
-func (s *CompanionService) availableVisualStatesForConversation(conversationID string) ([]VisualState, error) {
-	bootstrap, err := s.memory.LoadConversation(conversationID)
-	if err != nil {
-		return nil, err
-	}
-	record, err := s.activeCharacter(bootstrap.Conversation.CharacterID)
-	if err != nil {
-		return nil, err
-	}
+func visualStatesFromCharacter(record character.Record) ([]VisualState, error) {
 	if record.Appearance.Status != "assigned" || record.Appearance.Visual == nil {
 		return nil, errors.New("character appearance is unassigned")
 	}

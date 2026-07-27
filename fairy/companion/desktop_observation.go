@@ -71,16 +71,16 @@ func (s *CompanionService) ObserveDesktop(conversationID string, observation Des
 	var initiate func(context.Context, obs.DesktopObservation) error
 	if s.RespondRuntimeMigrated() {
 		initiate = func(_ context.Context, accepted obs.DesktopObservation) error {
-			s.backgroundJobs.Add(1)
-			go func() {
-				defer s.backgroundJobs.Add(-1)
+			if s.retention == nil || !s.retention.Run(func() {
 				_, runErr := s.SubmitDesktopInitiation(DesktopInitiationRequest{
 					ConversationID: conversationID, ObservationEvidenceIDs: []string{accepted.ObservationID},
 				}, accepted)
 				if runErr != nil {
 					s.setBackgroundError(runErr)
 				}
-			}()
+			}) {
+				return errors.New("retention runtime is closed")
+			}
 			return nil
 		}
 	}

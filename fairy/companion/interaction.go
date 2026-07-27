@@ -108,11 +108,11 @@ func (s *CompanionService) ResolveInteraction(conversationID string) (domain.Res
 	binding, found := s.interactions[conversationID]
 	s.interactionMu.RUnlock()
 	if !found {
-		if s.memoryPort() == nil {
+		if s.memory.ambient.bindings == nil {
 			return domain.Resolved{}, ErrRespondRuntimeNotMigrated
 		}
 		var err error
-		binding, found, err = s.memoryPort().LookupEndpointForConversation(conversationID)
+		binding, found, err = s.memory.ambient.bindings.LookupEndpointForConversation(conversationID)
 		if err != nil {
 			return domain.Resolved{}, fmt.Errorf("looking up durable interaction binding: %w", err)
 		}

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,7 +18,6 @@ import (
 	"fairy/contracts/interaction"
 	obs "fairy/contracts/observation"
 	"fairy/coreclient"
-	keychain "github.com/keybase/go-keychain"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
@@ -37,7 +37,7 @@ type CoreSession struct {
 }
 
 type CoreService struct {
-	tokens       tokenStore
+	connections  connectionStore
 	mu           sync.Mutex
 	app          *application.App
 	companion    application.Window
@@ -60,7 +60,7 @@ type CoreService struct {
 }
 
 func NewCoreService() *CoreService {
-	service := &CoreService{tokens: systemTokenStore{}, newCache: newVisualCache, privacy: obs.DesktopPrivacyProtected}
+	service := &CoreService{connections: newSystemConnectionStore(), newCache: newVisualCache, privacy: obs.DesktopPrivacyProtected}
 	service.capture, _ = newDesktopCaptureRuntime(newPlatformDesktopCapturer(), func() obs.DesktopPrivacyState {
 		service.mu.Lock()
 		defer service.mu.Unlock()
@@ -357,34 +357,59 @@ func (s *CoreService) HideSpeechBubble() {
 }
 
 func (s *CoreService) SaveConnection(endpoint, token, endpointKey string) (CoreSettings, error) {
-	settings, err := s.settings(endpoint, endpointKey)
+	endpoint, err := validateEndpoint(endpoint)
 	if err != nil {
 		return CoreSettings{}, err
 	}
-	if token != "" && token != strings.TrimSpace(token) {
+	if endpointKey == "" {
+		endpointKey, err = generateInstallationKey()
+		if err != nil {
+			return CoreSettings{}, err
+		}
+	}
+	if !installationKeyPattern.MatchString(endpointKey) {
+		return CoreSettings{}, errors.New("installation key is invalid")
+	}
+	if token == "" {
+		existing, loadErr := s.connections.Load()
+		if errors.Is(loadErr, errConnectionNotFound) {
+			return CoreSettings{}, errors.New("Core token is required when saving the first Desktop connection")
+		}
+		if loadErr != nil {
+			return CoreSettings{}, fmt.Errorf("load existing Desktop Core connection: %w", loadErr)
+		}
+		token = existing.Token
+	} else if token != strings.TrimSpace(token) {
 		return CoreSettings{}, errors.New("Core token must contain no surrounding whitespace")
 	}
-	if token != "" {
-		if err := s.tokens.Set(token); err != nil {
-			return CoreSettings{}, errors.New("saving Core token to macOS Keychain failed")
-		}
-		settings.HasToken = true
+	connection := desktopConnection{Endpoint: endpoint, EndpointKey: endpointKey, Token: token}
+	if err := s.connections.Save(connection); err != nil {
+		return CoreSettings{}, fmt.Errorf("save Desktop Core connection: %w", err)
 	}
-	return settings, nil
+	return settingsForConnection(connection), nil
 }
 
-func (s *CoreService) Connect(endpoint, endpointKey string) (CoreSession, error) {
-	settings, err := s.settings(endpoint, endpointKey)
+func (s *CoreService) ConnectionSettings() (CoreSettings, error) {
+	connection, err := s.connections.Load()
+	if errors.Is(err, errConnectionNotFound) {
+		return CoreSettings{Endpoint: defaultCoreEndpoint}, nil
+	}
 	if err != nil {
-		return CoreSession{}, err
+		return CoreSettings{}, fmt.Errorf("load Desktop Core connection: %w", err)
 	}
-	token, err := s.tokens.Get()
-	if errors.Is(err, errTokenNotFound) || strings.TrimSpace(token) == "" {
-		return CoreSession{}, errors.New("Core token is required: open settings and save FAIRY_API_TOKEN to Keychain")
-	} else if err != nil {
-		return CoreSession{}, errors.New("reading Core token from macOS Keychain failed")
+	return settingsForConnection(connection), nil
+}
+
+func (s *CoreService) Connect() (CoreSession, error) {
+	connection, err := s.connections.Load()
+	if errors.Is(err, errConnectionNotFound) {
+		return CoreSession{}, errors.New("Core connection is not configured: open settings and save FAIRY_API_TOKEN")
 	}
-	client, err := coreclient.New(coreclient.Options{Endpoint: settings.Endpoint, Token: token})
+	if err != nil {
+		return CoreSession{}, fmt.Errorf("load Desktop Core connection: %w", err)
+	}
+	settings := settingsForConnection(connection)
+	client, err := coreclient.New(coreclient.Options{Endpoint: connection.Endpoint, Token: connection.Token})
 	if err != nil {
 		return CoreSession{}, err
 	}
@@ -609,26 +634,20 @@ func (s *CoreService) emitDesktopSession(messages []coreclient.MessageRecord) {
 	}
 }
 
-func (s *CoreService) settings(endpoint, endpointKey string) (CoreSettings, error) {
-	endpoint, err := validateEndpoint(endpoint)
-	if err != nil {
-		return CoreSettings{}, err
+func generateInstallationKey() (string, error) {
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
 	}
-	if endpointKey == "" {
-		raw := make([]byte, 24)
-		if _, err := rand.Read(raw); err != nil {
-			return CoreSettings{}, err
-		}
-		endpointKey = "macos-" + base64.RawURLEncoding.EncodeToString(raw)
+	return "macos-" + base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func settingsForConnection(connection desktopConnection) CoreSettings {
+	return CoreSettings{
+		Endpoint:    connection.Endpoint,
+		EndpointKey: connection.EndpointKey,
+		HasToken:    connection.Token != "",
 	}
-	if !installationKeyPattern.MatchString(endpointKey) {
-		return CoreSettings{}, errors.New("installation key is invalid")
-	}
-	_, err = s.tokens.Get()
-	if err != nil && !errors.Is(err, errTokenNotFound) {
-		return CoreSettings{}, errors.New("reading Core token from macOS Keychain failed")
-	}
-	return CoreSettings{Endpoint: endpoint, EndpointKey: endpointKey, HasToken: err == nil}, nil
 }
 
 func validateEndpoint(raw string) (string, error) {
@@ -650,39 +669,4 @@ func validateEndpoint(raw string) (string, error) {
 
 func isLoopback(host string) bool {
 	return strings.EqualFold(host, "localhost") || (net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback())
-}
-
-var errTokenNotFound = errors.New("Core token is not present in macOS Keychain")
-
-type tokenStore interface {
-	Get() (string, error)
-	Set(string) error
-}
-type systemTokenStore struct{}
-
-func (systemTokenStore) Get() (string, error) {
-	item := keychain.NewItem()
-	item.SetSecClass(keychain.SecClassGenericPassword)
-	item.SetService("com.rinai.fairy.macos")
-	item.SetAccount("core-api-token")
-	item.SetMatchLimit(keychain.MatchLimitOne)
-	item.SetReturnData(true)
-	result, err := keychain.QueryItem(item)
-	if err != nil {
-		return "", err
-	}
-	if len(result) != 1 || len(result[0].Data) == 0 {
-		return "", errTokenNotFound
-	}
-	return string(result[0].Data), nil
-}
-func (systemTokenStore) Set(token string) error {
-	item := keychain.NewItem()
-	item.SetSecClass(keychain.SecClassGenericPassword)
-	item.SetService("com.rinai.fairy.macos")
-	item.SetAccount("core-api-token")
-	item.SetData([]byte(token))
-	item.SetAccessible(keychain.AccessibleAfterFirstUnlock)
-	_ = keychain.DeleteItem(item)
-	return keychain.AddItem(item)
 }

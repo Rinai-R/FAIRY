@@ -3,8 +3,8 @@ package runtime
 import (
 	"errors"
 
-	"fairy/companion"
 	"fairy/pkg/eventstream"
+	turnruntime "fairy/turn"
 )
 
 const eventHubBuffer = 64
@@ -13,9 +13,9 @@ var ErrEventSubscriberOverflow = errors.New("event subscriber overflow")
 
 // EventSubscription is one ordered per-conversation turn-event stream.
 type EventSubscription struct {
-	Events   <-chan companion.TurnEvent
+	Events   <-chan turnruntime.TurnEvent
 	Failures <-chan error
-	inner    eventstream.Subscription[companion.TurnEvent]
+	inner    eventstream.Subscription[turnruntime.TurnEvent]
 }
 
 func (s EventSubscription) Unsubscribe() {
@@ -24,11 +24,11 @@ func (s EventSubscription) Unsubscribe() {
 
 // EventHub fans turn events out to per-conversation WebSocket watchers.
 type EventHub struct {
-	inner *eventstream.Hub[string, companion.TurnEvent]
+	inner *eventstream.Hub[string, turnruntime.TurnEvent]
 }
 
 func NewEventHub() *EventHub {
-	return &EventHub{inner: eventstream.New[string, companion.TurnEvent](eventHubBuffer, ErrEventSubscriberOverflow)}
+	return &EventHub{inner: eventstream.New[string, turnruntime.TurnEvent](eventHubBuffer, ErrEventSubscriberOverflow)}
 }
 
 // Subscribe returns one ordered stream and a separate terminal-failure signal.
@@ -41,7 +41,7 @@ func (h *EventHub) Subscribe(conversationID string) EventSubscription {
 }
 
 func closedEventSubscription() EventSubscription {
-	events := make(chan companion.TurnEvent)
+	events := make(chan turnruntime.TurnEvent)
 	failures := make(chan error)
 	close(events)
 	close(failures)
@@ -49,7 +49,7 @@ func closedEventSubscription() EventSubscription {
 }
 
 // Publish never blocks Core turn execution. A slow subscriber is failed and removed.
-func (h *EventHub) Publish(event companion.TurnEvent) {
+func (h *EventHub) Publish(event turnruntime.TurnEvent) {
 	if h == nil || event.ConversationID == "" {
 		return
 	}

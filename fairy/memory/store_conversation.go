@@ -104,6 +104,33 @@ func (s *Store) loadConversationPostgres(ctx context.Context, conversationID str
 	return LoadConversationBootstrap(queryCtx, s.pool.Raw(), conversationID)
 }
 
+func (s *Store) loadConversationRecordPostgres(ctx context.Context, conversationID string) (ConversationRecord, error) {
+	if err := ValidateID("conversation_id", conversationID); err != nil {
+		return ConversationRecord{}, err
+	}
+	queryCtx, cancel := s.pool.QueryContext(ctx)
+	defer cancel()
+	return LoadConversationRecord(queryCtx, s.pool.Raw(), conversationID)
+}
+
+func (s *Store) loadConversationActivityPostgres(ctx context.Context, conversationID string, nowUnixMS int64) (ConversationActivity, error) {
+	if err := ValidateID("conversation_id", conversationID); err != nil {
+		return ConversationActivity{}, err
+	}
+	queryCtx, cancel := s.pool.QueryContext(ctx)
+	defer cancel()
+	return LoadConversationActivity(queryCtx, s.pool.Raw(), conversationID, nowUnixMS)
+}
+
+func (s *Store) loadConversationPromptContextPostgres(ctx context.Context, conversationID string) (ConversationPromptContext, error) {
+	if err := ValidateID("conversation_id", conversationID); err != nil {
+		return ConversationPromptContext{}, err
+	}
+	queryCtx, cancel := s.pool.QueryContext(ctx)
+	defer cancel()
+	return LoadConversationPromptContext(queryCtx, s.pool.Raw(), conversationID)
+}
+
 func (s *Store) beginTurnPostgres(ctx context.Context, conversationID string, userMessage string) (PersistedTurn, error) {
 	if err := ValidateID("conversation_id", conversationID); err != nil {
 		return PersistedTurn{}, err

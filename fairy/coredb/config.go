@@ -1,7 +1,6 @@
-// Package postgres owns PostgreSQL runtime configuration, pooling,
-// migrations, and health checks. Domain packages consume the pool through
-// explicit dependencies; this package does not contain memory business logic.
-package postgres
+// Package coredb owns FAIRY's shared relational database configuration,
+// connection pool, and resource diagnostics.
+package coredb
 
 import (
 	"errors"

@@ -38,7 +38,6 @@ func TestParticipationBehaviorContextKeepsOnlyBehaviorEntries(t *testing.T) {
 }
 
 type socialLearningMemory struct {
-	MemoryPort
 	mu                     sync.Mutex
 	storeErr               error
 	upsertErr              error
@@ -51,10 +50,14 @@ type socialLearningMemory struct {
 	feedbackSummary        memory.RecentSocialFeedbackSummary
 	feedbackSummaryErr     error
 	feedbackSummaryCalls   int
+	metadataLoads          int
 }
 
-func (m *socialLearningMemory) LoadConversation(conversationID string) (memory.ConversationBootstrap, error) {
-	return memory.ConversationBootstrap{Conversation: memory.ConversationRecord{ID: conversationID, CharacterID: "character-1"}}, nil
+func (m *socialLearningMemory) LoadConversationRecord(conversationID string) (memory.ConversationRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.metadataLoads++
+	return memory.ConversationRecord{ID: conversationID, CharacterID: "character-1"}, nil
 }
 
 func (m *socialLearningMemory) StoreSocialMemoryEntries(_ context.Context, input memory.SocialMemoryBatchInput) ([]memory.SocialMemoryEntry, error) {
@@ -139,11 +142,11 @@ func (m *socialLearningModel) ExecuteRequestContext(ctx context.Context, request
 	return []model.StreamEvent{{Type: "text_delta", Data: draft}}, nil
 }
 
-type socialLearningCatalog struct{ CharacterCatalog }
+type socialLearningCharacterLookup struct{}
 
-func (socialLearningCatalog) List() (character.Catalog, error) {
+func (socialLearningCharacterLookup) Lookup(characterID string) (character.Record, bool, error) {
 	record := character.Record{CharacterID: "character-1", Revision: 1, Name: "Fairy", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"}
-	return character.Catalog{Characters: []character.Record{record}}, nil
+	return record, characterID == record.CharacterID, nil
 }
 
 type socialLearningConfig struct{ ConfigSource }
@@ -152,14 +155,36 @@ func (socialLearningConfig) ModelConnection() (config.ModelConnection, error) {
 	return config.ModelConnection{Model: "model-1", Capabilities: config.GatewayCapabilities{PromptCacheKey: true}}, nil
 }
 
-func newSocialLearningTestService(memoryPort MemoryPort, modelPort ModelPort) *CompanionService {
+func newSocialLearningTestService(memoryPort *socialLearningMemory, modelPort ModelPort) *CompanionService {
 	service := NewCompanionService()
-	service.memory = memoryPort
+	service.memory = memoryPorts{
+		ambient: ambientMemoryPorts{
+			metadata:        memoryPort,
+			socialRetrieval: memoryPort,
+			socialContext:   memoryPort,
+			socialLearning:  memoryPort,
+		},
+	}
 	service.model = modelPort
-	service.characters = socialLearningCatalog{}
+	service.characterLookup = socialLearningCharacterLookup{}
 	service.cfg = socialLearningConfig{}
 	service.interactions["conversation-1"] = publicAmbientBinding()
 	return service
+}
+
+func TestSocialLearningHostLoadsConversationMetadata(t *testing.T) {
+	memoryPort := &socialLearningMemory{}
+	service := newSocialLearningTestService(memoryPort, &socialLearningModel{})
+	record, err := (socialLearningHost{service: service}).LoadConversationRecord("conversation-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	memoryPort.mu.Lock()
+	metadataLoads := memoryPort.metadataLoads
+	memoryPort.mu.Unlock()
+	if record.ID != "conversation-1" || record.CharacterID != "character-1" || metadataLoads != 1 {
+		t.Fatalf("record=%#v metadata loads=%d", record, metadataLoads)
+	}
 }
 
 func TestRetrieveSocialRespondContextUsesPublicConversationScope(t *testing.T) {

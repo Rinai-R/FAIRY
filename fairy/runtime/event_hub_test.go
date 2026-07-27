@@ -5,14 +5,14 @@ import (
 	"testing"
 	"time"
 
-	"fairy/companion"
+	turnruntime "fairy/turn"
 )
 
 func TestEventHubFanOut(t *testing.T) {
 	hub := NewEventHub()
 	subscription := hub.Subscribe("c1")
 	defer subscription.Unsubscribe()
-	hub.Publish(companion.TurnEvent{ConversationID: "c1", TurnID: "t1", Sequence: 1})
+	hub.Publish(turnruntime.TurnEvent{ConversationID: "c1", TurnID: "t1", Sequence: 1})
 	select {
 	case event := <-subscription.Events:
 		if event.TurnID != "t1" {
@@ -21,7 +21,7 @@ func TestEventHubFanOut(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for event")
 	}
-	hub.Publish(companion.TurnEvent{ConversationID: "other", TurnID: "x"})
+	hub.Publish(turnruntime.TurnEvent{ConversationID: "other", TurnID: "x"})
 	select {
 	case <-subscription.Events:
 		t.Fatal("received cross-conversation event")
@@ -37,7 +37,7 @@ func TestEventHubOverflowFailsOnlySlowSubscriber(t *testing.T) {
 	defer fast.Unsubscribe()
 
 	for sequence := 1; sequence <= eventHubBuffer; sequence++ {
-		hub.Publish(companion.TurnEvent{ConversationID: "c1", Sequence: uint64(sequence)})
+		hub.Publish(turnruntime.TurnEvent{ConversationID: "c1", Sequence: uint64(sequence)})
 		select {
 		case event := <-fast.Events:
 			if event.Sequence != uint64(sequence) {
@@ -47,7 +47,7 @@ func TestEventHubOverflowFailsOnlySlowSubscriber(t *testing.T) {
 			t.Fatal("fast subscriber stalled")
 		}
 	}
-	hub.Publish(companion.TurnEvent{ConversationID: "c1", Sequence: eventHubBuffer + 1})
+	hub.Publish(turnruntime.TurnEvent{ConversationID: "c1", Sequence: eventHubBuffer + 1})
 
 	select {
 	case err := <-slow.Failures:
@@ -92,5 +92,15 @@ func TestEventHubSubscriberCountAndClose(t *testing.T) {
 	}
 	if _, ok := <-subscriptionB.Failures; ok {
 		t.Fatal("failures channel remained open")
+	}
+}
+
+func BenchmarkEventHubPublishWithoutSubscribers(b *testing.B) {
+	hub := NewEventHub()
+	defer hub.Close()
+	event := turnruntime.TurnEvent{ConversationID: "conversation-1", TurnID: "turn-1", Sequence: 1}
+	b.ReportAllocs()
+	for b.Loop() {
+		hub.Publish(event)
 	}
 }

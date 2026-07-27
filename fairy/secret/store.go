@@ -10,7 +10,7 @@ import (
 	"time"
 
 	contracts "fairy/contracts/interaction"
-	pgstore "fairy/postgres"
+	"fairy/coredb"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -62,14 +62,14 @@ func (v Value) MarshalJSON() ([]byte, error) {
 // Store persists encrypted production secrets in PostgreSQL. Unit tests may
 // opt into the explicit in-memory store returned by NewTestStore.
 type Store struct {
-	pool       *pgstore.Pool
+	pool       *coredb.Pool
 	cipher     *Cipher
 	now        func() time.Time
 	testMu     sync.RWMutex
 	testValues map[string]Value
 }
 
-func NewPostgresStore(pool *pgstore.Pool, cipher *Cipher) (*Store, error) {
+func NewPostgresStore(pool *coredb.Pool, cipher *Cipher) (*Store, error) {
 	if pool == nil || pool.Raw() == nil {
 		return nil, ErrDatabasePoolRequired
 	}

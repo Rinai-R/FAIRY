@@ -6,6 +6,10 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "/wails/runtime.js";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as session$0 from "../contracts/session/models.js";
+
 export class CharacterAppearance {
     /**
      * Creates a new CharacterAppearance instance.
@@ -98,75 +102,11 @@ export class CharacterRecord {
     }
 }
 
-export class MessageRecord {
-    /**
-     * Creates a new MessageRecord instance.
-     * @param {Partial<MessageRecord>} [$$source = {}] - The source object to create the MessageRecord.
-     */
-    constructor($$source = {}) {
-        if (!("id" in $$source)) {
-            /**
-             * @member
-             * @type {string}
-             */
-            this["id"] = "";
-        }
-        if (!("conversationId" in $$source)) {
-            /**
-             * @member
-             * @type {string}
-             */
-            this["conversationId"] = "";
-        }
-        if (!("turnId" in $$source)) {
-            /**
-             * @member
-             * @type {string}
-             */
-            this["turnId"] = "";
-        }
-        if (!("sequence" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["sequence"] = 0;
-        }
-        if (!("role" in $$source)) {
-            /**
-             * @member
-             * @type {string}
-             */
-            this["role"] = "";
-        }
-        if (!("content" in $$source)) {
-            /**
-             * @member
-             * @type {string}
-             */
-            this["content"] = "";
-        }
-        if (!("createdAtUnixMs" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["createdAtUnixMs"] = 0;
-        }
+export const MessageRecord = session$0.MessageRecord;
 
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new MessageRecord instance from a string or object.
-     * @param {any} [$$source = {}]
-     * @returns {MessageRecord}
-     */
-    static createFrom($$source = {}) {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new MessageRecord(/** @type {Partial<MessageRecord>} */($$parsedSource));
-    }
-}
+/**
+ * @typedef {session$0.MessageRecord} MessageRecord
+ */
 
 export class VisualAnchor {
     /**

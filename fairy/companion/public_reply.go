@@ -28,17 +28,17 @@ func (s *CompanionService) retrieveSocialRespondContext(ctx context.Context, cha
 	}
 	var socialMemory memory.SocialMemoryContext
 	if memoryQuery != "" {
-		retrieved, err := s.memoryPort().RetrieveSocialMemoryContext(ctx, characterID, conversationID, memoryQuery)
+		retrieved, err := s.memory.ambient.socialRetrieval.RetrieveSocialMemoryContext(ctx, characterID, conversationID, memoryQuery)
 		if err != nil {
 			return nil, err
 		}
 		socialMemory.Entries = filterSocialMemoryKinds(retrieved.Entries, memory.SocialMemoryEpisode, memory.SocialMemoryBehavior)
 	}
-	notes, err := s.memoryPort().ListSocialPersonNotes(ctx, characterID, conversationID, senderIDs)
+	notes, err := s.memory.ambient.socialContext.ListSocialPersonNotes(ctx, characterID, conversationID, senderIDs)
 	if err != nil {
 		return nil, err
 	}
-	feedback, err := s.memoryPort().RecentSocialFeedbackSummary(ctx, characterID, conversationID)
+	feedback, err := s.memory.ambient.socialContext.RecentSocialFeedbackSummary(ctx, characterID, conversationID)
 	if err != nil {
 		return nil, err
 	}

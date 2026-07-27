@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	contracts "fairy/contracts/interaction"
 
@@ -11,6 +12,38 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const conversationActivityQuery = `
+SELECT c.id, c.character_id, c.created_at_ms, c.updated_at_ms,
+       COALESCE(assistant_recent.messages_5m, 0),
+       COALESCE(assistant_recent.messages_30m, 0),
+       COALESCE(user_recent.messages_30m, 0),
+       latest_assistant.created_at_ms
+FROM conversations c
+LEFT JOIN LATERAL (
+    SELECT COUNT(*) FILTER (WHERE created_at_ms >= $3)::bigint AS messages_5m,
+           COUNT(*)::bigint AS messages_30m
+    FROM conversation_messages
+    WHERE conversation_id = c.id
+      AND role = 'assistant'
+      AND created_at_ms >= $2
+) assistant_recent ON true
+LEFT JOIN LATERAL (
+    SELECT COUNT(*)::bigint AS messages_30m
+    FROM conversation_messages
+    WHERE conversation_id = c.id
+      AND role = 'user'
+      AND created_at_ms >= $2
+) user_recent ON true
+LEFT JOIN LATERAL (
+    SELECT created_at_ms
+    FROM conversation_messages
+    WHERE conversation_id = c.id
+      AND role = 'assistant'
+    ORDER BY created_at_ms DESC, sequence DESC
+    LIMIT 1
+) latest_assistant ON true
+WHERE c.id = $1`
 
 type ConversationDB interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
@@ -153,39 +186,123 @@ WHERE conversation_id = $1`, conversationID).Scan(&endpoint, &audience, &initiat
 }
 
 func LoadConversationBootstrap(ctx context.Context, db ConversationDB, conversationID string) (ConversationBootstrap, error) {
-	var conversation ConversationRecord
-	if err := db.QueryRow(ctx, "SELECT id, character_id, created_at_ms, updated_at_ms FROM conversations WHERE id = $1", conversationID).Scan(&conversation.ID, &conversation.CharacterID, &conversation.CreatedAtUnixMS, &conversation.UpdatedAtUnixMS); err != nil {
-		return ConversationBootstrap{}, fmt.Errorf("loading conversation: %w", err)
+	conversation, prompt, err := loadConversationMetadata(ctx, db, conversationID)
+	if err != nil {
+		return ConversationBootstrap{}, err
+	}
+	rows, err := db.Query(ctx, "SELECT id, conversation_id, turn_id, sequence, role, content, created_at_ms FROM conversation_messages WHERE conversation_id = $1 ORDER BY sequence ASC", conversationID)
+	if err != nil {
+		return ConversationBootstrap{}, fmt.Errorf("loading conversation messages: %w", err)
+	}
+	messages, err := scanConversationMessages(rows)
+	if err != nil {
+		return ConversationBootstrap{}, err
+	}
+	return ConversationBootstrap{Conversation: conversation, Messages: messages, PromptWindow: prompt}, nil
+}
+
+func LoadConversationRecord(ctx context.Context, db ConversationDB, conversationID string) (ConversationRecord, error) {
+	return loadConversationRecord(ctx, db, conversationID)
+}
+
+func LoadConversationActivity(ctx context.Context, db ConversationDB, conversationID string, nowUnixMS int64) (ConversationActivity, error) {
+	if nowUnixMS <= 0 {
+		return ConversationActivity{}, errors.New("activity evaluation time must be positive")
+	}
+	thirtyMinuteCutoff := max(int64(0), nowUnixMS-30*time.Minute.Milliseconds())
+	fiveMinuteCutoff := max(int64(0), nowUnixMS-5*time.Minute.Milliseconds())
+	var (
+		activity                        ConversationActivity
+		assistant5, assistant30, user30 int64
+		lastAssistant                   pgtype.Int8
+	)
+	if err := db.QueryRow(ctx, conversationActivityQuery, conversationID, thirtyMinuteCutoff, fiveMinuteCutoff).Scan(
+		&activity.Conversation.ID,
+		&activity.Conversation.CharacterID,
+		&activity.Conversation.CreatedAtUnixMS,
+		&activity.Conversation.UpdatedAtUnixMS,
+		&assistant5,
+		&assistant30,
+		&user30,
+		&lastAssistant,
+	); err != nil {
+		return ConversationActivity{}, fmt.Errorf("loading conversation activity: %w", err)
+	}
+	if lastAssistant.Valid && lastAssistant.Int64 > nowUnixMS {
+		return ConversationActivity{}, errors.New("assistant message timestamp is after activity evaluation time")
+	}
+	activity.AssistantMessages5Minutes = uint64(assistant5)
+	activity.AssistantMessages30Minutes = uint64(assistant30)
+	activity.UserMessages30Minutes = uint64(user30)
+	if lastAssistant.Valid {
+		value := lastAssistant.Int64
+		activity.LastAssistantMessageAtUnixMS = &value
+	}
+	return activity, nil
+}
+
+func LoadConversationPromptContext(ctx context.Context, db ConversationDB, conversationID string) (ConversationPromptContext, error) {
+	conversation, prompt, err := loadConversationMetadata(ctx, db, conversationID)
+	if err != nil {
+		return ConversationPromptContext{}, err
+	}
+	rows, err := db.Query(ctx, `
+SELECT id, conversation_id, turn_id, sequence, role, content, created_at_ms
+FROM conversation_messages
+WHERE conversation_id = $1 AND sequence > $2
+ORDER BY sequence ASC`, conversationID, int64(prompt.CutoffMessageSequence))
+	if err != nil {
+		return ConversationPromptContext{}, fmt.Errorf("loading conversation prompt messages: %w", err)
+	}
+	messages, err := scanConversationMessages(rows)
+	if err != nil {
+		return ConversationPromptContext{}, err
+	}
+	return ConversationPromptContext{Conversation: conversation, Messages: messages, PromptWindow: prompt}, nil
+}
+
+func loadConversationMetadata(ctx context.Context, db ConversationDB, conversationID string) (ConversationRecord, PromptWindowRecord, error) {
+	conversation, err := loadConversationRecord(ctx, db, conversationID)
+	if err != nil {
+		return ConversationRecord{}, PromptWindowRecord{}, err
 	}
 	var prompt PromptWindowRecord
 	var summary pgtype.Text
 	var promptRevision int64
 	var cutoffSequence int64
 	if err := db.QueryRow(ctx, "SELECT conversation_id, revision, summary, cutoff_message_sequence, updated_at_ms FROM prompt_windows WHERE conversation_id = $1", conversationID).Scan(&prompt.ConversationID, &promptRevision, &summary, &cutoffSequence, &prompt.UpdatedAtUnixMS); err != nil {
-		return ConversationBootstrap{}, fmt.Errorf("loading prompt window: %w", err)
+		return ConversationRecord{}, PromptWindowRecord{}, fmt.Errorf("loading prompt window: %w", err)
 	}
 	prompt.Revision = uint64(promptRevision)
 	prompt.CutoffMessageSequence = uint64(cutoffSequence)
 	if summary.Valid {
 		prompt.Summary = &summary.String
 	}
-	rows, err := db.Query(ctx, "SELECT id, conversation_id, turn_id, sequence, role, content, created_at_ms FROM conversation_messages WHERE conversation_id = $1 ORDER BY sequence ASC", conversationID)
-	if err != nil {
-		return ConversationBootstrap{}, fmt.Errorf("loading conversation messages: %w", err)
+	return conversation, prompt, nil
+}
+
+func loadConversationRecord(ctx context.Context, db ConversationDB, conversationID string) (ConversationRecord, error) {
+	var conversation ConversationRecord
+	if err := db.QueryRow(ctx, "SELECT id, character_id, created_at_ms, updated_at_ms FROM conversations WHERE id = $1", conversationID).Scan(&conversation.ID, &conversation.CharacterID, &conversation.CreatedAtUnixMS, &conversation.UpdatedAtUnixMS); err != nil {
+		return ConversationRecord{}, fmt.Errorf("loading conversation: %w", err)
 	}
+	return conversation, nil
+}
+
+func scanConversationMessages(rows pgx.Rows) ([]MessageRecord, error) {
 	defer rows.Close()
 	messages := make([]MessageRecord, 0)
 	for rows.Next() {
 		message, err := ScanMessageRecord(rows)
 		if err != nil {
-			return ConversationBootstrap{}, err
+			return nil, err
 		}
 		messages = append(messages, message)
 	}
 	if err := rows.Err(); err != nil {
-		return ConversationBootstrap{}, fmt.Errorf("iterating conversation messages: %w", err)
+		return nil, fmt.Errorf("iterating conversation messages: %w", err)
 	}
-	return ConversationBootstrap{Conversation: conversation, Messages: messages, PromptWindow: prompt}, nil
+	return messages, nil
 }
 
 func RequireConversation(ctx context.Context, tx pgx.Tx, conversationID string) error {

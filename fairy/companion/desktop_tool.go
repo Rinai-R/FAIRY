@@ -8,6 +8,7 @@ import (
 	"time"
 
 	contracts "fairy/contracts/interaction"
+	"fairy/desktopcapture"
 	"fairy/model"
 
 	domain "fairy/interaction"
@@ -19,20 +20,9 @@ const (
 	desktopToolResultMessage = "A fresh desktop capture is attached. Use only visible evidence from this image; do not infer hidden activity."
 )
 
-type DesktopToolRequest struct {
-	ConversationID string
-	TurnID         string
-	CallID         string
-	Deadline       time.Time
-}
+type DesktopToolRequest = desktopcapture.ToolRequest
 
-type DesktopToolEvidence struct {
-	ExecutionID string
-	MediaType   string
-	Width       int
-	Height      int
-	DataURL     string
-}
+type DesktopToolEvidence = desktopcapture.Evidence
 
 type DesktopToolCoordinator interface {
 	Available(conversationID string) bool
@@ -40,16 +30,7 @@ type DesktopToolCoordinator interface {
 	CancelTurn(context.Context, string, string) error
 }
 
-type DesktopToolError struct {
-	Code string
-}
-
-func (err *DesktopToolError) Error() string {
-	if err == nil || strings.TrimSpace(err.Code) == "" {
-		return "desktop observation failed"
-	}
-	return "desktop observation failed: " + err.Code
-}
+type DesktopToolError = desktopcapture.ToolError
 
 func AttachDesktopToolCoordinator(service *CompanionService, coordinator DesktopToolCoordinator) {
 	if service == nil {

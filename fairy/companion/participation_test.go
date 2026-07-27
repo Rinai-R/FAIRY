@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -82,6 +83,18 @@ func TestCompileParticipationIsStrict(t *testing.T) {
 		if _, err := participation.CompileParticipation(invalid, messages); err == nil {
 			t.Fatalf("invalid participation accepted: %q", invalid)
 		}
+	}
+}
+
+func TestCompileParticipationDerivesExpressionQueryFromFocusWhenProviderOmitsIt(t *testing.T) {
+	messages := []AmbientObservation{validAmbientObservation()}
+	draft := `{"action":"reply","targetMessageId":"m1","intent":{"replyAct":"接话","tone":"自然","relationshipSignal":"群友","replyMode":"brief","focus":"对方刚提到的实验结果","avoid":[],"referenceInfo":"","memoryQuery":""}}`
+	result, err := participation.CompileParticipation(draft, messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Intent == nil || result.Intent.ExpressionQuery != "对方刚提到的实验结果" {
+		t.Fatalf("reply intent = %#v", result.Intent)
 	}
 }
 
@@ -314,18 +327,128 @@ func TestDeriveParticipationSignalsContainsOnlyObjectiveTimingAndPresenceFacts(t
 	}
 }
 
+func TestParticipationActivityMatchesTranscriptSignalsAndPromptTail(t *testing.T) {
+	now := int64(1_800_000_000_000)
+	latestMinute := now - time.Minute.Milliseconds()
+	latestOld := now - 40*time.Minute.Milliseconds()
+	observations := []AmbientObservation{
+		{MessageID: "m1", SenderID: "u1", SenderName: "甲", Text: "你觉得呢？", DirectedToBot: true, IsNew: true, TimestampUnixMS: now - time.Second.Milliseconds()},
+		{MessageID: "m2", SenderID: "u2", SenderName: "乙", Text: "我觉得可以", IsNew: true, TimestampUnixMS: now},
+	}
+	record := character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "自然参与群聊", TextLanguage: "zh", SpeakingLanguage: "zh"}
+	tests := []struct {
+		name       string
+		transcript []memory.MessageRecord
+		activity   memory.ConversationActivity
+	}{
+		{name: "empty history"},
+		{
+			name: "inclusive five and thirty minute boundaries",
+			transcript: []memory.MessageRecord{
+				{Role: "assistant", CreatedAtUnixMS: latestMinute},
+				{Role: "assistant", CreatedAtUnixMS: now - 5*time.Minute.Milliseconds()},
+				{Role: "assistant", CreatedAtUnixMS: now - 5*time.Minute.Milliseconds() - 1},
+				{Role: "assistant", CreatedAtUnixMS: now - 30*time.Minute.Milliseconds()},
+				{Role: "assistant", CreatedAtUnixMS: now - 30*time.Minute.Milliseconds() - 1},
+				{Role: "user", CreatedAtUnixMS: now - 10*time.Minute.Milliseconds()},
+				{Role: "user", CreatedAtUnixMS: now - 30*time.Minute.Milliseconds()},
+				{Role: "user", CreatedAtUnixMS: now - 30*time.Minute.Milliseconds() - 1},
+			},
+			activity: memory.ConversationActivity{
+				AssistantMessages5Minutes: 2, AssistantMessages30Minutes: 4,
+				UserMessages30Minutes: 2, LastAssistantMessageAtUnixMS: &latestMinute,
+			},
+		},
+		{
+			name: "latest assistant predates activity window",
+			transcript: []memory.MessageRecord{
+				{Role: "assistant", CreatedAtUnixMS: latestOld},
+				{Role: "user", CreatedAtUnixMS: now - 10*time.Minute.Milliseconds()},
+			},
+			activity: memory.ConversationActivity{UserMessages30Minutes: 1, LastAssistantMessageAtUnixMS: &latestOld},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			transcriptPresence, err := participation.DeriveRecentPresence(test.transcript, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			activityPresence, err := participation.DeriveRecentPresenceFromActivity(test.activity, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(transcriptPresence, activityPresence) {
+				t.Fatalf("presence mismatch: transcript=%#v activity=%#v", transcriptPresence, activityPresence)
+			}
+			transcriptSignals, err := participation.DeriveParticipationSignals(observations, test.transcript, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			activitySignals, err := participation.DeriveParticipationSignalsFromActivity(observations, test.activity, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(transcriptSignals, activitySignals) {
+				t.Fatalf("signals mismatch: transcript=%#v activity=%#v", transcriptSignals, activitySignals)
+			}
+			transcriptInput, err := participation.BuildParticipationInputWithSignals(record, publicAmbientResolved(), ParticipationReasonMessage, observations, nil, transcriptPresence, now, test.transcript)
+			if err != nil {
+				t.Fatal(err)
+			}
+			activityInput, err := participation.BuildParticipationInputWithActivity(record, publicAmbientResolved(), ParticipationReasonMessage, observations, nil, activityPresence, now, test.activity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			transcriptTail := transcriptInput[len(transcriptInput)-1]
+			activityTail := activityInput[len(activityInput)-1]
+			if !reflect.DeepEqual(transcriptTail, activityTail) {
+				t.Fatalf("prompt tail mismatch:\ntranscript=%s\nactivity=%s", transcriptTail.Content, activityTail.Content)
+			}
+		})
+	}
+}
+
 type participationMemory struct {
-	MemoryPort
 	bootstrap     memory.ConversationBootstrap
 	binding       contracts.Binding
 	found         bool
 	lookupErr     error
 	retrieveCalls int
+	activityLoads int
 	retrieved     memory.SocialMemoryContext
 }
 
-func (m *participationMemory) LoadConversation(string) (memory.ConversationBootstrap, error) {
-	return m.bootstrap, nil
+func (m *participationMemory) LoadConversationActivity(_ string, nowUnixMS int64) (memory.ConversationActivity, error) {
+	m.activityLoads++
+	activity := memory.ConversationActivity{Conversation: m.bootstrap.Conversation}
+	var latestAssistant int64
+	for _, message := range m.bootstrap.Messages {
+		age := nowUnixMS - message.CreatedAtUnixMS
+		switch message.Role {
+		case "assistant":
+			if age < 0 {
+				return memory.ConversationActivity{}, errors.New("assistant message timestamp is after activity evaluation time")
+			}
+			if age <= 5*time.Minute.Milliseconds() {
+				activity.AssistantMessages5Minutes++
+			}
+			if age <= 30*time.Minute.Milliseconds() {
+				activity.AssistantMessages30Minutes++
+			}
+			if message.CreatedAtUnixMS > latestAssistant {
+				latestAssistant = message.CreatedAtUnixMS
+			}
+		case "user":
+			if age >= 0 && age <= 30*time.Minute.Milliseconds() {
+				activity.UserMessages30Minutes++
+			}
+		}
+	}
+	if latestAssistant > 0 {
+		activity.LastAssistantMessageAtUnixMS = &latestAssistant
+	}
+	return activity, nil
 }
 
 func (m *participationMemory) LookupEndpointForConversation(string) (contracts.Binding, bool, error) {
@@ -344,10 +467,25 @@ func (m *participationMemory) ListSocialPersonNotes(context.Context, string, str
 	return nil, nil
 }
 
-type participationCatalog struct{ record character.Record }
+func (m *participationMemory) RecentSocialFeedbackSummary(context.Context, string, string) (memory.RecentSocialFeedbackSummary, error) {
+	return memory.RecentSocialFeedbackSummary{}, nil
+}
 
-func (c participationCatalog) List() (character.Catalog, error) {
-	return character.Catalog{Characters: []character.Record{c.record}}, nil
+func participationMemoryPorts(store *participationMemory) memoryPorts {
+	return memoryPorts{
+		ambient: ambientMemoryPorts{
+			bindings:        store,
+			activity:        store,
+			socialRetrieval: store,
+			socialContext:   store,
+		},
+	}
+}
+
+type participationCharacterLookup struct{ record character.Record }
+
+func (c participationCharacterLookup) Lookup(characterID string) (character.Record, bool, error) {
+	return c.record, c.record.CharacterID == characterID, nil
 }
 
 type participationConfig struct{ ConfigSource }
@@ -399,10 +537,11 @@ func TestDecideParticipationRetriesOneInvalidDraftAndAccumulatesUsage(t *testing
 			{PromptTokens: 19, CompletionTokens: 3, CachedInputTokens: &secondCached},
 		},
 	}
+	memoryPort := &participationMemory{bootstrap: memory.ConversationBootstrap{Conversation: memory.ConversationRecord{ID: "c1", CharacterID: "character-1"}}}
 	service := NewCompanionService()
-	service.memory = &participationMemory{bootstrap: memory.ConversationBootstrap{Conversation: memory.ConversationRecord{ID: "c1", CharacterID: "character-1"}}}
+	service.memory = participationMemoryPorts(memoryPort)
 	service.model = modelPort
-	service.characters = participationCatalog{record: character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"}}
+	service.characterLookup = participationCharacterLookup{record: character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"}}
 	service.cfg = participationConfig{}
 	if err := service.BindInteraction("c1", publicAmbientBinding()); err != nil {
 		t.Fatal(err)
@@ -415,6 +554,9 @@ func TestDecideParticipationRetriesOneInvalidDraftAndAccumulatesUsage(t *testing
 	if result.Action != ParticipationSilent || len(modelPort.requests) != 2 || len(result.Usage) != 2 {
 		t.Fatalf("result=%#v calls=%d", result, len(modelPort.requests))
 	}
+	if memoryPort.activityLoads != 1 {
+		t.Fatalf("conversation activity loads = %d, want 1", memoryPort.activityLoads)
+	}
 	if got := *result.Usage[0].Usage.CachedInputTokens.Tokens; got != firstCached {
 		t.Fatalf("first cached tokens = %d", got)
 	}
@@ -426,9 +568,9 @@ func TestDecideParticipationRetriesOneInvalidDraftAndAccumulatesUsage(t *testing
 func TestDecideParticipationFailsAfterTwoInvalidRetries(t *testing.T) {
 	modelPort := &participationModel{drafts: []string{"", "not json", "still not json"}}
 	service := NewCompanionService()
-	service.memory = &participationMemory{bootstrap: memory.ConversationBootstrap{Conversation: memory.ConversationRecord{ID: "c1", CharacterID: "character-1"}}}
+	service.memory = participationMemoryPorts(&participationMemory{bootstrap: memory.ConversationBootstrap{Conversation: memory.ConversationRecord{ID: "c1", CharacterID: "character-1"}}})
 	service.model = modelPort
-	service.characters = participationCatalog{record: character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"}}
+	service.characterLookup = participationCharacterLookup{record: character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"}}
 	service.cfg = participationConfig{}
 	if err := service.BindInteraction("c1", publicAmbientBinding()); err != nil {
 		t.Fatal(err)
@@ -444,9 +586,9 @@ func TestDecideParticipationRequiresAmbientPublicAndPropagatesContext(t *testing
 	cachedTokens := uint64(11)
 	modelPort := &participationModel{draft: `{"action":"silent"}`, usage: &model.Usage{PromptTokens: 17, CompletionTokens: 3, CachedInputTokens: &cachedTokens}}
 	service := NewCompanionService()
-	service.memory = &participationMemory{bootstrap: memory.ConversationBootstrap{Conversation: memory.ConversationRecord{ID: "c1", CharacterID: "character-1"}}}
+	service.memory = participationMemoryPorts(&participationMemory{bootstrap: memory.ConversationBootstrap{Conversation: memory.ConversationRecord{ID: "c1", CharacterID: "character-1"}}})
 	service.model = modelPort
-	service.characters = participationCatalog{record: character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"}}
+	service.characterLookup = participationCharacterLookup{record: character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"}}
 	service.cfg = participationConfig{}
 	request := validParticipationRequest()
 	if _, err := service.DecideParticipation(t.Context(), request); err == nil || !strings.Contains(err.Error(), "no interaction binding") {
@@ -487,9 +629,9 @@ func TestDecideParticipationSuppressesOldMessageTargetForMessageEvaluation(t *te
 	oldTarget := "old"
 	modelPort := &participationModel{draft: validReplyDecision(oldTarget)}
 	service := NewCompanionService()
-	service.memory = &participationMemory{bootstrap: memory.ConversationBootstrap{Conversation: memory.ConversationRecord{ID: "c1", CharacterID: "character-1"}}}
+	service.memory = participationMemoryPorts(&participationMemory{bootstrap: memory.ConversationBootstrap{Conversation: memory.ConversationRecord{ID: "c1", CharacterID: "character-1"}}})
 	service.model = modelPort
-	service.characters = participationCatalog{record: character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"}}
+	service.characterLookup = participationCharacterLookup{record: character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"}}
 	service.cfg = participationConfig{}
 	if err := service.BindInteraction("c1", publicAmbientBinding()); err != nil {
 		t.Fatal(err)
@@ -518,9 +660,9 @@ func TestDecideParticipationSkipsSocialMemoryForPersonalInteraction(t *testing.T
 		}}},
 	}
 	service := NewCompanionService()
-	service.memory = memoryPort
+	service.memory = participationMemoryPorts(memoryPort)
 	service.model = &participationModel{draft: `{"action":"silent"}`}
-	service.characters = participationCatalog{record: character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "桌面", TextLanguage: "zh", SpeakingLanguage: "zh"}}
+	service.characterLookup = participationCharacterLookup{record: character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "桌面", TextLanguage: "zh", SpeakingLanguage: "zh"}}
 	service.cfg = participationConfig{}
 	if err := service.BindInteraction("c1", contracts.Binding{
 		Endpoint: contracts.EndpointDesktop,

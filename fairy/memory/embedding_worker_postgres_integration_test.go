@@ -12,8 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"fairy/coredb"
+	dbschema "fairy/coredb/schema"
 	"fairy/memory/semantic"
-	pgstore "fairy/postgres"
 	vectorindex "fairy/vectorindex"
 
 	"github.com/google/uuid"
@@ -61,7 +62,7 @@ func TestPostgresEmbeddingWorkerUpsertsQdrantAndCompletesOutbox(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -98,7 +99,7 @@ func TestPostgresEmbeddingWorkerReclaimsAfterQdrantUpsertCrash(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPoolWithLease(pool, "worker-crash", time.Minute)
@@ -149,7 +150,7 @@ func TestPostgresEmbeddingWorkerUnavailableIndexDoesNotClaim(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -180,7 +181,7 @@ func TestPostgresEmbeddingWorkerRejectsNonFiniteVectorBeforeUpsert(t *testing.T)
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -254,7 +255,7 @@ func seedPostgresEmbeddingMemory(t *testing.T, ctx context.Context, store *Store
 	return record
 }
 
-func assertPostgresEmbeddingCompleted(t *testing.T, ctx context.Context, pool *pgstore.Pool, itemID string, wantAttempts int) {
+func assertPostgresEmbeddingCompleted(t *testing.T, ctx context.Context, pool *coredb.Pool, itemID string, wantAttempts int) {
 	t.Helper()
 	var itemStatus, jobStatus string
 	var embeddedAt *int64

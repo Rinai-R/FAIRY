@@ -233,7 +233,47 @@ func DeriveRecentPresence(messages []memory.MessageRecord, nowUnixMS int64) (Rec
 	return presence, nil
 }
 
+func DeriveRecentPresenceFromActivity(activity memory.ConversationActivity, nowUnixMS int64) (RecentPresence, error) {
+	if nowUnixMS <= 0 {
+		return RecentPresence{}, errors.New("presence evaluation time must be positive")
+	}
+	if activity.AssistantMessages5Minutes > activity.AssistantMessages30Minutes {
+		return RecentPresence{}, errors.New("assistant activity counts are inconsistent")
+	}
+	presence := RecentPresence{
+		AssistantReplies5Minutes:  int(activity.AssistantMessages5Minutes),
+		AssistantReplies30Minutes: int(activity.AssistantMessages30Minutes),
+	}
+	if activity.LastAssistantMessageAtUnixMS == nil {
+		return presence, nil
+	}
+	if *activity.LastAssistantMessageAtUnixMS > nowUnixMS {
+		return RecentPresence{}, errors.New("assistant message timestamp is after presence evaluation time")
+	}
+	seconds := (nowUnixMS - *activity.LastAssistantMessageAtUnixMS) / time.Second.Milliseconds()
+	presence.SecondsSinceLastReply = &seconds
+	return presence, nil
+}
+
 func DeriveParticipationSignals(messages []AmbientObservation, transcript []memory.MessageRecord, nowUnixMS int64) (ParticipationSignals, error) {
+	assistantReplies := 0
+	externalMessages := 0
+	for _, message := range transcript {
+		if message.Role == "assistant" && nowUnixMS-message.CreatedAtUnixMS <= 30*time.Minute.Milliseconds() {
+			assistantReplies++
+		}
+		if message.Role == "user" && nowUnixMS-message.CreatedAtUnixMS <= 30*time.Minute.Milliseconds() {
+			externalMessages++
+		}
+	}
+	return deriveParticipationSignals(messages, assistantReplies, externalMessages, nowUnixMS)
+}
+
+func DeriveParticipationSignalsFromActivity(messages []AmbientObservation, activity memory.ConversationActivity, nowUnixMS int64) (ParticipationSignals, error) {
+	return deriveParticipationSignals(messages, int(activity.AssistantMessages30Minutes), int(activity.UserMessages30Minutes), nowUnixMS)
+}
+
+func deriveParticipationSignals(messages []AmbientObservation, assistantReplies, externalMessages int, nowUnixMS int64) (ParticipationSignals, error) {
 	if nowUnixMS <= 0 {
 		return ParticipationSignals{}, errors.New("participation signal evaluation time must be positive")
 	}
@@ -274,16 +314,6 @@ func DeriveParticipationSignals(messages []AmbientObservation, transcript []memo
 	if intervalCount > 0 {
 		signals.AverageExternalIntervalSeconds = float64(intervalTotal) / float64(intervalCount) / float64(time.Second.Milliseconds())
 	}
-	assistantReplies := 0
-	externalMessages := 0
-	for _, message := range transcript {
-		if message.Role == "assistant" && nowUnixMS-message.CreatedAtUnixMS <= 30*time.Minute.Milliseconds() {
-			assistantReplies++
-		}
-		if message.Role == "user" && nowUnixMS-message.CreatedAtUnixMS <= 30*time.Minute.Milliseconds() {
-			externalMessages++
-		}
-	}
 	denominator := assistantReplies + externalMessages
 	if denominator > 0 {
 		signals.RecentSelfReplyRatio = float64(assistantReplies) / float64(denominator)
@@ -297,6 +327,18 @@ func BuildParticipationInput(record character.Record, resolved domain.Resolved, 
 }
 
 func BuildParticipationInputWithSignals(record character.Record, resolved domain.Resolved, reason ParticipationEvaluationReason, messages []AmbientObservation, cacheMessages []AmbientObservation, presence RecentPresence, nowUnixMS int64, transcript []memory.MessageRecord) ([]model.PromptItem, error) {
+	return buildParticipationInput(record, resolved, reason, messages, cacheMessages, presence, func() (ParticipationSignals, error) {
+		return DeriveParticipationSignals(messages, transcript, nowUnixMS)
+	})
+}
+
+func BuildParticipationInputWithActivity(record character.Record, resolved domain.Resolved, reason ParticipationEvaluationReason, messages []AmbientObservation, cacheMessages []AmbientObservation, presence RecentPresence, nowUnixMS int64, activity memory.ConversationActivity) ([]model.PromptItem, error) {
+	return buildParticipationInput(record, resolved, reason, messages, cacheMessages, presence, func() (ParticipationSignals, error) {
+		return DeriveParticipationSignalsFromActivity(messages, activity, nowUnixMS)
+	})
+}
+
+func buildParticipationInput(record character.Record, resolved domain.Resolved, reason ParticipationEvaluationReason, messages []AmbientObservation, cacheMessages []AmbientObservation, presence RecentPresence, deriveSignals func() (ParticipationSignals, error)) ([]model.PromptItem, error) {
 	if len(messages) == 0 || len(messages) > MaxAmbientObservations {
 		return nil, fmt.Errorf("ambient messages count must be between 1 and %d", MaxAmbientObservations)
 	}
@@ -312,7 +354,7 @@ func BuildParticipationInputWithSignals(record character.Record, resolved domain
 	if err != nil {
 		return nil, err
 	}
-	signals, err := DeriveParticipationSignals(messages, transcript, nowUnixMS)
+	signals, err := deriveSignals()
 	if err != nil {
 		return nil, err
 	}
@@ -441,7 +483,6 @@ func CompileReplyIntent(raw json.RawMessage) (ReplyIntent, error) {
 		{"tone", draft.Tone},
 		{"relationshipSignal", draft.RelationshipSignal},
 		{"focus", draft.Focus},
-		{"expressionQuery", draft.ExpressionQuery},
 	}
 	for _, field := range required {
 		if err := validateReplyIntentText(field.name, field.value, maxReplyIntentTextRunes, true); err != nil {
@@ -467,18 +508,25 @@ func CompileReplyIntent(raw json.RawMessage) (ReplyIntent, error) {
 	if err := validateReplyIntentText("memoryQuery", draft.MemoryQuery, maxReplyIntentTextRunes, false); err != nil {
 		return ReplyIntent{}, err
 	}
+	if err := validateReplyIntentText("expressionQuery", draft.ExpressionQuery, maxReplyIntentTextRunes, false); err != nil {
+		return ReplyIntent{}, err
+	}
 	if !ValidOptionalDriftLevel(draft.DriftLevel) {
 		return ReplyIntent{}, errors.New("reply intent driftLevel is invalid")
 	}
 	if !ValidOptionalAnchorPolicy(draft.AnchorPolicy) {
 		return ReplyIntent{}, errors.New("reply intent anchorPolicy is invalid")
 	}
+	expressionQuery := strings.TrimSpace(draft.ExpressionQuery)
+	if expressionQuery == "" {
+		expressionQuery = strings.TrimSpace(draft.Focus)
+	}
 	return ReplyIntent{
 		ReplyAct: strings.TrimSpace(draft.ReplyAct), Tone: strings.TrimSpace(draft.Tone),
 		RelationshipSignal: strings.TrimSpace(draft.RelationshipSignal), ReplyMode: draft.ReplyMode,
 		Focus: strings.TrimSpace(draft.Focus), Avoid: avoid,
 		ReferenceInfo: strings.TrimSpace(draft.ReferenceInfo), MemoryQuery: strings.TrimSpace(draft.MemoryQuery),
-		ExpressionQuery: strings.TrimSpace(draft.ExpressionQuery),
+		ExpressionQuery: expressionQuery,
 		DriftLevel:      NormalizeDriftLevel(draft.DriftLevel),
 		AnchorPolicy:    NormalizeAnchorPolicy(draft.AnchorPolicy),
 	}, nil

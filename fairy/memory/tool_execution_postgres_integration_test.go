@@ -8,14 +8,14 @@ import (
 	"testing"
 	"time"
 
-	pgstore "fairy/postgres"
+	dbschema "fairy/coredb/schema"
 )
 
 func TestPostgresToolExecutionCASRecoveryAndPrivacyMetadata(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	if _, err := pool.Raw().Exec(ctx, `

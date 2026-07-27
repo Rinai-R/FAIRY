@@ -42,10 +42,11 @@ type learningTestHost struct {
 	started  chan struct{}
 	request  model.CompiledPromptRequest
 
-	stored   []memory.SocialMemoryBatchInput
-	upserted []memory.SocialPersonNoteInput
-	feedback []memory.SocialReplyFeedbackInput
-	warnings []error
+	stored        []memory.SocialMemoryBatchInput
+	upserted      []memory.SocialPersonNoteInput
+	feedback      []memory.SocialReplyFeedbackInput
+	warnings      []error
+	metadataLoads int
 }
 
 func newLearningTestHost() *learningTestHost {
@@ -56,8 +57,11 @@ func (h *learningTestHost) ResolveInteraction(string) (domain.Resolved, error) {
 	return h.resolved, nil
 }
 
-func (*learningTestHost) LoadConversation(conversationID string) (memory.ConversationBootstrap, error) {
-	return memory.ConversationBootstrap{Conversation: memory.ConversationRecord{ID: conversationID, CharacterID: "character-1"}}, nil
+func (h *learningTestHost) LoadConversationRecord(conversationID string) (memory.ConversationRecord, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.metadataLoads++
+	return memory.ConversationRecord{ID: conversationID, CharacterID: "character-1"}, nil
 }
 
 func (*learningTestHost) ActiveCharacter(string) (character.Record, error) {
@@ -161,6 +165,7 @@ func TestLearningEngineUsesDedicatedLaneAndCacheIdentity(t *testing.T) {
 	host.mu.Lock()
 	request := host.request
 	stored := append([]memory.SocialMemoryBatchInput(nil), host.stored...)
+	metadataLoads := host.metadataLoads
 	host.mu.Unlock()
 	if request.Shape.Lane != model.PromptLaneSocialLearn || request.Shape.PromptCacheKey != model.LaneCacheKey("conversation-1", model.PromptLaneSocialLearn) {
 		t.Fatalf("request shape = %#v", request.Shape)
@@ -170,6 +175,9 @@ func TestLearningEngineUsesDedicatedLaneAndCacheIdentity(t *testing.T) {
 	}
 	if len(stored) != 1 {
 		t.Fatalf("stored = %#v", stored)
+	}
+	if metadataLoads != 1 {
+		t.Fatalf("conversation metadata loads = %d, want 1", metadataLoads)
 	}
 }
 

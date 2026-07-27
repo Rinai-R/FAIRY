@@ -10,7 +10,6 @@ import (
 )
 
 type blockingKnowledgeMemory struct {
-	MemoryPort
 	started chan struct{}
 	release chan struct{}
 	done    chan struct{}
@@ -60,9 +59,9 @@ func TestScheduleKnowledgeIngestDoesNotWaitForStorage(t *testing.T) {
 	done := make(chan struct{})
 	service := NewCompanionService()
 	defer service.Close()
-	service.memory = blockingKnowledgeMemory{started: started, release: release, done: done}
+	service.memory = memoryPorts{retention: retentionMemoryPorts{knowledge: blockingKnowledgeMemory{started: started, release: release, done: done}}}
 	service.model = &participationModel{draft: `{"action":"silent"}`}
-	service.characters = participationCatalog{}
+	service.characterLookup = participationCharacterLookup{}
 	service.profiles = knowledgeIngestProfile{}
 	service.cfg = participationConfig{}
 

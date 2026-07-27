@@ -13,7 +13,8 @@ import (
 	"testing"
 	"time"
 
-	pgstore "fairy/postgres"
+	"fairy/coredb"
+	dbschema "fairy/coredb/schema"
 	vectorindex "fairy/vectorindex"
 
 	"github.com/jackc/pgx/v5"
@@ -116,11 +117,11 @@ func isolatedRuntimeSchema(t *testing.T, migrate bool) (string, func()) {
 	admin.Close()
 	databaseURL := withRuntimeSearchPath(t, rawURL, schema)
 	if migrate {
-		pool, err := pgstore.Open(ctx, pgstore.ShortTimeoutConfig(databaseURL))
+		pool, err := coredb.Open(ctx, coredb.ShortTimeoutConfig(databaseURL))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := pgstore.Migrate(ctx, pool); err != nil {
+		if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 			pool.Close()
 			t.Fatal(err)
 		}
@@ -168,11 +169,11 @@ func ensureRuntimeCollection(t *testing.T, rawURL string) {
 
 func setRuntimeEnvironment(t *testing.T, databaseURL, qdrantURL, masterKey string) {
 	t.Helper()
-	t.Setenv(pgstore.EnvDatabaseURL, databaseURL)
-	t.Setenv(pgstore.EnvMaxConns, "4")
-	t.Setenv(pgstore.EnvMinConns, "0")
-	t.Setenv(pgstore.EnvConnectTimeout, "2s")
-	t.Setenv(pgstore.EnvQueryTimeout, "2s")
+	t.Setenv(coredb.EnvDatabaseURL, databaseURL)
+	t.Setenv(coredb.EnvMaxConns, "4")
+	t.Setenv(coredb.EnvMinConns, "0")
+	t.Setenv(coredb.EnvConnectTimeout, "2s")
+	t.Setenv(coredb.EnvQueryTimeout, "2s")
 	t.Setenv(vectorindex.EnvURL, qdrantURL)
 	t.Setenv(vectorindex.EnvTimeout, "2s")
 	t.Setenv("FAIRY_SECRET_MASTER_KEY", masterKey)

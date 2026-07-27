@@ -1,10 +1,15 @@
-package postgres
+// Package schema owns FAIRY's PostgreSQL schema catalog, migration, and
+// readiness verification.
+package schema
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"sync"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -228,6 +233,7 @@ var schemaIndexes = []schemaIndex{
 	{"conversation_turns_extraction", "CREATE INDEX IF NOT EXISTS conversation_turns_extraction ON conversation_turns(conversation_id, extraction_state, sequence ASC) WHERE status = 'completed'"},
 	{"conversation_turn_evidence_evidence", "CREATE INDEX IF NOT EXISTS conversation_turn_evidence_evidence ON conversation_turn_evidence(evidence_id, turn_id)"},
 	{"conversation_messages_conversation_sequence", "CREATE INDEX IF NOT EXISTS conversation_messages_conversation_sequence ON conversation_messages(conversation_id, sequence ASC)"},
+	{"conversation_messages_conversation_role_created", "CREATE INDEX IF NOT EXISTS conversation_messages_conversation_role_created ON conversation_messages(conversation_id, role, created_at_ms DESC, sequence DESC)"},
 	{"turn_runtime_events_turn_sequence", "CREATE INDEX IF NOT EXISTS turn_runtime_events_turn_sequence ON turn_runtime_events(conversation_id, turn_id, sequence ASC)"},
 	{"turn_runtime_events_type_created", "CREATE INDEX IF NOT EXISTS turn_runtime_events_type_created ON turn_runtime_events(event_type, created_at_ms ASC, sequence ASC)"},
 	{"tool_executions_pending_deadline", "CREATE INDEX IF NOT EXISTS tool_executions_pending_deadline ON tool_executions(deadline_at_ms ASC, created_at_ms ASC, id ASC) WHERE status = 'pending'"},
@@ -256,7 +262,7 @@ var schemaIndexes = []schemaIndex{
 	{"social_person_notes_scope_sender", "CREATE INDEX IF NOT EXISTS social_person_notes_scope_sender ON social_person_notes(character_id, conversation_id, sender_id, updated_at_ms DESC, id ASC)"},
 }
 
-func Migrate(ctx context.Context, pool *Pool) error {
+func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	db, closeDB, err := openGORM(pool)
 	if err != nil {
 		return err
@@ -321,56 +327,76 @@ func schemaTableCounts(db *gorm.DB) (int, int, error) {
 	return present, total, nil
 }
 
-func VerifySchema(ctx context.Context, pool *Pool) (SchemaStatus, error) {
-	if pool == nil || pool.Raw() == nil {
+const schemaCatalogQuery = `
+SELECT 'extension' AS kind, '' AS owner, extname AS name
+FROM pg_extension
+WHERE extname = 'pg_trgm'
+UNION ALL
+SELECT 'table', tablename, ''
+FROM pg_tables
+WHERE schemaname = current_schema()
+UNION ALL
+SELECT 'column', table_name, column_name
+FROM information_schema.columns
+WHERE table_schema = current_schema()
+UNION ALL
+SELECT 'constraint', t.relname, c.conname
+FROM pg_constraint c
+JOIN pg_class t ON t.oid = c.conrelid
+JOIN pg_namespace n ON n.oid = t.relnamespace
+WHERE n.nspname = current_schema()
+UNION ALL
+SELECT 'index', '', indexname
+FROM pg_indexes
+WHERE schemaname = current_schema()
+ORDER BY 1, 2, 3`
+
+type schemaCatalog struct {
+	extension   bool
+	tables      map[string]bool
+	columns     map[string]map[string]bool
+	constraints map[string]map[string]bool
+	indexes     map[string]bool
+}
+
+var (
+	expectedColumnsOnce  sync.Once
+	expectedColumns      map[string][]string
+	expectedColumnCount  int
+	expectedColumnsError error
+)
+
+func VerifySchema(ctx context.Context, pool *pgxpool.Pool) (SchemaStatus, error) {
+	if pool == nil {
 		return SchemaStatus{}, errors.New("database pool is not open")
 	}
-	db, closeDB, err := openGORM(pool)
+	columns, columnCount, err := expectedSchemaColumns(pool)
 	if err != nil {
 		return SchemaStatus{}, err
 	}
-	defer closeDB()
-	db = db.WithContext(ctx)
-
-	columnCount := 0
-	for _, model := range schemaModels() {
-		statement := &gorm.Statement{DB: db}
-		if err := statement.Parse(model); err != nil {
-			return SchemaStatus{}, fmt.Errorf("parsing schema model: %w", err)
-		}
-		columnCount += len(statement.Schema.DBNames)
+	actual, err := loadSchemaCatalog(ctx, pool)
+	if err != nil {
+		return SchemaStatus{}, err
 	}
-	expected := len(schemaModels()) + columnCount + len(schemaConstraints) + len(schemaIndexes) + 1
-	status := SchemaStatus{ExpectedObjects: expected}
+	status := SchemaStatus{ExpectedObjects: len(schemaTableNames()) + columnCount + len(schemaConstraints) + len(schemaIndexes) + 1}
 	presentTables := 0
 
-	var extensionExists bool
-	if err := pool.Raw().QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')").Scan(&extensionExists); err != nil {
-		return status, fmt.Errorf("checking pg_trgm extension: %w", err)
-	}
-	if extensionExists {
+	if actual.extension {
 		status.PresentObjects++
 	} else {
 		status.MissingObjects = append(status.MissingObjects, "extension:pg_trgm")
 	}
-
-	for i, table := range schemaTableNames() {
-		var exists bool
-		if err := pool.Raw().QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", table).Scan(&exists); err != nil {
-			return status, fmt.Errorf("checking table %s: %w", table, err)
-		}
-		if exists {
+	expectedTables := make(map[string]bool, len(schemaTableNames()))
+	for _, table := range schemaTableNames() {
+		expectedTables[table] = true
+		if actual.tables[table] {
 			status.PresentObjects++
 			presentTables++
 		} else {
 			status.MissingObjects = append(status.MissingObjects, "table:"+table)
 		}
-		statement := &gorm.Statement{DB: db}
-		if err := statement.Parse(schemaModels()[i]); err != nil {
-			return status, fmt.Errorf("parsing schema model %s: %w", table, err)
-		}
-		for _, column := range statement.Schema.DBNames {
-			if exists && db.Migrator().HasColumn(table, column) {
+		for _, column := range columns[table] {
+			if actual.columns[table][column] {
 				status.PresentObjects++
 			} else {
 				status.MissingObjects = append(status.MissingObjects, "column:"+table+"."+column)
@@ -378,53 +404,30 @@ func VerifySchema(ctx context.Context, pool *Pool) (SchemaStatus, error) {
 		}
 	}
 	for _, constraint := range schemaConstraints {
-		var exists bool
-		if err := pool.Raw().QueryRow(ctx, `SELECT EXISTS (
-SELECT 1 FROM pg_constraint c
-JOIN pg_class t ON t.oid = c.conrelid
-JOIN pg_namespace n ON n.oid = t.relnamespace
-WHERE n.nspname = current_schema() AND t.relname = $1 AND c.conname = $2
-)`, constraint.Table, constraint.Name).Scan(&exists); err != nil {
-			return status, fmt.Errorf("checking constraint %s: %w", constraint.Name, err)
-		}
-		if exists {
+		if actual.constraints[constraint.Table][constraint.Name] {
 			status.PresentObjects++
 		} else {
 			status.MissingObjects = append(status.MissingObjects, "constraint:"+constraint.Table+"."+constraint.Name)
 		}
 	}
 	for _, index := range schemaIndexes {
-		var exists bool
-		if err := pool.Raw().QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", index.Name).Scan(&exists); err != nil {
-			return status, fmt.Errorf("checking index %s: %w", index.Name, err)
-		}
-		if exists {
+		if actual.indexes[index.Name] {
 			status.PresentObjects++
 		} else {
 			status.MissingObjects = append(status.MissingObjects, "index:"+index.Name)
 		}
 	}
-	rows, err := pool.Raw().Query(ctx, "SELECT tablename FROM pg_tables WHERE schemaname = current_schema() ORDER BY tablename")
-	if err != nil {
-		return status, fmt.Errorf("listing current schema tables: %w", err)
-	}
-	defer rows.Close()
-	expectedTables := make(map[string]bool, len(schemaTableNames()))
-	for _, table := range schemaTableNames() {
-		expectedTables[table] = true
-	}
-	for rows.Next() {
-		var table string
-		if err := rows.Scan(&table); err != nil {
-			return status, fmt.Errorf("scanning current schema table: %w", err)
-		}
+	unexpectedTables := make([]string, 0)
+	for table := range actual.tables {
 		if !expectedTables[table] {
-			status.UnexpectedObjects = append(status.UnexpectedObjects, "table:"+table)
+			unexpectedTables = append(unexpectedTables, table)
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return status, fmt.Errorf("iterating current schema tables: %w", err)
+	sort.Strings(unexpectedTables)
+	for _, table := range unexpectedTables {
+		status.UnexpectedObjects = append(status.UnexpectedObjects, "table:"+table)
 	}
+
 	if presentTables == 0 {
 		return status, ErrSchemaAbsent
 	}
@@ -438,13 +441,87 @@ WHERE n.nspname = current_schema() AND t.relname = $1 AND c.conname = $2
 	return status, nil
 }
 
-func openGORM(pool *Pool) (*gorm.DB, func(), error) {
-	if pool == nil || pool.Raw() == nil {
+func expectedSchemaColumns(pool *pgxpool.Pool) (map[string][]string, int, error) {
+	expectedColumnsOnce.Do(func() {
+		db, closeDB, err := openGORM(pool)
+		if err != nil {
+			expectedColumnsError = err
+			return
+		}
+		defer closeDB()
+		models := schemaModels()
+		tables := schemaTableNames()
+		if len(models) != len(tables) {
+			expectedColumnsError = errors.New("schema model and table catalogs differ")
+			return
+		}
+		columns := make(map[string][]string, len(tables))
+		for index, model := range models {
+			statement := &gorm.Statement{DB: db}
+			if err := statement.Parse(model); err != nil {
+				expectedColumnsError = fmt.Errorf("parsing schema model %s: %w", tables[index], err)
+				return
+			}
+			columns[tables[index]] = statement.Schema.DBNames
+			expectedColumnCount += len(statement.Schema.DBNames)
+		}
+		expectedColumns = columns
+	})
+	return expectedColumns, expectedColumnCount, expectedColumnsError
+}
+
+func loadSchemaCatalog(ctx context.Context, pool *pgxpool.Pool) (schemaCatalog, error) {
+	catalog := schemaCatalog{
+		tables:      make(map[string]bool),
+		columns:     make(map[string]map[string]bool),
+		constraints: make(map[string]map[string]bool),
+		indexes:     make(map[string]bool),
+	}
+	rows, err := pool.Query(ctx, schemaCatalogQuery)
+	if err != nil {
+		return schemaCatalog{}, fmt.Errorf("reading PostgreSQL schema catalog: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind, owner, name string
+		if err := rows.Scan(&kind, &owner, &name); err != nil {
+			return schemaCatalog{}, fmt.Errorf("scanning PostgreSQL schema catalog: %w", err)
+		}
+		switch kind {
+		case "extension":
+			catalog.extension = name == "pg_trgm"
+		case "table":
+			catalog.tables[owner] = true
+		case "column":
+			if catalog.columns[owner] == nil {
+				catalog.columns[owner] = make(map[string]bool)
+			}
+			catalog.columns[owner][name] = true
+		case "constraint":
+			if catalog.constraints[owner] == nil {
+				catalog.constraints[owner] = make(map[string]bool)
+			}
+			catalog.constraints[owner][name] = true
+		case "index":
+			catalog.indexes[name] = true
+		default:
+			return schemaCatalog{}, fmt.Errorf("unknown PostgreSQL schema catalog kind %q", kind)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return schemaCatalog{}, fmt.Errorf("iterating PostgreSQL schema catalog: %w", err)
+	}
+	return catalog, nil
+}
+
+func openGORM(pool *pgxpool.Pool) (*gorm.DB, func(), error) {
+	if pool == nil {
 		return nil, func() {}, errors.New("database pool is not open")
 	}
-	sqlDB := stdlib.OpenDBFromPool(pool.Raw())
+	sqlDB := stdlib.OpenDBFromPool(pool)
 	db, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{
 		DisableForeignKeyConstraintWhenMigrating: true,
+		DisableAutomaticPing:                     true,
 		Logger:                                   logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {

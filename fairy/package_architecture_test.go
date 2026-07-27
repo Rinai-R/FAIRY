@@ -84,14 +84,25 @@ func TestTopLevelDomainPackagesDoNotImportInfrastructure(t *testing.T) {
 	}
 }
 
+func TestMemoryPackageDoesNotImportCompanion(t *testing.T) {
+	for _, pkg := range listPackages(t, "./memory") {
+		for _, imported := range pkg.Imports {
+			if imported == "fairy/companion" || strings.HasPrefix(imported, "fairy/companion/") {
+				t.Errorf("memory owner imports companion consumer package %s", imported)
+			}
+		}
+	}
+}
+
 func TestThirdPartySDKImportsMatchMigrationInventory(t *testing.T) {
 	allowed := map[string][]string{
 		"github.com/jackc/pgx/": {
-			"fairy/postgres",
+			"fairy/coredb",
+			"fairy/coredb/schema",
 			"fairy/secret",
 			"fairy/memory",
 		},
-		"gorm.io/":                     {"fairy/postgres"},
+		"gorm.io/":                     {"fairy/coredb/schema"},
 		"github.com/qdrant/":           {"fairy/vectorindex"},
 		"github.com/openai/":           {"fairy/model"},
 		"github.com/cloudwego/hertz/":  {"fairy/api"},
@@ -104,6 +115,33 @@ func TestThirdPartySDKImportsMatchMigrationInventory(t *testing.T) {
 			for sdkPrefix, owners := range allowed {
 				if strings.HasPrefix(imported, sdkPrefix) && !slices.Contains(owners, pkg.ImportPath) {
 					t.Errorf("package %s imports SDK %s outside migration inventory %v", pkg.ImportPath, imported, owners)
+				}
+			}
+		}
+	}
+}
+
+func TestCoreDatabasePackagesHaveSingleOwners(t *testing.T) {
+	if _, err := os.Stat("postgres"); err == nil {
+		t.Fatal("obsolete top-level postgres package still exists")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat obsolete postgres package: %v", err)
+	}
+
+	packages := listPackages(t, "./coredb", "./coredb/schema")
+	if len(packages) != 2 {
+		t.Fatalf("core database package count = %d, want 2", len(packages))
+	}
+	for _, pkg := range packages {
+		for _, imported := range pkg.Imports {
+			switch pkg.ImportPath {
+			case "fairy/coredb":
+				if imported == "fairy/coredb/schema" || strings.HasPrefix(imported, "gorm.io/") {
+					t.Errorf("coredb resource package imports schema owner %s", imported)
+				}
+			case "fairy/coredb/schema":
+				if strings.HasPrefix(imported, "fairy/") {
+					t.Errorf("coredb/schema imports application package %s", imported)
 				}
 			}
 		}

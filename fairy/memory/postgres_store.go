@@ -10,7 +10,7 @@ import (
 	"time"
 
 	contracts "fairy/contracts/interaction"
-	pgstore "fairy/postgres"
+	"fairy/coredb"
 )
 
 const (
@@ -27,16 +27,16 @@ var (
 const defaultJobLeaseDuration = 30 * time.Second
 
 type Store struct {
-	pool             *pgstore.Pool
+	pool             *coredb.Pool
 	workerID         string
 	jobLeaseDuration time.Duration
 }
 
-func NewStoreFromPool(pool *pgstore.Pool) (*Store, error) {
+func NewStoreFromPool(pool *coredb.Pool) (*Store, error) {
 	return NewStoreFromPoolWithLease(pool, "memory-"+newID(), defaultJobLeaseDuration)
 }
 
-func NewStoreFromPoolWithLease(pool *pgstore.Pool, workerID string, leaseDuration time.Duration) (*Store, error) {
+func NewStoreFromPoolWithLease(pool *coredb.Pool, workerID string, leaseDuration time.Duration) (*Store, error) {
 	if pool == nil || pool.Raw() == nil {
 		return nil, ErrDatabasePoolEmpty
 	}
@@ -113,7 +113,7 @@ func (s *Store) postgresSummary(ctx context.Context) (Summary, error) {
 	}, nil
 }
 
-func countPostgresScalar(ctx context.Context, pool *pgstore.Pool, query string) (int64, error) {
+func countPostgresScalar(ctx context.Context, pool *coredb.Pool, query string) (int64, error) {
 	var count int64
 	if err := pool.Raw().QueryRow(ctx, query).Scan(&count); err != nil {
 		return 0, err

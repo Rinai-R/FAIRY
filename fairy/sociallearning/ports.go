@@ -12,7 +12,7 @@ import (
 
 type LearningHost interface {
 	ResolveInteraction(conversationID string) (domain.Resolved, error)
-	LoadConversation(conversationID string) (memory.ConversationBootstrap, error)
+	LoadConversationRecord(conversationID string) (memory.ConversationRecord, error)
 	ActiveCharacter(characterID string) (character.Record, error)
 	ModelConnection() (config.ModelConnection, error)
 	ExecuteRequest(context.Context, model.CompiledPromptRequest) ([]model.StreamEvent, error)

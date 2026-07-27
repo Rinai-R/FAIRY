@@ -18,7 +18,7 @@ import (
 )
 
 type turnGraphState struct {
-	bootstrap           memory.ConversationBootstrap
+	bootstrap           memory.ConversationPromptContext
 	character           character.Record
 	profile             *profile.Snapshot
 	socialContext       *SocialRespondContext
@@ -118,7 +118,7 @@ func (e *TurnEngine) declareGatherNodes(
 			if err := transition(TurnStateInterpreting); err != nil {
 				return state, fail("INVALID_STATE_TRANSITION", err)
 			}
-			bootstrap, err := s.memory.LoadConversation(request.ConversationID)
+			bootstrap, err := s.memory.turn.promptContext.LoadConversationPrompt(request.ConversationID)
 			if err != nil {
 				return state, fail("CONVERSATION_FAILED", err)
 			}

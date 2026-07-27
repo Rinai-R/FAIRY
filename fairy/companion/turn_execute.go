@@ -1,0 +1,743 @@
+package companion
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"fairy/character"
+	"fairy/config"
+	"fairy/interaction"
+	"fairy/memory"
+	"fairy/model"
+	"fairy/persona"
+	"fairy/profile"
+	replyapp "fairy/reply"
+	"fairy/search"
+	"fairy/tooling"
+
+	"go.uber.org/zap"
+)
+
+func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outcome TurnOutcome, err error) {
+	if err := ValidateSubmitCompiledTurnRequest(request); err != nil {
+		return TurnOutcome{}, err
+	}
+	return e.submitCompiledTurn(request, nil, false)
+}
+
+func (e *TurnEngine) submitRuntimeTurn(request SubmitCompiledTurnRequest, resolved *interaction.Resolved) (TurnOutcome, error) {
+	return e.submitCompiledTurn(request, resolved, true)
+}
+
+func (e *TurnEngine) submitCompiledTurn(
+	request SubmitCompiledTurnRequest,
+	preparedResolved *interaction.Resolved,
+	deriveVisualStates bool,
+) (outcome TurnOutcome, err error) {
+	s := e.host
+	var resolved interaction.Resolved
+	if preparedResolved == nil {
+		resolved, err = s.ResolveInteraction(request.ConversationID)
+	} else {
+		resolved = *preparedResolved
+	}
+	if err != nil {
+		return TurnOutcome{}, err
+	}
+	if !s.RespondRuntimeMigrated() {
+		return TurnOutcome{}, ErrRespondRuntimeNotMigrated
+	}
+	request.TraceID = s.beginMessageTrace(request.MessageSource, request.ConversationID, request.TraceID)
+	defer func() {
+		if err != nil {
+			s.endMessageTrace(request.TraceID, "failed")
+		}
+	}()
+	preparation, err := s.prepareBeforeTurn(request, resolved, deriveVisualStates)
+	if err != nil {
+		return TurnOutcome{}, err
+	}
+	if preparation.compactionErr != nil {
+		s.setBackgroundError(preparation.compactionErr)
+	}
+	if deriveVisualStates {
+		request.AvailableVisualStates = preparation.visualStates
+		if err := ValidateSubmitCompiledTurnRequest(request); err != nil {
+			return TurnOutcome{}, err
+		}
+	}
+	turnCtx, err := s.reserveTurn(request.ConversationID)
+	if err != nil {
+		s.endMessageTrace(request.TraceID, "failed")
+		return TurnOutcome{}, err
+	}
+	var persisted memory.PersistedTurn
+	if request.Initiation != nil {
+		persisted, err = s.memory.turn.turns.BeginInitiationTurn(request.ConversationID, request.Initiation.ObservationEvidenceIDs)
+	} else {
+		persisted, err = s.memory.turn.turns.BeginTurn(request.ConversationID, request.Input)
+	}
+	if err != nil {
+		s.endTurn(request.ConversationID, "")
+		s.endMessageTrace(request.TraceID, "failed")
+		return TurnOutcome{}, err
+	}
+	s.bindTurn(request.ConversationID, persisted.ID)
+	s.emitMu.Lock()
+	telemetry := s.messageTelemetry
+	s.emitMu.Unlock()
+	if telemetry != nil && request.TraceID != "" {
+		telemetry.TurnStarted(request.TraceID, request.ConversationID, persisted.ID)
+	}
+	defer s.endTurn(request.ConversationID, persisted.ID)
+	turnStarted := time.Now()
+
+	lg := s.logger.With(zap.String("turn", persisted.ID))
+	life := NewTurnLifecycle(request.ConversationID, persisted.ID)
+	execution := &turnExecution{engine: e, service: s, request: request, persisted: persisted, life: life}
+	fail := execution.fail
+	transition := execution.transition
+
+	gathered := e.declareGatherNodes(request, resolved, persisted.ID, transition, lg)
+	var (
+		bootstrap           memory.ConversationPromptContext
+		characterRecord     character.Record
+		userProfile         *profile.Snapshot
+		socialContext       *SocialRespondContext
+		retrieval           memory.RetrievalContext
+		retrievalOmitReason string
+	)
+	var (
+		connectionConfig config.ModelConnection
+		reply            CompiledReply
+		events           []model.StreamEvent
+		fullRequest      model.CompiledPromptRequest
+		finalUsage       []LaneModelUsage
+		ingestSnapshots  []memory.KnowledgeIngestSnapshot
+	)
+	planningOutcome, planningErr := e.declareOutcomeNode(turnCtx, gathered, request.ConversationID, persisted.ID, "planning", "model_tool_loop", TurnStatePlanning, func() (TurnOutcome, error) {
+		bootstrap = gathered.bootstrap
+		characterRecord = gathered.character
+		userProfile = gathered.profile
+		socialContext = gathered.socialContext
+		retrieval = gathered.retrieval
+		retrievalOmitReason = gathered.retrievalOmitReason
+		if err := transition(TurnStatePlanning); err != nil {
+			return fail("INVALID_STATE_TRANSITION", err)
+		}
+		connectionConfig, err = s.configSource().ModelConnection()
+		if err != nil {
+			return fail("MODEL_FAILED", err)
+		}
+		cacheKey := ""
+		if connectionConfig.Capabilities.PromptCacheKey {
+			cacheKey = model.LaneCacheKey(request.ConversationID, model.PromptLaneRespond)
+		}
+
+		var (
+			modelDrivenTools    int
+			modelCallAttempts   int
+			replyCompileRetries int
+			firstCompileErr     error
+			retryCorrection     string
+			toolPromptItems     []model.PromptItem
+			desktopToolUsed     bool
+		)
+		// Single-consumer TTS pipeline for the whole turn: mid-ReAct utterance audio
+		// and reply-chain audio are enqueued in order and synthesized one request per
+		// semantic unit (stable timbre). Emission stays serial via publishLife.
+		var (
+			utteranceSeq int
+		)
+		if request.SpeechEnabled && s.speech != nil {
+			capacity := replyapp.MaxReplyChains + tooling.ModelDrivenToolBudget(resolved) + 2
+			execution.speechFlow = replyapp.NewSpeechPipeline(turnCtx, s.speech, capacity, func(res replyapp.SpeechResult) {
+				s.handleSpeechResult(life, request.ConversationID, persisted.ID, execution.finalDelivery, res)
+			})
+			// Responding owns the successful drain; fail() closes on earlier errors.
+		}
+		webSearchEnabled := false
+		if settings, err := s.configSource().WebSearchSettings(); err == nil {
+			webSearchEnabled = settings.Enabled
+		}
+		toolBudget := tooling.ModelDrivenToolBudget(resolved)
+		for {
+			allowTools := modelDrivenTools < toolBudget
+			tools := []model.ToolSpec(nil)
+			desktopEnabled := allowTools && !desktopToolUsed && desktopToolAllowed(connectionConfig.Capabilities.VisionInput, resolved, s.desktopTool, request.ConversationID)
+			if allowTools {
+				tools = respondToolSpecsForRuntime(webSearchEnabled, resolved, desktopEnabled)
+			}
+			instructions := tooling.InstructionsForInteraction(len(tools) > 0, resolved)
+			if desktopEnabled {
+				instructions += " The desktop_observe tool provides one fresh main-display image when the current request genuinely requires visible screen context. Use it at most once, only when needed, and never claim to see anything not visible in its result."
+			}
+			if request.Initiation != nil {
+				if request.Initiation.VisionRequested {
+					instructions += " This is a Core-initiated private zero-message turn, not a user message. Decide whether a fresh desktop capture is necessary; use desktop_observe when visual evidence is required. Speak only if a brief natural check-in fits, never expose request evidence IDs, and never claim to see screen content unless the tool succeeds."
+				} else {
+					instructions += " This is a Core-initiated private companion turn, not a user message. Use the desktop_initiation context only as a coarse timing cue. Speak only if a brief natural check-in fits; never claim to see screen content, infer hidden activity, mention monitoring, or expose evidence IDs."
+				}
+			}
+			instructions += retryCorrection
+			modelCallAttempts++
+			attempt := modelCallAttempts
+			var slots []ContextSlot
+			if socialContext == nil {
+				slots, err = persona.BuildRespondContextSlots(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval, resolved)
+			} else {
+				slots, err = BuildRespondContextSlotsWithSocial(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval, resolved, *socialContext)
+			}
+			if err != nil {
+				return fail("PROMPT_BUILD_FAILED", err)
+			}
+			if request.Initiation != nil {
+				slots, err = AppendDesktopInitiationContext(slots, *request.Initiation)
+				if err != nil {
+					return fail("PROMPT_BUILD_FAILED", err)
+				}
+			}
+			if retrievalOmitReason != "" && retrieval.Empty() {
+				setContextSlotOmitReason(slots, "retrieved_context", retrievalOmitReason)
+			}
+			input := persona.PromptItemsFromContextSlots(slots)
+			input = append(input, toolPromptItems...)
+			cacheInput := model.NewCacheKeyInput(model.PromptLaneRespond, connectionConfig.Model, request.ConversationID, instructions)
+			cacheInput.CharacterRevision = characterRecord.Revision
+			cacheInput.ProfileRevision = profileRevisionValue(userProfile)
+			cacheInput.PromptRevision = bootstrap.PromptWindow.Revision
+			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventPrompt, TurnStatePlanning, "", runtimePromptLedgerMetadata(input, slots, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval, cacheInput, connectionConfig.Capabilities.PromptCacheKey))
+			fullRequest = model.CompiledPromptRequest{
+				Shape: model.ModelRequestShape{
+					Lane:            model.PromptLaneRespond,
+					Model:           connectionConfig.Model,
+					Instructions:    instructions,
+					MaxOutputTokens: request.MaxOutputTokens,
+					PromptCacheKey:  cacheKey,
+				},
+				Input:      input,
+				Tools:      tools,
+				CacheInput: &cacheInput,
+			}
+			var executeRequest model.CompiledPromptRequest
+			var continuationMode string
+			if modelDrivenTools > 0 {
+				// Retrieval changed mid-turn after tools; always full request.
+				var matErr error
+				executeRequest, matErr = model.MaterializeContinuationRequest(fullRequest, model.ContinuationDecision{})
+				if matErr != nil {
+					return fail("MODEL_FAILED", matErr)
+				}
+				continuationMode = "full_post_tool"
+				s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContinuation, TurnStatePlanning, "", map[string]any{
+					"incremental":         false,
+					"fullReason":          "cognition_post_tool",
+					"modelDrivenTools":    modelDrivenTools,
+					"previousStateSource": "none",
+				})
+			} else {
+				decision, previous, contErr := s.decideContinuation(request.ConversationID, connectionConfig.Capabilities.CacheRetention, bootstrap.PromptWindow.Revision, fullRequest)
+				if contErr != nil {
+					return fail("MODEL_FAILED", contErr)
+				}
+				executeRequest, err = model.MaterializeContinuationRequest(fullRequest, decision)
+				if err != nil {
+					return fail("MODEL_FAILED", err)
+				}
+				if decision.Incremental {
+					continuationMode = "incremental"
+				} else {
+					continuationMode = "full:" + string(decision.FullReason)
+				}
+				s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContinuation, TurnStatePlanning, "", runtimeContinuationLedgerMetadata(connectionConfig.Capabilities.CacheRetention, previous, fullRequest, executeRequest, decision))
+			}
+			lg.Info("cognition loop",
+				zap.String("phase", "model_call"),
+				zap.Int("attempt", attempt),
+				zap.Bool("allowTools", allowTools),
+				zap.Bool("webSearch", webSearchEnabled),
+				zap.Int("toolCount", len(tools)),
+				zap.String("continuation", continuationMode),
+				zap.Int("inputItems", len(input)),
+				zap.Int("personal", len(retrieval.PersonalMemories)),
+				zap.Int("knowledge", len(retrieval.Knowledge)),
+			)
+			if err := turnCtx.Err(); err != nil {
+				return fail("TURN_INTERRUPTED", ErrTurnInterrupted)
+			}
+			events = make([]model.StreamEvent, 0)
+			previewAccumulator := newStreamPreviewAccumulator(request.AvailableVisualStates)
+			modelCallStarted := time.Now()
+			firstByteAt := time.Time{}
+			previewAt := time.Time{}
+			streamCallback := func(event model.StreamEvent) {
+				events = append(events, event)
+				if firstByteAt.IsZero() {
+					firstByteAt = time.Now()
+					if _, presenceErr := s.publishLife(life, func() (TurnEvent, error) {
+						return life.Presence("model_stream")
+					}); presenceErr != nil {
+						lg.Warn("cognition loop", zap.String("phase", "presence_skipped"), zap.Error(presenceErr))
+					}
+				}
+				preview, ready := previewAccumulator.Observe(event)
+				if !ready || !allowReplyPreviewForInteraction(resolved) {
+					return
+				}
+				previewAt = time.Now()
+				if _, previewErr := s.publishLife(life, func() (TurnEvent, error) {
+					return life.ReplyPreview(preview.Chains)
+				}); previewErr != nil {
+					lg.Warn("cognition loop", zap.String("phase", "preview_skipped"), zap.Error(previewErr))
+				}
+			}
+			if streaming, ok := s.model.(StreamingModelPort); ok {
+				err = streaming.ExecuteRequestContextStream(turnCtx, executeRequest, streamCallback)
+			} else {
+				var collected []model.StreamEvent
+				collected, err = s.model.ExecuteRequestContext(turnCtx, executeRequest)
+				for _, event := range collected {
+					streamCallback(event)
+				}
+			}
+			streamTiming := map[string]any{"phase": "model_stream_timing"}
+			if !firstByteAt.IsZero() {
+				streamTiming["firstByteMs"] = firstByteAt.Sub(modelCallStarted).Milliseconds()
+			}
+			if !previewAt.IsZero() {
+				streamTiming["previewMs"] = previewAt.Sub(modelCallStarted).Milliseconds()
+			}
+			streamTiming["completedMs"] = time.Since(modelCallStarted).Milliseconds()
+			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventModel, TurnStatePlanning, "", streamTiming)
+			if !firstByteAt.IsZero() {
+				s.loopMetrics.providerFirstByte(firstByteAt.Sub(modelCallStarted))
+			}
+			if !previewAt.IsZero() {
+				s.loopMetrics.replyPreview(previewAt.Sub(modelCallStarted))
+			}
+			if err != nil {
+				err = mapModelCancelError(turnCtx, err)
+				code := "MODEL_FAILED"
+				if errors.Is(err, ErrTurnInterrupted) {
+					code = "TURN_INTERRUPTED"
+				}
+				lg.Error("cognition loop", zap.String("phase", "model_call_failed"), zap.Int("attempt", attempt), zap.String("code", code), zap.Error(err))
+				return fail(code, err)
+			}
+			if err := turnCtx.Err(); err != nil {
+				return fail("TURN_INTERRUPTED", ErrTurnInterrupted)
+			}
+			usage := model.LaneUsageFromEvents(model.PromptLaneRespond, events, bootstrap.PromptWindow.Revision)
+			finalUsage = usage
+			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventModel, TurnStatePlanning, "", runtimeModelLedgerMetadata(events, usage))
+
+			toolCalls := model.FunctionCallsFromEvents(events)
+			draft := collectText(events)
+			if strings.Contains(draft, `"gather"`) && len(toolCalls) == 0 {
+				lg.Warn("cognition loop", zap.String("phase", "gather_json_rejected"), zap.Int("attempt", attempt))
+				return fail("MODEL_RESPONSE_INVALID", errors.New("gather JSON is not supported; use function tools"))
+			}
+			if len(toolCalls) > 0 {
+				if !allowTools {
+					lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("reason", "budget_exhausted"), zap.Int("count", len(toolCalls)))
+					return fail("MODEL_RESPONSE_INVALID", errors.New("tool budget exhausted"))
+				}
+				// Mid-ReAct in-character line: queue a paired beat (text+TTS). Do NOT
+				// reveal the line until beat.ready — 齐套才揭示. Enqueue never blocks tools.
+				line := sanitizeUtteranceText(draft)
+				if line != "" {
+					if boundaryErr := validateTextForInteraction(line, resolved); boundaryErr != nil {
+						lg.Warn("cognition loop", zap.String("phase", "utterance_omitted"), zap.String("reason", "public_peer_identity"))
+						line = ""
+					}
+				}
+				if line != "" {
+					reason := toolUtteranceReason(toolCalls[0].Name)
+					seq := utteranceSeq
+					utteranceSeq++
+					beatID := fmt.Sprintf("utt-%d", seq)
+					lg.Info("cognition loop", zap.String("phase", "utterance_queued"), zap.Int("seq", seq), zap.String("reason", reason))
+					if execution.speechFlow == nil {
+						if _, uttErr := s.publishLife(life, func() (TurnEvent, error) {
+							return life.BeatReady(BeatReadyCompletion{
+								BeatID:      beatID,
+								Kind:        replyapp.BeatKindUtterance,
+								Index:       uint8(execution.speechPlayIndex),
+								ChainIndex:  replyapp.ChainIndexUtterance,
+								DisplayText: line,
+								SpeechText:  "",
+								VisualState: "idle",
+								Reason:      reason,
+							})
+						}); uttErr != nil {
+							lg.Warn("cognition loop", zap.String("phase", "beat_skipped"), zap.String("beatId", beatID), zap.Error(uttErr))
+						}
+						execution.speechPlayIndex++
+					} else {
+						play := execution.speechPlayIndex
+						execution.speechPlayIndex++
+						uttLine := line
+						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventSpeech, TurnStatePlanning, "", map[string]any{
+							"status":    "queued",
+							"kind":      "utterance",
+							"beatId":    beatID,
+							"playIndex": play,
+						})
+						execution.speechFlow.Enqueue(replyapp.SpeechJob{
+							BeatID:      beatID,
+							Kind:        replyapp.BeatKindUtterance,
+							PlayIndex:   play,
+							ChainIndex:  replyapp.ChainIndexUtterance,
+							DisplayText: uttLine,
+							VisualState: "idle",
+							Reason:      reason,
+							Resolve: func() (string, error) {
+								return s.resolveUtteranceSpeech(turnCtx, lg, characterRecord, uttLine, request.ConversationID, connectionConfig.Model)
+							},
+						})
+					}
+				}
+				for _, call := range toolCalls {
+					if modelDrivenTools >= toolBudget {
+						lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("reason", "budget_exhausted"), zap.String("tool", call.Name))
+						return fail("MODEL_RESPONSE_INVALID", errors.New("tool budget exhausted"))
+					}
+					query := ""
+					var queryErr error
+					if call.Name == toolDesktopObserve {
+						queryErr = validateDesktopToolArguments(call.Arguments)
+					} else {
+						query, queryErr = tooling.ParseQuery(call.Arguments)
+					}
+					if queryErr != nil {
+						lg.Warn("cognition loop", zap.String("phase", "tool_args_invalid"), zap.String("tool", call.Name), zap.Error(queryErr))
+						retrieval = tooling.MergeRetrievalContext(retrieval, tooling.FromToolError(call.Name, queryErr))
+						retrievalOmitReason = ""
+						modelDrivenTools++
+						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+							"tool":             call.Name,
+							"phase":            "model_driven",
+							"status":           "args_invalid",
+							"modelDrivenIndex": modelDrivenTools,
+						})
+						continue
+					}
+					lg.Info("cognition loop",
+						zap.String("phase", "tool_call"),
+						zap.String("tool", call.Name),
+						zap.String("callId", call.CallID),
+						zap.Int("queryRunes", utf8.RuneCountInString(query)),
+						zap.String("queryHash", runtimeHash(query)),
+					)
+					switch call.Name {
+					case toolDesktopObserve:
+						if desktopToolUsed || !desktopToolAllowed(connectionConfig.Capabilities.VisionInput, resolved, s.desktopTool, request.ConversationID) {
+							return fail("MODEL_RESPONSE_INVALID", errors.New("desktop_observe is unavailable for this interaction"))
+						}
+						desktopToolUsed = true
+						deadline := time.Now().Add(desktopToolTimeout)
+						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+							"tool": call.Name, "phase": "awaiting_tool", "status": "pending", "modelDrivenIndex": modelDrivenTools + 1,
+						})
+						evidence, toolErr := s.desktopTool.Observe(turnCtx, DesktopToolRequest{
+							ConversationID: request.ConversationID, TurnID: persisted.ID, CallID: call.CallID, Deadline: deadline,
+						})
+						if turnCtx.Err() != nil {
+							return fail("TURN_INTERRUPTED", ErrTurnInterrupted)
+						}
+						if toolErr != nil {
+							code := "capture_failed"
+							var typed *DesktopToolError
+							if errors.As(toolErr, &typed) && strings.TrimSpace(typed.Code) != "" {
+								code = typed.Code
+							}
+							toolPromptItems = append(toolPromptItems, desktopToolFailurePromptItems(call.CallID, call.Arguments, code)...)
+							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, code, map[string]any{
+								"tool": call.Name, "phase": "awaiting_tool", "status": "failed", "modelDrivenIndex": modelDrivenTools + 1,
+							})
+						} else {
+							toolPromptItems = append(toolPromptItems, desktopToolPromptItems(call.CallID, call.Arguments, evidence)...)
+							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+								"tool": call.Name, "phase": "awaiting_tool", "status": "completed", "executionId": evidence.ExecutionID,
+								"mediaType": evidence.MediaType, "width": evidence.Width, "height": evidence.Height, "modelDrivenIndex": modelDrivenTools + 1,
+							})
+						}
+					case tooling.MemorySearch:
+						if !resolved.AllowsPersonalMemory() {
+							return fail("MODEL_RESPONSE_INVALID", errors.New("memory_search is unavailable for public interactions"))
+						}
+						extra, toolErr := s.retrieveMemoryForTool(bootstrap.Conversation.CharacterID, query)
+						if toolErr != nil {
+							lg.Warn("cognition loop", zap.String("phase", "tool_failed"), zap.String("tool", call.Name), zap.Error(toolErr))
+							retrieval = tooling.MergeRetrievalContext(retrieval, tooling.FromToolError(call.Name, toolErr))
+							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+								"tool":             call.Name,
+								"phase":            "model_driven",
+								"status":           "failed",
+								"queryHash":        runtimeHash(query),
+								"modelDrivenIndex": modelDrivenTools + 1,
+							})
+						} else {
+							retrieval = tooling.MergeRetrievalContext(retrieval, extra)
+							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+								"tool":             call.Name,
+								"phase":            "model_driven",
+								"status":           "ok",
+								"queryHash":        runtimeHash(query),
+								"personalCount":    len(extra.PersonalMemories),
+								"knowledgeCount":   len(extra.Knowledge),
+								"semanticStatus":   extra.SemanticStatus,
+								"mergedPersonal":   len(retrieval.PersonalMemories),
+								"mergedKnowledge":  len(retrieval.Knowledge),
+								"modelDrivenIndex": modelDrivenTools + 1,
+							})
+							lg.Info("cognition loop",
+								zap.String("phase", "tool_done"),
+								zap.String("tool", call.Name),
+								zap.Int("personalAdded", len(extra.PersonalMemories)),
+								zap.Int("knowledgeAdded", len(extra.Knowledge)),
+								zap.Int("mergedPersonal", len(retrieval.PersonalMemories)),
+								zap.Int("mergedKnowledge", len(retrieval.Knowledge)),
+								zap.Int("index", modelDrivenTools+1),
+							)
+						}
+					case tooling.PublicMemorySearch:
+						if resolved.AllowsPersonalMemory() {
+							return fail("MODEL_RESPONSE_INVALID", errors.New("public_memory_search is available only for public interactions"))
+						}
+						extra, toolErr := s.retrievePublicKnowledgeForTool(turnCtx, query)
+						status := "ok"
+						if toolErr != nil {
+							status = "failed"
+							lg.Warn("cognition loop", zap.String("phase", "tool_failed"), zap.String("tool", call.Name), zap.Error(toolErr))
+							retrieval = tooling.MergeRetrievalContext(retrieval, tooling.FromToolError(call.Name, toolErr))
+						} else {
+							retrieval = tooling.MergeRetrievalContext(retrieval, extra)
+						}
+						retrievalOmitReason = ""
+						modelDrivenTools++
+						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+							"tool":             call.Name,
+							"phase":            "model_driven",
+							"status":           status,
+							"queryHash":        runtimeHash(query),
+							"personalCount":    len(extra.PersonalMemories),
+							"knowledgeCount":   len(extra.Knowledge),
+							"modelDrivenIndex": modelDrivenTools,
+						})
+					case tooling.SocialContextSearch:
+						if resolved.AllowsPersonalMemory() || !resolved.AllowsAmbientParticipation() {
+							return fail("MODEL_RESPONSE_INVALID", errors.New("social_context_search is available only for public ambient interactions"))
+						}
+						extra, toolErr := s.selectSocialContextForTool(turnCtx, bootstrap.Conversation.CharacterID, request.ConversationID, query)
+						status := "ok"
+						if toolErr != nil {
+							status = "failed"
+							lg.Warn("cognition loop", zap.String("phase", "tool_failed"), zap.String("tool", call.Name), zap.Error(toolErr))
+							retrieval = tooling.MergeRetrievalContext(retrieval, tooling.FromToolError(call.Name, toolErr))
+						} else {
+							retrieval = tooling.MergeRetrievalContext(retrieval, extra)
+						}
+						retrievalOmitReason = ""
+						modelDrivenTools++
+						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+							"tool":             call.Name,
+							"phase":            "model_driven",
+							"status":           status,
+							"queryHash":        runtimeHash(query),
+							"knowledgeCount":   len(extra.Knowledge),
+							"modelDrivenIndex": modelDrivenTools,
+						})
+					case tooling.SocialExpressionSelect:
+						if resolved.AllowsPersonalMemory() || !resolved.AllowsAmbientParticipation() {
+							return fail("MODEL_RESPONSE_INVALID", errors.New("social_expression_select is available only for public ambient interactions"))
+						}
+						extra, toolErr := s.selectSocialExpressionsForTool(turnCtx, bootstrap.Conversation.CharacterID, request.ConversationID, query)
+						status := "ok"
+						if toolErr != nil {
+							status = "failed"
+							lg.Warn("cognition loop", zap.String("phase", "tool_failed"), zap.String("tool", call.Name), zap.Error(toolErr))
+							retrieval = tooling.MergeRetrievalContext(retrieval, tooling.FromToolError(call.Name, toolErr))
+						} else {
+							retrieval = tooling.MergeRetrievalContext(retrieval, extra)
+						}
+						retrievalOmitReason = ""
+						modelDrivenTools++
+						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+							"tool":             call.Name,
+							"phase":            "model_driven",
+							"status":           status,
+							"queryHash":        runtimeHash(query),
+							"knowledgeCount":   len(extra.Knowledge),
+							"modelDrivenIndex": modelDrivenTools,
+						})
+					case tooling.WebSearch:
+						if !webSearchEnabled {
+							toolErr := errors.New("web search is disabled")
+							lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("tool", call.Name), zap.String("reason", "disabled"))
+							retrieval = tooling.MergeRetrievalContext(retrieval, tooling.FromToolError(call.Name, toolErr))
+							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+								"tool":             call.Name,
+								"phase":            "model_driven",
+								"status":           "disabled",
+								"queryHash":        runtimeHash(query),
+								"modelDrivenIndex": modelDrivenTools + 1,
+							})
+						} else if s.webSearch == nil {
+							lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("tool", call.Name), zap.String("reason", "endpoint_missing"))
+							retrieval = tooling.MergeRetrievalContext(retrieval, tooling.FromToolError(call.Name, search.ErrEndpointNotConfigured))
+							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+								"tool":             call.Name,
+								"phase":            "model_driven",
+								"status":           "endpoint_missing",
+								"queryHash":        runtimeHash(query),
+								"modelDrivenIndex": modelDrivenTools + 1,
+							})
+						} else {
+							hits, toolErr := s.webSearch.Search(turnCtx, query, 5)
+							if toolErr != nil {
+								lg.Warn("cognition loop", zap.String("phase", "tool_failed"), zap.String("tool", call.Name), zap.Error(toolErr))
+								retrieval = tooling.MergeRetrievalContext(retrieval, tooling.FromToolError(call.Name, toolErr))
+								s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+									"tool":             call.Name,
+									"phase":            "model_driven",
+									"status":           "failed",
+									"queryHash":        runtimeHash(query),
+									"modelDrivenIndex": modelDrivenTools + 1,
+								})
+							} else {
+								extra := tooling.FromWebHits(hits)
+								retrieval = tooling.MergeRetrievalContext(retrieval, extra)
+								ingestSnapshots = append(ingestSnapshots, knowledgeIngestSnapshots(request.ConversationID, persisted.ID, query, hits, time.Now().UnixMilli())...)
+								s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+									"tool":             call.Name,
+									"phase":            "model_driven",
+									"status":           "ok",
+									"queryHash":        runtimeHash(query),
+									"webHitCount":      len(hits),
+									"mergedKnowledge":  len(retrieval.Knowledge),
+									"modelDrivenIndex": modelDrivenTools + 1,
+								})
+								lg.Info("cognition loop",
+									zap.String("phase", "tool_done"),
+									zap.String("tool", call.Name),
+									zap.Int("webHits", len(hits)),
+									zap.Int("mergedKnowledge", len(retrieval.Knowledge)),
+									zap.Int("index", modelDrivenTools+1),
+								)
+							}
+						}
+					default:
+						toolErr := fmt.Errorf("tool %q is not whitelisted", call.Name)
+						lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("tool", call.Name), zap.String("reason", "not_whitelisted"))
+						retrieval = tooling.MergeRetrievalContext(retrieval, tooling.FromToolError(call.Name, toolErr))
+						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+							"tool":             call.Name,
+							"phase":            "model_driven",
+							"status":           "not_whitelisted",
+							"modelDrivenIndex": modelDrivenTools + 1,
+						})
+					}
+					retrievalOmitReason = ""
+					modelDrivenTools++
+				}
+				continue
+			}
+			reply, err = compileReplyForInteraction(draft, request.AvailableVisualStates, resolved, request.ReplyIntent)
+			if err != nil {
+				lg.Error("cognition loop",
+					zap.String("phase", "compile_failed"),
+					zap.Int("attempt", attempt),
+					zap.Int("draftRunes", utf8.RuneCountInString(draft)),
+					zap.Bool("draftHasSpeechTextKey", strings.Contains(draft, `"speechText"`)),
+					zap.Error(err),
+				)
+				if replyCompileRetries < maxProtocolCompileRetries {
+					replyCompileRetries++
+					if firstCompileErr == nil {
+						firstCompileErr = err
+					}
+					retryCorrection = replyCompileRetryCorrection(err)
+					lg.Warn("cognition loop", zap.String("phase", "compile_retry"), zap.Int("attempt", attempt), zap.Int("retry", replyCompileRetries))
+					continue
+				}
+				return fail("MODEL_RESPONSE_INVALID", fmt.Errorf("model reply remained invalid after %d retries: first attempt: %v; final attempt: %w", maxProtocolCompileRetries, firstCompileErr, err))
+			}
+			// chain = semantic unit = one TTS request: never split a chain further.
+			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventCompile, TurnStatePlanning, "", map[string]any{
+				"status":           "succeeded",
+				"visualState":      reply.VisualState,
+				"chainCount":       len(reply.Chains),
+				"displayTextHash":  runtimeHash(reply.DisplayText),
+				"modelDrivenTools": modelDrivenTools,
+			})
+			textLang := characterRecord.TextLanguage
+			if textLang == "" {
+				textLang = character.DefaultTextLanguage
+			}
+			speakLang := characterRecord.SpeakingLanguage
+			if speakLang == "" {
+				speakLang = character.DefaultSpeakingLanguage
+			}
+			lg.Info("cognition loop",
+				zap.String("phase", "reply_ready"),
+				zap.Int("chains", len(reply.Chains)),
+				zap.String("visual", reply.VisualState),
+				zap.Int("modelDrivenTools", modelDrivenTools),
+				zap.String("textLanguage", textLang),
+				zap.String("speakingLanguage", speakLang),
+				zap.Int("displayRunes", utf8.RuneCountInString(reply.DisplayText)),
+			)
+			break
+		}
+		gathered.connectionConfig = connectionConfig
+		gathered.reply = reply
+		gathered.events = append([]model.StreamEvent(nil), events...)
+		gathered.fullRequest = fullRequest
+		gathered.finalUsage = append([]LaneModelUsage(nil), finalUsage...)
+		gathered.ingestSnapshots = append([]memory.KnowledgeIngestSnapshot(nil), ingestSnapshots...)
+		return TurnOutcome{}, nil
+	})
+	if planningErr != nil {
+		return planningOutcome, planningErr
+	}
+	respondingOutcome, respondingErr := execution.declareRespondingNode(turnCtx, gathered, turnStarted, lg)
+	if respondingErr != nil {
+		return respondingOutcome, respondingErr
+	}
+	execution.declarePersistNode(turnCtx, gathered, resolved, turnStarted)
+	graphOutcome, graphErr := gathered.program.run(turnCtx, gathered)
+	if graphErr == nil {
+		return graphOutcome, nil
+	}
+	if gathered.program.runErr != nil {
+		return graphOutcome, graphErr
+	}
+	code, cause := unwrapTurnStageError(graphErr)
+	if errors.Is(cause, context.Canceled) {
+		return fail("TURN_INTERRUPTED", ErrTurnInterrupted)
+	}
+	return fail(code, cause)
+}
+
+func desktopInitiationRetrievalQuery(context DesktopInitiationContext) string {
+	parts := []string{"桌面陪伴主动问候"}
+	if value := strings.TrimSpace(context.Activity); value != "" {
+		parts = append(parts, value)
+	}
+	if value := strings.TrimSpace(context.Lifecycle); value != "" {
+		parts = append(parts, value)
+	}
+	return strings.Join(parts, " ")
+}
+
+func profileRevisionValue(snapshot *profile.Snapshot) uint64 {
+	if snapshot == nil {
+		return 0
+	}
+	return snapshot.Revision
+}

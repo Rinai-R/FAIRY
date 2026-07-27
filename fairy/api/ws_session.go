@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"fairy/companion"
+	"fairy/desktopcapture"
 	fairyruntime "fairy/runtime"
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/common/adaptor"
@@ -19,6 +20,7 @@ import (
 	contracts "fairy/contracts/interaction"
 	obs "fairy/contracts/observation"
 	sessioncontract "fairy/contracts/session"
+	turnruntime "fairy/turn"
 )
 
 const (
@@ -89,7 +91,7 @@ type wsServerFrame struct {
 	Endpoint       contracts.EndpointKind                 `json:"endpoint,omitempty"`
 	Error          string                                 `json:"error,omitempty"`
 	Payload        json.RawMessage                        `json:"payload,omitempty"`
-	Event          *companion.TurnEvent                   `json:"event,omitempty"`
+	Event          *turnruntime.TurnEvent                 `json:"event,omitempty"`
 	Participation  *companion.ParticipationEvent          `json:"participation,omitempty"`
 	CaptureRequest *sessioncontract.DesktopCaptureRequest `json:"captureRequest,omitempty"`
 }
@@ -243,7 +245,7 @@ func (c *sessionConn) handleCaptureResult(ctx context.Context, frame wsClientFra
 	registration, ok := c.captureRoutes[result.ConversationID]
 	c.watchMu.Unlock()
 	if !ok {
-		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: fairyruntime.ErrDesktopCaptureResultRejected.Error()})
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: desktopcapture.ErrDesktopCaptureResultRejected.Error()})
 		return
 	}
 	if err := c.server.rt.Captures.AcceptResult(ctx, registration.id, result); err != nil {

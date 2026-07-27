@@ -7,7 +7,7 @@ import (
 	"time"
 
 	contracts "fairy/contracts/interaction"
-	pgstore "fairy/postgres"
+	"fairy/coredb"
 )
 
 var (
@@ -22,11 +22,11 @@ type OwnerIdentity struct {
 }
 
 type Store struct {
-	pool *pgstore.Pool
+	pool *coredb.Pool
 	now  func() time.Time
 }
 
-func NewStore(pool *pgstore.Pool) (*Store, error) {
+func NewStore(pool *coredb.Pool) (*Store, error) {
 	if pool == nil || pool.Raw() == nil {
 		return nil, ErrDatabasePoolRequired
 	}

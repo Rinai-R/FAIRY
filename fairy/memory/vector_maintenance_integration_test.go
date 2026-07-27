@@ -8,8 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	dbschema "fairy/coredb/schema"
+
 	"fairy/memory/semantic"
-	pgstore "fairy/postgres"
 	vectorindex "fairy/vectorindex"
 
 	"github.com/google/uuid"
@@ -19,7 +20,7 @@ func TestVectorRebuildAndReconciliationAgainstRealServices(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)

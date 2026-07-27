@@ -6,22 +6,23 @@ import (
 	"fmt"
 	"os"
 
+	"fairy/coredb"
+	dbschema "fairy/coredb/schema"
 	"fairy/memory"
-	pgstore "fairy/postgres"
 	"fairy/secret"
 	"fairy/vectorindex"
 )
 
 // Dependencies allows tests and integration harnesses to inject infrastructure.
 type Dependencies struct {
-	Database    *pgstore.Pool
+	Database    *coredb.Pool
 	MemoryStore *memory.Store
 	SecretStore *secret.Store
 	VectorIndex *vectorindex.Client
 }
 
 type openedDependencies struct {
-	Database    *pgstore.Pool
+	Database    *coredb.Pool
 	MemoryStore *memory.Store
 	SecretStore *secret.Store
 	VectorIndex *vectorindex.Client
@@ -55,15 +56,15 @@ func openDependencies(ctx context.Context, injected *Dependencies, runtimeProfil
 		}, nil
 	}
 
-	databaseConfig, err := pgstore.ConfigFromEnv(os.Getenv)
+	databaseConfig, err := coredb.ConfigFromEnv(os.Getenv)
 	if err != nil {
 		return nil, fmt.Errorf("database configuration: %w", err)
 	}
-	database, err := pgstore.Open(ctx, databaseConfig)
+	database, err := coredb.Open(ctx, databaseConfig)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := pgstore.VerifySchema(ctx, database); err != nil {
+	if _, err := dbschema.VerifySchema(ctx, database.Raw()); err != nil {
 		database.Close()
 		return nil, fmt.Errorf("database schema: %w", err)
 	}

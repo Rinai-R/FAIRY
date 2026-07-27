@@ -20,6 +20,7 @@
 logs.txt
 /fairy/fairy
 /fairy/artifacts/group-eval/
+/fairy/artifacts/group-eval-smoke/
 /fairy/groupeval/
 /fairy/cmd/eval.go
 /fairy/cmd/eval_test.go

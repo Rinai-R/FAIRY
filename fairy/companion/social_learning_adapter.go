@@ -30,15 +30,15 @@ func (h socialLearningHost) ResolveInteraction(conversationID string) (domain.Re
 	return h.service.ResolveInteraction(conversationID)
 }
 
-func (h socialLearningHost) LoadConversation(conversationID string) (memory.ConversationBootstrap, error) {
-	if h.service == nil || h.service.memoryPort() == nil {
-		return memory.ConversationBootstrap{}, ErrRespondRuntimeNotMigrated
+func (h socialLearningHost) LoadConversationRecord(conversationID string) (memory.ConversationRecord, error) {
+	if h.service == nil || h.service.memory.ambient.metadata == nil {
+		return memory.ConversationRecord{}, ErrRespondRuntimeNotMigrated
 	}
-	return h.service.memoryPort().LoadConversation(conversationID)
+	return h.service.memory.ambient.metadata.LoadConversationRecord(conversationID)
 }
 
 func (h socialLearningHost) ActiveCharacter(characterID string) (character.Record, error) {
-	if h.service == nil || h.service.characterCatalog() == nil {
+	if h.service == nil || h.service.characterLookup == nil {
 		return character.Record{}, ErrRespondRuntimeNotMigrated
 	}
 	return h.service.activeCharacter(characterID)
@@ -59,24 +59,24 @@ func (h socialLearningHost) ExecuteRequest(ctx context.Context, request model.Co
 }
 
 func (h socialLearningHost) StoreSocialMemoryEntries(ctx context.Context, input memory.SocialMemoryBatchInput) ([]memory.SocialMemoryEntry, error) {
-	if h.service == nil || h.service.memoryPort() == nil {
+	if h.service == nil || h.service.memory.ambient.socialLearning == nil {
 		return nil, ErrRespondRuntimeNotMigrated
 	}
-	return h.service.memoryPort().StoreSocialMemoryEntries(ctx, input)
+	return h.service.memory.ambient.socialLearning.StoreSocialMemoryEntries(ctx, input)
 }
 
 func (h socialLearningHost) UpsertSocialPersonNote(ctx context.Context, input memory.SocialPersonNoteInput) (memory.SocialPersonNote, error) {
-	if h.service == nil || h.service.memoryPort() == nil {
+	if h.service == nil || h.service.memory.ambient.socialLearning == nil {
 		return memory.SocialPersonNote{}, ErrRespondRuntimeNotMigrated
 	}
-	return h.service.memoryPort().UpsertSocialPersonNote(ctx, input)
+	return h.service.memory.ambient.socialLearning.UpsertSocialPersonNote(ctx, input)
 }
 
 func (h socialLearningHost) RecordSocialReplyFeedback(ctx context.Context, input memory.SocialReplyFeedbackInput) (memory.SocialReplyFeedback, error) {
-	if h.service == nil || h.service.memoryPort() == nil {
+	if h.service == nil || h.service.memory.ambient.socialLearning == nil {
 		return memory.SocialReplyFeedback{}, ErrRespondRuntimeNotMigrated
 	}
-	return h.service.memoryPort().RecordSocialReplyFeedback(ctx, input)
+	return h.service.memory.ambient.socialLearning.RecordSocialReplyFeedback(ctx, input)
 }
 
 func (h socialLearningHost) WarnLearning(conversationID string, err error) {

@@ -14,3 +14,11 @@ test("production entry uses the standalone CoreService surface router", () => {
   assert.doesNotMatch(mainSource + surfaceSource, /fairy\/frontend\/bindings\/fairy\/desktop/);
   assert.doesNotMatch(mainSource + surfaceSource, /GetDesktopState|OpenCompanionChat/);
 });
+
+test("Core connection settings stay in the Go backend rather than WebView storage", () => {
+  assert.match(surfaceSource, /ConnectionSettings\(\)/);
+  assert.match(surfaceSource, /Connect\(\)/);
+  assert.doesNotMatch(surfaceSource, /Keychain|keychain/);
+  assert.doesNotMatch(surfaceSource, /fairy\.endpoint(?:Key)?/);
+  assert.doesNotMatch(surfaceSource, /localStorage\.(?:getItem|setItem)\([^)]*(?:endpoint|token)/);
+});

@@ -51,18 +51,8 @@ func stableKnowledgeCategory(query string) string {
 // scheduleKnowledgeIngest enqueues retrieval snapshots and processes a bounded
 // batch asynchronously. Writes verified knowledge with no human Confirm.
 func (s *CompanionService) scheduleKnowledgeIngest(snapshots []memory.KnowledgeIngestSnapshot) {
-	if s == nil || !s.RespondRuntimeMigrated() || len(snapshots) == 0 {
+	if s == nil || s.retention == nil || len(snapshots) == 0 {
 		return
 	}
-	s.backgroundJobs.Add(1)
-	go func() {
-		defer s.backgroundJobs.Add(-1)
-		if err := s.memory.EnqueueKnowledgeIngestSnapshots(snapshots); err != nil {
-			s.setBackgroundError(err)
-			return
-		}
-		if _, err := s.memory.ProcessKnowledgeIngestJobs(8); err != nil {
-			s.setBackgroundError(err)
-		}
-	}()
+	s.retention.ScheduleKnowledgeIngest(snapshots)
 }

@@ -103,6 +103,17 @@ func (s *Store) List() (Catalog, error) {
 	return Catalog{Characters: characters, Active: active, Diagnostics: diagnostics}, nil
 }
 
+func (s *Store) Lookup(characterID string) (Record, bool, error) {
+	if s == nil || s.root == "" {
+		return Record{}, false, errors.New("config root is required")
+	}
+	if !validID(characterID) {
+		return Record{}, false, errors.New("character_id is invalid")
+	}
+	record, found, _, err := s.latestValid(characterID)
+	return record, found, err
+}
+
 func (s *Store) Create(brief Brief, visualPackID string) (Record, error) {
 	if err := validateVisualPackID(visualPackID); err != nil {
 		return Record{}, err

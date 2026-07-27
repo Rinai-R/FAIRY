@@ -54,6 +54,7 @@ func TestDomainPackagesDoNotImportCompositionOrTransport(t *testing.T) {
 	domains := []string{
 		"./companion",
 		"./compaction",
+		"./desktopcapture",
 		"./extraction",
 		"./observation",
 		"./participation",
@@ -146,6 +147,69 @@ func TestSessionCoreHasNoDesktopPackage(t *testing.T) {
 		t.Fatal("fairy/desktop must not exist; desktop shell is not part of Session Core")
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("stat desktop: %v", err)
+	}
+}
+
+func TestDesktopCaptureHasOneProductionOwner(t *testing.T) {
+	if _, err := os.Stat("runtime/capture_hub.go"); err == nil {
+		t.Fatal("runtime must not own the desktop capture state machine")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat runtime capture hub: %v", err)
+	}
+
+	out, err := exec.Command("go", "list", "-json", "./desktopcapture").Output()
+	if err != nil {
+		t.Fatalf("go list desktopcapture: %v", err)
+	}
+	var pkg struct {
+		Imports []string
+	}
+	if err := json.Unmarshal(out, &pkg); err != nil {
+		t.Fatal(err)
+	}
+	for _, imported := range pkg.Imports {
+		for _, forbidden := range []string{"fairy/api", "fairy/cmd", "fairy/core", "fairy/coreclient", "fairy/runtime"} {
+			if imported == forbidden || strings.HasPrefix(imported, forbidden+"/") {
+				t.Fatalf("desktopcapture imports forbidden transport/composition package %s", imported)
+			}
+		}
+	}
+}
+
+func TestRuntimeDoesNotRetainTurnEventHistory(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "runtime/runtime.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, declaration := range file.Decls {
+		if function, ok := declaration.(*ast.FuncDecl); ok && function.Name.Name == "DrainEvents" {
+			t.Fatal("runtime exposes obsolete retained event history through DrainEvents")
+		}
+		general, ok := declaration.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, specification := range general.Specs {
+			typeSpec, ok := specification.(*ast.TypeSpec)
+			if !ok || typeSpec.Name.Name != "Runtime" {
+				continue
+			}
+			structure, ok := typeSpec.Type.(*ast.StructType)
+			if !ok {
+				continue
+			}
+			for _, field := range structure.Fields.List {
+				slice, ok := field.Type.(*ast.ArrayType)
+				if !ok || slice.Len != nil {
+					continue
+				}
+				selector, ok := slice.Elt.(*ast.SelectorExpr)
+				owner, ownerOK := selector.X.(*ast.Ident)
+				if ok && ownerOK && owner.Name == "companion" && selector.Sel.Name == "TurnEvent" {
+					t.Fatal("runtime retains an unbounded TurnEvent history slice")
+				}
+			}
+		}
 	}
 }
 
@@ -312,7 +376,7 @@ func TestDesktopCapturePersistenceBoundary(t *testing.T) {
 			}
 		}
 	}
-	schema, err := os.ReadFile("postgres/schema.go")
+	schema, err := os.ReadFile("coredb/schema/schema.go")
 	if err != nil {
 		t.Fatal(err)
 	}

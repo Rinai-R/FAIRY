@@ -1,12 +1,14 @@
 package character
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
-func writeFile(t *testing.T, path string, data string) {
+func writeFile(t testing.TB, path string, data string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
@@ -16,14 +18,31 @@ func writeFile(t *testing.T, path string, data string) {
 	}
 }
 
-func writeCharacter(t *testing.T, root string, characterID string, revision uint64, name string) {
+func writeCharacter(t testing.TB, root string, characterID string, revision uint64, name string) {
 	t.Helper()
 	writeFile(t, filepath.Join(root, "characters", characterID, "revisions", "1.json"), `{"schema_version":1,"data":{"schema_version":1,"compiler_version":"fairy-character-v1","character_id":"`+characterID+`","revision":`+"1"+`,"identity":{"name":"`+name+`","description":"认真听用户说话。"},"worldview":"not_specified","attention_biases":["user_explicit_content"],"relationship_stance":"warm_respectful_non_possessive","response_drives":["understand_before_assuming"],"emotional_tendencies":["calm_attunement"],"speech_style":{"character_description_guidance":"认真听用户说话。","fallback":"natural_concise"},"hard_boundaries":["preserve_facts"],"fingerprint":"fixture"}}`)
 }
 
-func writeVisual(t *testing.T, root string, packID string) {
+func writeVisual(t testing.TB, root string, packID string) {
 	t.Helper()
 	writeFile(t, filepath.Join(root, "visual-packs", packID, "manifest.json"), `{"schemaVersion":2,"packId":"`+packID+`","displayName":"Fairy","renderer":"state_images","frame":{"width":128,"height":128},"scale":1,"anchor":{"x":64,"y":127},"states":[{"id":"idle","description":"idle 状态说明","imagePath":"fairy-character://localhost/`+packID+`/idle.png"}]}`)
+}
+
+func writeCharacterLibrary(t testing.TB, root string, count int) string {
+	t.Helper()
+	if count < 1 {
+		t.Fatal("character fixture count must be positive")
+	}
+	const packID = "fairy.shared"
+	writeVisual(t, root, packID)
+	for index := range count {
+		characterID := fmt.Sprintf("character-%03d", index)
+		writeCharacter(t, root, characterID, 1, fmt.Sprintf("角色 %03d", index))
+		writeFile(t, filepath.Join(root, "character-appearances", characterID+".json"), `{"schema_version":1,"data":{"character_id":"`+characterID+`","revision":1,"visual_pack_id":"`+packID+`"}}`)
+	}
+	targetID := "character-000"
+	writeFile(t, filepath.Join(root, "active-character.json"), `{"schema_version":1,"data":{"character_id":"`+targetID+`","revision":1}}`)
+	return targetID
 }
 
 func TestStoreListReturnsActiveAssignedCharacter(t *testing.T) {
@@ -75,6 +94,98 @@ func TestStoreListReportsCorruptCharacter(t *testing.T) {
 	}
 	if len(catalog.Characters) != 0 || len(catalog.Diagnostics) != 1 {
 		t.Fatalf("catalog = %#v", catalog)
+	}
+}
+
+func TestStoreLookupMatchesCatalogRecord(t *testing.T) {
+	root := t.TempDir()
+	targetID := writeCharacterLibrary(t, root, 2)
+	store := NewStore(root)
+
+	got, found, err := store.Lookup(targetID)
+	if err != nil {
+		t.Fatalf("Lookup() error = %v", err)
+	}
+	if !found {
+		t.Fatal("Lookup() found = false, want true")
+	}
+	catalog, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(catalog.Characters) != 2 {
+		t.Fatalf("List() returned %d characters, want 2", len(catalog.Characters))
+	}
+	if !reflect.DeepEqual(got, catalog.Characters[0]) {
+		t.Fatalf("Lookup() = %#v, catalog target = %#v", got, catalog.Characters[0])
+	}
+}
+
+func TestStoreLookupRejectsInvalidOrMissingCharacter(t *testing.T) {
+	store := NewStore(t.TempDir())
+	for _, characterID := range []string{"", " character", "../character", `character\\nested`} {
+		if _, _, err := store.Lookup(characterID); err == nil {
+			t.Errorf("Lookup(%q) error = nil, want validation error", characterID)
+		}
+	}
+
+	if record, found, err := store.Lookup("missing-character"); err != nil || found || !reflect.DeepEqual(record, Record{}) {
+		t.Fatalf("Lookup(missing) = (%#v, %v, %v), want zero, false, nil", record, found, err)
+	}
+
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "characters", "broken-character", "revisions", "1.json"), `{broken`)
+	if record, found, err := NewStore(root).Lookup("broken-character"); err != nil || found || !reflect.DeepEqual(record, Record{}) {
+		t.Fatalf("Lookup(broken) = (%#v, %v, %v), want zero, false, nil", record, found, err)
+	}
+}
+
+func TestStoreLookupFallsBackToLatestValidRevision(t *testing.T) {
+	root := t.TempDir()
+	const characterID = "character-fallback"
+	writeCharacter(t, root, characterID, 1, "有效角色")
+	writeFile(t, filepath.Join(root, "characters", characterID, "revisions", "2.json"), `{broken`)
+
+	record, found, err := NewStore(root).Lookup(characterID)
+	if err != nil {
+		t.Fatalf("Lookup() error = %v", err)
+	}
+	if !found || record.Revision != 1 || record.Name != "有效角色" {
+		t.Fatalf("Lookup() = (%#v, %v), want revision 1 fallback", record, found)
+	}
+}
+
+func TestStoreLookupKeepsUnavailableAppearance(t *testing.T) {
+	root := t.TempDir()
+	const characterID = "character-unavailable-appearance"
+	writeCharacter(t, root, characterID, 1, "外观损坏角色")
+	writeFile(t, filepath.Join(root, "character-appearances", characterID+".json"), `{broken`)
+
+	record, found, err := NewStore(root).Lookup(characterID)
+	if err != nil {
+		t.Fatalf("Lookup() error = %v", err)
+	}
+	if !found || record.Appearance.Status != "unavailable" || record.Appearance.Visual != nil {
+		t.Fatalf("Lookup() = (%#v, %v), want unavailable appearance", record, found)
+	}
+}
+
+func TestStoreLookupIgnoresActivePointerAndUnrelatedCharacters(t *testing.T) {
+	root := t.TempDir()
+	const targetID = "character-target"
+	writeCharacter(t, root, targetID, 1, "目标角色")
+	writeFile(t, filepath.Join(root, "characters", "character-unrelated", "revisions", "1.json"), `{broken`)
+	writeFile(t, filepath.Join(root, "active-character.json"), `{broken`)
+
+	record, found, err := NewStore(root).Lookup(targetID)
+	if err != nil {
+		t.Fatalf("Lookup() error = %v", err)
+	}
+	if !found || record.CharacterID != targetID || record.Name != "目标角色" {
+		t.Fatalf("Lookup() = (%#v, %v), want target record", record, found)
+	}
+	if _, err := NewStore(root).List(); err == nil {
+		t.Fatal("List() error = nil, fixture must prove corrupt active pointer is observable to catalog only")
 	}
 }
 

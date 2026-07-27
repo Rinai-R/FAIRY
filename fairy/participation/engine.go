@@ -18,7 +18,7 @@ import (
 const protocolCompileRetries = 2
 
 type DecisionHost interface {
-	LoadConversation(conversationID string) (memory.ConversationBootstrap, error)
+	LoadConversationActivity(conversationID string, nowUnixMS int64) (memory.ConversationActivity, error)
 	ResolveInteraction(conversationID string) (domain.Resolved, error)
 	ActiveCharacter(characterID string) (character.Record, error)
 	ListSocialPersonNotes(context.Context, string, string, []string) ([]memory.SocialPersonNote, error)
@@ -52,31 +52,31 @@ func (e *Engine) DecideParticipation(ctx context.Context, request ParticipationR
 	if resolved.Memory != domain.MemoryPublic || !resolved.AllowsAmbientParticipation() {
 		return ParticipationResult{}, errors.New("participation requires a public ambient interaction")
 	}
-	bootstrap, err := e.host.LoadConversation(request.ConversationID)
-	if err != nil {
-		return ParticipationResult{}, fmt.Errorf("loading ambient conversation: %w", err)
-	}
-	record, err := e.host.ActiveCharacter(bootstrap.Conversation.CharacterID)
-	if err != nil {
-		return ParticipationResult{}, err
-	}
 	now := time.Now().UnixMilli()
-	presence, err := DeriveRecentPresence(bootstrap.Messages, now)
+	activity, err := e.host.LoadConversationActivity(request.ConversationID, now)
+	if err != nil {
+		return ParticipationResult{}, fmt.Errorf("loading ambient conversation activity: %w", err)
+	}
+	record, err := e.host.ActiveCharacter(activity.Conversation.CharacterID)
 	if err != nil {
 		return ParticipationResult{}, err
 	}
-	input, err := BuildParticipationInputWithSignals(record, resolved, request.EvaluationReason, request.Messages, request.CacheMessages, presence, now, bootstrap.Messages)
+	presence, err := DeriveRecentPresenceFromActivity(activity, now)
 	if err != nil {
 		return ParticipationResult{}, err
 	}
-	behavior, err := e.behaviorContext(ctx, bootstrap.Conversation.CharacterID, request.ConversationID, request.Messages)
+	input, err := BuildParticipationInputWithActivity(record, resolved, request.EvaluationReason, request.Messages, request.CacheMessages, presence, now, activity)
+	if err != nil {
+		return ParticipationResult{}, err
+	}
+	behavior, err := e.behaviorContext(ctx, activity.Conversation.CharacterID, request.ConversationID, request.Messages)
 	if err != nil {
 		return ParticipationResult{}, err
 	}
 	if behavior != nil {
 		input = append(input, *behavior)
 	}
-	notes, err := e.host.ListSocialPersonNotes(ctx, bootstrap.Conversation.CharacterID, request.ConversationID, SenderIDs(request.Messages))
+	notes, err := e.host.ListSocialPersonNotes(ctx, activity.Conversation.CharacterID, request.ConversationID, SenderIDs(request.Messages))
 	if err != nil {
 		return ParticipationResult{}, fmt.Errorf("listing social person notes: %w", err)
 	}

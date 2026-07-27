@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"fairy/companion"
 	fairyruntime "fairy/runtime"
+	turnruntime "fairy/turn"
 	"github.com/gorilla/websocket"
 )
 
@@ -72,7 +72,7 @@ func TestForwardTurnEventsPreservesOverflowReasonAfterEventStreamCloses(t *testi
 	hub := fairyruntime.NewEventHub()
 	subscription := hub.Subscribe("c1")
 	for sequence := 1; sequence <= 65; sequence++ {
-		hub.Publish(companion.TurnEvent{ConversationID: "c1", Sequence: uint64(sequence)})
+		hub.Publish(turnruntime.TurnEvent{ConversationID: "c1", Sequence: uint64(sequence)})
 	}
 
 	handlerDone := make(chan struct{})

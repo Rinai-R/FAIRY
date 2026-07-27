@@ -8,6 +8,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as session$0 from "../fairy/contracts/session/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as coreclient$0 from "../fairy/coreclient/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -36,13 +39,20 @@ export function CloseHistory() {
 }
 
 /**
- * @param {string} endpoint
- * @param {string} endpointKey
  * @returns {$CancellablePromise<$models.CoreSession>}
  */
-export function Connect(endpoint, endpointKey) {
-    return $Call.ByID(702891500, endpoint, endpointKey).then(/** @type {($result: any) => any} */(($result) => {
+export function Connect() {
+    return $Call.ByID(702891500).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType0($result);
+    }));
+}
+
+/**
+ * @returns {$CancellablePromise<$models.CoreSettings>}
+ */
+export function ConnectionSettings() {
+    return $Call.ByID(2086730623).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType1($result);
     }));
 }
 
@@ -91,7 +101,7 @@ export function OpenHistory() {
  */
 export function RecentMessages() {
     return $Call.ByID(983675989).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType2($result);
+        return $$createType3($result);
     }));
 }
 
@@ -117,7 +127,7 @@ export function RepositionSpeechBubble() {
  */
 export function SaveConnection(endpoint, token, endpointKey) {
     return $Call.ByID(3874272299, endpoint, token, endpointKey).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType3($result);
+        return $$createType1($result);
     }));
 }
 
@@ -140,6 +150,6 @@ export function SetDesktopObservationPrivacy(value) {
 
 // Private type creation functions
 const $$createType0 = $models.CoreSession.createFrom;
-const $$createType1 = coreclient$0.MessageRecord.createFrom;
-const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = $models.CoreSettings.createFrom;
+const $$createType1 = $models.CoreSettings.createFrom;
+const $$createType2 = session$0.MessageRecord.createFrom;
+const $$createType3 = $Create.Array($$createType2);

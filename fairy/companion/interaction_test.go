@@ -130,12 +130,12 @@ func TestPublicPromptAndCompactionOmitPrivateProfile(t *testing.T) {
 
 func TestBindResolveInteractionAndMissingBindingFailure(t *testing.T) {
 	service := NewCompanionService()
-	service.memory = &participationMemory{binding: publicAmbientBinding(), found: true}
+	service.memory = participationMemoryPorts(&participationMemory{binding: publicAmbientBinding(), found: true})
 	resolved, err := service.ResolveInteraction("conv-durable")
 	if err != nil || resolved != publicAmbientResolved() {
 		t.Fatalf("resolved = %#v, %v", resolved, err)
 	}
-	service.memory = &participationMemory{}
+	service.memory = participationMemoryPorts(&participationMemory{})
 	resolved, err = service.ResolveInteraction("conv-durable")
 	if err != nil || resolved != publicAmbientResolved() {
 		t.Fatalf("cached resolved = %#v, %v", resolved, err)
@@ -143,7 +143,7 @@ func TestBindResolveInteractionAndMissingBindingFailure(t *testing.T) {
 	if _, err := service.ResolveInteraction("missing"); err == nil || !strings.Contains(err.Error(), "no interaction binding") {
 		t.Fatalf("missing binding error = %v", err)
 	}
-	service.memory = &participationMemory{lookupErr: errors.New("db down")}
+	service.memory = participationMemoryPorts(&participationMemory{lookupErr: errors.New("db down")})
 	if _, err := service.ResolveInteraction("db-error"); err == nil || !strings.Contains(err.Error(), "db down") {
 		t.Fatalf("lookup error = %v", err)
 	}

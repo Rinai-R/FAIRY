@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,20 +23,29 @@ type fakeWindow struct {
 	focused       bool
 }
 
-type emptyTokenStore struct{}
-
-func (emptyTokenStore) Get() (string, error) { return "", errTokenNotFound }
-func (emptyTokenStore) Set(string) error     { return nil }
-
-type staticTokenStore struct{ token string }
-
-func (s staticTokenStore) Get() (string, error) {
-	if s.token == "" {
-		return "", errTokenNotFound
-	}
-	return s.token, nil
+type memoryConnectionStore struct {
+	connection desktopConnection
+	loadErr    error
+	saveErr    error
+	saveCount  int
 }
-func (staticTokenStore) Set(string) error { return nil }
+
+func (s *memoryConnectionStore) Load() (desktopConnection, error) {
+	if s.loadErr != nil {
+		return desktopConnection{}, s.loadErr
+	}
+	return s.connection, nil
+}
+
+func (s *memoryConnectionStore) Save(connection desktopConnection) error {
+	if s.saveErr != nil {
+		return s.saveErr
+	}
+	s.connection = connection
+	s.loadErr = nil
+	s.saveCount++
+	return nil
+}
 
 func (w *fakeWindow) Position() (int, int) { return w.x, w.y }
 func (w *fakeWindow) SetPosition(x, y int) { w.x, w.y = x, y }
@@ -162,6 +173,82 @@ func TestOpenHistoryHidesSettingsPanel(t *testing.T) {
 	}
 }
 
+func TestConnectionSettingsReturnsExplicitUnconfiguredState(t *testing.T) {
+	service := NewCoreService()
+	service.connections = &memoryConnectionStore{loadErr: errConnectionNotFound}
+
+	settings, err := service.ConnectionSettings()
+	if err != nil {
+		t.Fatalf("ConnectionSettings() error = %v", err)
+	}
+	if settings.Endpoint != defaultCoreEndpoint || settings.EndpointKey != "" || settings.HasToken {
+		t.Fatalf("ConnectionSettings() = %#v, want default unconfigured state", settings)
+	}
+	if _, err := service.Connect(); err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("Connect() error = %v, want explicit unconfigured error", err)
+	}
+}
+
+func TestConnectionSettingsRejectsDamagedStore(t *testing.T) {
+	service := NewCoreService()
+	service.connections = &memoryConnectionStore{loadErr: errors.New("mode must use 0600")}
+
+	if _, err := service.ConnectionSettings(); err == nil || !strings.Contains(err.Error(), "mode must use 0600") {
+		t.Fatalf("ConnectionSettings() error = %v, want store diagnostic", err)
+	}
+	if _, err := service.Connect(); err == nil || !strings.Contains(err.Error(), "mode must use 0600") {
+		t.Fatalf("Connect() error = %v, want store diagnostic", err)
+	}
+}
+
+func TestSaveConnectionRequiresInitialTokenAndRetainsExistingToken(t *testing.T) {
+	store := &memoryConnectionStore{loadErr: errConnectionNotFound}
+	service := NewCoreService()
+	service.connections = store
+
+	if _, err := service.SaveConnection(defaultCoreEndpoint, "", "desktop-test"); err == nil || !strings.Contains(err.Error(), "required") {
+		t.Fatalf("initial SaveConnection() error = %v, want token required", err)
+	}
+	settings, err := service.SaveConnection(defaultCoreEndpoint, "desktop-secret", "desktop-test")
+	if err != nil {
+		t.Fatalf("SaveConnection() error = %v", err)
+	}
+	if !settings.HasToken || settings.EndpointKey != "desktop-test" {
+		t.Fatalf("SaveConnection() settings = %#v", settings)
+	}
+	encoded, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "desktop-secret") || strings.Contains(string(encoded), `"token"`) {
+		t.Fatalf("settings response exposed token: %s", encoded)
+	}
+
+	if _, err := service.SaveConnection("http://127.0.0.1:8788", "", "desktop-test-2"); err != nil {
+		t.Fatalf("SaveConnection() retaining token error = %v", err)
+	}
+	if store.connection.Token != "desktop-secret" {
+		t.Fatalf("retained token = %q, want original token", store.connection.Token)
+	}
+	if store.connection.Endpoint != "http://127.0.0.1:8788" || store.connection.EndpointKey != "desktop-test-2" {
+		t.Fatalf("saved connection = %#v", store.connection)
+	}
+}
+
+func TestSaveConnectionGeneratesInstallationKey(t *testing.T) {
+	store := &memoryConnectionStore{loadErr: errConnectionNotFound}
+	service := NewCoreService()
+	service.connections = store
+
+	settings, err := service.SaveConnection(defaultCoreEndpoint, "desktop-secret", "")
+	if err != nil {
+		t.Fatalf("SaveConnection() error = %v", err)
+	}
+	if !installationKeyPattern.MatchString(settings.EndpointKey) || !strings.HasPrefix(settings.EndpointKey, "macos-") {
+		t.Fatalf("generated endpoint key = %q", settings.EndpointKey)
+	}
+}
+
 func TestCoreServiceUsesOneSocketAndClearsCompletedTurn(t *testing.T) {
 	var mu sync.Mutex
 	var frameTypes []string
@@ -219,7 +306,11 @@ func TestCoreServiceUsesOneSocketAndClearsCompletedTurn(t *testing.T) {
 	defer server.Close()
 
 	service := NewCoreService()
-	service.tokens = staticTokenStore{token: "desktop-test-token"}
+	service.connections = &memoryConnectionStore{connection: desktopConnection{
+		Endpoint:    server.URL,
+		EndpointKey: "desktop-test",
+		Token:       "desktop-test-token",
+	}}
 	service.newCache = func() (*visualCache, error) { return newVisualCacheAt(t.TempDir()) }
 	turns := make(chan desktopTurnEvent, 4)
 	service.attachEmitter(func(name string, payload any) {
@@ -227,7 +318,7 @@ func TestCoreServiceUsesOneSocketAndClearsCompletedTurn(t *testing.T) {
 			turns <- payload.(desktopTurnEvent)
 		}
 	})
-	if _, err := service.Connect(server.URL, "desktop-test"); err != nil {
+	if _, err := service.Connect(); err != nil {
 		t.Fatalf("Connect() error = %v", err)
 	}
 	defer service.ServiceShutdown()

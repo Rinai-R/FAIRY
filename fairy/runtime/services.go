@@ -4,10 +4,10 @@ import (
 	"fairy/character"
 	"fairy/companion"
 	"fairy/config"
+	"fairy/coredb"
 	"fairy/identity"
 	"fairy/memory"
 	"fairy/model"
-	pgstore "fairy/postgres"
 	"fairy/profile"
 	"fairy/search"
 	"fairy/secret"
@@ -27,7 +27,7 @@ type coreServices struct {
 	Memory       *memory.MemoryService
 }
 
-func wireCoreServices(configRoot string, database *pgstore.Pool, memoryStore *memory.Store, secretStore *secret.Store) (*coreServices, error) {
+func wireCoreServices(configRoot string, database *coredb.Pool, memoryStore *memory.Store, secretStore *secret.Store) (*coreServices, error) {
 	webSettings, err := config.ReadWebSearchSettings(configRoot)
 	if err != nil {
 		return nil, err

@@ -9,9 +9,10 @@ import (
 	"strings"
 
 	"fairy/config"
+	"fairy/coredb"
+	dbschema "fairy/coredb/schema"
 	"fairy/memory"
 	"fairy/model"
-	pgstore "fairy/postgres"
 	"fairy/secret"
 	vectorindex "fairy/vectorindex"
 
@@ -37,9 +38,9 @@ type localDatabaseOperations struct {
 }
 
 type databaseStatusResult struct {
-	DatabaseDescriptor pgstore.Descriptor           `json:"database"`
-	Schema             pgstore.SchemaStatus         `json:"schema"`
-	Pool               pgstore.PoolStats            `json:"pool"`
+	DatabaseDescriptor coredb.Descriptor            `json:"database"`
+	Schema             dbschema.SchemaStatus        `json:"schema"`
+	Pool               coredb.PoolStats             `json:"pool"`
 	QdrantDescriptor   vectorindex.Descriptor       `json:"qdrant"`
 	Collection         vectorindex.CollectionStatus `json:"collection"`
 }
@@ -148,10 +149,10 @@ func (o localDatabaseOperations) Migrate(ctx context.Context) (any, error) {
 		return nil, err
 	}
 	defer pool.Close()
-	if err := pgstore.Migrate(ctx, pool); err != nil {
+	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
 		return nil, err
 	}
-	return pgstore.VerifySchema(ctx, pool)
+	return dbschema.VerifySchema(ctx, pool.Raw())
 }
 
 func (o localDatabaseOperations) Status(ctx context.Context) (any, error) {
@@ -160,7 +161,7 @@ func (o localDatabaseOperations) Status(ctx context.Context) (any, error) {
 		return nil, err
 	}
 	defer pool.Close()
-	schema, err := pgstore.VerifySchema(ctx, pool)
+	schema, err := dbschema.VerifySchema(ctx, pool.Raw())
 	if err != nil {
 		return nil, err
 	}
@@ -242,7 +243,7 @@ func (o localDatabaseOperations) VectorReconcile(ctx context.Context, apply bool
 	return store.ReconcileVectorIndex(ctx, index, apply)
 }
 
-func (o localDatabaseOperations) openMaintenanceDependencies(ctx context.Context) (*pgstore.Pool, *memory.Store, *vectorindex.Client, error) {
+func (o localDatabaseOperations) openMaintenanceDependencies(ctx context.Context) (*coredb.Pool, *memory.Store, *vectorindex.Client, error) {
 	pool, err := o.openDatabase(ctx, true)
 	if err != nil {
 		return nil, nil, nil, err
@@ -260,17 +261,17 @@ func (o localDatabaseOperations) openMaintenanceDependencies(ctx context.Context
 	return pool, store, index, nil
 }
 
-func (o localDatabaseOperations) openDatabase(ctx context.Context, verify bool) (*pgstore.Pool, error) {
-	databaseConfig, err := pgstore.ConfigFromEnv(o.getenv)
+func (o localDatabaseOperations) openDatabase(ctx context.Context, verify bool) (*coredb.Pool, error) {
+	databaseConfig, err := coredb.ConfigFromEnv(o.getenv)
 	if err != nil {
 		return nil, fmt.Errorf("database configuration: %w", err)
 	}
-	pool, err := pgstore.Open(ctx, databaseConfig)
+	pool, err := coredb.Open(ctx, databaseConfig)
 	if err != nil {
 		return nil, err
 	}
 	if verify {
-		if _, err := pgstore.VerifySchema(ctx, pool); err != nil {
+		if _, err := dbschema.VerifySchema(ctx, pool.Raw()); err != nil {
 			pool.Close()
 			return nil, fmt.Errorf("database schema: %w", err)
 		}

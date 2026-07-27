@@ -1,4 +1,4 @@
-package postgres
+package schema
 
 type conversationSchema struct {
 	ID          string `gorm:"type:text;primaryKey"`

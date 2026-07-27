@@ -9,7 +9,6 @@ import (
 )
 
 type portraitMemory struct {
-	MemoryPort
 	portrait memory.RetrievalContext
 	err      error
 	calls    int
@@ -27,7 +26,7 @@ func (m *portraitMemory) CompanionPortraitContext(context.Context, string) (memo
 func TestRetrieveCompanionPortraitReadsOnlyPersonalInteractions(t *testing.T) {
 	memoryPort := &portraitMemory{portrait: memory.RetrievalContext{PersonalMemories: []memory.RetrievedPersonalMemory{{ID: "preference-1", Kind: "preference", Content: "先陪伴再建议。"}}}}
 	service := NewCompanionService()
-	service.memory = memoryPort
+	service.memory = memoryPorts{turn: turnMemoryPorts{portrait: memoryPort}}
 	portrait, err := service.retrieveCompanionPortrait(t.Context(), "character-1", "安静音乐", desktopResolved())
 	if err != nil || len(portrait.PersonalMemories) != 1 || memoryPort.calls != 1 {
 		t.Fatalf("private portrait = %#v, calls=%d, error=%v", portrait, memoryPort.calls, err)

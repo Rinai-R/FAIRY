@@ -1,4 +1,4 @@
-package companion
+package turn
 
 import (
 	"errors"
@@ -6,7 +6,9 @@ import (
 	"strings"
 	"sync"
 
+	"fairy/model"
 	"fairy/pkg/statemachine"
+	"fairy/reply"
 )
 
 // Turn lifecycle and turn events mirror crates/fairy-domain/src/conversation.rs.
@@ -48,11 +50,11 @@ type WireError struct {
 	Retryable bool   `json:"retryable"`
 }
 
-type stateChangedPayload struct {
+type StateChangedPayload struct {
 	Type string `json:"type"`
 }
 
-type replyChainPayload struct {
+type ReplyChainPayload struct {
 	Type        string `json:"type"`
 	Index       uint8  `json:"index"`
 	Delta       string `json:"delta"`
@@ -61,7 +63,7 @@ type replyChainPayload struct {
 	VisualState string `json:"visualState"`
 }
 
-type utterancePayload struct {
+type UtterancePayload struct {
 	Type        string `json:"type"`
 	Seq         uint8  `json:"seq"`
 	Text        string `json:"text"`
@@ -69,19 +71,19 @@ type utterancePayload struct {
 	Reason      string `json:"reason"`
 }
 
-type presencePayload struct {
+type PresencePayload struct {
 	Type  string `json:"type"`
 	Phase string `json:"phase"`
 }
 
-type replyPreviewPayload struct {
-	Type   string       `json:"type"`
-	Chains []ReplyChain `json:"chains"`
+type ReplyPreviewPayload struct {
+	Type   string             `json:"type"`
+	Chains []reply.ReplyChain `json:"chains"`
 }
 
-// beatReadyPayload is the paired text(+optional audio) delivery unit. Frontend
+// BeatReadyPayload is the paired text(+optional audio) delivery unit. Frontend
 // reveals a beat only after this event (齐套才揭示).
-type beatReadyPayload struct {
+type BeatReadyPayload struct {
 	Type                 string `json:"type"`
 	BeatID               string `json:"beatId"`
 	Kind                 string `json:"kind"` // utterance | final
@@ -100,31 +102,31 @@ type beatReadyPayload struct {
 	DataURL              string `json:"dataUrl,omitempty"`
 }
 
-type completedPayload struct {
-	Type                string           `json:"type"`
-	Text                string           `json:"text"`
-	SpeechText          string           `json:"speechText"`
-	Sources             []any            `json:"sources"`
-	CharacterRevision   uint64           `json:"characterRevision"`
-	UserProfileRevision *uint64          `json:"userProfileRevision"`
-	Usage               []LaneModelUsage `json:"usage"`
-	VisualState         string           `json:"visualState"`
-	Chains              []ReplyChain     `json:"chains"`
+type CompletedPayload struct {
+	Type                string                 `json:"type"`
+	Text                string                 `json:"text"`
+	SpeechText          string                 `json:"speechText"`
+	Sources             []any                  `json:"sources"`
+	CharacterRevision   uint64                 `json:"characterRevision"`
+	UserProfileRevision *uint64                `json:"userProfileRevision"`
+	Usage               []model.LaneModelUsage `json:"usage"`
+	VisualState         string                 `json:"visualState"`
+	Chains              []reply.ReplyChain     `json:"chains"`
 }
 
-type failedPayload struct {
+type FailedPayload struct {
 	Type  string    `json:"type"`
 	Error WireError `json:"error"`
 }
 
-type speechRequestedPayload struct {
+type SpeechRequestedPayload struct {
 	Type                string  `json:"type"`
 	Text                string  `json:"text"`
 	CharacterRevision   uint64  `json:"characterRevision"`
 	UserProfileRevision *uint64 `json:"userProfileRevision"`
 }
 
-type speechSynthesizedPayload struct {
+type SpeechSynthesizedPayload struct {
 	Type string `json:"type"`
 	// Index is the monotonic playback order across the whole turn (utterance audio
 	// first, then reply chains), used by the frontend to order playback.
@@ -139,7 +141,7 @@ type speechSynthesizedPayload struct {
 	DataURL    string `json:"dataUrl"`
 }
 
-type speechFailedPayload struct {
+type SpeechFailedPayload struct {
 	Type  string    `json:"type"`
 	Error WireError `json:"error"`
 }
@@ -158,9 +160,9 @@ type TurnCompletion struct {
 	Sources             []any
 	CharacterRevision   uint64
 	UserProfileRevision *uint64
-	Usage               []LaneModelUsage
+	Usage               []model.LaneModelUsage
 	VisualState         string
-	Chains              []ReplyChain
+	Chains              []reply.ReplyChain
 }
 
 type SpeechSynthesisCompletion struct {
@@ -169,7 +171,7 @@ type SpeechSynthesisCompletion struct {
 	// ChainIndex is the reply-chain index, or -1 for mid-ReAct utterance audio.
 	ChainIndex int
 	Text       string
-	Result     SpeechSynthesisResult
+	Result     reply.SpeechSynthesisResult
 }
 
 type EventEmitter func(TurnEvent)
@@ -191,7 +193,25 @@ func NewTurnLifecycle(conversationID string, turnID string) *TurnLifecycle {
 	}
 }
 
+// Publish serializes one lifecycle mutation and its event construction. The
+// caller must perform the mutation inside produce; lifecycle methods remain
+// intentionally small and deterministic.
+func (l *TurnLifecycle) Publish(produce func() (TurnEvent, error)) (TurnEvent, error) {
+	if l == nil {
+		return TurnEvent{}, errors.New("nil turn lifecycle")
+	}
+	if produce == nil {
+		return TurnEvent{}, errors.New("nil turn lifecycle mutation")
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return produce()
+}
+
 func (l *TurnLifecycle) State() TurnState {
+	if l == nil {
+		return TurnStateIdle
+	}
 	return l.state
 }
 
@@ -200,17 +220,17 @@ func (l *TurnLifecycle) Transition(next TurnState) (TurnEvent, error) {
 		return TurnEvent{}, fmt.Errorf("invalid turn state transition from %s to %s", l.state, next)
 	}
 	l.state = next
-	return l.event(stateChangedPayload{Type: "state_changed"}), nil
+	return l.event(StateChangedPayload{Type: "state_changed"}), nil
 }
 
-func (l *TurnLifecycle) ReplyChain(index uint8, delta string, chain ReplyChain) (TurnEvent, error) {
+func (l *TurnLifecycle) ReplyChain(index uint8, delta string, chain reply.ReplyChain) (TurnEvent, error) {
 	if l.state != TurnStateResponding {
 		return TurnEvent{}, errors.New("只有 Responding 状态可以发送回复分段")
 	}
 	if delta == "" {
 		return TurnEvent{}, errors.New("回复分段增量不能为空")
 	}
-	return l.event(replyChainPayload{
+	return l.event(ReplyChainPayload{
 		Type:        "reply_chain",
 		Index:       index,
 		Delta:       delta,
@@ -235,7 +255,7 @@ func (l *TurnLifecycle) Utterance(seq uint8, text string, visualState string, re
 	if visualState == "" {
 		visualState = "idle"
 	}
-	return l.event(utterancePayload{
+	return l.event(UtterancePayload{
 		Type:        "utterance",
 		Seq:         seq,
 		Text:        text,
@@ -253,18 +273,18 @@ func (l *TurnLifecycle) Presence(phase string) (TurnEvent, error) {
 	if strings.TrimSpace(phase) == "" {
 		phase = "model_stream"
 	}
-	return l.event(presencePayload{Type: "presence", Phase: phase}), nil
+	return l.event(PresencePayload{Type: "presence", Phase: phase}), nil
 }
 
-func (l *TurnLifecycle) ReplyPreview(chains []ReplyChain) (TurnEvent, error) {
+func (l *TurnLifecycle) ReplyPreview(chains []reply.ReplyChain) (TurnEvent, error) {
 	if l.state != TurnStatePlanning && l.state != TurnStateGathering {
 		return TurnEvent{}, errors.New("只有 Gathering/Planning 状态可以发送 reply.preview")
 	}
 	if len(chains) == 0 {
 		return TurnEvent{}, errors.New("reply.preview chains cannot be empty")
 	}
-	copyChains := append([]ReplyChain(nil), chains...)
-	return l.event(replyPreviewPayload{Type: "reply.preview", Chains: copyChains}), nil
+	copyChains := append([]reply.ReplyChain(nil), chains...)
+	return l.event(ReplyPreviewPayload{Type: "reply.preview", Chains: copyChains}), nil
 }
 
 func (l *TurnLifecycle) Fail(code string, message string, retryable bool) (TurnEvent, error) {
@@ -272,7 +292,7 @@ func (l *TurnLifecycle) Fail(code string, message string, retryable bool) (TurnE
 		return TurnEvent{}, fmt.Errorf("invalid turn state transition from %s to failed", l.state)
 	}
 	l.state = TurnStateFailed
-	return l.event(failedPayload{
+	return l.event(FailedPayload{
 		Type: "failed",
 		Error: WireError{
 			Code:      code,
@@ -293,9 +313,9 @@ func (l *TurnLifecycle) Complete(completion TurnCompletion) (TurnEvent, error) {
 	}
 	usage := completion.Usage
 	if usage == nil {
-		usage = []LaneModelUsage{}
+		usage = []model.LaneModelUsage{}
 	}
-	return l.event(completedPayload{
+	return l.event(CompletedPayload{
 		Type:                "completed",
 		Text:                completion.Text,
 		SpeechText:          completion.SpeechText,
@@ -312,7 +332,7 @@ func (l *TurnLifecycle) SpeechRequested(completion TurnCompletion) (TurnEvent, e
 	if l.state != TurnStateCompleted && l.state != TurnStatePlanning && l.state != TurnStateResponding {
 		return TurnEvent{}, errors.New("只有 Planning/Responding/Completed 状态可以请求语音")
 	}
-	return l.event(speechRequestedPayload{
+	return l.event(SpeechRequestedPayload{
 		Type:                "speech.requested",
 		Text:                completion.SpeechText,
 		CharacterRevision:   completion.CharacterRevision,
@@ -324,7 +344,7 @@ func (l *TurnLifecycle) SpeechSynthesized(completion SpeechSynthesisCompletion) 
 	if l.state != TurnStateCompleted && l.state != TurnStatePlanning && l.state != TurnStateResponding {
 		return TurnEvent{}, errors.New("只有 Planning/Responding/Completed 状态可以完成语音合成")
 	}
-	return l.event(speechSynthesizedPayload{
+	return l.event(SpeechSynthesizedPayload{
 		Type:       "speech.synthesized",
 		Index:      completion.Index,
 		ChainIndex: completion.ChainIndex,
@@ -338,7 +358,7 @@ func (l *TurnLifecycle) SpeechSynthesized(completion SpeechSynthesisCompletion) 
 
 // BeatReady emits a paired display(+optional audio) beat. Allowed in planning
 // (utterance beats) and responding (final beats).
-func (l *TurnLifecycle) BeatReady(completion BeatReadyCompletion) (TurnEvent, error) {
+func (l *TurnLifecycle) BeatReady(completion reply.BeatReadyCompletion) (TurnEvent, error) {
 	if l.state != TurnStatePlanning && l.state != TurnStateGathering && l.state != TurnStateResponding {
 		return TurnEvent{}, errors.New("只有 Gathering/Planning/Responding 状态可以发送 beat.ready")
 	}
@@ -356,7 +376,7 @@ func (l *TurnLifecycle) BeatReady(completion BeatReadyCompletion) (TurnEvent, er
 	if visual == "" {
 		visual = "idle"
 	}
-	payload := beatReadyPayload{
+	payload := BeatReadyPayload{
 		Type:                 "beat.ready",
 		BeatID:               completion.BeatID,
 		Kind:                 kind,
@@ -383,7 +403,7 @@ func (l *TurnLifecycle) SpeechFailed(code string, message string, retryable bool
 	if l.state != TurnStateCompleted && l.state != TurnStatePlanning && l.state != TurnStateResponding {
 		return TurnEvent{}, errors.New("只有 Planning/Responding/Completed 状态可以发送语音失败事件")
 	}
-	return l.event(speechFailedPayload{Type: "speech.failed", Error: WireError{Code: code, Message: message, Retryable: retryable}}), nil
+	return l.event(SpeechFailedPayload{Type: "speech.failed", Error: WireError{Code: code, Message: message, Retryable: retryable}}), nil
 }
 
 func (l *TurnLifecycle) Interrupt() (TurnEvent, error) {
@@ -391,7 +411,7 @@ func (l *TurnLifecycle) Interrupt() (TurnEvent, error) {
 		return TurnEvent{}, fmt.Errorf("invalid turn state transition from %s to interrupted", l.state)
 	}
 	l.state = TurnStateInterrupted
-	return l.event(stateChangedPayload{Type: "state_changed"}), nil
+	return l.event(StateChangedPayload{Type: "state_changed"}), nil
 }
 
 func (l *TurnLifecycle) event(payload any) TurnEvent {

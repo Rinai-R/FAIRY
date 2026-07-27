@@ -3,18 +3,19 @@ package api
 import (
 	"context"
 
+	"fairy/coredb"
+	dbschema "fairy/coredb/schema"
 	"fairy/memory"
-	pgstore "fairy/postgres"
 	vectorindex "fairy/vectorindex"
 )
 
 type databaseStatus struct {
-	Ready      bool                  `json:"ready"`
-	Mode       string                `json:"mode"`
-	Descriptor *pgstore.Descriptor   `json:"descriptor,omitempty"`
-	Schema     *pgstore.SchemaStatus `json:"schema,omitempty"`
-	Pool       *pgstore.PoolStats    `json:"pool,omitempty"`
-	Error      string                `json:"error,omitempty"`
+	Ready      bool                   `json:"ready"`
+	Mode       string                 `json:"mode"`
+	Descriptor *coredb.Descriptor     `json:"descriptor,omitempty"`
+	Schema     *dbschema.SchemaStatus `json:"schema,omitempty"`
+	Pool       *coredb.PoolStats      `json:"pool,omitempty"`
+	Error      string                 `json:"error,omitempty"`
 }
 
 type qdrantStatus struct {
@@ -32,7 +33,7 @@ type secretKeyStatus struct {
 
 type databaseMetrics struct {
 	Available bool                  `json:"available"`
-	Pool      *pgstore.PoolStats    `json:"pool,omitempty"`
+	Pool      *coredb.PoolStats     `json:"pool,omitempty"`
 	Vector    *memory.VectorMetrics `json:"vector,omitempty"`
 }
 
@@ -54,7 +55,7 @@ func (s *Server) infrastructureStatus(ctx context.Context) (databaseStatus, qdra
 			database.Descriptor = &descriptor
 			database.Error = err.Error()
 		} else {
-			schema, err := pgstore.VerifySchema(ctx, s.rt.Database)
+			schema, err := dbschema.VerifySchema(ctx, s.rt.Database.Raw())
 			database.Descriptor = &descriptor
 			if err != nil {
 				database.Error = err.Error()
