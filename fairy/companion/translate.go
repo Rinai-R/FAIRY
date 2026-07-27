@@ -8,6 +8,7 @@ import (
 
 	"fairy/character"
 	"fairy/model"
+	replyapp "fairy/reply"
 
 	"go.uber.org/zap"
 )
@@ -48,6 +49,9 @@ func (s *CompanionService) fillSpeechForTTS(
 	translatedChains := make([]ReplyChain, len(reply.Chains))
 	copy(translatedChains, reply.Chains)
 	for index := range translatedChains {
+		if translatedChains[index].Kind == replyapp.ChainSticker {
+			continue
+		}
 		source := translatedChains[index].Text
 		translated, err := s.translateDisplayText(ctx, record, source, textLang, speakLang, conversationID, connectionModel)
 		if err != nil {

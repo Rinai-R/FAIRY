@@ -145,3 +145,35 @@ func (s *CompanionService) BoundInteraction(conversationID string) (session.Bind
 	s.interactionMu.RUnlock()
 	return binding, ok
 }
+
+// BindOutputCapabilities records the explicitly advertised output support of
+// the live Surface session. Capabilities are process-local and must be
+// advertised again after Core restarts; they are never inferred from endpoint.
+func (s *CompanionService) BindOutputCapabilities(conversationID string, capabilities session.OutputCapabilities) error {
+	if s == nil {
+		return errors.New("companion service is nil")
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return errors.New("conversation_id is required")
+	}
+	s.capabilityMu.Lock()
+	if s.outputCapabilities == nil {
+		s.outputCapabilities = make(map[string]session.OutputCapabilities)
+	}
+	s.outputCapabilities[conversationID] = capabilities
+	s.capabilityMu.Unlock()
+	return nil
+}
+
+// OutputCapabilities returns a zero-value capability set when no live Surface
+// session has advertised support.
+func (s *CompanionService) OutputCapabilities(conversationID string) session.OutputCapabilities {
+	if s == nil {
+		return session.OutputCapabilities{}
+	}
+	s.capabilityMu.RLock()
+	capabilities := s.outputCapabilities[strings.TrimSpace(conversationID)]
+	s.capabilityMu.RUnlock()
+	return capabilities
+}

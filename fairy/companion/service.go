@@ -20,32 +20,36 @@ import (
 )
 
 type CompanionService struct {
-	root              string
-	memory            memoryPorts
-	semanticEmbedder  memory.SemanticEmbedder
-	vectorIndex       VectorIndex
-	model             ModelPort
-	webSearch         WebSearchBackend
-	speech            SpeechSynthesizer
-	characterLookup   CharacterLookup
-	profiles          ProfileSource
-	cfg               ConfigSource
-	logger            *zap.Logger
-	backgroundErrorMu sync.Mutex
-	backgroundError   error
-	loopMetrics       agentLoopMetrics
-	interactionMu     sync.RWMutex
-	interactions      map[string]session.Binding
-	identities        OwnerIdentityPort
-	emitMu            sync.Mutex
-	emit              eventEmitter
-	messageTelemetry  MessageTelemetry
-	turnRegistry      *turnRegistry
-	retention         *retentionEngine
-	turns             *TurnEngine
-	desktopEvidence   DesktopEvidenceValidator
-	desktopTool       DesktopToolCoordinator
-	ambientReplies    AmbientReplyObserver
+	root                 string
+	memory               memoryPorts
+	semanticEmbedder     memory.SemanticEmbedder
+	vectorIndex          VectorIndex
+	model                ModelPort
+	webSearch            WebSearchBackend
+	stickers             StickerSearchPort
+	speech               SpeechSynthesizer
+	characterLookup      CharacterLookup
+	profiles             ProfileSource
+	cfg                  ConfigSource
+	logger               *zap.Logger
+	backgroundErrorMu    sync.Mutex
+	backgroundError      error
+	loopMetrics          agentLoopMetrics
+	interactionMu        sync.RWMutex
+	interactions         map[string]session.Binding
+	capabilityMu         sync.RWMutex
+	outputCapabilities   map[string]session.OutputCapabilities
+	identities           OwnerIdentityPort
+	emitMu               sync.Mutex
+	emit                 eventEmitter
+	messageTelemetry     MessageTelemetry
+	turnRegistry         *turnRegistry
+	expressionDeliveries *expressionDeliveryRegistry
+	retention            *retentionEngine
+	turns                *TurnEngine
+	desktopEvidence      DesktopEvidenceValidator
+	desktopTool          DesktopToolCoordinator
+	ambientReplies       AmbientReplyObserver
 }
 
 type MessageTelemetry interface {
@@ -161,8 +165,9 @@ func (s *CompanionService) endMessageTrace(traceID, status string) {
 
 func NewCompanionService() *CompanionService {
 	service := &CompanionService{
-		logger:       zap.NewNop(),
-		interactions: make(map[string]session.Binding),
+		logger:             zap.NewNop(),
+		interactions:       make(map[string]session.Binding),
+		outputCapabilities: make(map[string]session.OutputCapabilities),
 	}
 	service.wireEngines()
 	return service
@@ -178,12 +183,13 @@ func NewCompanionServiceWithRuntime(root string, store *memory.Store, model Mode
 
 func newCompanionServiceWithPorts(root string, ports memoryPorts, model ModelPort, webSearch WebSearchBackend) *CompanionService {
 	service := &CompanionService{
-		root:         root,
-		memory:       ports,
-		model:        model,
-		webSearch:    webSearch,
-		logger:       zap.NewNop(),
-		interactions: make(map[string]session.Binding),
+		root:               root,
+		memory:             ports,
+		model:              model,
+		webSearch:          webSearch,
+		logger:             zap.NewNop(),
+		interactions:       make(map[string]session.Binding),
+		outputCapabilities: make(map[string]session.OutputCapabilities),
 	}
 	if strings.TrimSpace(root) != "" {
 		service.characterLookup = character.NewStore(root)
@@ -318,6 +324,7 @@ func (s *CompanionService) wireEngines() {
 		}
 		return s.desktopTool.CancelTurn(ctx, conversationID, turnID)
 	})
+	s.expressionDeliveries = newExpressionDeliveryRegistry(expressionDeliveryTimeout)
 	s.retention = newRetentionEngine(s)
 	s.turns = &TurnEngine{host: s}
 }
@@ -600,11 +607,12 @@ func collectText(events []model.StreamEvent) string {
 func promptItemsFromMessages(messages []memory.MessageRecord) []model.PromptItem {
 	items := make([]model.PromptItem, 0, len(messages))
 	for _, message := range messages {
+		content := memory.PromptMessageText(message)
 		switch message.Role {
 		case "user":
-			items = append(items, model.PromptItem{Type: model.PromptItemUserMessage, Content: message.Content})
+			items = append(items, model.PromptItem{Type: model.PromptItemUserMessage, Content: content})
 		case "assistant":
-			items = append(items, model.PromptItem{Type: model.PromptItemAssistantMessage, Content: message.Content})
+			items = append(items, model.PromptItem{Type: model.PromptItemAssistantMessage, Content: content})
 		}
 	}
 	return items

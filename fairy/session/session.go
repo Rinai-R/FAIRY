@@ -13,9 +13,14 @@ const (
 )
 
 type OpenRequest struct {
-	Endpoint    EndpointKind `json:"endpoint"`
-	EndpointKey string       `json:"endpointKey"`
-	Interaction Context      `json:"interaction"`
+	Endpoint           EndpointKind       `json:"endpoint"`
+	EndpointKey        string             `json:"endpointKey"`
+	Interaction        Context            `json:"interaction"`
+	OutputCapabilities OutputCapabilities `json:"outputCapabilities"`
+}
+
+type OutputCapabilities struct {
+	Sticker bool `json:"sticker"`
 }
 
 type OpenResponse struct {
@@ -26,13 +31,68 @@ type OpenResponse struct {
 }
 
 type MessageRecord struct {
-	ID              string `json:"id"`
-	ConversationID  string `json:"conversationId"`
-	TurnID          string `json:"turnId"`
-	Sequence        uint64 `json:"sequence"`
-	Role            string `json:"role"`
-	Content         string `json:"content"`
-	CreatedAtUnixMS int64  `json:"createdAtUnixMs"`
+	ID              string           `json:"id"`
+	ConversationID  string           `json:"conversationId"`
+	TurnID          string           `json:"turnId"`
+	Sequence        uint64           `json:"sequence"`
+	Role            string           `json:"role"`
+	Content         string           `json:"content"`
+	Parts           []ExpressionPart `json:"parts"`
+	CreatedAtUnixMS int64            `json:"createdAtUnixMs"`
+}
+
+type ExpressionKind string
+
+const (
+	ExpressionUtterance ExpressionKind = "utterance"
+	ExpressionSticker   ExpressionKind = "sticker"
+)
+
+type StickerReference struct {
+	ID          string `json:"id"`
+	Description string `json:"description"`
+	MIMEType    string `json:"mimeType"`
+}
+
+type ExpressionPart struct {
+	Kind        ExpressionKind    `json:"kind"`
+	Text        string            `json:"text,omitempty"`
+	VisualState string            `json:"visualState"`
+	Sticker     *StickerReference `json:"sticker,omitempty"`
+}
+
+type ExpressionDeliveryStatus string
+
+const (
+	ExpressionDeliverySucceeded ExpressionDeliveryStatus = "succeeded"
+	ExpressionDeliveryFailed    ExpressionDeliveryStatus = "failed"
+)
+
+type ExpressionDeliveryResult struct {
+	ConversationID string                   `json:"conversationId"`
+	TurnID         string                   `json:"turnId"`
+	BeatID         string                   `json:"beatId"`
+	Status         ExpressionDeliveryStatus `json:"status"`
+	ErrorMessage   string                   `json:"errorMessage,omitempty"`
+}
+
+func (result ExpressionDeliveryResult) Validate() error {
+	if strings.TrimSpace(result.ConversationID) == "" || strings.TrimSpace(result.TurnID) == "" || strings.TrimSpace(result.BeatID) == "" {
+		return errors.New("expression delivery identity is required")
+	}
+	switch result.Status {
+	case ExpressionDeliverySucceeded:
+		if result.ErrorMessage != "" {
+			return errors.New("successful expression delivery must not contain error")
+		}
+	case ExpressionDeliveryFailed:
+		if strings.TrimSpace(result.ErrorMessage) == "" {
+			return errors.New("failed expression delivery requires error")
+		}
+	default:
+		return errors.New("expression delivery status is invalid")
+	}
+	return nil
 }
 
 type MessagePage struct {

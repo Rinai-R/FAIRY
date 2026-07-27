@@ -57,7 +57,10 @@ func TestEndpointSessionIsolatesKeysAndPersistsNoRawKeyIntegration(t *testing.T)
 	}
 	imContext := session.Context{Audience: session.AudienceMulti, Initiation: session.InitiationAmbient, Presentation: session.PresentationChat}
 	open := func(key string) coreclient.OpenSessionResponse {
-		result, err := client.OpenSession(context.Background(), coreclient.OpenSessionRequest{Endpoint: session.EndpointIM, EndpointKey: key, Interaction: imContext})
+		result, err := client.OpenSession(context.Background(), coreclient.OpenSessionRequest{
+			Endpoint: session.EndpointIM, EndpointKey: key, Interaction: imContext,
+			OutputCapabilities: session.OutputCapabilities{Sticker: true},
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -69,12 +72,18 @@ func TestEndpointSessionIsolatesKeysAndPersistsNoRawKeyIntegration(t *testing.T)
 	if groupA.ConversationID != groupA2.ConversationID || groupA.ConversationID == groupB.ConversationID {
 		t.Fatalf("conversation bindings = %#v %#v %#v", groupA, groupA2, groupB)
 	}
+	if !rt.Companion.OutputCapabilities(groupA.ConversationID).Sticker {
+		t.Fatal("session.open did not bind advertised sticker capability")
+	}
 	desktop, err := client.OpenSession(context.Background(), coreclient.OpenSessionRequest{
 		Endpoint: session.EndpointDesktop, EndpointKey: "desktop-installation",
 		Interaction: session.Context{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied},
 	})
 	if err != nil || desktop.ConversationID == groupA.ConversationID || desktop.ConversationID == groupB.ConversationID {
 		t.Fatalf("desktop binding = %#v, %v", desktop, err)
+	}
+	if rt.Companion.OutputCapabilities(desktop.ConversationID).Sticker {
+		t.Fatal("missing outputCapabilities defaulted to sticker support")
 	}
 
 	pool, err := pgxpool.New(context.Background(), databaseURL)

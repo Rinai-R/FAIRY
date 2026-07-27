@@ -8,10 +8,10 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as session$0 from "../fairy/session/models.js";
+import * as coreclient$0 from "../fairy/coreclient/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as coreclient$0 from "../fairy/coreclient/models.js";
+import * as session$0 from "../fairy/session/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -103,6 +103,16 @@ export function RecentMessages() {
     return $Call.ByID(983675989).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType3($result);
     }));
+}
+
+/**
+ * @param {string} turnID
+ * @param {string} beatID
+ * @param {boolean} succeeded
+ * @returns {$CancellablePromise<void>}
+ */
+export function ReportStickerDelivery(turnID, beatID, succeeded) {
+    return $Call.ByID(1500694931, turnID, beatID, succeeded);
 }
 
 /**

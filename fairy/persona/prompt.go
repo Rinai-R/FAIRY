@@ -302,11 +302,12 @@ func buildRespondContextSlots(
 	}
 	dialogueItems := make([]model.PromptItem, 0, len(windowed))
 	for _, message := range windowed {
+		content := memory.PromptMessageText(message)
 		switch message.Role {
 		case "user":
-			dialogueItems = append(dialogueItems, model.PromptItem{Type: model.PromptItemUserMessage, Content: message.Content})
+			dialogueItems = append(dialogueItems, model.PromptItem{Type: model.PromptItemUserMessage, Content: content})
 		case "assistant":
-			dialogueItems = append(dialogueItems, model.PromptItem{Type: model.PromptItemAssistantMessage, Content: message.Content})
+			dialogueItems = append(dialogueItems, model.PromptItem{Type: model.PromptItemAssistantMessage, Content: content})
 		}
 	}
 	slots = append(slots, presentContextSlot("dialogue", true, "user_and_assistant_transcript", "suffix", dialogueItems, dialogueItems))

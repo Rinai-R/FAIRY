@@ -202,6 +202,32 @@
   overflow-wrap: anywhere;
 }
 
+.fairy-expression-bubble {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  width: min(214px, calc(100% - 32px));
+}
+
+.fairy-expression-bubble__sticker {
+  display: block;
+  width: auto;
+  max-width: 188px;
+  max-height: 132px;
+  margin: 0 auto;
+  object-fit: contain;
+  border-radius: 9px;
+}
+
+.fairy-expression-bubble__unavailable {
+  padding: 8px 10px;
+  border: 1px dashed rgb(173 74 57 / 36%);
+  border-radius: 9px;
+  color: rgb(132 53 43 / 92%);
+  background: rgb(255 239 234 / 76%);
+  text-align: center;
+}
+
 .fairy-speech-bubble__waiting {
   display: flex;
   align-items: center;

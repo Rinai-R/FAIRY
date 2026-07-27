@@ -127,6 +127,64 @@ func TestClosingPreviousVisualCacheKeepsSharedCachedAssets(t *testing.T) {
 	}
 }
 
+func TestVisualCacheServesBoundedInMemorySticker(t *testing.T) {
+	cache, err := newVisualCacheAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := coreclient.StickerContent{MIMEType: "image/gif", Bytes: []byte("GIF89a-content")}
+	route, err := cache.PutSticker("beat-1", content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route == "" || route[:21] != "/characters/stickers/" {
+		t.Fatalf("sticker route = %q", route)
+	}
+	content.Bytes[0] = 'X'
+	request := httptest.NewRequest(http.MethodGet, route, nil)
+	response := httptest.NewRecorder()
+	cache.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("sticker status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Content-Type") != "image/gif" ||
+		response.Header().Get("Cache-Control") != "private, no-store" ||
+		response.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("sticker headers = %#v", response.Header())
+	}
+	if got := response.Body.String(); got != "GIF89a-content" {
+		t.Fatalf("sticker content = %q", got)
+	}
+}
+
+func TestVisualCacheRejectsUnsupportedStickerAndEvictsOldest(t *testing.T) {
+	cache, err := newVisualCacheAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cache.PutSticker("bad", coreclient.StickerContent{MIMEType: "image/svg+xml", Bytes: []byte("<svg/>")}); err == nil {
+		t.Fatal("unsupported sticker MIME accepted")
+	}
+	var firstRoute string
+	for index := 0; index <= maxLiveStickerAssets; index++ {
+		route, err := cache.PutSticker(
+			string(rune('a'+index)),
+			coreclient.StickerContent{MIMEType: "image/png", Bytes: append([]byte(nil), testPNG...)},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if index == 0 {
+			firstRoute = route
+		}
+	}
+	response := httptest.NewRecorder()
+	cache.ServeHTTP(response, httptest.NewRequest(http.MethodGet, firstRoute, nil))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("evicted sticker status = %d, want 404", response.Code)
+	}
+}
+
 func testVisualManifest() coreclient.VisualManifest {
 	return coreclient.VisualManifest{
 		SchemaVersion: 2,

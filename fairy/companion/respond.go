@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"fairy/reply"
+	"fairy/session"
 )
 
 type (
@@ -40,28 +41,30 @@ func speechExceedsSoftLimit(value string) bool {
 var ErrRespondRuntimeNotMigrated = errors.New("companion respond runtime is not migrated to Go")
 
 type SubmitTurnRequest struct {
-	ConversationID      string       `json:"conversationId"`
-	Input               string       `json:"input"`
-	SpeechEnabled       bool         `json:"speechEnabled"`
-	TraceID             string       `json:"-"`
-	MessageSource       string       `json:"-"`
-	ReplyIntent         *ReplyIntent `json:"-"`
-	RecentTargetReply   string       `json:"-"`
-	PersonNoteSenderIDs []string     `json:"-"`
+	ConversationID      string                     `json:"conversationId"`
+	Input               string                     `json:"input"`
+	SpeechEnabled       bool                       `json:"speechEnabled"`
+	TraceID             string                     `json:"-"`
+	MessageSource       string                     `json:"-"`
+	ReplyIntent         *ReplyIntent               `json:"-"`
+	RecentTargetReply   string                     `json:"-"`
+	PersonNoteSenderIDs []string                   `json:"-"`
+	OutputCapabilities  session.OutputCapabilities `json:"-"`
 }
 
 type SubmitCompiledTurnRequest struct {
-	ConversationID        string                    `json:"conversationId"`
-	Input                 string                    `json:"input"`
-	SpeechEnabled         bool                      `json:"speechEnabled"`
-	MaxOutputTokens       uint32                    `json:"maxOutputTokens"`
-	AvailableVisualStates []VisualState             `json:"availableVisualStates"`
-	TraceID               string                    `json:"-"`
-	MessageSource         string                    `json:"-"`
-	ReplyIntent           *ReplyIntent              `json:"-"`
-	RecentTargetReply     string                    `json:"-"`
-	PersonNoteSenderIDs   []string                  `json:"-"`
-	Initiation            *DesktopInitiationContext `json:"-"`
+	ConversationID        string                     `json:"conversationId"`
+	Input                 string                     `json:"input"`
+	SpeechEnabled         bool                       `json:"speechEnabled"`
+	MaxOutputTokens       uint32                     `json:"maxOutputTokens"`
+	AvailableVisualStates []VisualState              `json:"availableVisualStates"`
+	TraceID               string                     `json:"-"`
+	MessageSource         string                     `json:"-"`
+	ReplyIntent           *ReplyIntent               `json:"-"`
+	RecentTargetReply     string                     `json:"-"`
+	PersonNoteSenderIDs   []string                   `json:"-"`
+	Initiation            *DesktopInitiationContext  `json:"-"`
+	OutputCapabilities    session.OutputCapabilities `json:"-"`
 }
 
 // ReplyIntent is ephemeral Companion control data supplied by an initiating

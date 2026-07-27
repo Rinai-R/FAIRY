@@ -24,6 +24,7 @@ import (
 	"fairy/observability"
 	"fairy/session"
 	"fairy/speech"
+	"fairy/sticker"
 )
 
 // RuntimeOptions configures a Session Core process.
@@ -65,6 +66,7 @@ type Runtime struct {
 	ConfigReader *config.Reader
 	Speech       *speech.SpeechService
 	Profile      *config.ProfileService
+	Stickers     *sticker.Store
 	WebSearch    *companion.WebSearchService
 	Bootstrap    *BootstrapService
 	ownDatabase  bool
@@ -82,7 +84,7 @@ func (rt *Runtime) APIDependencies() *api.Dependencies {
 		Database: rt.Database, VectorIndex: rt.VectorIndex, MemoryStore: rt.MemoryStore,
 		Identity: rt.Identity, Memory: rt.Memory, Secret: rt.Secret,
 		Companion: rt.Companion, Initiative: rt.Initiative, Character: rt.Character,
-		Config: rt.Config, Speech: rt.Speech, Profile: rt.Profile, Captures: rt.Captures,
+		Config: rt.Config, Speech: rt.Speech, Profile: rt.Profile, Stickers: rt.Stickers, Captures: rt.Captures,
 		Logs: rt.Logs, HTTPMetrics: rt.HTTPMetrics, Messages: rt.Messages,
 		BootstrapStatus: func() (any, error) {
 			return rt.Bootstrap.Status()
@@ -159,6 +161,11 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	stickerStore, err := sticker.NewStore(opened.Database)
+	if err != nil {
+		return nil, err
+	}
+	companion.AttachStickerSearch(services.Companion, stickerStore)
 	messageMetrics := observability.NewMessageMetrics()
 
 	rt := &Runtime{
@@ -184,6 +191,7 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 		ConfigReader:  services.ConfigReader,
 		Speech:        services.Speech,
 		Profile:       services.Profile,
+		Stickers:      stickerStore,
 		WebSearch:     services.WebSearch,
 		Bootstrap: NewBootstrapService(BootstrapOptions{
 			AppName:                "FAIRY",

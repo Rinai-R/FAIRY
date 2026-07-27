@@ -148,6 +148,28 @@ func TestBindResolveInteractionAndMissingBindingFailure(t *testing.T) {
 	}
 }
 
+func TestOutputCapabilitiesAreExplicitLiveSessionFacts(t *testing.T) {
+	service := NewCompanionService()
+	if service.OutputCapabilities("conversation-1").Sticker {
+		t.Fatal("missing live capability defaulted to supported")
+	}
+	if err := service.BindOutputCapabilities("conversation-1", session.OutputCapabilities{Sticker: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !service.OutputCapabilities("conversation-1").Sticker {
+		t.Fatal("advertised sticker capability was not retained")
+	}
+	if err := service.BindOutputCapabilities("conversation-1", session.OutputCapabilities{}); err != nil {
+		t.Fatal(err)
+	}
+	if service.OutputCapabilities("conversation-1").Sticker {
+		t.Fatal("latest live session capability did not replace prior value")
+	}
+	if err := service.BindOutputCapabilities(" ", session.OutputCapabilities{}); err == nil {
+		t.Fatal("blank conversation capability binding accepted")
+	}
+}
+
 func assertPrivateNameProjection(t *testing.T, public, personal []model.PromptItem, name string) {
 	t.Helper()
 	for _, item := range public {

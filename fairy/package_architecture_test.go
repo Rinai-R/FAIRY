@@ -31,6 +31,7 @@ var targetPackages = []string{
 	"fairy/reply",
 	"fairy/session",
 	"fairy/speech",
+	"fairy/sticker",
 }
 
 type listedPackage struct {
@@ -138,6 +139,7 @@ func TestThirdPartySDKImportsMatchMigrationInventory(t *testing.T) {
 			"fairy/coredb",
 			"fairy/config",
 			"fairy/memory",
+			"fairy/sticker",
 		},
 		"gorm.io/":                     {"fairy/coredb"},
 		"github.com/qdrant/":           {"fairy/memory"},
@@ -209,5 +211,55 @@ func TestIndependentSurfacesDoNotImportCoreInternals(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestApplicationDoesNotIntroduceDynamicWorkflowRuntime(t *testing.T) {
+	forbidden := []string{
+		"type WorkflowCatalog ",
+		"type WorkflowDefinition ",
+		"type WorkflowBlueprint ",
+		"type WorkflowDSL ",
+		"type NodeCatalog ",
+		"type turnGraphProgram ",
+		"type RuleTree ",
+		"type DesktopTypedGraph ",
+		"type DesktopGraphPlan ",
+		"type desktopGraphBuilder ",
+		"type desktopGraphStep ",
+		"type desktopGraphEdge ",
+		"type ExpressionEngine ",
+		"type ExpressionWorkflow ",
+		"type StickerRepository ",
+		"type StickerService ",
+	}
+	err := filepath.WalkDir(".", func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			line := scanner.Text()
+			for _, declaration := range forbidden {
+				if strings.Contains(line, declaration) {
+					t.Errorf("production source %s declares forbidden dynamic workflow mechanism %q", path, strings.TrimSpace(declaration))
+				}
+			}
+		}
+		return scanner.Err()
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

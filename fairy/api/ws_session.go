@@ -69,6 +69,7 @@ type wsClientFrame struct {
 	Endpoint           session.EndpointKind                     `json:"endpoint,omitempty"`
 	EndpointKey        string                                   `json:"endpointKey,omitempty"`
 	Interaction        session.Context                          `json:"interaction,omitempty"`
+	OutputCapabilities session.OutputCapabilities               `json:"outputCapabilities"`
 	ConversationID     string                                   `json:"conversationId,omitempty"`
 	EvaluationReason   initiative.ParticipationEvaluationReason `json:"evaluationReason,omitempty"`
 	Messages           []initiative.AmbientObservation          `json:"messages,omitempty"`
@@ -78,6 +79,7 @@ type wsClientFrame struct {
 	SpeechEnabled      bool                                     `json:"speechEnabled,omitempty"`
 	TurnID             string                                   `json:"turnId,omitempty"`
 	CaptureResult      *session.DesktopCaptureResult            `json:"captureResult,omitempty"`
+	DeliveryResult     *session.ExpressionDeliveryResult        `json:"deliveryResult,omitempty"`
 }
 
 type wsServerFrame struct {
@@ -199,13 +201,39 @@ func (c *sessionConn) dispatch(ctx context.Context, frame wsClientFrame) {
 		c.handleCancelTurn(frame)
 	case "desktop.capture.result":
 		c.handleCaptureResult(ctx, frame)
+	case "expression.delivery":
+		c.handleExpressionDelivery(frame)
 	default:
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "unknown frame type"})
 	}
 }
 
+func (c *sessionConn) handleExpressionDelivery(frame wsClientFrame) {
+	if frame.DeliveryResult == nil {
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "deliveryResult is required"})
+		return
+	}
+	result := *frame.DeliveryResult
+	if err := result.Validate(); err != nil {
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
+		return
+	}
+	c.watchMu.Lock()
+	_, watched := c.watches[result.ConversationID]
+	c.watchMu.Unlock()
+	if !watched || !c.server.rt.Companion.OutputCapabilities(result.ConversationID).Sticker {
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "sticker delivery report is unavailable for this session"})
+		return
+	}
+	if err := c.server.rt.Companion.ReportExpressionDelivery(result); err != nil {
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
+		return
+	}
+	_ = c.write(wsServerFrame{Type: "ack", RequestID: frame.RequestID, ConversationID: result.ConversationID})
+}
+
 func (c *sessionConn) handleOpen(ctx context.Context, frame wsClientFrame) {
-	result, err := c.server.openSession(ctx, frame.Endpoint, frame.EndpointKey, frame.Interaction)
+	result, err := c.server.openSession(ctx, frame.Endpoint, frame.EndpointKey, frame.Interaction, frame.OutputCapabilities)
 	if err != nil {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 		return
@@ -485,7 +513,7 @@ type openSessionResult struct {
 	Endpoint       session.EndpointKind
 }
 
-func (s *Server) openSession(ctx context.Context, endpoint session.EndpointKind, endpointKey string, interactionContext session.Context) (openSessionResult, error) {
+func (s *Server) openSession(ctx context.Context, endpoint session.EndpointKind, endpointKey string, interactionContext session.Context, outputCapabilities session.OutputCapabilities) (openSessionResult, error) {
 	if err := interactionContext.Validate(endpoint); err != nil {
 		return openSessionResult{}, err
 	}
@@ -519,6 +547,9 @@ func (s *Server) openSession(ctx context.Context, endpoint session.EndpointKind,
 		return openSessionResult{}, err
 	}
 	if err := s.rt.Companion.BindInteraction(bootstrap.Conversation.ID, binding); err != nil {
+		return openSessionResult{}, err
+	}
+	if err := s.rt.Companion.BindOutputCapabilities(bootstrap.Conversation.ID, outputCapabilities); err != nil {
 		return openSessionResult{}, err
 	}
 	return openSessionResult{

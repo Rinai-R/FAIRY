@@ -2,10 +2,11 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ClockIcon, Cross2Icon, GearIcon, PaperPlaneIcon, StopIcon } from "@radix-ui/react-icons";
 import { Card, Flex, IconButton, Text, TextArea, TextField } from "@radix-ui/themes";
 import { Events } from "@wailsio/runtime";
-import { Cancel, CloseControlPanel, CloseHistory, Connect, ConnectionSettings, DisableDesktopObservation, EnableDesktopObservation, HideSpeechBubble, OpenControlPanel, OpenHistory, RecentMessages, SaveConnection, Send, SetDesktopObservationPrivacy } from "../bindings/fairy-desktop/coreservice.js";
-import { CharacterSpeechBubble } from "./components/CharacterSpeechBubble.jsx";
+import { Cancel, CloseControlPanel, CloseHistory, Connect, ConnectionSettings, DisableDesktopObservation, EnableDesktopObservation, HideSpeechBubble, OpenControlPanel, OpenHistory, RecentMessages, ReportStickerDelivery, SaveConnection, Send, SetDesktopObservationPrivacy } from "../bindings/fairy-desktop/coreservice.js";
+import { CharacterExpressionBubble, CharacterSpeechBubble } from "./components/CharacterSpeechBubble.jsx";
 import { PixelCharacter } from "./components/PixelCharacter.jsx";
 import { resolveChatKeyboardAction } from "./companionViewState.mjs";
+import { appendExpressionPart, expressionPartFromTurn, markStickerUnavailable } from "./expressionViewState.mjs";
 
 const FOOT_INPUT_MAX_HEIGHT = 88;
 
@@ -216,51 +217,94 @@ function SettingsSurface() {
 }
 
 function SpeechSurface() {
-  const [bubble, setBubble] = useState({ visible: false, waiting: false, text: "" });
+  const [bubble, setBubble] = useState({ visible: false, waiting: false, settled: false, turnId: "", parts: [] });
   const bubbleRef = useRef(bubble);
+  const reportedStickersRef = useRef(new Set());
   bubbleRef.current = bubble;
 
   useEffect(() => Events.On("desktop:turn", (event) => {
     const turn = event?.data ?? event;
-    // Local Send() emits planning immediately for floating dots. Later Core
-    // state_changed events must NOT wipe an arrived reply back to waiting.
     if (turn.type === "state_changed") {
       const waitingPhase = turn.state === "planning"
         || turn.state === "interpreting"
         || turn.state === "gathering"
         || turn.state === "responding";
       setBubble((current) => {
-        if (current.text.length > 0) {
+        if (current.parts.length > 0) {
           return { ...current, visible: true, waiting: false };
         }
-        if (waitingPhase) {
-          return { visible: true, waiting: true, text: "" };
-        }
-        return { ...current, visible: true, waiting: true };
+        return waitingPhase
+          ? { visible: true, waiting: true, settled: false, turnId: turn.turnId || "", parts: [] }
+          : current;
       });
       return;
     }
-    if (turn.type === "beat.ready" && turn.beat?.displayText) {
-      setBubble({ visible: true, waiting: false, text: turn.beat.displayText });
+    if (turn.type === "beat.ready") {
+      const next = expressionPartFromTurn(turn);
+      if (!next) return;
+      setBubble((current) => {
+        const currentParts = current.turnId && turn.turnId && current.turnId !== turn.turnId ? [] : current.parts;
+        return {
+          visible: true,
+          waiting: false,
+          settled: false,
+          turnId: turn.turnId || current.turnId,
+          parts: appendExpressionPart(currentParts, next),
+        };
+      });
       return;
     }
     if (turn.type === "completed") {
-      if (bubbleRef.current.text.length > 0) {
-        setBubble((current) => ({ ...current, waiting: false }));
+      if (bubbleRef.current.parts.length > 0) {
+        setBubble((current) => ({ ...current, waiting: false, settled: true }));
         return;
       }
-      setBubble({ visible: false, waiting: false, text: "" });
+      setBubble({ visible: false, waiting: false, settled: true, turnId: "", parts: [] });
       HideSpeechBubble();
       return;
     }
     if (turn.type === "failed" || turn.type === "interrupted" || turn.type === "stream.closed") {
-      setBubble({ visible: false, waiting: false, text: "" });
-      HideSpeechBubble();
+      if (bubbleRef.current.parts.some((part) => part.kind === "sticker" && part.unavailable)) {
+        setBubble((current) => ({ ...current, visible: true, waiting: false, settled: true }));
+      } else {
+        setBubble({ visible: false, waiting: false, settled: true, turnId: "", parts: [] });
+        HideSpeechBubble();
+      }
     }
   }), []);
 
   if (!bubble.visible) return <main className="fairy-speech-surface" />;
-  return <main className="fairy-speech-surface"><CharacterSpeechBubble targetText={bubble.text} waiting={bubble.waiting} onFaded={() => { setBubble({ visible: false, waiting: false, text: "" }); HideSpeechBubble(); }} /></main>;
+  const hasSticker = bubble.parts.some((part) => part.kind === "sticker");
+  const text = bubble.parts.filter((part) => part.kind === "utterance").map((part) => part.text).join("\n");
+  const clearBubble = () => {
+    setBubble({ visible: false, waiting: false, settled: true, turnId: "", parts: [] });
+    HideSpeechBubble();
+  };
+  const reportSticker = async (part, succeeded) => {
+    if (!part.turnId || !part.beatId || reportedStickersRef.current.has(part.key)) return;
+    reportedStickersRef.current.add(part.key);
+    try {
+      await ReportStickerDelivery(part.turnId, part.beatId, succeeded);
+    } catch {
+      setBubble((current) => ({
+        ...current,
+        settled: true,
+        parts: markStickerUnavailable(current.parts, part.key, "无法确认表情包交付"),
+      }));
+    }
+  };
+  return <main className="fairy-speech-surface">{hasSticker
+    ? <CharacterExpressionBubble
+      parts={bubble.parts}
+      settled={bubble.settled}
+      onStickerLoad={(part) => reportSticker(part, true)}
+      onStickerError={(part) => {
+        setBubble((current) => ({ ...current, parts: markStickerUnavailable(current.parts, part.key, "表情包加载失败") }));
+        reportSticker(part, false);
+      }}
+      onFaded={clearBubble}
+    />
+    : <CharacterSpeechBubble targetText={text} waiting={bubble.waiting} onFaded={clearBubble} />}</main>;
 }
 
 export function SurfaceApp() {

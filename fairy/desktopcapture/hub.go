@@ -33,6 +33,17 @@ type ToolRequest struct {
 	Deadline       time.Time
 }
 
+// Execution is the durable correlation handle returned before a desktop
+// request is dispatched. The caller can therefore publish its own awaiting
+// state before the desktop surface can complete the request.
+type Execution struct {
+	ID             string
+	ConversationID string
+	TurnID         string
+	CallID         string
+	DeadlineUnixMS int64
+}
+
 type Evidence struct {
 	ExecutionID string
 	MediaType   string
@@ -88,48 +99,80 @@ func (h *CaptureHub) SettleRecovered(ctx context.Context) error {
 	return nil
 }
 
-func (h *CaptureHub) Observe(ctx context.Context, request ToolRequest) (Evidence, error) {
+func (h *CaptureHub) Begin(ctx context.Context, request ToolRequest, completed func()) (Execution, error) {
 	if h == nil || h.store == nil || ctx == nil {
-		return Evidence{}, &ToolError{Code: "capture_unavailable"}
+		return Execution{}, &ToolError{Code: "capture_unavailable"}
 	}
 	if !h.Available(request.ConversationID) {
-		return Evidence{}, &ToolError{Code: "surface_unavailable"}
+		return Execution{}, &ToolError{Code: "surface_unavailable"}
 	}
 	if request.Deadline.IsZero() || !request.Deadline.After(time.Now()) {
-		return Evidence{}, &ToolError{Code: "deadline_exceeded"}
+		return Execution{}, &ToolError{Code: "deadline_exceeded"}
+	}
+	if completed == nil {
+		return Execution{}, errors.New("desktop capture completion callback is required")
 	}
 	record, err := h.store.CreateToolExecution(ctx, memory.CreateToolExecutionInput{
 		ConversationID: request.ConversationID, TurnID: request.TurnID, CallID: request.CallID,
 		ToolName: memory.ToolNameDesktopObserve, DeadlineAtUnixMS: request.Deadline.UnixMilli(),
 	})
 	if err != nil {
-		return Evidence{}, err
+		return Execution{}, err
 	}
 	h.mu.Lock()
 	h.turns[record.ID] = captureTurnRef{conversationID: record.ConversationID, turnID: record.TurnID}
+	h.completions[record.ID] = completed
 	h.mu.Unlock()
-	defer func() {
-		h.mu.Lock()
-		delete(h.turns, record.ID)
-		delete(h.evidence, record.ID)
-		h.mu.Unlock()
-	}()
-	if err := h.Dispatch(ctx, DefaultDesktopCaptureRequest(record)); err != nil {
-		_, _, _ = h.store.FailToolExecution(context.Background(), record.ID, "dispatch_failed", "desktop capture dispatch failed")
-		return Evidence{}, &ToolError{Code: "dispatch_failed"}
+	return Execution{
+		ID: record.ID, ConversationID: record.ConversationID, TurnID: record.TurnID,
+		CallID: record.CallID, DeadlineUnixMS: record.DeadlineAtUnixMS,
+	}, nil
+}
+
+func (h *CaptureHub) DispatchExecution(ctx context.Context, execution Execution) error {
+	if h == nil || h.store == nil || ctx == nil {
+		return &ToolError{Code: "capture_unavailable"}
 	}
-	waitCtx, cancel := context.WithDeadline(ctx, request.Deadline)
-	err = h.Wait(waitCtx, record.ID)
-	cancel()
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			_, _ = h.store.CancelToolExecutionsForTurn(context.Background(), request.ConversationID, request.TurnID, "turn_cancelled", "turn was cancelled")
-			return Evidence{}, err
+	if strings.TrimSpace(execution.ID) == "" || execution.DeadlineUnixMS <= time.Now().UnixMilli() {
+		_, _, _ = h.store.FailToolExecution(context.Background(), execution.ID, "deadline_exceeded", "desktop capture deadline exceeded")
+		h.notify(execution.ID)
+		return &ToolError{Code: "deadline_exceeded"}
+	}
+
+	timer := time.AfterFunc(time.Until(time.UnixMilli(execution.DeadlineUnixMS)), func() {
+		_, changed, failErr := h.store.FailToolExecution(context.Background(), execution.ID, "deadline_exceeded", "desktop capture deadline exceeded")
+		if changed || failErr != nil {
+			h.notify(execution.ID)
 		}
-		_, _, _ = h.store.FailToolExecution(context.Background(), record.ID, "deadline_exceeded", "desktop capture deadline exceeded")
-		return Evidence{}, &ToolError{Code: "deadline_exceeded"}
+	})
+	h.mu.Lock()
+	if _, active := h.completions[execution.ID]; !active {
+		h.mu.Unlock()
+		timer.Stop()
+		return ErrDesktopCaptureResultRejected
 	}
-	settled, ok, err := h.store.LoadToolExecution(context.Background(), record.ID)
+	h.timers[execution.ID] = timer
+	h.mu.Unlock()
+
+	request := session.DesktopCaptureRequest{
+		ExecutionID: execution.ID, ConversationID: execution.ConversationID, TurnID: execution.TurnID,
+		CallID: execution.CallID, DeadlineUnixMS: execution.DeadlineUnixMS,
+		MaxDecodedBytes: session.DesktopCaptureMaxDecodedBytes, MaxDimension: session.DesktopCaptureMaxDimension,
+		AllowedMIMETypes: []string{"image/png", "image/jpeg"},
+	}
+	if err := h.Dispatch(ctx, request); err != nil {
+		_, _, _ = h.store.FailToolExecution(context.Background(), execution.ID, "dispatch_failed", "desktop capture dispatch failed")
+		h.notify(execution.ID)
+		return &ToolError{Code: "dispatch_failed"}
+	}
+	return nil
+}
+
+func (h *CaptureHub) Result(ctx context.Context, executionID string) (Evidence, error) {
+	if h == nil || h.store == nil || ctx == nil {
+		return Evidence{}, &ToolError{Code: "capture_unavailable"}
+	}
+	settled, ok, err := h.store.LoadToolExecution(ctx, executionID)
 	if err != nil {
 		return Evidence{}, err
 	}
@@ -138,7 +181,8 @@ func (h *CaptureHub) Observe(ctx context.Context, request ToolRequest) (Evidence
 	}
 	switch settled.Status {
 	case memory.ToolExecutionCompleted:
-		evidence, ok := h.TakeEvidence(record.ID)
+		defer h.release(executionID)
+		evidence, ok := h.TakeEvidence(executionID)
 		if !ok {
 			return Evidence{}, &ToolError{Code: "evidence_lost"}
 		}
@@ -147,12 +191,19 @@ func (h *CaptureHub) Observe(ctx context.Context, request ToolRequest) (Evidence
 			Width: evidence.Width, Height: evidence.Height, DataURL: evidence.DataURL(),
 		}, nil
 	case memory.ToolExecutionFailed, memory.ToolExecutionCancelled:
+		defer h.release(executionID)
 		code := "capture_failed"
 		if settled.ErrorCode != nil && *settled.ErrorCode != "" {
 			code = *settled.ErrorCode
 		}
 		return Evidence{}, &ToolError{Code: code}
 	default:
+		h.mu.Lock()
+		_, completionActive := h.completions[executionID]
+		h.mu.Unlock()
+		if !completionActive {
+			h.release(executionID)
+		}
 		return Evidence{}, &ToolError{Code: "execution_unsettled"}
 	}
 }
@@ -173,6 +224,7 @@ func (h *CaptureHub) CancelTurn(ctx context.Context, conversationID, turnID stri
 		h.mu.Unlock()
 		for _, executionID := range ids {
 			h.notify(executionID)
+			h.release(executionID)
 		}
 	}
 	return err
@@ -194,11 +246,12 @@ type CaptureEvidence struct {
 type CaptureHub struct {
 	store captureExecutionStore
 
-	mu       sync.Mutex
-	routes   map[string]captureRoute
-	evidence map[string]CaptureEvidence
-	waiters  map[string][]chan struct{}
-	turns    map[string]captureTurnRef
+	mu          sync.Mutex
+	routes      map[string]captureRoute
+	evidence    map[string]CaptureEvidence
+	completions map[string]func()
+	timers      map[string]*time.Timer
+	turns       map[string]captureTurnRef
 }
 
 type captureTurnRef struct {
@@ -209,8 +262,8 @@ type captureTurnRef struct {
 func NewCaptureHub(store captureExecutionStore) *CaptureHub {
 	return &CaptureHub{
 		store: store, routes: make(map[string]captureRoute),
-		evidence: make(map[string]CaptureEvidence), waiters: make(map[string][]chan struct{}),
-		turns: make(map[string]captureTurnRef),
+		evidence: make(map[string]CaptureEvidence), completions: make(map[string]func()),
+		timers: make(map[string]*time.Timer), turns: make(map[string]captureTurnRef),
 	}
 }
 
@@ -365,65 +418,51 @@ func (h *CaptureHub) Close() {
 		return
 	}
 	h.mu.Lock()
-	waiters := h.waiters
+	completions := h.completions
+	timers := h.timers
 	h.routes = make(map[string]captureRoute)
 	h.evidence = make(map[string]CaptureEvidence)
-	h.waiters = make(map[string][]chan struct{})
+	h.completions = make(map[string]func())
+	h.timers = make(map[string]*time.Timer)
 	h.turns = make(map[string]captureTurnRef)
 	h.mu.Unlock()
-	for _, executionWaiters := range waiters {
-		for _, waiter := range executionWaiters {
-			close(waiter)
-		}
+	for _, timer := range timers {
+		timer.Stop()
+	}
+	for executionID, completed := range completions {
+		_, _, _ = h.store.FailToolExecution(context.Background(), executionID, "capture_unavailable", "desktop capture hub closed")
+		completed()
 	}
 }
 
-func (h *CaptureHub) Wait(ctx context.Context, executionID string) error {
-	if h == nil || h.store == nil || ctx == nil {
-		return errors.New("capture wait is not configured")
+func (h *CaptureHub) release(executionID string) {
+	if h == nil {
+		return
 	}
-	record, ok, err := h.store.LoadToolExecution(ctx, executionID)
-	if err != nil || !ok || record.Status != memory.ToolExecutionPending {
-		return err
-	}
-	wake := make(chan struct{})
 	h.mu.Lock()
-	h.waiters[executionID] = append(h.waiters[executionID], wake)
+	timer := h.timers[executionID]
+	delete(h.timers, executionID)
+	delete(h.completions, executionID)
+	delete(h.turns, executionID)
+	delete(h.evidence, executionID)
 	h.mu.Unlock()
-	defer func() {
-		h.mu.Lock()
-		waiters := h.waiters[executionID]
-		for index, waiter := range waiters {
-			if waiter == wake {
-				h.waiters[executionID] = append(waiters[:index], waiters[index+1:]...)
-				break
-			}
-		}
-		if len(h.waiters[executionID]) == 0 {
-			delete(h.waiters, executionID)
-		}
-		h.mu.Unlock()
-	}()
-	// Close the subscribe-after-complete race by checking persistent state again.
-	record, ok, err = h.store.LoadToolExecution(ctx, executionID)
-	if err != nil || !ok || record.Status != memory.ToolExecutionPending {
-		return err
-	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-wake:
-		return nil
+	if timer != nil {
+		timer.Stop()
 	}
 }
 
 func (h *CaptureHub) notify(executionID string) {
 	h.mu.Lock()
-	waiters := append([]chan struct{}(nil), h.waiters[executionID]...)
-	delete(h.waiters, executionID)
+	completed := h.completions[executionID]
+	timer := h.timers[executionID]
+	delete(h.completions, executionID)
+	delete(h.timers, executionID)
 	h.mu.Unlock()
-	for _, waiter := range waiters {
-		close(waiter)
+	if timer != nil {
+		timer.Stop()
+	}
+	if completed != nil {
+		completed()
 	}
 }
 

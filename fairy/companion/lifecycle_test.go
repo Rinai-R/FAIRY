@@ -147,6 +147,38 @@ func TestBeatReadyIncludesPacingFields(t *testing.T) {
 	}
 }
 
+func TestStickerExpressionEventsAllowEmptyTextAndCarrySnapshot(t *testing.T) {
+	life := newTurnLifecycle("conversation", "turn")
+	for _, state := range []turnState{turnStateInterpreting, turnStateGathering, turnStatePlanning, turnStateResponding} {
+		if _, err := life.Transition(state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chain := ReplyChain{
+		Kind: reply.ChainSticker, VisualState: "surprised",
+		Sticker: &reply.StickerReference{ID: "sticker-1", Description: "震惊", MIMEType: "image/png"},
+	}
+	chainEvent, err := life.ReplyChain(0, "", chain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chainPayload := decodeEventPayload[replyChainPayload](t, chainEvent.Payload)
+	if chainPayload.Delta != "" || chainPayload.Part.Kind != "sticker" || chainPayload.Part.Sticker.ID != "sticker-1" {
+		t.Fatalf("reply chain payload = %#v", chainPayload)
+	}
+	beat, err := life.BeatReady(BeatReadyCompletion{
+		BeatID: "final-0", Kind: reply.BeatKindFinal, ChainIndex: 0, VisualState: "surprised", Chain: &chain,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := decodeEventPayload[beatReadyPayload](t, beat.Payload)
+	if payload.DisplayText != "" || payload.Part == nil || payload.Part.Kind != "sticker" ||
+		payload.Part.Sticker == nil || payload.Part.Sticker.Description != "震惊" {
+		t.Fatalf("sticker beat payload = %#v", payload)
+	}
+}
+
 func TestCompletedUsageWireShapeMatchesFrontendContract(t *testing.T) {
 	life := newTurnLifecycle("6a129284-6358-47b0-ad64-2a5907d36c91", "6a129284-6358-47b0-ad64-2a5907d36c92")
 	for _, state := range []turnState{turnStateInterpreting, turnStateGathering, turnStatePlanning, turnStateResponding} {

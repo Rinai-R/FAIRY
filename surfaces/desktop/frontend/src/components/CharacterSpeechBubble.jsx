@@ -101,3 +101,54 @@ export function CharacterSpeechBubble({
     </motion.aside>
   );
 }
+
+export function CharacterExpressionBubble({
+  parts,
+  settled,
+  onStickerLoad,
+  onStickerError,
+  onFaded,
+}) {
+  const [fading, setFading] = useState(false);
+  const visibleParts = Array.isArray(parts) ? parts : [];
+
+  useEffect(() => {
+    if (!settled || visibleParts.length === 0) return undefined;
+    const dwell = setTimeout(() => setFading(true), SPEECH_BUBBLE_FADE_AFTER_MS);
+    return () => clearTimeout(dwell);
+  }, [settled, visibleParts.length]);
+
+  useEffect(() => {
+    if (!fading) return undefined;
+    const id = setTimeout(() => onFaded?.(), 480);
+    return () => clearTimeout(id);
+  }, [fading, onFaded]);
+
+  if (visibleParts.length === 0) return null;
+  return (
+    <motion.aside
+      className={`fairy-speech-bubble fairy-expression-bubble${fading ? " is-fading" : ""}`}
+      aria-label="角色回复"
+      initial={{ opacity: 0, y: 8, scale: 0.94 }}
+      animate={{ opacity: fading ? 0 : 1, y: fading ? 4 : 0, scale: fading ? 0.96 : 1 }}
+      transition={{ duration: fading ? 0.45 : 0.22, ease: [0.16, 1, 0.3, 1] }}
+    >
+      {visibleParts.map((part) => {
+        if (part.kind === "utterance") {
+          return <p key={part.key}>{part.text}</p>;
+        }
+        if (part.unavailable || !part.url) {
+          return <div key={part.key} className="fairy-expression-bubble__unavailable" role="status">{part.error || "表情包不可用"}</div>;
+        }
+        return <img
+          key={part.key}
+          className="fairy-expression-bubble__sticker"
+          src={part.url}
+          alt={part.description || "角色表情包"}
+          onLoad={() => onStickerLoad?.(part)}
+          onError={() => onStickerError?.(part)}
+        />;
+      })}
+    </motion.aside>
+  );
+}

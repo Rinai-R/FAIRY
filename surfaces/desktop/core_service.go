@@ -439,7 +439,14 @@ func (s *CoreService) Connect() (CoreSession, error) {
 			_ = socket.Close()
 		}
 	}()
-	opened, err := socket.OpenSession(ctx, coreclient.OpenSessionRequest{Endpoint: session.EndpointDesktop, EndpointKey: settings.EndpointKey, Interaction: session.Context{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied}})
+	opened, err := socket.OpenSession(ctx, coreclient.OpenSessionRequest{
+		Endpoint:    session.EndpointDesktop,
+		EndpointKey: settings.EndpointKey,
+		Interaction: session.Context{
+			Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied,
+		},
+		OutputCapabilities: session.OutputCapabilities{Sticker: true},
+	})
 	if err != nil {
 		return CoreSession{}, err
 	}
@@ -552,9 +559,14 @@ type desktopTurnEvent struct {
 }
 
 type desktopBeat struct {
-	Kind        string `json:"kind"`
-	DisplayText string `json:"displayText"`
-	VisualState string `json:"visualState"`
+	BeatID             string                  `json:"beatId"`
+	Kind               string                  `json:"kind"`
+	DisplayText        string                  `json:"displayText"`
+	VisualState        string                  `json:"visualState"`
+	Part               *session.ExpressionPart `json:"part,omitempty"`
+	StickerURL         string                  `json:"stickerUrl,omitempty"`
+	StickerUnavailable bool                    `json:"stickerUnavailable,omitempty"`
+	StickerError       string                  `json:"stickerError,omitempty"`
 }
 
 func (s *CoreService) forwardTurnEvents(socket *coreclient.SessionSocket, conversation string, events <-chan coreclient.TurnEvent) {
@@ -563,6 +575,9 @@ func (s *CoreService) forwardTurnEvents(socket *coreclient.SessionSocket, conver
 			continue
 		}
 		converted := decodeDesktopTurnEvent(event)
+		if converted.Beat != nil && converted.Beat.Part != nil && converted.Beat.Part.Kind == session.ExpressionSticker {
+			s.prepareDesktopSticker(socket, event, converted.Beat)
+		}
 		s.mu.Lock()
 		current := s.socket == socket
 		if current && s.active && s.activeTurnID == "" {
@@ -587,6 +602,82 @@ func (s *CoreService) forwardTurnEvents(socket *coreclient.SessionSocket, conver
 	if current && active {
 		s.emitTurnEvent(desktopTurnEvent{Type: "stream.closed", Message: "与 Core 的会话连接已断开"})
 	}
+}
+
+func (s *CoreService) prepareDesktopSticker(socket *coreclient.SessionSocket, event coreclient.TurnEvent, beat *desktopBeat) {
+	fail := func(message string) {
+		beat.StickerUnavailable = true
+		beat.StickerError = message
+		if strings.TrimSpace(beat.BeatID) == "" || strings.TrimSpace(event.TurnID) == "" {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := socket.ReportExpressionDelivery(ctx, coreclient.ExpressionDeliveryResult{
+			ConversationID: event.ConversationID,
+			TurnID:         event.TurnID,
+			BeatID:         beat.BeatID,
+			Status:         session.ExpressionDeliveryFailed,
+			ErrorMessage:   message,
+		}); err != nil {
+			beat.StickerError = message + "；失败状态回报 Core 失败"
+		}
+	}
+	if beat.Part == nil || beat.Part.Sticker == nil || strings.TrimSpace(beat.Part.Sticker.ID) == "" ||
+		!desktopStickerMIME(beat.Part.Sticker.MIMEType) || strings.TrimSpace(beat.BeatID) == "" {
+		fail("表情包引用无效")
+		return
+	}
+	s.mu.Lock()
+	client, cache, current := s.client, s.visualCache, s.socket == socket
+	s.mu.Unlock()
+	if !current || client == nil || cache == nil {
+		fail("Desktop 表情包读取链路不可用")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	content, err := client.ReadStickerContent(ctx, beat.Part.Sticker.ID)
+	if err != nil {
+		fail("无法从 Core 读取表情包")
+		return
+	}
+	if content.MIMEType != beat.Part.Sticker.MIMEType {
+		fail("Core 表情包 MIME 与回复快照不一致")
+		return
+	}
+	route, err := cache.PutSticker(beat.BeatID, content)
+	if err != nil {
+		fail("无法准备 Desktop 表情包")
+		return
+	}
+	beat.StickerURL = route
+}
+
+func (s *CoreService) ReportStickerDelivery(turnID, beatID string, succeeded bool) error {
+	turnID, beatID = strings.TrimSpace(turnID), strings.TrimSpace(beatID)
+	if turnID == "" || beatID == "" {
+		return errors.New("sticker delivery identity is required")
+	}
+	s.mu.Lock()
+	socket, conversation := s.socket, s.conversation
+	s.mu.Unlock()
+	if socket == nil || conversation == "" {
+		return errors.New("Core session is not connected")
+	}
+	result := coreclient.ExpressionDeliveryResult{
+		ConversationID: conversation,
+		TurnID:         turnID,
+		BeatID:         beatID,
+		Status:         session.ExpressionDeliverySucceeded,
+	}
+	if !succeeded {
+		result.Status = session.ExpressionDeliveryFailed
+		result.ErrorMessage = "Desktop 表情包渲染失败"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return socket.ReportExpressionDelivery(ctx, result)
 }
 
 func decodeDesktopTurnEvent(event coreclient.TurnEvent) desktopTurnEvent {

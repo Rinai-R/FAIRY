@@ -34,6 +34,7 @@ func (e *TurnEngine) SubmitDesktopVisionInitiation(request DesktopVisionInitiati
 	return e.submitRuntimeTurn(SubmitCompiledTurnRequest{
 		ConversationID: request.ConversationID, SpeechEnabled: request.SpeechEnabled,
 		MaxOutputTokens: RespondMaxOutputTokens, MessageSource: "desktop_vision_initiation",
+		OutputCapabilities: s.OutputCapabilities(request.ConversationID),
 		Initiation: &DesktopInitiationContext{
 			ObservationEvidenceIDs: []string{requestID}, Trigger: "on_demand_vision", VisionRequested: true,
 		},
@@ -73,6 +74,7 @@ func (e *TurnEngine) SubmitDesktopInitiation(request DesktopInitiationRequest, o
 	return e.submitRuntimeTurn(SubmitCompiledTurnRequest{
 		ConversationID: request.ConversationID, SpeechEnabled: request.SpeechEnabled,
 		MaxOutputTokens: RespondMaxOutputTokens, MessageSource: "desktop_initiation",
+		OutputCapabilities: s.OutputCapabilities(request.ConversationID),
 		Initiation: &DesktopInitiationContext{
 			ObservationEvidenceIDs: append([]string(nil), request.ObservationEvidenceIDs...),
 			Trigger:                string(observation.Trigger), Activity: string(observation.Activity), Lifecycle: string(observation.Lifecycle),
@@ -113,5 +115,6 @@ func (e *TurnEngine) SubmitTurn(request SubmitTurnRequest) (TurnOutcome, error) 
 		ReplyIntent:         request.ReplyIntent,
 		RecentTargetReply:   request.RecentTargetReply,
 		PersonNoteSenderIDs: append([]string(nil), request.PersonNoteSenderIDs...),
+		OutputCapabilities:  s.OutputCapabilities(request.ConversationID),
 	}, resolved)
 }

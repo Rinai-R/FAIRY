@@ -54,7 +54,7 @@ func TestServiceObserveAmbientRejectsDirectInteractionSynchronously(t *testing.T
 	}
 }
 
-func TestServiceObserveDesktopShortCircuitsPrivacyBeforeGraph(t *testing.T) {
+func TestServiceObserveDesktopShortCircuitsPrivacyBeforeDecision(t *testing.T) {
 	service := NewService(t.Context(), ServiceOptions{
 		Interactions: staticInteractionResolver{resolved: privateDesktopInteraction()},
 	})
@@ -72,7 +72,7 @@ func TestServiceObserveDesktopShortCircuitsPrivacyBeforeGraph(t *testing.T) {
 	}
 }
 
-func TestServiceObserveDesktopExecutesTypedFlowAndAppliesAttentionBudget(t *testing.T) {
+func TestServiceObserveDesktopAppliesAttentionBudgetAndSchedulesInitiation(t *testing.T) {
 	turns := &recordingTurnStarter{}
 	service := NewService(t.Context(), ServiceOptions{
 		Turns: turns, Interactions: staticInteractionResolver{resolved: privateDesktopInteraction()},

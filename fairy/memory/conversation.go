@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -190,7 +191,7 @@ func LoadConversationBootstrap(ctx context.Context, db ConversationDB, conversat
 	if err != nil {
 		return ConversationBootstrap{}, err
 	}
-	rows, err := db.Query(ctx, "SELECT id, conversation_id, turn_id, sequence, role, content, created_at_ms FROM conversation_messages WHERE conversation_id = $1 ORDER BY sequence ASC", conversationID)
+	rows, err := db.Query(ctx, "SELECT id, conversation_id, turn_id, sequence, role, content, expression_parts, created_at_ms FROM conversation_messages WHERE conversation_id = $1 ORDER BY sequence ASC", conversationID)
 	if err != nil {
 		return ConversationBootstrap{}, fmt.Errorf("loading conversation messages: %w", err)
 	}
@@ -247,7 +248,7 @@ func LoadConversationPromptContext(ctx context.Context, db ConversationDB, conve
 		return ConversationPromptContext{}, err
 	}
 	rows, err := db.Query(ctx, `
-SELECT id, conversation_id, turn_id, sequence, role, content, created_at_ms
+SELECT id, conversation_id, turn_id, sequence, role, content, expression_parts, created_at_ms
 FROM conversation_messages
 WHERE conversation_id = $1 AND sequence > $2
 ORDER BY sequence ASC`, conversationID, int64(prompt.CutoffMessageSequence))
@@ -367,6 +368,7 @@ func CompleteTurn(
 	ctx context.Context,
 	tx pgx.Tx,
 	turnID, conversationID, messageID, assistantMessage string,
+	expressionPartsJSON []byte,
 	messageSequence, now int64,
 ) error {
 	changed, err := tx.Exec(ctx, "UPDATE conversation_turns SET status = 'completed', extraction_state = CASE WHEN origin = 'desktop_initiation' THEN 'ineligible' ELSE 'pending' END, updated_at_ms = $3 WHERE id = $1 AND conversation_id = $2 AND status IN ('interpreting', 'planning', 'responding')", turnID, conversationID, now)
@@ -376,7 +378,7 @@ func CompleteTurn(
 	if changed.RowsAffected() != 1 {
 		return errors.New("turn does not belong to conversation or is terminal")
 	}
-	if _, err := tx.Exec(ctx, "INSERT INTO conversation_messages(id, conversation_id, turn_id, sequence, role, content, created_at_ms) VALUES ($1, $2, $3, $4, 'assistant', $5, $6)", messageID, conversationID, turnID, messageSequence, assistantMessage, now); err != nil {
+	if _, err := tx.Exec(ctx, "INSERT INTO conversation_messages(id, conversation_id, turn_id, sequence, role, content, expression_parts, created_at_ms) VALUES ($1, $2, $3, $4, 'assistant', $5, $6, $7)", messageID, conversationID, turnID, messageSequence, assistantMessage, expressionPartsJSON, now); err != nil {
 		return fmt.Errorf("writing assistant message: %w", err)
 	}
 	return nil
@@ -403,8 +405,8 @@ WHERE id = $1
 	return nil
 }
 
-func InsertAssistantMessage(ctx context.Context, tx pgx.Tx, messageID, conversationID, turnID, content string, messageSequence, now int64) error {
-	if _, err := tx.Exec(ctx, "INSERT INTO conversation_messages(id, conversation_id, turn_id, sequence, role, content, created_at_ms) VALUES ($1, $2, $3, $4, 'assistant', $5, $6)", messageID, conversationID, turnID, messageSequence, content, now); err != nil {
+func InsertAssistantMessage(ctx context.Context, tx pgx.Tx, messageID, conversationID, turnID, content string, expressionPartsJSON []byte, messageSequence, now int64) error {
+	if _, err := tx.Exec(ctx, "INSERT INTO conversation_messages(id, conversation_id, turn_id, sequence, role, content, expression_parts, created_at_ms) VALUES ($1, $2, $3, $4, 'assistant', $5, $6, $7)", messageID, conversationID, turnID, messageSequence, content, expressionPartsJSON, now); err != nil {
 		return fmt.Errorf("writing interrupted assistant prefix: %w", err)
 	}
 	return nil
@@ -426,8 +428,20 @@ func FailTurn(ctx context.Context, db interface {
 func ScanMessageRecord(row scanner) (MessageRecord, error) {
 	var message MessageRecord
 	var sequence int64
-	if err := row.Scan(&message.ID, &message.ConversationID, &message.TurnID, &sequence, &message.Role, &message.Content, &message.CreatedAtUnixMS); err != nil {
+	var expressionPartsJSON []byte
+	if err := row.Scan(&message.ID, &message.ConversationID, &message.TurnID, &sequence, &message.Role, &message.Content, &expressionPartsJSON, &message.CreatedAtUnixMS); err != nil {
 		return MessageRecord{}, fmt.Errorf("scanning conversation message: %w", err)
+	}
+	if err := json.Unmarshal(expressionPartsJSON, &message.Parts); err != nil {
+		return MessageRecord{}, fmt.Errorf("decoding conversation message expression parts: %w", err)
+	}
+	if message.Parts == nil {
+		message.Parts = []ExpressionPart{}
+	}
+	if message.Role == "assistant" && len(message.Parts) > 0 {
+		if err := ValidateExpressionMessage(message.Content, message.Parts); err != nil {
+			return MessageRecord{}, fmt.Errorf("validating conversation message expression parts: %w", err)
+		}
 	}
 	message.Sequence = uint64(sequence)
 	return message, nil

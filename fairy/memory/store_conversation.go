@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -168,7 +169,10 @@ func (s *Store) beginTurnPostgres(ctx context.Context, conversationID string, us
 	if err := tx.Commit(queryCtx); err != nil {
 		return PersistedTurn{}, fmt.Errorf("committing user message transaction: %w", err)
 	}
-	return PersistedTurn{ID: turnID, ConversationID: conversationID, UserMessage: MessageRecord{ID: messageID, ConversationID: conversationID, TurnID: turnID, Sequence: uint64(messageSequence), Role: "user", Content: userMessage, CreatedAtUnixMS: now}}, nil
+	return PersistedTurn{ID: turnID, ConversationID: conversationID, UserMessage: MessageRecord{
+		ID: messageID, ConversationID: conversationID, TurnID: turnID, Sequence: uint64(messageSequence),
+		Role: "user", Content: userMessage, Parts: []ExpressionPart{}, CreatedAtUnixMS: now,
+	}}, nil
 }
 
 func (s *Store) beginInitiationTurnPostgres(ctx context.Context, conversationID string, evidenceIDs []string) (PersistedTurn, error) {
@@ -217,14 +221,23 @@ func (s *Store) beginInitiationTurnPostgres(ctx context.Context, conversationID 
 }
 
 func (s *Store) completeTurnPostgres(ctx context.Context, conversationID string, turnID string, assistantMessage string) (MessageRecord, error) {
+	return s.completeExpressionTurnPostgres(ctx, conversationID, turnID, assistantMessage, nil)
+}
+
+func (s *Store) completeExpressionTurnPostgres(ctx context.Context, conversationID string, turnID string, assistantMessage string, parts []ExpressionPart) (MessageRecord, error) {
 	if err := ValidateID("conversation_id", conversationID); err != nil {
 		return MessageRecord{}, err
 	}
 	if err := ValidateID("turn_id", turnID); err != nil {
 		return MessageRecord{}, err
 	}
-	if err := ValidateContent("assistant message", assistantMessage); err != nil {
+	if err := ValidateExpressionMessage(assistantMessage, parts); err != nil {
 		return MessageRecord{}, err
+	}
+	storedParts := append([]ExpressionPart{}, parts...)
+	partsJSON, err := json.Marshal(storedParts)
+	if err != nil {
+		return MessageRecord{}, fmt.Errorf("encoding assistant expression parts: %w", err)
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
@@ -242,7 +255,7 @@ func (s *Store) completeTurnPostgres(ctx context.Context, conversationID string,
 		return MessageRecord{}, err
 	}
 	messageID := newID()
-	if err := CompleteTurn(queryCtx, tx, turnID, conversationID, messageID, assistantMessage, messageSequence, now); err != nil {
+	if err := CompleteTurn(queryCtx, tx, turnID, conversationID, messageID, assistantMessage, partsJSON, messageSequence, now); err != nil {
 		return MessageRecord{}, err
 	}
 	if err := TouchConversation(queryCtx, tx, conversationID, now); err != nil {
@@ -251,20 +264,32 @@ func (s *Store) completeTurnPostgres(ctx context.Context, conversationID string,
 	if err := tx.Commit(queryCtx); err != nil {
 		return MessageRecord{}, fmt.Errorf("committing assistant message transaction: %w", err)
 	}
-	return MessageRecord{ID: messageID, ConversationID: conversationID, TurnID: turnID, Sequence: uint64(messageSequence), Role: "assistant", Content: assistantMessage, CreatedAtUnixMS: now}, nil
+	return MessageRecord{
+		ID: messageID, ConversationID: conversationID, TurnID: turnID, Sequence: uint64(messageSequence),
+		Role: "assistant", Content: assistantMessage, Parts: storedParts, CreatedAtUnixMS: now,
+	}, nil
 }
 
 func (s *Store) interruptTurnPostgres(ctx context.Context, conversationID string, turnID string, publishedPrefix string) (*MessageRecord, error) {
+	return s.interruptExpressionTurnPostgres(ctx, conversationID, turnID, publishedPrefix, nil)
+}
+
+func (s *Store) interruptExpressionTurnPostgres(ctx context.Context, conversationID string, turnID string, publishedPrefix string, parts []ExpressionPart) (*MessageRecord, error) {
 	if err := ValidateID("conversation_id", conversationID); err != nil {
 		return nil, err
 	}
 	if err := ValidateID("turn_id", turnID); err != nil {
 		return nil, err
 	}
-	if publishedPrefix != "" {
-		if err := ValidateContent("published assistant prefix", publishedPrefix); err != nil {
+	if publishedPrefix != "" || len(parts) > 0 {
+		if err := ValidateExpressionMessage(publishedPrefix, parts); err != nil {
 			return nil, err
 		}
+	}
+	storedParts := append([]ExpressionPart{}, parts...)
+	partsJSON, err := json.Marshal(storedParts)
+	if err != nil {
+		return nil, fmt.Errorf("encoding interrupted expression parts: %w", err)
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
@@ -282,13 +307,13 @@ func (s *Store) interruptTurnPostgres(ctx context.Context, conversationID string
 	}
 
 	var assistant *MessageRecord
-	if publishedPrefix != "" {
+	if publishedPrefix != "" || len(parts) > 0 {
 		messageSequence, err := NextSequence(queryCtx, tx, "conversation_messages", conversationID)
 		if err != nil {
 			return nil, err
 		}
 		messageID := newID()
-		if err := InsertAssistantMessage(queryCtx, tx, messageID, conversationID, turnID, publishedPrefix, messageSequence, now); err != nil {
+		if err := InsertAssistantMessage(queryCtx, tx, messageID, conversationID, turnID, publishedPrefix, partsJSON, messageSequence, now); err != nil {
 			return nil, err
 		}
 		assistant = &MessageRecord{
@@ -298,6 +323,7 @@ func (s *Store) interruptTurnPostgres(ctx context.Context, conversationID string
 			Sequence:        uint64(messageSequence),
 			Role:            "assistant",
 			Content:         publishedPrefix,
+			Parts:           storedParts,
 			CreatedAtUnixMS: now,
 		}
 	}

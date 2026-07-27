@@ -192,6 +192,13 @@ func sendTurn(command *cobra.Command, client APIClient, config ConnectionConfig,
 			}
 		case result := <-events:
 			if result.err != nil {
+				// A completed stream may close while the submit response is
+				// still in flight. The terminal event is authoritative; keep
+				// waiting for the correlated submit result instead of turning
+				// the post-terminal EOF into a failed command.
+				if terminal != "" {
+					continue
+				}
 				if command.Context().Err() != nil {
 					return command.Context().Err()
 				}

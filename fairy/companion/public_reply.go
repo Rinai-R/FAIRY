@@ -129,27 +129,34 @@ var publicPeerIdentityPatterns = []*regexp.Regexp{
 }
 
 func compileReplyForInteraction(draft string, availableVisualStates []VisualState, resolved session.Resolved, intent *ReplyIntent) (CompiledReply, error) {
-	reply, err := reply.CompileReply(draft, availableVisualStates)
+	return compileReplyForInteractionWithExpressions(draft, availableVisualStates, resolved, intent, reply.CompileOptions{})
+}
+
+func compileReplyForInteractionWithExpressions(draft string, availableVisualStates []VisualState, resolved session.Resolved, intent *ReplyIntent, options reply.CompileOptions) (CompiledReply, error) {
+	compiled, err := reply.CompileReplyWithOptions(draft, availableVisualStates, options)
 	if err != nil {
 		return CompiledReply{}, err
 	}
-	if err := validateReplyForInteraction(reply, resolved, intent); err != nil {
+	if err := validateReplyForInteraction(compiled, resolved, intent); err != nil {
 		return CompiledReply{}, err
 	}
-	return reply, nil
+	return compiled, nil
 }
 
-func validateReplyForInteraction(reply CompiledReply, resolved session.Resolved, intent *ReplyIntent) error {
+func validateReplyForInteraction(compiled CompiledReply, resolved session.Resolved, intent *ReplyIntent) error {
 	if resolved.Memory == session.MemoryPublic && intent != nil {
 		shape, err := publicReplyShapeForMode(intent.ReplyMode)
 		if err != nil {
 			return err
 		}
-		if len(reply.Chains) < shape.minChains || len(reply.Chains) > shape.maxChains {
-			return &publicReplyShapeError{mode: intent.ReplyMode, actual: len(reply.Chains), want: shape}
+		if len(compiled.Chains) < shape.minChains || len(compiled.Chains) > shape.maxChains {
+			return &publicReplyShapeError{mode: intent.ReplyMode, actual: len(compiled.Chains), want: shape}
 		}
 	}
-	for _, chain := range reply.Chains {
+	for _, chain := range compiled.Chains {
+		if chain.Kind == reply.ChainSticker {
+			continue
+		}
 		if err := validateTextForInteraction(chain.Text, resolved); err != nil {
 			return err
 		}

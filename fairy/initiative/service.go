@@ -134,21 +134,21 @@ func (s *Service) DecideParticipation(ctx context.Context, request Participation
 		return ParticipationResult{}, err
 	}
 	if route.Pipeline != PipelineParticipation {
-		return ParticipationResult{}, errors.New("public ambient trigger selected an invalid entry graph")
+		return ParticipationResult{}, errors.New("public ambient trigger selected an invalid initiative entry")
 	}
 	return s.decisions.DecideParticipation(ctx, request)
 }
 
-func (s *Service) ObserveDesktop(conversationID string, observation session.DesktopObservation) (DesktopGraphPlan, error) {
+func (s *Service) ObserveDesktop(conversationID string, observation session.DesktopObservation) (DesktopObservationResult, error) {
 	if s == nil {
-		return DesktopGraphPlan{}, errors.New("initiative service is unavailable")
+		return DesktopObservationResult{}, errors.New("initiative service is unavailable")
 	}
 	if s.interactions == nil {
-		return DesktopGraphPlan{}, errors.New("initiative interaction resolver is not configured")
+		return DesktopObservationResult{}, errors.New("initiative interaction resolver is not configured")
 	}
 	resolved, err := s.interactions.ResolveInteraction(conversationID)
 	if err != nil {
-		return DesktopGraphPlan{}, err
+		return DesktopObservationResult{}, err
 	}
 	now := time.Now()
 	envelope := TriggerEnvelope{
@@ -157,23 +157,24 @@ func (s *Service) ObserveDesktop(conversationID string, observation session.Desk
 		EvidenceIDs: []string{observation.ObservationID}, CreatedAt: now,
 	}
 	if err := envelope.Validate(now); err != nil {
-		return DesktopGraphPlan{}, err
+		return DesktopObservationResult{}, err
 	}
 	route, err := RouteTrigger(envelope, observation.Privacy, true, now)
 	if err != nil {
-		return DesktopGraphPlan{}, err
+		return DesktopObservationResult{}, err
 	}
 	if route.Pipeline == PipelineSilent {
-		return DesktopGraphPlan{Action: DesktopActionSilent, OmitReasons: []string{"rule_tree:" + route.Branch}}, nil
+		// Keep the historical omit code stable for existing Session clients.
+		return DesktopObservationResult{Nodes: []DesktopObservationStep{}, Action: DesktopActionSilent, OmitReasons: []string{"rule_tree:" + route.Branch}}, nil
 	}
 	if route.Pipeline != PipelineObservation {
-		return DesktopGraphPlan{}, errors.New("desktop trigger selected an invalid entry graph")
+		return DesktopObservationResult{}, errors.New("desktop trigger selected an invalid initiative entry")
 	}
 	if s.evidence == nil {
 		s.evidence = NewEvidenceRegistry()
 	}
 	if err := s.evidence.Accept(observation, now); err != nil {
-		return DesktopGraphPlan{}, err
+		return DesktopObservationResult{}, err
 	}
 	rulebook := DesktopRulebook{
 		Resolved: resolved, Trigger: observation.Trigger, Privacy: observation.Privacy,
@@ -181,45 +182,29 @@ func (s *Service) ObserveDesktop(conversationID string, observation session.Desk
 		AllowsPlanner: resolved.AllowsPersonalMemory(), AllowsInitiation: resolved.AllowsPersonalMemory(),
 		AttentionBudget: 1, MinSpacing: time.Minute, Now: now,
 	}
-	plan, err := CompileDesktopGraph(rulebook, observation)
+	result, err := DecideDesktopObservation(rulebook, observation)
 	if err != nil {
-		return DesktopGraphPlan{}, err
+		return DesktopObservationResult{}, err
 	}
 	if s.attention == nil {
 		s.attention = NewAttentionEvaluator()
 	}
-	action, err := s.attention.Evaluate(conversationID, plan, rulebook, rulebook.Now)
+	action, err := s.attention.Evaluate(conversationID, result.Action, rulebook, rulebook.Now)
 	if err != nil {
-		return DesktopGraphPlan{}, err
+		return DesktopObservationResult{}, err
 	}
-	graph, err := CompileDesktopTypedGraph(rulebook, observation)
-	if err != nil {
-		return DesktopGraphPlan{}, err
-	}
-	var initiate func(context.Context, session.DesktopObservation) error
-	if s.turns != nil {
-		initiate = func(_ context.Context, accepted session.DesktopObservation) error {
-			return s.turns.ScheduleDesktopInitiation(
-				conversationID,
-				[]string{accepted.ObservationID},
-				accepted,
-			)
+	if action == DesktopActionInitiate && s.turns != nil {
+		if err := s.turns.ScheduleDesktopInitiation(
+			conversationID,
+			[]string{observation.ObservationID},
+			observation,
+		); err != nil {
+			return DesktopObservationResult{}, err
 		}
 	}
-	state, err := graph.InvokeObserved(
-		context.Background(), "normalize", "final",
-		DesktopGraphState{Observation: observation, AttentionDecision: action, Initiate: initiate},
-		func(event DesktopGraphExecutionEvent) {
-			plan.Diagnostics = append(plan.Diagnostics, DesktopGraphDiagnostic{
-				Node: event.Node, Kind: event.Kind, Status: string(event.Status),
-			})
-		},
-	)
-	if err != nil {
-		return DesktopGraphPlan{}, err
-	}
-	plan.Action = state.Action
-	return plan, nil
+	result.Action = action
+	result.Diagnostics = desktopObservationDiagnostics(action)
+	return result, nil
 }
 
 func (s *Service) ObserveAmbientReply(registration FeedbackRegistration) bool {

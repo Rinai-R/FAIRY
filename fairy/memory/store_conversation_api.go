@@ -89,12 +89,28 @@ func (s *Store) CompleteTurnContext(ctx context.Context, conversationID string, 
 	return s.completeTurnPostgres(ctx, conversationID, turnID, assistantMessage)
 }
 
+func (s *Store) CompleteExpressionTurn(conversationID string, turnID string, assistantMessage string, parts []ExpressionPart) (MessageRecord, error) {
+	return s.CompleteExpressionTurnContext(context.Background(), conversationID, turnID, assistantMessage, parts)
+}
+
+func (s *Store) CompleteExpressionTurnContext(ctx context.Context, conversationID string, turnID string, assistantMessage string, parts []ExpressionPart) (MessageRecord, error) {
+	return s.completeExpressionTurnPostgres(ctx, conversationID, turnID, assistantMessage, parts)
+}
+
 func (s *Store) InterruptTurn(conversationID string, turnID string, publishedPrefix string) (*MessageRecord, error) {
 	return s.InterruptTurnContext(context.Background(), conversationID, turnID, publishedPrefix)
 }
 
 func (s *Store) InterruptTurnContext(ctx context.Context, conversationID string, turnID string, publishedPrefix string) (*MessageRecord, error) {
 	return s.interruptTurnPostgres(ctx, conversationID, turnID, publishedPrefix)
+}
+
+func (s *Store) InterruptExpressionTurn(conversationID string, turnID string, publishedPrefix string, parts []ExpressionPart) (*MessageRecord, error) {
+	return s.InterruptExpressionTurnContext(context.Background(), conversationID, turnID, publishedPrefix, parts)
+}
+
+func (s *Store) InterruptExpressionTurnContext(ctx context.Context, conversationID string, turnID string, publishedPrefix string, parts []ExpressionPart) (*MessageRecord, error) {
+	return s.interruptExpressionTurnPostgres(ctx, conversationID, turnID, publishedPrefix, parts)
 }
 
 func (s *Store) FailTurn(conversationID string, turnID string, code string, message string, retryable bool) error {

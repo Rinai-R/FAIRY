@@ -18,13 +18,34 @@ type ConversationRecord struct {
 }
 
 type MessageRecord struct {
-	ID              string `json:"id"`
-	ConversationID  string `json:"conversationId"`
-	TurnID          string `json:"turnId"`
-	Sequence        uint64 `json:"sequence"`
-	Role            string `json:"role"`
-	Content         string `json:"content"`
-	CreatedAtUnixMS int64  `json:"createdAtUnixMs"`
+	ID              string           `json:"id"`
+	ConversationID  string           `json:"conversationId"`
+	TurnID          string           `json:"turnId"`
+	Sequence        uint64           `json:"sequence"`
+	Role            string           `json:"role"`
+	Content         string           `json:"content"`
+	Parts           []ExpressionPart `json:"parts"`
+	CreatedAtUnixMS int64            `json:"createdAtUnixMs"`
+}
+
+type ExpressionKind string
+
+const (
+	ExpressionUtterance ExpressionKind = "utterance"
+	ExpressionSticker   ExpressionKind = "sticker"
+)
+
+type StickerSnapshot struct {
+	ID          string `json:"id"`
+	Description string `json:"description"`
+	MIMEType    string `json:"mimeType"`
+}
+
+type ExpressionPart struct {
+	Kind        ExpressionKind   `json:"kind"`
+	Text        string           `json:"text,omitempty"`
+	VisualState string           `json:"visualState"`
+	Sticker     *StickerSnapshot `json:"sticker,omitempty"`
 }
 
 type PromptWindowRecord struct {

@@ -292,8 +292,11 @@ func (visionCompanionIntegrationConfig) ModelConnection() (config.ModelConnectio
 }
 
 type desktopToolIntegrationCoordinator struct {
-	available bool
-	calls     int
+	available  bool
+	calls      int
+	completed  func()
+	release    <-chan struct{}
+	dispatched chan<- DesktopToolExecution
 }
 
 func (coordinator *desktopToolIntegrationCoordinator) Available(string) bool {
@@ -302,8 +305,29 @@ func (coordinator *desktopToolIntegrationCoordinator) Available(string) bool {
 func (coordinator *desktopToolIntegrationCoordinator) CancelTurn(context.Context, string, string) error {
 	return nil
 }
-func (coordinator *desktopToolIntegrationCoordinator) Observe(_ context.Context, request DesktopToolRequest) (DesktopToolEvidence, error) {
+func (coordinator *desktopToolIntegrationCoordinator) Begin(_ context.Context, request DesktopToolRequest, completed func()) (DesktopToolExecution, error) {
 	coordinator.calls++
+	coordinator.completed = completed
+	return DesktopToolExecution{
+		ID: "execution-1", ConversationID: request.ConversationID, TurnID: request.TurnID,
+		CallID: request.CallID, DeadlineUnixMS: request.Deadline.UnixMilli(),
+	}, nil
+}
+func (coordinator *desktopToolIntegrationCoordinator) DispatchExecution(_ context.Context, execution DesktopToolExecution) error {
+	if coordinator.dispatched != nil {
+		coordinator.dispatched <- execution
+	}
+	if coordinator.release == nil {
+		coordinator.completed()
+		return nil
+	}
+	go func() {
+		<-coordinator.release
+		coordinator.completed()
+	}()
+	return nil
+}
+func (coordinator *desktopToolIntegrationCoordinator) Result(context.Context, string) (DesktopToolEvidence, error) {
 	return DesktopToolEvidence{
 		ExecutionID: "execution-1", MediaType: "image/png", Width: 1, Height: 1,
 		DataURL: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -384,11 +408,11 @@ func (m terminalFailureTurnStore) BeginInitiationTurn(conversationID string, evi
 	return m.base.BeginInitiationTurn(conversationID, evidenceIDs)
 }
 
-func (m terminalFailureTurnStore) CompleteTurn(string, string, string) (memory.MessageRecord, error) {
+func (m terminalFailureTurnStore) CompleteExpressionTurn(string, string, string, []memory.ExpressionPart) (memory.MessageRecord, error) {
 	return memory.MessageRecord{}, m.completeErr
 }
 
-func (m terminalFailureTurnStore) InterruptTurn(string, string, string) (*memory.MessageRecord, error) {
+func (m terminalFailureTurnStore) InterruptExpressionTurn(string, string, string, []memory.ExpressionPart) (*memory.MessageRecord, error) {
 	return nil, m.interruptErr
 }
 
@@ -537,15 +561,37 @@ func TestPostgresDesktopToolResumesSameTurnWithFullMultimodalRequest(t *testing.
 		t.Fatal(err)
 	}
 	provider := &desktopToolIntegrationModel{}
-	coordinator := &desktopToolIntegrationCoordinator{available: true}
+	release := make(chan struct{})
+	dispatched := make(chan DesktopToolExecution, 1)
+	coordinator := &desktopToolIntegrationCoordinator{available: true, release: release, dispatched: dispatched}
 	service := newCompanionIntegrationService(store, "character-desktop-tool", provider)
 	AttachConfigSource(service, visionCompanionIntegrationConfig{})
 	AttachDesktopToolCoordinator(service, coordinator)
 	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
-	outcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
-		ConversationID: bootstrap.Conversation.ID, Input: "看看我屏幕上的内容",
-		MaxOutputTokens: 160, AvailableVisualStates: []VisualState{{ID: "idle", Description: "idle"}},
-	})
+	type submitResult struct {
+		outcome TurnOutcome
+		err     error
+	}
+	submitted := make(chan submitResult, 1)
+	go func() {
+		outcome, submitErr := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+			ConversationID: bootstrap.Conversation.ID, Input: "看看我屏幕上的内容",
+			MaxOutputTokens: 160, AvailableVisualStates: []VisualState{{ID: "idle", Description: "idle"}},
+		})
+		submitted <- submitResult{outcome: outcome, err: submitErr}
+	}()
+	execution := <-dispatched
+	if execution.TurnID == "" || execution.CallID != "desktop-call-1" {
+		t.Fatalf("dispatched execution = %#v", execution)
+	}
+	select {
+	case early := <-submitted:
+		t.Fatalf("turn returned before desktop completion: outcome=%#v err=%v", early.outcome, early.err)
+	default:
+	}
+	close(release)
+	submit := <-submitted
+	outcome, err := submit.outcome, submit.err
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -690,7 +736,7 @@ func TestPostgresDesktopInitiationUsesContextWithoutFabricatedUserMessage(t *tes
 	}
 }
 
-func TestPostgresDesktopObservationGraphSchedulesInitiation(t *testing.T) {
+func TestPostgresDesktopObservationDirectFlowSchedulesInitiation(t *testing.T) {
 	store, pool, cleanup := openCompanionIntegrationStore(t)
 	defer cleanup()
 	bootstrap, err := store.OpenOrCreateCharacterConversation("character-observation-graph")
@@ -766,29 +812,26 @@ func TestPostgresDesktopObservationGraphSchedulesInitiation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodeEvents := 0
-	nodeNames := make(map[string]int)
+	transitions := make(map[string]int)
+	completedTerminals := 0
 	for _, record := range ledger {
-		if record.EventType != runtimeLedgerEventNode {
-			continue
+		if record.EventType == "node" {
+			t.Fatalf("legacy graph node event remained in direct turn ledger: %#v", record)
 		}
-		nodeEvents++
-		var metadata map[string]any
-		if err := json.Unmarshal([]byte(record.MetadataJSON), &metadata); err != nil {
-			t.Fatal(err)
+		if record.EventType == runtimeLedgerEventTransition && record.State != nil {
+			transitions[*record.State]++
 		}
-		if len(metadata) != 3 || metadata["node"] == nil || metadata["kind"] == nil || metadata["status"] == nil {
-			t.Fatalf("node metadata = %#v", metadata)
+		if record.EventType == runtimeLedgerEventTerminal && record.State != nil && *record.State == string(turnStateCompleted) {
+			completedTerminals++
 		}
-		nodeNames[metadata["node"].(string)]++
 	}
-	if nodeEvents != 10 {
-		t.Fatalf("node event count = %d, want 10", nodeEvents)
-	}
-	for _, node := range []string{"interpreting", "gathering", "planning", "responding", "persist"} {
-		if nodeNames[node] != 2 {
-			t.Fatalf("node %q events = %d, all = %#v", node, nodeNames[node], nodeNames)
+	for _, state := range []turnState{turnStateInterpreting, turnStateGathering, turnStatePlanning, turnStateResponding} {
+		if transitions[string(state)] != 1 {
+			t.Fatalf("transition %q count = %d, all = %#v", state, transitions[string(state)], transitions)
 		}
+	}
+	if completedTerminals != 1 {
+		t.Fatalf("completed terminal count = %d", completedTerminals)
 	}
 }
 

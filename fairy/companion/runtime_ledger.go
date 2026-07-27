@@ -23,7 +23,6 @@ const (
 	runtimeLedgerEventSpeech        = "speech"
 	runtimeLedgerEventBeatDelivery  = "beat_delivery"
 	runtimeLedgerEventTerminal      = "terminal"
-	runtimeLedgerEventNode          = "node"
 )
 
 func (s *CompanionService) appendRuntimeLedger(conversationID string, turnID string, eventType string, state turnState, code string, metadata map[string]any) {

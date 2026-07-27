@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 
+	"fairy/sticker"
+
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"go.uber.org/zap"
@@ -47,7 +49,11 @@ func NewServer(rt *Dependencies, options Options) (*Server, error) {
 	if strings.TrimSpace(options.Token) == "" {
 		return nil, errors.New("FAIRY_API_TOKEN is required")
 	}
-	engine := server.Default(server.WithHostPorts(addr), server.WithSenseClientDisconnection(true))
+	engine := server.Default(
+		server.WithHostPorts(addr),
+		server.WithSenseClientDisconnection(true),
+		server.WithMaxRequestBodySize(sticker.MaxContentBytes+(1<<20)),
+	)
 	s := &Server{rt: rt, engine: engine, token: options.Token, logger: logger}
 	engine.Use(s.metricsMiddleware)
 	s.routes()
@@ -78,6 +84,7 @@ func (s *Server) routes() {
 	s.registerIntelligenceRoutes()
 	s.registerUsageRoutes()
 	s.registerObservabilityRoutes()
+	s.registerStickerRoutes()
 	s.registerConsoleRoutes()
 }
 

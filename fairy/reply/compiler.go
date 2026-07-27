@@ -36,14 +36,23 @@ type CompiledReply struct {
 	Chains      []ReplyChain `json:"chains"`
 }
 
+type CompileOptions struct {
+	StickerAllowed    bool
+	StickerCandidates map[string]StickerReference
+}
+
 func CompileReply(draft string, availableVisualStates []VisualState) (CompiledReply, error) {
+	return CompileReplyWithOptions(draft, availableVisualStates, CompileOptions{})
+}
+
+func CompileReplyWithOptions(draft string, availableVisualStates []VisualState, options CompileOptions) (CompiledReply, error) {
 	if err := ValidateAvailableVisualStates(availableVisualStates); err != nil {
 		return CompiledReply{}, err
 	}
 	if err := validateDraft(draft); err != nil {
 		return CompiledReply{}, err
 	}
-	return compileJSONReplyChains(draft, availableVisualStates)
+	return compileJSONReplyChains(draft, availableVisualStates, options)
 }
 
 type jsonReplyChains struct {
@@ -51,11 +60,26 @@ type jsonReplyChains struct {
 }
 
 type jsonReplyChain struct {
-	VisualState string `json:"visualState"`
-	Text        string `json:"text"`
+	Kind        optionalJSONString `json:"kind"`
+	VisualState string             `json:"visualState"`
+	Text        optionalJSONString `json:"text"`
+	StickerID   optionalJSONString `json:"stickerId"`
 }
 
-func compileJSONReplyChains(draft string, availableVisualStates []VisualState) (CompiledReply, error) {
+type optionalJSONString struct {
+	set   bool
+	value string
+}
+
+func (value *optionalJSONString) UnmarshalJSON(data []byte) error {
+	value.set = true
+	if string(data) == "null" {
+		return errors.New("field must be a string")
+	}
+	return json.Unmarshal(data, &value.value)
+}
+
+func compileJSONReplyChains(draft string, availableVisualStates []VisualState, options CompileOptions) (CompiledReply, error) {
 	decoder := json.NewDecoder(strings.NewReader(draft))
 	decoder.DisallowUnknownFields()
 	var parsed jsonReplyChains
@@ -70,10 +94,17 @@ func compileJSONReplyChains(draft string, availableVisualStates []VisualState) (
 		return CompiledReply{}, fmt.Errorf("model reply chains count must be 1-%d", MaxModelReplyChains)
 	}
 	chains := make([]ReplyChain, 0, len(parsed.Chains))
+	stickerCount := 0
 	for _, chain := range parsed.Chains {
-		compiled, err := compileChain(chain.VisualState, chain.Text, availableVisualStates)
+		compiled, err := compileJSONReplyChain(chain, availableVisualStates, options)
 		if err != nil {
 			return CompiledReply{}, err
+		}
+		if compiled.Kind == ChainSticker {
+			stickerCount++
+			if stickerCount > 1 {
+				return CompiledReply{}, errors.New("model reply may contain at most one sticker chain")
+			}
 		}
 		chains = append(chains, compiled)
 	}
@@ -87,6 +118,9 @@ func CompiledReplyFromChains(chains []ReplyChain) (CompiledReply, error) {
 	parts := make([]string, 0, len(chains))
 	speechParts := make([]string, 0, len(chains))
 	for _, chain := range chains {
+		if chain.Kind == ChainSticker {
+			continue
+		}
 		parts = append(parts, chain.Text)
 		if chain.SpeechText != "" {
 			speechParts = append(speechParts, chain.SpeechText)
@@ -100,15 +134,40 @@ func CompiledReplyFromChains(chains []ReplyChain) (CompiledReply, error) {
 	}, nil
 }
 
-func compileChain(visualState string, rawText string, availableVisualStates []VisualState) (ReplyChain, error) {
-	if !hasVisualState(availableVisualStates, visualState) {
+func compileJSONReplyChain(chain jsonReplyChain, availableVisualStates []VisualState, options CompileOptions) (ReplyChain, error) {
+	if !hasVisualState(availableVisualStates, chain.VisualState) {
 		return ReplyChain{}, errors.New("model reply returned undeclared visual state")
 	}
-	display := SanitizeDisplayText(rawText)
-	if display == "" {
-		return ReplyChain{}, errors.New("model did not return usable reply text")
+	kind := ChainUtterance
+	if chain.Kind.set {
+		kind = ChainKind(chain.Kind.value)
 	}
-	return ReplyChain{Text: display, SpeechText: "", VisualState: visualState}, nil
+	switch kind {
+	case ChainUtterance:
+		if !chain.Text.set || chain.StickerID.set {
+			return ReplyChain{}, errors.New("utterance chain must contain text and must not contain stickerId")
+		}
+		display := SanitizeDisplayText(chain.Text.value)
+		if display == "" {
+			return ReplyChain{}, errors.New("model did not return usable reply text")
+		}
+		return ReplyChain{Kind: ChainUtterance, Text: display, VisualState: chain.VisualState}, nil
+	case ChainSticker:
+		if chain.Text.set || !chain.StickerID.set || strings.TrimSpace(chain.StickerID.value) == "" {
+			return ReplyChain{}, errors.New("sticker chain must contain stickerId and must not contain text")
+		}
+		if !options.StickerAllowed {
+			return ReplyChain{}, errors.New("sticker output is unavailable for this session")
+		}
+		candidate, ok := options.StickerCandidates[chain.StickerID.value]
+		if !ok || candidate.ID != chain.StickerID.value {
+			return ReplyChain{}, errors.New("stickerId was not returned in this turn")
+		}
+		candidateCopy := candidate
+		return ReplyChain{Kind: ChainSticker, VisualState: chain.VisualState, Sticker: &candidateCopy}, nil
+	default:
+		return ReplyChain{}, fmt.Errorf("model reply chain kind %q is invalid", kind)
+	}
 }
 
 func SanitizeSpeechText(value string) string {
@@ -280,6 +339,9 @@ func FillSameLanguageSpeech(reply CompiledReply) (CompiledReply, error) {
 	chains := make([]ReplyChain, len(reply.Chains))
 	copy(chains, reply.Chains)
 	for index := range chains {
+		if chains[index].Kind == ChainSticker {
+			continue
+		}
 		candidate := SanitizeSpeechText(chains[index].Text)
 		if candidate == "" || ValidateSpeech(candidate) != nil {
 			chains[index].SpeechText = ""
@@ -298,6 +360,9 @@ func ApplyTranslatedSpeech(reply CompiledReply, rawSpeech string) (CompiledReply
 	chains := make([]ReplyChain, len(reply.Chains))
 	copy(chains, reply.Chains)
 	for index := range chains {
+		if chains[index].Kind == ChainSticker {
+			continue
+		}
 		chains[index].SpeechText = speech
 	}
 	compiled, err := CompiledReplyFromChains(chains)

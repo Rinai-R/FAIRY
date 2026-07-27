@@ -125,6 +125,34 @@ func TestBuildRespondInputAppliesSummaryCutoff(t *testing.T) {
 	}
 }
 
+func TestBuildRespondInputProjectsStickerHistoryAsSafeText(t *testing.T) {
+	items, err := BuildRespondInput(
+		testCharacter(), nil, memory.PromptWindowRecord{Revision: 1},
+		[]memory.MessageRecord{{
+			Role: "assistant", Content: "我懂了。", Sequence: 1,
+			Parts: []memory.ExpressionPart{
+				{Kind: memory.ExpressionUtterance, Text: "我懂了。", VisualState: "idle"},
+				{Kind: memory.ExpressionSticker, VisualState: "happy", Sticker: &memory.StickerSnapshot{
+					ID: "sticker-secret-id", Description: "开心赞同", MIMEType: "image/webp",
+				}},
+			},
+		}},
+		[]VisualState{{ID: "idle", Description: "待机"}}, memory.RetrievalContext{}, privateResolved(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := promptText(items)
+	if !strings.Contains(joined, "我懂了。\n[表情包：开心赞同]") {
+		t.Fatalf("prompt omitted ordered sticker history: %s", joined)
+	}
+	for _, forbidden := range []string{"sticker-secret-id", "image/webp"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("prompt leaked %q: %s", forbidden, joined)
+		}
+	}
+}
+
 func testCharacter() character.Record {
 	return character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "认真听用户说话。", TextLanguage: "zh", SpeakingLanguage: "zh"}
 }

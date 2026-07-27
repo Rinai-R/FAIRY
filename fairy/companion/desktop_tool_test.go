@@ -10,7 +10,13 @@ import (
 type gateDesktopCoordinator struct{ available bool }
 
 func (coordinator gateDesktopCoordinator) Available(string) bool { return coordinator.available }
-func (gateDesktopCoordinator) Observe(context.Context, DesktopToolRequest) (DesktopToolEvidence, error) {
+func (gateDesktopCoordinator) Begin(context.Context, DesktopToolRequest, func()) (DesktopToolExecution, error) {
+	return DesktopToolExecution{}, nil
+}
+func (gateDesktopCoordinator) DispatchExecution(context.Context, DesktopToolExecution) error {
+	return nil
+}
+func (gateDesktopCoordinator) Result(context.Context, string) (DesktopToolEvidence, error) {
 	return DesktopToolEvidence{}, nil
 }
 func (gateDesktopCoordinator) CancelTurn(context.Context, string, string) error { return nil }
@@ -30,7 +36,7 @@ func TestDesktopToolRequiresVisionPrivateDesktopAndAvailableSurface(t *testing.T
 			t.Fatalf("%s unexpectedly enabled desktop tool", name)
 		}
 	}
-	tools := respondToolSpecsForRuntime(false, desktopResolved(), true)
+	tools := respondToolSpecsForRuntime(false, desktopResolved(), true, false)
 	if tools[len(tools)-1].Name != toolDesktopObserve {
 		t.Fatalf("runtime tools = %#v", tools)
 	}

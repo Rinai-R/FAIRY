@@ -218,7 +218,7 @@ func TestCaptureHubRejectsNonPrivateRouteAndStaleUnregister(t *testing.T) {
 	}
 }
 
-func TestCaptureHubObserveCompletesAndConsumesEphemeralEvidence(t *testing.T) {
+func TestCaptureHubBeginDispatchCompletionAndResultConsumeEphemeralEvidence(t *testing.T) {
 	store := &fakeCaptureStore{}
 	hub := NewCaptureHub(store)
 	privateContext := session.Context{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied}
@@ -231,9 +231,24 @@ func TestCaptureHubObserveCompletesAndConsumesEphemeralEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unregister()
-	evidence, err := hub.Observe(t.Context(), ToolRequest{
+	completed := make(chan struct{}, 1)
+	execution, err := hub.Begin(t.Context(), ToolRequest{
 		ConversationID: "conversation-1", TurnID: "turn-1", CallID: "call-1", Deadline: time.Now().Add(time.Minute),
+	}, func() {
+		completed <- struct{}{}
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.DispatchExecution(t.Context(), execution); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-completed:
+	case <-time.After(time.Second):
+		t.Fatal("completed desktop capture did not notify coordinator")
+	}
+	evidence, err := hub.Result(t.Context(), execution.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,11 +256,51 @@ func TestCaptureHubObserveCompletesAndConsumesEphemeralEvidence(t *testing.T) {
 		t.Fatalf("tool evidence = %#v", evidence)
 	}
 	if _, ok := hub.TakeEvidence(evidence.ExecutionID); ok {
-		t.Fatal("Observe left raw evidence in registry")
+		t.Fatal("Result left raw evidence in registry")
 	}
 }
 
-func TestCaptureHubCancelTurnWakesObserveAndRejectsLateResult(t *testing.T) {
+func TestCaptureHubDispatchWithoutResultRemainsPending(t *testing.T) {
+	store := &fakeCaptureStore{}
+	hub := NewCaptureHub(store)
+	privateContext := session.Context{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied}
+	_, unregister, err := hub.Register("conversation-1", session.EndpointDesktop, privateContext, func(session.DesktopCaptureRequest) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unregister()
+	completed := make(chan struct{}, 1)
+	execution, err := hub.Begin(t.Context(), ToolRequest{
+		ConversationID: "conversation-1", TurnID: "turn-1", CallID: "call-1", Deadline: time.Now().Add(time.Minute),
+	}, func() {
+		completed <- struct{}{}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.DispatchExecution(t.Context(), execution); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-completed:
+		t.Fatal("pending execution notified without a result")
+	default:
+	}
+	store.mu.Lock()
+	status := store.record.Status
+	store.mu.Unlock()
+	if status != memory.ToolExecutionPending {
+		t.Fatalf("execution status = %q, want pending", status)
+	}
+	if err := hub.CancelTurn(t.Context(), execution.ConversationID, execution.TurnID); err != nil {
+		t.Fatal(err)
+	}
+	<-completed
+}
+
+func TestCaptureHubCancelTurnNotifiesCoordinatorAndRejectsLateResult(t *testing.T) {
 	store := &fakeCaptureStore{}
 	hub := NewCaptureHub(store)
 	privateContext := session.Context{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied}
@@ -258,25 +313,34 @@ func TestCaptureHubCancelTurnWakesObserveAndRejectsLateResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unregister()
-	result := make(chan error, 1)
-	go func() {
-		_, observeErr := hub.Observe(t.Context(), ToolRequest{
-			ConversationID: "conversation-1", TurnID: "turn-1", CallID: "call-1", Deadline: time.Now().Add(time.Minute),
-		})
-		result <- observeErr
-	}()
+	completed := make(chan struct{}, 1)
+	execution, err := hub.Begin(t.Context(), ToolRequest{
+		ConversationID: "conversation-1", TurnID: "turn-1", CallID: "call-1", Deadline: time.Now().Add(time.Minute),
+	}, func() {
+		completed <- struct{}{}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.DispatchExecution(t.Context(), execution); err != nil {
+		t.Fatal(err)
+	}
 	request := <-dispatched
 	if err := hub.CancelTurn(t.Context(), request.ConversationID, request.TurnID); err != nil {
 		t.Fatal(err)
 	}
 	select {
-	case observeErr := <-result:
-		var typed *ToolError
-		if !errors.As(observeErr, &typed) || typed.Code != "turn_cancelled" {
-			t.Fatalf("Observe cancellation error = %v", observeErr)
-		}
+	case <-completed:
 	case <-time.After(time.Second):
-		t.Fatal("cancelled Observe did not wake")
+		t.Fatal("cancelled execution did not notify coordinator")
+	}
+	if _, resultErr := hub.Result(t.Context(), execution.ID); resultErr == nil {
+		t.Fatal("cancelled execution returned successful result")
+	} else {
+		var typed *ToolError
+		if !errors.As(resultErr, &typed) || typed.Code != "turn_cancelled" {
+			t.Fatalf("Result cancellation error = %v", resultErr)
+		}
 	}
 	record := memory.ToolExecutionRecord{ID: request.ExecutionID, ConversationID: request.ConversationID, TurnID: request.TurnID, CallID: request.CallID}
 	if err := hub.AcceptResult(t.Context(), registrationID, capturePNGResult(t, record)); err != ErrDesktopCaptureResultRejected {
@@ -284,52 +348,86 @@ func TestCaptureHubCancelTurnWakesObserveAndRejectsLateResult(t *testing.T) {
 	}
 }
 
-func TestCaptureHubDropsEvidenceWhenCompletedResultLosesObserverRace(t *testing.T) {
-	store := &fakeCaptureStore{
-		waitReadyAtLoad: 3,
-		waitReady:       make(chan struct{}),
-		allowComplete:   make(chan struct{}),
-		completeWon:     make(chan struct{}),
-		releaseComplete: make(chan struct{}),
-	}
+func TestCaptureHubCloseFailsPendingExecutionAndNotifiesCoordinator(t *testing.T) {
+	store := &fakeCaptureStore{}
 	hub := NewCaptureHub(store)
 	privateContext := session.Context{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied}
-	var registrationID string
-	acceptResult := make(chan error, 1)
+	_, _, err := hub.Register("conversation-1", session.EndpointDesktop, privateContext, func(session.DesktopCaptureRequest) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := make(chan struct{}, 1)
+	execution, err := hub.Begin(t.Context(), ToolRequest{
+		ConversationID: "conversation-1", TurnID: "turn-1", CallID: "call-1", Deadline: time.Now().Add(time.Minute),
+	}, func() {
+		completed <- struct{}{}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.DispatchExecution(t.Context(), execution); err != nil {
+		t.Fatal(err)
+	}
+	hub.Close()
+	select {
+	case <-completed:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not notify coordinator")
+	}
+	if _, resultErr := hub.Result(t.Context(), execution.ID); resultErr == nil {
+		t.Fatal("closed execution returned successful result")
+	} else {
+		var typed *ToolError
+		if !errors.As(resultErr, &typed) || typed.Code != "capture_unavailable" {
+			t.Fatalf("Result close error = %v", resultErr)
+		}
+	}
+}
+
+func TestCaptureHubDeadlineNotifiesCoordinatorAndRejectsLateResult(t *testing.T) {
+	store := &fakeCaptureStore{}
+	hub := NewCaptureHub(store)
+	privateContext := session.Context{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied}
+	dispatched := make(chan session.DesktopCaptureRequest, 1)
 	registrationID, unregister, err := hub.Register("conversation-1", session.EndpointDesktop, privateContext, func(request session.DesktopCaptureRequest) error {
-		record := memory.ToolExecutionRecord{ID: request.ExecutionID, ConversationID: request.ConversationID, TurnID: request.TurnID, CallID: request.CallID}
-		go func() {
-			acceptResult <- hub.AcceptResult(t.Context(), registrationID, capturePNGResult(t, record))
-		}()
+		dispatched <- request
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer unregister()
-
-	observeContext, cancelObserve := context.WithCancel(t.Context())
-	observeResult := make(chan error, 1)
-	go func() {
-		_, observeErr := hub.Observe(observeContext, ToolRequest{
-			ConversationID: "conversation-1", TurnID: "turn-1", CallID: "call-1", Deadline: time.Now().Add(time.Minute),
-		})
-		observeResult <- observeErr
-	}()
-
-	<-store.waitReady
-	close(store.allowComplete)
-	<-store.completeWon
-	cancelObserve()
-	if observeErr := <-observeResult; !errors.Is(observeErr, context.Canceled) {
-		t.Fatalf("Observe race error = %v, want context cancellation", observeErr)
+	completed := make(chan struct{}, 1)
+	execution, err := hub.Begin(t.Context(), ToolRequest{
+		ConversationID: "conversation-1", TurnID: "turn-1", CallID: "call-1", Deadline: time.Now().Add(25 * time.Millisecond),
+	}, func() {
+		completed <- struct{}{}
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	close(store.releaseComplete)
-	if acceptErr := <-acceptResult; acceptErr != nil {
-		t.Fatalf("AcceptResult race error = %v", acceptErr)
+	if err := hub.DispatchExecution(t.Context(), execution); err != nil {
+		t.Fatal(err)
 	}
-	if _, ok := hub.TakeEvidence("execution-created"); ok {
-		t.Fatal("completed result retained evidence after observer exited")
+	request := <-dispatched
+	select {
+	case <-completed:
+	case <-time.After(time.Second):
+		t.Fatal("deadline did not notify coordinator")
+	}
+	if _, resultErr := hub.Result(t.Context(), execution.ID); resultErr == nil {
+		t.Fatal("deadline execution returned successful result")
+	} else {
+		var typed *ToolError
+		if !errors.As(resultErr, &typed) || typed.Code != "deadline_exceeded" {
+			t.Fatalf("Result deadline error = %v", resultErr)
+		}
+	}
+	record := memory.ToolExecutionRecord{ID: request.ExecutionID, ConversationID: request.ConversationID, TurnID: request.TurnID, CallID: request.CallID}
+	if err := hub.AcceptResult(t.Context(), registrationID, capturePNGResult(t, record)); err != ErrDesktopCaptureResultRejected {
+		t.Fatalf("late result error = %v", err)
 	}
 }
 

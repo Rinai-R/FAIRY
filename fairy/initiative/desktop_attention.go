@@ -21,12 +21,12 @@ func NewAttentionEvaluator() *AttentionEvaluator {
 	return &AttentionEvaluator{states: make(map[string]AttentionState)}
 }
 
-func (e *AttentionEvaluator) Evaluate(conversationID string, plan DesktopGraphPlan, rulebook DesktopRulebook, now time.Time) (DesktopObservationAction, error) {
+func (e *AttentionEvaluator) Evaluate(conversationID string, desired DesktopObservationAction, rulebook DesktopRulebook, now time.Time) (DesktopObservationAction, error) {
 	if e == nil {
 		return DesktopActionSilent, errors.New("desktop attention evaluator is unavailable")
 	}
-	if plan.Action == DesktopActionSilent {
-		return plan.Action, nil
+	if desired == DesktopActionSilent {
+		return desired, nil
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -37,10 +37,10 @@ func (e *AttentionEvaluator) Evaluate(conversationID string, plan DesktopGraphPl
 	if state.used >= rulebook.AttentionBudget || (!state.lastInitiated.IsZero() && now.Sub(state.lastInitiated) < rulebook.MinSpacing) {
 		return DesktopActionSilent, nil
 	}
-	if plan.Action == DesktopActionInitiate {
+	if desired == DesktopActionInitiate {
 		state.used++
 		state.lastInitiated = now
 	}
 	e.states[conversationID] = state
-	return plan.Action, nil
+	return desired, nil
 }

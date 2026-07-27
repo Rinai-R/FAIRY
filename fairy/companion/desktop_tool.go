@@ -20,11 +20,15 @@ const (
 
 type DesktopToolRequest = desktopcapture.ToolRequest
 
+type DesktopToolExecution = desktopcapture.Execution
+
 type DesktopToolEvidence = desktopcapture.Evidence
 
 type DesktopToolCoordinator interface {
 	Available(conversationID string) bool
-	Observe(context.Context, DesktopToolRequest) (DesktopToolEvidence, error)
+	Begin(context.Context, DesktopToolRequest, func()) (DesktopToolExecution, error)
+	DispatchExecution(context.Context, DesktopToolExecution) error
+	Result(context.Context, string) (DesktopToolEvidence, error)
 	CancelTurn(context.Context, string, string) error
 }
 

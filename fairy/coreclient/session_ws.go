@@ -31,20 +31,22 @@ var (
 )
 
 type sessionClientFrame struct {
-	Type               string                        `json:"type"`
-	RequestID          string                        `json:"requestId,omitempty"`
-	Endpoint           session.EndpointKind          `json:"endpoint,omitempty"`
-	EndpointKey        string                        `json:"endpointKey,omitempty"`
-	Interaction        session.Context               `json:"interaction,omitempty"`
-	ConversationID     string                        `json:"conversationId,omitempty"`
-	EvaluationReason   string                        `json:"evaluationReason,omitempty"`
-	Messages           []AmbientObservation          `json:"messages,omitempty"`
-	Message            *AmbientObservation           `json:"message,omitempty"`
-	DesktopObservation *DesktopObservation           `json:"desktopObservation,omitempty"`
-	Input              string                        `json:"input,omitempty"`
-	SpeechEnabled      bool                          `json:"speechEnabled,omitempty"`
-	TurnID             string                        `json:"turnId,omitempty"`
-	CaptureResult      *session.DesktopCaptureResult `json:"captureResult,omitempty"`
+	Type               string                            `json:"type"`
+	RequestID          string                            `json:"requestId,omitempty"`
+	Endpoint           session.EndpointKind              `json:"endpoint,omitempty"`
+	EndpointKey        string                            `json:"endpointKey,omitempty"`
+	Interaction        session.Context                   `json:"interaction,omitempty"`
+	OutputCapabilities session.OutputCapabilities        `json:"outputCapabilities"`
+	ConversationID     string                            `json:"conversationId,omitempty"`
+	EvaluationReason   string                            `json:"evaluationReason,omitempty"`
+	Messages           []AmbientObservation              `json:"messages,omitempty"`
+	Message            *AmbientObservation               `json:"message,omitempty"`
+	DesktopObservation *DesktopObservation               `json:"desktopObservation,omitempty"`
+	Input              string                            `json:"input,omitempty"`
+	SpeechEnabled      bool                              `json:"speechEnabled,omitempty"`
+	TurnID             string                            `json:"turnId,omitempty"`
+	CaptureResult      *session.DesktopCaptureResult     `json:"captureResult,omitempty"`
+	DeliveryResult     *session.ExpressionDeliveryResult `json:"deliveryResult,omitempty"`
 }
 
 type sessionServerFrame struct {
@@ -435,6 +437,7 @@ func (s *SessionSocket) request(ctx context.Context, frame sessionClientFrame, e
 func (s *SessionSocket) OpenSession(ctx context.Context, request OpenSessionRequest) (OpenSessionResponse, error) {
 	reply, err := s.request(ctx, sessionClientFrame{
 		Type: "session.open", Endpoint: request.Endpoint, EndpointKey: request.EndpointKey, Interaction: request.Interaction,
+		OutputCapabilities: request.OutputCapabilities,
 	}, "session.opened")
 	if err != nil {
 		return OpenSessionResponse{}, err
@@ -471,6 +474,16 @@ func (s *SessionSocket) SubmitCaptureResult(ctx context.Context, result DesktopC
 		return err
 	}
 	_, err := s.request(ctx, sessionClientFrame{Type: "desktop.capture.result", ConversationID: result.ConversationID, CaptureResult: &result}, "ack")
+	return err
+}
+
+func (s *SessionSocket) ReportExpressionDelivery(ctx context.Context, result ExpressionDeliveryResult) error {
+	if err := result.Validate(); err != nil {
+		return err
+	}
+	_, err := s.request(ctx, sessionClientFrame{
+		Type: "expression.delivery", ConversationID: result.ConversationID, DeliveryResult: &result,
+	}, "ack")
 	return err
 }
 

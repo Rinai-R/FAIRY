@@ -19,10 +19,13 @@ const (
 	runtimeLedgerEventTool     = "tool"
 )
 
-func respondToolSpecsForRuntime(webSearchEnabled bool, resolved session.Resolved, desktopEnabled bool) []model.ToolSpec {
+func respondToolSpecsForRuntime(webSearchEnabled bool, resolved session.Resolved, desktopEnabled, stickerEnabled bool) []model.ToolSpec {
 	tools := respondToolSpecsForInteraction(webSearchEnabled, resolved)
 	if desktopEnabled {
 		tools = append(tools, desktopToolSpec())
+	}
+	if stickerEnabled {
+		tools = append(tools, stickerToolSpec())
 	}
 	return tools
 }

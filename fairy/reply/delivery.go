@@ -45,6 +45,8 @@ func (d *Delivery) Deliver(chain ReplyChain, completion BeatReadyCompletion) err
 		return d.err
 	}
 
+	chainCopy := chain
+	completion.Chain = &chainCopy
 	target := d.pacer.Target(chain.Text)
 	d.emitRecord(DeliveryRecord{
 		Status:               "planned",

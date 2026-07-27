@@ -22,7 +22,7 @@ func ListConversationMessagesBefore(ctx context.Context, db ConversationDB, conv
 		before = int64(beforeSequence)
 	}
 	rows, err := db.Query(ctx, `
-SELECT id, conversation_id, turn_id, sequence, role, content, created_at_ms
+SELECT id, conversation_id, turn_id, sequence, role, content, expression_parts, created_at_ms
 FROM conversation_messages
 WHERE conversation_id = $1 AND sequence < $2
 ORDER BY sequence DESC

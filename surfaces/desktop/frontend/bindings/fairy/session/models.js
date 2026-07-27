@@ -6,6 +6,73 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "/wails/runtime.js";
 
+/**
+ * @readonly
+ * @enum {string}
+ */
+export const ExpressionKind = {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero: "",
+
+    ExpressionUtterance: "utterance",
+    ExpressionSticker: "sticker",
+};
+
+export class ExpressionPart {
+    /**
+     * Creates a new ExpressionPart instance.
+     * @param {Partial<ExpressionPart>} [$$source = {}] - The source object to create the ExpressionPart.
+     */
+    constructor($$source = {}) {
+        if (!("kind" in $$source)) {
+            /**
+             * @member
+             * @type {ExpressionKind}
+             */
+            this["kind"] = ExpressionKind.$zero;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["text"] = undefined;
+        }
+        if (!("visualState" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["visualState"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {StickerReference | null | undefined}
+             */
+            this["sticker"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ExpressionPart instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ExpressionPart}
+     */
+    static createFrom($$source = {}) {
+        const $$createField3_0 = $$createType1;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("sticker" in $$parsedSource) {
+            $$parsedSource["sticker"] = $$createField3_0($$parsedSource["sticker"]);
+        }
+        return new ExpressionPart(/** @type {Partial<ExpressionPart>} */($$parsedSource));
+    }
+}
+
 export class MessageRecord {
     /**
      * Creates a new MessageRecord instance.
@@ -54,6 +121,13 @@ export class MessageRecord {
              */
             this["content"] = "";
         }
+        if (!("parts" in $$source)) {
+            /**
+             * @member
+             * @type {ExpressionPart[]}
+             */
+            this["parts"] = [];
+        }
         if (!("createdAtUnixMs" in $$source)) {
             /**
              * @member
@@ -71,7 +145,59 @@ export class MessageRecord {
      * @returns {MessageRecord}
      */
     static createFrom($$source = {}) {
+        const $$createField6_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("parts" in $$parsedSource) {
+            $$parsedSource["parts"] = $$createField6_0($$parsedSource["parts"]);
+        }
         return new MessageRecord(/** @type {Partial<MessageRecord>} */($$parsedSource));
     }
 }
+
+export class StickerReference {
+    /**
+     * Creates a new StickerReference instance.
+     * @param {Partial<StickerReference>} [$$source = {}] - The source object to create the StickerReference.
+     */
+    constructor($$source = {}) {
+        if (!("id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["id"] = "";
+        }
+        if (!("description" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["description"] = "";
+        }
+        if (!("mimeType" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["mimeType"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new StickerReference instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {StickerReference}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new StickerReference(/** @type {Partial<StickerReference>} */($$parsedSource));
+    }
+}
+
+// Private type creation functions
+const $$createType0 = StickerReference.createFrom;
+const $$createType1 = $Create.Nullable($$createType0);
+const $$createType2 = ExpressionPart.createFrom;
+const $$createType3 = $Create.Array($$createType2);

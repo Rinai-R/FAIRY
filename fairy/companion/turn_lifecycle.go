@@ -61,12 +61,13 @@ type stateChangedPayload struct {
 }
 
 type replyChainPayload struct {
-	Type        string `json:"type"`
-	Index       uint8  `json:"index"`
-	Delta       string `json:"delta"`
-	Text        string `json:"text"`
-	SpeechText  string `json:"speechText"`
-	VisualState string `json:"visualState"`
+	Type        string                 `json:"type"`
+	Index       uint8                  `json:"index"`
+	Delta       string                 `json:"delta"`
+	Text        string                 `json:"text"`
+	SpeechText  string                 `json:"speechText"`
+	VisualState string                 `json:"visualState"`
+	Part        session.ExpressionPart `json:"part"`
 }
 
 type utterancePayload struct {
@@ -90,22 +91,23 @@ type replyPreviewPayload struct {
 // beatReadyPayload is the paired text(+optional audio) delivery unit. Frontend
 // reveals a beat only after this event (齐套才揭示).
 type beatReadyPayload struct {
-	Type                 string `json:"type"`
-	BeatID               string `json:"beatId"`
-	Kind                 string `json:"kind"` // utterance | final
-	Index                uint8  `json:"index"`
-	ChainIndex           int    `json:"chainIndex"`
-	DisplayText          string `json:"displayText"`
-	SpeechText           string `json:"speechText"`
-	VisualState          string `json:"visualState"`
-	TargetIntervalMS     int64  `json:"targetIntervalMs"`
-	PaceWaitMS           int64  `json:"paceWaitMs"`
-	PublishedPrefixCount int    `json:"publishedPrefixCount"`
-	Reason               string `json:"reason,omitempty"`
-	SpeakerID            string `json:"speakerId,omitempty"`
-	MimeType             string `json:"mimeType,omitempty"`
-	Format               string `json:"format,omitempty"`
-	DataURL              string `json:"dataUrl,omitempty"`
+	Type                 string                  `json:"type"`
+	BeatID               string                  `json:"beatId"`
+	Kind                 string                  `json:"kind"` // utterance | final
+	Index                uint8                   `json:"index"`
+	ChainIndex           int                     `json:"chainIndex"`
+	DisplayText          string                  `json:"displayText"`
+	SpeechText           string                  `json:"speechText"`
+	VisualState          string                  `json:"visualState"`
+	TargetIntervalMS     int64                   `json:"targetIntervalMs"`
+	PaceWaitMS           int64                   `json:"paceWaitMs"`
+	PublishedPrefixCount int                     `json:"publishedPrefixCount"`
+	Reason               string                  `json:"reason,omitempty"`
+	SpeakerID            string                  `json:"speakerId,omitempty"`
+	MimeType             string                  `json:"mimeType,omitempty"`
+	Format               string                  `json:"format,omitempty"`
+	DataURL              string                  `json:"dataUrl,omitempty"`
+	Part                 *session.ExpressionPart `json:"part,omitempty"`
 }
 
 type completedPayload struct {
@@ -225,7 +227,7 @@ func (l *turnLifecycle) ReplyChain(index uint8, delta string, chain reply.ReplyC
 	if l.state != turnStateResponding {
 		return session.Event{}, errors.New("只有 Responding 状态可以发送回复分段")
 	}
-	if delta == "" {
+	if delta == "" && chain.Kind != reply.ChainSticker {
 		return session.Event{}, errors.New("回复分段增量不能为空")
 	}
 	return l.event(replyChainPayload{
@@ -235,6 +237,7 @@ func (l *turnLifecycle) ReplyChain(index uint8, delta string, chain reply.ReplyC
 		Text:        chain.Text,
 		SpeechText:  chain.SpeechText,
 		VisualState: chain.VisualState,
+		Part:        sessionExpressionPart(chain),
 	})
 }
 
@@ -360,7 +363,8 @@ func (l *turnLifecycle) BeatReady(completion reply.BeatReadyCompletion) (session
 	if l.state != turnStatePlanning && l.state != turnStateGathering && l.state != turnStateResponding {
 		return session.Event{}, errors.New("只有 Gathering/Planning/Responding 状态可以发送 beat.ready")
 	}
-	if strings.TrimSpace(completion.DisplayText) == "" {
+	stickerBeat := completion.Chain != nil && completion.Chain.Kind == reply.ChainSticker
+	if strings.TrimSpace(completion.DisplayText) == "" && !stickerBeat {
 		return session.Event{}, errors.New("beat.ready displayText cannot be empty")
 	}
 	if completion.BeatID == "" {
@@ -387,6 +391,10 @@ func (l *turnLifecycle) BeatReady(completion reply.BeatReadyCompletion) (session
 		PaceWaitMS:           completion.PaceWaitMS,
 		PublishedPrefixCount: completion.PublishedPrefixCount,
 		Reason:               completion.Reason,
+	}
+	if completion.Chain != nil {
+		part := sessionExpressionPart(*completion.Chain)
+		payload.Part = &part
 	}
 	if completion.Audio != nil {
 		payload.SpeakerID = completion.Audio.SpeakerID

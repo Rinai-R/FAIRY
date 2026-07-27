@@ -25,7 +25,7 @@ func TestOpenSessionSendsEndpointFacts(t *testing.T) {
 		if err := conn.ReadJSON(&frame); err != nil {
 			t.Fatal(err)
 		}
-		if frame.Type != "session.open" || frame.Endpoint != session.EndpointIM || frame.EndpointKey != "onebot-group:123" || frame.Interaction.Audience != session.AudienceMulti {
+		if frame.Type != "session.open" || frame.Endpoint != session.EndpointIM || frame.EndpointKey != "onebot-group:123" || frame.Interaction.Audience != session.AudienceMulti || !frame.OutputCapabilities.Sticker {
 			t.Fatalf("frame = %#v", frame)
 		}
 		_ = conn.WriteJSON(sessionServerFrame{
@@ -38,7 +38,11 @@ func TestOpenSessionSendsEndpointFacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := client.OpenSession(context.Background(), OpenSessionRequest{Endpoint: session.EndpointIM, EndpointKey: "onebot-group:123", Interaction: session.Context{Audience: session.AudienceMulti, Initiation: session.InitiationAmbient, Presentation: session.PresentationChat}})
+	response, err := client.OpenSession(context.Background(), OpenSessionRequest{
+		Endpoint: session.EndpointIM, EndpointKey: "onebot-group:123",
+		Interaction:        session.Context{Audience: session.AudienceMulti, Initiation: session.InitiationAmbient, Presentation: session.PresentationChat},
+		OutputCapabilities: session.OutputCapabilities{Sticker: true},
+	})
 	if err != nil || response.ConversationID != "c1" {
 		t.Fatalf("response=%#v err=%v", response, err)
 	}
@@ -124,6 +128,36 @@ func TestObserveDesktopUsesTypedSessionFrame(t *testing.T) {
 	})
 	if err != nil || result.Action != "silent" {
 		t.Fatalf("result=%#v err=%v", result, err)
+	}
+}
+
+func TestReportExpressionDeliveryUsesCorrelatedSessionFrame(t *testing.T) {
+	server := newSessionWSServer(t, func(conn *websocket.Conn) {
+		var frame sessionClientFrame
+		if err := conn.ReadJSON(&frame); err != nil {
+			t.Fatal(err)
+		}
+		if frame.Type != "expression.delivery" || frame.DeliveryResult == nil ||
+			frame.DeliveryResult.BeatID != "final-0" || frame.DeliveryResult.Status != session.ExpressionDeliverySucceeded {
+			t.Fatalf("delivery frame = %#v", frame)
+		}
+		_ = conn.WriteJSON(sessionServerFrame{Type: "ack", RequestID: frame.RequestID, ConversationID: "conversation-1"})
+	})
+	defer server.Close()
+	client, err := New(Options{Endpoint: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket, err := client.DialSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer socket.Close()
+	if err := socket.ReportExpressionDelivery(t.Context(), ExpressionDeliveryResult{
+		ConversationID: "conversation-1", TurnID: "turn-1", BeatID: "final-0",
+		Status: session.ExpressionDeliverySucceeded,
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

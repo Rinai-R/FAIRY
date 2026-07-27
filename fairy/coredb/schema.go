@@ -34,16 +34,32 @@ type conversationTurnEvidenceSchema struct {
 func (conversationTurnEvidenceSchema) TableName() string { return "conversation_turn_evidence" }
 
 type conversationMessageSchema struct {
-	ID             string `gorm:"type:text;primaryKey"`
-	ConversationID string `gorm:"type:text;not null"`
-	TurnID         string `gorm:"type:text;not null"`
-	Sequence       int64  `gorm:"not null"`
-	Role           string `gorm:"type:text;not null"`
-	Content        string `gorm:"type:text;not null"`
-	CreatedAtMS    int64  `gorm:"not null"`
+	ID                  string `gorm:"type:text;primaryKey"`
+	ConversationID      string `gorm:"type:text;not null"`
+	TurnID              string `gorm:"type:text;not null"`
+	Sequence            int64  `gorm:"not null"`
+	Role                string `gorm:"type:text;not null"`
+	Content             string `gorm:"type:text;not null"`
+	ExpressionPartsJSON []byte `gorm:"column:expression_parts;type:jsonb;not null;default:'[]'::jsonb"`
+	CreatedAtMS         int64  `gorm:"not null"`
 }
 
 func (conversationMessageSchema) TableName() string { return "conversation_messages" }
+
+type stickerSchema struct {
+	ID            string `gorm:"type:text;primaryKey"`
+	ContentSHA256 string `gorm:"type:text;not null"`
+	MIMEType      string `gorm:"type:text;not null"`
+	ByteCount     int64  `gorm:"not null"`
+	Content       []byte `gorm:"type:bytea;not null"`
+	Description   string `gorm:"type:text;not null;default:''"`
+	TagsJSON      []byte `gorm:"column:tags;type:jsonb;not null;default:'[]'::jsonb"`
+	Status        string `gorm:"type:text;not null;default:draft"`
+	CreatedAtMS   int64  `gorm:"not null"`
+	UpdatedAtMS   int64  `gorm:"not null"`
+}
+
+func (stickerSchema) TableName() string { return "stickers" }
 
 type promptWindowSchema struct {
 	ConversationID        string  `gorm:"type:text;primaryKey"`
@@ -387,6 +403,7 @@ func schemaModels() []any {
 		&conversationTurnSchema{},
 		&conversationTurnEvidenceSchema{},
 		&conversationMessageSchema{},
+		&stickerSchema{},
 		&promptWindowSchema{},
 		&turnRuntimeEventSchema{},
 		&toolExecutionSchema{},
@@ -418,6 +435,7 @@ func schemaTableNames() []string {
 		"conversation_turns",
 		"conversation_turn_evidence",
 		"conversation_messages",
+		"stickers",
 		"prompt_windows",
 		"turn_runtime_events",
 		"tool_executions",

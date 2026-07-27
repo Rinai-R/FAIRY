@@ -30,29 +30,32 @@ type DependencyStatus struct {
 }
 
 type (
-	OpenSessionRequest    = session.OpenRequest
-	OpenSessionResponse   = session.OpenResponse
-	MessageRecord         = session.MessageRecord
-	MessagePage           = session.MessagePage
-	AmbientObservation    = session.AmbientObservation
-	ParticipationRequest  = session.ParticipationRequest
-	ParticipationResponse = session.ParticipationResponse
-	DesktopCaptureRequest = session.DesktopCaptureRequest
-	DesktopCaptureResult  = session.DesktopCaptureResult
-	SubmitTurnRequest     = session.SubmitRequest
-	TurnOutcome           = session.Outcome
-	SubmitTurnResponse    = session.SubmitResponse
-	TurnEvent             = session.Event
-	DesktopObservation    = session.DesktopObservation
+	OpenSessionRequest       = session.OpenRequest
+	OpenSessionResponse      = session.OpenResponse
+	MessageRecord            = session.MessageRecord
+	MessagePage              = session.MessagePage
+	AmbientObservation       = session.AmbientObservation
+	ParticipationRequest     = session.ParticipationRequest
+	ParticipationResponse    = session.ParticipationResponse
+	DesktopCaptureRequest    = session.DesktopCaptureRequest
+	DesktopCaptureResult     = session.DesktopCaptureResult
+	ExpressionDeliveryResult = session.ExpressionDeliveryResult
+	SubmitTurnRequest        = session.SubmitRequest
+	TurnOutcome              = session.Outcome
+	SubmitTurnResponse       = session.SubmitResponse
+	TurnEvent                = session.Event
+	DesktopObservation       = session.DesktopObservation
 )
 
 type DesktopObservationResponse struct {
-	Action      string             `json:"action"`
-	Nodes       []DesktopGraphNode `json:"nodes"`
-	OmitReasons []string           `json:"omitReasons,omitempty"`
+	Action      string                   `json:"action"`
+	Nodes       []DesktopObservationStep `json:"nodes"`
+	OmitReasons []string                 `json:"omitReasons,omitempty"`
 }
 
-type DesktopGraphNode struct {
+// DesktopObservationStep preserves the existing Session response shape. It is
+// diagnostic projection data, not an executable graph node.
+type DesktopObservationStep struct {
 	ID       string   `json:"id"`
 	Kind     string   `json:"kind"`
 	Depends  []string `json:"dependsOn,omitempty"`
@@ -136,6 +139,32 @@ type VisualState struct {
 type CharacterCatalog struct {
 	Characters []CharacterRecord `json:"characters"`
 	Active     *CharacterRecord  `json:"active"`
+}
+
+type StickerRecord struct {
+	ID              string   `json:"id"`
+	ContentSHA256   string   `json:"contentSha256"`
+	MIMEType        string   `json:"mimeType"`
+	ByteCount       int64    `json:"byteCount"`
+	Description     string   `json:"description"`
+	Tags            []string `json:"tags"`
+	Status          string   `json:"status"`
+	CreatedAtUnixMS int64    `json:"createdAtUnixMs"`
+	UpdatedAtUnixMS int64    `json:"updatedAtUnixMs"`
+}
+
+type StickerPage struct {
+	Items      []StickerRecord `json:"items"`
+	Offset     int             `json:"offset"`
+	Limit      int             `json:"limit"`
+	Total      int64           `json:"total"`
+	NextOffset *int            `json:"nextOffset,omitempty"`
+}
+
+type StickerContent struct {
+	MIMEType      string
+	ContentSHA256 string
+	Bytes         []byte
 }
 
 type UsageReport struct {

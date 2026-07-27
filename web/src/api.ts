@@ -23,3 +23,21 @@ export async function api<T = unknown>(path: string, options: RequestInit = {}):
   }
   return body as T;
 }
+
+export async function apiBlob(path: string): Promise<Blob> {
+  const headers = new Headers();
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(`/v1${path}`, { headers });
+  if (!res.ok) {
+    const text = await res.text();
+    let message = res.statusText || "request failed";
+    try {
+      message = JSON.parse(text)?.error || message;
+    } catch {
+      // Non-JSON image errors keep the bounded HTTP status text.
+    }
+    throw new Error(message);
+  }
+  return res.blob();
+}

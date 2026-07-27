@@ -21,17 +21,34 @@ import (
 type bot struct {
 	ctx       context.Context
 	allowlist map[int64]struct{}
-	socket    *coreclient.SessionSocket
+	socket    sessionSocket
+	stickers  stickerContentReader
 
 	mu            sync.Mutex
 	ensureMu      sync.Mutex
 	conversations map[int64]string
-	senders       map[string]func(string) error
+	senders       map[string]expressionSender
 }
 
-func newBot(ctx context.Context, cfg Config, socket *coreclient.SessionSocket) (*bot, error) {
-	if ctx == nil || socket == nil {
-		return nil, errors.New("bot context and session socket are required")
+type sessionSocket interface {
+	OpenSession(context.Context, coreclient.OpenSessionRequest) (coreclient.OpenSessionResponse, error)
+	Watch(context.Context, string) (<-chan coreclient.TurnEvent, error)
+	ObserveAmbient(context.Context, string, coreclient.AmbientObservation) error
+	ReportExpressionDelivery(context.Context, coreclient.ExpressionDeliveryResult) error
+}
+
+type stickerContentReader interface {
+	ReadStickerContent(context.Context, string) (coreclient.StickerContent, error)
+}
+
+type expressionSender struct {
+	text  func(string) error
+	image func([]byte) error
+}
+
+func newBot(ctx context.Context, cfg Config, socket sessionSocket, stickers stickerContentReader) (*bot, error) {
+	if ctx == nil || socket == nil || stickers == nil {
+		return nil, errors.New("bot context, session socket, and sticker reader are required")
 	}
 	allowlist := make(map[int64]struct{}, len(cfg.GroupAllowlist))
 	for _, raw := range cfg.GroupAllowlist {
@@ -42,9 +59,9 @@ func newBot(ctx context.Context, cfg Config, socket *coreclient.SessionSocket) (
 		allowlist[id] = struct{}{}
 	}
 	return &bot{
-		ctx: ctx, allowlist: allowlist, socket: socket,
+		ctx: ctx, allowlist: allowlist, socket: socket, stickers: stickers,
 		conversations: make(map[int64]string),
-		senders:       make(map[string]func(string) error),
+		senders:       make(map[string]expressionSender),
 	}, nil
 }
 
@@ -65,12 +82,13 @@ func (b *bot) handle(ctx *zero.Ctx) {
 		log.Printf("group message %d ignored: %v", groupID, err)
 		return
 	}
-	send := func(text string) error {
-		id := ctx.SendChain(message.Text(text))
-		if id.ID() == 0 {
-			return errors.New("ZeroBot send_group_msg returned empty message ID")
-		}
-		return nil
+	send := expressionSender{
+		text: func(text string) error {
+			return sendChain(ctx, message.Text(text))
+		},
+		image: func(content []byte) error {
+			return sendChain(ctx, message.ImageBytes(content))
+		},
 	}
 	conversationID, err := b.ensureConversation(groupID, send)
 	if err != nil {
@@ -82,7 +100,15 @@ func (b *bot) handle(ctx *zero.Ctx) {
 	}
 }
 
-func (b *bot) ensureConversation(groupID int64, send func(string) error) (string, error) {
+func sendChain(ctx *zero.Ctx, segment message.Segment) error {
+	id := ctx.SendChain(segment)
+	if id.ID() == 0 {
+		return errors.New("ZeroBot send_group_msg returned empty message ID")
+	}
+	return nil
+}
+
+func (b *bot) ensureConversation(groupID int64, send expressionSender) (string, error) {
 	b.ensureMu.Lock()
 	defer b.ensureMu.Unlock()
 	b.mu.Lock()
@@ -95,7 +121,8 @@ func (b *bot) ensureConversation(groupID int64, send func(string) error) (string
 
 	session, err := b.socket.OpenSession(b.ctx, coreclient.OpenSessionRequest{
 		Endpoint: session.EndpointIM, EndpointKey: "onebot-group:" + strconv.FormatInt(groupID, 10),
-		Interaction: session.Context{Audience: session.AudienceMulti, Initiation: session.InitiationAmbient, Presentation: session.PresentationChat},
+		Interaction:        session.Context{Audience: session.AudienceMulti, Initiation: session.InitiationAmbient, Presentation: session.PresentationChat},
+		OutputCapabilities: session.OutputCapabilities{Sticker: true},
 	})
 	if err != nil {
 		return "", err
@@ -127,19 +154,74 @@ func (b *bot) consumeTurnEvents(conversationID string, stream <-chan coreclient.
 			}
 			event = received
 		}
-		text, ok := finalBeatText(event)
+		beat, ok := finalExpressionBeat(event)
 		if !ok {
 			continue
 		}
 		b.mu.Lock()
 		send := b.senders[conversationID]
 		b.mu.Unlock()
-		if send == nil {
-			continue
+		switch beat.Part.Kind {
+		case session.ExpressionUtterance:
+			if send.text == nil {
+				log.Printf("deliver utterance failed: sender is unavailable")
+				continue
+			}
+			if err := send.text(beat.Part.Text); err != nil {
+				log.Printf("deliver utterance failed: %v", err)
+			}
+		case session.ExpressionSticker:
+			b.deliverSticker(conversationID, event, beat, send)
 		}
-		if err := send(text); err != nil {
-			log.Printf("deliver final beat failed: %v", err)
+	}
+}
+
+type expressionBeat struct {
+	BeatID string
+	Part   session.ExpressionPart
+}
+
+func (b *bot) deliverSticker(conversationID string, event coreclient.TurnEvent, beat expressionBeat, send expressionSender) {
+	result := coreclient.ExpressionDeliveryResult{
+		ConversationID: conversationID,
+		TurnID:         event.TurnID,
+		BeatID:         beat.BeatID,
+		Status:         session.ExpressionDeliveryFailed,
+	}
+	fail := func(message string, cause error) {
+		result.ErrorMessage = message
+		if cause != nil {
+			log.Printf("%s: %v", message, cause)
 		}
+		if err := b.socket.ReportExpressionDelivery(b.ctx, result); err != nil {
+			log.Printf("report sticker delivery failure failed: %v", err)
+		}
+	}
+	if beat.Part.Sticker == nil {
+		fail("QQ 表情包引用缺失", nil)
+		return
+	}
+	if send.image == nil {
+		fail("QQ 图片发送器不可用", nil)
+		return
+	}
+	content, err := b.stickers.ReadStickerContent(b.ctx, beat.Part.Sticker.ID)
+	if err != nil {
+		fail("从 Core 读取表情包失败", err)
+		return
+	}
+	if content.MIMEType != beat.Part.Sticker.MIMEType {
+		fail("Core 表情包 MIME 与回复快照不一致", nil)
+		return
+	}
+	if err := send.image(content.Bytes); err != nil {
+		fail("QQ 图片发送失败", err)
+		return
+	}
+	result.Status = session.ExpressionDeliverySucceeded
+	result.ErrorMessage = ""
+	if err := b.socket.ReportExpressionDelivery(b.ctx, result); err != nil {
+		log.Printf("report sticker delivery success failed: %v", err)
 	}
 }
 
@@ -167,19 +249,41 @@ func ambientObservationFromEvent(ctx *zero.Ctx) (coreclient.AmbientObservation, 
 	}, nil
 }
 
-func finalBeatText(event coreclient.TurnEvent) (string, bool) {
+func finalExpressionBeat(event coreclient.TurnEvent) (expressionBeat, bool) {
 	var envelope struct {
-		Type        string `json:"type"`
-		Kind        string `json:"kind"`
-		DisplayText string `json:"displayText"`
+		Type        string                 `json:"type"`
+		BeatID      string                 `json:"beatId"`
+		Kind        string                 `json:"kind"`
+		DisplayText string                 `json:"displayText"`
+		Part        session.ExpressionPart `json:"part"`
 	}
 	if err := json.Unmarshal(event.Payload, &envelope); err != nil {
-		return "", false
+		return expressionBeat{}, false
 	}
-	if envelope.Type != "beat.ready" || envelope.Kind != "final" || strings.TrimSpace(envelope.DisplayText) == "" {
-		return "", false
+	if envelope.Type != "beat.ready" || envelope.Kind != "final" {
+		return expressionBeat{}, false
 	}
-	return envelope.DisplayText, true
+	if envelope.Part.Kind == "" && strings.TrimSpace(envelope.DisplayText) != "" {
+		envelope.Part = session.ExpressionPart{
+			Kind: session.ExpressionUtterance,
+			Text: envelope.DisplayText,
+		}
+	}
+	switch envelope.Part.Kind {
+	case session.ExpressionUtterance:
+		envelope.Part.Text = strings.TrimSpace(envelope.Part.Text)
+		if envelope.Part.Text == "" {
+			return expressionBeat{}, false
+		}
+	case session.ExpressionSticker:
+		if strings.TrimSpace(envelope.BeatID) == "" || envelope.Part.Sticker == nil ||
+			strings.TrimSpace(envelope.Part.Sticker.ID) == "" || strings.TrimSpace(envelope.Part.Sticker.MIMEType) == "" {
+			return expressionBeat{}, false
+		}
+	default:
+		return expressionBeat{}, false
+	}
+	return expressionBeat{BeatID: envelope.BeatID, Part: envelope.Part}, true
 }
 
 func runBot(ctx context.Context, cfg Config) error {
@@ -195,7 +299,7 @@ func runBot(ctx context.Context, cfg Config) error {
 		return err
 	}
 	defer socket.Close()
-	b, err := newBot(ctx, cfg, socket)
+	b, err := newBot(ctx, cfg, socket, core)
 	if err != nil {
 		return err
 	}

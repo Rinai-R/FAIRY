@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	"fairy/coreclient"
+	"fairy/session"
 )
 
 func TestConsumeTurnEventsDeliversConversationStreamInOrder(t *testing.T) {
@@ -16,11 +18,11 @@ func TestConsumeTurnEventsDeliversConversationStreamInOrder(t *testing.T) {
 	delivered := make(chan string, 2)
 	bot := &bot{
 		ctx: ctx,
-		senders: map[string]func(string) error{
-			"c1": func(text string) error {
+		senders: map[string]expressionSender{
+			"c1": {text: func(text string) error {
 				delivered <- text
 				return nil
-			},
+			}},
 		},
 		conversations: make(map[int64]string),
 	}
@@ -49,16 +51,179 @@ func TestConsumeTurnEventsDeliversConversationStreamInOrder(t *testing.T) {
 	wg.Wait()
 }
 
-func TestFinalBeatTextRequiresFinalKind(t *testing.T) {
+func TestFinalExpressionBeatRequiresFinalKind(t *testing.T) {
 	payload, _ := json.Marshal(map[string]any{"type": "beat.ready", "kind": "utterance", "displayText": "skip"})
-	if _, ok := finalBeatText(coreclient.TurnEvent{Payload: payload}); ok {
+	if _, ok := finalExpressionBeat(coreclient.TurnEvent{Payload: payload}); ok {
 		t.Fatal("utterance accepted as final")
 	}
 	payload, _ = json.Marshal(map[string]any{"type": "beat.ready", "kind": "final", "displayText": "你好"})
-	text, ok := finalBeatText(coreclient.TurnEvent{Payload: payload})
-	if !ok || text != "你好" {
-		t.Fatalf("text=%q ok=%v", text, ok)
+	beat, ok := finalExpressionBeat(coreclient.TurnEvent{Payload: payload})
+	if !ok || beat.Part.Kind != session.ExpressionUtterance || beat.Part.Text != "你好" {
+		t.Fatalf("beat=%#v ok=%v", beat, ok)
 	}
+}
+
+func TestConsumeTurnEventsDeliversStickerAndReportsSuccess(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	socket := &fakeSessionSocket{reports: make(chan coreclient.ExpressionDeliveryResult, 1)}
+	reader := fakeStickerReader{content: coreclient.StickerContent{
+		MIMEType: "image/gif",
+		Bytes:    []byte("GIF89a-content"),
+	}}
+	delivered := make(chan []byte, 1)
+	bot := &bot{
+		ctx:      ctx,
+		socket:   socket,
+		stickers: reader,
+		senders: map[string]expressionSender{
+			"c1": {image: func(content []byte) error {
+				delivered <- append([]byte(nil), content...)
+				return nil
+			}},
+		},
+		conversations: make(map[int64]string),
+	}
+	stream := make(chan coreclient.TurnEvent, 1)
+	done := make(chan struct{})
+	go func() {
+		bot.consumeTurnEvents("c1", stream)
+		close(done)
+	}()
+	stream <- stickerBeatEvent("c1", "t1", "b1", "sticker-1", "image/gif")
+
+	select {
+	case got := <-delivered:
+		if string(got) != "GIF89a-content" {
+			t.Fatalf("image content = %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for image delivery")
+	}
+	select {
+	case report := <-socket.reports:
+		if report.Status != session.ExpressionDeliverySucceeded || report.ConversationID != "c1" ||
+			report.TurnID != "t1" || report.BeatID != "b1" || report.ErrorMessage != "" {
+			t.Fatalf("report = %#v", report)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for delivery report")
+	}
+	cancel()
+	<-done
+}
+
+func TestConsumeTurnEventsReportsStickerFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	socket := &fakeSessionSocket{reports: make(chan coreclient.ExpressionDeliveryResult, 1)}
+	bot := &bot{
+		ctx:      ctx,
+		socket:   socket,
+		stickers: fakeStickerReader{err: errors.New("content unavailable")},
+		senders: map[string]expressionSender{
+			"c1": {image: func([]byte) error {
+				t.Fatal("image sender called after content failure")
+				return nil
+			}},
+		},
+		conversations: make(map[int64]string),
+	}
+	stream := make(chan coreclient.TurnEvent, 1)
+	done := make(chan struct{})
+	go func() {
+		bot.consumeTurnEvents("c1", stream)
+		close(done)
+	}()
+	stream <- stickerBeatEvent("c1", "t1", "b1", "sticker-1", "image/png")
+
+	select {
+	case report := <-socket.reports:
+		if report.Status != session.ExpressionDeliveryFailed || report.ErrorMessage != "从 Core 读取表情包失败" {
+			t.Fatalf("report = %#v", report)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for failed delivery report")
+	}
+	cancel()
+	<-done
+}
+
+func TestEnsureConversationDeclaresStickerCapability(t *testing.T) {
+	socket := &fakeSessionSocket{
+		stream: make(chan coreclient.TurnEvent),
+		openResponse: coreclient.OpenSessionResponse{
+			ConversationID: "c1",
+			CharacterID:    "character-1",
+			Endpoint:       session.EndpointIM,
+		},
+	}
+	bot := &bot{
+		ctx:           t.Context(),
+		socket:        socket,
+		stickers:      fakeStickerReader{},
+		conversations: make(map[int64]string),
+		senders:       make(map[string]expressionSender),
+	}
+	if _, err := bot.ensureConversation(20001, expressionSender{}); err != nil {
+		t.Fatal(err)
+	}
+	if !socket.openRequest.OutputCapabilities.Sticker {
+		t.Fatalf("output capabilities = %#v", socket.openRequest.OutputCapabilities)
+	}
+}
+
+func stickerBeatEvent(conversationID, turnID, beatID, stickerID, mimeType string) coreclient.TurnEvent {
+	payload, _ := json.Marshal(map[string]any{
+		"type":   "beat.ready",
+		"kind":   "final",
+		"beatId": beatID,
+		"part": map[string]any{
+			"kind": "sticker",
+			"sticker": map[string]any{
+				"id": stickerID, "description": "开心", "mimeType": mimeType,
+			},
+		},
+	})
+	return coreclient.TurnEvent{
+		ConversationID: conversationID,
+		TurnID:         turnID,
+		Payload:        payload,
+	}
+}
+
+type fakeSessionSocket struct {
+	openRequest  coreclient.OpenSessionRequest
+	openResponse coreclient.OpenSessionResponse
+	stream       chan coreclient.TurnEvent
+	reports      chan coreclient.ExpressionDeliveryResult
+}
+
+func (socket *fakeSessionSocket) OpenSession(_ context.Context, request coreclient.OpenSessionRequest) (coreclient.OpenSessionResponse, error) {
+	socket.openRequest = request
+	return socket.openResponse, nil
+}
+
+func (socket *fakeSessionSocket) Watch(context.Context, string) (<-chan coreclient.TurnEvent, error) {
+	return socket.stream, nil
+}
+
+func (socket *fakeSessionSocket) ObserveAmbient(context.Context, string, coreclient.AmbientObservation) error {
+	return nil
+}
+
+func (socket *fakeSessionSocket) ReportExpressionDelivery(_ context.Context, result coreclient.ExpressionDeliveryResult) error {
+	socket.reports <- result
+	return nil
+}
+
+type fakeStickerReader struct {
+	content coreclient.StickerContent
+	err     error
+}
+
+func (reader fakeStickerReader) ReadStickerContent(context.Context, string) (coreclient.StickerContent, error) {
+	return reader.content, reader.err
 }
 
 func TestConfigValidationAndExactTokens(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"fairy/coreclient"
+	"fairy/session"
 
 	"github.com/gorilla/websocket"
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -290,6 +291,12 @@ func TestCoreServiceUsesOneSocketAndClearsCompletedTurn(t *testing.T) {
 				mu.Unlock()
 				switch kind {
 				case "session.open":
+					var capabilities session.OutputCapabilities
+					_ = json.Unmarshal(frame["outputCapabilities"], &capabilities)
+					if !capabilities.Sticker {
+						t.Error("Desktop session did not declare sticker capability")
+						return
+					}
 					_ = conn.WriteJSON(map[string]any{"type": "session.opened", "requestId": requestID, "conversationId": "c1", "characterId": "character-1", "endpoint": "desktop"})
 				case "session.watch":
 					_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID})
@@ -340,6 +347,206 @@ func TestCoreServiceUsesOneSocketAndClearsCompletedTurn(t *testing.T) {
 	}
 	if got, want := frameTypes, []string{"session.open", "session.watch", "turn.submit"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
 		t.Fatalf("socket frames = %v, want %v", got, want)
+	}
+}
+
+func TestCoreServicePreparesControlledStickerAndReportsRenderSuccess(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	deliveryReceived := make(chan coreclient.ExpressionDeliveryResult, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/status":
+			writeServiceFixtureJSON(t, w, serviceStatusFixture())
+		case "/v1/characters":
+			writeServiceFixtureJSON(t, w, coreclient.CharacterCatalog{Characters: []coreclient.CharacterRecord{serviceCharacterFixture()}, Active: ptr(serviceCharacterFixture())})
+		case "/v1/visual-assets/fairy.test/images/idle.png":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(testPNG)
+		case "/v1/sessions/c1/messages":
+			writeServiceFixtureJSON(t, w, coreclient.MessagePage{Messages: []coreclient.MessageRecord{}})
+		case "/v1/stickers/sticker-1/content":
+			if r.Header.Get("Authorization") != "Bearer desktop-test-token" {
+				t.Errorf("sticker authorization = %q", r.Header.Get("Authorization"))
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "image/gif")
+			_, _ = w.Write([]byte("GIF89a-content"))
+		case "/v1/session/ws":
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			defer conn.Close()
+			_ = conn.WriteJSON(map[string]any{"type": "ready"})
+			var submitRequestID string
+			for {
+				var frame map[string]json.RawMessage
+				if err := conn.ReadJSON(&frame); err != nil {
+					return
+				}
+				var kind, requestID string
+				_ = json.Unmarshal(frame["type"], &kind)
+				_ = json.Unmarshal(frame["requestId"], &requestID)
+				switch kind {
+				case "session.open":
+					var capabilities session.OutputCapabilities
+					_ = json.Unmarshal(frame["outputCapabilities"], &capabilities)
+					if !capabilities.Sticker {
+						t.Error("Desktop session did not declare sticker capability")
+						return
+					}
+					_ = conn.WriteJSON(map[string]any{"type": "session.opened", "requestId": requestID, "conversationId": "c1", "characterId": "character-1", "endpoint": "desktop"})
+				case "session.watch":
+					_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID})
+				case "turn.submit":
+					submitRequestID = requestID
+					writeTurnEventFixture(conn, "t1", 1, "responding", `{"type":"beat.ready","beatId":"b1","kind":"final","visualState":"idle","part":{"kind":"sticker","visualState":"idle","sticker":{"id":"sticker-1","description":"开心","mimeType":"image/gif"}}}`)
+				case "expression.delivery":
+					var result coreclient.ExpressionDeliveryResult
+					_ = json.Unmarshal(frame["deliveryResult"], &result)
+					deliveryReceived <- result
+					_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID, "conversationId": "c1"})
+					writeTurnEventFixture(conn, "t1", 2, "completed", `{"type":"completed"}`)
+					_ = conn.WriteJSON(map[string]any{"type": "result", "requestId": submitRequestID, "payload": json.RawMessage(`{"outcome":{"conversationId":"c1","turnId":"t1","responseText":"[表情包：开心]"}}`)})
+				}
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	service := NewCoreService()
+	service.connections = &memoryConnectionStore{connection: desktopConnection{
+		Endpoint: server.URL, EndpointKey: "desktop-test", Token: "desktop-test-token",
+	}}
+	service.newCache = func() (*visualCache, error) { return newVisualCacheAt(t.TempDir()) }
+	turns := make(chan desktopTurnEvent, 6)
+	service.attachEmitter(func(name string, payload any) {
+		if name == "desktop:turn" {
+			turns <- payload.(desktopTurnEvent)
+		}
+	})
+	if _, err := service.Connect(); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	defer service.ServiceShutdown()
+
+	sendResult := make(chan error, 1)
+	go func() { sendResult <- service.Send("发个表情", false) }()
+	assertTurnTypes(t, turns, "state_changed")
+	var beatEvent desktopTurnEvent
+	select {
+	case beatEvent = <-turns:
+	case <-time.After(time.Second):
+		t.Fatal("did not receive sticker beat")
+	}
+	if beatEvent.Type != "beat.ready" || beatEvent.Beat == nil || beatEvent.Beat.StickerURL == "" ||
+		beatEvent.Beat.StickerUnavailable {
+		t.Fatalf("sticker beat = %#v", beatEvent)
+	}
+	response := httptest.NewRecorder()
+	service.ServeHTTP(response, httptest.NewRequest(http.MethodGet, beatEvent.Beat.StickerURL, nil))
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "image/gif" ||
+		response.Body.String() != "GIF89a-content" {
+		t.Fatalf("controlled sticker response = status %d, headers %#v, body %q", response.Code, response.Header(), response.Body.String())
+	}
+	if err := service.ReportStickerDelivery("t1", "b1", true); err != nil {
+		t.Fatalf("ReportStickerDelivery() error = %v", err)
+	}
+	select {
+	case result := <-deliveryReceived:
+		if result.Status != session.ExpressionDeliverySucceeded || result.ConversationID != "c1" ||
+			result.TurnID != "t1" || result.BeatID != "b1" {
+			t.Fatalf("delivery result = %#v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("did not receive Desktop delivery result")
+	}
+	assertTurnTypes(t, turns, "completed")
+	select {
+	case err := <-sendResult:
+		if err != nil {
+			t.Fatalf("Send() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Send() did not finish after sticker delivery")
+	}
+}
+
+func TestCoreServiceReportsStickerFetchFailure(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	deliveryReceived := make(chan coreclient.ExpressionDeliveryResult, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/stickers/missing/content":
+			http.NotFound(w, r)
+		case "/v1/session/ws":
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			defer conn.Close()
+			_ = conn.WriteJSON(map[string]any{"type": "ready"})
+			for {
+				var frame map[string]json.RawMessage
+				if err := conn.ReadJSON(&frame); err != nil {
+					return
+				}
+				var kind, requestID string
+				_ = json.Unmarshal(frame["type"], &kind)
+				_ = json.Unmarshal(frame["requestId"], &requestID)
+				if kind != "expression.delivery" {
+					continue
+				}
+				var result coreclient.ExpressionDeliveryResult
+				_ = json.Unmarshal(frame["deliveryResult"], &result)
+				deliveryReceived <- result
+				_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID})
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client, err := coreclient.New(coreclient.Options{Endpoint: server.URL, Token: "desktop-test-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket, err := client.DialSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer socket.Close()
+	cache, err := newVisualCacheAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewCoreService()
+	service.client, service.socket, service.conversation, service.visualCache = client, socket, "c1", cache
+	beat := desktopBeat{
+		BeatID: "b1",
+		Part: &session.ExpressionPart{
+			Kind: session.ExpressionSticker,
+			Sticker: &session.StickerReference{
+				ID: "missing", Description: "不存在", MIMEType: "image/png",
+			},
+		},
+	}
+	service.prepareDesktopSticker(socket, coreclient.TurnEvent{ConversationID: "c1", TurnID: "t1"}, &beat)
+	if !beat.StickerUnavailable || beat.StickerURL != "" || beat.StickerError != "无法从 Core 读取表情包" {
+		t.Fatalf("failed sticker beat = %#v", beat)
+	}
+	select {
+	case result := <-deliveryReceived:
+		if result.Status != session.ExpressionDeliveryFailed || result.ErrorMessage != "无法从 Core 读取表情包" {
+			t.Fatalf("delivery result = %#v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("did not receive failed Desktop delivery result")
 	}
 }
 

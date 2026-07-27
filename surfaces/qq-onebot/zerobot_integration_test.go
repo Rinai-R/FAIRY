@@ -137,7 +137,9 @@ func newCoreWSTestServer(silentObserved, waitObserved chan struct{}, openCalls, 
 				openCalls.Add(1)
 				endpoint, _ := frame["endpoint"].(string)
 				endpointKey, _ := frame["endpointKey"].(string)
-				if endpoint != "im" || endpointKey != "onebot-group:20001" {
+				capabilities, _ := frame["outputCapabilities"].(map[string]any)
+				stickerCapable, _ := capabilities["sticker"].(bool)
+				if endpoint != "im" || endpointKey != "onebot-group:20001" || !stickerCapable {
 					errorsCh <- fmt.Errorf("session open = %#v", frame)
 					return
 				}
