@@ -2,37 +2,27 @@ package companion
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	"fairy/character"
 	"fairy/config"
 	"fairy/memory"
-	"fairy/memory/semantic"
 	"fairy/model"
-	"fairy/participation"
-	"fairy/proactive"
-	"fairy/profile"
 	"fairy/reply"
-	"fairy/retention"
-	"fairy/search"
-	"fairy/sociallearning"
-	turnruntime "fairy/turn"
 
 	"go.uber.org/zap"
 
-	contracts "fairy/contracts/interaction"
-	obs "fairy/contracts/observation"
-	appobs "fairy/observation"
+	"fairy/session"
 )
 
 type CompanionService struct {
 	root              string
 	memory            memoryPorts
-	semanticEmbedder  semantic.Embedder
+	semanticEmbedder  memory.SemanticEmbedder
 	vectorIndex       VectorIndex
 	model             ModelPort
 	webSearch         WebSearchBackend
@@ -45,22 +35,17 @@ type CompanionService struct {
 	backgroundError   error
 	loopMetrics       agentLoopMetrics
 	interactionMu     sync.RWMutex
-	interactions      map[string]contracts.Binding
+	interactions      map[string]session.Binding
 	identities        OwnerIdentityPort
 	emitMu            sync.Mutex
-	emit              EventEmitter
-	emitParticipation ParticipationEventEmitter
+	emit              eventEmitter
 	messageTelemetry  MessageTelemetry
-	ambient           *AmbientInbox
-	turnRegistry      *turnruntime.Registry
-	retention         *retention.Engine
+	turnRegistry      *turnRegistry
+	retention         *retentionEngine
 	turns             *TurnEngine
-	participation     *ParticipationEngine
-	desktopAttention  *proactive.AttentionEvaluator
-	desktopEvidence   *proactive.EvidenceRegistry
+	desktopEvidence   DesktopEvidenceValidator
 	desktopTool       DesktopToolCoordinator
-	socialLearning    *sociallearning.LearningEngine
-	socialFeedback    *sociallearning.FeedbackEngine
+	ambientReplies    AmbientReplyObserver
 }
 
 type MessageTelemetry interface {
@@ -73,12 +58,12 @@ type MessageTelemetry interface {
 
 // WebSearchBackend is the optional OpenSERP sidecar search surface.
 type WebSearchBackend interface {
-	Search(ctx context.Context, query string, limit int) ([]search.Hit, error)
+	Search(ctx context.Context, query string, limit int) ([]WebSearchHit, error)
 	Close() error
 }
 
 // AttachEventEmitter wires a Wails-free sink from main (package function, not a bound service method).
-func AttachEventEmitter(s *CompanionService, emit EventEmitter) {
+func AttachEventEmitter(s *CompanionService, emit eventEmitter) {
 	if s == nil {
 		return
 	}
@@ -96,7 +81,7 @@ func AttachMessageTelemetry(s *CompanionService, telemetry MessageTelemetry) {
 	s.emitMu.Unlock()
 }
 
-func (s *CompanionService) emitEvent(event TurnEvent) {
+func (s *CompanionService) emitEvent(event session.Event) {
 	s.emitMu.Lock()
 	emit := s.emit
 	s.emitMu.Unlock()
@@ -107,14 +92,14 @@ func (s *CompanionService) emitEvent(event TurnEvent) {
 
 // publishLife allocates the next turn-event sequence and emits under one lock so
 // concurrent utterance TTS cannot deliver duplicated or out-of-order sequences.
-func (s *CompanionService) publishLife(life *TurnLifecycle, produce func() (TurnEvent, error)) (TurnEvent, error) {
+func (s *CompanionService) publishLife(life *turnLifecycle, produce func() (session.Event, error)) (session.Event, error) {
 	if life == nil {
-		return TurnEvent{}, errors.New("nil turn lifecycle")
+		return session.Event{}, errors.New("nil turn lifecycle")
 	}
-	return life.Publish(func() (TurnEvent, error) {
+	return life.Publish(func() (session.Event, error) {
 		event, err := produce()
 		if err != nil {
-			return TurnEvent{}, err
+			return session.Event{}, err
 		}
 		s.emitEvent(event)
 		s.emitMu.Lock()
@@ -129,16 +114,17 @@ func (s *CompanionService) publishLife(life *TurnLifecycle, produce func() (Turn
 	})
 }
 
-func messageTelemetryStage(event TurnEvent) string {
-	if beat, ok := event.Payload.(beatReadyPayload); ok && beat.Kind == reply.BeatKindFinal {
+func messageTelemetryStage(event session.Event) string {
+	var beat beatReadyPayload
+	if json.Unmarshal(event.Payload, &beat) == nil && beat.Type == "beat.ready" && beat.Kind == reply.BeatKindFinal {
 		return "first_beat"
 	}
 	switch event.State {
-	case TurnStateCompleted:
+	case string(turnStateCompleted):
 		return "completed"
-	case TurnStateFailed:
+	case string(turnStateFailed):
 		return "failed"
-	case TurnStateInterrupted:
+	case string(turnStateInterrupted):
 		return "interrupted"
 	default:
 		return ""
@@ -176,11 +162,8 @@ func (s *CompanionService) endMessageTrace(traceID, status string) {
 func NewCompanionService() *CompanionService {
 	service := &CompanionService{
 		logger:       zap.NewNop(),
-		interactions: make(map[string]contracts.Binding),
+		interactions: make(map[string]session.Binding),
 	}
-	service.ambient = newAmbientInbox(context.Background(), service)
-	service.desktopAttention = proactive.NewAttentionEvaluator()
-	service.desktopEvidence = proactive.NewEvidenceRegistry()
 	service.wireEngines()
 	return service
 }
@@ -200,18 +183,13 @@ func newCompanionServiceWithPorts(root string, ports memoryPorts, model ModelPor
 		model:        model,
 		webSearch:    webSearch,
 		logger:       zap.NewNop(),
-		interactions: make(map[string]contracts.Binding),
+		interactions: make(map[string]session.Binding),
 	}
 	if strings.TrimSpace(root) != "" {
 		service.characterLookup = character.NewStore(root)
-		service.profiles = profile.NewStore(root)
+		service.profiles = config.NewProfileStore(root)
 		service.cfg = config.NewReader(root)
 	}
-	service.ambient = newAmbientInbox(context.Background(), service)
-	service.desktopAttention = proactive.NewAttentionEvaluator()
-	service.desktopEvidence = proactive.NewEvidenceRegistry()
-	service.socialLearning = sociallearning.NewLearningEngine(socialLearningHost{service: service}, sociallearning.LearningQueueCapacity)
-	service.socialFeedback = sociallearning.NewFeedbackEngine(socialLearningHost{service: service}, sociallearning.FeedbackQueueCapacity)
 	service.wireEngines()
 	return service
 }
@@ -267,7 +245,7 @@ func AttachSpeechSynthesizer(s *CompanionService, synthesizer SpeechSynthesizer)
 // AttachSemanticEmbedder injects the optional local semantic backend used by
 // memory_search and bounded embedding job passes. A nil or unavailable embedder
 // leaves the runtime on the existing FTS-only memory path.
-func AttachSemanticEmbedder(s *CompanionService, embedder semantic.Embedder) {
+func AttachSemanticEmbedder(s *CompanionService, embedder memory.SemanticEmbedder) {
 	if s == nil || embedder == nil {
 		return
 	}
@@ -314,17 +292,8 @@ func (s *CompanionService) Close() error {
 	if s == nil {
 		return nil
 	}
-	if s.ambient != nil {
-		s.ambient.Close()
-	}
-	if s.socialLearning != nil {
-		s.socialLearning.Close()
-	}
-	if s.socialFeedback != nil {
-		s.socialFeedback.Close()
-	}
 	if s.retention != nil {
-		s.retention.Close()
+		s.retention.close()
 	}
 	s.cancelActiveTurns()
 	if s.webSearch == nil {
@@ -343,15 +312,14 @@ func (s *CompanionService) wireEngines() {
 	if s == nil {
 		return
 	}
-	s.turnRegistry = turnruntime.NewRegistry(func(ctx context.Context, conversationID, turnID string) error {
+	s.turnRegistry = newTurnRegistry(func(ctx context.Context, conversationID, turnID string) error {
 		if s.desktopTool == nil {
 			return nil
 		}
 		return s.desktopTool.CancelTurn(ctx, conversationID, turnID)
 	})
-	s.retention = retention.NewEngine(retentionHost{service: s})
+	s.retention = newRetentionEngine(s)
 	s.turns = &TurnEngine{host: s}
-	s.participation = newParticipationEngine(s)
 }
 
 func (s *CompanionService) SubmitTurn(request SubmitTurnRequest) (TurnOutcome, error) {
@@ -368,7 +336,7 @@ func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest)
 	return s.turns.SubmitCompiledTurn(request)
 }
 
-func (s *CompanionService) SubmitDesktopInitiation(request DesktopInitiationRequest, observation DesktopObservation) (TurnOutcome, error) {
+func (s *CompanionService) SubmitDesktopInitiation(request DesktopInitiationRequest, observation session.DesktopObservation) (TurnOutcome, error) {
 	if s == nil || s.turns == nil {
 		return TurnOutcome{}, ErrRespondRuntimeNotMigrated
 	}
@@ -389,32 +357,6 @@ func (s *CompanionService) CancelTurn(conversationID string, turnID string) erro
 	return s.turns.CancelTurn(conversationID, turnID)
 }
 
-func (s *CompanionService) DecideParticipation(ctx context.Context, request ParticipationRequest) (ParticipationResult, error) {
-	if s == nil || s.participation == nil {
-		return ParticipationResult{}, ErrRespondRuntimeNotMigrated
-	}
-	if err := participation.ValidateParticipationRequest(request); err != nil {
-		return ParticipationResult{}, err
-	}
-	resolved, err := s.ResolveInteraction(request.ConversationID)
-	if err != nil {
-		return ParticipationResult{}, err
-	}
-	messageID := request.Messages[len(request.Messages)-1].MessageID
-	now := time.Now()
-	route, err := appobs.RouteCoreTrigger(appobs.TriggerEnvelope{
-		Kind: appobs.TriggerPublicAmbient, ConversationID: request.ConversationID, Resolved: resolved,
-		Payload: appobs.PublicAmbientTrigger{MessageID: messageID}, EvidenceIDs: []string{messageID}, CreatedAt: now,
-	}, obs.DesktopPrivacyNormal, true, now)
-	if err != nil {
-		return ParticipationResult{}, err
-	}
-	if route.Pipeline != appobs.PipelineParticipation {
-		return ParticipationResult{}, errors.New("public ambient trigger selected an invalid entry graph")
-	}
-	return s.participation.DecideParticipation(ctx, request)
-}
-
 func (s *CompanionService) RespondRuntimeMigrated() bool {
 	return s != nil &&
 		s.memory.ready() &&
@@ -424,18 +366,18 @@ func (s *CompanionService) RespondRuntimeMigrated() bool {
 		s.cfg != nil
 }
 
-func (s *CompanionService) terminalPersistenceFailure(life *TurnLifecycle, conversationID, turnID string, cause, persistenceErr error) (TurnOutcome, error) {
+func (s *CompanionService) terminalPersistenceFailure(life *turnLifecycle, conversationID, turnID string, cause, persistenceErr error) (TurnOutcome, error) {
 	err := fmt.Errorf("persisting turn terminal state: %w", persistenceErr)
 	if cause != nil {
 		err = errors.Join(cause, err)
 	}
 	const code = "TURN_TERMINAL_PERSISTENCE_FAILED"
-	if _, lifeErr := s.publishLife(life, func() (TurnEvent, error) {
+	if _, lifeErr := s.publishLife(life, func() (session.Event, error) {
 		return life.Fail(code, err.Error(), false)
 	}); lifeErr != nil {
 		err = errors.Join(err, lifeErr)
 	}
-	s.appendRuntimeLedger(conversationID, turnID, runtimeLedgerEventTerminal, TurnStateFailed, code, runtimeFailureLedgerMetadata(code, err, false))
+	s.appendRuntimeLedger(conversationID, turnID, runtimeLedgerEventTerminal, turnStateFailed, code, runtimeFailureLedgerMetadata(code, err, false))
 	return TurnOutcome{}, err
 }
 
@@ -443,7 +385,7 @@ func (s *CompanionService) terminalPersistenceFailure(life *TurnLifecycle, conve
 // lifecycle lock, so emitting from here stays serialized with the main goroutine
 // and preserves monotonic sequence numbers. Skipped and ordinary failed TTS jobs
 // deliver text-only beats; cancelled jobs are discarded by the turn delivery owner.
-func (s *CompanionService) handleSpeechResult(life *TurnLifecycle, conversationID string, turnID string, delivery *reply.Delivery, res reply.SpeechResult) {
+func (s *CompanionService) handleSpeechResult(life *turnLifecycle, conversationID string, turnID string, delivery *reply.Delivery, res reply.SpeechResult) {
 	display := strings.TrimSpace(res.DisplayText)
 	if display == "" {
 		display = strings.TrimSpace(res.Text)
@@ -519,7 +461,7 @@ func (s *CompanionService) handleSpeechResult(life *TurnLifecycle, conversationI
 		}
 		return
 	}
-	if _, err := s.publishLife(life, func() (TurnEvent, error) {
+	if _, err := s.publishLife(life, func() (session.Event, error) {
 		return life.BeatReady(completion)
 	}); err != nil {
 		s.logger.Warn("beat.ready skipped",
@@ -551,7 +493,7 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
-	var userProfile *profile.Snapshot
+	var userProfile *config.ProfileSnapshot
 	if resolved.AllowsPersonalMemory() {
 		userProfile, err = s.profileSource().Current()
 		if err != nil {
@@ -566,7 +508,7 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
-	input, err := BuildCompactInput(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, states, resolved)
+	input, err := buildCompactInput(characterRecord, userProfile, bootstrap.PromptWindow, bootstrap.Messages, states, resolved)
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}

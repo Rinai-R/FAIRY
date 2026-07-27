@@ -8,10 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	dbschema "fairy/coredb/schema"
-
-	"fairy/memory/semantic"
-	vectorindex "fairy/vectorindex"
+	"fairy/coredb"
 
 	"github.com/google/uuid"
 )
@@ -20,7 +17,7 @@ func TestVectorRebuildAndReconciliationAgainstRealServices(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -32,7 +29,7 @@ func TestVectorRebuildAndReconciliationAgainstRealServices(t *testing.T) {
 	second := seedPostgresEmbeddingMemory(t, ctx, store, "rebuild-second", "第二条重建记忆")
 	third := seedPostgresEmbeddingMemory(t, ctx, store, "rebuild-third", "第三条重建记忆")
 
-	if _, err := store.RebuildVectorIndex(ctx, semantic.UnavailableEmbedder{}, index, 2); err == nil {
+	if _, err := store.RebuildVectorIndex(ctx, UnavailableSemanticEmbedder{}, index, 2); err == nil {
 		t.Fatal("RebuildVectorIndex(unavailable embedder) error = nil")
 	}
 	status, err := index.VerifyCollection(ctx)
@@ -76,11 +73,11 @@ func TestVectorRebuildAndReconciliationAgainstRealServices(t *testing.T) {
 		t.Fatalf("succeeded rebuilt jobs = %d", succeededJobs)
 	}
 
-	firstID, _ := vectorindex.PointID(vectorindex.ItemKindPersonalMemory, first.ID, SemanticEmbeddingModelID)
-	secondID, _ := vectorindex.PointID(vectorindex.ItemKindPersonalMemory, second.ID, SemanticEmbeddingModelID)
-	thirdID, _ := vectorindex.PointID(vectorindex.ItemKindPersonalMemory, third.ID, SemanticEmbeddingModelID)
-	if err := index.Upsert(ctx, vectorindex.Point{ID: firstID, Vector: vector, Payload: vectorindex.PointPayloadInput{
-		ItemKind: vectorindex.ItemKindPersonalMemory, ItemID: first.ID, ModelID: SemanticEmbeddingModelID,
+	firstID, _ := VectorPointID(ItemKindPersonalMemory, first.ID, SemanticEmbeddingModelID)
+	secondID, _ := VectorPointID(ItemKindPersonalMemory, second.ID, SemanticEmbeddingModelID)
+	thirdID, _ := VectorPointID(ItemKindPersonalMemory, third.ID, SemanticEmbeddingModelID)
+	if err := index.Upsert(ctx, VectorPoint{ID: firstID, Vector: vector, Payload: VectorPointPayloadInput{
+		ItemKind: ItemKindPersonalMemory, ItemID: first.ID, ModelID: SemanticEmbeddingModelID,
 		ScopeType: "global", ContentHash: strings.Repeat("f", 64),
 	}}); err != nil {
 		t.Fatal(err)
@@ -88,12 +85,12 @@ func TestVectorRebuildAndReconciliationAgainstRealServices(t *testing.T) {
 	if err := index.DeletePoints(ctx, []uuid.UUID{secondID}); err != nil {
 		t.Fatal(err)
 	}
-	orphanID, err := vectorindex.PointID(vectorindex.ItemKindPersonalMemory, "orphan-memory", SemanticEmbeddingModelID)
+	orphanID, err := VectorPointID(ItemKindPersonalMemory, "orphan-memory", SemanticEmbeddingModelID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := index.Upsert(ctx, vectorindex.Point{ID: orphanID, Vector: vector, Payload: vectorindex.PointPayloadInput{
-		ItemKind: vectorindex.ItemKindPersonalMemory, ItemID: "orphan-memory", ModelID: SemanticEmbeddingModelID,
+	if err := index.Upsert(ctx, VectorPoint{ID: orphanID, Vector: vector, Payload: VectorPointPayloadInput{
+		ItemKind: ItemKindPersonalMemory, ItemID: "orphan-memory", ModelID: SemanticEmbeddingModelID,
 		ScopeType: "global", ContentHash: strings.Repeat("e", 64),
 	}}); err != nil {
 		t.Fatal(err)

@@ -2,17 +2,16 @@ package speech
 
 import (
 	"encoding/json"
+	"fairy/config"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"fairy/secret"
 )
 
 func TestReadStatusDefaultsToDisabledAndNoSecret(t *testing.T) {
 	root := t.TempDir()
-	status, err := ReadStatus(root, secret.NewTestStore())
+	status, err := ReadStatus(root, config.NewTestSecretStore())
 	if err != nil {
 		t.Fatalf("ReadStatus() error = %v", err)
 	}
@@ -26,7 +25,7 @@ func TestReadStatusDefaultsToDisabledAndNoSecret(t *testing.T) {
 
 func TestSaveSettingsStoresAPIKeyAndReturnsRedactedStatus(t *testing.T) {
 	root := t.TempDir()
-	store := secret.NewTestStore()
+	store := config.NewTestSecretStore()
 	status, err := SaveSettings(root, SaveSettingsRequest{
 		Enabled:        true,
 		APIKey:         "test-api-key",
@@ -58,7 +57,7 @@ func TestSaveSettingsStoresAPIKeyAndReturnsRedactedStatus(t *testing.T) {
 
 func TestSaveSettingsRequiresCredentialWhenEnabled(t *testing.T) {
 	root := t.TempDir()
-	_, err := SaveSettings(root, SaveSettingsRequest{Enabled: true}, secret.NewTestStore())
+	_, err := SaveSettings(root, SaveSettingsRequest{Enabled: true}, config.NewTestSecretStore())
 	if err == nil {
 		t.Fatal("SaveSettings() error = nil, want missing credential")
 	}
@@ -69,7 +68,7 @@ func TestSaveSettingsRequiresCredentialWhenEnabled(t *testing.T) {
 
 func TestSaveSettingsCanUseAPIKeyOnlyWhenEnabled(t *testing.T) {
 	root := t.TempDir()
-	status, err := SaveSettings(root, SaveSettingsRequest{Enabled: true, APIKey: "test-api-key"}, secret.NewTestStore())
+	status, err := SaveSettings(root, SaveSettingsRequest{Enabled: true, APIKey: "test-api-key"}, config.NewTestSecretStore())
 	if err != nil {
 		t.Fatalf("SaveSettings() error = %v", err)
 	}
@@ -80,8 +79,8 @@ func TestSaveSettingsCanUseAPIKeyOnlyWhenEnabled(t *testing.T) {
 
 func TestSaveSettingsCanUseExistingAPIKey(t *testing.T) {
 	root := t.TempDir()
-	store := secret.NewTestStore()
-	value, err := secret.NewValue("existing-key")
+	store := config.NewTestSecretStore()
+	value, err := config.NewSecretValue("existing-key")
 	if err != nil {
 		t.Fatalf("NewValue() error = %v", err)
 	}
@@ -118,7 +117,7 @@ func TestLegacyWSSSettingsFileDoesNotConfigureVoiceCloneHTTP(t *testing.T) {
 	if err := os.WriteFile(legacyPath, []byte(legacy), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-	status, err := ReadStatus(root, secret.NewTestStore())
+	status, err := ReadStatus(root, config.NewTestSecretStore())
 	if err != nil {
 		t.Fatalf("ReadStatus() error = %v", err)
 	}

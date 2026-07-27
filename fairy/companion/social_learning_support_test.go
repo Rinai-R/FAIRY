@@ -9,13 +9,13 @@ import (
 
 	"fairy/character"
 	"fairy/config"
+	"fairy/initiative"
 	"fairy/memory"
 	"fairy/model"
-	"fairy/sociallearning"
 )
 
-func socialLearningObservations() []AmbientObservation {
-	return []AmbientObservation{
+func socialLearningObservations() []initiative.AmbientObservation {
+	return []initiative.AmbientObservation{
 		{MessageID: "m1", SenderID: "u1", SenderName: "甲", Text: "最近投简历有点焦虑", TimestampUnixMS: 1000},
 		{MessageID: "m2", SenderID: "u2", SenderName: "乙", Text: "先把项目经历整理清楚", TimestampUnixMS: 2000},
 	}
@@ -27,10 +27,9 @@ func TestParticipationBehaviorContextKeepsOnlyBehaviorEntries(t *testing.T) {
 		{ID: "e2", Kind: memory.SocialMemoryBehavior, Situation: "被点名时", Content: "先短回再补一句", RecallCue: "被点名"},
 		{ID: "e3", Kind: memory.SocialMemoryBehavior, Situation: "冷场时", Content: "不硬插话", RecallCue: "冷场"},
 	}}}
-	service := newSocialLearningTestService(memoryPort, &socialLearningModel{})
-	item, err := service.participationBehaviorContext(t.Context(), "character-1", "conversation-1", socialLearningObservations())
+	item, err := initiative.BehaviorItem(memoryPort.retrieved)
 	if err != nil || item == nil {
-		t.Fatalf("participationBehaviorContext() = %#v, %v", item, err)
+		t.Fatalf("BehaviorItem() = %#v, %v", item, err)
 	}
 	if !strings.Contains(item.Content, `"kind":"behavior"`) || strings.Contains(item.Content, `"kind":"episode"`) {
 		t.Fatalf("behavior context = %s", item.Content)
@@ -172,21 +171,6 @@ func newSocialLearningTestService(memoryPort *socialLearningMemory, modelPort Mo
 	return service
 }
 
-func TestSocialLearningHostLoadsConversationMetadata(t *testing.T) {
-	memoryPort := &socialLearningMemory{}
-	service := newSocialLearningTestService(memoryPort, &socialLearningModel{})
-	record, err := (socialLearningHost{service: service}).LoadConversationRecord("conversation-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	memoryPort.mu.Lock()
-	metadataLoads := memoryPort.metadataLoads
-	memoryPort.mu.Unlock()
-	if record.ID != "conversation-1" || record.CharacterID != "character-1" || metadataLoads != 1 {
-		t.Fatalf("record=%#v metadata loads=%d", record, metadataLoads)
-	}
-}
-
 func TestRetrieveSocialRespondContextUsesPublicConversationScope(t *testing.T) {
 	memoryPort := &socialLearningMemory{retrieved: memory.SocialMemoryContext{Entries: []memory.SocialMemoryEntry{
 		{ID: "entry-1", Kind: memory.SocialMemoryEpisode, Situation: "实习", Content: "群内讨论实习进度", RecallCue: "实习"},
@@ -244,24 +228,5 @@ func TestRetrieveSocialRespondContextReturnsStorageFailure(t *testing.T) {
 	intent := &ReplyIntent{MemoryQuery: "接住焦虑"}
 	if _, err := service.retrieveSocialRespondContext(t.Context(), "character-1", "conversation-1", publicAmbientResolved(), intent, nil); err == nil {
 		t.Fatal("retrieveSocialRespondContext() error = nil")
-	}
-}
-
-func TestAmbientLearningEnqueuesEveryThresholdOnce(t *testing.T) {
-	engine := sociallearning.NewLearningEngine(nil, 2)
-	service := NewCompanionService()
-	service.socialLearning = engine
-	service.interactions["conversation-1"] = publicAmbientBinding()
-	defer service.Close()
-	for index := 1; index <= 40; index++ {
-		observation := AmbientObservation{
-			MessageID: "m" + strings.Repeat("x", index), SenderID: "u1", SenderName: "甲", Text: "消息", TimestampUnixMS: int64(index),
-		}
-		if err := service.ObserveAmbient("conversation-1", observation); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if stats := engine.Stats(); stats.Enqueued != 2 || stats.Dropped != 0 {
-		t.Fatalf("Stats() = %#v", stats)
 	}
 }

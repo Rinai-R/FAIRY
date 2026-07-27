@@ -15,9 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"fairy/contracts/interaction"
-	"fairy/contracts/session"
 	"fairy/memory"
+	"fairy/session"
+
 	"github.com/google/uuid"
 )
 
@@ -215,7 +215,7 @@ func NewCaptureHub(store captureExecutionStore) *CaptureHub {
 }
 
 // Register attaches one authenticated private desktop session to its conversation.
-func (h *CaptureHub) Register(conversationID string, endpoint interaction.EndpointKind, context interaction.Context, send func(session.DesktopCaptureRequest) error) (string, func(), error) {
+func (h *CaptureHub) Register(conversationID string, endpoint session.EndpointKind, context session.Context, send func(session.DesktopCaptureRequest) error) (string, func(), error) {
 	conversationID = strings.TrimSpace(conversationID)
 	if h == nil || h.store == nil {
 		return "", nil, errors.New("capture hub is not configured")
@@ -223,7 +223,7 @@ func (h *CaptureHub) Register(conversationID string, endpoint interaction.Endpoi
 	if conversationID == "" || send == nil {
 		return "", nil, errors.New("capture route is incomplete")
 	}
-	if endpoint != interaction.EndpointDesktop || context.Audience != interaction.AudienceSingle || context.Presentation != interaction.PresentationEmbodied {
+	if endpoint != session.EndpointDesktop || context.Audience != session.AudienceSingle || context.Presentation != session.PresentationEmbodied {
 		return "", nil, errors.New("capture route requires a private desktop interaction")
 	}
 	id := uuid.NewString()

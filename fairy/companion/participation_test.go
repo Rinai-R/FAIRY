@@ -12,21 +12,20 @@ import (
 
 	"fairy/character"
 	"fairy/config"
+	"fairy/initiative"
 	"fairy/memory"
 	"fairy/model"
-	"fairy/participation"
-
-	contracts "fairy/contracts/interaction"
+	"fairy/session"
 )
 
-func validAmbientObservation() AmbientObservation {
-	return AmbientObservation{MessageID: "m1", SenderID: "u1", SenderName: "群友", Text: "这话题挺有意思", IsNew: true, TimestampUnixMS: 1}
+func validAmbientObservation() initiative.AmbientObservation {
+	return initiative.AmbientObservation{MessageID: "m1", SenderID: "u1", SenderName: "群友", Text: "这话题挺有意思", IsNew: true, TimestampUnixMS: 1}
 }
 
-func validParticipationRequest() ParticipationRequest {
-	return ParticipationRequest{
-		ConversationID: "c1", EvaluationReason: ParticipationReasonMessage,
-		Messages: []AmbientObservation{validAmbientObservation()},
+func validParticipationRequest() initiative.ParticipationRequest {
+	return initiative.ParticipationRequest{
+		ConversationID: "c1", EvaluationReason: initiative.ParticipationReasonMessage,
+		Messages: []initiative.AmbientObservation{validAmbientObservation()},
 	}
 }
 
@@ -36,30 +35,30 @@ func validReplyDecision(target string) string {
 
 func TestParticipationInstructionsRequireOneConversationalHook(t *testing.T) {
 	for _, required := range []string{"choose exactly one conversational hook", "surrounding messages are background only", `"focus":"<one conversational hook to answer>"`} {
-		if !strings.Contains(ParticipationInstructions, required) {
+		if !strings.Contains(initiative.ParticipationInstructions, required) {
 			t.Fatalf("ParticipationInstructions missing %q", required)
 		}
 	}
 }
 
 func TestCompileParticipationIsStrict(t *testing.T) {
-	messages := []AmbientObservation{validAmbientObservation()}
+	messages := []initiative.AmbientObservation{validAmbientObservation()}
 	tests := []struct {
 		draft  string
-		action ParticipationAction
+		action initiative.ParticipationAction
 	}{
-		{validReplyDecision("m1"), ParticipationReply},
-		{`{"action":"wait","waitSeconds":7}`, ParticipationWait},
-		{`{"action":"silent"}`, ParticipationSilent},
-		{"  {\"action\":\"silent\"}  ", ParticipationSilent},
-		{"```json\n{\"action\":\"wait\",\"waitSeconds\":3}\n```", ParticipationWait},
+		{validReplyDecision("m1"), initiative.ParticipationReply},
+		{`{"action":"wait","waitSeconds":7}`, initiative.ParticipationWait},
+		{`{"action":"silent"}`, initiative.ParticipationSilent},
+		{"  {\"action\":\"silent\"}  ", initiative.ParticipationSilent},
+		{"```json\n{\"action\":\"wait\",\"waitSeconds\":3}\n```", initiative.ParticipationWait},
 	}
 	for _, test := range tests {
-		result, err := participation.CompileParticipation(test.draft, messages)
+		result, err := initiative.CompileParticipation(test.draft, messages)
 		if err != nil || result.Action != test.action {
 			t.Fatalf("draft %q: result=%#v err=%v", test.draft, result, err)
 		}
-		if test.action == ParticipationReply && (result.Intent == nil || result.Intent.ReplyMode != "brief" || result.Intent.ExpressionQuery != "轻松接话") {
+		if test.action == initiative.ParticipationReply && (result.Intent == nil || result.Intent.ReplyMode != "brief" || result.Intent.ExpressionQuery != "轻松接话") {
 			t.Fatalf("reply intent = %#v", result.Intent)
 		}
 	}
@@ -80,16 +79,16 @@ func TestCompileParticipationIsStrict(t *testing.T) {
 		`{"action":"silent"} trailing`,
 		``,
 	} {
-		if _, err := participation.CompileParticipation(invalid, messages); err == nil {
+		if _, err := initiative.CompileParticipation(invalid, messages); err == nil {
 			t.Fatalf("invalid participation accepted: %q", invalid)
 		}
 	}
 }
 
 func TestCompileParticipationDerivesExpressionQueryFromFocusWhenProviderOmitsIt(t *testing.T) {
-	messages := []AmbientObservation{validAmbientObservation()}
+	messages := []initiative.AmbientObservation{validAmbientObservation()}
 	draft := `{"action":"reply","targetMessageId":"m1","intent":{"replyAct":"接话","tone":"自然","relationshipSignal":"群友","replyMode":"brief","focus":"对方刚提到的实验结果","avoid":[],"referenceInfo":"","memoryQuery":""}}`
-	result, err := participation.CompileParticipation(draft, messages)
+	result, err := initiative.CompileParticipation(draft, messages)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,10 +98,9 @@ func TestCompileParticipationDerivesExpressionQueryFromFocusWhenProviderOmitsIt(
 }
 
 func TestReplyIntentIsNotSerializedAcrossSurfaceContracts(t *testing.T) {
-	intent := &ReplyIntent{ReplyAct: "接话", Tone: "自然", RelationshipSignal: "群友", ReplyMode: "brief", Focus: "当前消息", ExpressionQuery: "轻松接话"}
 	for name, value := range map[string]any{
-		"participation": ParticipationResult{Action: ParticipationReply, Intent: intent},
-		"submit":        SubmitTurnRequest{ConversationID: "c1", Input: "hello", ReplyIntent: intent},
+		"participation": initiative.ParticipationResult{Action: initiative.ParticipationReply, Intent: &initiative.ReplyIntent{ReplyAct: "接话", RelationshipSignal: "群友", ExpressionQuery: "轻松接话"}},
+		"submit":        SubmitTurnRequest{ConversationID: "c1", Input: "hello", ReplyIntent: &ReplyIntent{ReplyAct: "接话", RelationshipSignal: "群友", ExpressionQuery: "轻松接话"}},
 	} {
 		payload, err := json.Marshal(value)
 		if err != nil {
@@ -118,38 +116,38 @@ func TestReplyIntentIsNotSerializedAcrossSurfaceContracts(t *testing.T) {
 
 func TestValidateParticipationBoundsAndReason(t *testing.T) {
 	request := validParticipationRequest()
-	if err := participation.ValidateParticipationRequest(request); err != nil {
+	if err := initiative.ValidateParticipationRequest(request); err != nil {
 		t.Fatal(err)
 	}
 	waitRequest := request
-	waitRequest.EvaluationReason = ParticipationReasonWaitElapsed
-	waitRequest.Messages = append([]AmbientObservation(nil), request.Messages...)
+	waitRequest.EvaluationReason = initiative.ParticipationReasonWaitElapsed
+	waitRequest.Messages = append([]initiative.AmbientObservation(nil), request.Messages...)
 	waitRequest.Messages[0].IsNew = false
-	if err := participation.ValidateParticipationRequest(waitRequest); err != nil {
+	if err := initiative.ValidateParticipationRequest(waitRequest); err != nil {
 		t.Fatal(err)
 	}
 	invalidMessage := request
-	invalidMessage.Messages = append([]AmbientObservation(nil), request.Messages...)
+	invalidMessage.Messages = append([]initiative.AmbientObservation(nil), request.Messages...)
 	invalidMessage.Messages[0].IsNew = false
-	if err := participation.ValidateParticipationRequest(invalidMessage); err == nil {
+	if err := initiative.ValidateParticipationRequest(invalidMessage); err == nil {
 		t.Fatal("message reason without new observation accepted")
 	}
 	invalidWait := request
-	invalidWait.EvaluationReason = ParticipationReasonWaitElapsed
-	if err := participation.ValidateParticipationRequest(invalidWait); err == nil {
+	invalidWait.EvaluationReason = initiative.ParticipationReasonWaitElapsed
+	if err := initiative.ValidateParticipationRequest(invalidWait); err == nil {
 		t.Fatal("wait_elapsed with new observation accepted")
 	}
-	request.Messages[0].Text = strings.Repeat("群", participation.MaxAmbientTextRunes+1)
-	if err := participation.ValidateParticipationRequest(request); err == nil {
+	request.Messages[0].Text = strings.Repeat("群", initiative.MaxAmbientTextRunes+1)
+	if err := initiative.ValidateParticipationRequest(request); err == nil {
 		t.Fatal("oversized text accepted")
 	}
 	request = validParticipationRequest()
 	request.Messages = append(request.Messages, request.Messages[0])
-	if err := participation.ValidateParticipationRequest(request); err == nil {
+	if err := initiative.ValidateParticipationRequest(request); err == nil {
 		t.Fatal("duplicate message ID accepted")
 	}
-	request.Messages = make([]AmbientObservation, participation.MaxAmbientObservations+1)
-	if err := participation.ValidateParticipationRequest(request); err == nil {
+	request.Messages = make([]initiative.AmbientObservation, initiative.MaxAmbientObservations+1)
+	if err := initiative.ValidateParticipationRequest(request); err == nil {
 		t.Fatal("oversized window accepted")
 	}
 }
@@ -164,7 +162,7 @@ func TestDeriveRecentPresenceUsesInclusiveWindows(t *testing.T) {
 		{Role: "assistant", CreatedAtUnixMS: now - 30*time.Minute.Milliseconds() - 1},
 		{Role: "user", CreatedAtUnixMS: now},
 	}
-	presence, err := participation.DeriveRecentPresence(messages, now)
+	presence, err := initiative.DeriveRecentPresence(messages, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,20 +172,20 @@ func TestDeriveRecentPresenceUsesInclusiveWindows(t *testing.T) {
 	if presence.SecondsSinceLastReply == nil || *presence.SecondsSinceLastReply != 60 {
 		t.Fatalf("seconds since last reply = %#v", presence.SecondsSinceLastReply)
 	}
-	empty, err := participation.DeriveRecentPresence(nil, now)
+	empty, err := initiative.DeriveRecentPresence(nil, now)
 	if err != nil || empty.SecondsSinceLastReply != nil {
 		t.Fatalf("empty presence = %#v, %v", empty, err)
 	}
-	if _, err := participation.DeriveRecentPresence([]memory.MessageRecord{{Role: "assistant", CreatedAtUnixMS: now + 1}}, now); err == nil {
+	if _, err := initiative.DeriveRecentPresence([]memory.MessageRecord{{Role: "assistant", CreatedAtUnixMS: now + 1}}, now); err == nil {
 		t.Fatal("future assistant timestamp accepted")
 	}
 }
 
 func TestBuildParticipationInputHasPolicyPresenceAndNoProfile(t *testing.T) {
 	seconds := int64(12)
-	input, err := participation.BuildParticipationInput(character.Record{
+	input, err := initiative.BuildParticipationInput(character.Record{
 		CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "自然参与群聊", TextLanguage: "zh", SpeakingLanguage: "zh",
-	}, publicAmbientResolved(), ParticipationReasonMessage, []AmbientObservation{validAmbientObservation()}, RecentPresence{
+	}, publicAmbientResolved(), initiative.ParticipationReasonMessage, []initiative.AmbientObservation{validAmbientObservation()}, initiative.RecentPresence{
 		AssistantReplies5Minutes: 2, AssistantReplies30Minutes: 4, SecondsSinceLastReply: &seconds,
 	})
 	if err != nil {
@@ -212,18 +210,18 @@ func TestBuildParticipationInputKeepsAcceptedObservationPrefixStable(t *testing.
 	record := character.Record{
 		CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "自然参与群聊", TextLanguage: "zh", SpeakingLanguage: "zh",
 	}
-	first := AmbientObservation{
+	first := initiative.AmbientObservation{
 		MessageID: "m1", SenderID: "u1", SenderName: "甲", Text: "你们觉得呢？", DirectedToBot: true, IsNew: true, TimestampUnixMS: now - 1000,
 	}
-	before, err := participation.BuildParticipationInputWithSignals(record, publicAmbientResolved(), ParticipationReasonMessage, []AmbientObservation{first}, nil, RecentPresence{}, now, nil)
+	before, err := initiative.BuildParticipationInputWithSignals(record, publicAmbientResolved(), initiative.ParticipationReasonMessage, []initiative.AmbientObservation{first}, nil, initiative.RecentPresence{}, now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	first.IsNew = false
-	second := AmbientObservation{
+	second := initiative.AmbientObservation{
 		MessageID: "m2", SenderID: "u2", SenderName: "乙", Text: "我觉得可以", IsNew: true, TimestampUnixMS: now,
 	}
-	after, err := participation.BuildParticipationInputWithSignals(record, publicAmbientResolved(), ParticipationReasonMessage, []AmbientObservation{first, second}, nil, RecentPresence{}, now, nil)
+	after, err := initiative.BuildParticipationInputWithSignals(record, publicAmbientResolved(), initiative.ParticipationReasonMessage, []initiative.AmbientObservation{first, second}, nil, initiative.RecentPresence{}, now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +239,7 @@ func TestBuildParticipationInputKeepsAcceptedObservationPrefixStable(t *testing.
 	if !strings.Contains(after[len(after)-1].Content, `"newMessageIds":["m2"]`) {
 		t.Fatalf("dynamic decision context missing new message IDs: %s", after[len(after)-1].Content)
 	}
-	waitInput, err := participation.BuildParticipationInputWithSignals(record, publicAmbientResolved(), ParticipationReasonWaitElapsed, []AmbientObservation{first}, nil, RecentPresence{}, now, nil)
+	waitInput, err := initiative.BuildParticipationInputWithSignals(record, publicAmbientResolved(), initiative.ParticipationReasonWaitElapsed, []initiative.AmbientObservation{first}, nil, initiative.RecentPresence{}, now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,32 +253,32 @@ func TestBuildParticipationInputKeepsCachePrefixStableAfterRollingWindowSlides(t
 	record := character.Record{
 		CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "自然参与群聊", TextLanguage: "zh", SpeakingLanguage: "zh",
 	}
-	cacheBefore := make([]AmbientObservation, 0, participation.MaxAmbientObservations)
-	for i := 1; i <= participation.MaxAmbientObservations; i++ {
-		cacheBefore = append(cacheBefore, AmbientObservation{
+	cacheBefore := make([]initiative.AmbientObservation, 0, initiative.MaxAmbientObservations)
+	for i := 1; i <= initiative.MaxAmbientObservations; i++ {
+		cacheBefore = append(cacheBefore, initiative.AmbientObservation{
 			MessageID: fmt.Sprintf("m%d", i), SenderID: fmt.Sprintf("u%d", i%6), SenderName: fmt.Sprintf("群友%d", i%6),
 			Text: fmt.Sprintf("第%d条群聊观察", i), TimestampUnixMS: now + int64(i),
 		})
 	}
-	windowBefore := append([]AmbientObservation(nil), cacheBefore...)
+	windowBefore := append([]initiative.AmbientObservation(nil), cacheBefore...)
 	windowBefore[len(windowBefore)-1].IsNew = true
-	before, err := participation.BuildParticipationInputWithSignals(record, publicAmbientResolved(), ParticipationReasonMessage, windowBefore, cacheBefore, RecentPresence{}, now+100, nil)
+	before, err := initiative.BuildParticipationInputWithSignals(record, publicAmbientResolved(), initiative.ParticipationReasonMessage, windowBefore, cacheBefore, initiative.RecentPresence{}, now+100, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	cacheAfter := append([]AmbientObservation(nil), cacheBefore...)
-	cacheAfter = append(cacheAfter, AmbientObservation{
+	cacheAfter := append([]initiative.AmbientObservation(nil), cacheBefore...)
+	cacheAfter = append(cacheAfter, initiative.AmbientObservation{
 		MessageID: "m21", SenderID: "u3", SenderName: "群友3", Text: "第21条群聊观察", TimestampUnixMS: now + 21,
 		IsNew: true,
 	})
-	windowAfter := append([]AmbientObservation(nil), cacheAfter[1:]...)
+	windowAfter := append([]initiative.AmbientObservation(nil), cacheAfter[1:]...)
 	windowAfter[len(windowAfter)-1].IsNew = true
-	after, err := participation.BuildParticipationInputWithSignals(record, publicAmbientResolved(), ParticipationReasonMessage, windowAfter, cacheAfter, RecentPresence{}, now+200, nil)
+	after, err := initiative.BuildParticipationInputWithSignals(record, publicAmbientResolved(), initiative.ParticipationReasonMessage, windowAfter, cacheAfter, initiative.RecentPresence{}, now+200, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(before) != participation.MaxAmbientObservations+3 || len(after) != participation.MaxAmbientObservations+4 {
+	if len(before) != initiative.MaxAmbientObservations+3 || len(after) != initiative.MaxAmbientObservations+4 {
 		t.Fatalf("input lengths before=%d after=%d", len(before), len(after))
 	}
 	for index := 0; index < len(before)-1; index++ {
@@ -302,11 +300,11 @@ func TestBuildParticipationInputKeepsCachePrefixStableAfterRollingWindowSlides(t
 
 func TestDeriveParticipationSignalsContainsOnlyObjectiveTimingAndPresenceFacts(t *testing.T) {
 	now := int64((10 * time.Minute) / time.Millisecond)
-	messages := []AmbientObservation{
+	messages := []initiative.AmbientObservation{
 		{MessageID: "m1", SenderID: "u1", SenderName: "甲", Text: "你觉得呢？", DirectedToBot: true, IsNew: true, TimestampUnixMS: now - 5*int64(time.Second.Milliseconds())},
 		{MessageID: "m2", SenderID: "u2", SenderName: "乙", Text: "你觉得呢？", IsNew: true, TimestampUnixMS: now},
 	}
-	signals, err := participation.DeriveParticipationSignals(messages, []memory.MessageRecord{{Role: "assistant", CreatedAtUnixMS: now - 2*int64(time.Minute.Milliseconds())}, {Role: "user", CreatedAtUnixMS: now - int64(time.Minute.Milliseconds())}}, now)
+	signals, err := initiative.DeriveParticipationSignals(messages, []memory.MessageRecord{{Role: "assistant", CreatedAtUnixMS: now - 2*int64(time.Minute.Milliseconds())}, {Role: "user", CreatedAtUnixMS: now - int64(time.Minute.Milliseconds())}}, now)
 	if err != nil {
 		t.Fatalf("DeriveParticipationSignals() error = %v", err)
 	}
@@ -331,7 +329,7 @@ func TestParticipationActivityMatchesTranscriptSignalsAndPromptTail(t *testing.T
 	now := int64(1_800_000_000_000)
 	latestMinute := now - time.Minute.Milliseconds()
 	latestOld := now - 40*time.Minute.Milliseconds()
-	observations := []AmbientObservation{
+	observations := []initiative.AmbientObservation{
 		{MessageID: "m1", SenderID: "u1", SenderName: "甲", Text: "你觉得呢？", DirectedToBot: true, IsNew: true, TimestampUnixMS: now - time.Second.Milliseconds()},
 		{MessageID: "m2", SenderID: "u2", SenderName: "乙", Text: "我觉得可以", IsNew: true, TimestampUnixMS: now},
 	}
@@ -370,33 +368,33 @@ func TestParticipationActivityMatchesTranscriptSignalsAndPromptTail(t *testing.T
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			transcriptPresence, err := participation.DeriveRecentPresence(test.transcript, now)
+			transcriptPresence, err := initiative.DeriveRecentPresence(test.transcript, now)
 			if err != nil {
 				t.Fatal(err)
 			}
-			activityPresence, err := participation.DeriveRecentPresenceFromActivity(test.activity, now)
+			activityPresence, err := initiative.DeriveRecentPresenceFromActivity(test.activity, now)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !reflect.DeepEqual(transcriptPresence, activityPresence) {
 				t.Fatalf("presence mismatch: transcript=%#v activity=%#v", transcriptPresence, activityPresence)
 			}
-			transcriptSignals, err := participation.DeriveParticipationSignals(observations, test.transcript, now)
+			transcriptSignals, err := initiative.DeriveParticipationSignals(observations, test.transcript, now)
 			if err != nil {
 				t.Fatal(err)
 			}
-			activitySignals, err := participation.DeriveParticipationSignalsFromActivity(observations, test.activity, now)
+			activitySignals, err := initiative.DeriveParticipationSignalsFromActivity(observations, test.activity, now)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !reflect.DeepEqual(transcriptSignals, activitySignals) {
 				t.Fatalf("signals mismatch: transcript=%#v activity=%#v", transcriptSignals, activitySignals)
 			}
-			transcriptInput, err := participation.BuildParticipationInputWithSignals(record, publicAmbientResolved(), ParticipationReasonMessage, observations, nil, transcriptPresence, now, test.transcript)
+			transcriptInput, err := initiative.BuildParticipationInputWithSignals(record, publicAmbientResolved(), initiative.ParticipationReasonMessage, observations, nil, transcriptPresence, now, test.transcript)
 			if err != nil {
 				t.Fatal(err)
 			}
-			activityInput, err := participation.BuildParticipationInputWithActivity(record, publicAmbientResolved(), ParticipationReasonMessage, observations, nil, activityPresence, now, test.activity)
+			activityInput, err := initiative.BuildParticipationInputWithActivity(record, publicAmbientResolved(), initiative.ParticipationReasonMessage, observations, nil, activityPresence, now, test.activity)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -411,7 +409,7 @@ func TestParticipationActivityMatchesTranscriptSignalsAndPromptTail(t *testing.T
 
 type participationMemory struct {
 	bootstrap     memory.ConversationBootstrap
-	binding       contracts.Binding
+	binding       session.Binding
 	found         bool
 	lookupErr     error
 	retrieveCalls int
@@ -451,9 +449,9 @@ func (m *participationMemory) LoadConversationActivity(_ string, nowUnixMS int64
 	return activity, nil
 }
 
-func (m *participationMemory) LookupEndpointForConversation(string) (contracts.Binding, bool, error) {
+func (m *participationMemory) LookupEndpointForConversation(string) (session.Binding, bool, error) {
 	if m.lookupErr != nil {
-		return contracts.Binding{}, false, m.lookupErr
+		return session.Binding{}, false, m.lookupErr
 	}
 	return m.binding, m.found, nil
 }
@@ -492,6 +490,51 @@ type participationConfig struct{ ConfigSource }
 
 func (participationConfig) ModelConnection() (config.ModelConnection, error) {
 	return config.ModelConnection{Model: "model-1", Capabilities: config.GatewayCapabilities{PromptCacheKey: true}}, nil
+}
+
+type participationDecisionHost struct {
+	service *CompanionService
+}
+
+func decideParticipation(service *CompanionService, ctx context.Context, request initiative.ParticipationRequest) (initiative.ParticipationResult, error) {
+	return initiative.NewEngine(participationDecisionHost{service: service}).DecideParticipation(ctx, request)
+}
+
+func (h participationDecisionHost) LoadConversationActivity(conversationID string, nowUnixMS int64) (memory.ConversationActivity, error) {
+	if h.service == nil || h.service.memory.ambient.activity == nil {
+		return memory.ConversationActivity{}, ErrRespondRuntimeNotMigrated
+	}
+	return h.service.memory.ambient.activity.LoadConversationActivity(conversationID, nowUnixMS)
+}
+
+func (h participationDecisionHost) ResolveInteraction(conversationID string) (session.Resolved, error) {
+	if h.service == nil {
+		return session.Resolved{}, ErrRespondRuntimeNotMigrated
+	}
+	return h.service.ResolveInteraction(conversationID)
+}
+
+func (h participationDecisionHost) ActiveCharacter(characterID string) (character.Record, error) {
+	if h.service == nil {
+		return character.Record{}, ErrRespondRuntimeNotMigrated
+	}
+	return h.service.activeCharacter(characterID)
+}
+
+func (h participationDecisionHost) ListSocialPersonNotes(ctx context.Context, characterID, conversationID string, senderIDs []string) ([]memory.SocialPersonNote, error) {
+	return h.service.memory.ambient.socialContext.ListSocialPersonNotes(ctx, characterID, conversationID, senderIDs)
+}
+
+func (h participationDecisionHost) RetrieveSocialMemoryContext(ctx context.Context, characterID, conversationID, query string) (memory.SocialMemoryContext, error) {
+	return h.service.memory.ambient.socialRetrieval.RetrieveSocialMemoryContext(ctx, characterID, conversationID, query)
+}
+
+func (h participationDecisionHost) ModelConnection() (config.ModelConnection, error) {
+	return h.service.configSource().ModelConnection()
+}
+
+func (h participationDecisionHost) ExecuteRequest(ctx context.Context, request model.CompiledPromptRequest) ([]model.StreamEvent, error) {
+	return h.service.modelPort().ExecuteRequestContext(ctx, request)
 }
 
 type participationModel struct {
@@ -547,11 +590,11 @@ func TestDecideParticipationRetriesOneInvalidDraftAndAccumulatesUsage(t *testing
 		t.Fatal(err)
 	}
 
-	result, err := service.DecideParticipation(t.Context(), validParticipationRequest())
+	result, err := decideParticipation(service, t.Context(), validParticipationRequest())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Action != ParticipationSilent || len(modelPort.requests) != 2 || len(result.Usage) != 2 {
+	if result.Action != initiative.ParticipationSilent || len(modelPort.requests) != 2 || len(result.Usage) != 2 {
 		t.Fatalf("result=%#v calls=%d", result, len(modelPort.requests))
 	}
 	if memoryPort.activityLoads != 1 {
@@ -576,7 +619,7 @@ func TestDecideParticipationFailsAfterTwoInvalidRetries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := service.DecideParticipation(t.Context(), validParticipationRequest())
+	_, err := decideParticipation(service, t.Context(), validParticipationRequest())
 	if err == nil || !strings.Contains(err.Error(), "remained invalid after 2 retries") || len(modelPort.requests) != 3 {
 		t.Fatalf("error=%v calls=%d", err, len(modelPort.requests))
 	}
@@ -591,17 +634,17 @@ func TestDecideParticipationRequiresAmbientPublicAndPropagatesContext(t *testing
 	service.characterLookup = participationCharacterLookup{record: character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"}}
 	service.cfg = participationConfig{}
 	request := validParticipationRequest()
-	if _, err := service.DecideParticipation(t.Context(), request); err == nil || !strings.Contains(err.Error(), "no interaction binding") {
+	if _, err := decideParticipation(service, t.Context(), request); err == nil || !strings.Contains(err.Error(), "no interaction binding") {
 		t.Fatalf("missing interaction error = %v", err)
 	}
 	if err := service.BindInteraction("c1", publicAmbientBinding()); err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.DecideParticipation(t.Context(), request)
-	if err != nil || result.Action != ParticipationSilent {
+	result, err := decideParticipation(service, t.Context(), request)
+	if err != nil || result.Action != initiative.ParticipationSilent {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
-	if modelPort.request.Shape.Lane != model.PromptLaneParticipate || modelPort.request.Shape.PromptCacheKey != "fairy:c1:participate" || modelPort.request.Shape.MaxOutputTokens != ParticipationMaxOutputTokens {
+	if modelPort.request.Shape.Lane != model.PromptLaneParticipate || modelPort.request.Shape.PromptCacheKey != "fairy:c1:participate" || modelPort.request.Shape.MaxOutputTokens != initiative.ParticipationMaxOutputTokens {
 		t.Fatalf("request shape = %#v", modelPort.request.Shape)
 	}
 	if modelPort.request.CacheInput == nil || modelPort.request.CacheInput.Lane != model.PromptLaneParticipate || modelPort.request.CacheInput.CharacterRevision != 1 || modelPort.request.CacheInput.StablePromptHash == "" {
@@ -620,7 +663,7 @@ func TestDecideParticipationRequiresAmbientPublicAndPropagatesContext(t *testing
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	modelPort.err = canceled.Err()
-	if _, err := service.DecideParticipation(canceled, request); !errors.Is(err, context.Canceled) {
+	if _, err := decideParticipation(service, canceled, request); !errors.Is(err, context.Canceled) {
 		t.Fatalf("context error = %v", err)
 	}
 }
@@ -636,18 +679,18 @@ func TestDecideParticipationSuppressesOldMessageTargetForMessageEvaluation(t *te
 	if err := service.BindInteraction("c1", publicAmbientBinding()); err != nil {
 		t.Fatal(err)
 	}
-	request := ParticipationRequest{
-		ConversationID: "c1", EvaluationReason: ParticipationReasonMessage,
-		Messages: []AmbientObservation{
+	request := initiative.ParticipationRequest{
+		ConversationID: "c1", EvaluationReason: initiative.ParticipationReasonMessage,
+		Messages: []initiative.AmbientObservation{
 			{MessageID: oldTarget, SenderID: "u1", SenderName: "甲", Text: "刚才的问题", TimestampUnixMS: 1, IsNew: false},
 			{MessageID: "new", SenderID: "u2", SenderName: "乙", Text: "新的补充", TimestampUnixMS: 2, IsNew: true},
 		},
 	}
-	result, err := service.DecideParticipation(t.Context(), request)
+	result, err := decideParticipation(service, t.Context(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Action != ParticipationSilent {
+	if result.Action != initiative.ParticipationSilent {
 		t.Fatalf("old target result = %#v", result)
 	}
 }
@@ -664,16 +707,16 @@ func TestDecideParticipationSkipsSocialMemoryForPersonalInteraction(t *testing.T
 	service.model = &participationModel{draft: `{"action":"silent"}`}
 	service.characterLookup = participationCharacterLookup{record: character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "桌面", TextLanguage: "zh", SpeakingLanguage: "zh"}}
 	service.cfg = participationConfig{}
-	if err := service.BindInteraction("c1", contracts.Binding{
-		Endpoint: contracts.EndpointDesktop,
-		Facts: contracts.Facts{
-			Audience: contracts.AudienceSingle, Initiation: contracts.InitiationDirect,
-			Presentation: contracts.PresentationEmbodied,
+	if err := service.BindInteraction("c1", session.Binding{
+		Endpoint: session.EndpointDesktop,
+		Facts: session.Facts{
+			Audience: session.AudienceSingle, Initiation: session.InitiationDirect,
+			Presentation: session.PresentationEmbodied,
 		},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := service.DecideParticipation(t.Context(), validParticipationRequest())
+	_, err := decideParticipation(service, t.Context(), validParticipationRequest())
 	if err == nil || !strings.Contains(err.Error(), "public ambient") {
 		t.Fatalf("personal participation error = %v", err)
 	}

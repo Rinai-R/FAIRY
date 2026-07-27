@@ -2,10 +2,9 @@ package speech
 
 import (
 	"context"
+	"fairy/config"
 	"fmt"
 	"strings"
-
-	"fairy/secret"
 )
 
 type VoiceCloneClient interface {
@@ -17,15 +16,15 @@ type VoiceCloneClient interface {
 
 type SpeechService struct {
 	root    string
-	secrets *secret.Store
+	secrets *config.SecretStore
 	client  VoiceCloneClient
 }
 
-func NewSpeechService(root string, secrets *secret.Store) *SpeechService {
+func NewSpeechService(root string, secrets *config.SecretStore) *SpeechService {
 	return NewSpeechServiceWithClient(root, secrets, NewClient())
 }
 
-func NewSpeechServiceWithClient(root string, secrets *secret.Store, client VoiceCloneClient) *SpeechService {
+func NewSpeechServiceWithClient(root string, secrets *config.SecretStore, client VoiceCloneClient) *SpeechService {
 	if client == nil {
 		client = NewClient()
 	}

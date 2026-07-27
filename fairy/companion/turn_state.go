@@ -2,14 +2,15 @@ package companion
 
 import (
 	"context"
+	"errors"
+
 	"fairy/reply"
-	turnruntime "fairy/turn"
 )
 
 var (
-	ErrTurnInProgress  = turnruntime.ErrInProgress
+	ErrTurnInProgress  = errors.New("TURN_IN_PROGRESS: companion turn or compaction already in progress")
 	ErrTurnInterrupted = reply.ErrInterrupted
-	ErrTurnNotActive   = turnruntime.ErrNotActive
+	ErrTurnNotActive   = errors.New("TURN_NOT_ACTIVE: no matching active turn to cancel")
 )
 
 // reserveTurn acquires the conversation turn slot before persistence so concurrent

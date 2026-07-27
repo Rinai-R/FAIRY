@@ -10,8 +10,9 @@ import (
 	"strings"
 	"sync"
 
-	"fairy/contracts/interaction"
 	"fairy/coreclient"
+	"fairy/session"
+
 	zero "github.com/wdvxdr1123/ZeroBot"
 	"github.com/wdvxdr1123/ZeroBot/driver"
 	"github.com/wdvxdr1123/ZeroBot/message"
@@ -93,8 +94,8 @@ func (b *bot) ensureConversation(groupID int64, send func(string) error) (string
 	b.mu.Unlock()
 
 	session, err := b.socket.OpenSession(b.ctx, coreclient.OpenSessionRequest{
-		Endpoint: interaction.EndpointIM, EndpointKey: "onebot-group:" + strconv.FormatInt(groupID, 10),
-		Interaction: interaction.Context{Audience: interaction.AudienceMulti, Initiation: interaction.InitiationAmbient, Presentation: interaction.PresentationChat},
+		Endpoint: session.EndpointIM, EndpointKey: "onebot-group:" + strconv.FormatInt(groupID, 10),
+		Interaction: session.Context{Audience: session.AudienceMulti, Initiation: session.InitiationAmbient, Presentation: session.PresentationChat},
 	})
 	if err != nil {
 		return "", err

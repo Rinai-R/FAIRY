@@ -7,18 +7,11 @@ import (
 
 	"fairy/memory"
 	"fairy/model"
-	"fairy/search"
-	"fairy/tooling"
 
-	domain "fairy/interaction"
+	"fairy/session"
 )
 
 const (
-	toolMemorySearch           = tooling.MemorySearch
-	toolPublicMemorySearch     = tooling.PublicMemorySearch
-	toolWebSearch              = tooling.WebSearch
-	toolSocialExpressionSelect = tooling.SocialExpressionSelect
-	toolSocialContextSearch    = tooling.SocialContextSearch
 	maxProtocolCompileRetries  = 2
 	maxExpressionSelectResults = 5
 	maxSocialContextResults    = 5
@@ -26,41 +19,12 @@ const (
 	runtimeLedgerEventTool     = "tool"
 )
 
-// RespondInstructionsAllowTools extends reply rules with native function tools.
-const RespondInstructionsAllowTools = tooling.RespondInstructionsAllowTools
-
-const RespondInstructionsAllowPublicTools = tooling.RespondInstructionsAllowPublicTools
-
-func RespondToolSpecs(webSearchEnabled bool) []model.ToolSpec {
-	return tooling.ToolSpecs(webSearchEnabled)
-}
-
-func RespondToolSpecsForInteraction(webSearchEnabled bool, resolved domain.Resolved) []model.ToolSpec {
-	return tooling.ToolSpecsForInteraction(webSearchEnabled, resolved)
-}
-
-func respondToolSpecsForRuntime(webSearchEnabled bool, resolved domain.Resolved, desktopEnabled bool) []model.ToolSpec {
-	tools := tooling.ToolSpecsForInteraction(webSearchEnabled, resolved)
+func respondToolSpecsForRuntime(webSearchEnabled bool, resolved session.Resolved, desktopEnabled bool) []model.ToolSpec {
+	tools := respondToolSpecsForInteraction(webSearchEnabled, resolved)
 	if desktopEnabled {
 		tools = append(tools, desktopToolSpec())
 	}
 	return tools
-}
-
-func RespondInstructionsForTools(toolsEnabled bool) string {
-	return tooling.InstructionsForTools(toolsEnabled)
-}
-
-func modelDrivenToolBudget(resolved domain.Resolved) int {
-	return tooling.ModelDrivenToolBudget(resolved)
-}
-
-func RespondInstructionsForInteraction(toolsEnabled bool, resolved domain.Resolved) string {
-	return tooling.InstructionsForInteraction(toolsEnabled, resolved)
-}
-
-func parseToolQuery(arguments string) (string, error) {
-	return tooling.ParseQuery(arguments)
 }
 
 func (s *CompanionService) retrieveMemoryForTool(characterID string, query string) (memory.RetrievalContext, error) {
@@ -143,16 +107,4 @@ func (s *CompanionService) selectSocialMemoryKindsForTool(
 	}
 	// Social memory is trigram-only today; do not claim vector semantic fusion.
 	return memory.RetrievalContext{Knowledge: knowledge, SemanticStatus: "unavailable"}, nil
-}
-
-func mergeRetrievalContext(base memory.RetrievalContext, extra memory.RetrievalContext) memory.RetrievalContext {
-	return tooling.MergeRetrievalContext(base, extra)
-}
-
-func retrievalFromWebHits(hits []search.Hit) memory.RetrievalContext {
-	return tooling.FromWebHits(hits)
-}
-
-func retrievalFromToolError(toolName string, err error) memory.RetrievalContext {
-	return tooling.FromToolError(toolName, err)
 }

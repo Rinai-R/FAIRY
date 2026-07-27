@@ -7,11 +7,9 @@ import (
 	"strings"
 	"time"
 
-	contracts "fairy/contracts/interaction"
 	"fairy/desktopcapture"
 	"fairy/model"
-
-	domain "fairy/interaction"
+	"fairy/session"
 )
 
 const (
@@ -39,8 +37,8 @@ func AttachDesktopToolCoordinator(service *CompanionService, coordinator Desktop
 	service.desktopTool = coordinator
 }
 
-func desktopToolAllowed(visionInput bool, resolved domain.Resolved, coordinator DesktopToolCoordinator, conversationID string) bool {
-	return visionInput && resolved.Endpoint == contracts.EndpointDesktop && resolved.Facts.Audience == contracts.AudienceSingle && resolved.AllowsPersonalMemory() && coordinator != nil && coordinator.Available(conversationID)
+func desktopToolAllowed(visionInput bool, resolved session.Resolved, coordinator DesktopToolCoordinator, conversationID string) bool {
+	return visionInput && resolved.Endpoint == session.EndpointDesktop && resolved.Facts.Audience == session.AudienceSingle && resolved.AllowsPersonalMemory() && coordinator != nil && coordinator.Available(conversationID)
 }
 
 func desktopToolSpec() model.ToolSpec {

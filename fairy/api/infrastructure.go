@@ -4,26 +4,24 @@ import (
 	"context"
 
 	"fairy/coredb"
-	dbschema "fairy/coredb/schema"
 	"fairy/memory"
-	vectorindex "fairy/vectorindex"
 )
 
 type databaseStatus struct {
-	Ready      bool                   `json:"ready"`
-	Mode       string                 `json:"mode"`
-	Descriptor *coredb.Descriptor     `json:"descriptor,omitempty"`
-	Schema     *dbschema.SchemaStatus `json:"schema,omitempty"`
-	Pool       *coredb.PoolStats      `json:"pool,omitempty"`
-	Error      string                 `json:"error,omitempty"`
+	Ready      bool                 `json:"ready"`
+	Mode       string               `json:"mode"`
+	Descriptor *coredb.Descriptor   `json:"descriptor,omitempty"`
+	Schema     *coredb.SchemaStatus `json:"schema,omitempty"`
+	Pool       *coredb.PoolStats    `json:"pool,omitempty"`
+	Error      string               `json:"error,omitempty"`
 }
 
 type qdrantStatus struct {
-	Ready      bool                          `json:"ready"`
-	Mode       string                        `json:"mode"`
-	Descriptor *vectorindex.Descriptor       `json:"descriptor,omitempty"`
-	Collection *vectorindex.CollectionStatus `json:"collection,omitempty"`
-	Error      string                        `json:"error,omitempty"`
+	Ready      bool                           `json:"ready"`
+	Mode       string                         `json:"mode"`
+	Descriptor *memory.VectorDescriptor       `json:"descriptor,omitempty"`
+	Collection *memory.VectorCollectionStatus `json:"collection,omitempty"`
+	Error      string                         `json:"error,omitempty"`
 }
 
 type secretKeyStatus struct {
@@ -38,8 +36,8 @@ type databaseMetrics struct {
 }
 
 type qdrantMetrics struct {
-	Available bool                         `json:"available"`
-	Snapshot  *vectorindex.MetricsSnapshot `json:"snapshot,omitempty"`
+	Available bool                          `json:"available"`
+	Snapshot  *memory.VectorMetricsSnapshot `json:"snapshot,omitempty"`
 }
 
 func (s *Server) infrastructureStatus(ctx context.Context) (databaseStatus, qdrantStatus, secretKeyStatus) {
@@ -55,7 +53,7 @@ func (s *Server) infrastructureStatus(ctx context.Context) (databaseStatus, qdra
 			database.Descriptor = &descriptor
 			database.Error = err.Error()
 		} else {
-			schema, err := dbschema.VerifySchema(ctx, s.rt.Database.Raw())
+			schema, err := coredb.VerifySchema(ctx, s.rt.Database.Raw())
 			database.Descriptor = &descriptor
 			if err != nil {
 				database.Error = err.Error()

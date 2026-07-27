@@ -1,15 +1,11 @@
 package config
 
-import (
-	"fairy/secret"
-)
-
 type ConfigService struct {
 	root    string
-	secrets *secret.Store
+	secrets *SecretStore
 }
 
-func NewConfigService(root string, secrets *secret.Store) *ConfigService {
+func NewConfigService(root string, secrets *SecretStore) *ConfigService {
 	return &ConfigService{root: root, secrets: secrets}
 }
 

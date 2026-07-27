@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"fairy/memory/semantic"
 )
 
 func (s *Store) retrievePostgres(ctx context.Context, characterID, query string) (RetrievalContext, error) {
@@ -14,7 +13,7 @@ func (s *Store) retrievePostgres(ctx context.Context, characterID, query string)
 		return RetrievalContext{}, err
 	}
 	if normalized == "" {
-		return RetrievalContext{SemanticStatus: string(semantic.StatusUnavailable)}, nil
+		return RetrievalContext{SemanticStatus: string(SemanticStatusUnavailable)}, nil
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
@@ -27,7 +26,7 @@ func (s *Store) retrievePostgres(ctx context.Context, characterID, query string)
 	if err != nil {
 		return RetrievalContext{}, err
 	}
-	return RetrievalContext{PersonalMemories: memories, Knowledge: knowledge, SemanticStatus: string(semantic.StatusUnavailable)}, nil
+	return RetrievalContext{PersonalMemories: memories, Knowledge: knowledge, SemanticStatus: string(SemanticStatusUnavailable)}, nil
 }
 
 func normalizePostgresSearchQuery(query string) (string, error) {

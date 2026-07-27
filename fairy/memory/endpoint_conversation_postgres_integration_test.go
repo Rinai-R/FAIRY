@@ -10,18 +10,17 @@ import (
 	"sync"
 	"testing"
 
-	dbschema "fairy/coredb/schema"
+	"fairy/config"
+	"fairy/coredb"
 
-	contracts "fairy/contracts/interaction"
-	"fairy/identity"
-	"fairy/secret"
+	"fairy/session"
 )
 
 func TestEndpointConversationIsolationAndImmutableFactsIntegration(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -53,7 +52,7 @@ func TestEndpointConversationIsolationAndImmutableFactsIntegration(t *testing.T)
 	}
 
 	mismatch := binding
-	mismatch.Facts.Presentation = contracts.PresentationEmbodied
+	mismatch.Facts.Presentation = session.PresentationEmbodied
 	if _, err := store.OpenOrCreateEndpointConversation("character-endpoint", mismatch, digestA); !errors.Is(err, ErrEndpointBindingMismatch) {
 		t.Fatalf("mismatched reopen error = %v", err)
 	}
@@ -74,7 +73,7 @@ func TestEndpointConversationConcurrentOpenCreatesOneBindingIntegration(t *testi
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -125,15 +124,15 @@ func TestOwnerIdentityLifecycleDoesNotPersistRawSubjectIntegration(t *testing.T)
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
-	identityStore, err := identity.NewStore(pool)
+	identityStore, err := NewIdentityStore(pool)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cipher, err := secret.CipherFromEnv(func(name string) string {
-		if name != secret.EnvMasterKey {
+	cipher, err := config.SecretCipherFromEnv(func(name string) string {
+		if name != config.SecretEnvMasterKey {
 			return ""
 		}
 		return base64.StdEncoding.EncodeToString(bytesOf(7, 32))
@@ -141,7 +140,7 @@ func TestOwnerIdentityLifecycleDoesNotPersistRawSubjectIntegration(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal := contracts.PrincipalRef{Namespace: "qq.onebot", Subject: "raw-user-123456"}
+	principal := session.PrincipalRef{Namespace: "qq.onebot", Subject: "raw-user-123456"}
 	digest, err := cipher.DigestPrincipal(principal)
 	if err != nil {
 		t.Fatal(err)
@@ -177,7 +176,7 @@ SELECT
 	if err := identityStore.UnbindOwner(principal.Namespace, digest); err != nil {
 		t.Fatal(err)
 	}
-	if err := identityStore.UnbindOwner(principal.Namespace, digest); !errors.Is(err, identity.ErrOwnerIdentityNotFound) {
+	if err := identityStore.UnbindOwner(principal.Namespace, digest); !errors.Is(err, ErrOwnerIdentityNotFound) {
 		t.Fatalf("second UnbindOwner() error = %v", err)
 	}
 	owner, err = identityStore.IsOwner(principal.Namespace, digest)
@@ -186,12 +185,12 @@ SELECT
 	}
 }
 
-func multiIMBinding() contracts.Binding {
-	return contracts.Binding{
-		Endpoint: contracts.EndpointIM,
-		Facts: contracts.Facts{
-			Audience: contracts.AudienceMulti, Initiation: contracts.InitiationAmbient,
-			Presentation: contracts.PresentationChat,
+func multiIMBinding() session.Binding {
+	return session.Binding{
+		Endpoint: session.EndpointIM,
+		Facts: session.Facts{
+			Audience: session.AudienceMulti, Initiation: session.InitiationAmbient,
+			Presentation: session.PresentationChat,
 		},
 	}
 }

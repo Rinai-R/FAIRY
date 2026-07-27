@@ -6,19 +6,20 @@ import (
 	"net/http"
 	"strings"
 
-	"fairy/visual"
+	"fairy/character"
+
 	"github.com/cloudwego/hertz/pkg/app"
 )
 
 func (s *Server) handleVisualAsset(ctx context.Context, c *app.RequestContext) {
 	packID := c.Param("packId")
 	assetPath := strings.TrimPrefix(c.Param("assetPath"), "/")
-	full, err := visual.ResolveAssetFile(visual.VisualPacksRoot(s.rt.ConfigRoot), packID+"/"+assetPath)
+	full, err := character.ResolveAssetFile(character.VisualPacksRoot(s.rt.ConfigRoot), packID+"/"+assetPath)
 	if err != nil {
 		switch {
-		case errors.Is(err, visual.ErrInvalidAssetPath):
+		case errors.Is(err, character.ErrInvalidAssetPath):
 			writeErr(c, http.StatusBadRequest, err)
-		case errors.Is(err, visual.ErrAssetNotFound):
+		case errors.Is(err, character.ErrAssetNotFound):
 			writeErr(c, http.StatusNotFound, err)
 		default:
 			writeErr(c, http.StatusInternalServerError, err)

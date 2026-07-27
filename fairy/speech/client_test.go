@@ -4,13 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fairy/config"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
-
-	"fairy/secret"
 )
 
 func TestClientTrainVoiceUsesHTTPHeadersAndBody(t *testing.T) {
@@ -28,7 +27,7 @@ func TestClientTrainVoiceUsesHTTPHeadersAndBody(t *testing.T) {
 	}))
 	defer server.Close()
 
-	apiKey, err := secret.NewValue("test-api-key")
+	apiKey, err := config.NewSecretValue("test-api-key")
 	if err != nil {
 		t.Fatalf("NewValue() error = %v", err)
 	}
@@ -82,7 +81,7 @@ func TestClientQueryAndUpgradeUseAppAccessTokenHeaders(t *testing.T) {
 	}))
 	defer server.Close()
 
-	apiKey, err := secret.NewValue("test-api-key")
+	apiKey, err := config.NewSecretValue("test-api-key")
 	if err != nil {
 		t.Fatalf("NewValue() error = %v", err)
 	}
@@ -118,7 +117,7 @@ func TestClientSynthesizeUsesHTTPBodyAndReturnsDataURL(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":20000000,"message":"OK","data":"` + audio1 + `"}` + "\n" + `{"code":20000000,"message":"OK","data":"` + audio2 + `"}`))
 	}))
 	defer server.Close()
-	token, err := secret.NewValue("access-token")
+	token, err := config.NewSecretValue("access-token")
 	if err != nil {
 		t.Fatalf("NewValue() error = %v", err)
 	}
@@ -146,7 +145,7 @@ func TestClientSynthesizeRedactsProviderErrors(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":"Forbidden","message":"bad key test-api-key X-Api-Key X-Api-Resource-Id"}`))
 	}))
 	defer server.Close()
-	apiKey, _ := secret.NewValue("test-api-key")
+	apiKey, _ := config.NewSecretValue("test-api-key")
 	_, err := (&Client{HTTPClient: server.Client(), Timeout: time.Second}).SynthesizeSpeech(context.Background(), Settings{Enabled: true, BaseURL: server.URL, DefaultSpeaker: "S_voice"}, Credentials{APIKey: apiKey, HasAPIKey: true}, SynthesizeSpeechRequest{Text: "こんにちは。"})
 	if err == nil {
 		t.Fatal("SynthesizeSpeech() error = nil, want provider error")
@@ -163,7 +162,7 @@ func TestClientTrainVoiceRejectsInvalidInputBeforeProvider(t *testing.T) {
 		calls++
 	}))
 	defer server.Close()
-	apiKey, _ := secret.NewValue("test-api-key")
+	apiKey, _ := config.NewSecretValue("test-api-key")
 	_, err := (&Client{HTTPClient: server.Client(), Timeout: time.Second}).TrainVoice(context.Background(), Settings{Enabled: true, BaseURL: server.URL}, Credentials{APIKey: apiKey, HasAPIKey: true}, TrainVoiceRequest{
 		SpeakerID:   "S_voice",
 		AudioData:   "not-base64",
@@ -183,7 +182,7 @@ func TestClientRedactsProviderErrors(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":"Forbidden","message":"bad key test-api-key X-Api-Key"}`))
 	}))
 	defer server.Close()
-	apiKey, _ := secret.NewValue("test-api-key")
+	apiKey, _ := config.NewSecretValue("test-api-key")
 	_, err := (&Client{HTTPClient: server.Client(), Timeout: time.Second}).QueryVoice(context.Background(), Settings{Enabled: true, BaseURL: server.URL}, Credentials{APIKey: apiKey, HasAPIKey: true}, VoiceOperationRequest{SpeakerID: "S_voice"})
 	if err == nil {
 		t.Fatal("QueryVoice() error = nil, want provider error")

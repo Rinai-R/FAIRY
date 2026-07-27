@@ -10,8 +10,8 @@ import (
 )
 
 func TestTurnLifecycleHappyPathJSONShape(t *testing.T) {
-	life := NewTurnLifecycle("6a129284-6358-47b0-ad64-2a5907d36c91", "6a129284-6358-47b0-ad64-2a5907d36c92")
-	for _, state := range []TurnState{TurnStateInterpreting, TurnStateGathering, TurnStatePlanning, TurnStateResponding} {
+	life := newTurnLifecycle("6a129284-6358-47b0-ad64-2a5907d36c91", "6a129284-6358-47b0-ad64-2a5907d36c92")
+	for _, state := range []turnState{turnStateInterpreting, turnStateGathering, turnStatePlanning, turnStateResponding} {
 		event, err := life.Transition(state)
 		if err != nil {
 			t.Fatalf("Transition(%s) error = %v", state, err)
@@ -37,7 +37,7 @@ func TestTurnLifecycleHappyPathJSONShape(t *testing.T) {
 	if reply.Sequence != 5 {
 		t.Fatalf("reply sequence = %d", reply.Sequence)
 	}
-	completed, err := life.Complete(TurnCompletion{
+	completed, err := life.Complete(turnCompletion{
 		Text:              "我在。",
 		CharacterRevision: 2,
 		VisualState:       "idle",
@@ -64,15 +64,15 @@ func TestTurnLifecycleHappyPathJSONShape(t *testing.T) {
 }
 
 func TestTurnLifecycleRejectsInvalidTransition(t *testing.T) {
-	life := NewTurnLifecycle("c", "t")
-	if _, err := life.Transition(TurnStateResponding); err == nil {
+	life := newTurnLifecycle("c", "t")
+	if _, err := life.Transition(turnStateResponding); err == nil {
 		t.Fatal("idle -> responding must fail")
 	}
 }
 
 func TestTurnLifecycleTemporaryStreamEventsAreOrderedAndMarked(t *testing.T) {
-	life := NewTurnLifecycle("conversation", "turn")
-	for _, state := range []TurnState{TurnStateInterpreting, TurnStateGathering, TurnStatePlanning} {
+	life := newTurnLifecycle("conversation", "turn")
+	for _, state := range []turnState{turnStateInterpreting, turnStateGathering, turnStatePlanning} {
 		if _, err := life.Transition(state); err != nil {
 			t.Fatalf("Transition(%s) error = %v", state, err)
 		}
@@ -88,20 +88,20 @@ func TestTurnLifecycleTemporaryStreamEventsAreOrderedAndMarked(t *testing.T) {
 	if presence.Sequence >= preview.Sequence {
 		t.Fatalf("temporary event order = presence %d, preview %d", presence.Sequence, preview.Sequence)
 	}
-	if payload, ok := presence.Payload.(presencePayload); !ok || payload.Type != "presence" || payload.Phase != "model_stream" {
+	if payload := decodeEventPayload[presencePayload](t, presence.Payload); payload.Type != "presence" || payload.Phase != "model_stream" {
 		t.Fatalf("presence payload = %#v", presence.Payload)
 	}
-	if payload, ok := preview.Payload.(replyPreviewPayload); !ok || payload.Type != "reply.preview" || len(payload.Chains) != 1 {
+	if payload := decodeEventPayload[replyPreviewPayload](t, preview.Payload); payload.Type != "reply.preview" || len(payload.Chains) != 1 {
 		t.Fatalf("preview payload = %#v", preview.Payload)
 	}
 }
 
 func TestTurnLifecycleRejectsUnsafeTemporaryEvents(t *testing.T) {
-	life := NewTurnLifecycle("conversation", "turn")
+	life := newTurnLifecycle("conversation", "turn")
 	if _, err := life.Presence("model_stream"); err == nil {
 		t.Fatal("Presence() in idle error = nil")
 	}
-	for _, state := range []TurnState{TurnStateInterpreting, TurnStateGathering, TurnStatePlanning} {
+	for _, state := range []turnState{turnStateInterpreting, turnStateGathering, turnStatePlanning} {
 		if _, err := life.Transition(state); err != nil {
 			t.Fatalf("Transition(%s) error = %v", state, err)
 		}
@@ -112,8 +112,8 @@ func TestTurnLifecycleRejectsUnsafeTemporaryEvents(t *testing.T) {
 }
 
 func TestBeatReadyIncludesPacingFields(t *testing.T) {
-	life := NewTurnLifecycle("conversation", "turn")
-	for _, state := range []TurnState{TurnStateInterpreting, TurnStateGathering, TurnStatePlanning, TurnStateResponding} {
+	life := newTurnLifecycle("conversation", "turn")
+	for _, state := range []turnState{turnStateInterpreting, turnStateGathering, turnStatePlanning, turnStateResponding} {
 		if _, err := life.Transition(state); err != nil {
 			t.Fatalf("Transition(%s) error = %v", state, err)
 		}
@@ -132,10 +132,7 @@ func TestBeatReadyIncludesPacingFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BeatReady() error = %v", err)
 	}
-	payload, ok := event.Payload.(beatReadyPayload)
-	if !ok {
-		t.Fatalf("payload = %T, want beatReadyPayload", event.Payload)
-	}
+	payload := decodeEventPayload[beatReadyPayload](t, event.Payload)
 	if payload.TargetIntervalMS != 920 || payload.PaceWaitMS != 370 || payload.PublishedPrefixCount != 2 {
 		t.Fatalf("pacing payload = %#v", payload)
 	}
@@ -151,8 +148,8 @@ func TestBeatReadyIncludesPacingFields(t *testing.T) {
 }
 
 func TestCompletedUsageWireShapeMatchesFrontendContract(t *testing.T) {
-	life := NewTurnLifecycle("6a129284-6358-47b0-ad64-2a5907d36c91", "6a129284-6358-47b0-ad64-2a5907d36c92")
-	for _, state := range []TurnState{TurnStateInterpreting, TurnStateGathering, TurnStatePlanning, TurnStateResponding} {
+	life := newTurnLifecycle("6a129284-6358-47b0-ad64-2a5907d36c91", "6a129284-6358-47b0-ad64-2a5907d36c92")
+	for _, state := range []turnState{turnStateInterpreting, turnStateGathering, turnStatePlanning, turnStateResponding} {
 		if _, err := life.Transition(state); err != nil {
 			t.Fatalf("Transition(%s) error = %v", state, err)
 		}
@@ -163,7 +160,7 @@ func TestCompletedUsageWireShapeMatchesFrontendContract(t *testing.T) {
 	}
 	input := uint64(12)
 	output := uint64(4)
-	completed, err := life.Complete(TurnCompletion{
+	completed, err := life.Complete(turnCompletion{
 		Text:              "我在。",
 		CharacterRevision: 2,
 		VisualState:       "idle",

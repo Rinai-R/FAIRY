@@ -10,14 +10,11 @@ import (
 
 	"fairy/character"
 	"fairy/config"
-	"fairy/interaction"
 	"fairy/memory"
 	"fairy/model"
 	"fairy/persona"
-	"fairy/profile"
 	replyapp "fairy/reply"
-	"fairy/search"
-	"fairy/tooling"
+	"fairy/session"
 
 	"go.uber.org/zap"
 )
@@ -29,17 +26,17 @@ func (e *TurnEngine) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (outc
 	return e.submitCompiledTurn(request, nil, false)
 }
 
-func (e *TurnEngine) submitRuntimeTurn(request SubmitCompiledTurnRequest, resolved *interaction.Resolved) (TurnOutcome, error) {
+func (e *TurnEngine) submitRuntimeTurn(request SubmitCompiledTurnRequest, resolved *session.Resolved) (TurnOutcome, error) {
 	return e.submitCompiledTurn(request, resolved, true)
 }
 
 func (e *TurnEngine) submitCompiledTurn(
 	request SubmitCompiledTurnRequest,
-	preparedResolved *interaction.Resolved,
+	preparedResolved *session.Resolved,
 	deriveVisualStates bool,
 ) (outcome TurnOutcome, err error) {
 	s := e.host
-	var resolved interaction.Resolved
+	var resolved session.Resolved
 	if preparedResolved == nil {
 		resolved, err = s.ResolveInteraction(request.ConversationID)
 	} else {
@@ -97,7 +94,7 @@ func (e *TurnEngine) submitCompiledTurn(
 	turnStarted := time.Now()
 
 	lg := s.logger.With(zap.String("turn", persisted.ID))
-	life := NewTurnLifecycle(request.ConversationID, persisted.ID)
+	life := newTurnLifecycle(request.ConversationID, persisted.ID)
 	execution := &turnExecution{engine: e, service: s, request: request, persisted: persisted, life: life}
 	fail := execution.fail
 	transition := execution.transition
@@ -106,7 +103,7 @@ func (e *TurnEngine) submitCompiledTurn(
 	var (
 		bootstrap           memory.ConversationPromptContext
 		characterRecord     character.Record
-		userProfile         *profile.Snapshot
+		userProfile         *config.ProfileSnapshot
 		socialContext       *SocialRespondContext
 		retrieval           memory.RetrievalContext
 		retrievalOmitReason string
@@ -119,14 +116,14 @@ func (e *TurnEngine) submitCompiledTurn(
 		finalUsage       []LaneModelUsage
 		ingestSnapshots  []memory.KnowledgeIngestSnapshot
 	)
-	planningOutcome, planningErr := e.declareOutcomeNode(turnCtx, gathered, request.ConversationID, persisted.ID, "planning", "model_tool_loop", TurnStatePlanning, func() (TurnOutcome, error) {
+	planningOutcome, planningErr := e.declareOutcomeNode(turnCtx, gathered, request.ConversationID, persisted.ID, "planning", "model_tool_loop", turnStatePlanning, func() (TurnOutcome, error) {
 		bootstrap = gathered.bootstrap
 		characterRecord = gathered.character
 		userProfile = gathered.profile
 		socialContext = gathered.socialContext
 		retrieval = gathered.retrieval
 		retrievalOmitReason = gathered.retrievalOmitReason
-		if err := transition(TurnStatePlanning); err != nil {
+		if err := transition(turnStatePlanning); err != nil {
 			return fail("INVALID_STATE_TRANSITION", err)
 		}
 		connectionConfig, err = s.configSource().ModelConnection()
@@ -154,7 +151,7 @@ func (e *TurnEngine) submitCompiledTurn(
 			utteranceSeq int
 		)
 		if request.SpeechEnabled && s.speech != nil {
-			capacity := replyapp.MaxReplyChains + tooling.ModelDrivenToolBudget(resolved) + 2
+			capacity := replyapp.MaxReplyChains + modelDrivenToolBudget(resolved) + 2
 			execution.speechFlow = replyapp.NewSpeechPipeline(turnCtx, s.speech, capacity, func(res replyapp.SpeechResult) {
 				s.handleSpeechResult(life, request.ConversationID, persisted.ID, execution.finalDelivery, res)
 			})
@@ -164,7 +161,7 @@ func (e *TurnEngine) submitCompiledTurn(
 		if settings, err := s.configSource().WebSearchSettings(); err == nil {
 			webSearchEnabled = settings.Enabled
 		}
-		toolBudget := tooling.ModelDrivenToolBudget(resolved)
+		toolBudget := modelDrivenToolBudget(resolved)
 		for {
 			allowTools := modelDrivenTools < toolBudget
 			tools := []model.ToolSpec(nil)
@@ -172,7 +169,7 @@ func (e *TurnEngine) submitCompiledTurn(
 			if allowTools {
 				tools = respondToolSpecsForRuntime(webSearchEnabled, resolved, desktopEnabled)
 			}
-			instructions := tooling.InstructionsForInteraction(len(tools) > 0, resolved)
+			instructions := respondInstructionsForInteraction(len(tools) > 0, resolved)
 			if desktopEnabled {
 				instructions += " The desktop_observe tool provides one fresh main-display image when the current request genuinely requires visible screen context. Use it at most once, only when needed, and never claim to see anything not visible in its result."
 			}
@@ -210,7 +207,7 @@ func (e *TurnEngine) submitCompiledTurn(
 			cacheInput.CharacterRevision = characterRecord.Revision
 			cacheInput.ProfileRevision = profileRevisionValue(userProfile)
 			cacheInput.PromptRevision = bootstrap.PromptWindow.Revision
-			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventPrompt, TurnStatePlanning, "", runtimePromptLedgerMetadata(input, slots, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval, cacheInput, connectionConfig.Capabilities.PromptCacheKey))
+			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventPrompt, turnStatePlanning, "", runtimePromptLedgerMetadata(input, slots, bootstrap.PromptWindow, bootstrap.Messages, request.AvailableVisualStates, retrieval, cacheInput, connectionConfig.Capabilities.PromptCacheKey))
 			fullRequest = model.CompiledPromptRequest{
 				Shape: model.ModelRequestShape{
 					Lane:            model.PromptLaneRespond,
@@ -233,7 +230,7 @@ func (e *TurnEngine) submitCompiledTurn(
 					return fail("MODEL_FAILED", matErr)
 				}
 				continuationMode = "full_post_tool"
-				s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContinuation, TurnStatePlanning, "", map[string]any{
+				s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContinuation, turnStatePlanning, "", map[string]any{
 					"incremental":         false,
 					"fullReason":          "cognition_post_tool",
 					"modelDrivenTools":    modelDrivenTools,
@@ -253,7 +250,7 @@ func (e *TurnEngine) submitCompiledTurn(
 				} else {
 					continuationMode = "full:" + string(decision.FullReason)
 				}
-				s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContinuation, TurnStatePlanning, "", runtimeContinuationLedgerMetadata(connectionConfig.Capabilities.CacheRetention, previous, fullRequest, executeRequest, decision))
+				s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventContinuation, turnStatePlanning, "", runtimeContinuationLedgerMetadata(connectionConfig.Capabilities.CacheRetention, previous, fullRequest, executeRequest, decision))
 			}
 			lg.Info("cognition loop",
 				zap.String("phase", "model_call"),
@@ -278,7 +275,7 @@ func (e *TurnEngine) submitCompiledTurn(
 				events = append(events, event)
 				if firstByteAt.IsZero() {
 					firstByteAt = time.Now()
-					if _, presenceErr := s.publishLife(life, func() (TurnEvent, error) {
+					if _, presenceErr := s.publishLife(life, func() (session.Event, error) {
 						return life.Presence("model_stream")
 					}); presenceErr != nil {
 						lg.Warn("cognition loop", zap.String("phase", "presence_skipped"), zap.Error(presenceErr))
@@ -289,7 +286,7 @@ func (e *TurnEngine) submitCompiledTurn(
 					return
 				}
 				previewAt = time.Now()
-				if _, previewErr := s.publishLife(life, func() (TurnEvent, error) {
+				if _, previewErr := s.publishLife(life, func() (session.Event, error) {
 					return life.ReplyPreview(preview.Chains)
 				}); previewErr != nil {
 					lg.Warn("cognition loop", zap.String("phase", "preview_skipped"), zap.Error(previewErr))
@@ -312,7 +309,7 @@ func (e *TurnEngine) submitCompiledTurn(
 				streamTiming["previewMs"] = previewAt.Sub(modelCallStarted).Milliseconds()
 			}
 			streamTiming["completedMs"] = time.Since(modelCallStarted).Milliseconds()
-			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventModel, TurnStatePlanning, "", streamTiming)
+			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventModel, turnStatePlanning, "", streamTiming)
 			if !firstByteAt.IsZero() {
 				s.loopMetrics.providerFirstByte(firstByteAt.Sub(modelCallStarted))
 			}
@@ -333,7 +330,7 @@ func (e *TurnEngine) submitCompiledTurn(
 			}
 			usage := model.LaneUsageFromEvents(model.PromptLaneRespond, events, bootstrap.PromptWindow.Revision)
 			finalUsage = usage
-			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventModel, TurnStatePlanning, "", runtimeModelLedgerMetadata(events, usage))
+			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventModel, turnStatePlanning, "", runtimeModelLedgerMetadata(events, usage))
 
 			toolCalls := model.FunctionCallsFromEvents(events)
 			draft := collectText(events)
@@ -362,7 +359,7 @@ func (e *TurnEngine) submitCompiledTurn(
 					beatID := fmt.Sprintf("utt-%d", seq)
 					lg.Info("cognition loop", zap.String("phase", "utterance_queued"), zap.Int("seq", seq), zap.String("reason", reason))
 					if execution.speechFlow == nil {
-						if _, uttErr := s.publishLife(life, func() (TurnEvent, error) {
+						if _, uttErr := s.publishLife(life, func() (session.Event, error) {
 							return life.BeatReady(BeatReadyCompletion{
 								BeatID:      beatID,
 								Kind:        replyapp.BeatKindUtterance,
@@ -381,7 +378,7 @@ func (e *TurnEngine) submitCompiledTurn(
 						play := execution.speechPlayIndex
 						execution.speechPlayIndex++
 						uttLine := line
-						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventSpeech, TurnStatePlanning, "", map[string]any{
+						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventSpeech, turnStatePlanning, "", map[string]any{
 							"status":    "queued",
 							"kind":      "utterance",
 							"beatId":    beatID,
@@ -411,14 +408,14 @@ func (e *TurnEngine) submitCompiledTurn(
 					if call.Name == toolDesktopObserve {
 						queryErr = validateDesktopToolArguments(call.Arguments)
 					} else {
-						query, queryErr = tooling.ParseQuery(call.Arguments)
+						query, queryErr = parseToolQuery(call.Arguments)
 					}
 					if queryErr != nil {
 						lg.Warn("cognition loop", zap.String("phase", "tool_args_invalid"), zap.String("tool", call.Name), zap.Error(queryErr))
-						retrieval = tooling.MergeRetrievalContext(retrieval, tooling.FromToolError(call.Name, queryErr))
+						retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, queryErr))
 						retrievalOmitReason = ""
 						modelDrivenTools++
-						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, turnStatePlanning, "", map[string]any{
 							"tool":             call.Name,
 							"phase":            "model_driven",
 							"status":           "args_invalid",
@@ -440,7 +437,7 @@ func (e *TurnEngine) submitCompiledTurn(
 						}
 						desktopToolUsed = true
 						deadline := time.Now().Add(desktopToolTimeout)
-						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, turnStatePlanning, "", map[string]any{
 							"tool": call.Name, "phase": "awaiting_tool", "status": "pending", "modelDrivenIndex": modelDrivenTools + 1,
 						})
 						evidence, toolErr := s.desktopTool.Observe(turnCtx, DesktopToolRequest{
@@ -456,25 +453,25 @@ func (e *TurnEngine) submitCompiledTurn(
 								code = typed.Code
 							}
 							toolPromptItems = append(toolPromptItems, desktopToolFailurePromptItems(call.CallID, call.Arguments, code)...)
-							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, code, map[string]any{
+							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, turnStatePlanning, code, map[string]any{
 								"tool": call.Name, "phase": "awaiting_tool", "status": "failed", "modelDrivenIndex": modelDrivenTools + 1,
 							})
 						} else {
 							toolPromptItems = append(toolPromptItems, desktopToolPromptItems(call.CallID, call.Arguments, evidence)...)
-							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, turnStatePlanning, "", map[string]any{
 								"tool": call.Name, "phase": "awaiting_tool", "status": "completed", "executionId": evidence.ExecutionID,
 								"mediaType": evidence.MediaType, "width": evidence.Width, "height": evidence.Height, "modelDrivenIndex": modelDrivenTools + 1,
 							})
 						}
-					case tooling.MemorySearch:
+					case toolMemorySearch:
 						if !resolved.AllowsPersonalMemory() {
 							return fail("MODEL_RESPONSE_INVALID", errors.New("memory_search is unavailable for public interactions"))
 						}
 						extra, toolErr := s.retrieveMemoryForTool(bootstrap.Conversation.CharacterID, query)
 						if toolErr != nil {
 							lg.Warn("cognition loop", zap.String("phase", "tool_failed"), zap.String("tool", call.Name), zap.Error(toolErr))
-							retrieval = tooling.MergeRetrievalContext(retrieval, tooling.FromToolError(call.Name, toolErr))
-							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+							retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
+							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, turnStatePlanning, "", map[string]any{
 								"tool":             call.Name,
 								"phase":            "model_driven",
 								"status":           "failed",
@@ -482,8 +479,8 @@ func (e *TurnEngine) submitCompiledTurn(
 								"modelDrivenIndex": modelDrivenTools + 1,
 							})
 						} else {
-							retrieval = tooling.MergeRetrievalContext(retrieval, extra)
-							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+							retrieval = mergeRetrievalContext(retrieval, extra)
+							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, turnStatePlanning, "", map[string]any{
 								"tool":             call.Name,
 								"phase":            "model_driven",
 								"status":           "ok",
@@ -505,7 +502,7 @@ func (e *TurnEngine) submitCompiledTurn(
 								zap.Int("index", modelDrivenTools+1),
 							)
 						}
-					case tooling.PublicMemorySearch:
+					case toolPublicMemorySearch:
 						if resolved.AllowsPersonalMemory() {
 							return fail("MODEL_RESPONSE_INVALID", errors.New("public_memory_search is available only for public interactions"))
 						}
@@ -514,13 +511,13 @@ func (e *TurnEngine) submitCompiledTurn(
 						if toolErr != nil {
 							status = "failed"
 							lg.Warn("cognition loop", zap.String("phase", "tool_failed"), zap.String("tool", call.Name), zap.Error(toolErr))
-							retrieval = tooling.MergeRetrievalContext(retrieval, tooling.FromToolError(call.Name, toolErr))
+							retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
 						} else {
-							retrieval = tooling.MergeRetrievalContext(retrieval, extra)
+							retrieval = mergeRetrievalContext(retrieval, extra)
 						}
 						retrievalOmitReason = ""
 						modelDrivenTools++
-						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, turnStatePlanning, "", map[string]any{
 							"tool":             call.Name,
 							"phase":            "model_driven",
 							"status":           status,
@@ -529,7 +526,7 @@ func (e *TurnEngine) submitCompiledTurn(
 							"knowledgeCount":   len(extra.Knowledge),
 							"modelDrivenIndex": modelDrivenTools,
 						})
-					case tooling.SocialContextSearch:
+					case toolSocialContextSearch:
 						if resolved.AllowsPersonalMemory() || !resolved.AllowsAmbientParticipation() {
 							return fail("MODEL_RESPONSE_INVALID", errors.New("social_context_search is available only for public ambient interactions"))
 						}
@@ -538,13 +535,13 @@ func (e *TurnEngine) submitCompiledTurn(
 						if toolErr != nil {
 							status = "failed"
 							lg.Warn("cognition loop", zap.String("phase", "tool_failed"), zap.String("tool", call.Name), zap.Error(toolErr))
-							retrieval = tooling.MergeRetrievalContext(retrieval, tooling.FromToolError(call.Name, toolErr))
+							retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
 						} else {
-							retrieval = tooling.MergeRetrievalContext(retrieval, extra)
+							retrieval = mergeRetrievalContext(retrieval, extra)
 						}
 						retrievalOmitReason = ""
 						modelDrivenTools++
-						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, turnStatePlanning, "", map[string]any{
 							"tool":             call.Name,
 							"phase":            "model_driven",
 							"status":           status,
@@ -552,7 +549,7 @@ func (e *TurnEngine) submitCompiledTurn(
 							"knowledgeCount":   len(extra.Knowledge),
 							"modelDrivenIndex": modelDrivenTools,
 						})
-					case tooling.SocialExpressionSelect:
+					case toolSocialExpressionSelect:
 						if resolved.AllowsPersonalMemory() || !resolved.AllowsAmbientParticipation() {
 							return fail("MODEL_RESPONSE_INVALID", errors.New("social_expression_select is available only for public ambient interactions"))
 						}
@@ -561,13 +558,13 @@ func (e *TurnEngine) submitCompiledTurn(
 						if toolErr != nil {
 							status = "failed"
 							lg.Warn("cognition loop", zap.String("phase", "tool_failed"), zap.String("tool", call.Name), zap.Error(toolErr))
-							retrieval = tooling.MergeRetrievalContext(retrieval, tooling.FromToolError(call.Name, toolErr))
+							retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
 						} else {
-							retrieval = tooling.MergeRetrievalContext(retrieval, extra)
+							retrieval = mergeRetrievalContext(retrieval, extra)
 						}
 						retrievalOmitReason = ""
 						modelDrivenTools++
-						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, turnStatePlanning, "", map[string]any{
 							"tool":             call.Name,
 							"phase":            "model_driven",
 							"status":           status,
@@ -575,12 +572,12 @@ func (e *TurnEngine) submitCompiledTurn(
 							"knowledgeCount":   len(extra.Knowledge),
 							"modelDrivenIndex": modelDrivenTools,
 						})
-					case tooling.WebSearch:
+					case toolWebSearch:
 						if !webSearchEnabled {
 							toolErr := errors.New("web search is disabled")
 							lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("tool", call.Name), zap.String("reason", "disabled"))
-							retrieval = tooling.MergeRetrievalContext(retrieval, tooling.FromToolError(call.Name, toolErr))
-							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+							retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
+							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, turnStatePlanning, "", map[string]any{
 								"tool":             call.Name,
 								"phase":            "model_driven",
 								"status":           "disabled",
@@ -589,8 +586,8 @@ func (e *TurnEngine) submitCompiledTurn(
 							})
 						} else if s.webSearch == nil {
 							lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("tool", call.Name), zap.String("reason", "endpoint_missing"))
-							retrieval = tooling.MergeRetrievalContext(retrieval, tooling.FromToolError(call.Name, search.ErrEndpointNotConfigured))
-							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+							retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, ErrWebSearchEndpointNotConfigured))
+							s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, turnStatePlanning, "", map[string]any{
 								"tool":             call.Name,
 								"phase":            "model_driven",
 								"status":           "endpoint_missing",
@@ -601,8 +598,8 @@ func (e *TurnEngine) submitCompiledTurn(
 							hits, toolErr := s.webSearch.Search(turnCtx, query, 5)
 							if toolErr != nil {
 								lg.Warn("cognition loop", zap.String("phase", "tool_failed"), zap.String("tool", call.Name), zap.Error(toolErr))
-								retrieval = tooling.MergeRetrievalContext(retrieval, tooling.FromToolError(call.Name, toolErr))
-								s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+								retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
+								s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, turnStatePlanning, "", map[string]any{
 									"tool":             call.Name,
 									"phase":            "model_driven",
 									"status":           "failed",
@@ -610,10 +607,10 @@ func (e *TurnEngine) submitCompiledTurn(
 									"modelDrivenIndex": modelDrivenTools + 1,
 								})
 							} else {
-								extra := tooling.FromWebHits(hits)
-								retrieval = tooling.MergeRetrievalContext(retrieval, extra)
+								extra := retrievalFromWebHits(hits)
+								retrieval = mergeRetrievalContext(retrieval, extra)
 								ingestSnapshots = append(ingestSnapshots, knowledgeIngestSnapshots(request.ConversationID, persisted.ID, query, hits, time.Now().UnixMilli())...)
-								s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+								s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, turnStatePlanning, "", map[string]any{
 									"tool":             call.Name,
 									"phase":            "model_driven",
 									"status":           "ok",
@@ -634,8 +631,8 @@ func (e *TurnEngine) submitCompiledTurn(
 					default:
 						toolErr := fmt.Errorf("tool %q is not whitelisted", call.Name)
 						lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("tool", call.Name), zap.String("reason", "not_whitelisted"))
-						retrieval = tooling.MergeRetrievalContext(retrieval, tooling.FromToolError(call.Name, toolErr))
-						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, TurnStatePlanning, "", map[string]any{
+						retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
+						s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, turnStatePlanning, "", map[string]any{
 							"tool":             call.Name,
 							"phase":            "model_driven",
 							"status":           "not_whitelisted",
@@ -668,7 +665,7 @@ func (e *TurnEngine) submitCompiledTurn(
 				return fail("MODEL_RESPONSE_INVALID", fmt.Errorf("model reply remained invalid after %d retries: first attempt: %v; final attempt: %w", maxProtocolCompileRetries, firstCompileErr, err))
 			}
 			// chain = semantic unit = one TTS request: never split a chain further.
-			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventCompile, TurnStatePlanning, "", map[string]any{
+			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventCompile, turnStatePlanning, "", map[string]any{
 				"status":           "succeeded",
 				"visualState":      reply.VisualState,
 				"chainCount":       len(reply.Chains),
@@ -735,7 +732,7 @@ func desktopInitiationRetrievalQuery(context DesktopInitiationContext) string {
 	return strings.Join(parts, " ")
 }
 
-func profileRevisionValue(snapshot *profile.Snapshot) uint64 {
+func profileRevisionValue(snapshot *config.ProfileSnapshot) uint64 {
 	if snapshot == nil {
 		return 0
 	}

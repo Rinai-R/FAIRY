@@ -1,7 +1,7 @@
 package companion
 
 import (
-	"context"
+	"fairy/session"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -25,7 +25,7 @@ var memoryStoreInterfaceNames = []string{
 	"SocialLearningStore",
 }
 
-var retentionPortInterfaceNames = []string{"ExtractionStore", "KnowledgeIngestStore"}
+var retentionPortInterfaceNames = []string{"extractionStore", "knowledgeIngestStore"}
 
 func TestMemoryPortsAreConsumerScoped(t *testing.T) {
 	file, err := parser.ParseFile(token.NewFileSet(), "ports.go", nil, 0)
@@ -75,8 +75,8 @@ func TestMemoryPortsAreConsumerScoped(t *testing.T) {
 	}
 }
 
-func TestRetentionPortsAreOwnedByRetentionPackage(t *testing.T) {
-	file, err := parser.ParseFile(token.NewFileSet(), "../retention/engine.go", nil, 0)
+func TestRetentionPortsAreConsumerScoped(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "ports.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,25 +94,25 @@ func TestRetentionPortsAreOwnedByRetentionPackage(t *testing.T) {
 			found[typeSpec.Name.Name] = true
 			iface, ok := typeSpec.Type.(*ast.InterfaceType)
 			if !ok {
-				t.Errorf("retention %s is not an interface", typeSpec.Name.Name)
+				t.Errorf("%s is not an interface", typeSpec.Name.Name)
 				continue
 			}
 			methods := 0
 			for _, field := range iface.Methods.List {
 				if len(field.Names) == 0 {
-					t.Errorf("retention %s embeds another interface", typeSpec.Name.Name)
+					t.Errorf("%s embeds another interface", typeSpec.Name.Name)
 					continue
 				}
 				methods += len(field.Names)
 			}
 			if methods == 0 || methods > 8 {
-				t.Errorf("retention %s declares %d methods, want 1..8", typeSpec.Name.Name, methods)
+				t.Errorf("%s declares %d methods, want 1..8", typeSpec.Name.Name, methods)
 			}
 		}
 	}
 	for _, name := range retentionPortInterfaceNames {
 		if !found[name] {
-			t.Errorf("missing retention interface %s", name)
+			t.Errorf("missing consumer-scoped retention interface %s", name)
 		}
 	}
 }
@@ -149,15 +149,15 @@ func TestCompanionFacadeDoesNotOwnLifecycleState(t *testing.T) {
 	}
 }
 
-func TestLifecyclePackagesDoNotDependOnFacadeOrComposition(t *testing.T) {
-	for _, filename := range []string{"../turn/registry.go", "../retention/engine.go"} {
+func TestLifecycleImplementationDoesNotDependOnComposition(t *testing.T) {
+	for _, filename := range []string{"turn_registry.go", "turn_lifecycle.go", "retention_engine.go"} {
 		file, err := parser.ParseFile(token.NewFileSet(), filename, nil, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, importSpec := range file.Imports {
 			path := strings.Trim(importSpec.Path.Value, "\"")
-			if strings.HasPrefix(path, "fairy/companion") || strings.HasPrefix(path, "fairy/runtime") || strings.HasPrefix(path, "fairy/api") {
+			if strings.HasPrefix(path, "fairy/core") || strings.HasPrefix(path, "fairy/api") || strings.HasPrefix(path, "fairy/cmd") {
 				t.Errorf("%s imports forbidden upper-layer package %s", filename, path)
 			}
 		}
@@ -257,10 +257,9 @@ func TestCharacterLookupIsIDAddressed(t *testing.T) {
 type companionFacadeContract interface {
 	SubmitTurn(SubmitTurnRequest) (TurnOutcome, error)
 	SubmitCompiledTurn(SubmitCompiledTurnRequest) (TurnOutcome, error)
-	SubmitDesktopInitiation(DesktopInitiationRequest, DesktopObservation) (TurnOutcome, error)
+	SubmitDesktopInitiation(DesktopInitiationRequest, session.DesktopObservation) (TurnOutcome, error)
 	SubmitDesktopVisionInitiation(DesktopVisionInitiationRequest) (TurnOutcome, error)
 	CancelTurn(string, string) error
-	DecideParticipation(context.Context, ParticipationRequest) (ParticipationResult, error)
 }
 
 var _ companionFacadeContract = (*CompanionService)(nil)

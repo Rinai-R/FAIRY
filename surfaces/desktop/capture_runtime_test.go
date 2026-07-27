@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"fairy/contracts/observation"
 	"fairy/coreclient"
+	"fairy/session"
 )
 
 type fakeDesktopCapturer struct {
@@ -28,8 +28,8 @@ func (capturer *fakeDesktopCapturer) CaptureMainDisplay(context.Context) (image.
 
 func TestDesktopCaptureRuntimeRejectsPrivacyAndExpiredBeforeCapture(t *testing.T) {
 	capturer := &fakeDesktopCapturer{frame: image.NewRGBA(image.Rect(0, 0, 2, 2))}
-	privacy := observation.DesktopPrivacyProtected
-	runtime, err := newDesktopCaptureRuntime(capturer, func() observation.DesktopPrivacyState { return privacy })
+	privacy := session.DesktopPrivacyProtected
+	runtime, err := newDesktopCaptureRuntime(capturer, func() session.DesktopPrivacyState { return privacy })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestDesktopCaptureRuntimeRejectsPrivacyAndExpiredBeforeCapture(t *testing.T
 	if result.Status != "failed" || result.ErrorCode != "privacy_blocked" || capturer.calls != 0 {
 		t.Fatalf("privacy result = %#v, calls=%d", result, capturer.calls)
 	}
-	privacy = observation.DesktopPrivacyNormal
+	privacy = session.DesktopPrivacyNormal
 	request.DeadlineUnixMS = time.Now().Add(-time.Second).UnixMilli()
 	result = runtime.Handle(t.Context(), request)
 	if result.Status != "failed" || result.ErrorCode != "deadline_exceeded" || capturer.calls != 0 {
@@ -48,7 +48,7 @@ func TestDesktopCaptureRuntimeRejectsPrivacyAndExpiredBeforeCapture(t *testing.T
 
 func TestDesktopCaptureRuntimeMapsPermissionDenial(t *testing.T) {
 	capturer := &fakeDesktopCapturer{err: errScreenRecordingPermissionDenied}
-	runtime, err := newDesktopCaptureRuntime(capturer, func() observation.DesktopPrivacyState { return observation.DesktopPrivacyNormal })
+	runtime, err := newDesktopCaptureRuntime(capturer, func() session.DesktopPrivacyState { return session.DesktopPrivacyNormal })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestEncodeDesktopCaptureHonorsDimensionAndByteBudgets(t *testing.T) {
 
 func TestDesktopCaptureRuntimeDoesNotFallbackAfterCaptureFailure(t *testing.T) {
 	capturer := &fakeDesktopCapturer{err: errors.New("capture failed")}
-	runtime, err := newDesktopCaptureRuntime(capturer, func() observation.DesktopPrivacyState { return observation.DesktopPrivacyNormal })
+	runtime, err := newDesktopCaptureRuntime(capturer, func() session.DesktopPrivacyState { return session.DesktopPrivacyNormal })
 	if err != nil {
 		t.Fatal(err)
 	}

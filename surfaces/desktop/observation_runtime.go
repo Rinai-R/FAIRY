@@ -6,15 +6,15 @@ import (
 	"sync"
 	"time"
 
-	obs "fairy/contracts/observation"
+	"fairy/session"
 )
 
 // desktopObservationSampler is the only platform-specific seam. Implementations
 // may report coarse facts, but must never return prompt text, window titles or
 // model-derived interpretation.
-type desktopObservationSampler func(context.Context) (obs.DesktopObservation, error)
+type desktopObservationSampler func(context.Context) (session.DesktopObservation, error)
 
-type desktopObservationSubmitter func(context.Context, obs.DesktopObservation) error
+type desktopObservationSubmitter func(context.Context, session.DesktopObservation) error
 
 type desktopObservationRuntime struct {
 	mu       sync.Mutex

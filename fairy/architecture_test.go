@@ -52,25 +52,21 @@ func TestNoPackageImportsWails(t *testing.T) {
 
 func TestDomainPackagesDoNotImportCompositionOrTransport(t *testing.T) {
 	domains := []string{
+		"./character",
 		"./companion",
-		"./compaction",
+		"./config",
 		"./desktopcapture",
-		"./extraction",
-		"./observation",
-		"./participation",
-		"./proactive",
-		"./reply",
-		"./sociallearning",
-		"./persona",
-		"./interaction",
+		"./initiative",
 		"./memory",
 		"./model",
-		"./profile",
-		"./character",
-		"./config",
+		"./observability",
+		"./persona",
+		"./reply",
+		"./session",
+		"./speech",
 	}
 	forbidden := map[string]struct{}{
-		"fairy/api": {}, "fairy/cmd": {}, "fairy/core": {}, "fairy/coreclient": {}, "fairy/runtime": {},
+		"fairy/api": {}, "fairy/cmd": {}, "fairy/core": {}, "fairy/coreclient": {},
 	}
 
 	args := append([]string{"list", "-json"}, domains...)
@@ -151,10 +147,10 @@ func TestSessionCoreHasNoDesktopPackage(t *testing.T) {
 }
 
 func TestDesktopCaptureHasOneProductionOwner(t *testing.T) {
-	if _, err := os.Stat("runtime/capture_hub.go"); err == nil {
-		t.Fatal("runtime must not own the desktop capture state machine")
+	if _, err := os.Stat("core/capture_hub.go"); err == nil {
+		t.Fatal("core must not own the desktop capture state machine")
 	} else if !os.IsNotExist(err) {
-		t.Fatalf("stat runtime capture hub: %v", err)
+		t.Fatalf("stat core capture hub: %v", err)
 	}
 
 	out, err := exec.Command("go", "list", "-json", "./desktopcapture").Output()
@@ -168,7 +164,7 @@ func TestDesktopCaptureHasOneProductionOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, imported := range pkg.Imports {
-		for _, forbidden := range []string{"fairy/api", "fairy/cmd", "fairy/core", "fairy/coreclient", "fairy/runtime"} {
+		for _, forbidden := range []string{"fairy/api", "fairy/cmd", "fairy/core", "fairy/coreclient"} {
 			if imported == forbidden || strings.HasPrefix(imported, forbidden+"/") {
 				t.Fatalf("desktopcapture imports forbidden transport/composition package %s", imported)
 			}
@@ -176,14 +172,14 @@ func TestDesktopCaptureHasOneProductionOwner(t *testing.T) {
 	}
 }
 
-func TestRuntimeDoesNotRetainTurnEventHistory(t *testing.T) {
-	file, err := parser.ParseFile(token.NewFileSet(), "runtime/runtime.go", nil, 0)
+func TestCoreDoesNotRetainTurnEventHistory(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "core/runtime.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, declaration := range file.Decls {
 		if function, ok := declaration.(*ast.FuncDecl); ok && function.Name.Name == "DrainEvents" {
-			t.Fatal("runtime exposes obsolete retained event history through DrainEvents")
+			t.Fatal("core exposes obsolete retained event history through DrainEvents")
 		}
 		general, ok := declaration.(*ast.GenDecl)
 		if !ok {
@@ -206,7 +202,7 @@ func TestRuntimeDoesNotRetainTurnEventHistory(t *testing.T) {
 				selector, ok := slice.Elt.(*ast.SelectorExpr)
 				owner, ownerOK := selector.X.(*ast.Ident)
 				if ok && ownerOK && owner.Name == "companion" && selector.Sel.Name == "TurnEvent" {
-					t.Fatal("runtime retains an unbounded TurnEvent history slice")
+					t.Fatal("core retains an unbounded TurnEvent history slice")
 				}
 			}
 		}
@@ -376,7 +372,7 @@ func TestDesktopCapturePersistenceBoundary(t *testing.T) {
 			}
 		}
 	}
-	schema, err := os.ReadFile("coredb/schema/schema.go")
+	schema, err := os.ReadFile("coredb/schema.go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +408,7 @@ func TestDesktopSurfaceDependencyBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, imported := range pkg.Imports {
-		for _, forbidden := range []string{"fairy/companion", "fairy/memory", "fairy/model", "fairy/runtime", "github.com/wailsapp/wails/v2"} {
+		for _, forbidden := range []string{"fairy/companion", "fairy/core", "fairy/memory", "fairy/model", "github.com/wailsapp/wails/v2"} {
 			if imported == forbidden || strings.HasPrefix(imported, forbidden+"/") {
 				t.Fatalf("desktop Surface imports forbidden package %s", imported)
 			}

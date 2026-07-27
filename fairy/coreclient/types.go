@@ -4,11 +4,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"fairy/contracts/interaction"
-	"fairy/contracts/observation"
-	"fairy/contracts/session"
-	"fairy/contracts/turn"
 	"fairy/observability"
+	"fairy/session"
 )
 
 type Status struct {
@@ -42,11 +39,11 @@ type (
 	ParticipationResponse = session.ParticipationResponse
 	DesktopCaptureRequest = session.DesktopCaptureRequest
 	DesktopCaptureResult  = session.DesktopCaptureResult
-	SubmitTurnRequest     = turn.SubmitRequest
-	TurnOutcome           = turn.Outcome
-	SubmitTurnResponse    = turn.SubmitResponse
-	TurnEvent             = turn.Event
-	DesktopObservation    = observation.DesktopObservation
+	SubmitTurnRequest     = session.SubmitRequest
+	TurnOutcome           = session.Outcome
+	SubmitTurnResponse    = session.SubmitResponse
+	TurnEvent             = session.Event
+	DesktopObservation    = session.DesktopObservation
 )
 
 type DesktopObservationResponse struct {
@@ -65,7 +62,7 @@ type DesktopGraphNode struct {
 // Keep interaction kinds reachable through coreclient for older Surface call sites
 // that construct OpenSessionRequest inline with interaction constants via this package.
 var (
-	_ = interaction.EndpointDesktop
+	_ = session.EndpointDesktop
 )
 
 type ParticipationEvent struct {

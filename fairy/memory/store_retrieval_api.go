@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"fairy/memory/semantic"
 	"strings"
 )
 
@@ -25,7 +24,7 @@ func (s *Store) RetrievePublicKnowledgeContext(ctx context.Context, query string
 	result := RetrievalContext{
 		PersonalMemories: []RetrievedPersonalMemory{},
 		Knowledge:        []RetrievedKnowledge{},
-		SemanticStatus:   string(semantic.StatusUnavailable),
+		SemanticStatus:   string(SemanticStatusUnavailable),
 	}
 	if normalized == "" {
 		return result, nil

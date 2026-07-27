@@ -13,6 +13,7 @@ import (
 	"fairy/companion"
 	"fairy/memory"
 	"fairy/observability"
+
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/sse"
 )
@@ -124,12 +125,14 @@ func (s *Server) handleMetrics(ctx context.Context, c *app.RequestContext) {
 		Messages: s.rt.Messages.Snapshot(),
 		Runtime: runtimeMetrics{
 			ActiveBackgroundJobs: uint64(activeJobs),
-			EventSubscribers:     s.rt.Events.SubscriberCount(),
 			AgentLoop:            s.rt.Companion.AgentLoopMetrics(),
 		},
 		Usage:    usage,
 		Database: database,
 		Qdrant:   qdrant,
+	}
+	if s.rt.TurnEventSubscriberCount != nil {
+		response.Runtime.EventSubscribers = s.rt.TurnEventSubscriberCount()
 	}
 	response.GeneratedAtUnixMS = time.Now().UnixMilli()
 	c.JSON(http.StatusOK, response)

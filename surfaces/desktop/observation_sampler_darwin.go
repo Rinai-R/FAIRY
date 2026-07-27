@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	obs "fairy/contracts/observation"
+	"fairy/session"
 )
 
 var hidIdleTimePattern = regexp.MustCompile(`"HIDIdleTime"\s*=\s*([0-9]+)`)
@@ -22,13 +22,13 @@ var hidIdleTimePattern = regexp.MustCompile(`"HIDIdleTime"\s*=\s*([0-9]+)`)
 type macOSIdleSampler struct {
 	mu            sync.Mutex
 	idleThreshold time.Duration
-	privacy       func() obs.DesktopPrivacyState
+	privacy       func() session.DesktopPrivacyState
 	run           func(context.Context) ([]byte, error)
 	wasIdle       bool
-	lastPrivacy   obs.DesktopPrivacyState
+	lastPrivacy   session.DesktopPrivacyState
 }
 
-func newMacOSIdleSampler(idleThreshold time.Duration, privacy func() obs.DesktopPrivacyState) (*macOSIdleSampler, error) {
+func newMacOSIdleSampler(idleThreshold time.Duration, privacy func() session.DesktopPrivacyState) (*macOSIdleSampler, error) {
 	if idleThreshold <= 0 {
 		return nil, errors.New("macOS observation idle threshold must be positive")
 	}
@@ -44,47 +44,47 @@ func newMacOSIdleSampler(idleThreshold time.Duration, privacy func() obs.Desktop
 	}, nil
 }
 
-func (s *macOSIdleSampler) Sample(ctx context.Context) (obs.DesktopObservation, error) {
+func (s *macOSIdleSampler) Sample(ctx context.Context) (session.DesktopObservation, error) {
 	output, err := s.run(ctx)
 	if err != nil {
-		return obs.DesktopObservation{}, fmt.Errorf("reading macOS idle state: %w", err)
+		return session.DesktopObservation{}, fmt.Errorf("reading macOS idle state: %w", err)
 	}
 	idle, err := parseMacOSHIDIdleTime(output)
 	if err != nil {
-		return obs.DesktopObservation{}, err
+		return session.DesktopObservation{}, err
 	}
 	now := time.Now()
 	isIdle := idle >= s.idleThreshold
 	privacy := s.privacy()
 	s.mu.Lock()
-	trigger := obs.DesktopTriggerPeriodic
-	lifecycle := obs.DesktopLifecycleNone
+	trigger := session.DesktopTriggerPeriodic
+	lifecycle := session.DesktopLifecycleNone
 	if s.lastPrivacy != "" && s.lastPrivacy != privacy {
-		trigger = obs.DesktopTriggerLifecycle
-		if privacy == obs.DesktopPrivacyNormal {
-			lifecycle = obs.DesktopLifecyclePrivacyOff
+		trigger = session.DesktopTriggerLifecycle
+		if privacy == session.DesktopPrivacyNormal {
+			lifecycle = session.DesktopLifecyclePrivacyOff
 		} else {
-			lifecycle = obs.DesktopLifecyclePrivacyOn
+			lifecycle = session.DesktopLifecyclePrivacyOn
 		}
 	} else if s.wasIdle && !isIdle {
-		trigger = obs.DesktopTriggerLifecycle
-		lifecycle = obs.DesktopLifecycleReturned
+		trigger = session.DesktopTriggerLifecycle
+		lifecycle = session.DesktopLifecycleReturned
 	}
 	s.wasIdle = isIdle
 	s.lastPrivacy = privacy
 	s.mu.Unlock()
-	activity := obs.DesktopActivityWorking
+	activity := session.DesktopActivityWorking
 	if isIdle {
-		activity = obs.DesktopActivityIdle
+		activity = session.DesktopActivityIdle
 	}
-	if privacy != obs.DesktopPrivacyNormal {
-		activity = obs.DesktopActivityUnknown
+	if privacy != session.DesktopPrivacyNormal {
+		activity = session.DesktopActivityUnknown
 	}
 	id, err := newDesktopObservationID()
 	if err != nil {
-		return obs.DesktopObservation{}, err
+		return session.DesktopObservation{}, err
 	}
-	return obs.DesktopObservation{
+	return session.DesktopObservation{
 		ObservationID: id, TimestampUnixMS: now.UnixMilli(), Trigger: trigger,
 		Activity: activity, Lifecycle: lifecycle, Privacy: privacy,
 	}, nil

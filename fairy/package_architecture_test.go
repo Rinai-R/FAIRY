@@ -12,6 +12,27 @@ import (
 	"testing"
 )
 
+var targetPackages = []string{
+	"fairy",
+	"fairy/api",
+	"fairy/character",
+	"fairy/cmd",
+	"fairy/companion",
+	"fairy/config",
+	"fairy/core",
+	"fairy/coreclient",
+	"fairy/coredb",
+	"fairy/desktopcapture",
+	"fairy/initiative",
+	"fairy/memory",
+	"fairy/model",
+	"fairy/observability",
+	"fairy/persona",
+	"fairy/reply",
+	"fairy/session",
+	"fairy/speech",
+}
+
 type listedPackage struct {
 	ImportPath string
 	Dir        string
@@ -43,11 +64,23 @@ func listPackages(t *testing.T, patterns ...string) []listedPackage {
 	return packages
 }
 
-func TestPkgPackagesAreBusinessNeutral(t *testing.T) {
-	for _, pkg := range listPackages(t, "./pkg/...") {
-		for _, imported := range pkg.Imports {
-			if strings.HasPrefix(imported, "fairy/") && !strings.HasPrefix(imported, "fairy/pkg/") {
-				t.Errorf("generic package %s imports FAIRY business package %s", pkg.ImportPath, imported)
+func TestPackageInventoryMatchesConsolidatedLayout(t *testing.T) {
+	got := make([]string, 0, len(targetPackages))
+	for _, pkg := range listPackages(t, "./...") {
+		got = append(got, pkg.ImportPath)
+	}
+	slices.Sort(got)
+	want := slices.Clone(targetPackages)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		for _, pkg := range got {
+			if !slices.Contains(want, pkg) {
+				t.Errorf("unexpected package after consolidation: %s", pkg)
+			}
+		}
+		for _, pkg := range want {
+			if !slices.Contains(got, pkg) {
+				t.Errorf("missing package after consolidation: %s", pkg)
 			}
 		}
 	}
@@ -63,22 +96,14 @@ func TestApplicationPackagesDoNotImportInternalLayers(t *testing.T) {
 	}
 }
 
-func TestTopLevelDomainPackagesDoNotImportInfrastructure(t *testing.T) {
-	domains := []string{
-		"./compaction",
-		"./extraction",
-		"./interaction",
-		"./observation",
-		"./participation",
-		"./persona",
-		"./proactive",
-		"./reply",
-		"./sociallearning",
-	}
-	for _, pkg := range listPackages(t, domains...) {
+func TestBusinessPackagesDoNotImportComposition(t *testing.T) {
+	for _, pkg := range listPackages(t, "./...") {
+		if slices.Contains([]string{"fairy", "fairy/api", "fairy/cmd", "fairy/core"}, pkg.ImportPath) {
+			continue
+		}
 		for _, imported := range pkg.Imports {
-			if imported == "fairy/api" || imported == "fairy/cmd" || imported == "fairy/coreclient" || imported == "fairy/runtime" {
-				t.Errorf("domain package %s imports infrastructure/composition package %s", pkg.ImportPath, imported)
+			if slices.Contains([]string{"fairy/api", "fairy/cmd", "fairy/core"}, imported) {
+				t.Errorf("business package %s imports composition package %s", pkg.ImportPath, imported)
 			}
 		}
 	}
@@ -94,16 +119,28 @@ func TestMemoryPackageDoesNotImportCompanion(t *testing.T) {
 	}
 }
 
+func TestOrchestrationPackagesDoNotImportEachOther(t *testing.T) {
+	for _, pkg := range listPackages(t, "./companion", "./initiative") {
+		for _, imported := range pkg.Imports {
+			if pkg.ImportPath == "fairy/companion" && imported == "fairy/initiative" {
+				t.Error("companion imports initiative; Core must adapt the two orchestration boundaries")
+			}
+			if pkg.ImportPath == "fairy/initiative" && imported == "fairy/companion" {
+				t.Error("initiative imports companion; TurnStarter must remain a consumption-side interface")
+			}
+		}
+	}
+}
+
 func TestThirdPartySDKImportsMatchMigrationInventory(t *testing.T) {
 	allowed := map[string][]string{
 		"github.com/jackc/pgx/": {
 			"fairy/coredb",
-			"fairy/coredb/schema",
-			"fairy/secret",
+			"fairy/config",
 			"fairy/memory",
 		},
-		"gorm.io/":                     {"fairy/coredb/schema"},
-		"github.com/qdrant/":           {"fairy/vectorindex"},
+		"gorm.io/":                     {"fairy/coredb"},
+		"github.com/qdrant/":           {"fairy/memory"},
 		"github.com/openai/":           {"fairy/model"},
 		"github.com/cloudwego/hertz/":  {"fairy/api"},
 		"github.com/gorilla/websocket": {"fairy/api", "fairy/coreclient"},
@@ -121,30 +158,11 @@ func TestThirdPartySDKImportsMatchMigrationInventory(t *testing.T) {
 	}
 }
 
-func TestCoreDatabasePackagesHaveSingleOwners(t *testing.T) {
+func TestObsoletePostgresPackageIsAbsent(t *testing.T) {
 	if _, err := os.Stat("postgres"); err == nil {
 		t.Fatal("obsolete top-level postgres package still exists")
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("stat obsolete postgres package: %v", err)
-	}
-
-	packages := listPackages(t, "./coredb", "./coredb/schema")
-	if len(packages) != 2 {
-		t.Fatalf("core database package count = %d, want 2", len(packages))
-	}
-	for _, pkg := range packages {
-		for _, imported := range pkg.Imports {
-			switch pkg.ImportPath {
-			case "fairy/coredb":
-				if imported == "fairy/coredb/schema" || strings.HasPrefix(imported, "gorm.io/") {
-					t.Errorf("coredb resource package imports schema owner %s", imported)
-				}
-			case "fairy/coredb/schema":
-				if strings.HasPrefix(imported, "fairy/") {
-					t.Errorf("coredb/schema imports application package %s", imported)
-				}
-			}
-		}
 	}
 }
 
@@ -182,7 +200,7 @@ func TestIndependentSurfacesDoNotImportCoreInternals(t *testing.T) {
 			scanner := bufio.NewScanner(file)
 			for scanner.Scan() {
 				line := scanner.Text()
-				if strings.Contains(line, `"fairy/internal/`) || strings.Contains(line, `"fairy/companion`) || strings.Contains(line, `"fairy/memory`) || strings.Contains(line, `"fairy/runtime`) || strings.Contains(line, `"fairy/interaction`) {
+				if strings.Contains(line, `"fairy/internal/`) || strings.Contains(line, `"fairy/companion`) || strings.Contains(line, `"fairy/memory`) {
 					t.Errorf("independent Surface source %s imports Core implementation: %s", path, strings.TrimSpace(line))
 				}
 			}

@@ -2,12 +2,10 @@ package config
 
 import (
 	"testing"
-
-	"fairy/secret"
 )
 
 func TestConfigServiceSaveAndClearModelConnection(t *testing.T) {
-	service := NewConfigService(t.TempDir(), secret.NewTestStore())
+	service := NewConfigService(t.TempDir(), NewTestSecretStore())
 	apiKey := "sk-test-secret"
 	status, err := service.SaveModelConnection(ModelConnectionInput{
 		Protocol:            "chat_completions",

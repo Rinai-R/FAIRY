@@ -24,5 +24,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	go.uber.org/zap v1.28.0 // indirect
+	go.uber.org/zap/exp v0.3.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 )

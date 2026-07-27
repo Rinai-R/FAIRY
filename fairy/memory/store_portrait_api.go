@@ -7,8 +7,6 @@ import (
 	"slices"
 	"strings"
 	"unicode/utf8"
-
-	"fairy/memory/semantic"
 )
 
 func (s *Store) CompanionPortraitContext(ctx context.Context, characterID string) (RetrievalContext, error) {
@@ -120,7 +118,7 @@ func buildCompanionPortrait(characterID string, records []PersonalMemoryRecord) 
 	result := RetrievalContext{
 		PersonalMemories: make([]RetrievedPersonalMemory, 0, min(len(records), maxCompanionPortraitMemories)),
 		Knowledge:        []RetrievedKnowledge{},
-		SemanticStatus:   string(semantic.StatusUnavailable),
+		SemanticStatus:   string(SemanticStatusUnavailable),
 	}
 	perKind := make(map[string]int, 4)
 	remaining := maxCompanionPortraitRunes

@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"fairy/visual"
 )
 
 type Catalog struct {
@@ -32,9 +30,9 @@ type Record struct {
 }
 
 type Appearance struct {
-	Status          string           `json:"status"`
-	BindingRevision uint64           `json:"bindingRevision,omitempty"`
-	Visual          *visual.Manifest `json:"visual,omitempty"`
+	Status          string    `json:"status"`
+	BindingRevision uint64    `json:"bindingRevision,omitempty"`
+	Visual          *Manifest `json:"visual,omitempty"`
 }
 
 type Diagnostic struct {
@@ -160,7 +158,7 @@ func (s *Store) SetAppearance(characterID string, visualPackID string) (Record, 
 	if err := validateVisualPackID(visualPackID); err != nil {
 		return Record{}, err
 	}
-	if _, err := visual.LoadManifestFromFile(filepath.Join(s.root, "visual-packs", visualPackID, "manifest.json")); err != nil {
+	if _, err := LoadManifestFromFile(filepath.Join(s.root, "visual-packs", visualPackID, "manifest.json")); err != nil {
 		return Record{}, err
 	}
 	if _, ok, _, err := s.latestValid(characterID); err != nil || !ok {
@@ -294,7 +292,7 @@ func (s *Store) appearance(characterID string) (Appearance, *Diagnostic) {
 	if err := json.Unmarshal(data, &document); err != nil || document.Data.CharacterID != characterID || document.Data.VisualPackID == "" {
 		return Appearance{Status: "unavailable"}, &Diagnostic{CharacterID: &characterID, Code: "CHARACTER_APPEARANCE_UNAVAILABLE", Message: "角色外观绑定已损坏或不可用"}
 	}
-	manifest, err := visual.LoadManifestFromFile(filepath.Join(s.root, "visual-packs", document.Data.VisualPackID, "manifest.json"))
+	manifest, err := LoadManifestFromFile(filepath.Join(s.root, "visual-packs", document.Data.VisualPackID, "manifest.json"))
 	if err != nil {
 		return Appearance{Status: "unavailable"}, &Diagnostic{CharacterID: &characterID, Code: "CHARACTER_APPEARANCE_UNAVAILABLE", Message: "角色外观资源不可用"}
 	}
@@ -463,7 +461,7 @@ func (s *Store) writeSnapshot(snapshot characterSnapshot) error {
 }
 
 func (s *Store) writeAppearance(characterID string, visualPackID string) error {
-	if _, err := visual.LoadManifestFromFile(filepath.Join(s.root, "visual-packs", visualPackID, "manifest.json")); err != nil {
+	if _, err := LoadManifestFromFile(filepath.Join(s.root, "visual-packs", visualPackID, "manifest.json")); err != nil {
 		return err
 	}
 	currentRevision := uint64(0)

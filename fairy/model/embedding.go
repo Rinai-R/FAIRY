@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"fairy/config"
-	"fairy/embedding"
 )
 
 // ExecuteRequest runs a prepared draft via the default SDK transport.
@@ -14,7 +13,7 @@ func ExecuteRequest(ctx context.Context, draft RequestDraft, bearerKey string, o
 	return SDKTransport{}.Execute(ctx, draft, bearerKey, onEvent)
 }
 
-func (s *ModelService) SemanticAPIEmbedder(settings config.SemanticEmbeddingSettings) (*embedding.APIEmbedder, error) {
+func (s *ModelService) SemanticAPIEmbedder(settings config.SemanticEmbeddingSettings) (*APIEmbedder, error) {
 	if settings.Provider != config.SemanticEmbeddingProviderOpenAICompatible {
 		return nil, errors.New("semantic embedding API provider is not selected")
 	}
@@ -26,7 +25,7 @@ func (s *ModelService) SemanticAPIEmbedder(settings config.SemanticEmbeddingSett
 	if err != nil {
 		return nil, err
 	}
-	return embedding.NewAPIEmbedder(embedding.APIEmbeddingOptions{
+	return NewAPIEmbedder(APIEmbeddingOptions{
 		Endpoint:   connection.Endpoint,
 		AuthMode:   connection.AuthMode,
 		BearerKey:  bearerKey,

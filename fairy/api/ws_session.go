@@ -11,20 +11,18 @@ import (
 
 	"fairy/companion"
 	"fairy/desktopcapture"
-	fairyruntime "fairy/runtime"
+	"fairy/initiative"
+
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/common/adaptor"
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 
-	contracts "fairy/contracts/interaction"
-	obs "fairy/contracts/observation"
-	sessioncontract "fairy/contracts/session"
-	turnruntime "fairy/turn"
+	"fairy/session"
 )
 
 const (
-	wsReadLimit      = sessioncontract.DesktopCaptureMaxFrameBytes
+	wsReadLimit      = session.DesktopCaptureMaxFrameBytes
 	wsWriteWait      = 10 * time.Second
 	wsPingInterval   = 30 * time.Second
 	wsPongWait       = 60 * time.Second
@@ -66,34 +64,34 @@ func isLocalConsoleOrigin(origin string) bool {
 }
 
 type wsClientFrame struct {
-	Type               string                                  `json:"type"`
-	RequestID          string                                  `json:"requestId,omitempty"`
-	Endpoint           contracts.EndpointKind                  `json:"endpoint,omitempty"`
-	EndpointKey        string                                  `json:"endpointKey,omitempty"`
-	Interaction        contracts.Context                       `json:"interaction,omitempty"`
-	ConversationID     string                                  `json:"conversationId,omitempty"`
-	EvaluationReason   companion.ParticipationEvaluationReason `json:"evaluationReason,omitempty"`
-	Messages           []companion.AmbientObservation          `json:"messages,omitempty"`
-	Message            *companion.AmbientObservation           `json:"message,omitempty"`
-	DesktopObservation *obs.DesktopObservation                 `json:"desktopObservation,omitempty"`
-	Input              string                                  `json:"input,omitempty"`
-	SpeechEnabled      bool                                    `json:"speechEnabled,omitempty"`
-	TurnID             string                                  `json:"turnId,omitempty"`
-	CaptureResult      *sessioncontract.DesktopCaptureResult   `json:"captureResult,omitempty"`
+	Type               string                                   `json:"type"`
+	RequestID          string                                   `json:"requestId,omitempty"`
+	Endpoint           session.EndpointKind                     `json:"endpoint,omitempty"`
+	EndpointKey        string                                   `json:"endpointKey,omitempty"`
+	Interaction        session.Context                          `json:"interaction,omitempty"`
+	ConversationID     string                                   `json:"conversationId,omitempty"`
+	EvaluationReason   initiative.ParticipationEvaluationReason `json:"evaluationReason,omitempty"`
+	Messages           []initiative.AmbientObservation          `json:"messages,omitempty"`
+	Message            *initiative.AmbientObservation           `json:"message,omitempty"`
+	DesktopObservation *session.DesktopObservation              `json:"desktopObservation,omitempty"`
+	Input              string                                   `json:"input,omitempty"`
+	SpeechEnabled      bool                                     `json:"speechEnabled,omitempty"`
+	TurnID             string                                   `json:"turnId,omitempty"`
+	CaptureResult      *session.DesktopCaptureResult            `json:"captureResult,omitempty"`
 }
 
 type wsServerFrame struct {
-	Type           string                                 `json:"type"`
-	RequestID      string                                 `json:"requestId,omitempty"`
-	ConversationID string                                 `json:"conversationId,omitempty"`
-	CharacterID    string                                 `json:"characterId,omitempty"`
-	MessageCount   int                                    `json:"messageCount,omitempty"`
-	Endpoint       contracts.EndpointKind                 `json:"endpoint,omitempty"`
-	Error          string                                 `json:"error,omitempty"`
-	Payload        json.RawMessage                        `json:"payload,omitempty"`
-	Event          *turnruntime.TurnEvent                 `json:"event,omitempty"`
-	Participation  *companion.ParticipationEvent          `json:"participation,omitempty"`
-	CaptureRequest *sessioncontract.DesktopCaptureRequest `json:"captureRequest,omitempty"`
+	Type           string                         `json:"type"`
+	RequestID      string                         `json:"requestId,omitempty"`
+	ConversationID string                         `json:"conversationId,omitempty"`
+	CharacterID    string                         `json:"characterId,omitempty"`
+	MessageCount   int                            `json:"messageCount,omitempty"`
+	Endpoint       session.EndpointKind           `json:"endpoint,omitempty"`
+	Error          string                         `json:"error,omitempty"`
+	Payload        json.RawMessage                `json:"payload,omitempty"`
+	Event          *session.Event                 `json:"event,omitempty"`
+	Participation  *initiative.Event              `json:"participation,omitempty"`
+	CaptureRequest *session.DesktopCaptureRequest `json:"captureRequest,omitempty"`
 }
 
 func (s *Server) handleSessionWebSocket() app.HandlerFunc {
@@ -212,8 +210,8 @@ func (c *sessionConn) handleOpen(ctx context.Context, frame wsClientFrame) {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 		return
 	}
-	if frame.Endpoint == contracts.EndpointDesktop && frame.Interaction.Audience == contracts.AudienceSingle && frame.Interaction.Presentation == contracts.PresentationEmbodied {
-		registrationID, unregister, registerErr := c.server.rt.Captures.Register(result.ConversationID, frame.Endpoint, frame.Interaction, func(request sessioncontract.DesktopCaptureRequest) error {
+	if frame.Endpoint == session.EndpointDesktop && frame.Interaction.Audience == session.AudienceSingle && frame.Interaction.Presentation == session.PresentationEmbodied {
+		registrationID, unregister, registerErr := c.server.rt.Captures.Register(result.ConversationID, frame.Endpoint, frame.Interaction, func(request session.DesktopCaptureRequest) error {
 			requestCopy := request
 			return c.write(wsServerFrame{Type: "desktop.capture.request", ConversationID: request.ConversationID, CaptureRequest: &requestCopy})
 		})
@@ -267,8 +265,13 @@ func (c *sessionConn) handleWatch(frame wsClientFrame) {
 		_ = c.write(wsServerFrame{Type: "ack", RequestID: frame.RequestID, ConversationID: conversationID})
 		return
 	}
-	subscription := c.server.rt.Events.Subscribe(conversationID)
-	participation := c.server.rt.Participation.Subscribe(conversationID)
+	if c.server.rt.SubscribeTurnEvents == nil || c.server.rt.SubscribeParticipation == nil {
+		c.watchMu.Unlock()
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "event subscriptions are unavailable"})
+		return
+	}
+	subscription := c.server.rt.SubscribeTurnEvents(conversationID)
+	participation := c.server.rt.SubscribeParticipation(conversationID)
 	c.watches[conversationID] = func() {
 		subscription.Unsubscribe()
 		participation.Unsubscribe()
@@ -279,7 +282,7 @@ func (c *sessionConn) handleWatch(frame wsClientFrame) {
 	_ = c.write(wsServerFrame{Type: "ack", RequestID: frame.RequestID, ConversationID: conversationID})
 }
 
-func (c *sessionConn) forwardParticipationEvents(conversationID string, subscription fairyruntime.ParticipationSubscription) {
+func (c *sessionConn) forwardParticipationEvents(conversationID string, subscription ParticipationSubscription) {
 	defer subscription.Unsubscribe()
 	for {
 		select {
@@ -301,7 +304,7 @@ func (c *sessionConn) forwardParticipationEvents(conversationID string, subscrip
 	}
 }
 
-func (c *sessionConn) forwardTurnEvents(conversationID string, subscription fairyruntime.EventSubscription) {
+func (c *sessionConn) forwardTurnEvents(conversationID string, subscription EventSubscription) {
 	defer subscription.Unsubscribe()
 	for {
 		select {
@@ -343,7 +346,11 @@ func (c *sessionConn) handleObserve(frame wsClientFrame) {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "message is required"})
 		return
 	}
-	if err := c.server.rt.Companion.ObserveAmbient(frame.ConversationID, *frame.Message); err != nil {
+	if c.server.rt.Initiative == nil {
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "initiative service is unavailable"})
+		return
+	}
+	if err := c.server.rt.Initiative.ObserveAmbient(frame.ConversationID, *frame.Message); err != nil {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 		return
 	}
@@ -355,7 +362,11 @@ func (c *sessionConn) handleDesktopObserve(frame wsClientFrame) {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "desktopObservation is required"})
 		return
 	}
-	plan, err := c.server.rt.Companion.ObserveDesktop(frame.ConversationID, *frame.DesktopObservation)
+	if c.server.rt.Initiative == nil {
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "initiative service is unavailable"})
+		return
+	}
+	plan, err := c.server.rt.Initiative.ObserveDesktop(frame.ConversationID, *frame.DesktopObservation)
 	if err != nil {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 		return
@@ -369,7 +380,11 @@ func (c *sessionConn) handleDesktopObserve(frame wsClientFrame) {
 }
 
 func (c *sessionConn) handleParticipate(ctx context.Context, frame wsClientFrame) {
-	result, err := c.server.rt.Companion.DecideParticipation(ctx, companion.ParticipationRequest{
+	if c.server.rt.Initiative == nil {
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "initiative service is unavailable"})
+		return
+	}
+	result, err := c.server.rt.Initiative.DecideParticipation(ctx, initiative.ParticipationRequest{
 		ConversationID:   frame.ConversationID,
 		EvaluationReason: frame.EvaluationReason,
 		Messages:         frame.Messages,
@@ -430,7 +445,7 @@ func (c *sessionConn) shutdown(reason error) {
 	c.closeOnce.Do(func() {
 		if reason != nil {
 			code := websocket.CloseInternalServerErr
-			if errors.Is(reason, fairyruntime.ErrEventSubscriberOverflow) || errors.Is(reason, fairyruntime.ErrParticipationSubscriberOverflow) {
+			if errors.Is(reason, ErrEventSubscriberOverflow) || errors.Is(reason, ErrParticipationSubscriberOverflow) {
 				code = websocket.CloseTryAgainLater
 			}
 			c.writeMu.Lock()
@@ -467,10 +482,10 @@ type openSessionResult struct {
 	ConversationID string
 	CharacterID    string
 	MessageCount   int
-	Endpoint       contracts.EndpointKind
+	Endpoint       session.EndpointKind
 }
 
-func (s *Server) openSession(ctx context.Context, endpoint contracts.EndpointKind, endpointKey string, interactionContext contracts.Context) (openSessionResult, error) {
+func (s *Server) openSession(ctx context.Context, endpoint session.EndpointKind, endpointKey string, interactionContext session.Context) (openSessionResult, error) {
 	if err := interactionContext.Validate(endpoint); err != nil {
 		return openSessionResult{}, err
 	}
@@ -488,7 +503,7 @@ func (s *Server) openSession(ctx context.Context, endpoint contracts.EndpointKin
 			return openSessionResult{}, err
 		}
 	}
-	binding, err := contracts.NewBinding(endpoint, interactionContext, principalDigest)
+	binding, err := session.NewBinding(endpoint, interactionContext, principalDigest)
 	if err != nil {
 		return openSessionResult{}, err
 	}

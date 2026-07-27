@@ -11,8 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"fairy/visual"
 )
 
 const pngSignature = "\x89PNG\r\n\x1a\n"
@@ -27,9 +25,9 @@ type packageManifest struct {
 type packageVisual struct {
 	DisplayName string         `json:"displayName"`
 	Renderer    string         `json:"renderer"`
-	Frame       visual.Frame   `json:"frame"`
+	Frame       Frame          `json:"frame"`
 	Scale       float64        `json:"scale"`
-	Anchor      visual.Point   `json:"anchor"`
+	Anchor      Point          `json:"anchor"`
 	States      []packageState `json:"states"`
 }
 
@@ -201,7 +199,7 @@ func validatePackageManifest(manifest packageManifest) error {
 }
 
 func (s *Store) installVisualPackage(manifest packageManifest, files map[string][]byte) error {
-	runtime := visual.Manifest{
+	runtime := Manifest{
 		SchemaVersion: 2,
 		PackID:        manifest.PackageID,
 		DisplayName:   manifest.Visual.DisplayName,
@@ -209,20 +207,20 @@ func (s *Store) installVisualPackage(manifest packageManifest, files map[string]
 		Frame:         manifest.Visual.Frame,
 		Scale:         manifest.Visual.Scale,
 		Anchor:        manifest.Visual.Anchor,
-		States:        make([]visual.State, 0, len(manifest.Visual.States)),
+		States:        make([]State, 0, len(manifest.Visual.States)),
 	}
 	for _, state := range manifest.Visual.States {
 		relative, err := validatePackageFile(state.File)
 		if err != nil {
 			return err
 		}
-		runtime.States = append(runtime.States, visual.State{ID: state.ID, Description: state.Description, ImagePath: "fairy-character://localhost/" + manifest.PackageID + "/" + relative})
+		runtime.States = append(runtime.States, State{ID: state.ID, Description: state.Description, ImagePath: "fairy-character://localhost/" + manifest.PackageID + "/" + relative})
 	}
 	manifestBytes, err := json.MarshalIndent(runtime, "", "  ")
 	if err != nil {
 		return fmt.Errorf("serializing runtime visual manifest: %w", err)
 	}
-	if _, err := visual.ParseManifest(manifestBytes); err != nil {
+	if _, err := ParseManifest(manifestBytes); err != nil {
 		return err
 	}
 	staging := filepath.Join(s.root, "visual-packs", "."+manifest.PackageID+".importing."+fmt.Sprint(time.Now().UnixNano()))

@@ -15,9 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"fairy/contracts/interaction"
-	obs "fairy/contracts/observation"
 	"fairy/coreclient"
+	"fairy/session"
+
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
@@ -56,12 +56,12 @@ type CoreService struct {
 	emit         func(string, any)
 	observation  *desktopObservationRuntime
 	capture      *desktopCaptureRuntime
-	privacy      obs.DesktopPrivacyState
+	privacy      session.DesktopPrivacyState
 }
 
 func NewCoreService() *CoreService {
-	service := &CoreService{connections: newSystemConnectionStore(), newCache: newVisualCache, privacy: obs.DesktopPrivacyProtected}
-	service.capture, _ = newDesktopCaptureRuntime(newPlatformDesktopCapturer(), func() obs.DesktopPrivacyState {
+	service := &CoreService{connections: newSystemConnectionStore(), newCache: newVisualCache, privacy: session.DesktopPrivacyProtected}
+	service.capture, _ = newDesktopCaptureRuntime(newPlatformDesktopCapturer(), func() session.DesktopPrivacyState {
 		service.mu.Lock()
 		defer service.mu.Unlock()
 		return service.privacy
@@ -118,9 +118,9 @@ func (s *CoreService) ServiceShutdown() error {
 }
 
 func (s *CoreService) SetDesktopObservationPrivacy(value string) error {
-	privacy := obs.DesktopPrivacyState(value)
+	privacy := session.DesktopPrivacyState(value)
 	switch privacy {
-	case obs.DesktopPrivacyNormal, obs.DesktopPrivacyLocked, obs.DesktopPrivacyMeeting, obs.DesktopPrivacyDoNotDisturb, obs.DesktopPrivacyProtected:
+	case session.DesktopPrivacyNormal, session.DesktopPrivacyLocked, session.DesktopPrivacyMeeting, session.DesktopPrivacyDoNotDisturb, session.DesktopPrivacyProtected:
 	default:
 		return errors.New("desktop observation privacy state is invalid")
 	}
@@ -143,13 +143,13 @@ func (s *CoreService) EnableDesktopObservation(intervalMinutes, idleMinutes int)
 		s.mu.Unlock()
 		return errors.New("Core session is not connected")
 	}
-	if s.privacy == obs.DesktopPrivacyProtected {
+	if s.privacy == session.DesktopPrivacyProtected {
 		s.mu.Unlock()
 		return errors.New("desktop observation privacy must be explicitly configured before enabling")
 	}
 	s.mu.Unlock()
 
-	sampler, err := newMacOSIdleSampler(time.Duration(idleMinutes)*time.Minute, func() obs.DesktopPrivacyState {
+	sampler, err := newMacOSIdleSampler(time.Duration(idleMinutes)*time.Minute, func() session.DesktopPrivacyState {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		return s.privacy
@@ -157,7 +157,7 @@ func (s *CoreService) EnableDesktopObservation(intervalMinutes, idleMinutes int)
 	if err != nil {
 		return err
 	}
-	runtime, err := newDesktopObservationRuntime(sampler.Sample, func(ctx context.Context, observation obs.DesktopObservation) error {
+	runtime, err := newDesktopObservationRuntime(sampler.Sample, func(ctx context.Context, observation session.DesktopObservation) error {
 		s.mu.Lock()
 		socket, conversation := s.socket, s.conversation
 		s.mu.Unlock()
@@ -439,7 +439,7 @@ func (s *CoreService) Connect() (CoreSession, error) {
 			_ = socket.Close()
 		}
 	}()
-	opened, err := socket.OpenSession(ctx, coreclient.OpenSessionRequest{Endpoint: interaction.EndpointDesktop, EndpointKey: settings.EndpointKey, Interaction: interaction.Context{Audience: interaction.AudienceSingle, Initiation: interaction.InitiationDirect, Presentation: interaction.PresentationEmbodied}})
+	opened, err := socket.OpenSession(ctx, coreclient.OpenSessionRequest{Endpoint: session.EndpointDesktop, EndpointKey: settings.EndpointKey, Interaction: session.Context{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied}})
 	if err != nil {
 		return CoreSession{}, err
 	}

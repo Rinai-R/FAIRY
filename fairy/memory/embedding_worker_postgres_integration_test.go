@@ -13,9 +13,6 @@ import (
 	"time"
 
 	"fairy/coredb"
-	dbschema "fairy/coredb/schema"
-	"fairy/memory/semantic"
-	vectorindex "fairy/vectorindex"
 
 	"github.com/google/uuid"
 )
@@ -24,9 +21,9 @@ type postgresWorkerEmbedder struct {
 	vector []float32
 }
 
-func (e postgresWorkerEmbedder) Ready() bool             { return true }
-func (e postgresWorkerEmbedder) Status() semantic.Status { return semantic.StatusReady }
-func (e postgresWorkerEmbedder) Dims() int               { return SemanticEmbeddingDimensions }
+func (e postgresWorkerEmbedder) Ready() bool            { return true }
+func (e postgresWorkerEmbedder) Status() SemanticStatus { return SemanticStatusReady }
+func (e postgresWorkerEmbedder) Dims() int              { return SemanticEmbeddingDimensions }
 func (e postgresWorkerEmbedder) Embed(texts []string) ([][]float32, error) {
 	vectors := make([][]float32, len(texts))
 	for index := range texts {
@@ -43,7 +40,7 @@ func (i *unavailableWorkerIndex) Ready(context.Context) error {
 	return errors.New("qdrant unavailable")
 }
 
-func (i *unavailableWorkerIndex) Upsert(context.Context, vectorindex.Point) error {
+func (i *unavailableWorkerIndex) Upsert(context.Context, VectorPoint) error {
 	i.upsertCalled = true
 	return nil
 }
@@ -53,7 +50,7 @@ type recordingWorkerIndex struct {
 }
 
 func (i *recordingWorkerIndex) Ready(context.Context) error { return nil }
-func (i *recordingWorkerIndex) Upsert(context.Context, vectorindex.Point) error {
+func (i *recordingWorkerIndex) Upsert(context.Context, VectorPoint) error {
 	i.upsertCalled = true
 	return nil
 }
@@ -62,7 +59,7 @@ func TestPostgresEmbeddingWorkerUpsertsQdrantAndCompletesOutbox(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -77,10 +74,10 @@ func TestPostgresEmbeddingWorkerUpsertsQdrantAndCompletesOutbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Processed != 1 || result.Succeeded != 1 || result.Failed != 0 || result.SemanticStatus != string(semantic.StatusReady) {
+	if result.Processed != 1 || result.Succeeded != 1 || result.Failed != 0 || result.SemanticStatus != string(SemanticStatusReady) {
 		t.Fatalf("result = %#v", result)
 	}
-	pointID, err := vectorindex.PointID(vectorindex.ItemKindPersonalMemory, record.ID, SemanticEmbeddingModelID)
+	pointID, err := VectorPointID(ItemKindPersonalMemory, record.ID, SemanticEmbeddingModelID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +96,7 @@ func TestPostgresEmbeddingWorkerReclaimsAfterQdrantUpsertCrash(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPoolWithLease(pool, "worker-crash", time.Minute)
@@ -123,7 +120,7 @@ func TestPostgresEmbeddingWorkerReclaimsAfterQdrantUpsertCrash(t *testing.T) {
 	}
 	vector := make([]float32, SemanticEmbeddingDimensions)
 	vector[4] = 1
-	if err := index.Upsert(ctx, vectorindex.Point{ID: pointID, Vector: vector, Payload: vectorindex.PointPayloadInput{
+	if err := index.Upsert(ctx, VectorPoint{ID: pointID, Vector: vector, Payload: VectorPointPayloadInput{
 		ItemKind: jobs[0].ItemKind, ItemID: jobs[0].ItemID, ModelID: jobs[0].ModelID,
 		ScopeType: payload.ScopeType, CharacterID: payload.CharacterID, ContentHash: jobs[0].ContentHash,
 	}}); err != nil {
@@ -150,7 +147,7 @@ func TestPostgresEmbeddingWorkerUnavailableIndexDoesNotClaim(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -181,7 +178,7 @@ func TestPostgresEmbeddingWorkerRejectsNonFiniteVectorBeforeUpsert(t *testing.T)
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -209,13 +206,13 @@ func TestPostgresEmbeddingWorkerRejectsNonFiniteVectorBeforeUpsert(t *testing.T)
 	}
 }
 
-func openIsolatedWorkerVectorIndex(t *testing.T, ctx context.Context) *vectorindex.Client {
+func openIsolatedWorkerVectorIndex(t *testing.T, ctx context.Context) *VectorClient {
 	t.Helper()
 	qdrantURL := os.Getenv("FAIRY_TEST_QDRANT_GRPC_URL")
 	if qdrantURL == "" {
 		qdrantURL = "http://127.0.0.1:16334"
 	}
-	client, err := vectorindex.Open(ctx, vectorindex.Config{
+	client, err := OpenVectorClient(ctx, VectorConfig{
 		URL: qdrantURL, Timeout: 5 * time.Second,
 		CollectionName: fmt.Sprintf("fairy_worker_test_%d", time.Now().UnixNano()),
 	})

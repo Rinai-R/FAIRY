@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"fairy/contracts/interaction"
+	"fairy/session"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -33,7 +34,7 @@ func TestSessionSocketDispatchesCaptureCallbackAndReturnsCorrelatedResult(t *tes
 			t.Error(err)
 			return
 		}
-		if err := conn.WriteJSON(sessionServerFrame{Type: "session.opened", RequestID: open.RequestID, ConversationID: "conversation-1", CharacterID: "character-1", Endpoint: interaction.EndpointDesktop}); err != nil {
+		if err := conn.WriteJSON(sessionServerFrame{Type: "session.opened", RequestID: open.RequestID, ConversationID: "conversation-1", CharacterID: "character-1", Endpoint: session.EndpointDesktop}); err != nil {
 			t.Error(err)
 			return
 		}
@@ -75,8 +76,8 @@ func TestSessionSocketDispatchesCaptureCallbackAndReturnsCorrelatedResult(t *tes
 	}
 	close(start)
 	if _, err := socket.OpenSession(t.Context(), OpenSessionRequest{
-		Endpoint: interaction.EndpointDesktop, EndpointKey: "desktop-1",
-		Interaction: interaction.Context{Audience: interaction.AudienceSingle, Initiation: interaction.InitiationDirect, Presentation: interaction.PresentationEmbodied},
+		Endpoint: session.EndpointDesktop, EndpointKey: "desktop-1",
+		Interaction: session.Context{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied},
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -13,13 +13,13 @@ import (
 	"time"
 
 	"fairy/config"
+	"fairy/initiative"
 	"fairy/memory"
 	"fairy/model"
-	"fairy/participation"
 	"fairy/persona"
 	replypkg "fairy/reply"
 
-	obs "fairy/contracts/observation"
+	"fairy/session"
 )
 
 func TestLiveSimulateSREGroupChat(t *testing.T) {
@@ -67,9 +67,9 @@ func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 		decisions []string
 		replies   []string
 	)
-	service.ambient.decideHook = func(ctx context.Context, batch ambientBatch) (ParticipationResult, error) {
+	service.ambient.decideHook = func(ctx context.Context, batch ambientBatch) (initiative.ParticipationResult, error) {
 		started := time.Now()
-		result, err := service.DecideParticipation(ctx, ParticipationRequest{
+		result, err := service.DecideParticipation(ctx, initiative.ParticipationRequest{
 			ConversationID:   batch.conversationID,
 			EvaluationReason: batch.evaluationReason,
 			Messages:         batch.messages,
@@ -84,7 +84,7 @@ func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 				decisions = append(decisions, fmt.Sprintf("gen=%d reason=%s failed (%dms): %v", batch.generation, batch.evaluationReason, elapsed, err))
 			}
 			mu.Unlock()
-			return ParticipationResult{}, err
+			return initiative.ParticipationResult{}, err
 		}
 		newCount := 0
 		for _, message := range batch.messages {
@@ -118,7 +118,7 @@ func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 		}
 		service.ambient.mu.Lock()
 		state := service.ambient.states[request.ConversationID]
-		cache := make([]AmbientObservation, 0)
+		cache := make([]initiative.AmbientObservation, 0)
 		if state != nil {
 			for _, entry := range state.cacheMessages {
 				cache = append(cache, entry.observation)
@@ -154,7 +154,7 @@ func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 			t.Fatalf("feed aborted: %v", err)
 		}
 		obs := incoming
-		obs.IsNew = false
+		session.IsNew = false
 		if err := service.ObserveAmbient("conversation-1", obs); err != nil {
 			t.Fatalf("ObserveAmbient #%d: %v", index+1, err)
 		}
@@ -234,7 +234,7 @@ func truncateRunes(text string, limit int) string {
 
 type liveGroupChatScenario struct {
 	name    string
-	all     []AmbientObservation
+	all     []initiative.AmbientObservation
 	seed    []memory.SocialMemoryEntry
 	newTail int
 }
@@ -244,16 +244,16 @@ func runLiveGroupChatSimulation(t *testing.T, scenario liveGroupChatScenario) {
 	persona := loadPersonaLiveConfig(t)
 	modelPort := newLiveModelPort(t, persona)
 
-	all := append([]AmbientObservation(nil), scenario.all...)
+	all := append([]initiative.AmbientObservation(nil), scenario.all...)
 	if len(all) == 0 {
 		t.Fatal("empty scenario")
 	}
-	if len(all) > participation.MaxAmbientCacheObservations {
-		t.Fatalf("scenario has %d messages, cache max is %d", len(all), participation.MaxAmbientCacheObservations)
+	if len(all) > initiative.MaxAmbientCacheObservations {
+		t.Fatalf("scenario has %d messages, cache max is %d", len(all), initiative.MaxAmbientCacheObservations)
 	}
 	window := all
-	if len(window) > participation.MaxAmbientObservations {
-		window = window[len(window)-participation.MaxAmbientObservations:]
+	if len(window) > initiative.MaxAmbientObservations {
+		window = window[len(window)-initiative.MaxAmbientObservations:]
 	}
 	newTail := scenario.newTail
 	if newTail < 1 {
@@ -275,9 +275,9 @@ func runLiveGroupChatSimulation(t *testing.T, scenario liveGroupChatScenario) {
 	defer cancel()
 
 	participateStarted := time.Now()
-	result, err := service.DecideParticipation(ctx, ParticipationRequest{
+	result, err := service.DecideParticipation(ctx, initiative.ParticipationRequest{
 		ConversationID:   "conversation-1",
-		EvaluationReason: ParticipationReasonMessage,
+		EvaluationReason: initiative.ParticipationReasonMessage,
 		Messages:         window,
 		CacheMessages:    all,
 	})
@@ -295,7 +295,7 @@ func runLiveGroupChatSimulation(t *testing.T, scenario liveGroupChatScenario) {
 			result.Intent.ReplyAct, result.Intent.Focus, result.Intent.ReplyMode,
 			result.Intent.MemoryQuery, result.Intent.ExpressionQuery, result.Intent.DriftLevel)
 	}
-	if result.Action != ParticipationReply || result.Intent == nil {
+	if result.Action != initiative.ParticipationReply || result.Intent == nil {
 		t.Log("simulation stopped at participate (no reply)")
 		return
 	}
@@ -319,7 +319,7 @@ func runLiveGroupChatSimulation(t *testing.T, scenario liveGroupChatScenario) {
 	}
 }
 
-func observationTextByID(messages []AmbientObservation, id string) string {
+func observationTextByID(messages []initiative.AmbientObservation, id string) string {
 	for _, message := range messages {
 		if message.MessageID == id {
 			return message.Text
@@ -328,15 +328,15 @@ func observationTextByID(messages []AmbientObservation, id string) string {
 	return ""
 }
 
-func sreGroupChatObservations() []AmbientObservation {
+func sreGroupChatObservations() []initiative.AmbientObservation {
 	all := sreGroupChatObservationsFull()
-	if len(all) > participation.MaxAmbientObservations {
-		return all[len(all)-participation.MaxAmbientObservations:]
+	if len(all) > initiative.MaxAmbientObservations {
+		return all[len(all)-initiative.MaxAmbientObservations:]
 	}
 	return all
 }
 
-func sreGroupChatObservationsFull() []AmbientObservation {
+func sreGroupChatObservationsFull() []initiative.AmbientObservation {
 	base := time.Date(2026, 7, 23, 23, 16, 57, 0, time.Local).UnixMilli()
 	rows := []chatSimRow{
 		{"HikariLan贺兰星辰", "可能周六", 0},
@@ -396,7 +396,7 @@ func sreGroupChatObservationsFull() []AmbientObservation {
 	return rowsToObservations(base, rows)
 }
 
-func galgameDualPlayObservations() []AmbientObservation {
+func galgameDualPlayObservations() []initiative.AmbientObservation {
 	base := time.Date(2026, 7, 23, 20, 32, 51, 0, time.Local).UnixMilli()
 	rows := []chatSimRow{
 		{"灰魔女", "[图片]", 0},
@@ -448,11 +448,11 @@ type chatSimRow struct {
 	ms         int64
 }
 
-func rowsToObservations(base int64, rows []chatSimRow) []AmbientObservation {
-	out := make([]AmbientObservation, 0, len(rows))
+func rowsToObservations(base int64, rows []chatSimRow) []initiative.AmbientObservation {
+	out := make([]initiative.AmbientObservation, 0, len(rows))
 	for i, item := range rows {
 		sender := strings.TrimSpace(item.name)
-		out = append(out, AmbientObservation{
+		out = append(out, initiative.AmbientObservation{
 			MessageID:       fmt.Sprintf("m%d", i+1),
 			SenderID:        "u-" + sender,
 			SenderName:      sender,
@@ -468,15 +468,15 @@ func livePublicRespondWithTools(
 	service *CompanionService,
 	modelPort ModelPort,
 	modelName string,
-	messages []AmbientObservation,
-	intent *ReplyIntent,
+	messages []initiative.AmbientObservation,
+	intent *initiative.ReplyIntent,
 ) (string, []string, []string, error) {
 	resolved := publicAmbientResolved()
 	toolsUsed := make([]string, 0, 3)
 	phases := make([]string, 0, 6)
 	retrieval := memory.RetrievalContext{}
 	socialStarted := time.Now()
-	social, err := service.retrieveSocialRespondContext(ctx, "character-1", "conversation-1", resolved, intent, participation.SenderIDs(messages))
+	social, err := service.retrieveSocialRespondContext(ctx, "character-1", "conversation-1", resolved, intent, initiative.SenderIDs(messages))
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -506,7 +506,7 @@ func livePublicRespondWithTools(
 	for step := 0; step <= budget; step++ {
 		tools := []model.ToolSpec(nil)
 		if step < budget {
-			tools = RespondToolSpecsForInteraction(false, resolved)
+			tools = respondToolSpecsForInteraction(false, resolved)
 		}
 		input := []model.PromptItem{
 			{Type: model.PromptItemContextData, Content: `{"contextType":"character","name":"Fairy","description":"群友","textLanguage":"zh","speakingLanguage":"zh"}`},
@@ -535,7 +535,7 @@ func livePublicRespondWithTools(
 		events, execErr := modelPort.ExecuteRequestContext(ctx, model.CompiledPromptRequest{
 			Shape: model.ModelRequestShape{
 				Lane: model.PromptLaneRespond, Model: modelName,
-				Instructions: RespondInstructionsForInteraction(len(tools) > 0, resolved), MaxOutputTokens: 640,
+				Instructions: respondInstructionsForInteraction(len(tools) > 0, resolved), MaxOutputTokens: 640,
 			},
 			Input: input, Tools: tools,
 		})

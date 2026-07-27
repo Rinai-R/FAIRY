@@ -3,12 +3,11 @@ package speech
 import (
 	"encoding/json"
 	"errors"
+	"fairy/config"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"fairy/secret"
 )
 
 const (
@@ -62,9 +61,9 @@ type Settings struct {
 }
 
 type Credentials struct {
-	APIKey         secret.Value
+	APIKey         config.SecretValue
 	HasAPIKey      bool
-	AccessToken    secret.Value
+	AccessToken    config.SecretValue
 	HasAccessToken bool
 }
 
@@ -137,7 +136,7 @@ func DefaultSettings() Settings {
 	}
 }
 
-func ReadStatus(root string, secrets *secret.Store) (Status, error) {
+func ReadStatus(root string, secrets *config.SecretStore) (Status, error) {
 	settings, err := ReadSettings(root)
 	if err != nil {
 		return Status{}, err
@@ -194,7 +193,7 @@ func ParseSettings(data []byte) (Settings, error) {
 	}), nil
 }
 
-func SaveSettings(root string, input SaveSettingsRequest, secrets *secret.Store) (Status, error) {
+func SaveSettings(root string, input SaveSettingsRequest, secrets *config.SecretStore) (Status, error) {
 	if root == "" {
 		return Status{}, ErrConfigRootRequired
 	}
@@ -214,7 +213,7 @@ func SaveSettings(root string, input SaveSettingsRequest, secrets *secret.Store)
 		}
 	}
 	if input.APIKey != "" {
-		value, err := secret.NewValue(input.APIKey)
+		value, err := config.NewSecretValue(input.APIKey)
 		if err != nil {
 			return Status{}, err
 		}
@@ -223,7 +222,7 @@ func SaveSettings(root string, input SaveSettingsRequest, secrets *secret.Store)
 		}
 	}
 	if input.AccessToken != "" {
-		value, err := secret.NewValue(input.AccessToken)
+		value, err := config.NewSecretValue(input.AccessToken)
 		if err != nil {
 			return Status{}, err
 		}
@@ -250,7 +249,7 @@ func SaveSettings(root string, input SaveSettingsRequest, secrets *secret.Store)
 	return statusFromSettings(settings, hasAPIKey, hasAccessToken), nil
 }
 
-func ClearSettings(root string, secrets *secret.Store) (Status, error) {
+func ClearSettings(root string, secrets *config.SecretStore) (Status, error) {
 	if root == "" {
 		return Status{}, ErrConfigRootRequired
 	}
@@ -270,7 +269,7 @@ func ClearSettings(root string, secrets *secret.Store) (Status, error) {
 	return statusFromSettings(DefaultSettings(), false, false), nil
 }
 
-func loadReadySettings(root string, secrets *secret.Store) (Settings, Credentials, error) {
+func loadReadySettings(root string, secrets *config.SecretStore) (Settings, Credentials, error) {
 	settings, err := ReadSettings(root)
 	if err != nil {
 		return Settings{}, Credentials{}, err
@@ -427,7 +426,7 @@ func writeSettings(root string, settings Settings) error {
 	return nil
 }
 
-func resolveSecretStore(_ string, secrets *secret.Store) (*secret.Store, error) {
+func resolveSecretStore(_ string, secrets *config.SecretStore) (*config.SecretStore, error) {
 	if secrets != nil {
 		return secrets, nil
 	}

@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 
-	fairyruntime "fairy/runtime"
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"go.uber.org/zap"
@@ -19,15 +18,15 @@ type Options struct {
 	Logger *zap.Logger
 }
 
-// Server wraps Hertz + Session Core runtime.
+// Server wraps Hertz around Core-injected process services.
 type Server struct {
-	rt     *fairyruntime.Runtime
+	rt     *Dependencies
 	engine *server.Hertz
 	token  string
 	logger *zap.Logger
 }
 
-func NewServer(rt *fairyruntime.Runtime, options Options) (*Server, error) {
+func NewServer(rt *Dependencies, options Options) (*Server, error) {
 	if rt == nil {
 		return nil, errors.New("runtime is required")
 	}
@@ -38,6 +37,9 @@ func NewServer(rt *fairyruntime.Runtime, options Options) (*Server, error) {
 	logger := options.Logger
 	if logger == nil {
 		logger = rt.Logger
+	}
+	if logger == nil {
+		logger = zap.NewNop()
 	}
 	if options.Token != strings.TrimSpace(options.Token) {
 		return nil, errors.New("API token must not contain leading or trailing whitespace")
@@ -89,7 +91,11 @@ func (s *Server) authMiddleware(ctx context.Context, c *app.RequestContext) {
 }
 
 func (s *Server) handleStatus(ctx context.Context, c *app.RequestContext) {
-	bootstrap, err := s.rt.Bootstrap.Status()
+	if s.rt.BootstrapStatus == nil {
+		writeErr(c, http.StatusInternalServerError, errors.New("bootstrap status is unavailable"))
+		return
+	}
+	bootstrap, err := s.rt.BootstrapStatus()
 	if err != nil {
 		writeErr(c, http.StatusInternalServerError, err)
 		return

@@ -1,23 +1,17 @@
 package companion
 
-import (
-	"fairy/extraction"
-	"fairy/memory"
-	"fairy/model"
-)
-
 func (s *CompanionService) scheduleBackgroundExtraction(conversationID string) {
 	if s == nil || !s.RespondRuntimeMigrated() || s.retention == nil {
 		return
 	}
-	s.retention.ScheduleExtraction(conversationID)
+	s.retention.scheduleExtraction(conversationID)
 }
 
 func (s *CompanionService) ActiveBackgroundJobs() int64 {
 	if s == nil || s.retention == nil {
 		return 0
 	}
-	return s.retention.ActiveJobs()
+	return s.retention.activeJobs()
 }
 
 func (s *CompanionService) setBackgroundError(err error) {
@@ -36,12 +30,4 @@ func (s *CompanionService) clearBackgroundError() {
 	s.backgroundErrorMu.Lock()
 	s.backgroundError = nil
 	s.backgroundErrorMu.Unlock()
-}
-
-func BuildExtractInput(batch memory.ExtractionBatchInput) ([]model.PromptItem, error) {
-	return extraction.BuildInput(batch)
-}
-
-func ParseMemoryMutationOutput(raw string) (memory.MemoryMutationOutput, error) {
-	return extraction.ParseMutationOutput(raw)
 }

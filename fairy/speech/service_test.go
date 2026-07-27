@@ -3,10 +3,9 @@ package speech
 import (
 	"context"
 	"encoding/base64"
+	"fairy/config"
 	"strings"
 	"testing"
-
-	"fairy/secret"
 )
 
 type fakeVoiceCloneClient struct {
@@ -70,7 +69,7 @@ func (f *fakeVoiceCloneClient) SynthesizeSpeech(_ context.Context, settings Sett
 
 func TestSpeechServiceTrainVoiceUsesStoredSecretAndDefaults(t *testing.T) {
 	root := t.TempDir()
-	store := secret.NewTestStore()
+	store := config.NewTestSecretStore()
 	_, err := SaveSettings(root, SaveSettingsRequest{Enabled: true, APIKey: "test-api-key", DefaultSpeaker: "S_default", DefaultFormat: "wav"}, store)
 	if err != nil {
 		t.Fatalf("SaveSettings() error = %v", err)
@@ -96,7 +95,7 @@ func TestSpeechServiceTrainVoiceUsesStoredSecretAndDefaults(t *testing.T) {
 func TestSpeechServiceRejectsDisabledBeforeProvider(t *testing.T) {
 	root := t.TempDir()
 	fake := &fakeVoiceCloneClient{result: VoiceResult{SpeakerID: "S_voice"}}
-	service := NewSpeechServiceWithClient(root, secret.NewTestStore(), fake)
+	service := NewSpeechServiceWithClient(root, config.NewTestSecretStore(), fake)
 	_, err := service.QueryVoice(VoiceOperationRequest{SpeakerID: "S_voice"})
 	if err == nil {
 		t.Fatal("QueryVoice() error = nil, want disabled")
@@ -111,7 +110,7 @@ func TestSpeechServiceRejectsDisabledBeforeProvider(t *testing.T) {
 
 func TestSpeechServiceRejectsMissingTrainInputBeforeProvider(t *testing.T) {
 	root := t.TempDir()
-	store := secret.NewTestStore()
+	store := config.NewTestSecretStore()
 	_, err := SaveSettings(root, SaveSettingsRequest{Enabled: true, APIKey: "test-api-key"}, store)
 	if err != nil {
 		t.Fatalf("SaveSettings() error = %v", err)
@@ -129,8 +128,8 @@ func TestSpeechServiceRejectsMissingTrainInputBeforeProvider(t *testing.T) {
 
 func TestSpeechServiceQueryAndUpgradeUseDefaultSpeaker(t *testing.T) {
 	root := t.TempDir()
-	store := secret.NewTestStore()
-	value, err := secret.NewValue("test-api-key")
+	store := config.NewTestSecretStore()
+	value, err := config.NewSecretValue("test-api-key")
 	if err != nil {
 		t.Fatalf("NewValue() error = %v", err)
 	}
@@ -159,7 +158,7 @@ func TestSpeechServiceQueryAndUpgradeUseDefaultSpeaker(t *testing.T) {
 
 func TestSpeechServiceSynthesizeUsesStoredSecretAndDefaultSpeaker(t *testing.T) {
 	root := t.TempDir()
-	store := secret.NewTestStore()
+	store := config.NewTestSecretStore()
 	_, err := SaveSettings(root, SaveSettingsRequest{Enabled: true, APIKey: "test-api-key", DefaultSpeaker: "S_default"}, store)
 	if err != nil {
 		t.Fatalf("SaveSettings() error = %v", err)
@@ -180,7 +179,7 @@ func TestSpeechServiceSynthesizeUsesStoredSecretAndDefaultSpeaker(t *testing.T) 
 
 func TestSpeechServiceSynthesizeRejectsMissingInputBeforeProvider(t *testing.T) {
 	root := t.TempDir()
-	store := secret.NewTestStore()
+	store := config.NewTestSecretStore()
 	_, err := SaveSettings(root, SaveSettingsRequest{Enabled: true, APIKey: "test-api-key", DefaultSpeaker: "S_default"}, store)
 	if err != nil {
 		t.Fatalf("SaveSettings() error = %v", err)

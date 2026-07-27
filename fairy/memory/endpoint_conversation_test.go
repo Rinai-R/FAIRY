@@ -1,7 +1,7 @@
 package memory
 
 import (
-	contracts "fairy/contracts/interaction"
+	"fairy/session"
 	"strings"
 	"testing"
 )
@@ -10,11 +10,11 @@ func TestOpenEndpointConversationRejectsInvalidKeyBeforeDatabase(t *testing.T) {
 	store := &Store{}
 	tests := []struct {
 		character string
-		binding   contracts.Binding
+		binding   session.Binding
 		digest    string
 	}{
 		{"", desktopBinding(), strings.Repeat("a", 64)},
-		{"character", contracts.Binding{}, strings.Repeat("a", 64)},
+		{"character", session.Binding{}, strings.Repeat("a", 64)},
 		{"character", desktopBinding(), "short"},
 		{"character", desktopBinding(), strings.Repeat("A", 64)},
 	}
@@ -25,12 +25,12 @@ func TestOpenEndpointConversationRejectsInvalidKeyBeforeDatabase(t *testing.T) {
 	}
 }
 
-func desktopBinding() contracts.Binding {
-	return contracts.Binding{
-		Endpoint: contracts.EndpointDesktop,
-		Facts: contracts.Facts{
-			Audience: contracts.AudienceSingle, Initiation: contracts.InitiationDirect,
-			Presentation: contracts.PresentationEmbodied,
+func desktopBinding() session.Binding {
+	return session.Binding{
+		Endpoint: session.EndpointDesktop,
+		Facts: session.Facts{
+			Audience: session.AudienceSingle, Initiation: session.InitiationDirect,
+			Presentation: session.PresentationEmbodied,
 		},
 	}
 }

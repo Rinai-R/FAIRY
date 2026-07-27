@@ -3,24 +3,23 @@ package companion
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"fairy/character"
 	"fairy/config"
 	"fairy/memory"
 	"fairy/model"
-	"fairy/pkg/nodegraph"
-	"fairy/profile"
 
 	"go.uber.org/zap"
 
-	domain "fairy/interaction"
+	"fairy/session"
 )
 
 type turnGraphState struct {
 	bootstrap           memory.ConversationPromptContext
 	character           character.Record
-	profile             *profile.Snapshot
+	profile             *config.ProfileSnapshot
 	socialContext       *SocialRespondContext
 	retrieval           memory.RetrievalContext
 	retrievalOmitReason string
@@ -39,54 +38,78 @@ type turnGraphProgram struct {
 	host           *CompanionService
 	conversationID string
 	turnID         string
-	nodes          []nodegraph.Node[*turnGraphState]
-	states         map[string]TurnState
+	nodes          []turnGraphNode
+	states         map[string]turnState
 	outcome        TurnOutcome
 	runErr         error
+	validationErr  error
+}
+
+type turnGraphNode struct {
+	key  string
+	kind string
+	run  func(context.Context, *turnGraphState) (*turnGraphState, error)
+}
+
+func turnStep(key, kind string, run func(context.Context, *turnGraphState) (*turnGraphState, error)) turnGraphNode {
+	return turnGraphNode{key: key, kind: kind, run: run}
 }
 
 func newTurnGraphProgram(host *CompanionService, conversationID, turnID string) *turnGraphProgram {
-	return &turnGraphProgram{host: host, conversationID: conversationID, turnID: turnID, states: make(map[string]TurnState)}
+	return &turnGraphProgram{host: host, conversationID: conversationID, turnID: turnID, states: make(map[string]turnState)}
 }
 
-func (p *turnGraphProgram) add(node nodegraph.Node[*turnGraphState], state TurnState) {
+func (p *turnGraphProgram) add(node turnGraphNode, state turnState) {
+	if p.validationErr != nil {
+		return
+	}
+	if strings.TrimSpace(node.key) == "" || strings.TrimSpace(node.kind) == "" || node.run == nil {
+		p.validationErr = errors.New("turn graph node requires key, kind and runner")
+		return
+	}
+	if _, exists := p.states[node.key]; exists {
+		p.validationErr = errors.New("turn graph node key is duplicated")
+		return
+	}
 	p.nodes = append(p.nodes, node)
-	p.states[node.Key] = state
+	p.states[node.key] = state
 }
 
-func (p *turnGraphProgram) addOutcome(node, kind string, state TurnState, run func() (TurnOutcome, error)) {
-	p.add(nodegraph.Step(node, kind, func(_ context.Context, graphState *turnGraphState) (*turnGraphState, error) {
+func (p *turnGraphProgram) addOutcome(node, kind string, state turnState, run func() (TurnOutcome, error)) {
+	p.add(turnStep(node, kind, func(_ context.Context, graphState *turnGraphState) (*turnGraphState, error) {
 		p.outcome, p.runErr = run()
 		return graphState, p.runErr
 	}), state)
 }
 
 func (p *turnGraphProgram) run(ctx context.Context, state *turnGraphState) (TurnOutcome, error) {
+	if p.validationErr != nil {
+		return TurnOutcome{}, &turnStageError{code: "TURN_GRAPH_INVALID", cause: p.validationErr}
+	}
 	if len(p.nodes) == 0 {
 		return TurnOutcome{}, errors.New("turn graph has no nodes")
 	}
-	keys := make([]string, 0, len(p.nodes))
-	builder := nodegraph.New[*turnGraphState](len(p.nodes)).Nodes(p.nodes...)
 	for _, node := range p.nodes {
-		keys = append(keys, node.Key)
-	}
-	if len(keys) > 1 {
-		builder.Path(keys...)
-	}
-	graph, err := builder.Compile()
-	if err != nil {
-		return TurnOutcome{}, &turnStageError{code: "TURN_GRAPH_INVALID", cause: err}
-	}
-	_, invokeErr := graph.InvokeObserved(ctx, keys[0], keys[len(keys)-1], state, func(event nodegraph.Event) {
-		p.host.appendRuntimeLedger(p.conversationID, p.turnID, runtimeLedgerEventNode, p.states[event.Node], "", map[string]any{
-			"node": event.Node, "kind": event.Kind, "status": string(event.Status),
-		})
-	})
-	if invokeErr != nil {
-		if p.runErr != nil {
-			return p.outcome, p.runErr
+		if err := ctx.Err(); err != nil {
+			return p.outcome, err
 		}
-		return p.outcome, invokeErr
+		p.host.appendRuntimeLedger(p.conversationID, p.turnID, runtimeLedgerEventNode, p.states[node.key], "", map[string]any{
+			"node": node.key, "kind": node.kind, "status": "started",
+		})
+		next, err := node.run(ctx, state)
+		if err != nil {
+			p.host.appendRuntimeLedger(p.conversationID, p.turnID, runtimeLedgerEventNode, p.states[node.key], "", map[string]any{
+				"node": node.key, "kind": node.kind, "status": "failed",
+			})
+			if p.runErr != nil {
+				return p.outcome, p.runErr
+			}
+			return p.outcome, fmt.Errorf("turn graph node %q failed: %w", node.key, err)
+		}
+		state = next
+		p.host.appendRuntimeLedger(p.conversationID, p.turnID, runtimeLedgerEventNode, p.states[node.key], "", map[string]any{
+			"node": node.key, "kind": node.kind, "status": "completed",
+		})
 	}
 	return p.outcome, nil
 }
@@ -99,11 +122,11 @@ type turnStageError struct {
 func (e *turnStageError) Error() string { return e.cause.Error() }
 func (e *turnStageError) Unwrap() error { return e.cause }
 
-type turnTransition func(TurnState) error
+type turnTransition func(turnState) error
 
 func (e *TurnEngine) declareGatherNodes(
 	request SubmitCompiledTurnRequest,
-	resolved domain.Resolved,
+	resolved session.Resolved,
 	turnID string,
 	transition turnTransition,
 	logger *zap.Logger,
@@ -114,8 +137,8 @@ func (e *TurnEngine) declareGatherNodes(
 	fail := func(code string, err error) error { return &turnStageError{code: code, cause: err} }
 
 	state.program.add(
-		nodegraph.Step("interpreting", "load_turn_context", func(_ context.Context, state *turnGraphState) (*turnGraphState, error) {
-			if err := transition(TurnStateInterpreting); err != nil {
+		turnStep("interpreting", "load_turn_context", func(_ context.Context, state *turnGraphState) (*turnGraphState, error) {
+			if err := transition(turnStateInterpreting); err != nil {
 				return state, fail("INVALID_STATE_TRANSITION", err)
 			}
 			bootstrap, err := s.memory.turn.promptContext.LoadConversationPrompt(request.ConversationID)
@@ -135,10 +158,10 @@ func (e *TurnEngine) declareGatherNodes(
 				}
 			}
 			return state, nil
-		}), TurnStateInterpreting)
+		}), turnStateInterpreting)
 	state.program.add(
-		nodegraph.Step("gathering", "retrieve_context", func(ctx context.Context, state *turnGraphState) (*turnGraphState, error) {
-			if err := transition(TurnStateGathering); err != nil {
+		turnStep("gathering", "retrieve_context", func(ctx context.Context, state *turnGraphState) (*turnGraphState, error) {
+			if err := transition(turnStateGathering); err != nil {
 				return state, fail("INVALID_STATE_TRANSITION", err)
 			}
 			social, err := s.retrieveSocialRespondContext(ctx, state.bootstrap.Conversation.CharacterID, request.ConversationID, resolved, request.ReplyIntent, request.PersonNoteSenderIDs)
@@ -163,13 +186,13 @@ func (e *TurnEngine) declareGatherNodes(
 				state.retrievalOmitReason = "awaiting_tools"
 				state.gatherPhase = "skip_auto_retrieve"
 			}
-			s.appendRuntimeLedger(request.ConversationID, turnID, runtimeLedgerEventGather, TurnStateGathering, "", map[string]any{
+			s.appendRuntimeLedger(request.ConversationID, turnID, runtimeLedgerEventGather, turnStateGathering, "", map[string]any{
 				"phase": state.gatherPhase, "personalCount": len(state.retrieval.PersonalMemories),
 				"knowledgeCount": 0, "omitReason": state.retrievalOmitReason, "modelDrivenIndex": 0,
 			})
 			logger.Info("cognition loop", zap.String("phase", state.gatherPhase), zap.Int("personalCount", len(state.retrieval.PersonalMemories)))
 			return state, nil
-		}), TurnStateGathering)
+		}), turnStateGathering)
 	return state
 }
 
@@ -188,7 +211,7 @@ func (e *TurnEngine) declareOutcomeNode(
 	_ string,
 	node string,
 	kind string,
-	turnState TurnState,
+	turnState turnState,
 	run func() (TurnOutcome, error),
 ) (TurnOutcome, error) {
 	state.program.addOutcome(node, kind, turnState, run)

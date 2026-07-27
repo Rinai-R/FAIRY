@@ -6,14 +6,14 @@ import (
 	"context"
 	"testing"
 
-	dbschema "fairy/coredb/schema"
+	"fairy/coredb"
 )
 
 func TestPostgresSocialMemoryScopesRetrievalAndFeedback(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -142,7 +142,7 @@ func TestPostgresSocialMemoryBatchIsAtomic(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -176,7 +176,7 @@ func TestPostgresSocialMemorySuppressesAfterNegativeThreshold(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -235,7 +235,7 @@ func TestPostgresSocialReplyFeedbackAllowsEmptyEntries(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)

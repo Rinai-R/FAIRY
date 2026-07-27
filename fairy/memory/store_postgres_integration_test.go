@@ -16,8 +16,6 @@ import (
 	"time"
 
 	"fairy/coredb"
-	dbschema "fairy/coredb/schema"
-	vectorindex "fairy/vectorindex"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -25,20 +23,20 @@ import (
 )
 
 type staticSemanticIndex struct {
-	hits []vectorindex.SearchHit
+	hits []VectorSearchHit
 }
 
 func (s staticSemanticIndex) Ready(context.Context) error { return nil }
 
-func (s staticSemanticIndex) Search(context.Context, []float32, string, string, int) ([]vectorindex.SearchHit, error) {
-	return append([]vectorindex.SearchHit(nil), s.hits...), nil
+func (s staticSemanticIndex) Search(context.Context, []float32, string, string, int) ([]VectorSearchHit, error) {
+	return append([]VectorSearchHit(nil), s.hits...), nil
 }
 
 func TestPostgresStoreSummaryUsesInjectedPool(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	_, err := pool.Raw().Exec(ctx, `
@@ -89,7 +87,7 @@ func TestPostgresStoreSummaryHonorsCanceledContext(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -116,7 +114,7 @@ func TestPostgresConversationPromptContextBoundsHistoryMaterialization(t *testin
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	const (
@@ -207,7 +205,7 @@ func BenchmarkPostgresConversationPromptContextHistoryGrowth(b *testing.B) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(b, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		b.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -269,7 +267,7 @@ func TestPostgresConversationActivityBoundsExpiredHistory(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -352,7 +350,7 @@ func TestPostgresConversationRecordDoesNotRequireTranscriptTables(t *testing.T) 
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	if _, err := pool.Raw().Exec(ctx, "INSERT INTO conversations(id, character_id, created_at_ms, updated_at_ms) VALUES ('metadata-only', 'character-metadata', 1, 2)"); err != nil {
@@ -378,7 +376,7 @@ func TestPostgresConversationActivityKeepsOldLatestAndEmptyHistory(t *testing.T)
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -479,7 +477,7 @@ func BenchmarkPostgresConversationActivityHistoryGrowth(b *testing.B) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(b, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		b.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -551,7 +549,7 @@ func TestPostgresDesktopInitiationTurnDoesNotFabricateUserMessage(t *testing.T) 
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -603,7 +601,7 @@ func TestPostgresConversationFailedTurnPreservesUserOnly(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -645,7 +643,7 @@ func TestPostgresConversationInterruptedTurnWithoutPrefixPreservesUserOnly(t *te
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -674,7 +672,7 @@ func TestPostgresConversationInterruptedTurnPersistsPublishedPrefix(t *testing.T
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -707,7 +705,7 @@ func TestPostgresConversationInterruptRollbackOnAssistantConflict(t *testing.T) 
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -773,7 +771,7 @@ func TestPostgresConversationConcurrentSequencesAreUnique(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -818,7 +816,7 @@ func TestPostgresConversationConcurrentOpenReusesCharacterConversation(t *testin
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -870,7 +868,7 @@ func TestPostgresRuntimeLedgerAndWindowRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -952,7 +950,7 @@ func TestPostgresUsageLedgerPreservesAggregation(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -992,7 +990,7 @@ func TestPostgresUsageLedgerPreservesCrossConversationFailureAndTruncation(t *te
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1037,7 +1035,7 @@ func TestPostgresPersonalMemoryLifecycleQueuesDeterministicOutbox(t *testing.T) 
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1059,7 +1057,7 @@ func TestPostgresPersonalMemoryLifecycleQueuesDeterministicOutbox(t *testing.T) 
 	if err != nil {
 		t.Fatalf("CreatePersonalMemoryContext: %v", err)
 	}
-	assertPostgresEmbeddingOutbox(t, ctx, pool, vectorindex.ItemKindPersonalMemory, created.ID, "喜欢安静")
+	assertPostgresEmbeddingOutbox(t, ctx, pool, ItemKindPersonalMemory, created.ID, "喜欢安静")
 	revised, err := store.RevisePersonalMemoryContext(ctx, created.ID, "更喜欢安静的环境", 9200)
 	if err != nil {
 		t.Fatalf("RevisePersonalMemoryContext: %v", err)
@@ -1067,7 +1065,7 @@ func TestPostgresPersonalMemoryLifecycleQueuesDeterministicOutbox(t *testing.T) 
 	if revised.SupersedesID == nil || *revised.SupersedesID != created.ID {
 		t.Fatalf("revised = %#v", revised)
 	}
-	assertPostgresEmbeddingOutbox(t, ctx, pool, vectorindex.ItemKindPersonalMemory, revised.ID, "更喜欢安静的环境")
+	assertPostgresEmbeddingOutbox(t, ctx, pool, ItemKindPersonalMemory, revised.ID, "更喜欢安静的环境")
 	var oldStatus string
 	if err := pool.Raw().QueryRow(ctx, "SELECT status FROM personal_memories WHERE id = $1", created.ID).Scan(&oldStatus); err != nil || oldStatus != "superseded" {
 		t.Fatalf("old status = %q, err=%v", oldStatus, err)
@@ -1091,7 +1089,7 @@ func TestPostgresPersonalMemoryLifecycleQueuesDeterministicOutbox(t *testing.T) 
 	if err != nil {
 		t.Fatalf("AssignLegacyRelationshipContext: %v", err)
 	}
-	assertPostgresEmbeddingOutbox(t, ctx, pool, vectorindex.ItemKindPersonalMemory, assigned.ID, "旧关系记忆")
+	assertPostgresEmbeddingOutbox(t, ctx, pool, ItemKindPersonalMemory, assigned.ID, "旧关系记忆")
 	catalog, err := store.PersonalMemoryCatalogContext(ctx, "character-memory")
 	if err != nil {
 		t.Fatalf("PersonalMemoryCatalogContext: %v", err)
@@ -1105,7 +1103,7 @@ func TestPostgresPersonalMemoryRollsBackWhenOutboxWriteFails(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1145,7 +1143,7 @@ func TestPostgresPersonalMemoryContentLimitPreservesWritesAndRejectsOversizedHis
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1169,7 +1167,7 @@ func TestPostgresPersonalMemoryContentLimitPreservesWritesAndRejectsOversizedHis
 	if err != nil {
 		t.Fatalf("creating exact-limit memory: %v", err)
 	}
-	assertPostgresEmbeddingOutbox(t, ctx, pool, vectorindex.ItemKindPersonalMemory, created.ID, exact)
+	assertPostgresEmbeddingOutbox(t, ctx, pool, ItemKindPersonalMemory, created.ID, exact)
 	reviseSource, err := store.CreatePersonalMemoryContext(ctx, "profile", MemoryScope{Type: "global"}, "revise source", 8000)
 	if err != nil {
 		t.Fatalf("creating exact-limit revise source: %v", err)
@@ -1181,7 +1179,7 @@ func TestPostgresPersonalMemoryContentLimitPreservesWritesAndRejectsOversizedHis
 	if revisedExact.SupersedesID == nil || *revisedExact.SupersedesID != reviseSource.ID {
 		t.Fatalf("exact-limit revision = %#v", revisedExact)
 	}
-	assertPostgresEmbeddingOutbox(t, ctx, pool, vectorindex.ItemKindPersonalMemory, revisedExact.ID, exact)
+	assertPostgresEmbeddingOutbox(t, ctx, pool, ItemKindPersonalMemory, revisedExact.ID, exact)
 	tooLong := exact + "界"
 	if _, err := store.CreatePersonalMemoryContext(ctx, "preference", MemoryScope{Type: "global"}, tooLong, 9000); err == nil || !strings.Contains(err.Error(), "2400") {
 		t.Fatalf("oversized create error = %v", err)
@@ -1201,7 +1199,7 @@ func TestPostgresPersonalMemoryContentLimitPreservesWritesAndRejectsOversizedHis
 	if err != nil || len(exactResult) != 1 || exactResult[0].Status != "applied" {
 		t.Fatalf("exact-limit extraction result = %#v, %v", exactResult, err)
 	}
-	assertPostgresEmbeddingOutbox(t, ctx, pool, vectorindex.ItemKindPersonalMemory, exactResult[0].MemoryID, exact)
+	assertPostgresEmbeddingOutbox(t, ctx, pool, ItemKindPersonalMemory, exactResult[0].MemoryID, exact)
 
 	_, rollbackTurnID, rollbackBatchID := seedPostgresRunningExtractionBatch(t, ctx, pool, store, "character-content-limit")
 	_, err = store.CommitMemoryMutationsContext(ctx, rollbackBatchID, "character-content-limit", nil, []MemoryMutation{
@@ -1260,7 +1258,7 @@ func TestPostgresPersonalMemoryContentLimitPreservesWritesAndRejectsOversizedHis
 	if _, err := store.CompanionPortraitContext(ctx, "character-content-limit"); err == nil || !strings.Contains(err.Error(), historyID) || !strings.Contains(err.Error(), "2400") {
 		t.Fatalf("portrait oversized history error = %v", err)
 	}
-	pointID, err := vectorindex.PointID(vectorindex.ItemKindPersonalMemory, historyID, SemanticEmbeddingModelID)
+	pointID, err := VectorPointID(ItemKindPersonalMemory, historyID, SemanticEmbeddingModelID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1271,8 +1269,8 @@ VALUES ($1, 'personal_memory', $2, $3, $4, $5, $6, 'embedded', 1, 1, 1)`, uuid.N
 	}
 	vector := make([]float32, SemanticEmbeddingDimensions)
 	vector[0] = 1
-	_, err = store.RetrieveWithSemanticVectorIndex(ctx, "character-content-limit", "历史超限标记", postgresWorkerEmbedder{vector: vector}, staticSemanticIndex{hits: []vectorindex.SearchHit{{
-		PointID: pointID, ItemKind: vectorindex.ItemKindPersonalMemory, ItemID: historyID,
+	_, err = store.RetrieveWithSemanticVectorIndex(ctx, "character-content-limit", "历史超限标记", postgresWorkerEmbedder{vector: vector}, staticSemanticIndex{hits: []VectorSearchHit{{
+		PointID: pointID, ItemKind: ItemKindPersonalMemory, ItemID: historyID,
 		ModelID: SemanticEmbeddingModelID, ScopeType: "global", ContentHash: semanticContentHash("历史超限标记" + tooLong), Score: 1,
 	}}})
 	if err == nil || !strings.Contains(err.Error(), historyID) || !strings.Contains(err.Error(), "2400") {
@@ -1315,7 +1313,7 @@ func TestPostgresKnowledgeLifecyclePreservesSourcesAndOutbox(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1351,7 +1349,7 @@ VALUES
 	if confirmed.Status != "verified" || confirmed.VerificationBasis != "user_confirmed" || len(confirmed.Sources) != 0 {
 		t.Fatalf("confirmed = %#v", confirmed)
 	}
-	assertPostgresEmbeddingOutbox(t, ctx, pool, vectorindex.ItemKindKnowledge, confirmed.ID, "主题一\n候选事实")
+	assertPostgresEmbeddingOutbox(t, ctx, pool, ItemKindKnowledge, confirmed.ID, "主题一\n候选事实")
 	if _, err := store.ConfirmKnowledgeCandidateContext(ctx, "candidate-web"); err == nil {
 		t.Fatal("ConfirmKnowledgeCandidateContext sourced candidate error = nil")
 	}
@@ -1382,7 +1380,7 @@ func TestPostgresKnowledgeConfirmationRollsBackWhenOutboxWriteFails(t *testing.T
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1426,7 +1424,7 @@ func TestPostgresPromptWindowCommitPreservesRevisionAndCutoff(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1476,7 +1474,7 @@ func TestPostgresCommitCompactionAtomicallySwitchesWindowAndContinuation(t *test
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1535,7 +1533,7 @@ func TestPostgresCommitMemoryMutationsCommitsRowsAndOutboxAtomically(t *testing.
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1553,8 +1551,8 @@ func TestPostgresCommitMemoryMutationsCommitsRowsAndOutboxAtomically(t *testing.
 	if len(results) != 2 || results[0].Status != "applied" || results[1].Status != "applied" {
 		t.Fatalf("results = %#v", results)
 	}
-	assertPostgresEmbeddingOutbox(t, ctx, pool, vectorindex.ItemKindPersonalMemory, results[0].MemoryID, "喜欢爵士乐")
-	assertPostgresEmbeddingOutbox(t, ctx, pool, vectorindex.ItemKindPersonalMemory, results[1].MemoryID, "愿意分享近况")
+	assertPostgresEmbeddingOutbox(t, ctx, pool, ItemKindPersonalMemory, results[0].MemoryID, "喜欢爵士乐")
+	assertPostgresEmbeddingOutbox(t, ctx, pool, ItemKindPersonalMemory, results[1].MemoryID, "愿意分享近况")
 	var batchStatus, extractionState string
 	if err := pool.Raw().QueryRow(ctx, "SELECT status FROM extraction_batches WHERE id = $1 AND conversation_id = $2", batchID, conversationID).Scan(&batchStatus); err != nil {
 		t.Fatal(err)
@@ -1571,7 +1569,7 @@ func TestPostgresCommitMemoryMutationsPreservesPerMutationSourceTurn(t *testing.
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1604,7 +1602,7 @@ func TestPostgresCommitMemoryMutationsCopiesObservationEvidenceProvenance(t *tes
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1652,7 +1650,7 @@ func TestPostgresCommitMemoryMutationsRollsBackEarlierMutationOnLaterFailure(t *
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1693,7 +1691,7 @@ func TestPostgresCommitMemoryMutationsPreservesNoChangeAndSupersedeSemantics(t *
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1731,14 +1729,14 @@ func TestPostgresCommitMemoryMutationsPreservesNoChangeAndSupersedeSemantics(t *
 	if oldStatus != "superseded" || newStatus != "active" || supersedesID != initialID || newSourceTurnID != turnID {
 		t.Fatalf("old=%q new=%q supersedes=%q source=%q", oldStatus, newStatus, supersedesID, newSourceTurnID)
 	}
-	assertPostgresEmbeddingOutbox(t, ctx, pool, vectorindex.ItemKindPersonalMemory, results[1].MemoryID, "喜欢清晨散步")
+	assertPostgresEmbeddingOutbox(t, ctx, pool, ItemKindPersonalMemory, results[1].MemoryID, "喜欢清晨散步")
 }
 
 func TestPostgresCommitMemoryMutationsRejectsBatchExternalTurnAndKeepsEmptyCompletion(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -1835,7 +1833,7 @@ func TestPostgresExtractionLeasePreventsDuplicateClaimAndRecoversExpiredOwner(t 
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	first, err := NewStoreFromPoolWithLease(pool, "worker-first", time.Minute)
@@ -1938,7 +1936,7 @@ func TestPostgresExtractionProjectionBoundsLookupAndPreservesEvidence(t *testing
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	first, err := NewStoreFromPoolWithLease(pool, "worker-projection-first", time.Minute)
@@ -2037,7 +2035,7 @@ func TestPostgresExtractionFailedCatalogAndRetryReleaseTurns(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPoolWithLease(pool, "worker-retry", time.Minute)
@@ -2092,7 +2090,7 @@ func TestPostgresKnowledgeIngestWorkersClaimDisjointJobs(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	first, err := NewStoreFromPoolWithLease(pool, "ingest-first", time.Minute)
@@ -2164,7 +2162,7 @@ func TestPostgresKnowledgeIngestExpiredLeaseReclaimsAndRejectsOldOwner(t *testin
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	first, err := NewStoreFromPoolWithLease(pool, "ingest-owner-first", time.Minute)
@@ -2220,7 +2218,7 @@ func TestPostgresKnowledgeIngestDropsStructuralJunkAndValidatesLimits(t *testing
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -2271,7 +2269,7 @@ func TestPostgresEmbeddingLeaseClaimAndConditionalCompletion(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	first, err := NewStoreFromPoolWithLease(pool, "embedding-first", time.Minute)
@@ -2361,7 +2359,7 @@ func TestPostgresEmbeddingStaleContentCannotMarkNewItemEmbedded(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPoolWithLease(pool, "embedding-stale", time.Minute)
@@ -2435,7 +2433,7 @@ func TestPostgresTrigramRetrievalPreservesScopeLimitsAndStableOrder(t *testing.T
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -2569,7 +2567,7 @@ func TestPostgresTrigramQueriesUseGINIndexes(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := pool.Raw().Begin(ctx)
@@ -2626,7 +2624,7 @@ func explainPostgresPlan(t *testing.T, ctx context.Context, tx pgx.Tx, query str
 
 func assertPostgresEmbeddingOutbox(t *testing.T, ctx context.Context, pool *coredb.Pool, itemKind, itemID, content string) {
 	t.Helper()
-	wantPointID, err := vectorindex.PointID(itemKind, itemID, SemanticEmbeddingModelID)
+	wantPointID, err := VectorPointID(itemKind, itemID, SemanticEmbeddingModelID)
 	if err != nil {
 		t.Fatal(err)
 	}

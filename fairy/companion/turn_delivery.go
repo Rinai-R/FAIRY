@@ -10,18 +10,19 @@ import (
 	"unicode/utf8"
 
 	replyapp "fairy/reply"
+	"fairy/session"
 
 	"go.uber.org/zap"
 )
 
 func (x *turnExecution) declareRespondingNode(ctx context.Context, gathered *turnGraphState, turnStarted time.Time, logger *zap.Logger) (TurnOutcome, error) {
-	return x.engine.declareOutcomeNode(ctx, gathered, x.request.ConversationID, x.persisted.ID, "responding", "deliver_reply", TurnStateResponding, func() (TurnOutcome, error) {
+	return x.engine.declareOutcomeNode(ctx, gathered, x.request.ConversationID, x.persisted.ID, "responding", "deliver_reply", turnStateResponding, func() (TurnOutcome, error) {
 		s := x.service
 		request := x.request
 		reply := gathered.reply
 		connectionConfig := gathered.connectionConfig
 		characterRecord := gathered.character
-		if err := x.transition(TurnStateResponding); err != nil {
+		if err := x.transition(turnStateResponding); err != nil {
 			return x.fail("INVALID_STATE_TRANSITION", err)
 		}
 		s.markTurnDelivering(request.ConversationID, x.persisted.ID)
@@ -35,7 +36,7 @@ func (x *turnExecution) declareRespondingNode(ctx context.Context, gathered *tur
 			ctx,
 			len(reply.Chains),
 			func(completion BeatReadyCompletion) error {
-				_, err := s.publishLife(x.life, func() (TurnEvent, error) {
+				_, err := s.publishLife(x.life, func() (session.Event, error) {
 					return x.life.BeatReady(completion)
 				})
 				if err == nil && completion.Kind == replyapp.BeatKindFinal {
@@ -48,7 +49,7 @@ func (x *turnExecution) declareRespondingNode(ctx context.Context, gathered *tur
 					request.ConversationID,
 					x.persisted.ID,
 					runtimeLedgerEventBeatDelivery,
-					TurnStateResponding,
+					turnStateResponding,
 					"",
 					runtimeBeatDeliveryLedgerMetadata(
 						record.Status,
@@ -72,7 +73,7 @@ func (x *turnExecution) declareRespondingNode(ctx context.Context, gathered *tur
 			filled, skipReason, fillErr := s.fillSpeechForTTS(ctx, logger, partial, characterRecord, request.SpeechEnabled, request.ConversationID, connectionConfig.Model)
 			if fillErr != nil {
 				logger.Warn("cognition loop", zap.String("phase", "speech_translate_skip"), zap.String("reason", skipReason), zap.Int("chain", index), zap.Error(fillErr))
-				s.appendRuntimeLedger(request.ConversationID, x.persisted.ID, runtimeLedgerEventSpeech, TurnStateResponding, "TTS_SKIPPED", map[string]any{"status": "skipped", "reason": skipReason, "index": index})
+				s.appendRuntimeLedger(request.ConversationID, x.persisted.ID, runtimeLedgerEventSpeech, turnStateResponding, "TTS_SKIPPED", map[string]any{"status": "skipped", "reason": skipReason, "index": index})
 				filledChains = append(filledChains, chain)
 			} else if skipReason != "" {
 				logger.Info("cognition loop", zap.String("phase", "speech_translate_skip"), zap.String("reason", skipReason), zap.Int("chain", index))
@@ -85,7 +86,7 @@ func (x *turnExecution) declareRespondingNode(ctx context.Context, gathered *tur
 			if index > 0 {
 				delta = "\n" + chain.Text
 			}
-			if _, err := s.publishLife(x.life, func() (TurnEvent, error) {
+			if _, err := s.publishLife(x.life, func() (session.Event, error) {
 				return x.life.ReplyChain(uint8(index), delta, chain)
 			}); err != nil {
 				return x.fail("MODEL_RESPONSE_INVALID", err)
@@ -101,7 +102,7 @@ func (x *turnExecution) declareRespondingNode(ctx context.Context, gathered *tur
 			}
 			if x.speechFlow == nil {
 				if request.SpeechEnabled {
-					s.appendRuntimeLedger(request.ConversationID, x.persisted.ID, runtimeLedgerEventSpeech, TurnStateResponding, "TTS_SKIPPED", map[string]any{"status": "skipped", "reason": "speech_synthesizer_unavailable", "index": index})
+					s.appendRuntimeLedger(request.ConversationID, x.persisted.ID, runtimeLedgerEventSpeech, turnStateResponding, "TTS_SKIPPED", map[string]any{"status": "skipped", "reason": "speech_synthesizer_unavailable", "index": index})
 				}
 				play := x.speechPlayIndex
 				x.speechPlayIndex++
@@ -123,8 +124,8 @@ func (x *turnExecution) declareRespondingNode(ctx context.Context, gathered *tur
 				continue
 			}
 			if speechText != "" && !x.speechRequested {
-				if _, err := s.publishLife(x.life, func() (TurnEvent, error) {
-					return x.life.SpeechRequested(TurnCompletion{
+				if _, err := s.publishLife(x.life, func() (session.Event, error) {
+					return x.life.SpeechRequested(turnCompletion{
 						Text:                chain.Text,
 						SpeechText:          speechText,
 						CharacterRevision:   characterRecord.Revision,
@@ -140,7 +141,7 @@ func (x *turnExecution) declareRespondingNode(ctx context.Context, gathered *tur
 			x.speechPlayIndex++
 			chainSpeech := speechText
 			beatID := fmt.Sprintf("final-%d", index)
-			s.appendRuntimeLedger(request.ConversationID, x.persisted.ID, runtimeLedgerEventSpeech, TurnStateResponding, "", map[string]any{
+			s.appendRuntimeLedger(request.ConversationID, x.persisted.ID, runtimeLedgerEventSpeech, turnStateResponding, "", map[string]any{
 				"status":         "queued",
 				"index":          index,
 				"beatId":         beatID,

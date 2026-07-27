@@ -4,28 +4,22 @@ import (
 	"fmt"
 
 	"fairy/character"
-	domain "fairy/interaction"
+	"fairy/config"
 	"fairy/memory"
 	"fairy/model"
-	"fairy/participation"
 	"fairy/persona"
-	"fairy/profile"
-	"fairy/sociallearning"
+	"fairy/session"
 )
 
 const (
-	RespondInstructions           = persona.RespondInstructions
-	CompactInstructions           = persona.CompactInstructions
-	ExtractInstructions           = persona.ExtractInstructions
-	TranslateInstructions         = persona.TranslateInstructions
-	RespondMaxOutputTokens        = persona.RespondMaxOutputTokens
-	CompactMaxOutputTokens        = persona.CompactMaxOutputTokens
-	ExtractMaxOutputTokens        = persona.ExtractMaxOutputTokens
-	TranslateMaxOutputTokens      = persona.TranslateMaxOutputTokens
-	SocialLearnInstructions       = sociallearning.SocialLearnInstructions
-	SocialLearnMaxOutputTokens    = sociallearning.SocialLearnMaxOutputTokens
-	SocialFeedbackInstructions    = sociallearning.SocialFeedbackInstructions
-	SocialFeedbackMaxOutputTokens = sociallearning.SocialFeedbackMaxOutputTokens
+	RespondInstructions      = persona.RespondInstructions
+	CompactInstructions      = persona.CompactInstructions
+	ExtractInstructions      = persona.ExtractInstructions
+	TranslateInstructions    = persona.TranslateInstructions
+	RespondMaxOutputTokens   = persona.RespondMaxOutputTokens
+	CompactMaxOutputTokens   = persona.CompactMaxOutputTokens
+	ExtractMaxOutputTokens   = persona.ExtractMaxOutputTokens
+	TranslateMaxOutputTokens = persona.TranslateMaxOutputTokens
 )
 
 type ContextSlot = persona.ContextSlot
@@ -58,12 +52,12 @@ func AppendDesktopInitiationContext(slots []ContextSlot, context DesktopInitiati
 
 func BuildRespondContextSlotsWithSocial(
 	record character.Record,
-	userProfile *profile.Snapshot,
+	userProfile *config.ProfileSnapshot,
 	promptWindow memory.PromptWindowRecord,
 	messages []memory.MessageRecord,
 	states []VisualState,
 	retrieval memory.RetrievalContext,
-	resolved domain.Resolved,
+	resolved session.Resolved,
 	social SocialRespondContext,
 ) ([]ContextSlot, error) {
 	return persona.BuildRespondContextSlotsWithSocial(
@@ -101,18 +95,12 @@ func InstructionsForLane(lane model.PromptLane) (string, uint32, error) {
 	switch lane {
 	case model.PromptLaneRespond:
 		return RespondInstructions, RespondMaxOutputTokens, nil
-	case model.PromptLaneParticipate:
-		return participation.ParticipationInstructions, participation.ParticipationMaxOutputTokens, nil
 	case model.PromptLaneCompact:
 		return CompactInstructions, CompactMaxOutputTokens, nil
 	case model.PromptLaneExtract:
 		return ExtractInstructions, ExtractMaxOutputTokens, nil
 	case model.PromptLaneTranslate:
 		return TranslateInstructions, TranslateMaxOutputTokens, nil
-	case model.PromptLaneSocialLearn:
-		return sociallearning.SocialLearnInstructions, sociallearning.SocialLearnMaxOutputTokens, nil
-	case model.PromptLaneSocialFeedback:
-		return sociallearning.SocialFeedbackInstructions, sociallearning.SocialFeedbackMaxOutputTokens, nil
 	default:
 		return "", 0, fmt.Errorf("prompt lane %q is not supported", lane)
 	}

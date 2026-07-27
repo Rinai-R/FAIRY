@@ -9,10 +9,11 @@ import (
 	"strings"
 
 	"fairy/coreclient"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	contracts "fairy/contracts/interaction"
+	"fairy/session"
 )
 
 func newSessionCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
@@ -21,14 +22,14 @@ func newSessionCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 	open := &cobra.Command{
 		Use: "open", Short: "Open a character conversation", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
-			interactionContext := contracts.Context{
-				Audience: contracts.AudienceKind(audience), Initiation: contracts.InitiationKind(initiation),
-				Presentation: contracts.PresentationKind(presentation),
+			interactionContext := session.Context{
+				Audience: session.AudienceKind(audience), Initiation: session.InitiationKind(initiation),
+				Presentation: session.PresentationKind(presentation),
 			}
 			if principalNamespace != "" || principalSubject != "" {
-				interactionContext.Principal = &contracts.PrincipalRef{Namespace: principalNamespace, Subject: principalSubject}
+				interactionContext.Principal = &session.PrincipalRef{Namespace: principalNamespace, Subject: principalSubject}
 			}
-			endpointKind := contracts.EndpointKind(endpoint)
+			endpointKind := session.EndpointKind(endpoint)
 			if err := interactionContext.Validate(endpointKind); err != nil {
 				return err
 			}

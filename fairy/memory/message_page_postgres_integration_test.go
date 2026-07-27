@@ -6,14 +6,14 @@ import (
 	"context"
 	"testing"
 
-	dbschema "fairy/coredb/schema"
+	"fairy/coredb"
 )
 
 func TestMessagePagePaginationIsCompleteAndStableIntegration(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)

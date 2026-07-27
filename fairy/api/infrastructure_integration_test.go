@@ -17,10 +17,9 @@ import (
 	"time"
 
 	"fairy/api"
+	fairycore "fairy/core"
 	"fairy/coredb"
-	dbschema "fairy/coredb/schema"
-	fairyruntime "fairy/runtime"
-	vectorindex "fairy/vectorindex"
+	"fairy/memory"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -35,7 +34,7 @@ func TestProductionInfrastructureStatusAndMetrics(t *testing.T) {
 	masterKey := base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789"))
 	setAPIProductionEnv(t, databaseURL, qdrantURL, masterKey)
 
-	rt, err := fairyruntime.Open(fairyruntime.Options{ConfigRoot: t.TempDir(), Logger: zap.NewNop()})
+	rt, err := fairycore.Open(fairycore.RuntimeOptions{ConfigRoot: t.TempDir(), Logger: zap.NewNop()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +67,7 @@ func TestProductionInfrastructureStatusAndMetrics(t *testing.T) {
 	}
 	qdrant := status["qdrant"].(map[string]any)
 	collection := qdrant["collection"].(map[string]any)
-	if collection["dimensions"] != float64(vectorindex.Dimensions) || collection["distance"] != vectorindex.Distance {
+	if collection["dimensions"] != float64(memory.VectorDimensions) || collection["distance"] != memory.VectorDistance {
 		t.Fatalf("qdrant collection status = %#v", collection)
 	}
 
@@ -105,7 +104,7 @@ func TestProductionPersonalMemoryContentLimitReturnsBadRequest(t *testing.T) {
 	masterKey := base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789"))
 	setAPIProductionEnv(t, databaseURL, qdrantURL, masterKey)
 
-	rt, err := fairyruntime.Open(fairyruntime.Options{ConfigRoot: t.TempDir(), Logger: zap.NewNop()})
+	rt, err := fairycore.Open(fairycore.RuntimeOptions{ConfigRoot: t.TempDir(), Logger: zap.NewNop()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +178,7 @@ INSERT INTO memory_embedding_jobs(
 	}
 }
 
-func startProductionAPIServer(t *testing.T, rt *fairyruntime.Runtime) (string, string) {
+func startProductionAPIServer(t *testing.T, rt *fairycore.Runtime) (string, string) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -188,7 +187,7 @@ func startProductionAPIServer(t *testing.T, rt *fairyruntime.Runtime) (string, s
 	addr := listener.Addr().String()
 	listener.Close()
 	const token = "integration-test-token"
-	server, err := api.NewServer(rt, api.Options{Addr: addr, Token: token, Logger: zap.NewNop()})
+	server, err := api.NewServer(rt.APIDependencies(), api.Options{Addr: addr, Token: token, Logger: zap.NewNop()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +232,7 @@ func isolatedAPISchema(t *testing.T) (string, func()) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		pool.Close()
 		t.Fatal(err)
 	}
@@ -255,7 +254,7 @@ func ensureAPIQdrantCollection(t *testing.T, rawURL string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	client, err := vectorindex.Open(ctx, vectorindex.Config{URL: rawURL, Timeout: 5 * time.Second, CollectionName: vectorindex.CollectionName})
+	client, err := memory.OpenVectorClient(ctx, memory.VectorConfig{URL: rawURL, Timeout: 5 * time.Second, CollectionName: memory.VectorCollectionName})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,8 +271,8 @@ func setAPIProductionEnv(t *testing.T, databaseURL, qdrantURL, masterKey string)
 	t.Setenv(coredb.EnvMinConns, "0")
 	t.Setenv(coredb.EnvConnectTimeout, "2s")
 	t.Setenv(coredb.EnvQueryTimeout, "2s")
-	t.Setenv(vectorindex.EnvURL, qdrantURL)
-	t.Setenv(vectorindex.EnvTimeout, "2s")
+	t.Setenv(memory.VectorEnvURL, qdrantURL)
+	t.Setenv(memory.VectorEnvTimeout, "2s")
 	t.Setenv("FAIRY_SECRET_MASTER_KEY", masterKey)
 }
 

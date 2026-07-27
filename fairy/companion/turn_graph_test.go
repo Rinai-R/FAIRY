@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-
-	"fairy/pkg/nodegraph"
 )
 
 func TestTurnGraphProgramCompilesAndRunsOneOrderedPath(t *testing.T) {
@@ -15,14 +13,14 @@ func TestTurnGraphProgramCompilesAndRunsOneOrderedPath(t *testing.T) {
 	var order []string
 	for _, key := range []string{"interpreting", "gathering"} {
 		key := key
-		program.add(nodegraph.Step(key, key, func(_ context.Context, state *turnGraphState) (*turnGraphState, error) {
+		program.add(turnStep(key, key, func(_ context.Context, state *turnGraphState) (*turnGraphState, error) {
 			order = append(order, key)
 			return state, nil
-		}), TurnStateInterpreting)
+		}), turnStateInterpreting)
 	}
 	for _, key := range []string{"planning", "responding", "persist"} {
 		key := key
-		program.addOutcome(key, key, TurnStatePlanning, func() (TurnOutcome, error) {
+		program.addOutcome(key, key, turnStatePlanning, func() (TurnOutcome, error) {
 			order = append(order, key)
 			return TurnOutcome{TurnID: key}, nil
 		})
@@ -52,10 +50,10 @@ func TestTurnGraphProgramStopsAfterNodeFailure(t *testing.T) {
 	state.program = program
 	failed := errors.New("planning failed")
 	responded := false
-	program.addOutcome("planning", "planning", TurnStatePlanning, func() (TurnOutcome, error) {
+	program.addOutcome("planning", "planning", turnStatePlanning, func() (TurnOutcome, error) {
 		return TurnOutcome{}, failed
 	})
-	program.addOutcome("responding", "responding", TurnStateResponding, func() (TurnOutcome, error) {
+	program.addOutcome("responding", "responding", turnStateResponding, func() (TurnOutcome, error) {
 		responded = true
 		return TurnOutcome{}, nil
 	})

@@ -5,16 +5,13 @@ import (
 	"errors"
 	"fmt"
 
-	"fairy/memory/semantic"
-	vectorindex "fairy/vectorindex"
-
 	"github.com/google/uuid"
 )
 
 // VectorIndex upserts embedded vectors for memory items.
 type VectorIndex interface {
 	Ready(context.Context) error
-	Upsert(context.Context, vectorindex.Point) error
+	Upsert(context.Context, VectorPoint) error
 }
 
 // EmbeddingJobResult summarizes one explicit worker pass.
@@ -26,8 +23,8 @@ type EmbeddingJobResult struct {
 	Skipped        int    `json:"skipped"`
 }
 
-func (s *Store) ProcessEmbeddingJobsWithVectorIndex(ctx context.Context, embedder semantic.Embedder, index VectorIndex, limit int) (EmbeddingJobResult, error) {
-	result := EmbeddingJobResult{SemanticStatus: string(semantic.StatusUnavailable)}
+func (s *Store) ProcessEmbeddingJobsWithVectorIndex(ctx context.Context, embedder SemanticEmbedder, index VectorIndex, limit int) (EmbeddingJobResult, error) {
+	result := EmbeddingJobResult{SemanticStatus: string(SemanticStatusUnavailable)}
 	if limit <= 0 {
 		return result, nil
 	}
@@ -35,8 +32,8 @@ func (s *Store) ProcessEmbeddingJobsWithVectorIndex(ctx context.Context, embedde
 		return result, nil
 	}
 	result.SemanticStatus = string(embedder.Status())
-	if result.SemanticStatus == "" || result.SemanticStatus == string(semantic.StatusUnavailable) {
-		result.SemanticStatus = string(semantic.StatusReady)
+	if result.SemanticStatus == "" || result.SemanticStatus == string(SemanticStatusUnavailable) {
+		result.SemanticStatus = string(SemanticStatusReady)
 	}
 	if dims := embedder.Dims(); dims != SemanticEmbeddingDimensions {
 		return result, fmt.Errorf("embedding dimensions = %d, want %d", dims, SemanticEmbeddingDimensions)
@@ -86,7 +83,7 @@ func (s *Store) ProcessEmbeddingJobsWithVectorIndex(ctx context.Context, embedde
 			result.Failed++
 			continue
 		}
-		if err := vectorindex.ValidateVector(vectors[0]); err != nil {
+		if err := ValidateVector(vectors[0]); err != nil {
 			if failErr := s.finishEmbeddingJobFailedPostgres(ctx, job, embeddingJobErrorInvalidVector, err.Error(), false, nowUnixMS()); failErr != nil {
 				return result, failErr
 			}
@@ -101,7 +98,7 @@ func (s *Store) ProcessEmbeddingJobsWithVectorIndex(ctx context.Context, embedde
 			result.Failed++
 			continue
 		}
-		if err := index.Upsert(ctx, vectorindex.Point{ID: pointID, Vector: vectors[0], Payload: vectorindex.PointPayloadInput{ItemKind: job.ItemKind, ItemID: job.ItemID, ModelID: job.ModelID, ScopeType: payload.ScopeType, CharacterID: payload.CharacterID, ContentHash: job.ContentHash}}); err != nil {
+		if err := index.Upsert(ctx, VectorPoint{ID: pointID, Vector: vectors[0], Payload: VectorPointPayloadInput{ItemKind: job.ItemKind, ItemID: job.ItemID, ModelID: job.ModelID, ScopeType: payload.ScopeType, CharacterID: payload.CharacterID, ContentHash: job.ContentHash}}); err != nil {
 			if failErr := s.finishEmbeddingJobFailedPostgres(ctx, job, embeddingJobErrorEmbedFailed, err.Error(), true, nowUnixMS()); failErr != nil {
 				return result, failErr
 			}

@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"fairy/contracts/interaction"
-	contractsession "fairy/contracts/session"
+	"fairy/session"
+
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
@@ -31,34 +31,34 @@ var (
 )
 
 type sessionClientFrame struct {
-	Type               string                                `json:"type"`
-	RequestID          string                                `json:"requestId,omitempty"`
-	Endpoint           interaction.EndpointKind              `json:"endpoint,omitempty"`
-	EndpointKey        string                                `json:"endpointKey,omitempty"`
-	Interaction        interaction.Context                   `json:"interaction,omitempty"`
-	ConversationID     string                                `json:"conversationId,omitempty"`
-	EvaluationReason   string                                `json:"evaluationReason,omitempty"`
-	Messages           []AmbientObservation                  `json:"messages,omitempty"`
-	Message            *AmbientObservation                   `json:"message,omitempty"`
-	DesktopObservation *DesktopObservation                   `json:"desktopObservation,omitempty"`
-	Input              string                                `json:"input,omitempty"`
-	SpeechEnabled      bool                                  `json:"speechEnabled,omitempty"`
-	TurnID             string                                `json:"turnId,omitempty"`
-	CaptureResult      *contractsession.DesktopCaptureResult `json:"captureResult,omitempty"`
+	Type               string                        `json:"type"`
+	RequestID          string                        `json:"requestId,omitempty"`
+	Endpoint           session.EndpointKind          `json:"endpoint,omitempty"`
+	EndpointKey        string                        `json:"endpointKey,omitempty"`
+	Interaction        session.Context               `json:"interaction,omitempty"`
+	ConversationID     string                        `json:"conversationId,omitempty"`
+	EvaluationReason   string                        `json:"evaluationReason,omitempty"`
+	Messages           []AmbientObservation          `json:"messages,omitempty"`
+	Message            *AmbientObservation           `json:"message,omitempty"`
+	DesktopObservation *DesktopObservation           `json:"desktopObservation,omitempty"`
+	Input              string                        `json:"input,omitempty"`
+	SpeechEnabled      bool                          `json:"speechEnabled,omitempty"`
+	TurnID             string                        `json:"turnId,omitempty"`
+	CaptureResult      *session.DesktopCaptureResult `json:"captureResult,omitempty"`
 }
 
 type sessionServerFrame struct {
-	Type           string                                 `json:"type"`
-	RequestID      string                                 `json:"requestId,omitempty"`
-	ConversationID string                                 `json:"conversationId,omitempty"`
-	CharacterID    string                                 `json:"characterId,omitempty"`
-	MessageCount   int                                    `json:"messageCount,omitempty"`
-	Endpoint       interaction.EndpointKind               `json:"endpoint,omitempty"`
-	Error          string                                 `json:"error,omitempty"`
-	Payload        json.RawMessage                        `json:"payload,omitempty"`
-	Event          *TurnEvent                             `json:"event,omitempty"`
-	Participation  *ParticipationEvent                    `json:"participation,omitempty"`
-	CaptureRequest *contractsession.DesktopCaptureRequest `json:"captureRequest,omitempty"`
+	Type           string                         `json:"type"`
+	RequestID      string                         `json:"requestId,omitempty"`
+	ConversationID string                         `json:"conversationId,omitempty"`
+	CharacterID    string                         `json:"characterId,omitempty"`
+	MessageCount   int                            `json:"messageCount,omitempty"`
+	Endpoint       session.EndpointKind           `json:"endpoint,omitempty"`
+	Error          string                         `json:"error,omitempty"`
+	Payload        json.RawMessage                `json:"payload,omitempty"`
+	Event          *TurnEvent                     `json:"event,omitempty"`
+	Participation  *ParticipationEvent            `json:"participation,omitempty"`
+	CaptureRequest *session.DesktopCaptureRequest `json:"captureRequest,omitempty"`
 	cause          error
 }
 
@@ -71,7 +71,7 @@ type SessionSocket struct {
 	pending             map[string]chan sessionServerFrame
 	turnEvents          map[string]chan TurnEvent
 	participationEvents map[string]chan ParticipationEvent
-	openedConversations map[string]interaction.EndpointKind
+	openedConversations map[string]session.EndpointKind
 	captureHandler      func(context.Context, DesktopCaptureRequest) DesktopCaptureResult
 	captureSlot         chan struct{}
 	done                chan struct{}
@@ -114,7 +114,7 @@ func (c *Client) DialSession(ctx context.Context) (*SessionSocket, error) {
 		pending:             make(map[string]chan sessionServerFrame),
 		turnEvents:          make(map[string]chan TurnEvent),
 		participationEvents: make(map[string]chan ParticipationEvent),
-		openedConversations: make(map[string]interaction.EndpointKind),
+		openedConversations: make(map[string]session.EndpointKind),
 		captureSlot:         make(chan struct{}, 1),
 		done:                make(chan struct{}),
 	}
@@ -241,7 +241,7 @@ func (s *SessionSocket) readLoop() {
 			handler := s.captureHandler
 			endpoint, opened := s.openedConversations[request.ConversationID]
 			s.mu.Unlock()
-			if !opened || endpoint != interaction.EndpointDesktop {
+			if !opened || endpoint != session.EndpointDesktop {
 				go s.submitAutomaticCaptureFailure(request, "session_mismatch")
 				continue
 			}

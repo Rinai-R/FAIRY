@@ -1,6 +1,7 @@
 package companion
 
 import (
+	"fairy/session"
 	"sync"
 	"testing"
 	"time"
@@ -46,40 +47,22 @@ func (f *fakeMessageTelemetry) End(traceID, status string) {
 	f.calls <- telemetryCall{kind: "end", traceID: traceID, action: status}
 }
 
-func TestAmbientInboxReportsAcceptedObservationAndSilentDecision(t *testing.T) {
-	service := NewCompanionService()
-	t.Cleanup(func() { _ = service.Close() })
-	telemetry := newFakeMessageTelemetry()
-	AttachMessageTelemetry(service, telemetry)
-	host := ambientHost{service: service}
-	traceID := host.BeginMessageTrace("ambient", "c1", "")
-	host.RecordParticipation([]string{traceID}, "", "silent")
-	begin := receiveTelemetryCall(t, telemetry.calls)
-	decision := receiveTelemetryCall(t, telemetry.calls)
-	if begin.kind != "begin" || decision.kind != "participation" || decision.action != "silent" {
-		t.Fatalf("telemetry calls = %#v, %#v", begin, decision)
-	}
-	if len(decision.traceIDs) != 1 || decision.traceIDs[0] != begin.traceID {
-		t.Fatalf("decision trace IDs = %v, begin = %q", decision.traceIDs, begin.traceID)
-	}
-}
-
 func TestPublishLifeReportsFinalBeatAndTerminalStages(t *testing.T) {
 	service := NewCompanionService()
 	telemetry := newFakeMessageTelemetry()
 	AttachMessageTelemetry(service, telemetry)
-	life := NewTurnLifecycle("c1", "t1")
-	for _, state := range []TurnState{TurnStateInterpreting, TurnStateGathering, TurnStatePlanning, TurnStateResponding} {
-		if _, err := service.publishLife(life, func() (TurnEvent, error) { return life.Transition(state) }); err != nil {
+	life := newTurnLifecycle("c1", "t1")
+	for _, state := range []turnState{turnStateInterpreting, turnStateGathering, turnStatePlanning, turnStateResponding} {
+		if _, err := service.publishLife(life, func() (session.Event, error) { return life.Transition(state) }); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := service.publishLife(life, func() (TurnEvent, error) {
+	if _, err := service.publishLife(life, func() (session.Event, error) {
 		return life.BeatReady(BeatReadyCompletion{BeatID: "b1", Kind: "final", DisplayText: "hello"})
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.publishLife(life, func() (TurnEvent, error) { return life.Complete(TurnCompletion{}) }); err != nil {
+	if _, err := service.publishLife(life, func() (session.Event, error) { return life.Complete(turnCompletion{}) }); err != nil {
 		t.Fatal(err)
 	}
 	firstBeat := receiveTelemetryCall(t, telemetry.calls)

@@ -4,10 +4,9 @@ import (
 	"strings"
 
 	"fairy/memory"
-	"fairy/search"
 )
 
-func knowledgeIngestSnapshots(conversationID, turnID, query string, hits []search.Hit, fetchedAtUnixMS int64) []memory.KnowledgeIngestSnapshot {
+func knowledgeIngestSnapshots(conversationID, turnID, query string, hits []WebSearchHit, fetchedAtUnixMS int64) []memory.KnowledgeIngestSnapshot {
 	category := stableKnowledgeCategory(query)
 	if category == "" {
 		return nil
@@ -54,5 +53,5 @@ func (s *CompanionService) scheduleKnowledgeIngest(snapshots []memory.KnowledgeI
 	if s == nil || s.retention == nil || len(snapshots) == 0 {
 		return
 	}
-	s.retention.ScheduleKnowledgeIngest(snapshots)
+	s.retention.scheduleKnowledgeIngest(snapshots)
 }

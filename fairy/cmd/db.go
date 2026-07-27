@@ -10,11 +10,8 @@ import (
 
 	"fairy/config"
 	"fairy/coredb"
-	dbschema "fairy/coredb/schema"
 	"fairy/memory"
 	"fairy/model"
-	"fairy/secret"
-	vectorindex "fairy/vectorindex"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -38,11 +35,11 @@ type localDatabaseOperations struct {
 }
 
 type databaseStatusResult struct {
-	DatabaseDescriptor coredb.Descriptor            `json:"database"`
-	Schema             dbschema.SchemaStatus        `json:"schema"`
-	Pool               coredb.PoolStats             `json:"pool"`
-	QdrantDescriptor   vectorindex.Descriptor       `json:"qdrant"`
-	Collection         vectorindex.CollectionStatus `json:"collection"`
+	DatabaseDescriptor coredb.Descriptor             `json:"database"`
+	Schema             coredb.SchemaStatus           `json:"schema"`
+	Pool               coredb.PoolStats              `json:"pool"`
+	QdrantDescriptor   memory.VectorDescriptor       `json:"qdrant"`
+	Collection         memory.VectorCollectionStatus `json:"collection"`
 }
 
 func newDBCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
@@ -149,10 +146,10 @@ func (o localDatabaseOperations) Migrate(ctx context.Context) (any, error) {
 		return nil, err
 	}
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		return nil, err
 	}
-	return dbschema.VerifySchema(ctx, pool.Raw())
+	return coredb.VerifySchema(ctx, pool.Raw())
 }
 
 func (o localDatabaseOperations) Status(ctx context.Context) (any, error) {
@@ -161,7 +158,7 @@ func (o localDatabaseOperations) Status(ctx context.Context) (any, error) {
 		return nil, err
 	}
 	defer pool.Close()
-	schema, err := dbschema.VerifySchema(ctx, pool.Raw())
+	schema, err := coredb.VerifySchema(ctx, pool.Raw())
 	if err != nil {
 		return nil, err
 	}
@@ -210,11 +207,11 @@ func (o localDatabaseOperations) VectorRebuild(ctx context.Context, pageSize int
 	}
 	defer pool.Close()
 	defer index.Close()
-	cipher, err := secret.CipherFromEnv(o.getenv)
+	cipher, err := config.SecretCipherFromEnv(o.getenv)
 	if err != nil {
 		return nil, fmt.Errorf("secret master key: %w", err)
 	}
-	secretStore, err := secret.NewPostgresStore(pool, cipher)
+	secretStore, err := config.NewPostgresSecretStore(pool, cipher)
 	if err != nil {
 		return nil, err
 	}
@@ -243,7 +240,7 @@ func (o localDatabaseOperations) VectorReconcile(ctx context.Context, apply bool
 	return store.ReconcileVectorIndex(ctx, index, apply)
 }
 
-func (o localDatabaseOperations) openMaintenanceDependencies(ctx context.Context) (*coredb.Pool, *memory.Store, *vectorindex.Client, error) {
+func (o localDatabaseOperations) openMaintenanceDependencies(ctx context.Context) (*coredb.Pool, *memory.Store, *memory.VectorClient, error) {
 	pool, err := o.openDatabase(ctx, true)
 	if err != nil {
 		return nil, nil, nil, err
@@ -271,7 +268,7 @@ func (o localDatabaseOperations) openDatabase(ctx context.Context, verify bool) 
 		return nil, err
 	}
 	if verify {
-		if _, err := dbschema.VerifySchema(ctx, pool.Raw()); err != nil {
+		if _, err := coredb.VerifySchema(ctx, pool.Raw()); err != nil {
 			pool.Close()
 			return nil, fmt.Errorf("database schema: %w", err)
 		}
@@ -279,12 +276,12 @@ func (o localDatabaseOperations) openDatabase(ctx context.Context, verify bool) 
 	return pool, nil
 }
 
-func (o localDatabaseOperations) openVector(ctx context.Context, verify bool) (*vectorindex.Client, error) {
-	vectorConfig, err := vectorindex.ConfigFromEnv(o.getenv)
+func (o localDatabaseOperations) openVector(ctx context.Context, verify bool) (*memory.VectorClient, error) {
+	vectorConfig, err := memory.VectorConfigFromEnv(o.getenv)
 	if err != nil {
 		return nil, fmt.Errorf("qdrant configuration: %w", err)
 	}
-	index, err := vectorindex.Open(ctx, vectorConfig)
+	index, err := memory.OpenVectorClient(ctx, vectorConfig)
 	if err != nil {
 		return nil, err
 	}

@@ -11,10 +11,10 @@ import (
 	"go.uber.org/zap"
 )
 
-func respondingLifecycle(t *testing.T) *TurnLifecycle {
+func respondingLifecycle(t *testing.T) *turnLifecycle {
 	t.Helper()
-	life := NewTurnLifecycle("conversation", "turn")
-	for _, state := range []TurnState{TurnStateInterpreting, TurnStateGathering, TurnStatePlanning, TurnStateResponding} {
+	life := newTurnLifecycle("conversation", "turn")
+	for _, state := range []turnState{turnStateInterpreting, turnStateGathering, turnStatePlanning, turnStateResponding} {
 		if _, err := life.Transition(state); err != nil {
 			t.Fatalf("Transition(%s) error = %v", state, err)
 		}

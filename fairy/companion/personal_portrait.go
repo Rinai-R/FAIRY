@@ -6,10 +6,10 @@ import (
 
 	"fairy/memory"
 
-	domain "fairy/interaction"
+	"fairy/session"
 )
 
-func (s *CompanionService) retrieveCompanionPortrait(ctx context.Context, characterID, query string, resolved domain.Resolved) (memory.RetrievalContext, error) {
+func (s *CompanionService) retrieveCompanionPortrait(ctx context.Context, characterID, query string, resolved session.Resolved) (memory.RetrievalContext, error) {
 	if !resolved.AllowsPersonalMemory() {
 		return memory.RetrievalContext{}, nil
 	}

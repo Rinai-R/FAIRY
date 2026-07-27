@@ -6,30 +6,29 @@ import (
 	"testing"
 
 	"fairy/character"
+	"fairy/config"
 	"fairy/memory"
 	"fairy/model"
 	"fairy/persona"
-	"fairy/profile"
 
-	contracts "fairy/contracts/interaction"
-	domain "fairy/interaction"
+	"fairy/session"
 )
 
 func TestInteractionMemoryPolicySelectsToolsAndInstructions(t *testing.T) {
 	public := publicAmbientResolved()
-	tools := RespondToolSpecsForInteraction(true, public)
+	tools := respondToolSpecsForInteraction(true, public)
 	if len(tools) != 4 || tools[0].Name != toolPublicMemorySearch || tools[1].Name != toolSocialContextSearch || tools[2].Name != toolSocialExpressionSelect || tools[3].Name != toolWebSearch {
 		t.Fatalf("public tools = %#v", tools)
 	}
-	instructions := RespondInstructionsForInteraction(true, public)
+	instructions := respondInstructionsForInteraction(true, public)
 	if strings.Contains(instructions, "personal memories") || !strings.Contains(instructions, toolPublicMemorySearch) || !strings.Contains(instructions, toolSocialContextSearch) || !strings.Contains(instructions, toolSocialExpressionSelect) || !strings.Contains(instructions, "PUBLIC GROUP IDENTITY OVERRIDE") || !strings.Contains(instructions, "high-performance robot") || !strings.Contains(instructions, "Keep emoji light") {
 		t.Fatalf("public instructions violate memory policy: %s", instructions)
 	}
-	privateInstructions := RespondInstructionsForInteraction(true, desktopResolved())
+	privateInstructions := respondInstructionsForInteraction(true, desktopResolved())
 	if strings.Contains(privateInstructions, "PUBLIC GROUP IDENTITY OVERRIDE") {
 		t.Fatalf("private instructions inherited public identity boundary: %s", privateInstructions)
 	}
-	for _, tool := range RespondToolSpecsForInteraction(true, desktopResolved()) {
+	for _, tool := range respondToolSpecsForInteraction(true, desktopResolved()) {
 		if tool.Name == toolMemorySearch {
 			return
 		}
@@ -50,10 +49,10 @@ func TestInteractionPresentationAndMemoryAreIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if desktop.Presentation != contracts.PresentationEmbodied || ownerIM.Presentation != contracts.PresentationChat {
+	if desktop.Presentation != session.PresentationEmbodied || ownerIM.Presentation != session.PresentationChat {
 		t.Fatalf("presentations = %#v / %#v", desktop, ownerIM)
 	}
-	if desktop.MemoryPolicy != domain.MemoryPersonal || ownerIM.MemoryPolicy != domain.MemoryPersonal || publicIM.MemoryPolicy != domain.MemoryPublic {
+	if desktop.MemoryPolicy != session.MemoryPersonal || ownerIM.MemoryPolicy != session.MemoryPersonal || publicIM.MemoryPolicy != session.MemoryPublic {
 		t.Fatalf("memory policies = %q/%q/%q", desktop.MemoryPolicy, ownerIM.MemoryPolicy, publicIM.MemoryPolicy)
 	}
 	if desktop.PresenceProjection != presencePrivateCompanion || ownerIM.PresenceProjection != presencePrivateCompanion {
@@ -104,7 +103,7 @@ func TestStablePrefixAndProfileProjectionFollowResolvedInteraction(t *testing.T)
 func TestPublicPromptAndCompactionOmitPrivateProfile(t *testing.T) {
 	name := "PRIVATE-NAME"
 	record := character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"}
-	profileSnapshot := &profile.Snapshot{Revision: 1, PreferredName: &name}
+	profileSnapshot := &config.ProfileSnapshot{Revision: 1, PreferredName: &name}
 	states := []VisualState{{ID: "idle", Description: "待机"}}
 	public, err := persona.BuildRespondInput(record, profileSnapshot, memory.PromptWindowRecord{}, nil, states, memory.RetrievalContext{}, publicAmbientResolved())
 	if err != nil {
@@ -117,11 +116,11 @@ func TestPublicPromptAndCompactionOmitPrivateProfile(t *testing.T) {
 	assertPrivateNameProjection(t, public, personal, name)
 
 	messages := []memory.MessageRecord{{Role: "user", Content: "消息", Sequence: 1}}
-	publicCompact, err := BuildCompactInput(record, profileSnapshot, memory.PromptWindowRecord{}, messages, states, publicAmbientResolved())
+	publicCompact, err := buildCompactInput(record, profileSnapshot, memory.PromptWindowRecord{}, messages, states, publicAmbientResolved())
 	if err != nil {
 		t.Fatal(err)
 	}
-	personalCompact, err := BuildCompactInput(record, profileSnapshot, memory.PromptWindowRecord{}, messages, states, desktopResolved())
+	personalCompact, err := buildCompactInput(record, profileSnapshot, memory.PromptWindowRecord{}, messages, states, desktopResolved())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,18 +163,18 @@ func assertPrivateNameProjection(t *testing.T, public, personal []model.PromptIt
 	t.Fatal("personal prompt lost profile")
 }
 
-func desktopResolved() domain.Resolved {
-	return domain.Resolved{Endpoint: contracts.EndpointDesktop, Facts: contracts.Facts{Audience: contracts.AudienceSingle, Initiation: contracts.InitiationDirect, Presentation: contracts.PresentationEmbodied}, Principal: domain.PrincipalOwner, Memory: domain.MemoryPersonal}
+func desktopResolved() session.Resolved {
+	return session.Resolved{Endpoint: session.EndpointDesktop, Facts: session.Facts{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied}, Principal: session.PrincipalOwner, Memory: session.MemoryPersonal}
 }
 
-func ownerIMResolved() domain.Resolved {
-	return domain.Resolved{Endpoint: contracts.EndpointIM, Facts: contracts.Facts{Audience: contracts.AudienceSingle, Initiation: contracts.InitiationDirect, Presentation: contracts.PresentationChat, PrincipalNamespace: "qq.onebot", PrincipalDigest: strings.Repeat("a", 64)}, Principal: domain.PrincipalOwner, Memory: domain.MemoryPersonal}
+func ownerIMResolved() session.Resolved {
+	return session.Resolved{Endpoint: session.EndpointIM, Facts: session.Facts{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationChat, PrincipalNamespace: "qq.onebot", PrincipalDigest: strings.Repeat("a", 64)}, Principal: session.PrincipalOwner, Memory: session.MemoryPersonal}
 }
 
-func publicAmbientBinding() contracts.Binding {
-	return contracts.Binding{Endpoint: contracts.EndpointIM, Facts: contracts.Facts{Audience: contracts.AudienceMulti, Initiation: contracts.InitiationAmbient, Presentation: contracts.PresentationChat}}
+func publicAmbientBinding() session.Binding {
+	return session.Binding{Endpoint: session.EndpointIM, Facts: session.Facts{Audience: session.AudienceMulti, Initiation: session.InitiationAmbient, Presentation: session.PresentationChat}}
 }
 
-func publicAmbientResolved() domain.Resolved {
-	return domain.Resolved{Endpoint: contracts.EndpointIM, Facts: publicAmbientBinding().Facts, Principal: domain.PrincipalNone, Memory: domain.MemoryPublic}
+func publicAmbientResolved() session.Resolved {
+	return session.Resolved{Endpoint: session.EndpointIM, Facts: publicAmbientBinding().Facts, Principal: session.PrincipalNone, Memory: session.MemoryPublic}
 }

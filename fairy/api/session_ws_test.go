@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	fairyruntime "fairy/runtime"
-	turnruntime "fairy/turn"
+	"fairy/session"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -42,7 +42,7 @@ func TestSessionConnOverflowSendsTryAgainLaterClose(t *testing.T) {
 		session := &sessionConn{conn: conn, watches: make(map[string]func())}
 		close(connected)
 		<-shutdown
-		session.shutdown(fairyruntime.ErrEventSubscriberOverflow)
+		session.shutdown(ErrEventSubscriberOverflow)
 	}))
 	defer func() {
 		server.Close()
@@ -63,17 +63,18 @@ func TestSessionConnOverflowSendsTryAgainLaterClose(t *testing.T) {
 	if !errors.As(err, &closeErr) {
 		t.Fatalf("read error = %v, want websocket.CloseError", err)
 	}
-	if closeErr.Code != websocket.CloseTryAgainLater || closeErr.Text != fairyruntime.ErrEventSubscriberOverflow.Error() {
+	if closeErr.Code != websocket.CloseTryAgainLater || closeErr.Text != ErrEventSubscriberOverflow.Error() {
 		t.Fatalf("close = %#v", closeErr)
 	}
 }
 
 func TestForwardTurnEventsPreservesOverflowReasonAfterEventStreamCloses(t *testing.T) {
-	hub := fairyruntime.NewEventHub()
-	subscription := hub.Subscribe("c1")
-	for sequence := 1; sequence <= 65; sequence++ {
-		hub.Publish(turnruntime.TurnEvent{ConversationID: "c1", Sequence: uint64(sequence)})
-	}
+	events := make(chan session.Event)
+	failures := make(chan error, 1)
+	close(events)
+	failures <- ErrEventSubscriberOverflow
+	close(failures)
+	subscription := EventSubscription{Events: events, Failures: failures}
 
 	handlerDone := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

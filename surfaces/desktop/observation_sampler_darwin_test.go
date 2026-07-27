@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	obs "fairy/contracts/observation"
+	"fairy/session"
 )
 
 func TestMacOSIdleSamplerReportsReturnedWithoutSensitiveApplicationData(t *testing.T) {
-	sampler, err := newMacOSIdleSampler(time.Minute, func() obs.DesktopPrivacyState { return obs.DesktopPrivacyNormal })
+	sampler, err := newMacOSIdleSampler(time.Minute, func() session.DesktopPrivacyState { return session.DesktopPrivacyNormal })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +20,7 @@ func TestMacOSIdleSamplerReportsReturnedWithoutSensitiveApplicationData(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Activity != obs.DesktopActivityIdle || first.Lifecycle != obs.DesktopLifecycleNone {
+	if first.Activity != session.DesktopActivityIdle || first.Lifecycle != session.DesktopLifecycleNone {
 		t.Fatalf("first = %#v", first)
 	}
 	sampler.run = func(context.Context) ([]byte, error) { return []byte(`"HIDIdleTime" = 1000000`), nil }
@@ -28,7 +28,7 @@ func TestMacOSIdleSamplerReportsReturnedWithoutSensitiveApplicationData(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if returned.Trigger != obs.DesktopTriggerLifecycle || returned.Lifecycle != obs.DesktopLifecycleReturned || returned.Activity != obs.DesktopActivityWorking {
+	if returned.Trigger != session.DesktopTriggerLifecycle || returned.Lifecycle != session.DesktopLifecycleReturned || returned.Activity != session.DesktopActivityWorking {
 		t.Fatalf("returned = %#v", returned)
 	}
 }
@@ -40,8 +40,8 @@ func TestParseMacOSHIDIdleTimeRejectsMissingValue(t *testing.T) {
 }
 
 func TestMacOSIdleSamplerDowngradesPrivacyTransition(t *testing.T) {
-	privacy := obs.DesktopPrivacyNormal
-	sampler, err := newMacOSIdleSampler(time.Minute, func() obs.DesktopPrivacyState { return privacy })
+	privacy := session.DesktopPrivacyNormal
+	sampler, err := newMacOSIdleSampler(time.Minute, func() session.DesktopPrivacyState { return privacy })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,12 +49,12 @@ func TestMacOSIdleSamplerDowngradesPrivacyTransition(t *testing.T) {
 	if _, err := sampler.Sample(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	privacy = obs.DesktopPrivacyMeeting
+	privacy = session.DesktopPrivacyMeeting
 	sample, err := sampler.Sample(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sample.Lifecycle != obs.DesktopLifecyclePrivacyOn || sample.Activity != obs.DesktopActivityUnknown || sample.Privacy != obs.DesktopPrivacyMeeting {
+	if sample.Lifecycle != session.DesktopLifecyclePrivacyOn || sample.Activity != session.DesktopActivityUnknown || sample.Privacy != session.DesktopPrivacyMeeting {
 		t.Fatalf("privacy observation = %#v", sample)
 	}
 }

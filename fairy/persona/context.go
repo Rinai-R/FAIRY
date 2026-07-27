@@ -6,9 +6,8 @@ import (
 	"fmt"
 
 	"fairy/character"
-	contracts "fairy/contracts/interaction"
-	domain "fairy/interaction"
 	"fairy/model"
+	"fairy/session"
 )
 
 type sharedCharacterContextPayload struct {
@@ -41,20 +40,20 @@ const (
 )
 
 type interactionContextPayload struct {
-	ContextType          string                     `json:"contextType"`
-	Endpoint             contracts.EndpointKind     `json:"endpoint"`
-	Audience             contracts.AudienceKind     `json:"audience"`
-	Initiation           contracts.InitiationKind   `json:"initiation"`
-	Presentation         contracts.PresentationKind `json:"presentation"`
-	Principal            domain.PrincipalKind       `json:"principal"`
-	MemoryPolicy         domain.MemoryPolicy        `json:"memoryPolicy"`
-	PresenceProjection   presenceProjection         `json:"presenceProjection"`
-	PresenceGuidance     string                     `json:"presenceGuidance"`
-	OutputContract       string                     `json:"outputContract"`
-	MemoryVisibilityHint string                     `json:"memoryVisibilityHint"`
+	ContextType          string                   `json:"contextType"`
+	Endpoint             session.EndpointKind     `json:"endpoint"`
+	Audience             session.AudienceKind     `json:"audience"`
+	Initiation           session.InitiationKind   `json:"initiation"`
+	Presentation         session.PresentationKind `json:"presentation"`
+	Principal            session.PrincipalKind    `json:"principal"`
+	MemoryPolicy         session.MemoryPolicy     `json:"memoryPolicy"`
+	PresenceProjection   presenceProjection       `json:"presenceProjection"`
+	PresenceGuidance     string                   `json:"presenceGuidance"`
+	OutputContract       string                   `json:"outputContract"`
+	MemoryVisibilityHint string                   `json:"memoryVisibilityHint"`
 }
 
-func EncodeInteractionContext(resolved domain.Resolved) (model.PromptItem, error) {
+func EncodeInteractionContext(resolved session.Resolved) (model.PromptItem, error) {
 	segment, err := interactionSegment(resolved)
 	if err != nil {
 		return model.PromptItem{}, err
@@ -66,7 +65,7 @@ func EncodeInteractionContext(resolved domain.Resolved) (model.PromptItem, error
 	return model.PromptItem{Type: model.PromptItemContextData, Content: string(payload)}, nil
 }
 
-func interactionSegment(resolved domain.Resolved) (interactionContextPayload, error) {
+func interactionSegment(resolved session.Resolved) (interactionContextPayload, error) {
 	if err := resolved.Validate(); err != nil {
 		return interactionContextPayload{}, err
 	}
@@ -81,9 +80,9 @@ func interactionSegment(resolved domain.Resolved) (interactionContextPayload, er
 		PresenceProjection: projection, PresenceGuidance: guidance,
 	}
 	switch resolved.Facts.Presentation {
-	case contracts.PresentationChat:
+	case session.PresentationChat:
 		payload.OutputContract = "chains.text is the primary user-visible output. Keep each chain suitable for a short chat bubble. Emit a valid visualState for each chain, but do not narrate visuals, stage directions, or desktop-only performance."
-	case contracts.PresentationEmbodied:
+	case session.PresentationEmbodied:
 		payload.OutputContract = "Each chain is a short embodied performance beat: natural dialogue paired with matching visualState affect. Change visualState when the emotional beat changes; never narrate image paths or animation technology."
 	default:
 		return interactionContextPayload{}, fmt.Errorf("unsupported interaction presentation %q", resolved.Facts.Presentation)
@@ -96,11 +95,11 @@ func interactionSegment(resolved domain.Resolved) (interactionContextPayload, er
 	return payload, nil
 }
 
-func derivePresenceProjection(resolved domain.Resolved) (presenceProjection, string, error) {
+func derivePresenceProjection(resolved session.Resolved) (presenceProjection, string, error) {
 	switch resolved.Memory {
-	case domain.MemoryPersonal:
+	case session.MemoryPersonal:
 		return presencePrivateCompanion, "This is the same character in a private owner interaction. Relate as the user's familiar, exclusive companion with only the closeness supported by the established relationship, profile, and dialogue. Be natural: never announce a role, mode, or relationship label, and never force romantic wording unsupported by context.", nil
-	case domain.MemoryPublic:
+	case session.MemoryPublic:
 		return presencePublicPeer, "This is the same character in a public social setting. Relate as a socially aware peer or group member: contribute naturally, respect the room, and never imply private intimacy or dominate the conversation. Never announce a mode or internal policy.", nil
 	default:
 		return "", "", fmt.Errorf("unsupported interaction memory policy %q", resolved.Memory)

@@ -2,8 +2,6 @@ package config
 
 import (
 	"testing"
-
-	"fairy/secret"
 )
 
 func TestReaderModelConnectionAndWebSearch(t *testing.T) {
@@ -15,7 +13,7 @@ func TestReaderModelConnectionAndWebSearch(t *testing.T) {
 		Model:               "deepseek-v4-flash",
 		ContextWindowTokens: 1048576,
 		AuthMode:            "bearer_key",
-	}, &apiKey, secret.NewTestStore()); err != nil {
+	}, &apiKey, NewTestSecretStore()); err != nil {
 		t.Fatalf("SaveModelConnection() error = %v", err)
 	}
 	reader := NewReader(root)

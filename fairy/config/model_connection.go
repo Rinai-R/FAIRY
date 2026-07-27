@@ -8,8 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"fairy/secret"
 )
 
 const modelConnectionPath = "model/connection.json"
@@ -119,7 +117,7 @@ func ReadModelConnection(root string) (ModelConnection, error) {
 	return ParseModelConnection(data)
 }
 
-func SaveModelConnection(root string, input ModelConnectionInput, apiKey *string, secrets *secret.Store) (ModelConnectionStatus, error) {
+func SaveModelConnection(root string, input ModelConnectionInput, apiKey *string, secrets *SecretStore) (ModelConnectionStatus, error) {
 	if root == "" {
 		return ModelConnectionStatus{}, errors.New("config root is required")
 	}
@@ -141,7 +139,7 @@ func SaveModelConnection(root string, input ModelConnectionInput, apiKey *string
 	}
 	if connection.AuthMode == "bearer_key" {
 		if apiKey != nil {
-			value, err := secret.NewValue(*apiKey)
+			value, err := NewSecretValue(*apiKey)
 			if err != nil {
 				return ModelConnectionStatus{}, err
 			}
@@ -173,7 +171,7 @@ func SaveModelConnection(root string, input ModelConnectionInput, apiKey *string
 	return statusFromConnection(connection), nil
 }
 
-func ClearModelConnection(root string, secrets *secret.Store) (bool, error) {
+func ClearModelConnection(root string, secrets *SecretStore) (bool, error) {
 	existing, err := ReadModelConnection(root)
 	if err != nil {
 		if err.Error() == "model connection is not configured" {
@@ -199,7 +197,7 @@ func ClearModelConnection(root string, secrets *secret.Store) (bool, error) {
 	return true, nil
 }
 
-func resolveSecretStore(_ string, secrets *secret.Store) (*secret.Store, error) {
+func resolveSecretStore(_ string, secrets *SecretStore) (*SecretStore, error) {
 	if secrets != nil {
 		return secrets, nil
 	}

@@ -7,10 +7,10 @@ import (
 	"strings"
 
 	"fairy/character"
-	domain "fairy/interaction"
+	"fairy/config"
 	"fairy/memory"
 	"fairy/model"
-	"fairy/profile"
+	"fairy/session"
 )
 
 // Stable lane instructions restore the historical English Go/Wails prompt contract.
@@ -183,7 +183,7 @@ func AppendDesktopInitiationContext(slots []ContextSlot, context DesktopInitiati
 
 // BuildStablePrefixItems returns the respond/compact shared cacheable prefix:
 // character -> display_language -> profile -> available_visual_states.
-func BuildStablePrefixItems(record character.Record, userProfile *profile.Snapshot, states []VisualState) ([]model.PromptItem, error) {
+func BuildStablePrefixItems(record character.Record, userProfile *config.ProfileSnapshot, states []VisualState) ([]model.PromptItem, error) {
 	characterItem, err := encodeCharacterContext(record)
 	if err != nil {
 		return nil, err
@@ -208,12 +208,12 @@ func BuildStablePrefixItems(record character.Record, userProfile *profile.Snapsh
 // Prompt window summary/cutoff shrinks the dialogue window without rewriting persisted messages.
 func BuildRespondInput(
 	record character.Record,
-	userProfile *profile.Snapshot,
+	userProfile *config.ProfileSnapshot,
 	promptWindow memory.PromptWindowRecord,
 	messages []memory.MessageRecord,
 	states []VisualState,
 	retrieval memory.RetrievalContext,
-	resolved domain.Resolved,
+	resolved session.Resolved,
 ) ([]model.PromptItem, error) {
 	slots, err := BuildRespondContextSlots(record, userProfile, promptWindow, messages, states, retrieval, resolved)
 	if err != nil {
@@ -224,24 +224,24 @@ func BuildRespondInput(
 
 func BuildRespondContextSlots(
 	record character.Record,
-	userProfile *profile.Snapshot,
+	userProfile *config.ProfileSnapshot,
 	promptWindow memory.PromptWindowRecord,
 	messages []memory.MessageRecord,
 	states []VisualState,
 	retrieval memory.RetrievalContext,
-	resolved domain.Resolved,
+	resolved session.Resolved,
 ) ([]ContextSlot, error) {
 	return buildRespondContextSlots(record, userProfile, promptWindow, messages, states, retrieval, resolved, nil)
 }
 
 func BuildRespondContextSlotsWithSocial(
 	record character.Record,
-	userProfile *profile.Snapshot,
+	userProfile *config.ProfileSnapshot,
 	promptWindow memory.PromptWindowRecord,
 	messages []memory.MessageRecord,
 	states []VisualState,
 	retrieval memory.RetrievalContext,
-	resolved domain.Resolved,
+	resolved session.Resolved,
 	social SocialRespondContext,
 ) ([]ContextSlot, error) {
 	if resolved.AllowsPersonalMemory() || !resolved.AllowsAmbientParticipation() {
@@ -252,12 +252,12 @@ func BuildRespondContextSlotsWithSocial(
 
 func buildRespondContextSlots(
 	record character.Record,
-	userProfile *profile.Snapshot,
+	userProfile *config.ProfileSnapshot,
 	promptWindow memory.PromptWindowRecord,
 	messages []memory.MessageRecord,
 	states []VisualState,
 	retrieval memory.RetrievalContext,
-	resolved domain.Resolved,
+	resolved session.Resolved,
 	social *SocialRespondContext,
 ) ([]ContextSlot, error) {
 	if _, err := interactionSegment(resolved); err != nil {
@@ -548,7 +548,7 @@ func displayLanguageConstraintRule(textLang string) string {
 	}
 }
 
-func encodeUserProfileContext(snapshot *profile.Snapshot) (model.PromptItem, error) {
+func encodeUserProfileContext(snapshot *config.ProfileSnapshot) (model.PromptItem, error) {
 	var revision *uint64
 	var preferredName *string
 	if snapshot != nil {

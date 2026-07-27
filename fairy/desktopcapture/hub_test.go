@@ -14,9 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"fairy/contracts/interaction"
-	"fairy/contracts/session"
 	"fairy/memory"
+	"fairy/session"
 )
 
 type fakeCaptureStore struct {
@@ -156,9 +155,9 @@ func TestCaptureHubPrivateRouteCorrelationCASAndEvidence(t *testing.T) {
 	store := &fakeCaptureStore{record: record}
 	hub := NewCaptureHub(store)
 	hub.turns[record.ID] = captureTurnRef{conversationID: record.ConversationID, turnID: record.TurnID}
-	interactionContext := interaction.Context{Audience: interaction.AudienceSingle, Initiation: interaction.InitiationDirect, Presentation: interaction.PresentationEmbodied}
+	interactionContext := session.Context{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied}
 	delivered := make(chan session.DesktopCaptureRequest, 1)
-	registrationID, unregister, err := hub.Register(record.ConversationID, interaction.EndpointDesktop, interactionContext, func(request session.DesktopCaptureRequest) error {
+	registrationID, unregister, err := hub.Register(record.ConversationID, session.EndpointDesktop, interactionContext, func(request session.DesktopCaptureRequest) error {
 		delivered <- request
 		return nil
 	})
@@ -196,16 +195,16 @@ func TestCaptureHubPrivateRouteCorrelationCASAndEvidence(t *testing.T) {
 func TestCaptureHubRejectsNonPrivateRouteAndStaleUnregister(t *testing.T) {
 	store := &fakeCaptureStore{record: memory.ToolExecutionRecord{ID: "execution-1"}}
 	hub := NewCaptureHub(store)
-	publicContext := interaction.Context{Audience: interaction.AudienceMulti, Initiation: interaction.InitiationAmbient, Presentation: interaction.PresentationChat}
-	if _, _, err := hub.Register("conversation-1", interaction.EndpointIM, publicContext, func(session.DesktopCaptureRequest) error { return nil }); err == nil {
+	publicContext := session.Context{Audience: session.AudienceMulti, Initiation: session.InitiationAmbient, Presentation: session.PresentationChat}
+	if _, _, err := hub.Register("conversation-1", session.EndpointIM, publicContext, func(session.DesktopCaptureRequest) error { return nil }); err == nil {
 		t.Fatal("public route was accepted")
 	}
-	privateContext := interaction.Context{Audience: interaction.AudienceSingle, Initiation: interaction.InitiationDirect, Presentation: interaction.PresentationEmbodied}
-	_, unregisterOld, err := hub.Register("conversation-1", interaction.EndpointDesktop, privateContext, func(session.DesktopCaptureRequest) error { return nil })
+	privateContext := session.Context{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied}
+	_, unregisterOld, err := hub.Register("conversation-1", session.EndpointDesktop, privateContext, func(session.DesktopCaptureRequest) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, unregisterNew, err := hub.Register("conversation-1", interaction.EndpointDesktop, privateContext, func(session.DesktopCaptureRequest) error { return nil })
+	_, unregisterNew, err := hub.Register("conversation-1", session.EndpointDesktop, privateContext, func(session.DesktopCaptureRequest) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,9 +221,9 @@ func TestCaptureHubRejectsNonPrivateRouteAndStaleUnregister(t *testing.T) {
 func TestCaptureHubObserveCompletesAndConsumesEphemeralEvidence(t *testing.T) {
 	store := &fakeCaptureStore{}
 	hub := NewCaptureHub(store)
-	privateContext := interaction.Context{Audience: interaction.AudienceSingle, Initiation: interaction.InitiationDirect, Presentation: interaction.PresentationEmbodied}
+	privateContext := session.Context{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied}
 	var registrationID string
-	registrationID, unregister, err := hub.Register("conversation-1", interaction.EndpointDesktop, privateContext, func(request session.DesktopCaptureRequest) error {
+	registrationID, unregister, err := hub.Register("conversation-1", session.EndpointDesktop, privateContext, func(request session.DesktopCaptureRequest) error {
 		record := memory.ToolExecutionRecord{ID: request.ExecutionID, ConversationID: request.ConversationID, TurnID: request.TurnID, CallID: request.CallID}
 		return hub.AcceptResult(t.Context(), registrationID, capturePNGResult(t, record))
 	})
@@ -249,9 +248,9 @@ func TestCaptureHubObserveCompletesAndConsumesEphemeralEvidence(t *testing.T) {
 func TestCaptureHubCancelTurnWakesObserveAndRejectsLateResult(t *testing.T) {
 	store := &fakeCaptureStore{}
 	hub := NewCaptureHub(store)
-	privateContext := interaction.Context{Audience: interaction.AudienceSingle, Initiation: interaction.InitiationDirect, Presentation: interaction.PresentationEmbodied}
+	privateContext := session.Context{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied}
 	dispatched := make(chan session.DesktopCaptureRequest, 1)
-	registrationID, unregister, err := hub.Register("conversation-1", interaction.EndpointDesktop, privateContext, func(request session.DesktopCaptureRequest) error {
+	registrationID, unregister, err := hub.Register("conversation-1", session.EndpointDesktop, privateContext, func(request session.DesktopCaptureRequest) error {
 		dispatched <- request
 		return nil
 	})
@@ -294,10 +293,10 @@ func TestCaptureHubDropsEvidenceWhenCompletedResultLosesObserverRace(t *testing.
 		releaseComplete: make(chan struct{}),
 	}
 	hub := NewCaptureHub(store)
-	privateContext := interaction.Context{Audience: interaction.AudienceSingle, Initiation: interaction.InitiationDirect, Presentation: interaction.PresentationEmbodied}
+	privateContext := session.Context{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied}
 	var registrationID string
 	acceptResult := make(chan error, 1)
-	registrationID, unregister, err := hub.Register("conversation-1", interaction.EndpointDesktop, privateContext, func(request session.DesktopCaptureRequest) error {
+	registrationID, unregister, err := hub.Register("conversation-1", session.EndpointDesktop, privateContext, func(request session.DesktopCaptureRequest) error {
 		record := memory.ToolExecutionRecord{ID: request.ExecutionID, ConversationID: request.ConversationID, TurnID: request.TurnID, CallID: request.CallID}
 		go func() {
 			acceptResult <- hub.AcceptResult(t.Context(), registrationID, capturePNGResult(t, record))

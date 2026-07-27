@@ -5,15 +5,12 @@ import (
 	"errors"
 	"fmt"
 
-	"fairy/memory/semantic"
-	vectorindex "fairy/vectorindex"
-
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type SemanticVectorIndex interface {
 	Ready(context.Context) error
-	Search(context.Context, []float32, string, string, int) ([]vectorindex.SearchHit, error)
+	Search(context.Context, []float32, string, string, int) ([]VectorSearchHit, error)
 }
 
 type vectorPersonalTruth struct {
@@ -26,7 +23,7 @@ type vectorKnowledgeTruth struct {
 	score  float64
 }
 
-func (s *Store) RetrieveWithSemanticVectorIndex(ctx context.Context, characterID, query string, embedder semantic.Embedder, index SemanticVectorIndex) (RetrievalContext, error) {
+func (s *Store) RetrieveWithSemanticVectorIndex(ctx context.Context, characterID, query string, embedder SemanticEmbedder, index SemanticVectorIndex) (RetrievalContext, error) {
 	if s == nil || s.pool == nil {
 		return RetrievalContext{}, ErrDatabasePoolEmpty
 	}
@@ -42,7 +39,7 @@ func (s *Store) RetrieveWithSemanticVectorIndex(ctx context.Context, characterID
 		return RetrievalContext{}, err
 	}
 	if embedder == nil || !embedder.Ready() || index == nil {
-		textContext.SemanticStatus = string(semantic.StatusUnavailable)
+		textContext.SemanticStatus = string(SemanticStatusUnavailable)
 		return textContext, nil
 	}
 	if dims := embedder.Dims(); dims != SemanticEmbeddingDimensions {
@@ -50,23 +47,23 @@ func (s *Store) RetrieveWithSemanticVectorIndex(ctx context.Context, characterID
 	}
 	semanticText := semanticQueryText(query)
 	if semanticText == "" {
-		textContext.SemanticStatus = string(semantic.StatusReady)
+		textContext.SemanticStatus = string(SemanticStatusReady)
 		return textContext, nil
 	}
 	vectors, err := embedder.Embed([]string{semanticText})
 	if err != nil {
-		textContext.SemanticStatus = string(semantic.StatusUnavailable)
+		textContext.SemanticStatus = string(SemanticStatusUnavailable)
 		return textContext, nil
 	}
 	if len(vectors) != 1 {
 		return RetrievalContext{}, fmt.Errorf("embedder returned %d vectors for one retrieval query", len(vectors))
 	}
-	if err := vectorindex.ValidateVector(vectors[0]); err != nil {
+	if err := ValidateVector(vectors[0]); err != nil {
 		return RetrievalContext{}, err
 	}
 	hits, err := index.Search(ctx, vectors[0], SemanticEmbeddingModelID, characterID, maxResultsPerKind*2)
 	if err != nil {
-		textContext.SemanticStatus = string(semantic.StatusUnavailable)
+		textContext.SemanticStatus = string(SemanticStatusUnavailable)
 		return textContext, nil
 	}
 	personalTruth, knowledgeTruth, err := s.truthCheckVectorHits(ctx, characterID, hits)
@@ -78,7 +75,7 @@ func (s *Store) RetrieveWithSemanticVectorIndex(ctx context.Context, characterID
 
 func (s *Store) retrievePostgresTextContext(ctx context.Context, characterID, normalized string) (RetrievalContext, error) {
 	if normalized == "" {
-		return RetrievalContext{SemanticStatus: string(semantic.StatusUnavailable)}, nil
+		return RetrievalContext{SemanticStatus: string(SemanticStatusUnavailable)}, nil
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
@@ -91,17 +88,17 @@ func (s *Store) retrievePostgresTextContext(ctx context.Context, characterID, no
 	if err != nil {
 		return RetrievalContext{}, err
 	}
-	return RetrievalContext{PersonalMemories: memories, Knowledge: knowledge, SemanticStatus: string(semantic.StatusUnavailable)}, nil
+	return RetrievalContext{PersonalMemories: memories, Knowledge: knowledge, SemanticStatus: string(SemanticStatusUnavailable)}, nil
 }
 
-func (s *Store) truthCheckVectorHits(ctx context.Context, characterID string, hits []vectorindex.SearchHit) (map[string]vectorPersonalTruth, map[string]vectorKnowledgeTruth, error) {
+func (s *Store) truthCheckVectorHits(ctx context.Context, characterID string, hits []VectorSearchHit) (map[string]vectorPersonalTruth, map[string]vectorKnowledgeTruth, error) {
 	personalIDs := make([]string, 0)
 	knowledgeIDs := make([]string, 0)
 	for _, hit := range hits {
 		switch hit.ItemKind {
-		case vectorindex.ItemKindPersonalMemory:
+		case ItemKindPersonalMemory:
 			personalIDs = append(personalIDs, hit.ItemID)
-		case vectorindex.ItemKindKnowledge:
+		case ItemKindKnowledge:
 			knowledgeIDs = append(knowledgeIDs, hit.ItemID)
 		}
 	}
@@ -117,13 +114,13 @@ func (s *Store) truthCheckVectorHits(ctx context.Context, characterID string, hi
 	validKnowledge := make(map[string]vectorKnowledgeTruth)
 	for _, hit := range hits {
 		switch hit.ItemKind {
-		case vectorindex.ItemKindPersonalMemory:
+		case ItemKindPersonalMemory:
 			truth, ok := personal[hit.ItemID]
 			if ok && hit.ContentHash == semanticContentHash(truth.record.Content) {
 				truth.score = hit.Score
 				validPersonal[hit.ItemID] = truth
 			}
-		case vectorindex.ItemKindKnowledge:
+		case ItemKindKnowledge:
 			truth, ok := knowledge[hit.ItemID]
 			if ok && hit.ContentHash == semanticContentHash(truth.record.Topic+"\n"+truth.record.Statement) {
 				truth.score = hit.Score
@@ -151,7 +148,7 @@ WHERE p.id = ANY($1)
   AND i.status = 'embedded'
   AND p.status = 'active' AND p.review_status = 'ready'
   AND (p.scope_kind = 'global' OR (p.scope_kind = 'character' AND p.character_id = $4))`,
-		ids, vectorindex.ItemKindPersonalMemory, SemanticEmbeddingModelID, characterID)
+		ids, ItemKindPersonalMemory, SemanticEmbeddingModelID, characterID)
 	if err != nil {
 		return nil, fmt.Errorf("querying personal vector truth: %w", err)
 	}
@@ -198,7 +195,7 @@ FROM knowledge_entries k
 JOIN memory_embedding_items i
   ON i.item_kind = $2 AND i.item_id = k.id AND i.model_id = $3
 WHERE k.id = ANY($1) AND i.status = 'embedded' AND k.status = 'verified'`,
-		ids, vectorindex.ItemKindKnowledge, SemanticEmbeddingModelID)
+		ids, ItemKindKnowledge, SemanticEmbeddingModelID)
 	if err != nil {
 		return nil, fmt.Errorf("querying knowledge vector truth: %w", err)
 	}
@@ -228,30 +225,30 @@ WHERE k.id = ANY($1) AND i.status = 'embedded' AND k.status = 'verified'`,
 
 func fusePostgresRetrieval(text RetrievalContext, personal map[string]vectorPersonalTruth, knowledge map[string]vectorKnowledgeTruth) RetrievalContext {
 	personalRecords := make(map[string]RetrievedPersonalMemory, len(text.PersonalMemories)+len(personal))
-	personalCandidates := make([]semantic.Candidate, 0, len(text.PersonalMemories)+len(personal))
+	personalCandidates := make([]SemanticCandidate, 0, len(text.PersonalMemories)+len(personal))
 	for _, record := range text.PersonalMemories {
 		personalRecords[record.ID] = record
-		personalCandidates = append(personalCandidates, semantic.Candidate{ID: record.ID, Kind: record.Kind, FTSRank: 1, HasFTS: true, UpdatedAtMS: record.UpdatedAtUnixMS, ConfidenceBP: record.ConfidenceBasisPoints})
+		personalCandidates = append(personalCandidates, SemanticCandidate{ID: record.ID, Kind: record.Kind, FTSRank: 1, HasFTS: true, UpdatedAtMS: record.UpdatedAtUnixMS, ConfidenceBP: record.ConfidenceBasisPoints})
 	}
 	for id, truth := range personal {
 		personalRecords[id] = truth.record
-		personalCandidates = append(personalCandidates, semantic.Candidate{ID: id, Kind: truth.record.Kind, VectorSim: truth.score, HasVector: true, UpdatedAtMS: truth.record.UpdatedAtUnixMS, ConfidenceBP: truth.record.ConfidenceBasisPoints})
+		personalCandidates = append(personalCandidates, SemanticCandidate{ID: id, Kind: truth.record.Kind, VectorSim: truth.score, HasVector: true, UpdatedAtMS: truth.record.UpdatedAtUnixMS, ConfidenceBP: truth.record.ConfidenceBasisPoints})
 	}
 	knowledgeRecords := make(map[string]RetrievedKnowledge, len(text.Knowledge)+len(knowledge))
-	knowledgeCandidates := make([]semantic.Candidate, 0, len(text.Knowledge)+len(knowledge))
+	knowledgeCandidates := make([]SemanticCandidate, 0, len(text.Knowledge)+len(knowledge))
 	for _, record := range text.Knowledge {
 		knowledgeRecords[record.ID] = record
-		knowledgeCandidates = append(knowledgeCandidates, semantic.Candidate{ID: record.ID, Kind: "knowledge", FTSRank: 1, HasFTS: true, UpdatedAtMS: record.UpdatedAtUnixMS, ConfidenceBP: record.ConfidenceBasisPoints})
+		knowledgeCandidates = append(knowledgeCandidates, SemanticCandidate{ID: record.ID, Kind: "knowledge", FTSRank: 1, HasFTS: true, UpdatedAtMS: record.UpdatedAtUnixMS, ConfidenceBP: record.ConfidenceBasisPoints})
 	}
 	for id, truth := range knowledge {
 		knowledgeRecords[id] = truth.record
-		knowledgeCandidates = append(knowledgeCandidates, semantic.Candidate{ID: id, Kind: "knowledge", VectorSim: truth.score, HasVector: true, UpdatedAtMS: truth.record.UpdatedAtUnixMS, ConfidenceBP: truth.record.ConfidenceBasisPoints})
+		knowledgeCandidates = append(knowledgeCandidates, SemanticCandidate{ID: id, Kind: "knowledge", VectorSim: truth.score, HasVector: true, UpdatedAtMS: truth.record.UpdatedAtUnixMS, ConfidenceBP: truth.record.ConfidenceBasisPoints})
 	}
 
 	remaining := maxRetrievedContextChars
-	result := RetrievalContext{SemanticStatus: string(semantic.StatusUsed)}
+	result := RetrievalContext{SemanticStatus: string(SemanticStatusUsed)}
 	perKind := make(map[string]int)
-	for _, candidate := range semantic.Fuse(personalCandidates, 64) {
+	for _, candidate := range FuseSemanticCandidates(personalCandidates, 64) {
 		record, ok := personalRecords[candidate.ID]
 		if !ok || perKind[record.Kind] >= maxResultsPerKind {
 			continue
@@ -264,7 +261,7 @@ func fusePostgresRetrieval(text RetrievalContext, personal map[string]vectorPers
 		perKind[record.Kind]++
 		result.PersonalMemories = append(result.PersonalMemories, record)
 	}
-	for _, candidate := range semantic.Fuse(knowledgeCandidates, maxResultsPerKind) {
+	for _, candidate := range FuseSemanticCandidates(knowledgeCandidates, maxResultsPerKind) {
 		record, ok := knowledgeRecords[candidate.ID]
 		if !ok {
 			continue
@@ -277,7 +274,7 @@ func fusePostgresRetrieval(text RetrievalContext, personal map[string]vectorPers
 		result.Knowledge = append(result.Knowledge, record)
 	}
 	if len(personal) == 0 && len(knowledge) == 0 {
-		result.SemanticStatus = string(semantic.StatusReady)
+		result.SemanticStatus = string(SemanticStatusReady)
 	}
 	return result
 }

@@ -5,18 +5,14 @@ import (
 
 	"fairy/character"
 	"fairy/config"
-	"fairy/identity"
 	"fairy/memory"
-	"fairy/memory/semantic"
 	"fairy/model"
-	"fairy/profile"
-	"fairy/retention"
 
-	contracts "fairy/contracts/interaction"
+	"fairy/session"
 )
 
 type InteractionBindingStore interface {
-	LookupEndpointForConversation(conversationID string) (contracts.Binding, bool, error)
+	LookupEndpointForConversation(conversationID string) (session.Binding, bool, error)
 }
 
 type ConversationActivityStore interface {
@@ -46,7 +42,7 @@ type TurnStore interface {
 // public memory.
 type MemoryRetrievalStore interface {
 	Retrieve(characterID string, query string) (memory.RetrievalContext, error)
-	RetrieveWithSemanticVectorIndex(context.Context, string, string, semantic.Embedder, memory.SemanticVectorIndex) (memory.RetrievalContext, error)
+	RetrieveWithSemanticVectorIndex(context.Context, string, string, memory.SemanticEmbedder, memory.SemanticVectorIndex) (memory.RetrievalContext, error)
 	RetrievePublicKnowledgeContext(context.Context, string) (memory.RetrievalContext, error)
 	RetrieveCharacterSocialMemoryContext(context.Context, string, string) (memory.SocialMemoryContext, error)
 }
@@ -74,12 +70,21 @@ type RuntimeStateStore interface {
 	LoadContextWindow(conversationID string, lane string) (memory.ContextWindowRecord, bool, error)
 }
 
-// ExtractionStore owns bounded extraction and embedding jobs coordinated after
+// extractionStore owns bounded extraction and embedding jobs coordinated after
 // a turn.
-type ExtractionStore = retention.ExtractionStore
+type extractionStore interface {
+	PendingExtractionTurnCount(conversationID string) (uint64, error)
+	ClaimExtractionBatch(conversationID string, limit int) (*memory.ExtractionBatchInput, error)
+	FailExtractionBatch(batchID, code, message string, retryable bool) error
+	CommitMemoryMutations(batchID string, characterID string, allowedMemoryIDs []string, mutations []memory.MemoryMutation) ([]memory.MemoryMutationResult, error)
+	ProcessEmbeddingJobsWithVectorIndex(context.Context, memory.SemanticEmbedder, memory.VectorIndex, int) (memory.EmbeddingJobResult, error)
+}
 
-// KnowledgeIngestStore owns the independent verified-knowledge ingest queue.
-type KnowledgeIngestStore = retention.KnowledgeIngestStore
+// knowledgeIngestStore owns the independent verified-knowledge ingest queue.
+type knowledgeIngestStore interface {
+	EnqueueKnowledgeIngestSnapshots(snapshots []memory.KnowledgeIngestSnapshot) error
+	ProcessKnowledgeIngestJobs(limit int) (int, error)
+}
 
 // SocialContextStore reads public feedback and person-note context.
 type SocialContextStore interface {
@@ -112,8 +117,8 @@ type ambientMemoryPorts struct {
 }
 
 type retentionMemoryPorts struct {
-	extraction ExtractionStore
-	knowledge  KnowledgeIngestStore
+	extraction extractionStore
+	knowledge  knowledgeIngestStore
 }
 
 type memoryPorts struct {
@@ -187,9 +192,9 @@ type CharacterLookup interface {
 }
 
 // ProfileSource reads the current user profile snapshot.
-// Implemented by *profile.Store.
+// Implemented by *config.ProfileStore.
 type ProfileSource interface {
-	Current() (*profile.Snapshot, error)
+	Current() (*config.ProfileSnapshot, error)
 }
 
 // ConfigSource reads durable model and web-search settings.
@@ -210,13 +215,13 @@ var (
 	_ PortraitStore             = (*memory.Store)(nil)
 	_ SocialRetrievalStore      = (*memory.Store)(nil)
 	_ RuntimeStateStore         = (*memory.Store)(nil)
-	_ ExtractionStore           = (*memory.Store)(nil)
-	_ KnowledgeIngestStore      = (*memory.Store)(nil)
+	_ extractionStore           = (*memory.Store)(nil)
+	_ knowledgeIngestStore      = (*memory.Store)(nil)
 	_ SocialContextStore        = (*memory.Store)(nil)
 	_ SocialLearningStore       = (*memory.Store)(nil)
 	_ ModelPort                 = (*model.ModelService)(nil)
 	_ CharacterLookup           = (*character.Store)(nil)
-	_ ProfileSource             = (*profile.Store)(nil)
+	_ ProfileSource             = (*config.ProfileStore)(nil)
 	_ ConfigSource              = (*config.Reader)(nil)
-	_ OwnerIdentityPort         = (*identity.Store)(nil)
+	_ OwnerIdentityPort         = (*memory.IdentityStore)(nil)
 )

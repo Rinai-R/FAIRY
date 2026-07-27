@@ -7,17 +7,17 @@ import (
 	"testing"
 	"time"
 
-	obs "fairy/contracts/observation"
+	"fairy/session"
 )
 
 func TestDesktopObservationRuntimeKeepsSamplingAndSubmittingSeparate(t *testing.T) {
 	var sampled, submitted atomic.Int32
 	runtime, err := newDesktopObservationRuntime(
-		func(context.Context) (obs.DesktopObservation, error) {
+		func(context.Context) (session.DesktopObservation, error) {
 			sampled.Add(1)
-			return obs.DesktopObservation{ObservationID: "obs-runtime", TimestampUnixMS: time.Now().UnixMilli(), Trigger: obs.DesktopTriggerPeriodic, Activity: obs.DesktopActivityWorking, Privacy: obs.DesktopPrivacyNormal}, nil
+			return session.DesktopObservation{ObservationID: "obs-runtime", TimestampUnixMS: time.Now().UnixMilli(), Trigger: session.DesktopTriggerPeriodic, Activity: session.DesktopActivityWorking, Privacy: session.DesktopPrivacyNormal}, nil
 		},
-		func(context.Context, obs.DesktopObservation) error { submitted.Add(1); return nil },
+		func(context.Context, session.DesktopObservation) error { submitted.Add(1); return nil },
 		observationSchedulerConfig{Interval: time.Hour, DailyEvaluationLimit: 2, ConsecutiveFailureLimit: 2},
 	)
 	if err != nil {
@@ -35,10 +35,10 @@ func TestDesktopObservationRuntimeRetainsQueueUntilSubmitSucceeds(t *testing.T) 
 	submitErr := errors.New("offline")
 	var attempts atomic.Int32
 	runtime, err := newDesktopObservationRuntime(
-		func(context.Context) (obs.DesktopObservation, error) {
-			return obs.DesktopObservation{ObservationID: "obs-retry", TimestampUnixMS: time.Now().UnixMilli(), Trigger: obs.DesktopTriggerPeriodic, Activity: obs.DesktopActivityWorking, Privacy: obs.DesktopPrivacyNormal}, nil
+		func(context.Context) (session.DesktopObservation, error) {
+			return session.DesktopObservation{ObservationID: "obs-retry", TimestampUnixMS: time.Now().UnixMilli(), Trigger: session.DesktopTriggerPeriodic, Activity: session.DesktopActivityWorking, Privacy: session.DesktopPrivacyNormal}, nil
 		},
-		func(context.Context, obs.DesktopObservation) error {
+		func(context.Context, session.DesktopObservation) error {
 			if attempts.Add(1) == 1 {
 				return submitErr
 			}

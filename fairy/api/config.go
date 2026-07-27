@@ -7,6 +7,7 @@ import (
 
 	"fairy/config"
 	"fairy/speech"
+
 	"github.com/cloudwego/hertz/pkg/app"
 )
 

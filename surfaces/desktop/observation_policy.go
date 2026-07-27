@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	obs "fairy/contracts/observation"
+	"fairy/session"
 )
 
 const (
@@ -16,18 +16,18 @@ const (
 
 type observationPolicy struct {
 	mu         sync.Mutex
-	last       obs.DesktopObservation
+	last       session.DesktopObservation
 	lastSentAt time.Time
-	queue      []obs.DesktopObservation
+	queue      []session.DesktopObservation
 	dropped    uint64
 	stale      uint64
 }
 
-func (p *observationPolicy) Accept(sample obs.DesktopObservation, now time.Time) bool {
+func (p *observationPolicy) Accept(sample session.DesktopObservation, now time.Time) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	privacyTransition := sample.Lifecycle == obs.DesktopLifecyclePrivacyOn || sample.Lifecycle == obs.DesktopLifecyclePrivacyOff
-	if sample.Privacy != obs.DesktopPrivacyNormal && !privacyTransition {
+	privacyTransition := sample.Lifecycle == session.DesktopLifecyclePrivacyOn || sample.Lifecycle == session.DesktopLifecyclePrivacyOff
+	if sample.Privacy != session.DesktopPrivacyNormal && !privacyTransition {
 		return false
 	}
 	if now.Sub(time.UnixMilli(sample.TimestampUnixMS)) > desktopObservationFreshness {
@@ -42,7 +42,7 @@ func (p *observationPolicy) Accept(sample obs.DesktopObservation, now time.Time)
 	return true
 }
 
-func (p *observationPolicy) Enqueue(sample obs.DesktopObservation, now time.Time) error {
+func (p *observationPolicy) Enqueue(sample session.DesktopObservation, now time.Time) error {
 	if p == nil {
 		return errors.New("observation policy is unavailable")
 	}
@@ -59,7 +59,7 @@ func (p *observationPolicy) Enqueue(sample obs.DesktopObservation, now time.Time
 	return nil
 }
 
-func (p *observationPolicy) Next(now time.Time) (obs.DesktopObservation, bool) {
+func (p *observationPolicy) Next(now time.Time) (session.DesktopObservation, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for len(p.queue) > 0 {
@@ -71,7 +71,7 @@ func (p *observationPolicy) Next(now time.Time) (obs.DesktopObservation, bool) {
 		}
 		return sample, true
 	}
-	return obs.DesktopObservation{}, false
+	return session.DesktopObservation{}, false
 }
 
 func (p *observationPolicy) Ack(observationID string) error {
@@ -84,8 +84,8 @@ func (p *observationPolicy) Ack(observationID string) error {
 	return nil
 }
 
-func (p *observationPolicy) Drain(now time.Time) []obs.DesktopObservation {
-	out := make([]obs.DesktopObservation, 0)
+func (p *observationPolicy) Drain(now time.Time) []session.DesktopObservation {
+	out := make([]session.DesktopObservation, 0)
 	for {
 		sample, ok := p.Next(now)
 		if !ok {

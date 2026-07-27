@@ -10,14 +10,14 @@ import (
 	"fairy/memory"
 	"fairy/reply"
 
-	domain "fairy/interaction"
+	"fairy/session"
 )
 
 func socialMemoryQuery(intent ReplyIntent) string {
 	return strings.TrimSpace(intent.MemoryQuery)
 }
 
-func (s *CompanionService) retrieveSocialRespondContext(ctx context.Context, characterID, conversationID string, resolved domain.Resolved, intent *ReplyIntent, senderIDs []string) (*SocialRespondContext, error) {
+func (s *CompanionService) retrieveSocialRespondContext(ctx context.Context, characterID, conversationID string, resolved session.Resolved, intent *ReplyIntent, senderIDs []string) (*SocialRespondContext, error) {
 	if intent == nil || !resolved.AllowsAmbientParticipation() || resolved.AllowsPersonalMemory() {
 		return nil, nil
 	}
@@ -128,7 +128,7 @@ var publicPeerIdentityPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`我[^，。！？\n]{0,12}(回收进|写进|存进|记到)(数据库|核心存储器|内存|缓存)`),
 }
 
-func compileReplyForInteraction(draft string, availableVisualStates []VisualState, resolved domain.Resolved, intent *ReplyIntent) (CompiledReply, error) {
+func compileReplyForInteraction(draft string, availableVisualStates []VisualState, resolved session.Resolved, intent *ReplyIntent) (CompiledReply, error) {
 	reply, err := reply.CompileReply(draft, availableVisualStates)
 	if err != nil {
 		return CompiledReply{}, err
@@ -139,8 +139,8 @@ func compileReplyForInteraction(draft string, availableVisualStates []VisualStat
 	return reply, nil
 }
 
-func validateReplyForInteraction(reply CompiledReply, resolved domain.Resolved, intent *ReplyIntent) error {
-	if resolved.Memory == domain.MemoryPublic && intent != nil {
+func validateReplyForInteraction(reply CompiledReply, resolved session.Resolved, intent *ReplyIntent) error {
+	if resolved.Memory == session.MemoryPublic && intent != nil {
 		shape, err := publicReplyShapeForMode(intent.ReplyMode)
 		if err != nil {
 			return err
@@ -157,8 +157,8 @@ func validateReplyForInteraction(reply CompiledReply, resolved domain.Resolved, 
 	return nil
 }
 
-func validateTextForInteraction(text string, resolved domain.Resolved) error {
-	if resolved.Memory != domain.MemoryPublic {
+func validateTextForInteraction(text string, resolved session.Resolved) error {
+	if resolved.Memory != session.MemoryPublic {
 		return nil
 	}
 	return validatePublicPeerText(text)
@@ -184,6 +184,6 @@ func replyCompileRetryCorrection(err error) string {
 	return " RETRY CORRECTION: The previous reply did not satisfy the strict reply protocol. Return a newly generated reply as exactly one valid JSON object matching the required schema, with no prose, Markdown, unknown fields, or trailing data."
 }
 
-func allowReplyPreviewForInteraction(resolved domain.Resolved) bool {
-	return resolved.Memory == domain.MemoryPersonal
+func allowReplyPreviewForInteraction(resolved session.Resolved) bool {
+	return resolved.Memory == session.MemoryPersonal
 }

@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	vectorindex "fairy/vectorindex"
-
 	"github.com/jackc/pgx/v5"
 )
 
@@ -18,7 +16,7 @@ func enqueueKnowledgeEmbeddingJobPostgres(ctx context.Context, tx pgx.Tx, knowle
 }
 
 func enqueueEmbeddingJobPostgres(ctx context.Context, tx pgx.Tx, itemKind, itemID, content string, now int64) error {
-	pointID, err := vectorindex.PointID(itemKind, itemID, SemanticEmbeddingModelID)
+	pointID, err := VectorPointID(itemKind, itemID, SemanticEmbeddingModelID)
 	if err != nil {
 		return fmt.Errorf("deriving semantic point id: %w", err)
 	}

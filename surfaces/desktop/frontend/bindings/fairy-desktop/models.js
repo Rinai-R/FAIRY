@@ -8,7 +8,7 @@ import { Create as $Create } from "/wails/runtime.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as session$0 from "../fairy/contracts/session/models.js";
+import * as session$0 from "../fairy/session/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as coreclient$0 from "../fairy/coreclient/models.js";

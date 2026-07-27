@@ -1,6 +1,7 @@
 package companion
 
 import (
+	"fairy/session"
 	"sync"
 	"testing"
 )
@@ -9,14 +10,14 @@ func TestPublishLifeSerializesConcurrentSpeechEvents(t *testing.T) {
 	service := NewCompanionService()
 	var mu sync.Mutex
 	var sequences []uint64
-	AttachEventEmitter(service, func(event TurnEvent) {
+	AttachEventEmitter(service, func(event session.Event) {
 		mu.Lock()
 		sequences = append(sequences, event.Sequence)
 		mu.Unlock()
 	})
-	life := NewTurnLifecycle("c1", "t1")
-	for _, state := range []TurnState{TurnStateInterpreting, TurnStateGathering, TurnStatePlanning} {
-		if _, err := service.publishLife(life, func() (TurnEvent, error) {
+	life := newTurnLifecycle("c1", "t1")
+	for _, state := range []turnState{turnStateInterpreting, turnStateGathering, turnStatePlanning} {
+		if _, err := service.publishLife(life, func() (session.Event, error) {
 			return life.Transition(state)
 		}); err != nil {
 			t.Fatalf("Transition(%s) error = %v", state, err)
@@ -29,8 +30,8 @@ func TestPublishLifeSerializesConcurrentSpeechEvents(t *testing.T) {
 	for i := 0; i < workers; i++ {
 		go func() {
 			defer wg.Done()
-			_, _ = service.publishLife(life, func() (TurnEvent, error) {
-				return life.SpeechRequested(TurnCompletion{
+			_, _ = service.publishLife(life, func() (session.Event, error) {
+				return life.SpeechRequested(turnCompletion{
 					Text:              "稍等一下哦。",
 					SpeechText:        "稍等一下哦。",
 					CharacterRevision: 1,

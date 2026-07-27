@@ -4,10 +4,10 @@ import (
 	"context"
 	"net/http"
 
-	"fairy/identity"
 	"github.com/cloudwego/hertz/pkg/app"
 
-	contracts "fairy/contracts/interaction"
+	"fairy/memory"
+	"fairy/session"
 )
 
 func (s *Server) registerIdentityRoutes() {
@@ -38,7 +38,7 @@ func (s *Server) handleBindOwnerIdentity(ctx context.Context, c *app.RequestCont
 		writeErr(c, http.StatusBadRequest, err)
 		return
 	}
-	principal := contracts.PrincipalRef{Namespace: body.Namespace, Subject: body.Subject}
+	principal := session.PrincipalRef{Namespace: body.Namespace, Subject: body.Subject}
 	digest, err := s.rt.Secret.DigestPrincipal(principal)
 	if err != nil {
 		writeErr(c, http.StatusBadRequest, err)
@@ -48,7 +48,7 @@ func (s *Server) handleBindOwnerIdentity(ctx context.Context, c *app.RequestCont
 		writeErr(c, http.StatusInternalServerError, err)
 		return
 	}
-	c.JSON(http.StatusOK, identity.OwnerIdentity{Namespace: principal.Namespace, PrincipalDigest: digest})
+	c.JSON(http.StatusOK, memory.OwnerIdentity{Namespace: principal.Namespace, PrincipalDigest: digest})
 }
 
 func (s *Server) handleUnbindOwnerIdentity(ctx context.Context, c *app.RequestContext) {
@@ -57,7 +57,7 @@ func (s *Server) handleUnbindOwnerIdentity(ctx context.Context, c *app.RequestCo
 		writeErr(c, http.StatusBadRequest, err)
 		return
 	}
-	principal := contracts.PrincipalRef{Namespace: body.Namespace, Subject: body.Subject}
+	principal := session.PrincipalRef{Namespace: body.Namespace, Subject: body.Subject}
 	digest, err := s.rt.Secret.DigestPrincipal(principal)
 	if err != nil {
 		writeErr(c, http.StatusBadRequest, err)
@@ -65,7 +65,7 @@ func (s *Server) handleUnbindOwnerIdentity(ctx context.Context, c *app.RequestCo
 	}
 	if err := s.rt.Identity.UnbindOwnerContext(ctx, principal.Namespace, digest); err != nil {
 		status := http.StatusInternalServerError
-		if err == identity.ErrOwnerIdentityNotFound {
+		if err == memory.ErrOwnerIdentityNotFound {
 			status = http.StatusNotFound
 		}
 		writeErr(c, status, err)

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"fairy/config"
-	"fairy/secret"
 )
 
 type blockingStreamTransport struct {
@@ -46,10 +45,10 @@ func writeModelConnectionWithEndpoint(t *testing.T, root string, protocol string
 	}
 }
 
-func saveModelSecret(t *testing.T, raw string) *secret.Store {
+func saveModelSecret(t *testing.T, raw string) *config.SecretStore {
 	t.Helper()
-	store := secret.NewTestStore()
-	value, err := secret.NewValue(raw)
+	store := config.NewTestSecretStore()
+	value, err := config.NewSecretValue(raw)
 	if err != nil {
 		t.Fatalf("NewValue() error = %v", err)
 	}
@@ -120,7 +119,7 @@ func TestModelServiceBuildRequestDraftUsesStoredConnection(t *testing.T) {
 
 func TestModelServiceReadsSynchronousConfigUpdatesWithoutRestart(t *testing.T) {
 	root := t.TempDir()
-	serviceConfig := config.NewConfigService(root, secret.NewTestStore())
+	serviceConfig := config.NewConfigService(root, config.NewTestSecretStore())
 	if _, err := serviceConfig.SaveModelConnection(config.ModelConnectionInput{
 		Protocol:            "chat_completions",
 		Endpoint:            "https://first.example",

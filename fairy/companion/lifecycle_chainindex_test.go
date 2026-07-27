@@ -8,19 +8,19 @@ import (
 )
 
 func TestSpeechSynthesizedCarriesChainIndexAndPlaybackIndex(t *testing.T) {
-	life := NewTurnLifecycle("conversation-1", "turn-1")
-	if _, err := life.Transition(TurnStateInterpreting); err != nil {
+	life := newTurnLifecycle("conversation-1", "turn-1")
+	if _, err := life.Transition(turnStateInterpreting); err != nil {
 		t.Fatalf("interpreting: %v", err)
 	}
-	if _, err := life.Transition(TurnStateGathering); err != nil {
+	if _, err := life.Transition(turnStateGathering); err != nil {
 		t.Fatalf("gathering: %v", err)
 	}
-	if _, err := life.Transition(TurnStatePlanning); err != nil {
+	if _, err := life.Transition(turnStatePlanning); err != nil {
 		t.Fatalf("planning: %v", err)
 	}
 
 	// Utterance audio: playback index 0, chainIndex -1.
-	event, err := life.SpeechSynthesized(SpeechSynthesisCompletion{
+	event, err := life.SpeechSynthesized(speechSynthesisCompletion{
 		Index:      0,
 		ChainIndex: reply.ChainIndexUtterance,
 		Text:       "让我看看",

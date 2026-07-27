@@ -4,9 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"fairy/config"
 	"fairy/memory"
-	"fairy/profile"
-	"fairy/search"
 )
 
 type blockingKnowledgeMemory struct {
@@ -28,10 +27,10 @@ func (m blockingKnowledgeMemory) ProcessKnowledgeIngestJobs(int) (int, error) {
 
 type knowledgeIngestProfile struct{}
 
-func (knowledgeIngestProfile) Current() (*profile.Snapshot, error) { return nil, nil }
+func (knowledgeIngestProfile) Current() (*config.ProfileSnapshot, error) { return nil, nil }
 
 func TestKnowledgeIngestSnapshotsPromotesOnlyStableCategoriesWithoutRawQuery(t *testing.T) {
-	hits := []search.Hit{{Title: "作品条目", URL: "https://example.test/work", Snippet: "这是一段来自公开来源并且长度足够的作品设定摘要。"}}
+	hits := []WebSearchHit{{Title: "作品条目", URL: "https://example.test/work", Snippet: "这是一段来自公开来源并且长度足够的作品设定摘要。"}}
 	for _, test := range []struct {
 		query    string
 		category string

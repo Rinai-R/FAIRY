@@ -13,13 +13,13 @@ import (
 	"testing"
 
 	"fairy/character"
+	fairycore "fairy/core"
 	"fairy/coreclient"
-	fairyruntime "fairy/runtime"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
-	contracts "fairy/contracts/interaction"
+	"fairy/session"
 )
 
 func TestEndpointSessionIsolatesKeysAndPersistsNoRawKeyIntegration(t *testing.T) {
@@ -38,7 +38,7 @@ func TestEndpointSessionIsolatesKeysAndPersistsNoRawKeyIntegration(t *testing.T)
 	qdrantURL := apiTestQdrantURL()
 	ensureAPIQdrantCollection(t, qdrantURL)
 	setAPIProductionEnv(t, databaseURL, qdrantURL, base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789")))
-	rt, err := fairyruntime.Open(fairyruntime.Options{ConfigRoot: root, Logger: zap.NewNop()})
+	rt, err := fairycore.Open(fairycore.RuntimeOptions{ConfigRoot: root, Logger: zap.NewNop()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,9 +55,9 @@ func TestEndpointSessionIsolatesKeysAndPersistsNoRawKeyIntegration(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	imContext := contracts.Context{Audience: contracts.AudienceMulti, Initiation: contracts.InitiationAmbient, Presentation: contracts.PresentationChat}
+	imContext := session.Context{Audience: session.AudienceMulti, Initiation: session.InitiationAmbient, Presentation: session.PresentationChat}
 	open := func(key string) coreclient.OpenSessionResponse {
-		result, err := client.OpenSession(context.Background(), coreclient.OpenSessionRequest{Endpoint: contracts.EndpointIM, EndpointKey: key, Interaction: imContext})
+		result, err := client.OpenSession(context.Background(), coreclient.OpenSessionRequest{Endpoint: session.EndpointIM, EndpointKey: key, Interaction: imContext})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -70,8 +70,8 @@ func TestEndpointSessionIsolatesKeysAndPersistsNoRawKeyIntegration(t *testing.T)
 		t.Fatalf("conversation bindings = %#v %#v %#v", groupA, groupA2, groupB)
 	}
 	desktop, err := client.OpenSession(context.Background(), coreclient.OpenSessionRequest{
-		Endpoint: contracts.EndpointDesktop, EndpointKey: "desktop-installation",
-		Interaction: contracts.Context{Audience: contracts.AudienceSingle, Initiation: contracts.InitiationDirect, Presentation: contracts.PresentationEmbodied},
+		Endpoint: session.EndpointDesktop, EndpointKey: "desktop-installation",
+		Interaction: session.Context{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied},
 	})
 	if err != nil || desktop.ConversationID == groupA.ConversationID || desktop.ConversationID == groupB.ConversationID {
 		t.Fatalf("desktop binding = %#v, %v", desktop, err)

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	contracts "fairy/contracts/interaction"
 	"fairy/coredb"
+	"fairy/session"
 )
 
 const (
@@ -121,14 +121,14 @@ func countPostgresScalar(ctx context.Context, pool *coredb.Pool, query string) (
 	return count, nil
 }
 
-func validateEndpointConversationKey(characterID string, binding contracts.Binding, digest string) error {
+func validateEndpointConversationKey(characterID string, binding session.Binding, digest string) error {
 	if err := ValidateID("character_id", characterID); err != nil {
 		return err
 	}
 	if err := binding.Validate(); err != nil {
 		return err
 	}
-	if err := contracts.ValidateDigest(digest); err != nil {
+	if err := session.ValidateDigest(digest); err != nil {
 		return errors.New("endpoint key digest is invalid")
 	}
 	return nil

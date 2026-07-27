@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"fairy/initiative"
 	"fairy/memory"
 )
 
@@ -57,7 +58,7 @@ func TestSelectSocialContextForToolKeepsEpisodeAndBehavior(t *testing.T) {
 }
 
 func TestParticipationBehaviorQueryUsesRecentWindow(t *testing.T) {
-	query := participationBehaviorQuery([]AmbientObservation{
+	query := initiative.BehaviorQuery([]initiative.AmbientObservation{
 		{Text: "第一条求职讨论"},
 		{Text: "第二条整理项目"},
 		{Text: "第三条继续聊"},

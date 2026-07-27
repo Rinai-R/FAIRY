@@ -13,8 +13,9 @@ import (
 	"math"
 	"time"
 
-	"fairy/contracts/observation"
 	"fairy/coreclient"
+	"fairy/session"
+
 	"golang.org/x/image/draw"
 )
 
@@ -24,10 +25,10 @@ type desktopImageCapturer interface {
 
 type desktopCaptureRuntime struct {
 	capturer desktopImageCapturer
-	privacy func() observation.DesktopPrivacyState
+	privacy  func() session.DesktopPrivacyState
 }
 
-func newDesktopCaptureRuntime(capturer desktopImageCapturer, privacy func() observation.DesktopPrivacyState) (*desktopCaptureRuntime, error) {
+func newDesktopCaptureRuntime(capturer desktopImageCapturer, privacy func() session.DesktopPrivacyState) (*desktopCaptureRuntime, error) {
 	if capturer == nil || privacy == nil {
 		return nil, errors.New("desktop capture runtime dependencies are required")
 	}
@@ -44,7 +45,7 @@ func (runtime *desktopCaptureRuntime) Handle(ctx context.Context, request corecl
 	if runtime == nil || runtime.capturer == nil || runtime.privacy == nil {
 		return failedCaptureResult("capture_unavailable")
 	}
-	if runtime.privacy() != observation.DesktopPrivacyNormal {
+	if runtime.privacy() != session.DesktopPrivacyNormal {
 		return failedCaptureResult("privacy_blocked")
 	}
 	select {

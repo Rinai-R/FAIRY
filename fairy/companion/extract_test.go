@@ -22,7 +22,7 @@ func TestBuildExtractInputPreservesCompleteTurnEvidence(t *testing.T) {
 		}},
 	}
 
-	items, err := BuildExtractInput(batch)
+	items, err := buildExtractInput(batch)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,8 +49,8 @@ func TestParseMemoryMutationOutputRejectsMissingSourceTurnID(t *testing.T) {
 		`{"mutations":[{"operation":"create","kind":"preference","scope":{"type":"global"},"content":"喜欢爵士乐","confidenceBasisPoints":9000}]}`,
 		`{"mutations":[{"operation":"create","sourceTurnId":"   ","kind":"preference","scope":{"type":"global"},"content":"喜欢爵士乐","confidenceBasisPoints":9000}]}`,
 	} {
-		if _, err := ParseMemoryMutationOutput(raw); err == nil {
-			t.Fatalf("ParseMemoryMutationOutput(%s) accepted missing source turn evidence", raw)
+		if _, err := parseMemoryMutationOutput(raw); err == nil {
+			t.Fatalf("parseMemoryMutationOutput(%s) accepted missing source turn evidence", raw)
 		}
 	}
 }

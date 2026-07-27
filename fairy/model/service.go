@@ -5,20 +5,19 @@ import (
 	"fmt"
 
 	"fairy/config"
-	"fairy/secret"
 )
 
 type ModelService struct {
 	root      string
 	transport Transport
-	secrets   *secret.Store
+	secrets   *config.SecretStore
 }
 
-func NewModelService(root string, secrets *secret.Store) *ModelService {
+func NewModelService(root string, secrets *config.SecretStore) *ModelService {
 	return &ModelService{root: root, transport: SDKTransport{}, secrets: secrets}
 }
 
-func NewModelServiceWithTransport(root string, transport Transport, secrets *secret.Store) *ModelService {
+func NewModelServiceWithTransport(root string, transport Transport, secrets *config.SecretStore) *ModelService {
 	if transport == nil {
 		transport = SDKTransport{}
 	}
@@ -155,7 +154,7 @@ func (s *ModelService) bearerCredential(connection config.ModelConnection) (stri
 	return value.Expose(), nil
 }
 
-func resolveSecretStore(_ string, secrets *secret.Store) (*secret.Store, error) {
+func resolveSecretStore(_ string, secrets *config.SecretStore) (*config.SecretStore, error) {
 	if secrets != nil {
 		return secrets, nil
 	}

@@ -16,7 +16,6 @@ import (
 	"fairy/config"
 	"fairy/memory"
 	"fairy/model"
-	"fairy/secret"
 )
 
 func TestLivePublicSocialMultiStepToolUse(t *testing.T) {
@@ -30,8 +29,8 @@ func TestLivePublicSocialMultiStepToolUse(t *testing.T) {
 	}}}
 
 	service := newSocialLearningTestService(memoryPort, modelPort)
-	tools := RespondToolSpecsForInteraction(false, publicAmbientResolved())
-	instructions := RespondInstructionsForInteraction(true, publicAmbientResolved())
+	tools := respondToolSpecsForInteraction(false, publicAmbientResolved())
+	instructions := respondInstructionsForInteraction(true, publicAmbientResolved())
 	if strings.Contains(strings.ToLower(instructions), "use more") || strings.Contains(instructions, "must call") || strings.Contains(instructions, "always call") {
 		t.Fatalf("instructions overfit tool usage: %s", instructions)
 	}
@@ -109,7 +108,7 @@ type personaLiveConfig struct {
 func newLiveModelPort(t *testing.T, persona personaLiveConfig) *model.ModelService {
 	t.Helper()
 	root := t.TempDir()
-	secrets := secret.NewTestStore()
+	secrets := config.NewTestSecretStore()
 	apiKey := persona.APIKey
 	if _, err := config.SaveModelConnection(root, config.ModelConnectionInput{
 		Protocol: persona.Protocol, Endpoint: persona.BaseURL, Model: persona.Model,

@@ -18,21 +18,34 @@ import (
 	"fairy/character"
 	"fairy/config"
 	"fairy/coredb"
-	dbschema "fairy/coredb/schema"
 	"fairy/memory"
 	"fairy/model"
-	"fairy/profile"
 	"fairy/reply"
-	"fairy/search"
-	"fairy/visual"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	contracts "fairy/contracts/interaction"
-	obs "fairy/contracts/observation"
-	appobs "fairy/observation"
+	"fairy/initiative"
+	"fairy/session"
 )
+
+type companionInitiativeTestTurnStarter struct {
+	service *CompanionService
+}
+
+func (a companionInitiativeTestTurnStarter) CancelTurnBeforeDelivery(conversationID string) {
+	a.service.CancelTurnBeforeDelivery(conversationID)
+}
+
+func (a companionInitiativeTestTurnStarter) SubmitTurn(initiative.TurnRequest) (initiative.TurnOutcome, error) {
+	return initiative.TurnOutcome{}, errors.New("unexpected ambient turn")
+}
+
+func (a companionInitiativeTestTurnStarter) ScheduleDesktopInitiation(conversationID string, evidenceIDs []string, observation session.DesktopObservation) error {
+	return a.service.ScheduleDesktopInitiation(DesktopInitiationRequest{
+		ConversationID: conversationID, ObservationEvidenceIDs: evidenceIDs,
+	}, observation)
+}
 
 var (
 	errCompletePersistence  = errors.New("complete persistence unavailable")
@@ -228,11 +241,11 @@ func (m *preparationCountingModel) firstSnapshot(t *testing.T) preparationCallSn
 
 type companionIntegrationProfile struct{}
 
-func (companionIntegrationProfile) Current() (*profile.Snapshot, error) { return nil, nil }
+func (companionIntegrationProfile) Current() (*config.ProfileSnapshot, error) { return nil, nil }
 
 type rejectingGroupProfile struct{}
 
-func (rejectingGroupProfile) Current() (*profile.Snapshot, error) {
+func (rejectingGroupProfile) Current() (*config.ProfileSnapshot, error) {
 	return nil, errors.New("group surface must not read private profile")
 }
 
@@ -337,8 +350,8 @@ func (*groupWebIntegrationModel) ExecutePrompt(model.PromptLane, string, uint32,
 
 type groupWebSearchStub struct{}
 
-func (groupWebSearchStub) Search(context.Context, string, int) ([]search.Hit, error) {
-	return []search.Hit{{Title: "公开新闻标题", URL: "https://example.com/news", Snippet: "公开摘要"}}, nil
+func (groupWebSearchStub) Search(context.Context, string, int) ([]WebSearchHit, error) {
+	return []WebSearchHit{{Title: "公开新闻标题", URL: "https://example.com/news", Snippet: "公开摘要"}}, nil
 }
 
 func (groupWebSearchStub) Close() error { return nil }
@@ -351,11 +364,11 @@ type terminalFailureTurnStore struct {
 
 func mustBindDesktopInteraction(t *testing.T, service *CompanionService, conversationID string) {
 	t.Helper()
-	err := service.BindInteraction(conversationID, contracts.Binding{
-		Endpoint: contracts.EndpointDesktop,
-		Facts: contracts.Facts{
-			Audience: contracts.AudienceSingle, Initiation: contracts.InitiationDirect,
-			Presentation: contracts.PresentationEmbodied,
+	err := service.BindInteraction(conversationID, session.Binding{
+		Endpoint: session.EndpointDesktop,
+		Facts: session.Facts{
+			Audience: session.AudienceSingle, Initiation: session.InitiationDirect,
+			Presentation: session.PresentationEmbodied,
 		},
 	})
 	if err != nil {
@@ -403,9 +416,9 @@ func TestPostgresDirectTurnPreparationCallBounds(t *testing.T) {
 	AttachProfileSource(service, companionIntegrationProfile{})
 	AttachConfigSource(service, companionIntegrationConfig{})
 	AttachOwnerIdentityStore(service, owner)
-	binding := contracts.Binding{Endpoint: contracts.EndpointIM, Facts: contracts.Facts{
-		Audience: contracts.AudienceSingle, Initiation: contracts.InitiationDirect,
-		Presentation: contracts.PresentationChat, PrincipalNamespace: "qq.onebot",
+	binding := session.Binding{Endpoint: session.EndpointIM, Facts: session.Facts{
+		Audience: session.AudienceSingle, Initiation: session.InitiationDirect,
+		Presentation: session.PresentationChat, PrincipalNamespace: "qq.onebot",
 		PrincipalDigest: strings.Repeat("a", 64),
 	}}
 	if err := service.BindInteraction(bootstrap.Conversation.ID, binding); err != nil {
@@ -471,8 +484,8 @@ func TestPostgresCompanionMultiBeatCompletesWithPacing(t *testing.T) {
 	}})
 	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
 	var mu sync.Mutex
-	var events []TurnEvent
-	AttachEventEmitter(service, func(event TurnEvent) {
+	var events []session.Event
+	AttachEventEmitter(service, func(event session.Event) {
 		mu.Lock()
 		events = append(events, event)
 		mu.Unlock()
@@ -497,7 +510,7 @@ func TestPostgresCompanionMultiBeatCompletesWithPacing(t *testing.T) {
 	if beats[0].PaceWaitMS != 0 || beats[0].PublishedPrefixCount != 1 || beats[1].PaceWaitMS <= 0 || beats[1].PublishedPrefixCount != 2 {
 		t.Fatalf("pacing fields = %#v", beats)
 	}
-	if terminalEventCount(events, TurnStateCompleted) != 1 || terminalEventCount(events, TurnStateInterrupted) != 0 {
+	if terminalEventCount(events, turnStateCompleted) != 1 || terminalEventCount(events, turnStateInterrupted) != 0 {
 		t.Fatalf("terminal events = %#v", events)
 	}
 	reloaded, err := store.LoadConversation(bootstrap.Conversation.ID)
@@ -627,11 +640,13 @@ func TestPostgresDesktopInitiationUsesContextWithoutFabricatedUserMessage(t *tes
 	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
 
 	now := time.Now()
-	observation := DesktopObservation{
-		ObservationID: "obs-1", TimestampUnixMS: now.UnixMilli(), Trigger: obs.DesktopTriggerLifecycle,
-		Activity: obs.DesktopActivityIdle, Lifecycle: obs.DesktopLifecycleReturned, Privacy: obs.DesktopPrivacyNormal,
+	observation := session.DesktopObservation{
+		ObservationID: "obs-1", TimestampUnixMS: now.UnixMilli(), Trigger: session.DesktopTriggerLifecycle,
+		Activity: session.DesktopActivityIdle, Lifecycle: session.DesktopLifecycleReturned, Privacy: session.DesktopPrivacyNormal,
 	}
-	if err := service.desktopEvidence.Accept(observation, now); err != nil {
+	evidence := initiative.NewEvidenceRegistry()
+	AttachDesktopEvidenceValidator(service, evidence)
+	if err := evidence.Accept(observation, now); err != nil {
 		t.Fatal(err)
 	}
 	outcome, err := service.SubmitDesktopInitiation(DesktopInitiationRequest{
@@ -684,9 +699,9 @@ func TestPostgresDesktopObservationGraphSchedulesInitiation(t *testing.T) {
 	}
 	service := newCompanionIntegrationService(store, "character-observation-graph", &capturingIntegrationModel{})
 	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
-	completed := make(chan TurnEvent, 1)
-	AttachEventEmitter(service, func(event TurnEvent) {
-		if event.State == TurnStateCompleted {
+	completed := make(chan session.Event, 1)
+	AttachEventEmitter(service, func(event session.Event) {
+		if event.State == string(turnStateCompleted) {
 			select {
 			case completed <- event:
 			default:
@@ -695,14 +710,19 @@ func TestPostgresDesktopObservationGraphSchedulesInitiation(t *testing.T) {
 	})
 
 	now := time.Now()
-	plan, err := service.ObserveDesktop(bootstrap.Conversation.ID, DesktopObservation{
-		ObservationID: "obs-graph", TimestampUnixMS: now.UnixMilli(), Trigger: obs.DesktopTriggerLifecycle,
-		Activity: obs.DesktopActivityIdle, Lifecycle: obs.DesktopLifecycleReturned, Privacy: obs.DesktopPrivacyNormal,
+	initiativeService := initiative.NewService(t.Context(), initiative.ServiceOptions{
+		Turns: companionInitiativeTestTurnStarter{service: service}, Interactions: service,
+	})
+	t.Cleanup(initiativeService.Close)
+	AttachDesktopEvidenceValidator(service, initiativeService.EvidenceValidator())
+	plan, err := initiativeService.ObserveDesktop(bootstrap.Conversation.ID, session.DesktopObservation{
+		ObservationID: "obs-graph", TimestampUnixMS: now.UnixMilli(), Trigger: session.DesktopTriggerLifecycle,
+		Activity: session.DesktopActivityIdle, Lifecycle: session.DesktopLifecycleReturned, Privacy: session.DesktopPrivacyNormal,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Action != appobs.DesktopActionInitiate {
+	if plan.Action != initiative.DesktopActionInitiate {
 		t.Fatalf("plan action = %q", plan.Action)
 	}
 	foundInitiate := false
@@ -715,7 +735,7 @@ func TestPostgresDesktopObservationGraphSchedulesInitiation(t *testing.T) {
 		t.Fatalf("initiate diagnostic missing: %#v", plan.Diagnostics)
 	}
 
-	var event TurnEvent
+	var event session.Event
 	select {
 	case event = <-completed:
 	case <-time.After(5 * time.Second):
@@ -783,8 +803,8 @@ func TestPostgresCompanionRetriesOneInvalidReplyWithoutDuplicatingTurn(t *testin
 	service := newCompanionIntegrationService(store, "character-retry", provider)
 	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
 	var mu sync.Mutex
-	var events []TurnEvent
-	AttachEventEmitter(service, func(event TurnEvent) {
+	var events []session.Event
+	AttachEventEmitter(service, func(event session.Event) {
 		mu.Lock()
 		events = append(events, event)
 		mu.Unlock()
@@ -811,7 +831,7 @@ func TestPostgresCompanionRetriesOneInvalidReplyWithoutDuplicatingTurn(t *testin
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if terminalEventCount(events, TurnStateCompleted) != 1 || terminalEventCount(events, TurnStateFailed) != 0 {
+	if terminalEventCount(events, turnStateCompleted) != 1 || terminalEventCount(events, turnStateFailed) != 0 {
 		t.Fatalf("terminal events=%#v", events)
 	}
 }
@@ -865,13 +885,14 @@ func TestPostgresCompanionCancelAfterFirstBeatPersistsPrefix(t *testing.T) {
 	}})
 	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
 	var mu sync.Mutex
-	var events []TurnEvent
+	var events []session.Event
 	var cancelErr error
-	AttachEventEmitter(service, func(event TurnEvent) {
+	AttachEventEmitter(service, func(event session.Event) {
 		mu.Lock()
 		events = append(events, event)
 		mu.Unlock()
-		if payload, ok := event.Payload.(beatReadyPayload); ok && payload.Kind == reply.BeatKindFinal && payload.ChainIndex == 0 {
+		payload := decodeEventPayload[beatReadyPayload](t, event.Payload)
+		if payload.Type == "beat.ready" && payload.Kind == reply.BeatKindFinal && payload.ChainIndex == 0 {
 			cancelErr = service.CancelTurn(event.ConversationID, event.TurnID)
 		}
 	})
@@ -889,7 +910,7 @@ func TestPostgresCompanionCancelAfterFirstBeatPersistsPrefix(t *testing.T) {
 	if len(beats) != 1 || beats[0].ChainIndex != 0 {
 		t.Fatalf("final beats = %#v", beats)
 	}
-	if terminalEventCount(events, TurnStateInterrupted) != 1 || terminalEventCount(events, TurnStateCompleted) != 0 {
+	if terminalEventCount(events, turnStateInterrupted) != 1 || terminalEventCount(events, turnStateCompleted) != 0 {
 		t.Fatalf("terminal events = %#v", events)
 	}
 	reloaded, err := store.LoadConversation(bootstrap.Conversation.ID)
@@ -921,8 +942,8 @@ func TestPostgresCompanionTerminalPersistenceFailureEmitsFailed(t *testing.T) {
 		{VisualState: "idle", Text: "已发布但无法保存"},
 	}})
 	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
-	var events []TurnEvent
-	AttachEventEmitter(service, func(event TurnEvent) { events = append(events, event) })
+	var events []session.Event
+	AttachEventEmitter(service, func(event session.Event) { events = append(events, event) })
 	_, submitErr := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 		ConversationID:        bootstrap.Conversation.ID,
 		Input:                 "测试持久化错误",
@@ -932,7 +953,7 @@ func TestPostgresCompanionTerminalPersistenceFailureEmitsFailed(t *testing.T) {
 	if !errors.Is(submitErr, errCompletePersistence) {
 		t.Fatalf("SubmitCompiledTurn = %v, want complete persistence error", submitErr)
 	}
-	if terminalEventCount(events, TurnStateFailed) != 1 || terminalEventCount(events, TurnStateCompleted) != 0 {
+	if terminalEventCount(events, turnStateFailed) != 1 || terminalEventCount(events, turnStateCompleted) != 0 {
 		t.Fatalf("terminal events = %#v", events)
 	}
 	failed := lastFailedEvent(events)
@@ -955,10 +976,11 @@ func TestPostgresCompanionInterruptPersistenceFailureEmitsFailed(t *testing.T) {
 		{VisualState: "idle", Text: "第二拍"},
 	}})
 	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
-	var events []TurnEvent
-	AttachEventEmitter(service, func(event TurnEvent) {
+	var events []session.Event
+	AttachEventEmitter(service, func(event session.Event) {
 		events = append(events, event)
-		if payload, ok := event.Payload.(beatReadyPayload); ok && payload.ChainIndex == 0 {
+		payload := decodeEventPayload[beatReadyPayload](t, event.Payload)
+		if payload.Type == "beat.ready" && payload.ChainIndex == 0 {
 			_ = service.CancelTurn(event.ConversationID, event.TurnID)
 		}
 	})
@@ -971,7 +993,7 @@ func TestPostgresCompanionInterruptPersistenceFailureEmitsFailed(t *testing.T) {
 	if !errors.Is(submitErr, errInterruptPersistence) || !errors.Is(submitErr, ErrTurnInterrupted) {
 		t.Fatalf("SubmitCompiledTurn = %v, want interrupt and persistence errors", submitErr)
 	}
-	if terminalEventCount(events, TurnStateFailed) != 1 || terminalEventCount(events, TurnStateInterrupted) != 0 {
+	if terminalEventCount(events, turnStateFailed) != 1 || terminalEventCount(events, turnStateInterrupted) != 0 {
 		t.Fatalf("terminal events = %#v", events)
 	}
 }
@@ -1274,30 +1296,37 @@ func companionIntegrationCharacter(characterID string) character.Record {
 		Description:      "认真听用户说话。",
 		TextLanguage:     "zh",
 		SpeakingLanguage: "zh",
-		Appearance: character.Appearance{Status: "assigned", Visual: &visual.Manifest{States: []visual.State{{
+		Appearance: character.Appearance{Status: "assigned", Visual: &character.Manifest{States: []character.State{{
 			ID: "idle", Description: "idle", ImagePath: "states/idle.png",
 		}}}},
 	}
 }
 
-func finalBeatEvents(events []TurnEvent) []beatReadyPayload {
+func finalBeatEvents(events []session.Event) []beatReadyPayload {
 	result := make([]beatReadyPayload, 0)
 	for _, event := range events {
-		if payload, ok := event.Payload.(beatReadyPayload); ok && payload.Kind == reply.BeatKindFinal {
+		var payload beatReadyPayload
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.Type == "beat.ready" && payload.Kind == reply.BeatKindFinal {
 			result = append(result, payload)
 		}
 	}
 	return result
 }
 
-func terminalEventCount(events []TurnEvent, state TurnState) int {
+func terminalEventCount(events []session.Event, state turnState) int {
 	count := 0
 	for _, event := range events {
-		if event.State != state {
+		if event.State != string(state) {
 			continue
 		}
-		switch event.Payload.(type) {
-		case completedPayload, failedPayload, stateChangedPayload:
+		var envelope struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(event.Payload, &envelope) != nil {
+			continue
+		}
+		switch envelope.Type {
+		case "completed", "failed", "state_changed":
 			count++
 		}
 	}
@@ -1306,9 +1335,10 @@ func terminalEventCount(events []TurnEvent, state TurnState) int {
 
 type failedEvent struct{ Code string }
 
-func lastFailedEvent(events []TurnEvent) *failedEvent {
+func lastFailedEvent(events []session.Event) *failedEvent {
 	for index := len(events) - 1; index >= 0; index-- {
-		if payload, ok := events[index].Payload.(failedPayload); ok {
+		var payload failedPayload
+		if json.Unmarshal(events[index].Payload, &payload) == nil && payload.Type == "failed" {
 			return &failedEvent{Code: payload.Error.Code}
 		}
 	}
@@ -1391,7 +1421,7 @@ func openCompanionIntegrationStore(t *testing.T) (*memory.Store, *pgxpool.Pool, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		pool.Close()
 		t.Fatal(err)
 	}

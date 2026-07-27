@@ -7,15 +7,15 @@ import (
 	"errors"
 	"time"
 
-	obs "fairy/contracts/observation"
+	"fairy/session"
 )
 
 type macOSIdleSampler struct{}
 
-func newMacOSIdleSampler(time.Duration, func() obs.DesktopPrivacyState) (*macOSIdleSampler, error) {
+func newMacOSIdleSampler(time.Duration, func() session.DesktopPrivacyState) (*macOSIdleSampler, error) {
 	return nil, errors.New("desktop observation sampler is unavailable on this platform")
 }
 
-func (*macOSIdleSampler) Sample(context.Context) (obs.DesktopObservation, error) {
-	return obs.DesktopObservation{}, errors.New("desktop observation sampler is unavailable on this platform")
+func (*macOSIdleSampler) Sample(context.Context) (session.DesktopObservation, error) {
+	return session.DesktopObservation{}, errors.New("desktop observation sampler is unavailable on this platform")
 }

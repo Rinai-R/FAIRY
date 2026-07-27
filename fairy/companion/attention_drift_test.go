@@ -5,13 +5,13 @@ import (
 	"strings"
 	"testing"
 
-	"fairy/participation"
+	"fairy/initiative"
 )
 
 func TestEncodeReplyIntentContextIncludesDriftGuidance(t *testing.T) {
 	item, err := encodeReplyIntentContext(ReplyIntent{
 		ReplyAct: "接话", Tone: "自然", RelationshipSignal: "群友", ReplyMode: "brief",
-		Focus: "当前消息", ExpressionQuery: "轻松接话", DriftLevel: participation.DriftScattered, AnchorPolicy: participation.AnchorLoose,
+		Focus: "当前消息", ExpressionQuery: "轻松接话", DriftLevel: initiative.DriftScattered, AnchorPolicy: initiative.AnchorLoose,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -26,18 +26,18 @@ func TestEncodeReplyIntentContextIncludesDriftGuidance(t *testing.T) {
 
 func TestCompileReplyIntentAppliesDriftDefaults(t *testing.T) {
 	raw := []byte(`{"replyAct":"接话","tone":"自然","relationshipSignal":"群友","replyMode":"brief","focus":"当前消息","avoid":[],"referenceInfo":"","memoryQuery":"","expressionQuery":"轻松接话"}`)
-	intent, err := participation.CompileReplyIntent(json.RawMessage(raw))
+	intent, err := initiative.CompileReplyIntent(json.RawMessage(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if intent.DriftLevel != participation.DefaultDriftLevel || intent.AnchorPolicy != participation.DefaultAnchorPolicy {
+	if intent.DriftLevel != initiative.DefaultDriftLevel || intent.AnchorPolicy != initiative.DefaultAnchorPolicy {
 		t.Fatalf("defaults = %#v", intent)
 	}
 }
 
 func TestCompileReplyIntentRejectsInvalidDrift(t *testing.T) {
 	raw := []byte(`{"replyAct":"接话","tone":"自然","relationshipSignal":"群友","replyMode":"brief","focus":"当前消息","avoid":[],"referenceInfo":"","memoryQuery":"","expressionQuery":"轻松接话","driftLevel":"chaotic"}`)
-	if _, err := participation.CompileReplyIntent(json.RawMessage(raw)); err == nil {
+	if _, err := initiative.CompileReplyIntent(json.RawMessage(raw)); err == nil {
 		t.Fatal("invalid drift accepted")
 	}
 }

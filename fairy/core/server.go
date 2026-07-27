@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"fairy/api"
-	fairyruntime "fairy/runtime"
 )
 
 const shutdownTimeout = 5 * time.Second
@@ -25,13 +24,13 @@ type managedServer interface {
 }
 
 func Run(ctx context.Context, options Options) error {
-	rt, err := fairyruntime.Open(fairyruntime.Options{ConfigRoot: options.ConfigRoot})
+	rt, err := Open(RuntimeOptions{ConfigRoot: options.ConfigRoot})
 	if err != nil {
 		return err
 	}
 	defer rt.Close()
 
-	srv, err := api.NewServer(rt, api.Options{Addr: options.Addr, Token: options.Token, Logger: rt.Logger})
+	srv, err := api.NewServer(rt.APIDependencies(), api.Options{Addr: options.Addr, Token: options.Token, Logger: rt.Logger})
 	if err != nil {
 		return err
 	}

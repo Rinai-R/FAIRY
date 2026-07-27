@@ -6,12 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	fairyruntime "fairy/runtime"
 	"go.uber.org/zap"
 )
 
 func TestNewServerRequiresAPIToken(t *testing.T) {
-	rt := &fairyruntime.Runtime{Logger: zap.NewNop()}
+	rt := &Dependencies{Logger: zap.NewNop()}
 	if _, err := NewServer(rt, Options{Addr: "127.0.0.1:0", Token: ""}); err == nil || !strings.Contains(err.Error(), "FAIRY_API_TOKEN") {
 		t.Fatalf("NewServer(empty token) error = %v", err)
 	}

@@ -5,10 +5,9 @@ import (
 	"testing"
 
 	"fairy/character"
-	contracts "fairy/contracts/interaction"
-	domain "fairy/interaction"
 	"fairy/memory"
 	"fairy/model"
+	"fairy/session"
 )
 
 func TestBuildRespondContextSlotsKeepsStableOrder(t *testing.T) {
@@ -130,19 +129,19 @@ func testCharacter() character.Record {
 	return character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "认真听用户说话。", TextLanguage: "zh", SpeakingLanguage: "zh"}
 }
 
-func privateResolved() domain.Resolved {
-	return domain.Resolved{
-		Endpoint:  contracts.EndpointDesktop,
-		Facts:     contracts.Facts{Audience: contracts.AudienceSingle, Initiation: contracts.InitiationDirect, Presentation: contracts.PresentationEmbodied},
-		Principal: domain.PrincipalOwner, Memory: domain.MemoryPersonal,
+func privateResolved() session.Resolved {
+	return session.Resolved{
+		Endpoint:  session.EndpointDesktop,
+		Facts:     session.Facts{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied},
+		Principal: session.PrincipalOwner, Memory: session.MemoryPersonal,
 	}
 }
 
-func publicResolved() domain.Resolved {
-	return domain.Resolved{
-		Endpoint:  contracts.EndpointIM,
-		Facts:     contracts.Facts{Audience: contracts.AudienceMulti, Initiation: contracts.InitiationAmbient, Presentation: contracts.PresentationChat},
-		Principal: domain.PrincipalNone, Memory: domain.MemoryPublic,
+func publicResolved() session.Resolved {
+	return session.Resolved{
+		Endpoint:  session.EndpointIM,
+		Facts:     session.Facts{Audience: session.AudienceMulti, Initiation: session.InitiationAmbient, Presentation: session.PresentationChat},
+		Principal: session.PrincipalNone, Memory: session.MemoryPublic,
 	}
 }
 

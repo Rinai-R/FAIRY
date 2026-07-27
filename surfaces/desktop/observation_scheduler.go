@@ -5,8 +5,6 @@ import (
 	"errors"
 	"sync"
 	"time"
-
-	"fairy/pkg/coalescer"
 )
 
 type observationEvaluator func(context.Context) error
@@ -39,12 +37,55 @@ type observationScheduler struct {
 	config   observationSchedulerConfig
 	evaluate observationEvaluator
 	now      func() time.Time
-	owner    coalescer.Owner
+	owner    observationOwner
 
 	suspended           bool
 	budgetDay           time.Time
 	evaluationsToday    int
 	consecutiveFailures int
+}
+
+// observationOwner serializes evaluations and retains at most one rerun while
+// an evaluation is already active.
+type observationOwner struct {
+	mu      sync.Mutex
+	active  bool
+	pending bool
+}
+
+func (o *observationOwner) Start() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.active {
+		o.pending = true
+		return false
+	}
+	o.active = true
+	return true
+}
+
+func (o *observationOwner) Finish() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.pending {
+		o.pending = false
+		return true
+	}
+	o.active = false
+	return false
+}
+
+func (o *observationOwner) Abort() {
+	o.mu.Lock()
+	o.active = false
+	o.pending = false
+	o.mu.Unlock()
+}
+
+func (o *observationOwner) Snapshot() (bool, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.active, o.pending
 }
 
 func newObservationScheduler(config observationSchedulerConfig, evaluate observationEvaluator) (*observationScheduler, error) {

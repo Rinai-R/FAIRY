@@ -8,10 +8,10 @@ import (
 	"unicode/utf8"
 
 	"fairy/character"
+	"fairy/config"
 	"fairy/memory"
 	"fairy/model"
 	"fairy/persona"
-	"fairy/profile"
 )
 
 func TestRespondInstructionsStayStable(t *testing.T) {
@@ -58,7 +58,7 @@ func TestRespondInstructionsStayStable(t *testing.T) {
 }
 
 func TestPublicRespondInstructionsRequireImmediateSingleHook(t *testing.T) {
-	instructions := RespondInstructionsForInteraction(false, publicAmbientResolved())
+	instructions := respondInstructionsForInteraction(false, publicAmbientResolved())
 	for _, required := range []string{"one conversational hook", "not a summary of the whole transcript", "do not turn a reaction into unsolicited advice"} {
 		if !strings.Contains(instructions, required) {
 			t.Fatalf("public Respond instructions missing %q", required)
@@ -226,7 +226,7 @@ func TestReplyIntentDeliveryContractFollowsModeWithoutChangingInstructions(t *te
 		{mode: "normal", max: 3},
 		{mode: "expanded", max: 5},
 	}
-	publicInstructions := RespondInstructionsForInteraction(false, publicAmbientResolved())
+	publicInstructions := respondInstructionsForInteraction(false, publicAmbientResolved())
 	for _, tt := range tests {
 		item, err := encodeReplyIntentContext(ReplyIntent{
 			ReplyAct: "接话", Tone: "自然", RelationshipSignal: "群友", ReplyMode: tt.mode, Focus: "一个话题",
@@ -241,7 +241,7 @@ func TestReplyIntentDeliveryContractFollowsModeWithoutChangingInstructions(t *te
 		if payload.Delivery.MinChains != 1 || payload.Delivery.MaxChains != tt.max || !payload.Delivery.OneConversationalHook || !payload.Delivery.AvoidUnrequestedAdvice {
 			t.Fatalf("mode %q delivery = %#v", tt.mode, payload.Delivery)
 		}
-		if got := RespondInstructionsForInteraction(false, publicAmbientResolved()); got != publicInstructions {
+		if got := respondInstructionsForInteraction(false, publicAmbientResolved()); got != publicInstructions {
 			t.Fatalf("public instructions changed for mode %q", tt.mode)
 		}
 	}
@@ -321,7 +321,7 @@ func TestBuildRespondInputKeepsPersonaOutOfInstructions(t *testing.T) {
 			TextLanguage:     "zh",
 			SpeakingLanguage: "ja",
 		},
-		&profile.Snapshot{Revision: 1, PreferredName: &name},
+		&config.ProfileSnapshot{Revision: 1, PreferredName: &name},
 		memory.PromptWindowRecord{Revision: 1},
 		[]memory.MessageRecord{
 			{Role: "user", Content: "你好", Sequence: 1},
@@ -429,12 +429,7 @@ func TestInstructionsForLane(t *testing.T) {
 			t.Fatalf("TranslateInstructions missing %q", needle)
 		}
 	}
-	text, tokens, err = InstructionsForLane(model.PromptLaneSocialLearn)
-	if err != nil || text != SocialLearnInstructions || tokens != SocialLearnMaxOutputTokens {
-		t.Fatalf("social learn lane = (%q, %d, %v)", text, tokens, err)
-	}
-	text, tokens, err = InstructionsForLane(model.PromptLaneSocialFeedback)
-	if err != nil || text != SocialFeedbackInstructions || tokens != SocialFeedbackMaxOutputTokens {
-		t.Fatalf("social feedback lane = (%q, %d, %v)", text, tokens, err)
+	if _, _, err = InstructionsForLane(model.PromptLaneSocialLearn); err == nil {
+		t.Fatal("Companion accepted Initiative-owned social learning lane")
 	}
 }

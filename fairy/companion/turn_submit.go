@@ -8,10 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
-	contracts "fairy/contracts/interaction"
-	obs "fairy/contracts/observation"
-	domain "fairy/interaction"
-	appobs "fairy/observation"
+	"fairy/session"
 )
 
 func (e *TurnEngine) SubmitDesktopVisionInitiation(request DesktopVisionInitiationRequest) (TurnOutcome, error) {
@@ -43,7 +40,7 @@ func (e *TurnEngine) SubmitDesktopVisionInitiation(request DesktopVisionInitiati
 	}, &resolved)
 }
 
-func (e *TurnEngine) SubmitDesktopInitiation(request DesktopInitiationRequest, observation DesktopObservation) (TurnOutcome, error) {
+func (e *TurnEngine) SubmitDesktopInitiation(request DesktopInitiationRequest, observation session.DesktopObservation) (TurnOutcome, error) {
 	s := e.host
 	if err := ValidateDesktopInitiationRequest(request); err != nil {
 		return TurnOutcome{}, err
@@ -55,14 +52,14 @@ func (e *TurnEngine) SubmitDesktopInitiation(request DesktopInitiationRequest, o
 	if err := observation.Validate(now); err != nil {
 		return TurnOutcome{}, err
 	}
-	if observation.Privacy != obs.DesktopPrivacyNormal {
+	if observation.Privacy != session.DesktopPrivacyNormal {
 		return TurnOutcome{}, errors.New("desktop initiation requires normal privacy state")
 	}
 	resolved, err := s.ResolveInteraction(request.ConversationID)
 	if err != nil {
 		return TurnOutcome{}, err
 	}
-	if resolved.Endpoint != contracts.EndpointDesktop || !resolved.AllowsPersonalMemory() {
+	if resolved.Endpoint != session.EndpointDesktop || !resolved.AllowsPersonalMemory() {
 		return TurnOutcome{}, errors.New("desktop initiation requires a private desktop interaction")
 	}
 	if s.desktopEvidence == nil {
@@ -91,23 +88,15 @@ func (e *TurnEngine) SubmitTurn(request SubmitTurnRequest) (TurnOutcome, error) 
 	if s == nil || !s.RespondRuntimeMigrated() {
 		return TurnOutcome{}, ErrRespondRuntimeNotMigrated
 	}
-	var resolved *domain.Resolved
+	var resolved *session.Resolved
 	if request.MessageSource == "" || request.MessageSource == "direct" {
 		current, err := s.ResolveInteraction(request.ConversationID)
 		if err != nil {
 			return TurnOutcome{}, err
 		}
 		resolved = &current
-		now := time.Now()
-		route, err := appobs.RouteCoreTrigger(appobs.TriggerEnvelope{
-			Kind: appobs.TriggerDirect, ConversationID: request.ConversationID, Resolved: current,
-			Payload: appobs.DirectTrigger{Input: request.Input}, CreatedAt: now, SpeechEnabled: request.SpeechEnabled,
-		}, obs.DesktopPrivacyNormal, true, now)
-		if err != nil {
-			return TurnOutcome{}, err
-		}
-		if route.Pipeline != appobs.PipelineDirectTurn {
-			return TurnOutcome{}, errors.New("direct trigger selected an invalid entry graph")
+		if !current.AllowsPersonalMemory() {
+			return TurnOutcome{}, errors.New("direct trigger requires a private interaction")
 		}
 	}
 	request.TraceID = s.beginMessageTrace(request.MessageSource, request.ConversationID, request.TraceID)

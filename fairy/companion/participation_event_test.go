@@ -6,14 +6,15 @@ import (
 	"testing"
 	"time"
 
+	"fairy/initiative"
 	"fairy/model"
 )
 
 func TestParticipationEventJSONIsDiagnosticOnly(t *testing.T) {
 	inputTokens := uint64(29)
 	cachedTokens := uint64(21)
-	raw, err := json.Marshal(ParticipationEvent{
-		ConversationID: "c1", Generation: 4, EvaluationReason: ParticipationReasonMessage,
+	raw, err := json.Marshal(initiative.Event{
+		ConversationID: "c1", Generation: 4, EvaluationReason: initiative.ParticipationReasonMessage,
 		Action: "reply", TargetMessageID: "m4", ObservedAt: time.Unix(1, 0).UTC(),
 		Usage: []LaneModelUsage{{
 			Lane:  string(model.PromptLaneParticipate),

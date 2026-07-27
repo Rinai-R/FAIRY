@@ -4,14 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"fairy/search"
+	"time"
 )
 
-const webSearchSettingsFile = "settings.json"
+const (
+	webSearchSettingsFile   = "settings.json"
+	defaultWebSearchBaseURL = "http://127.0.0.1:7000"
+	webSearchBaseURLEnv     = "FAIRY_OPENSERP_URL"
+	webSearchHealthTimeout  = 5 * time.Second
+)
 
 type WebSearchSettings struct {
 	SchemaVersion uint32 `json:"schema_version"`
@@ -33,6 +38,32 @@ type webSearchDocument struct {
 
 func webSearchDir(root string) string {
 	return filepath.Join(root, "web_search")
+}
+
+func ResolveWebSearchBaseURL(raw string) string {
+	baseURL := strings.TrimSpace(raw)
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(os.Getenv(webSearchBaseURLEnv))
+	}
+	if baseURL == "" {
+		baseURL = defaultWebSearchBaseURL
+	}
+	return strings.TrimRight(baseURL, "/")
+}
+
+func webSearchReady(ctx context.Context, baseURL string) bool {
+	healthCtx, cancel := context.WithTimeout(ctx, webSearchHealthTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(healthCtx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/health", nil)
+	if err != nil {
+		return false
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return false
+	}
+	defer response.Body.Close()
+	return response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices
 }
 
 func ReadWebSearchSettings(root string) (WebSearchSettings, error) {
@@ -79,14 +110,14 @@ func (s *ConfigService) WebSearchStatus() (WebSearchStatus, error) {
 	if err != nil {
 		return WebSearchStatus{}, err
 	}
-	client := search.NewServiceFromEnv(settings.BaseURL)
+	baseURL := ResolveWebSearchBaseURL(settings.BaseURL)
 	ready := false
 	if settings.Enabled {
-		ready = client.EnsureReady(context.Background()) == nil
+		ready = webSearchReady(context.Background(), baseURL)
 	}
 	return WebSearchStatus{
 		Enabled: settings.Enabled,
-		BaseURL: client.BaseURL(),
+		BaseURL: baseURL,
 		Ready:   ready,
 	}, nil
 }

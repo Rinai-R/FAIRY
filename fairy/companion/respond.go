@@ -64,6 +64,22 @@ type SubmitCompiledTurnRequest struct {
 	Initiation            *DesktopInitiationContext `json:"-"`
 }
 
+// ReplyIntent is ephemeral Companion control data supplied by an initiating
+// workflow. It is never serialized to a Surface or persisted in transcript.
+type ReplyIntent struct {
+	ReplyAct           string
+	Tone               string
+	RelationshipSignal string
+	ReplyMode          string
+	Focus              string
+	Avoid              []string
+	ReferenceInfo      string
+	MemoryQuery        string
+	ExpressionQuery    string
+	DriftLevel         string
+	AnchorPolicy       string
+}
+
 type DesktopInitiationContext struct {
 	ObservationEvidenceIDs []string
 	Trigger                string

@@ -8,16 +8,13 @@ import (
 	"reflect"
 	"testing"
 
-	dbschema "fairy/coredb/schema"
-
-	"fairy/memory/semantic"
-	vectorindex "fairy/vectorindex"
+	"fairy/coredb"
 )
 
 type failingSemanticIndex struct{}
 
 func (failingSemanticIndex) Ready(context.Context) error { return nil }
-func (failingSemanticIndex) Search(context.Context, []float32, string, string, int) ([]vectorindex.SearchHit, error) {
+func (failingSemanticIndex) Search(context.Context, []float32, string, string, int) ([]VectorSearchHit, error) {
 	return nil, errors.New("qdrant timeout")
 }
 
@@ -25,7 +22,7 @@ func TestPostgresSemanticRetrievalEnforcesRelationshipScopeAndTruth(t *testing.T
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -74,7 +71,7 @@ func TestPostgresSemanticRetrievalEnforcesRelationshipScopeAndTruth(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.SemanticStatus != string(semantic.StatusUsed) || len(first.PersonalMemories) != 1 || first.PersonalMemories[0].ID != memoryA.ID {
+	if first.SemanticStatus != string(SemanticStatusUsed) || len(first.PersonalMemories) != 1 || first.PersonalMemories[0].ID != memoryA.ID {
 		t.Fatalf("character A retrieval = %#v; character B id = %s", first, memoryB.ID)
 	}
 	repeated, err := store.RetrieveWithSemanticVectorIndex(ctx, "character-a", "角色安静陪伴", embedder, index)
@@ -95,7 +92,7 @@ func TestPostgresSemanticRetrievalEnforcesRelationshipScopeAndTruth(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !stale.Empty() || stale.SemanticStatus != string(semantic.StatusReady) {
+	if !stale.Empty() || stale.SemanticStatus != string(SemanticStatusReady) {
 		t.Fatalf("stale point retrieval = %#v", stale)
 	}
 }
@@ -104,7 +101,7 @@ func TestPostgresSemanticRetrievalFallsBackToTrigramWhenQdrantFails(t *testing.T
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
-	if err := dbschema.Migrate(ctx, pool.Raw()); err != nil {
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatal(err)
 	}
 	store, err := NewStoreFromPool(pool)
@@ -118,7 +115,7 @@ func TestPostgresSemanticRetrievalFallsBackToTrigramWhenQdrantFails(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.SemanticStatus != string(semantic.StatusUnavailable) || len(result.PersonalMemories) != 1 || result.PersonalMemories[0].ID != record.ID {
+	if result.SemanticStatus != string(SemanticStatusUnavailable) || len(result.PersonalMemories) != 1 || result.PersonalMemories[0].ID != record.ID {
 		t.Fatalf("fallback result = %#v", result)
 	}
 }

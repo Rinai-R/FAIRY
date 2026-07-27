@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	contracts "fairy/contracts/interaction"
+	"fairy/session"
 )
 
 func (s *Store) openOrCreateCharacterConversationPostgres(ctx context.Context, characterID string) (ConversationBootstrap, error) {
@@ -39,7 +39,7 @@ func (s *Store) openOrCreateCharacterConversationPostgres(ctx context.Context, c
 	return s.loadConversationPostgres(ctx, conversationID)
 }
 
-func (s *Store) openOrCreateEndpointConversationPostgres(ctx context.Context, characterID string, binding contracts.Binding, digest string) (ConversationBootstrap, error) {
+func (s *Store) openOrCreateEndpointConversationPostgres(ctx context.Context, characterID string, binding session.Binding, digest string) (ConversationBootstrap, error) {
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
 	tx, err := s.pool.Raw().Begin(queryCtx)
@@ -86,9 +86,9 @@ func (s *Store) openOrCreateEndpointConversationPostgres(ctx context.Context, ch
 	return s.loadConversationPostgres(ctx, stored.ConversationID)
 }
 
-func (s *Store) lookupEndpointForConversationPostgres(ctx context.Context, conversationID string) (contracts.Binding, bool, error) {
+func (s *Store) lookupEndpointForConversationPostgres(ctx context.Context, conversationID string) (session.Binding, bool, error) {
 	if err := ValidateID("conversation_id", conversationID); err != nil {
-		return contracts.Binding{}, false, err
+		return session.Binding{}, false, err
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()

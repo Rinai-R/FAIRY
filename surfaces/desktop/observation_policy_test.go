@@ -5,13 +5,13 @@ import (
 	"testing"
 	"time"
 
-	obs "fairy/contracts/observation"
+	"fairy/session"
 )
 
 func TestObservationPolicyDeduplicatesAndSuppressesPrivacy(t *testing.T) {
 	now := time.UnixMilli(1_000_000)
 	p := &observationPolicy{}
-	sample := obs.DesktopObservation{ObservationID: "o1", TimestampUnixMS: now.UnixMilli(), Trigger: obs.DesktopTriggerPeriodic, Activity: obs.DesktopActivityWorking, Privacy: obs.DesktopPrivacyNormal}
+	sample := session.DesktopObservation{ObservationID: "o1", TimestampUnixMS: now.UnixMilli(), Trigger: session.DesktopTriggerPeriodic, Activity: session.DesktopActivityWorking, Privacy: session.DesktopPrivacyNormal}
 	if err := p.Enqueue(sample, now); err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +20,7 @@ func TestObservationPolicyDeduplicatesAndSuppressesPrivacy(t *testing.T) {
 	}
 	privacy := sample
 	privacy.ObservationID = "o2"
-	privacy.Privacy = obs.DesktopPrivacyMeeting
+	privacy.Privacy = session.DesktopPrivacyMeeting
 	if err := p.Enqueue(privacy, now.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
@@ -32,15 +32,15 @@ func TestObservationPolicyDeduplicatesAndSuppressesPrivacy(t *testing.T) {
 func TestObservationPolicyReportsDowngradedPrivacyTransition(t *testing.T) {
 	now := time.UnixMilli(1_000_000)
 	p := &observationPolicy{}
-	transition := obs.DesktopObservation{
-		ObservationID: "privacy-on", TimestampUnixMS: now.UnixMilli(), Trigger: obs.DesktopTriggerLifecycle,
-		Activity: obs.DesktopActivityUnknown, Lifecycle: obs.DesktopLifecyclePrivacyOn, Privacy: obs.DesktopPrivacyMeeting,
+	transition := session.DesktopObservation{
+		ObservationID: "privacy-on", TimestampUnixMS: now.UnixMilli(), Trigger: session.DesktopTriggerLifecycle,
+		Activity: session.DesktopActivityUnknown, Lifecycle: session.DesktopLifecyclePrivacyOn, Privacy: session.DesktopPrivacyMeeting,
 	}
 	if err := p.Enqueue(transition, now); err != nil {
 		t.Fatal(err)
 	}
 	queued, ok := p.Next(now)
-	if !ok || queued.ObservationID != transition.ObservationID || queued.Activity != obs.DesktopActivityUnknown {
+	if !ok || queued.ObservationID != transition.ObservationID || queued.Activity != session.DesktopActivityUnknown {
 		t.Fatalf("privacy transition = %#v, ok=%v", queued, ok)
 	}
 }
@@ -50,9 +50,9 @@ func TestObservationPolicyBoundsQueueAndDropsOldestInOrder(t *testing.T) {
 	p := &observationPolicy{}
 	for index := 0; index < desktopObservationQueueLimit+1; index++ {
 		sampledAt := now.Add(time.Duration(index) * (desktopObservationMinInterval + time.Second))
-		sample := obs.DesktopObservation{
+		sample := session.DesktopObservation{
 			ObservationID: fmt.Sprintf("o%d", index), TimestampUnixMS: sampledAt.UnixMilli(),
-			Trigger: obs.DesktopTriggerPeriodic, Activity: obs.DesktopActivityWorking, Privacy: obs.DesktopPrivacyNormal,
+			Trigger: session.DesktopTriggerPeriodic, Activity: session.DesktopActivityWorking, Privacy: session.DesktopPrivacyNormal,
 		}
 		if err := p.Enqueue(sample, sampledAt); err != nil {
 			t.Fatal(err)
@@ -70,7 +70,7 @@ func TestObservationPolicyBoundsQueueAndDropsOldestInOrder(t *testing.T) {
 func TestObservationPolicyDropsStaleQueueItems(t *testing.T) {
 	now := time.UnixMilli(1_000_000)
 	p := &observationPolicy{}
-	sample := obs.DesktopObservation{ObservationID: "old", TimestampUnixMS: now.Add(-desktopObservationFreshness - time.Second).UnixMilli(), Trigger: obs.DesktopTriggerPeriodic, Activity: obs.DesktopActivityIdle, Privacy: obs.DesktopPrivacyNormal}
+	sample := session.DesktopObservation{ObservationID: "old", TimestampUnixMS: now.Add(-desktopObservationFreshness - time.Second).UnixMilli(), Trigger: session.DesktopTriggerPeriodic, Activity: session.DesktopActivityIdle, Privacy: session.DesktopPrivacyNormal}
 	if err := p.Enqueue(sample, now); err != nil {
 		t.Fatal(err)
 	}

@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"fairy/character"
-	"fairy/visual"
+
 	"github.com/cloudwego/hertz/pkg/app"
 )
 
@@ -175,7 +175,7 @@ func (s *Server) handleExportCharacter(ctx context.Context, c *app.RequestContex
 }
 
 func (s *Server) handleListVisualPacks(ctx context.Context, c *app.RequestContext) {
-	catalog, err := visual.ListManifests(visual.VisualPacksRoot(s.rt.ConfigRoot))
+	catalog, err := character.ListManifests(character.VisualPacksRoot(s.rt.ConfigRoot))
 	if err != nil {
 		writeErr(c, http.StatusInternalServerError, err)
 		return

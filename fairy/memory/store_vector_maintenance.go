@@ -7,9 +7,6 @@ import (
 	"fmt"
 	"sort"
 
-	"fairy/memory/semantic"
-	vectorindex "fairy/vectorindex"
-
 	"github.com/google/uuid"
 )
 
@@ -17,8 +14,8 @@ const maxVectorMaintenancePageSize = 100
 
 type VectorMaintenanceIndex interface {
 	Ready(context.Context) error
-	Upsert(context.Context, vectorindex.Point) error
-	ListPoints(context.Context) ([]vectorindex.StoredPoint, error)
+	Upsert(context.Context, VectorPoint) error
+	ListPoints(context.Context) ([]VectorStoredPoint, error)
 	DeletePoints(context.Context, []uuid.UUID) error
 	Collection() string
 }
@@ -45,7 +42,7 @@ type authoritativeVectorItem struct {
 	CharacterID string
 }
 
-func (s *Store) RebuildVectorIndex(ctx context.Context, embedder semantic.Embedder, index VectorMaintenanceIndex, pageSize int) (VectorRebuildResult, error) {
+func (s *Store) RebuildVectorIndex(ctx context.Context, embedder SemanticEmbedder, index VectorMaintenanceIndex, pageSize int) (VectorRebuildResult, error) {
 	if s == nil || s.pool == nil {
 		return VectorRebuildResult{}, errors.New("vector rebuild requires PostgreSQL store")
 	}
@@ -98,17 +95,17 @@ func (s *Store) RebuildVectorIndex(ctx context.Context, embedder semantic.Embedd
 			return result, err
 		}
 		for i, item := range items {
-			if err := vectorindex.ValidateVector(vectors[i]); err != nil {
+			if err := ValidateVector(vectors[i]); err != nil {
 				s.failVectorRebuildRun(ctx, runID, err)
 				return result, err
 			}
-			pointID, err := vectorindex.PointID(item.ItemKind, item.ItemID, SemanticEmbeddingModelID)
+			pointID, err := VectorPointID(item.ItemKind, item.ItemID, SemanticEmbeddingModelID)
 			if err != nil {
 				s.failVectorRebuildRun(ctx, runID, err)
 				return result, err
 			}
 			hash := semanticContentHash(item.Content)
-			if err := index.Upsert(ctx, vectorindex.Point{ID: pointID, Vector: vectors[i], Payload: vectorindex.PointPayloadInput{ItemKind: item.ItemKind, ItemID: item.ItemID, ModelID: SemanticEmbeddingModelID, ScopeType: item.ScopeType, CharacterID: item.CharacterID, ContentHash: hash}}); err != nil {
+			if err := index.Upsert(ctx, VectorPoint{ID: pointID, Vector: vectors[i], Payload: VectorPointPayloadInput{ItemKind: item.ItemKind, ItemID: item.ItemID, ModelID: SemanticEmbeddingModelID, ScopeType: item.ScopeType, CharacterID: item.CharacterID, ContentHash: hash}}); err != nil {
 				s.failVectorRebuildRun(ctx, runID, err)
 				return result, err
 			}
@@ -181,7 +178,7 @@ func (s *Store) allAuthoritativeVectorItems(ctx context.Context) (map[uuid.UUID]
 			return items, nil
 		}
 		for _, item := range page {
-			pointID, err := vectorindex.PointID(item.ItemKind, item.ItemID, SemanticEmbeddingModelID)
+			pointID, err := VectorPointID(item.ItemKind, item.ItemID, SemanticEmbeddingModelID)
 			if err != nil {
 				return nil, err
 			}
@@ -257,7 +254,7 @@ func (s *Store) ReconcileVectorIndex(ctx context.Context, index VectorMaintenanc
 		s.failVectorReconciliationRun(ctx, runID, err)
 		return result, err
 	}
-	storedByID := make(map[uuid.UUID]vectorindex.StoredPoint, len(stored))
+	storedByID := make(map[uuid.UUID]VectorStoredPoint, len(stored))
 	for _, point := range stored {
 		storedByID[point.PointID] = point
 		item, ok := expected[point.PointID]

@@ -3,7 +3,7 @@ package memory
 import (
 	"context"
 
-	contracts "fairy/contracts/interaction"
+	"fairy/session"
 )
 
 func (s *Store) BeginInitiationTurn(conversationID string, evidenceIDs []string) (PersistedTurn, error) {
@@ -14,22 +14,22 @@ func (s *Store) BeginInitiationTurnContext(ctx context.Context, conversationID s
 	return s.beginInitiationTurnPostgres(ctx, conversationID, evidenceIDs)
 }
 
-func (s *Store) OpenOrCreateEndpointConversation(characterID string, binding contracts.Binding, endpointKeyDigest string) (ConversationBootstrap, error) {
+func (s *Store) OpenOrCreateEndpointConversation(characterID string, binding session.Binding, endpointKeyDigest string) (ConversationBootstrap, error) {
 	return s.OpenOrCreateEndpointConversationContext(context.Background(), characterID, binding, endpointKeyDigest)
 }
 
-func (s *Store) OpenOrCreateEndpointConversationContext(ctx context.Context, characterID string, binding contracts.Binding, endpointKeyDigest string) (ConversationBootstrap, error) {
+func (s *Store) OpenOrCreateEndpointConversationContext(ctx context.Context, characterID string, binding session.Binding, endpointKeyDigest string) (ConversationBootstrap, error) {
 	if err := validateEndpointConversationKey(characterID, binding, endpointKeyDigest); err != nil {
 		return ConversationBootstrap{}, err
 	}
 	return s.openOrCreateEndpointConversationPostgres(ctx, characterID, binding, endpointKeyDigest)
 }
 
-func (s *Store) LookupEndpointForConversation(conversationID string) (contracts.Binding, bool, error) {
+func (s *Store) LookupEndpointForConversation(conversationID string) (session.Binding, bool, error) {
 	return s.LookupEndpointForConversationContext(context.Background(), conversationID)
 }
 
-func (s *Store) LookupEndpointForConversationContext(ctx context.Context, conversationID string) (contracts.Binding, bool, error) {
+func (s *Store) LookupEndpointForConversationContext(ctx context.Context, conversationID string) (session.Binding, bool, error) {
 	return s.lookupEndpointForConversationPostgres(ctx, conversationID)
 }
 

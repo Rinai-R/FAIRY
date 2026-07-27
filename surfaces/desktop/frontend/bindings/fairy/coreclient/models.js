@@ -8,7 +8,7 @@ import { Create as $Create } from "/wails/runtime.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as session$0 from "../contracts/session/models.js";
+import * as session$0 from "../session/models.js";
 
 export class CharacterAppearance {
     /**

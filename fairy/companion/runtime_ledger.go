@@ -26,7 +26,7 @@ const (
 	runtimeLedgerEventNode          = "node"
 )
 
-func (s *CompanionService) appendRuntimeLedger(conversationID string, turnID string, eventType string, state TurnState, code string, metadata map[string]any) {
+func (s *CompanionService) appendRuntimeLedger(conversationID string, turnID string, eventType string, state turnState, code string, metadata map[string]any) {
 	if s == nil || s.memory.turn.runtimeState == nil {
 		return
 	}

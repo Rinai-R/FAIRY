@@ -6,24 +6,12 @@ import (
 	"unicode/utf8"
 
 	"fairy/character"
-	"fairy/compaction"
+	"fairy/config"
 	"fairy/memory"
 	"fairy/model"
 	"fairy/persona"
-	"fairy/profile"
 
-	domain "fairy/interaction"
-)
-
-type CompactionPolicy = compaction.Policy
-type CompactionTrigger = compaction.Trigger
-
-const (
-	CompactionTriggerManual             = compaction.TriggerManual
-	CompactionTriggerAfterCompletedTurn = compaction.TriggerAfterCompletedTurn
-	CompactionTriggerPreTurnPredictive  = compaction.TriggerPreTurnPredictive
-	estimatedPromptCharsPerToken        = compaction.EstimatedPromptCharsPerToken
-	maxCompactionSummaryChars           = compaction.MaxSummaryChars
+	"fairy/session"
 )
 
 func estimatePromptPrefillTokens(instructions string, input []model.PromptItem) uint64 {
@@ -36,26 +24,26 @@ func estimatePromptPrefillTokens(instructions string, input []model.PromptItem) 
 	if chars == 0 {
 		return 0
 	}
-	return compaction.EstimatePromptTokens(chars)
+	return estimatePromptTokens(chars)
 }
 
 func normalizeCompactionSummary(summary string) (string, error) {
 	value := strings.TrimSpace(summary)
-	if err := compaction.ValidateSummary(value); err != nil {
+	if err := validateCompactionSummary(value); err != nil {
 		return "", errors.New("compaction summary must be 1-12000 characters")
 	}
 	return value, nil
 }
 
-// BuildCompactInput mirrors respond's stable prefix, then window summary/dialogue,
+// buildCompactInput mirrors respond's stable prefix, then window summary/dialogue,
 // then a trailing compaction directive. Only the dialogue window is compacted.
-func BuildCompactInput(
+func buildCompactInput(
 	record character.Record,
-	userProfile *profile.Snapshot,
+	userProfile *config.ProfileSnapshot,
 	promptWindow memory.PromptWindowRecord,
 	messages []memory.MessageRecord,
 	states []VisualState,
-	resolved domain.Resolved,
+	resolved session.Resolved,
 ) ([]model.PromptItem, error) {
 	windowed := messagesAfterCutoff(messages, promptWindow.CutoffMessageSequence)
 	prefix, err := persona.BuildStablePrefixItems(record, userProfile, states)
@@ -94,7 +82,7 @@ func (s *CompanionService) scheduleAutoCompaction(conversationID string, events 
 	if err != nil {
 		return
 	}
-	policy := compaction.PolicyFromContextWindow(connection.ContextWindowTokens)
+	policy := compactionPolicyFromContextWindow(connection.ContextWindowTokens)
 	window, found, err := s.memory.turn.runtimeState.LoadContextWindow(conversationID, string(model.PromptLaneRespond))
 	if err != nil {
 		s.setBackgroundError(err)
@@ -104,10 +92,10 @@ func (s *CompanionService) scheduleAutoCompaction(conversationID string, events 
 	if found {
 		windowPtr = &window
 	}
-	if !policy.ShouldCompactWindow(CompactionTriggerAfterCompletedTurn, promptTokens, true, windowPtr) {
+	if !policy.shouldCompactWindow(compactionTriggerAfterCompletedTurn, promptTokens, true, windowPtr) {
 		return
 	}
-	if s.retention == nil || !s.retention.Run(func() {
+	if s.retention == nil || !s.retention.run(func() {
 		if _, err := s.CompactConversation(conversationID); err != nil {
 			if recordErr := s.recordContextWindowFailure(conversationID); recordErr != nil {
 				s.setBackgroundError(recordErr)
@@ -129,7 +117,7 @@ type preTurnPreparation struct {
 
 func (s *CompanionService) prepareBeforeTurn(
 	request SubmitCompiledTurnRequest,
-	resolved domain.Resolved,
+	resolved session.Resolved,
 	deriveVisualStates bool,
 ) (preTurnPreparation, error) {
 	result := preTurnPreparation{visualStates: request.AvailableVisualStates}
@@ -165,7 +153,7 @@ func (s *CompanionService) prepareBeforeTurn(
 	if len(windowed) == 0 {
 		return result, nil
 	}
-	var userProfile *profile.Snapshot
+	var userProfile *config.ProfileSnapshot
 	if resolved.AllowsPersonalMemory() {
 		userProfile, err = s.profileSource().Current()
 		if err != nil {
@@ -202,8 +190,8 @@ func (s *CompanionService) prepareBeforeTurn(
 		result.compactionErr = err
 		return result, nil
 	}
-	policy := compaction.PolicyFromContextWindow(connection.ContextWindowTokens)
-	if !policy.ShouldCompactWindow(CompactionTriggerPreTurnPredictive, estimatedTokens, true, window) {
+	policy := compactionPolicyFromContextWindow(connection.ContextWindowTokens)
+	if !policy.shouldCompactWindow(compactionTriggerPreTurnPredictive, estimatedTokens, true, window) {
 		return result, nil
 	}
 	if _, err := s.CompactConversation(request.ConversationID); err != nil {

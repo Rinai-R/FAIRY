@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	contracts "fairy/contracts/interaction"
+	"fairy/session"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -89,20 +89,20 @@ type EndpointConversationRow struct {
 	PrincipalDigest    string
 }
 
-func (row EndpointConversationRow) Binding(endpoint contracts.EndpointKind) contracts.Binding {
-	return contracts.Binding{
+func (row EndpointConversationRow) Binding(endpoint session.EndpointKind) session.Binding {
+	return session.Binding{
 		Endpoint: endpoint,
-		Facts: contracts.Facts{
-			Audience:           contracts.AudienceKind(row.Audience),
-			Initiation:         contracts.InitiationKind(row.Initiation),
-			Presentation:       contracts.PresentationKind(row.Presentation),
+		Facts: session.Facts{
+			Audience:           session.AudienceKind(row.Audience),
+			Initiation:         session.InitiationKind(row.Initiation),
+			Presentation:       session.PresentationKind(row.Presentation),
 			PrincipalNamespace: row.PrincipalNamespace,
 			PrincipalDigest:    row.PrincipalDigest,
 		},
 	}
 }
 
-func SelectEndpointConversation(ctx context.Context, tx pgx.Tx, characterID string, endpoint contracts.EndpointKind, digest string) (EndpointConversationRow, bool, error) {
+func SelectEndpointConversation(ctx context.Context, tx pgx.Tx, characterID string, endpoint session.EndpointKind, digest string) (EndpointConversationRow, bool, error) {
 	var row EndpointConversationRow
 	var namespace, principalDigest pgtype.Text
 	err := tx.QueryRow(ctx, `
@@ -126,7 +126,7 @@ func InsertEndpointConversation(
 	ctx context.Context,
 	tx pgx.Tx,
 	characterID string,
-	endpoint contracts.EndpointKind,
+	endpoint session.EndpointKind,
 	digest, conversationID string,
 	audience, initiation, presentation, principalNamespace, principalDigest string,
 	now int64,
@@ -146,7 +146,7 @@ INSERT INTO endpoint_conversations(
 	return nil
 }
 
-func TouchEndpointConversation(ctx context.Context, tx pgx.Tx, characterID string, endpoint contracts.EndpointKind, digest string, now int64) error {
+func TouchEndpointConversation(ctx context.Context, tx pgx.Tx, characterID string, endpoint session.EndpointKind, digest string, now int64) error {
 	if _, err := tx.Exec(ctx, `
 UPDATE endpoint_conversations
 SET updated_at_ms = $4
@@ -156,7 +156,7 @@ WHERE character_id = $1 AND endpoint = $2 AND endpoint_key_digest = $3`, charact
 	return nil
 }
 
-func LookupEndpointBinding(ctx context.Context, db RowQuerier, conversationID string) (contracts.Binding, bool, error) {
+func LookupEndpointBinding(ctx context.Context, db RowQuerier, conversationID string) (session.Binding, bool, error) {
 	var endpoint, audience, initiation, presentation string
 	var namespace, digest pgtype.Text
 	err := db.QueryRow(ctx, `
@@ -164,23 +164,23 @@ SELECT endpoint, audience, initiation, presentation, principal_namespace, princi
 FROM endpoint_conversations
 WHERE conversation_id = $1`, conversationID).Scan(&endpoint, &audience, &initiation, &presentation, &namespace, &digest)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return contracts.Binding{}, false, nil
+		return session.Binding{}, false, nil
 	}
 	if err != nil {
-		return contracts.Binding{}, false, fmt.Errorf("looking up endpoint conversation: %w", err)
+		return session.Binding{}, false, fmt.Errorf("looking up endpoint conversation: %w", err)
 	}
-	binding := contracts.Binding{
-		Endpoint: contracts.EndpointKind(endpoint),
-		Facts: contracts.Facts{
-			Audience:           contracts.AudienceKind(audience),
-			Initiation:         contracts.InitiationKind(initiation),
-			Presentation:       contracts.PresentationKind(presentation),
+	binding := session.Binding{
+		Endpoint: session.EndpointKind(endpoint),
+		Facts: session.Facts{
+			Audience:           session.AudienceKind(audience),
+			Initiation:         session.InitiationKind(initiation),
+			Presentation:       session.PresentationKind(presentation),
 			PrincipalNamespace: namespace.String,
 			PrincipalDigest:    digest.String,
 		},
 	}
 	if err := binding.Validate(); err != nil {
-		return contracts.Binding{}, false, fmt.Errorf("validating stored endpoint conversation: %w", err)
+		return session.Binding{}, false, fmt.Errorf("validating stored endpoint conversation: %w", err)
 	}
 	return binding, true, nil
 }

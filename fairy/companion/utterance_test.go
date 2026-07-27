@@ -15,22 +15,22 @@ func TestToolUtteranceReason(t *testing.T) {
 }
 
 func TestLifecycleUtteranceInPlanning(t *testing.T) {
-	life := NewTurnLifecycle("c1", "t1")
-	if _, err := life.Transition(TurnStateInterpreting); err != nil {
+	life := newTurnLifecycle("c1", "t1")
+	if _, err := life.Transition(turnStateInterpreting); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := life.Transition(TurnStateGathering); err != nil {
+	if _, err := life.Transition(turnStateGathering); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := life.Transition(TurnStatePlanning); err != nil {
+	if _, err := life.Transition(turnStatePlanning); err != nil {
 		t.Fatal(err)
 	}
 	event, err := life.Utterance(0, "角色自己的等待句。", "idle", "thinking")
 	if err != nil {
 		t.Fatalf("Utterance() error = %v", err)
 	}
-	payload, ok := event.Payload.(utterancePayload)
-	if !ok || payload.Type != "utterance" || payload.Reason != "thinking" {
+	payload := decodeEventPayload[utterancePayload](t, event.Payload)
+	if payload.Type != "utterance" || payload.Reason != "thinking" {
 		t.Fatalf("payload = %#v", event.Payload)
 	}
 }

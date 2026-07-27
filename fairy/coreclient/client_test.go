@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"fairy/contracts/interaction"
-	"fairy/contracts/observation"
+	"fairy/session"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -25,12 +25,12 @@ func TestOpenSessionSendsEndpointFacts(t *testing.T) {
 		if err := conn.ReadJSON(&frame); err != nil {
 			t.Fatal(err)
 		}
-		if frame.Type != "session.open" || frame.Endpoint != interaction.EndpointIM || frame.EndpointKey != "onebot-group:123" || frame.Interaction.Audience != interaction.AudienceMulti {
+		if frame.Type != "session.open" || frame.Endpoint != session.EndpointIM || frame.EndpointKey != "onebot-group:123" || frame.Interaction.Audience != session.AudienceMulti {
 			t.Fatalf("frame = %#v", frame)
 		}
 		_ = conn.WriteJSON(sessionServerFrame{
 			Type: "session.opened", RequestID: frame.RequestID,
-			ConversationID: "c1", CharacterID: "ch1", MessageCount: 0, Endpoint: interaction.EndpointIM,
+			ConversationID: "c1", CharacterID: "ch1", MessageCount: 0, Endpoint: session.EndpointIM,
 		})
 	})
 	defer server.Close()
@@ -38,7 +38,7 @@ func TestOpenSessionSendsEndpointFacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := client.OpenSession(context.Background(), OpenSessionRequest{Endpoint: interaction.EndpointIM, EndpointKey: "onebot-group:123", Interaction: interaction.Context{Audience: interaction.AudienceMulti, Initiation: interaction.InitiationAmbient, Presentation: interaction.PresentationChat}})
+	response, err := client.OpenSession(context.Background(), OpenSessionRequest{Endpoint: session.EndpointIM, EndpointKey: "onebot-group:123", Interaction: session.Context{Audience: session.AudienceMulti, Initiation: session.InitiationAmbient, Presentation: session.PresentationChat}})
 	if err != nil || response.ConversationID != "c1" {
 		t.Fatalf("response=%#v err=%v", response, err)
 	}
@@ -46,9 +46,9 @@ func TestOpenSessionSendsEndpointFacts(t *testing.T) {
 
 func TestOpenSessionRequestExposesOnlyInteractionFacts(t *testing.T) {
 	raw, err := json.Marshal(OpenSessionRequest{
-		Endpoint:    interaction.EndpointIM,
+		Endpoint:    session.EndpointIM,
 		EndpointKey: "onebot-group:123",
-		Interaction: interaction.Context{Audience: interaction.AudienceMulti, Initiation: interaction.InitiationAmbient, Presentation: interaction.PresentationChat},
+		Interaction: session.Context{Audience: session.AudienceMulti, Initiation: session.InitiationAmbient, Presentation: session.PresentationChat},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +108,7 @@ func TestObserveDesktopUsesTypedSessionFrame(t *testing.T) {
 		if frame.Type != "desktop.observe" || frame.ConversationID != "c1" || frame.DesktopObservation == nil {
 			t.Fatalf("frame = %#v", frame)
 		}
-		if frame.DesktopObservation.ObservationID != "obs-1" || frame.DesktopObservation.Activity != observation.DesktopActivityWorking || frame.DesktopObservation.Privacy != observation.DesktopPrivacyNormal {
+		if frame.DesktopObservation.ObservationID != "obs-1" || frame.DesktopObservation.Activity != session.DesktopActivityWorking || frame.DesktopObservation.Privacy != session.DesktopPrivacyNormal {
 			t.Fatalf("observation = %#v", frame.DesktopObservation)
 		}
 		_ = conn.WriteJSON(sessionServerFrame{Type: "result", RequestID: frame.RequestID, Payload: json.RawMessage(`{"action":"silent","nodes":[]}`)})
@@ -119,8 +119,8 @@ func TestObserveDesktopUsesTypedSessionFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := client.ObserveDesktop(t.Context(), "c1", DesktopObservation{
-		ObservationID: "obs-1", TimestampUnixMS: time.Now().UnixMilli(), Trigger: observation.DesktopTriggerPeriodic,
-		Activity: observation.DesktopActivityWorking, Lifecycle: observation.DesktopLifecycleNone, Privacy: observation.DesktopPrivacyNormal,
+		ObservationID: "obs-1", TimestampUnixMS: time.Now().UnixMilli(), Trigger: session.DesktopTriggerPeriodic,
+		Activity: session.DesktopActivityWorking, Lifecycle: session.DesktopLifecycleNone, Privacy: session.DesktopPrivacyNormal,
 	})
 	if err != nil || result.Action != "silent" {
 		t.Fatalf("result=%#v err=%v", result, err)
