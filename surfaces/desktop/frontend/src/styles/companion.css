@@ -102,9 +102,12 @@
   display: none;
 }
 
-.fairy-history-list p {
+.fairy-history-message {
+  display: flex;
   max-width: 90%;
   align-self: flex-start;
+  flex-direction: column;
+  gap: 6px;
   margin: 0;
   padding: 7px 11px 8px;
   border-radius: 13px 13px 13px 4px;
@@ -120,7 +123,7 @@
   -webkit-user-select: text;
 }
 
-.fairy-history-list p.is-user {
+.fairy-history-message.is-user {
   align-self: flex-end;
   max-width: 88%;
   margin-left: 0;
@@ -128,6 +131,33 @@
   color: rgb(13 76 87 / 96%);
   background: linear-gradient(158deg, rgb(15 143 166 / 22%), rgb(15 143 166 / 12%));
   box-shadow: 0 4px 12px rgb(15 143 166 / 12%);
+}
+
+.fairy-history-message__utterance {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.fairy-history-message__sticker {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid rgb(55 126 145 / 18%);
+  border-radius: 9px;
+  background: rgb(225 244 248 / 72%);
+}
+
+.fairy-history-message__sticker-label {
+  flex: 0 0 auto;
+  color: rgb(15 112 133 / 84%);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.fairy-history-message.is-user .fairy-history-message__sticker {
+  background: rgb(255 255 255 / 45%);
 }
 
 .fairy-surface-error {
@@ -246,6 +276,24 @@
 
 .fairy-speech-bubble__waiting span:nth-child(2) { animation-delay: 120ms; }
 .fairy-speech-bubble__waiting span:nth-child(3) { animation-delay: 240ms; }
+
+.fairy-speech-playback-error {
+  position: absolute;
+  top: 5px;
+  left: 16px;
+  right: 16px;
+  margin: 0 auto;
+  width: fit-content;
+  max-width: 214px;
+  padding: 4px 8px;
+  border: 1px solid rgb(173 74 57 / 28%);
+  border-radius: 9px;
+  color: rgb(132 53 43 / 92%);
+  background: rgb(255 244 240 / 88%);
+  box-shadow: 0 6px 16px rgb(120 40 30 / 10%);
+  font-size: 10px;
+  line-height: 1.35;
+}
 
 .fairy-foot-dock {
   position: absolute;

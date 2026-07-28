@@ -7,6 +7,10 @@ type recordingSynth struct {
 	texts []string
 }
 
+func (*recordingSynth) SpeechReady() (bool, error) {
+	return true, nil
+}
+
 func (r *recordingSynth) SynthesizeSpeech(request SpeechSynthesisRequest) (SpeechSynthesisResult, error) {
 	r.mu.Lock()
 	r.texts = append(r.texts, request.Text)

@@ -1,18 +1,18 @@
-// Package schema owns FAIRY's PostgreSQL schema catalog, migration, and
-// readiness verification.
+// Package coredb owns FAIRY's PostgreSQL connection, migration, and readiness.
 package coredb
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
-	"sync"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 )
 
@@ -23,12 +23,14 @@ var (
 	ErrSchemaNotCurrent = errors.New("postgres schema is not current")
 )
 
+// SchemaStatus reports readiness of the single committed schema revision.
+// Object counters remain for API compatibility; they count only that marker,
+// not tables, columns, constraints, or indexes.
 type SchemaStatus struct {
-	ExpectedObjects   int      `json:"expectedObjects"`
-	PresentObjects    int      `json:"presentObjects"`
-	MissingObjects    []string `json:"missingObjects,omitempty"`
-	UnexpectedObjects []string `json:"unexpectedObjects,omitempty"`
-	Current           bool     `json:"current"`
+	ExpectedObjects int      `json:"expectedObjects"`
+	PresentObjects  int      `json:"presentObjects"`
+	MissingObjects  []string `json:"missingObjects,omitempty"`
+	Current         bool     `json:"current"`
 }
 
 type schemaConstraint struct {
@@ -42,239 +44,53 @@ type schemaIndex struct {
 	DDL  string
 }
 
-var schemaConstraints = []schemaConstraint{
-	{"conversations", "conversations_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"conversations", "conversations_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
+var postgresForeignKeys = []schemaConstraint{
 	{"conversation_turns", "conversation_turns_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
-	{"conversation_turns", "conversation_turns_sequence_check", "CHECK (sequence > 0)"},
-	{"conversation_turns", "conversation_turns_status_check", "CHECK (status IN ('interpreting', 'planning', 'responding', 'completed', 'interrupted', 'failed'))"},
-	{"conversation_turns", "conversation_turns_extraction_state_check", "CHECK (extraction_state IN ('ineligible', 'pending', 'claimed', 'processed'))"},
-	{"conversation_turns", "conversation_turns_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"conversation_turns", "conversation_turns_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
-	{"conversation_turns", "conversation_turns_conversation_sequence_key", "UNIQUE (conversation_id, sequence)"},
-	{"conversation_turns", "conversation_turns_error_check", "CHECK ((status = 'failed') = (error_code IS NOT NULL AND error_message IS NOT NULL))"},
 	{"conversation_turn_evidence", "conversation_turn_evidence_turn_fk", "FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE CASCADE"},
-	{"conversation_turn_evidence", "conversation_turn_evidence_id_check", "CHECK (evidence_id <> '')"},
-	{"conversation_turn_evidence", "conversation_turn_evidence_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
 	{"conversation_messages", "conversation_messages_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
 	{"conversation_messages", "conversation_messages_turn_fk", "FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE CASCADE"},
-	{"conversation_messages", "conversation_messages_sequence_check", "CHECK (sequence > 0)"},
-	{"conversation_messages", "conversation_messages_role_check", "CHECK (role IN ('user', 'assistant'))"},
-	{"conversation_messages", "conversation_messages_parts_check", "CHECK (jsonb_typeof(expression_parts) = 'array' AND jsonb_array_length(expression_parts) <= 12)"},
-	{"conversation_messages", "conversation_messages_content_check", "CHECK (content <> '' OR jsonb_array_length(expression_parts) > 0)"},
-	{"conversation_messages", "conversation_messages_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"conversation_messages", "conversation_messages_conversation_sequence_key", "UNIQUE (conversation_id, sequence)"},
-	{"conversation_messages", "conversation_messages_turn_role_key", "UNIQUE (turn_id, role)"},
-	{"stickers", "stickers_id_check", "CHECK (id <> '')"},
-	{"stickers", "stickers_hash_check", "CHECK (content_sha256 ~ '^[0-9a-f]{64}$')"},
-	{"stickers", "stickers_hash_key", "UNIQUE (content_sha256)"},
-	{"stickers", "stickers_mime_check", "CHECK (mime_type IN ('image/jpeg', 'image/png', 'image/gif', 'image/webp'))"},
-	{"stickers", "stickers_byte_count_check", "CHECK (byte_count > 0 AND byte_count <= 5242880)"},
-	{"stickers", "stickers_content_check", "CHECK (octet_length(content) = byte_count)"},
-	{"stickers", "stickers_description_check", "CHECK (char_length(description) <= 512 AND description = btrim(description))"},
-	{"stickers", "stickers_tags_check", "CHECK (jsonb_typeof(tags) = 'array' AND jsonb_array_length(tags) <= 16)"},
-	{"stickers", "stickers_status_check", "CHECK (status IN ('draft', 'active', 'disabled'))"},
-	{"stickers", "stickers_active_description_check", "CHECK (status <> 'active' OR description <> '')"},
-	{"stickers", "stickers_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"stickers", "stickers_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
 	{"prompt_windows", "prompt_windows_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
-	{"prompt_windows", "prompt_windows_revision_check", "CHECK (revision > 0)"},
-	{"prompt_windows", "prompt_windows_cutoff_check", "CHECK (cutoff_message_sequence >= 0)"},
-	{"prompt_windows", "prompt_windows_updated_at_ms_check", "CHECK (updated_at_ms >= 0)"},
 	{"turn_runtime_events", "turn_runtime_events_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
 	{"turn_runtime_events", "turn_runtime_events_turn_fk", "FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE CASCADE"},
-	{"turn_runtime_events", "turn_runtime_events_sequence_check", "CHECK (sequence > 0)"},
-	{"turn_runtime_events", "turn_runtime_events_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"turn_runtime_events", "turn_runtime_events_conversation_turn_sequence_key", "UNIQUE (conversation_id, turn_id, sequence)"},
 	{"tool_executions", "tool_executions_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
 	{"tool_executions", "tool_executions_turn_fk", "FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE CASCADE"},
-	{"tool_executions", "tool_executions_turn_call_key", "UNIQUE (turn_id, call_id)"},
-	{"tool_executions", "tool_executions_turn_tool_key", "UNIQUE (turn_id, tool_name)"},
-	{"tool_executions", "tool_executions_status_check", "CHECK (status IN ('pending', 'completed', 'failed', 'cancelled'))"},
-	{"tool_executions", "tool_executions_tool_name_check", "CHECK (tool_name = 'desktop_observe')"},
-	{"tool_executions", "tool_executions_deadline_check", "CHECK (deadline_at_ms > created_at_ms)"},
-	{"tool_executions", "tool_executions_attempt_count_check", "CHECK (attempt_count >= 0)"},
-	{"tool_executions", "tool_executions_last_dispatched_check", "CHECK (last_dispatched_at_ms IS NULL OR last_dispatched_at_ms >= created_at_ms)"},
-	{"tool_executions", "tool_executions_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"tool_executions", "tool_executions_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
-	{"tool_executions", "tool_executions_result_check", "CHECK ((status = 'completed') = (result_media_type IS NOT NULL AND result_width IS NOT NULL AND result_height IS NOT NULL AND result_byte_count IS NOT NULL AND result_sha256 IS NOT NULL))"},
-	{"tool_executions", "tool_executions_error_check", "CHECK ((status IN ('failed', 'cancelled')) = (error_code IS NOT NULL AND error_message IS NOT NULL))"},
-	{"tool_executions", "tool_executions_terminal_fields_check", "CHECK (status <> 'completed' OR (error_code IS NULL AND error_message IS NULL))"},
 	{"lane_continuations", "lane_continuations_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
-	{"lane_continuations", "lane_continuations_window_revision_check", "CHECK (window_revision > 0)"},
-	{"lane_continuations", "lane_continuations_updated_at_ms_check", "CHECK (updated_at_ms >= 0)"},
 	{"context_windows", "context_windows_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
-	{"context_windows", "context_windows_window_number_check", "CHECK (window_number >= 0)"},
-	{"context_windows", "context_windows_observed_tokens_check", "CHECK (observed_prefill_tokens IS NULL OR observed_prefill_tokens >= 0)"},
-	{"context_windows", "context_windows_estimated_tokens_check", "CHECK (estimated_prefill_tokens IS NULL OR estimated_prefill_tokens >= 0)"},
-	{"context_windows", "context_windows_failure_count_check", "CHECK (failure_count >= 0)"},
-	{"context_windows", "context_windows_prompt_revision_check", "CHECK (prompt_window_revision > 0)"},
-	{"context_windows", "context_windows_updated_at_ms_check", "CHECK (updated_at_ms >= 0)"},
-	{"personal_memories", "personal_memories_scope_kind_check", "CHECK (scope_kind IN ('global', 'character', 'relationship', 'unassigned_legacy'))"},
-	{"personal_memories", "personal_memories_content_check", "CHECK (content <> '')"},
-	{"personal_memories", "personal_memories_status_check", "CHECK (status IN ('active', 'superseded', 'tombstone'))"},
-	{"personal_memories", "personal_memories_confidence_check", "CHECK (confidence_basis_points BETWEEN 0 AND 10000)"},
 	{"personal_memories", "personal_memories_source_conversation_fk", "FOREIGN KEY (source_conversation_id) REFERENCES conversations(id) ON DELETE RESTRICT"},
 	{"personal_memories", "personal_memories_source_turn_fk", "FOREIGN KEY (source_turn_id) REFERENCES conversation_turns(id) ON DELETE RESTRICT"},
 	{"personal_memories", "personal_memories_supersedes_fk", "FOREIGN KEY (supersedes_id) REFERENCES personal_memories(id) ON DELETE RESTRICT"},
-	{"personal_memories", "personal_memories_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"personal_memories", "personal_memories_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
-	{"personal_memories", "personal_memories_character_scope_check", "CHECK ((scope_kind = 'character') = (character_id IS NOT NULL) OR scope_kind <> 'character')"},
 	{"personal_memory_evidence", "personal_memory_evidence_memory_fk", "FOREIGN KEY (memory_id) REFERENCES personal_memories(id) ON DELETE CASCADE"},
 	{"personal_memory_evidence", "personal_memory_evidence_turn_evidence_fk", "FOREIGN KEY (turn_id, evidence_id) REFERENCES conversation_turn_evidence(turn_id, evidence_id) ON DELETE RESTRICT"},
-	{"personal_memory_evidence", "personal_memory_evidence_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"knowledge_entries", "knowledge_entries_topic_check", "CHECK (topic <> '')"},
-	{"knowledge_entries", "knowledge_entries_statement_check", "CHECK (statement <> '')"},
-	{"knowledge_entries", "knowledge_entries_status_check", "CHECK (status IN ('candidate', 'verified', 'superseded', 'rejected', 'tombstone'))"},
-	{"knowledge_entries", "knowledge_entries_confidence_check", "CHECK (confidence_basis_points BETWEEN 0 AND 10000)"},
 	{"knowledge_entries", "knowledge_entries_source_conversation_fk", "FOREIGN KEY (source_conversation_id) REFERENCES conversations(id) ON DELETE RESTRICT"},
 	{"knowledge_entries", "knowledge_entries_source_turn_fk", "FOREIGN KEY (source_turn_id) REFERENCES conversation_turns(id) ON DELETE RESTRICT"},
 	{"knowledge_entries", "knowledge_entries_supersedes_fk", "FOREIGN KEY (supersedes_id) REFERENCES knowledge_entries(id) ON DELETE RESTRICT"},
-	{"knowledge_entries", "knowledge_entries_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"knowledge_entries", "knowledge_entries_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
 	{"knowledge_sources", "knowledge_sources_knowledge_fk", "FOREIGN KEY (knowledge_id) REFERENCES knowledge_entries(id) ON DELETE CASCADE"},
-	{"knowledge_sources", "knowledge_sources_rank_check", "CHECK (rank >= 0)"},
-	{"knowledge_sources", "knowledge_sources_fetched_at_ms_check", "CHECK (fetched_at_ms >= 0)"},
 	{"extraction_batches", "extraction_batches_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
-	{"extraction_batches", "extraction_batches_status_check", "CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled'))"},
-	{"extraction_batches", "extraction_batches_first_turn_check", "CHECK (first_turn_sequence > 0)"},
-	{"extraction_batches", "extraction_batches_last_turn_check", "CHECK (last_turn_sequence >= first_turn_sequence)"},
-	{"extraction_batches", "extraction_batches_lease_expires_check", "CHECK (lease_expires_at_ms IS NULL OR lease_expires_at_ms >= 0)"},
-	{"extraction_batches", "extraction_batches_attempt_count_check", "CHECK (attempt_count >= 0)"},
-	{"extraction_batches", "extraction_batches_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"extraction_batches", "extraction_batches_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
-	{"extraction_batches", "extraction_batches_lease_pair_check", "CHECK ((lease_owner IS NULL) = (lease_expires_at_ms IS NULL))"},
-	{"extraction_batches", "extraction_batches_running_owner_check", "CHECK (status = 'running' OR lease_owner IS NULL)"},
 	{"extraction_batch_turns", "extraction_batch_turns_batch_fk", "FOREIGN KEY (batch_id) REFERENCES extraction_batches(id) ON DELETE CASCADE"},
 	{"extraction_batch_turns", "extraction_batch_turns_turn_fk", "FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE RESTRICT"},
-	{"extraction_batch_turns", "extraction_batch_turns_sequence_check", "CHECK (turn_sequence > 0)"},
-	{"extraction_batch_turns", "extraction_batch_turns_batch_sequence_key", "UNIQUE (batch_id, turn_sequence)"},
 	{"knowledge_ingest_jobs", "knowledge_ingest_jobs_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
 	{"knowledge_ingest_jobs", "knowledge_ingest_jobs_turn_fk", "FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE CASCADE"},
-	{"knowledge_ingest_jobs", "knowledge_ingest_jobs_rank_check", "CHECK (rank >= 0)"},
-	{"knowledge_ingest_jobs", "knowledge_ingest_jobs_fetched_at_ms_check", "CHECK (fetched_at_ms >= 0)"},
-	{"knowledge_ingest_jobs", "knowledge_ingest_jobs_status_check", "CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'dropped'))"},
-	{"knowledge_ingest_jobs", "knowledge_ingest_jobs_lease_expires_check", "CHECK (lease_expires_at_ms IS NULL OR lease_expires_at_ms >= 0)"},
-	{"knowledge_ingest_jobs", "knowledge_ingest_jobs_attempt_count_check", "CHECK (attempt_count >= 0)"},
-	{"knowledge_ingest_jobs", "knowledge_ingest_jobs_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"knowledge_ingest_jobs", "knowledge_ingest_jobs_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
-	{"knowledge_ingest_jobs", "knowledge_ingest_jobs_lease_pair_check", "CHECK ((lease_owner IS NULL) = (lease_expires_at_ms IS NULL))"},
-	{"knowledge_ingest_jobs", "knowledge_ingest_jobs_running_owner_check", "CHECK (status = 'running' OR lease_owner IS NULL)"},
-	{"memory_embedding_items", "memory_embedding_items_kind_check", "CHECK (item_kind IN ('personal_memory', 'knowledge'))"},
-	{"memory_embedding_items", "memory_embedding_items_dimensions_check", "CHECK (dimensions = 512)"},
-	{"memory_embedding_items", "memory_embedding_items_content_hash_check", "CHECK (content_hash <> '')"},
-	{"memory_embedding_items", "memory_embedding_items_status_check", "CHECK (status IN ('pending', 'embedded', 'failed'))"},
-	{"memory_embedding_items", "memory_embedding_items_embedded_at_check", "CHECK (embedded_at_ms IS NULL OR embedded_at_ms >= 0)"},
-	{"memory_embedding_items", "memory_embedding_items_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"memory_embedding_items", "memory_embedding_items_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
-	{"memory_embedding_items", "memory_embedding_items_item_key", "UNIQUE (item_kind, item_id, model_id)"},
-	{"memory_embedding_items", "memory_embedding_items_point_key", "UNIQUE (point_id)"},
-	{"memory_embedding_items", "memory_embedding_items_legacy_rowid_key", "UNIQUE (legacy_vector_rowid)"},
-	{"memory_embedding_items", "memory_embedding_items_embedded_status_check", "CHECK ((status = 'embedded') = (embedded_at_ms IS NOT NULL))"},
-	{"memory_embedding_jobs", "memory_embedding_jobs_kind_check", "CHECK (item_kind IN ('personal_memory', 'knowledge'))"},
-	{"memory_embedding_jobs", "memory_embedding_jobs_dimensions_check", "CHECK (dimensions = 512)"},
-	{"memory_embedding_jobs", "memory_embedding_jobs_content_hash_check", "CHECK (content_hash <> '')"},
-	{"memory_embedding_jobs", "memory_embedding_jobs_status_check", "CHECK (status IN ('pending', 'running', 'succeeded', 'failed'))"},
-	{"memory_embedding_jobs", "memory_embedding_jobs_lease_expires_check", "CHECK (lease_expires_at_ms IS NULL OR lease_expires_at_ms >= 0)"},
-	{"memory_embedding_jobs", "memory_embedding_jobs_attempt_count_check", "CHECK (attempt_count >= 0)"},
-	{"memory_embedding_jobs", "memory_embedding_jobs_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"memory_embedding_jobs", "memory_embedding_jobs_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
-	{"memory_embedding_jobs", "memory_embedding_jobs_item_content_key", "UNIQUE (item_kind, item_id, model_id, content_hash)"},
-	{"memory_embedding_jobs", "memory_embedding_jobs_lease_pair_check", "CHECK ((lease_owner IS NULL) = (lease_expires_at_ms IS NULL))"},
-	{"memory_embedding_jobs", "memory_embedding_jobs_running_owner_check", "CHECK (status = 'running' OR lease_owner IS NULL)"},
-	{"secret_values", "secret_values_key_version_check", "CHECK (key_version > 0)"},
-	{"secret_values", "secret_values_nonce_check", "CHECK (octet_length(nonce) = 12)"},
-	{"secret_values", "secret_values_ciphertext_check", "CHECK (octet_length(ciphertext) > 0)"},
-	{"secret_values", "secret_values_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"secret_values", "secret_values_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
-	{"vector_rebuild_runs", "vector_rebuild_runs_status_check", "CHECK (status IN ('pending', 'running', 'succeeded', 'failed'))"},
-	{"vector_rebuild_runs", "vector_rebuild_runs_scanned_check", "CHECK (scanned_items >= 0)"},
-	{"vector_rebuild_runs", "vector_rebuild_runs_upserted_check", "CHECK (upserted_points >= 0)"},
-	{"vector_rebuild_runs", "vector_rebuild_runs_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"vector_rebuild_runs", "vector_rebuild_runs_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
-	{"vector_reconciliation_runs", "vector_reconciliation_runs_status_check", "CHECK (status IN ('running', 'succeeded', 'failed'))"},
-	{"vector_reconciliation_runs", "vector_reconciliation_runs_missing_check", "CHECK (missing_points >= 0)"},
-	{"vector_reconciliation_runs", "vector_reconciliation_runs_stale_check", "CHECK (stale_points >= 0)"},
-	{"vector_reconciliation_runs", "vector_reconciliation_runs_orphan_check", "CHECK (orphan_points >= 0)"},
-	{"vector_reconciliation_runs", "vector_reconciliation_runs_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"vector_reconciliation_runs", "vector_reconciliation_runs_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
-	{"endpoint_conversations", "endpoint_conversations_endpoint_check", "CHECK (endpoint IN ('desktop', 'im'))"},
-	{"endpoint_conversations", "endpoint_conversations_endpoint_digest_check", "CHECK (endpoint_key_digest ~ '^[0-9a-f]{64}$')"},
-	{"endpoint_conversations", "endpoint_conversations_audience_check", "CHECK (audience IN ('single', 'multi'))"},
-	{"endpoint_conversations", "endpoint_conversations_initiation_check", "CHECK (initiation IN ('direct', 'ambient'))"},
-	{"endpoint_conversations", "endpoint_conversations_presentation_check", "CHECK (presentation IN ('embodied', 'chat'))"},
-	{"endpoint_conversations", "endpoint_conversations_principal_pair_check", "CHECK ((principal_namespace IS NULL) = (principal_digest IS NULL))"},
-	{"endpoint_conversations", "endpoint_conversations_principal_shape_check", "CHECK ((endpoint = 'im' AND audience = 'single') = (principal_namespace IS NOT NULL AND principal_digest IS NOT NULL))"},
-	{"endpoint_conversations", "endpoint_conversations_principal_namespace_check", "CHECK (principal_namespace IS NULL OR principal_namespace ~ '^[a-z0-9._-]{1,64}$')"},
-	{"endpoint_conversations", "endpoint_conversations_principal_digest_check", "CHECK (principal_digest IS NULL OR principal_digest ~ '^[0-9a-f]{64}$')"},
 	{"endpoint_conversations", "endpoint_conversations_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
-	{"endpoint_conversations", "endpoint_conversations_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"endpoint_conversations", "endpoint_conversations_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
-	{"endpoint_conversations", "endpoint_conversations_conversation_key", "UNIQUE (conversation_id)"},
-	{"owner_identities", "owner_identities_namespace_check", "CHECK (namespace ~ '^[a-z0-9._-]{1,64}$')"},
-	{"owner_identities", "owner_identities_digest_check", "CHECK (subject_digest ~ '^[0-9a-f]{64}$')"},
-	{"owner_identities", "owner_identities_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
 	{"social_memory_entries", "social_memory_entries_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
-	{"social_memory_entries", "social_memory_entries_kind_check", "CHECK (kind IN ('episode', 'expression', 'behavior'))"},
-	{"social_memory_entries", "social_memory_entries_situation_check", "CHECK (situation <> '')"},
-	{"social_memory_entries", "social_memory_entries_content_check", "CHECK (content <> '')"},
-	{"social_memory_entries", "social_memory_entries_recall_cue_check", "CHECK (recall_cue <> '')"},
-	{"social_memory_entries", "social_memory_entries_hash_check", "CHECK (content_hash ~ '^[0-9a-f]{64}$')"},
-	{"social_memory_entries", "social_memory_entries_status_check", "CHECK (status IN ('active', 'suppressed'))"},
-	{"social_memory_entries", "social_memory_entries_source_range_check", "CHECK (source_start_ms > 0 AND source_end_ms >= source_start_ms)"},
-	{"social_memory_entries", "social_memory_entries_counts_check", "CHECK (use_count >= 0 AND positive_count >= 0 AND negative_count >= 0 AND unknown_count >= 0)"},
-	{"social_memory_entries", "social_memory_entries_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"social_memory_entries", "social_memory_entries_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
-	{"social_memory_entries", "social_memory_entries_scope_hash_key", "UNIQUE (conversation_id, kind, content_hash)"},
 	{"social_reply_feedback", "social_reply_feedback_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
 	{"social_reply_feedback", "social_reply_feedback_turn_fk", "FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE CASCADE"},
-	{"social_reply_feedback", "social_reply_feedback_outcome_check", "CHECK (outcome IN ('positive', 'negative', 'unknown'))"},
-	{"social_reply_feedback", "social_reply_feedback_entry_ids_check", "CHECK (jsonb_typeof(entry_ids_json) = 'array')"},
-	{"social_reply_feedback", "social_reply_feedback_observed_count_check", "CHECK (observed_message_count >= 0)"},
-	{"social_reply_feedback", "social_reply_feedback_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"social_reply_feedback", "social_reply_feedback_turn_key", "UNIQUE (turn_id)"},
 	{"social_person_notes", "social_person_notes_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
-	{"social_person_notes", "social_person_notes_note_check", "CHECK (note <> '')"},
-	{"social_person_notes", "social_person_notes_created_at_ms_check", "CHECK (created_at_ms >= 0)"},
-	{"social_person_notes", "social_person_notes_updated_at_ms_check", "CHECK (updated_at_ms >= created_at_ms)"},
-	{"social_person_notes", "social_person_notes_scope_sender_key", "UNIQUE (character_id, conversation_id, sender_id)"},
 }
 
-var schemaIndexes = []schemaIndex{
-	{"conversations_character_updated", "CREATE INDEX IF NOT EXISTS conversations_character_updated ON conversations(character_id, updated_at_ms DESC, id ASC)"},
-	{"conversation_turns_conversation_status", "CREATE INDEX IF NOT EXISTS conversation_turns_conversation_status ON conversation_turns(conversation_id, status, sequence ASC)"},
+var postgresIndexes = []schemaIndex{
 	{"conversation_turns_extraction", "CREATE INDEX IF NOT EXISTS conversation_turns_extraction ON conversation_turns(conversation_id, extraction_state, sequence ASC) WHERE status = 'completed'"},
-	{"conversation_turn_evidence_evidence", "CREATE INDEX IF NOT EXISTS conversation_turn_evidence_evidence ON conversation_turn_evidence(evidence_id, turn_id)"},
-	{"conversation_messages_conversation_sequence", "CREATE INDEX IF NOT EXISTS conversation_messages_conversation_sequence ON conversation_messages(conversation_id, sequence ASC)"},
-	{"conversation_messages_conversation_role_created", "CREATE INDEX IF NOT EXISTS conversation_messages_conversation_role_created ON conversation_messages(conversation_id, role, created_at_ms DESC, sequence DESC)"},
-	{"stickers_status_updated", "CREATE INDEX IF NOT EXISTS stickers_status_updated ON stickers(status, updated_at_ms DESC, id ASC)"},
 	{"stickers_description_trgm", "CREATE INDEX IF NOT EXISTS stickers_description_trgm ON stickers USING gin (description public.gin_trgm_ops)"},
-	{"turn_runtime_events_turn_sequence", "CREATE INDEX IF NOT EXISTS turn_runtime_events_turn_sequence ON turn_runtime_events(conversation_id, turn_id, sequence ASC)"},
-	{"turn_runtime_events_type_created", "CREATE INDEX IF NOT EXISTS turn_runtime_events_type_created ON turn_runtime_events(event_type, created_at_ms ASC, sequence ASC)"},
 	{"tool_executions_pending_deadline", "CREATE INDEX IF NOT EXISTS tool_executions_pending_deadline ON tool_executions(deadline_at_ms ASC, created_at_ms ASC, id ASC) WHERE status = 'pending'"},
-	{"tool_executions_turn_status", "CREATE INDEX IF NOT EXISTS tool_executions_turn_status ON tool_executions(conversation_id, turn_id, status, created_at_ms ASC)"},
-	{"personal_memories_scope_status", "CREATE INDEX IF NOT EXISTS personal_memories_scope_status ON personal_memories(scope_kind, character_id, status, updated_at_ms DESC, id ASC)"},
 	{"personal_memories_content_trgm", "CREATE INDEX IF NOT EXISTS personal_memories_content_trgm ON personal_memories USING gin (content public.gin_trgm_ops)"},
-	{"personal_memory_evidence_memory", "CREATE INDEX IF NOT EXISTS personal_memory_evidence_memory ON personal_memory_evidence(memory_id, evidence_id)"},
-	{"knowledge_entries_status_updated", "CREATE INDEX IF NOT EXISTS knowledge_entries_status_updated ON knowledge_entries(status, updated_at_ms DESC, id ASC)"},
 	{"knowledge_entries_topic_trgm", "CREATE INDEX IF NOT EXISTS knowledge_entries_topic_trgm ON knowledge_entries USING gin (topic public.gin_trgm_ops)"},
 	{"knowledge_entries_statement_trgm", "CREATE INDEX IF NOT EXISTS knowledge_entries_statement_trgm ON knowledge_entries USING gin (statement public.gin_trgm_ops)"},
 	{"extraction_batches_one_running", "CREATE UNIQUE INDEX IF NOT EXISTS extraction_batches_one_running ON extraction_batches(conversation_id) WHERE status = 'running'"},
 	{"extraction_batches_claimable", "CREATE INDEX IF NOT EXISTS extraction_batches_claimable ON extraction_batches(status, lease_expires_at_ms ASC NULLS FIRST, updated_at_ms ASC, id ASC) WHERE status IN ('pending', 'running')"},
 	{"knowledge_ingest_jobs_status", "CREATE INDEX IF NOT EXISTS knowledge_ingest_jobs_status ON knowledge_ingest_jobs(status, lease_expires_at_ms ASC NULLS FIRST, created_at_ms ASC, id ASC)"},
-	{"memory_embedding_items_item", "CREATE INDEX IF NOT EXISTS memory_embedding_items_item ON memory_embedding_items(item_kind, item_id, model_id)"},
-	{"memory_embedding_items_status", "CREATE INDEX IF NOT EXISTS memory_embedding_items_status ON memory_embedding_items(status, updated_at_ms ASC, id ASC)"},
 	{"memory_embedding_jobs_status", "CREATE INDEX IF NOT EXISTS memory_embedding_jobs_status ON memory_embedding_jobs(status, lease_expires_at_ms ASC NULLS FIRST, updated_at_ms ASC, id ASC)"},
-	{"memory_embedding_jobs_item", "CREATE INDEX IF NOT EXISTS memory_embedding_jobs_item ON memory_embedding_jobs(item_kind, item_id, model_id, content_hash)"},
-	{"vector_rebuild_runs_status", "CREATE INDEX IF NOT EXISTS vector_rebuild_runs_status ON vector_rebuild_runs(status, updated_at_ms DESC, id ASC)"},
-	{"vector_reconciliation_runs_status", "CREATE INDEX IF NOT EXISTS vector_reconciliation_runs_status ON vector_reconciliation_runs(status, updated_at_ms DESC, id ASC)"},
-	{"endpoint_conversations_conversation", "CREATE INDEX IF NOT EXISTS endpoint_conversations_conversation ON endpoint_conversations(conversation_id)"},
-	{"social_memory_entries_scope_kind", "CREATE INDEX IF NOT EXISTS social_memory_entries_scope_kind ON social_memory_entries(character_id, conversation_id, kind, status, updated_at_ms DESC, id ASC)"},
 	{"social_memory_entries_situation_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_situation_trgm ON social_memory_entries USING gin (situation public.gin_trgm_ops)"},
 	{"social_memory_entries_content_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_content_trgm ON social_memory_entries USING gin (content public.gin_trgm_ops)"},
 	{"social_memory_entries_recall_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_recall_trgm ON social_memory_entries USING gin (recall_cue public.gin_trgm_ops)"},
-	{"social_reply_feedback_scope_created", "CREATE INDEX IF NOT EXISTS social_reply_feedback_scope_created ON social_reply_feedback(character_id, conversation_id, created_at_ms DESC, id ASC)"},
-	{"social_person_notes_scope_sender", "CREATE INDEX IF NOT EXISTS social_person_notes_scope_sender ON social_person_notes(character_id, conversation_id, sender_id, updated_at_ms DESC, id ASC)"},
 }
 
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
@@ -290,19 +106,10 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		if err := tx.Exec("CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public").Error; err != nil {
 			return fmt.Errorf("creating pg_trgm extension: %w", err)
 		}
-		presentTables, totalTables, err := schemaTableCounts(tx)
-		if err != nil {
-			return err
+		if err := tx.AutoMigrate(schemaModels()...); err != nil {
+			return fmt.Errorf("auto-migrating PostgreSQL schema: %w", err)
 		}
-		if totalTables != 0 && (presentTables != len(schemaTableNames()) || totalTables != len(schemaTableNames())) {
-			return fmt.Errorf("%w: GORM migration requires an empty or exact current table set, found %d required and %d total tables", ErrSchemaNotCurrent, presentTables, totalTables)
-		}
-		if totalTables == 0 {
-			if err := tx.AutoMigrate(schemaModels()...); err != nil {
-				return fmt.Errorf("auto-migrating PostgreSQL schema: %w", err)
-			}
-		}
-		for _, constraint := range schemaConstraints {
+		for _, constraint := range postgresForeignKeys {
 			exists, err := constraintExists(tx, constraint.Table, constraint.Name)
 			if err != nil {
 				return err
@@ -310,223 +117,64 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 			if exists {
 				continue
 			}
-			statement := fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s %s", quoteIdentifier(constraint.Table), quoteIdentifier(constraint.Name), constraint.Definition)
+			statement := fmt.Sprintf(
+				"ALTER TABLE %s ADD CONSTRAINT %s %s",
+				pgx.Identifier{constraint.Table}.Sanitize(),
+				pgx.Identifier{constraint.Name}.Sanitize(),
+				constraint.Definition,
+			)
 			if err := tx.Exec(statement).Error; err != nil {
 				return fmt.Errorf("creating constraint %s: %w", constraint.Name, err)
 			}
 		}
-		for _, index := range schemaIndexes {
+		for _, index := range postgresIndexes {
 			if err := tx.Exec(index.DDL).Error; err != nil {
 				return fmt.Errorf("creating index %s: %w", index.Name, err)
 			}
+		}
+		state := schemaState{ID: 1, Revision: currentSchemaRevision}
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"revision"}),
+		}).Create(&state).Error; err != nil {
+			return fmt.Errorf("committing PostgreSQL schema revision: %w", err)
 		}
 		return nil
 	})
 }
 
-func schemaTableCounts(db *gorm.DB) (int, int, error) {
-	present := 0
-	for _, table := range schemaTableNames() {
-		var exists bool
-		if err := db.Raw("SELECT to_regclass(?) IS NOT NULL", table).Scan(&exists).Error; err != nil {
-			return 0, 0, fmt.Errorf("checking table %s: %w", table, err)
-		}
-		if exists {
-			present++
-		}
-	}
-	var total int
-	if err := db.Raw("SELECT count(*) FROM pg_tables WHERE schemaname = current_schema()").Scan(&total).Error; err != nil {
-		return 0, 0, fmt.Errorf("counting current schema tables: %w", err)
-	}
-	return present, total, nil
-}
-
-const schemaCatalogQuery = `
-SELECT 'extension' AS kind, '' AS owner, extname AS name
-FROM pg_extension
-WHERE extname = 'pg_trgm'
-UNION ALL
-SELECT 'table', tablename, ''
-FROM pg_tables
-WHERE schemaname = current_schema()
-UNION ALL
-SELECT 'column', table_name, column_name
-FROM information_schema.columns
-WHERE table_schema = current_schema()
-UNION ALL
-SELECT 'constraint', t.relname, c.conname
-FROM pg_constraint c
-JOIN pg_class t ON t.oid = c.conrelid
-JOIN pg_namespace n ON n.oid = t.relnamespace
-WHERE n.nspname = current_schema()
-UNION ALL
-SELECT 'index', '', indexname
-FROM pg_indexes
-WHERE schemaname = current_schema()
-ORDER BY 1, 2, 3`
-
-type schemaCatalog struct {
-	extension   bool
-	tables      map[string]bool
-	columns     map[string]map[string]bool
-	constraints map[string]map[string]bool
-	indexes     map[string]bool
-}
-
-var (
-	expectedColumnsOnce  sync.Once
-	expectedColumns      map[string][]string
-	expectedColumnCount  int
-	expectedColumnsError error
-)
-
 func VerifySchema(ctx context.Context, pool *pgxpool.Pool) (SchemaStatus, error) {
+	status := SchemaStatus{ExpectedObjects: 1}
 	if pool == nil {
-		return SchemaStatus{}, errors.New("database pool is not open")
-	}
-	columns, columnCount, err := expectedSchemaColumns(pool)
-	if err != nil {
-		return SchemaStatus{}, err
-	}
-	actual, err := loadSchemaCatalog(ctx, pool)
-	if err != nil {
-		return SchemaStatus{}, err
-	}
-	status := SchemaStatus{ExpectedObjects: len(schemaTableNames()) + columnCount + len(schemaConstraints) + len(schemaIndexes) + 1}
-	presentTables := 0
-
-	if actual.extension {
-		status.PresentObjects++
-	} else {
-		status.MissingObjects = append(status.MissingObjects, "extension:pg_trgm")
-	}
-	expectedTables := make(map[string]bool, len(schemaTableNames()))
-	for _, table := range schemaTableNames() {
-		expectedTables[table] = true
-		if actual.tables[table] {
-			status.PresentObjects++
-			presentTables++
-		} else {
-			status.MissingObjects = append(status.MissingObjects, "table:"+table)
-		}
-		for _, column := range columns[table] {
-			if actual.columns[table][column] {
-				status.PresentObjects++
-			} else {
-				status.MissingObjects = append(status.MissingObjects, "column:"+table+"."+column)
-			}
-		}
-	}
-	for _, constraint := range schemaConstraints {
-		if actual.constraints[constraint.Table][constraint.Name] {
-			status.PresentObjects++
-		} else {
-			status.MissingObjects = append(status.MissingObjects, "constraint:"+constraint.Table+"."+constraint.Name)
-		}
-	}
-	for _, index := range schemaIndexes {
-		if actual.indexes[index.Name] {
-			status.PresentObjects++
-		} else {
-			status.MissingObjects = append(status.MissingObjects, "index:"+index.Name)
-		}
-	}
-	unexpectedTables := make([]string, 0)
-	for table := range actual.tables {
-		if !expectedTables[table] {
-			unexpectedTables = append(unexpectedTables, table)
-		}
-	}
-	sort.Strings(unexpectedTables)
-	for _, table := range unexpectedTables {
-		status.UnexpectedObjects = append(status.UnexpectedObjects, "table:"+table)
+		return status, errors.New("database pool is not open")
 	}
 
-	if presentTables == 0 {
-		return status, ErrSchemaAbsent
-	}
-	if status.PresentObjects != status.ExpectedObjects || len(status.UnexpectedObjects) != 0 {
-		if len(status.UnexpectedObjects) != 0 {
-			return status, fmt.Errorf("%w: unexpected %s", ErrSchemaNotCurrent, status.UnexpectedObjects[0])
+	var revision string
+	err := pool.QueryRow(ctx, `SELECT revision FROM fairy_schema_state WHERE id = 1`).Scan(&revision)
+	if err != nil {
+		var postgresError *pgconn.PgError
+		switch {
+		case errors.As(err, &postgresError) && postgresError.Code == "42P01":
+			status.MissingObjects = []string{"table:fairy_schema_state"}
+			return status, ErrSchemaAbsent
+		case errors.Is(err, pgx.ErrNoRows):
+			status.MissingObjects = []string{"revision:" + currentSchemaRevision}
+			return status, fmt.Errorf("%w: current schema revision is not committed", ErrSchemaNotCurrent)
+		case errors.As(err, &postgresError) && postgresError.Code == "42703":
+			status.MissingObjects = []string{"column:fairy_schema_state.revision"}
+			return status, fmt.Errorf("%w: schema revision column is absent", ErrSchemaNotCurrent)
+		default:
+			return status, fmt.Errorf("reading PostgreSQL schema revision: %w", err)
 		}
-		return status, fmt.Errorf("%w: missing %s (found %d of %d required objects)", ErrSchemaNotCurrent, status.MissingObjects[0], status.PresentObjects, status.ExpectedObjects)
+	}
+
+	status.PresentObjects = 1
+	if revision != currentSchemaRevision {
+		status.MissingObjects = []string{"revision:" + currentSchemaRevision}
+		return status, fmt.Errorf("%w: have revision %q, want %q", ErrSchemaNotCurrent, revision, currentSchemaRevision)
 	}
 	status.Current = true
 	return status, nil
-}
-
-func expectedSchemaColumns(pool *pgxpool.Pool) (map[string][]string, int, error) {
-	expectedColumnsOnce.Do(func() {
-		db, closeDB, err := openGORM(pool)
-		if err != nil {
-			expectedColumnsError = err
-			return
-		}
-		defer closeDB()
-		models := schemaModels()
-		tables := schemaTableNames()
-		if len(models) != len(tables) {
-			expectedColumnsError = errors.New("schema model and table catalogs differ")
-			return
-		}
-		columns := make(map[string][]string, len(tables))
-		for index, model := range models {
-			statement := &gorm.Statement{DB: db}
-			if err := statement.Parse(model); err != nil {
-				expectedColumnsError = fmt.Errorf("parsing schema model %s: %w", tables[index], err)
-				return
-			}
-			columns[tables[index]] = statement.Schema.DBNames
-			expectedColumnCount += len(statement.Schema.DBNames)
-		}
-		expectedColumns = columns
-	})
-	return expectedColumns, expectedColumnCount, expectedColumnsError
-}
-
-func loadSchemaCatalog(ctx context.Context, pool *pgxpool.Pool) (schemaCatalog, error) {
-	catalog := schemaCatalog{
-		tables:      make(map[string]bool),
-		columns:     make(map[string]map[string]bool),
-		constraints: make(map[string]map[string]bool),
-		indexes:     make(map[string]bool),
-	}
-	rows, err := pool.Query(ctx, schemaCatalogQuery)
-	if err != nil {
-		return schemaCatalog{}, fmt.Errorf("reading PostgreSQL schema catalog: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var kind, owner, name string
-		if err := rows.Scan(&kind, &owner, &name); err != nil {
-			return schemaCatalog{}, fmt.Errorf("scanning PostgreSQL schema catalog: %w", err)
-		}
-		switch kind {
-		case "extension":
-			catalog.extension = name == "pg_trgm"
-		case "table":
-			catalog.tables[owner] = true
-		case "column":
-			if catalog.columns[owner] == nil {
-				catalog.columns[owner] = make(map[string]bool)
-			}
-			catalog.columns[owner][name] = true
-		case "constraint":
-			if catalog.constraints[owner] == nil {
-				catalog.constraints[owner] = make(map[string]bool)
-			}
-			catalog.constraints[owner][name] = true
-		case "index":
-			catalog.indexes[name] = true
-		default:
-			return schemaCatalog{}, fmt.Errorf("unknown PostgreSQL schema catalog kind %q", kind)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return schemaCatalog{}, fmt.Errorf("iterating PostgreSQL schema catalog: %w", err)
-	}
-	return catalog, nil
 }
 
 func openGORM(pool *pgxpool.Pool) (*gorm.DB, func(), error) {
@@ -557,16 +205,4 @@ WHERE n.nspname = current_schema() AND t.relname = ? AND c.conname = ?
 		return false, fmt.Errorf("checking constraint %s: %w", name, err)
 	}
 	return exists, nil
-}
-
-func quoteIdentifier(identifier string) string {
-	quoted := `"`
-	for _, char := range identifier {
-		if char == '"' {
-			quoted += `""`
-			continue
-		}
-		quoted += string(char)
-	}
-	return quoted + `"`
 }

@@ -9,12 +9,14 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	gormschema "gorm.io/gorm/schema"
 )
 
 func TestMigrateAndVerifySchemaIntegration(t *testing.T) {
@@ -38,7 +40,22 @@ func TestMigrateAndVerifySchemaIntegration(t *testing.T) {
 	for _, table := range schemaTableNames() {
 		assertRegclass(t, ctx, pool, table, true)
 	}
-	for _, index := range schemaIndexes {
+	for _, model := range schemaModels() {
+		parsed, err := gormschema.Parse(model, &sync.Map{}, gormschema.NamingStrategy{})
+		if err != nil {
+			t.Fatalf("parse schema model %T: %v", model, err)
+		}
+		for name := range parsed.ParseCheckConstraints() {
+			assertConstraint(t, ctx, pool, parsed.Table, name, true)
+		}
+		for _, index := range parsed.ParseIndexes() {
+			assertRegclass(t, ctx, pool, index.Name, true)
+		}
+	}
+	for _, constraint := range postgresForeignKeys {
+		assertConstraint(t, ctx, pool, constraint.Table, constraint.Name, true)
+	}
+	for _, index := range postgresIndexes {
 		assertRegclass(t, ctx, pool, index.Name, true)
 	}
 	assertRegclass(t, ctx, pool, "fairy_schema_migrations", false)
@@ -126,6 +143,45 @@ func TestMigratePreservesDomainConstraintsIntegration(t *testing.T) {
 	if err == nil {
 		t.Fatal("invalid secret nonce length must be rejected")
 	}
+	if _, err := pool.Exec(ctx, "INSERT INTO conversations(id, character_id, created_at_ms, updated_at_ms) VALUES ('constraint-conversation', 'character', 1, 1)"); err != nil {
+		t.Fatalf("insert constraint conversation: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO conversation_turns(id, conversation_id, sequence, status, origin, extraction_state, created_at_ms, updated_at_ms)
+VALUES ('invalid-status-turn', 'constraint-conversation', 1, 'unknown', 'user', 'pending', 1, 1)
+`); err == nil {
+		t.Fatal("invalid turn status must be rejected")
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO conversation_turns(id, conversation_id, sequence, status, origin, extraction_state, created_at_ms, updated_at_ms)
+VALUES ('constraint-turn', 'constraint-conversation', 1, 'completed', 'user', 'pending', 1, 1)
+`); err != nil {
+		t.Fatalf("insert constraint turn: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO conversation_messages(id, conversation_id, turn_id, sequence, role, content, expression_parts, created_at_ms)
+VALUES ('invalid-parts-message', 'constraint-conversation', 'constraint-turn', 1, 'assistant', 'text', '{}'::jsonb, 1)
+`); err == nil {
+		t.Fatal("non-array expression parts must be rejected")
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO tool_executions(id, conversation_id, turn_id, call_id, tool_name, status, deadline_at_ms, created_at_ms, updated_at_ms)
+VALUES ('invalid-completed-tool', 'constraint-conversation', 'constraint-turn', 'call', 'desktop_observe', 'completed', 2, 1, 1)
+`); err == nil {
+		t.Fatal("completed tool execution without result fields must be rejected")
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO stickers(id, content_sha256, mime_type, byte_count, content, description, tags, status, created_at_ms, updated_at_ms)
+VALUES ('sticker-1', repeat('a', 64), 'image/png', 1, '\x01'::bytea, '', '[]'::jsonb, 'draft', 1, 1)
+`); err != nil {
+		t.Fatalf("insert first sticker hash: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO stickers(id, content_sha256, mime_type, byte_count, content, description, tags, status, created_at_ms, updated_at_ms)
+VALUES ('sticker-2', repeat('a', 64), 'image/png', 1, '\x02'::bytea, '', '[]'::jsonb, 'draft', 1, 1)
+`); err == nil {
+		t.Fatal("duplicate sticker hash must be rejected")
+	}
 }
 
 func TestVerifySchemaReportsPartialObjectsWithoutMutatingIntegration(t *testing.T) {
@@ -137,44 +193,155 @@ func TestVerifySchemaReportsPartialObjectsWithoutMutatingIntegration(t *testing.
 	}
 	fingerprintBefore := catalogFingerprint(t, ctx, pool)
 	status, err := VerifySchema(ctx, pool)
-	if !errors.Is(err, ErrSchemaNotCurrent) {
-		t.Fatalf("VerifySchema() err = %v, want ErrSchemaNotCurrent", err)
+	if !errors.Is(err, ErrSchemaAbsent) {
+		t.Fatalf("VerifySchema() err = %v, want ErrSchemaAbsent", err)
 	}
-	if status.Current || len(status.MissingObjects) == 0 || status.MissingObjects[0] != "column:conversations.character_id" {
+	if status.Current || len(status.MissingObjects) == 0 || status.MissingObjects[0] != "table:fairy_schema_state" {
 		t.Fatalf("partial status = %#v", status)
 	}
 	if fingerprintAfter := catalogFingerprint(t, ctx, pool); fingerprintAfter != fingerprintBefore {
 		t.Fatalf("VerifySchema mutated partial catalog: before %s, after %s", fingerprintBefore, fingerprintAfter)
 	}
 	assertRegclass(t, ctx, pool, "conversation_turns", false)
-	if err := Migrate(ctx, pool); !errors.Is(err, ErrSchemaNotCurrent) {
-		t.Fatalf("Migrate(partial schema) err = %v, want ErrSchemaNotCurrent", err)
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("Migrate(partial schema) error = %v", err)
+	}
+	status, err = VerifySchema(ctx, pool)
+	if err != nil || !status.Current {
+		t.Fatalf("VerifySchema() after additive migrate status = %#v, err = %v", status, err)
 	}
 }
 
-func TestMigrateRejectsLegacyTablesIntegration(t *testing.T) {
+func TestMigrateUpgradesPreviousStickerSchemaAndPreservesRowsIntegration(t *testing.T) {
 	ctx := t.Context()
 	pool := openIsolatedPool(t, ctx)
 	defer pool.Close()
 	if err := Migrate(ctx, pool); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
-	if _, err := pool.Exec(ctx, "CREATE TABLE fairy_schema_migrations (version integer PRIMARY KEY)"); err != nil {
-		t.Fatalf("create legacy table: %v", err)
+	if _, err := pool.Exec(ctx, `
+INSERT INTO conversations(id, character_id, created_at_ms, updated_at_ms)
+VALUES ('upgrade-conversation', 'character', 1, 1);
+INSERT INTO conversation_turns(id, conversation_id, sequence, status, origin, extraction_state, created_at_ms, updated_at_ms)
+VALUES ('upgrade-turn', 'upgrade-conversation', 1, 'completed', 'user', 'pending', 1, 1);
+INSERT INTO conversation_messages(id, conversation_id, turn_id, sequence, role, content, expression_parts, created_at_ms)
+VALUES ('upgrade-message', 'upgrade-conversation', 'upgrade-turn', 1, 'assistant', 'sentinel', '[]'::jsonb, 1);
+DELETE FROM fairy_schema_state WHERE id = 1;
+ALTER TABLE conversations ADD CONSTRAINT previous_conversations_character_check CHECK (character_id <> '');
+ALTER TABLE conversation_messages DROP CONSTRAINT conversation_messages_invariants_check;
+ALTER TABLE conversation_messages DROP COLUMN expression_parts;
+DROP TABLE stickers;
+`); err != nil {
+		t.Fatalf("prepare previous sticker schema: %v", err)
 	}
-	fingerprintBefore := catalogFingerprint(t, ctx, pool)
 	status, err := VerifySchema(ctx, pool)
 	if !errors.Is(err, ErrSchemaNotCurrent) {
 		t.Fatalf("VerifySchema() err = %v, want ErrSchemaNotCurrent", err)
 	}
-	if len(status.UnexpectedObjects) != 1 || status.UnexpectedObjects[0] != "table:fairy_schema_migrations" {
-		t.Fatalf("status = %#v", status)
+	if status.Current {
+		t.Fatalf("previous schema unexpectedly current: %#v", status)
 	}
-	if fingerprintAfter := catalogFingerprint(t, ctx, pool); fingerprintAfter != fingerprintBefore {
-		t.Fatalf("VerifySchema mutated unexpected catalog: before %s, after %s", fingerprintBefore, fingerprintAfter)
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("Migrate(previous schema) error = %v", err)
 	}
-	if err := Migrate(ctx, pool); !errors.Is(err, ErrSchemaNotCurrent) {
-		t.Fatalf("Migrate(legacy schema) err = %v, want ErrSchemaNotCurrent", err)
+	status, err = VerifySchema(ctx, pool)
+	if err != nil || !status.Current {
+		t.Fatalf("VerifySchema() after upgrade status = %#v, err = %v", status, err)
+	}
+	var content string
+	var expressionParts string
+	if err := pool.QueryRow(ctx, `
+SELECT content, expression_parts::text
+FROM conversation_messages
+WHERE id = 'upgrade-message'
+`).Scan(&content, &expressionParts); err != nil {
+		t.Fatalf("read preserved message: %v", err)
+	}
+	if content != "sentinel" || expressionParts != "[]" {
+		t.Fatalf("preserved message content = %q, expression_parts = %q", content, expressionParts)
+	}
+	assertRegclass(t, ctx, pool, "stickers", true)
+	assertConstraint(t, ctx, pool, "conversations", "previous_conversations_character_check", true)
+}
+
+func TestMigrateAndVerifyAllowUnrelatedTablesIntegration(t *testing.T) {
+	ctx := t.Context()
+	pool := openIsolatedPool(t, ctx)
+	defer pool.Close()
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	if _, err := pool.Exec(ctx, "CREATE TABLE operator_notes (id integer PRIMARY KEY, note text NOT NULL)"); err != nil {
+		t.Fatalf("create unrelated table: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO operator_notes(id, note) VALUES (1, 'keep me')"); err != nil {
+		t.Fatalf("insert unrelated row: %v", err)
+	}
+	status, err := VerifySchema(ctx, pool)
+	if err != nil || !status.Current {
+		t.Fatalf("VerifySchema() with unrelated table status = %#v, err = %v", status, err)
+	}
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("Migrate() with unrelated table error = %v", err)
+	}
+	var note string
+	if err := pool.QueryRow(ctx, "SELECT note FROM operator_notes WHERE id = 1").Scan(&note); err != nil {
+		t.Fatalf("read unrelated row: %v", err)
+	}
+	if note != "keep me" {
+		t.Fatalf("unrelated row = %q, want keep me", note)
+	}
+}
+
+func TestMigrateFailsWhenExistingRowsViolateCurrentConstraintIntegration(t *testing.T) {
+	ctx := t.Context()
+	pool := openIsolatedPool(t, ctx)
+	defer pool.Close()
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+DELETE FROM fairy_schema_state WHERE id = 1;
+ALTER TABLE conversations DROP CONSTRAINT conversations_invariants_check;
+INSERT INTO conversations(id, character_id, created_at_ms, updated_at_ms)
+VALUES ('invalid-existing-row', 'character', -1, -1);
+`); err != nil {
+		t.Fatalf("prepare invalid existing row: %v", err)
+	}
+	err := Migrate(ctx, pool)
+	if err == nil {
+		t.Fatal("Migrate() with invalid existing row succeeded")
+	}
+	if !strings.Contains(err.Error(), "conversations_invariants_check") {
+		t.Fatalf("Migrate() error = %v, want constraint name", err)
+	}
+	assertConstraint(t, ctx, pool, "conversations", "conversations_invariants_check", false)
+	status, verifyErr := VerifySchema(ctx, pool)
+	if !errors.Is(verifyErr, ErrSchemaNotCurrent) || status.Current {
+		t.Fatalf("VerifySchema() after failed migration status = %#v, err = %v", status, verifyErr)
+	}
+}
+
+func TestVerifySchemaRejectsMissingAndOldRevisionIntegration(t *testing.T) {
+	ctx := t.Context()
+	pool := openIsolatedPool(t, ctx)
+	defer pool.Close()
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	if _, err := pool.Exec(ctx, "UPDATE fairy_schema_state SET revision = 'previous' WHERE id = 1"); err != nil {
+		t.Fatalf("set previous revision: %v", err)
+	}
+	status, err := VerifySchema(ctx, pool)
+	if !errors.Is(err, ErrSchemaNotCurrent) || status.Current || status.PresentObjects != 1 {
+		t.Fatalf("VerifySchema() with previous revision status = %#v, err = %v", status, err)
+	}
+	if _, err := pool.Exec(ctx, "DELETE FROM fairy_schema_state WHERE id = 1"); err != nil {
+		t.Fatalf("delete schema revision: %v", err)
+	}
+	status, err = VerifySchema(ctx, pool)
+	if !errors.Is(err, ErrSchemaNotCurrent) || status.Current || status.PresentObjects != 0 {
+		t.Fatalf("VerifySchema() without revision status = %#v, err = %v", status, err)
 	}
 }
 
@@ -257,9 +424,27 @@ WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2`,
 	}
 }
 
+func assertConstraint(t *testing.T, ctx context.Context, pool *pgxpool.Pool, table string, name string, want bool) {
+	t.Helper()
+	var exists bool
+	if err := pool.QueryRow(ctx, `
+SELECT EXISTS (
+	SELECT 1
+	FROM pg_constraint c
+	JOIN pg_class t ON t.oid = c.conrelid
+	JOIN pg_namespace n ON n.oid = t.relnamespace
+	WHERE n.nspname = current_schema() AND t.relname = $1 AND c.conname = $2
+)`, table, name).Scan(&exists); err != nil {
+		t.Fatalf("checking constraint %s.%s: %v", table, name, err)
+	}
+	if exists != want {
+		t.Fatalf("constraint %s.%s exists = %v, want %v", table, name, exists, want)
+	}
+}
+
 func catalogFingerprint(t *testing.T, ctx context.Context, pool *pgxpool.Pool) string {
 	t.Helper()
-	rows, err := pool.Query(ctx, schemaCatalogQuery)
+	rows, err := pool.Query(ctx, testSchemaCatalogQuery)
 	if err != nil {
 		t.Fatalf("read catalog fingerprint: %v", err)
 	}
@@ -277,3 +462,23 @@ func catalogFingerprint(t *testing.T, ctx context.Context, pool *pgxpool.Pool) s
 	}
 	return fmt.Sprintf("%x", hash.Sum(nil))
 }
+
+const testSchemaCatalogQuery = `
+SELECT 'table' AS kind, tablename AS owner, '' AS name
+FROM pg_tables
+WHERE schemaname = current_schema()
+UNION ALL
+SELECT 'column', table_name, column_name
+FROM information_schema.columns
+WHERE table_schema = current_schema()
+UNION ALL
+SELECT 'constraint', t.relname, c.conname
+FROM pg_constraint c
+JOIN pg_class t ON t.oid = c.conrelid
+JOIN pg_namespace n ON n.oid = t.relnamespace
+WHERE n.nspname = current_schema()
+UNION ALL
+SELECT 'index', '', indexname
+FROM pg_indexes
+WHERE schemaname = current_schema()
+ORDER BY 1, 2, 3`

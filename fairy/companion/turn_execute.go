@@ -95,6 +95,22 @@ func (e *TurnEngine) submitCompiledTurn(
 
 	lg := s.logger.With(zap.String("turn", persisted.ID))
 	life := newTurnLifecycle(request.ConversationID, persisted.ID)
+	speechEnabled, speechReadinessErr := s.speechEnabledForTurn(request.SpeechEnabled)
+	request.SpeechEnabled = speechEnabled
+	if speechReadinessErr != nil {
+		lg.Warn("cognition loop",
+			zap.String("phase", "speech_readiness_failed"),
+			zap.String("reason", "speech_readiness_failed"),
+		)
+		s.appendRuntimeLedger(
+			request.ConversationID,
+			persisted.ID,
+			runtimeLedgerEventSpeech,
+			life.State(),
+			"TTS_SKIPPED",
+			map[string]any{"status": "skipped", "reason": "speech_readiness_failed"},
+		)
+	}
 	execution := &turnExecution{engine: e, service: s, request: request, persisted: persisted, life: life}
 	fail := execution.fail
 	transition := execution.transition

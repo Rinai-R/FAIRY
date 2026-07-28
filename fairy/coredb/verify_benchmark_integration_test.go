@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,11 +18,16 @@ import (
 )
 
 type countingQueryTracer struct {
-	count atomic.Int64
+	count   atomic.Int64
+	mu      sync.Mutex
+	queries []string
 }
 
-func (tracer *countingQueryTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+func (tracer *countingQueryTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	tracer.count.Add(1)
+	tracer.mu.Lock()
+	tracer.queries = append(tracer.queries, data.SQL)
+	tracer.mu.Unlock()
 	return ctx
 }
 
@@ -28,13 +35,22 @@ func (*countingQueryTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQ
 
 func (tracer *countingQueryTracer) Reset() {
 	tracer.count.Store(0)
+	tracer.mu.Lock()
+	tracer.queries = nil
+	tracer.mu.Unlock()
 }
 
 func (tracer *countingQueryTracer) Count() int64 {
 	return tracer.count.Load()
 }
 
-func TestVerifySchemaUsesOneCatalogQueryIntegration(t *testing.T) {
+func (tracer *countingQueryTracer) Queries() []string {
+	tracer.mu.Lock()
+	defer tracer.mu.Unlock()
+	return append([]string(nil), tracer.queries...)
+}
+
+func TestVerifySchemaUsesOneRevisionQueryIntegration(t *testing.T) {
 	pool, tracer := openTracedIsolatedPool(t, t.Context())
 	if err := Migrate(t.Context(), pool); err != nil {
 		t.Fatal(err)
@@ -45,11 +61,19 @@ func TestVerifySchemaUsesOneCatalogQueryIntegration(t *testing.T) {
 	}
 	queries := tracer.Count()
 	if queries != 1 {
-		t.Fatalf("VerifySchema query count = %d, want 1 catalog snapshot", queries)
+		t.Fatalf("VerifySchema query count = %d, want 1 revision read", queries)
+	}
+	for _, query := range tracer.Queries() {
+		lower := strings.ToLower(query)
+		for _, forbidden := range []string{"information_schema", "pg_constraint", "pg_indexes"} {
+			if strings.Contains(lower, forbidden) {
+				t.Fatalf("VerifySchema query %q contains forbidden catalog %s", query, forbidden)
+			}
+		}
 	}
 }
 
-func BenchmarkVerifySchemaIntegration(b *testing.B) {
+func BenchmarkVerifySchemaRevisionIntegration(b *testing.B) {
 	pool, tracer := openTracedIsolatedPool(b, b.Context())
 	if err := Migrate(b.Context(), pool); err != nil {
 		b.Fatal(err)

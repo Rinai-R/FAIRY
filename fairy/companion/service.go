@@ -27,7 +27,7 @@ type CompanionService struct {
 	model                ModelPort
 	webSearch            WebSearchBackend
 	stickers             StickerSearchPort
-	speech               SpeechSynthesizer
+	speech               SpeechRuntime
 	characterLookup      CharacterLookup
 	profiles             ProfileSource
 	cfg                  ConfigSource
@@ -50,6 +50,14 @@ type CompanionService struct {
 	desktopEvidence      DesktopEvidenceValidator
 	desktopTool          DesktopToolCoordinator
 	ambientReplies       AmbientReplyObserver
+}
+
+// SpeechRuntime is the speech capability Companion consumes. The reply package
+// owns synthesis mechanics; Companion additionally needs one readiness decision
+// before it creates any per-turn translation or synthesis work.
+type SpeechRuntime interface {
+	reply.SpeechSynthesizer
+	SpeechReady() (bool, error)
 }
 
 type MessageTelemetry interface {
@@ -240,12 +248,12 @@ func AttachConfigSource(s *CompanionService, source ConfigSource) {
 	s.cfg = source
 }
 
-// AttachSpeechSynthesizer injects the optional speech backend from main.
-func AttachSpeechSynthesizer(s *CompanionService, synthesizer SpeechSynthesizer) {
-	if s == nil || synthesizer == nil {
+// AttachSpeechRuntime injects the optional speech backend from the composition root.
+func AttachSpeechRuntime(s *CompanionService, runtime SpeechRuntime) {
+	if s == nil || runtime == nil {
 		return
 	}
-	s.speech = synthesizer
+	s.speech = runtime
 }
 
 // AttachSemanticEmbedder injects the optional local semantic backend used by

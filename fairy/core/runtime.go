@@ -212,7 +212,7 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 	companion.AttachProfileSource(services.Companion, services.Profile.ProfileStore())
 	companion.AttachConfigSource(services.Companion, services.ConfigReader)
 	companion.AttachDesktopToolCoordinator(services.Companion, rt.Captures)
-	companion.AttachSpeechSynthesizer(services.Companion, companionSpeechAdapter{service: services.Speech})
+	companion.AttachSpeechRuntime(services.Companion, companionSpeechAdapter{service: services.Speech})
 	attachSemanticEmbedder(services.Companion, services.Model, services.ConfigReader, logger.Named("semantic"))
 	if opened.VectorIndex != nil {
 		companion.AttachVectorIndex(services.Companion, opened.VectorIndex)

@@ -154,7 +154,7 @@ func TestPostgresStickerDeliveryAcknowledgementControlsTerminalStateIntegration(
 				}},
 			})
 			synth := &recordingSynth{}
-			AttachSpeechSynthesizer(service, synth)
+			AttachSpeechRuntime(service, synth)
 			AttachEventEmitter(service, func(event session.Event) {
 				var payload beatReadyPayload
 				if json.Unmarshal(event.Payload, &payload) != nil || payload.Type != "beat.ready" ||

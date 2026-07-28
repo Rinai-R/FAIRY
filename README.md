@@ -67,7 +67,7 @@ go -C fairy run . db vector reconcile          # 默认 dry-run
 go -C fairy run . db vector reconcile --apply  # 只删除确认 orphan
 ```
 
-PostgreSQL 初始化只支持全新空 schema，不升级旧 PostgreSQL schema，也不读取或导入 SQLite 数据。
+PostgreSQL 初始化使用 GORM models 对空库或已有 schema 执行非破坏性的 additive migration：常规 CHECK、unique 与 B-tree index 随 model 迁移，外键、trigram/partial 等 PostgreSQL 特例显式创建，全部成功后才提交 current schema revision。迁移不自动删除、重命名或重写已有结构，也不读取或导入 SQLite 数据。
 
 ## 备份与恢复
 

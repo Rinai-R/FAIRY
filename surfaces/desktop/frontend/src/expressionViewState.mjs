@@ -42,3 +42,28 @@ export function markStickerUnavailable(parts, key, error = "表情包不可用")
       : part
   ));
 }
+
+export function historyExpressionParts(message) {
+  const messageID = typeof message?.id === "string" ? message.id : "message";
+  const source = Array.isArray(message?.parts) ? message.parts : [];
+  const parts = source.flatMap((part, index) => {
+    const key = `${messageID}:${index}`;
+    if (part?.kind === "utterance") {
+      const text = typeof part.text === "string" ? part.text.trim() : "";
+      return text ? [{ key, kind: "utterance", text }] : [];
+    }
+    if (part?.kind === "sticker") {
+      const description = typeof part.sticker?.description === "string"
+        ? part.sticker.description.trim()
+        : "";
+      return [{ key, kind: "sticker", description: description || "表情包" }];
+    }
+    return [];
+  });
+  if (parts.length > 0) return parts;
+
+  const legacyText = typeof message?.content === "string" ? message.content.trim() : "";
+  return legacyText
+    ? [{ key: `${messageID}:legacy`, kind: "utterance", text: legacyText }]
+    : [];
+}

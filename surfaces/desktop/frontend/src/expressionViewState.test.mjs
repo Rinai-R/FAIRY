@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   appendExpressionPart,
   expressionPartFromTurn,
+  historyExpressionParts,
   markStickerUnavailable,
 } from "./expressionViewState.mjs";
 
@@ -52,4 +53,44 @@ test("failed image load replaces the image with an explicit unavailable state", 
   assert.equal(next[0].url, "");
   assert.equal(next[0].unavailable, true);
   assert.equal(next[0].error, "图片加载失败");
+});
+
+test("history expression preserves utterance sticker utterance order", () => {
+  const parts = historyExpressionParts({
+    id: "message-1",
+    content: "legacy projection",
+    parts: [
+      { kind: "utterance", text: "先这样" },
+      { kind: "sticker", sticker: { id: "sticker-1", description: "开心点头", mimeType: "image/png" } },
+      { kind: "utterance", text: "再继续" },
+    ],
+  });
+  assert.deepEqual(parts.map((part) => part.kind), ["utterance", "sticker", "utterance"]);
+  assert.equal(parts[1].description, "开心点头");
+});
+
+test("pure sticker history remains visible when content is empty", () => {
+  const parts = historyExpressionParts({
+    id: "message-2",
+    content: "",
+    parts: [{ kind: "sticker", sticker: { description: "无语摊手" } }],
+  });
+  assert.deepEqual(parts, [{
+    key: "message-2:0",
+    kind: "sticker",
+    description: "无语摊手",
+  }]);
+});
+
+test("legacy text history falls back to content without inventing sticker parts", () => {
+  const parts = historyExpressionParts({
+    id: "message-3",
+    content: "旧消息",
+    parts: [],
+  });
+  assert.deepEqual(parts, [{
+    key: "message-3:legacy",
+    kind: "utterance",
+    text: "旧消息",
+  }]);
 });

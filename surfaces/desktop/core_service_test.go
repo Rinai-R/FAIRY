@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -61,6 +62,66 @@ func (w *fakeWindow) Hide() application.Window {
 }
 func (w *fakeWindow) IsVisible() bool { return w.visible }
 func (w *fakeWindow) Focus()          { w.focused = true }
+
+func TestDecodeDesktopTurnEventPreservesValidAudio(t *testing.T) {
+	payload := `{"type":"beat.ready","beatId":"b1","kind":"final","index":2,"chainIndex":1,"displayText":"你好","speechText":"你好","visualState":"idle","speakerId":"speaker-1","mimeType":"audio/mpeg","format":"mp3","dataUrl":"data:audio/mpeg;base64,bXAz"}`
+	event := decodeDesktopTurnEvent(coreclient.TurnEvent{TurnID: "turn-1", Payload: json.RawMessage(payload)})
+	if event.Type != "beat.ready" || event.TurnID != "turn-1" || event.Beat == nil {
+		t.Fatalf("decoded event = %#v", event)
+	}
+	beat := event.Beat
+	if beat.Index != 2 || beat.ChainIndex != 1 || beat.SpeechText != "你好" ||
+		beat.MIMEType != desktopAudioMIME || beat.Format != desktopAudioFormat ||
+		beat.DataURL != "data:audio/mpeg;base64,bXAz" || beat.AudioUnavailable || beat.AudioError != "" {
+		t.Fatalf("decoded audio beat = %#v", beat)
+	}
+}
+
+func TestDecodeDesktopTurnEventKeepsTextOnlyBeat(t *testing.T) {
+	payload := `{"type":"beat.ready","beatId":"b1","kind":"final","displayText":"只显示文字","visualState":"idle"}`
+	event := decodeDesktopTurnEvent(coreclient.TurnEvent{TurnID: "turn-1", Payload: json.RawMessage(payload)})
+	if event.Beat == nil || event.Beat.DisplayText != "只显示文字" ||
+		event.Beat.DataURL != "" || event.Beat.AudioUnavailable || event.Beat.AudioError != "" {
+		t.Fatalf("decoded text-only beat = %#v", event.Beat)
+	}
+}
+
+func TestDecodeDesktopTurnEventRejectsInvalidAudio(t *testing.T) {
+	oversized := "data:audio/mpeg;base64," + strings.Repeat("A", base64.StdEncoding.EncodedLen(maxDesktopAudioBytes+1))
+	tests := []struct {
+		name    string
+		audio   string
+		mime    string
+		format  string
+		speaker string
+	}{
+		{name: "http URL", audio: "https://example.com/audio.mp3", mime: desktopAudioMIME, format: desktopAudioFormat},
+		{name: "file URL", audio: "file:///tmp/audio.mp3", mime: desktopAudioMIME, format: desktopAudioFormat},
+		{name: "wrong MIME", audio: "data:audio/wav;base64,bXAz", mime: "audio/wav", format: desktopAudioFormat},
+		{name: "wrong format", audio: "data:audio/mpeg;base64,bXAz", mime: desktopAudioMIME, format: "wav"},
+		{name: "invalid base64", audio: "data:audio/mpeg;base64,***", mime: desktopAudioMIME, format: desktopAudioFormat},
+		{name: "empty base64", audio: "data:audio/mpeg;base64,", mime: desktopAudioMIME, format: desktopAudioFormat},
+		{name: "oversized", audio: oversized, mime: desktopAudioMIME, format: desktopAudioFormat},
+		{name: "metadata without data", mime: desktopAudioMIME, format: desktopAudioFormat, speaker: "speaker-1"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload, err := json.Marshal(map[string]any{
+				"type": "beat.ready", "beatId": "b1", "kind": "final",
+				"displayText": "文字保留", "visualState": "idle",
+				"mimeType": test.mime, "format": test.format, "speakerId": test.speaker, "dataUrl": test.audio,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			event := decodeDesktopTurnEvent(coreclient.TurnEvent{TurnID: "turn-1", Payload: payload})
+			if event.Beat == nil || event.Beat.DisplayText != "文字保留" || event.Beat.DataURL != "" ||
+				!event.Beat.AudioUnavailable || event.Beat.AudioError != "语音数据不可用" {
+				t.Fatalf("decoded invalid audio beat = %#v", event.Beat)
+			}
+		})
+	}
+}
 
 func TestOpenHistoryPlacesWindowToCompanionLeft(t *testing.T) {
 	companion := &fakeWindow{x: 700, y: 350}
@@ -301,6 +362,12 @@ func TestCoreServiceUsesOneSocketAndClearsCompletedTurn(t *testing.T) {
 				case "session.watch":
 					_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID})
 				case "turn.submit":
+					var speechEnabled bool
+					_ = json.Unmarshal(frame["speechEnabled"], &speechEnabled)
+					if !speechEnabled {
+						t.Error("Desktop turn did not request speech output")
+						return
+					}
 					writeTurnEventFixture(conn, "t1", 1, "responding", `{"type":"beat.ready","kind":"reply","displayText":"ok","visualState":"idle"}`)
 					writeTurnEventFixture(conn, "t1", 2, "completed", `{"type":"completed"}`)
 					_ = conn.WriteJSON(map[string]any{"type": "result", "requestId": requestID, "payload": json.RawMessage(`{"outcome":{"conversationId":"c1","turnId":"t1","responseText":"ok"}}`)})
@@ -330,7 +397,7 @@ func TestCoreServiceUsesOneSocketAndClearsCompletedTurn(t *testing.T) {
 		t.Fatalf("Connect() error = %v", err)
 	}
 	defer service.ServiceShutdown()
-	if err := service.Send("hello", false); err != nil {
+	if err := service.Send("hello", true); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
 	assertTurnTypes(t, turns, "state_changed", "beat.ready", "completed")
@@ -347,6 +414,110 @@ func TestCoreServiceUsesOneSocketAndClearsCompletedTurn(t *testing.T) {
 	}
 	if got, want := frameTypes, []string{"session.open", "session.watch", "turn.submit"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
 		t.Fatalf("socket frames = %v, want %v", got, want)
+	}
+}
+
+func TestCoreServiceRejectsSendAndCancelsProactiveTurn(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	cancelled := make(chan struct {
+		conversation string
+		turnID       string
+	}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/status":
+			writeServiceFixtureJSON(t, w, serviceStatusFixture())
+		case "/v1/characters":
+			writeServiceFixtureJSON(t, w, coreclient.CharacterCatalog{Characters: []coreclient.CharacterRecord{serviceCharacterFixture()}, Active: ptr(serviceCharacterFixture())})
+		case "/v1/visual-assets/fairy.test/images/idle.png":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(testPNG)
+		case "/v1/sessions/c1/messages":
+			writeServiceFixtureJSON(t, w, coreclient.MessagePage{Messages: []coreclient.MessageRecord{}})
+		case "/v1/session/ws":
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			defer conn.Close()
+			_ = conn.WriteJSON(map[string]any{"type": "ready"})
+			for {
+				var frame map[string]json.RawMessage
+				if err := conn.ReadJSON(&frame); err != nil {
+					return
+				}
+				var kind, requestID string
+				_ = json.Unmarshal(frame["type"], &kind)
+				_ = json.Unmarshal(frame["requestId"], &requestID)
+				switch kind {
+				case "session.open":
+					_ = conn.WriteJSON(map[string]any{"type": "session.opened", "requestId": requestID, "conversationId": "c1", "characterId": "character-1", "endpoint": "desktop"})
+				case "session.watch":
+					_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID})
+					writeTurnEventFixture(conn, "proactive-turn", 1, "planning", `{"type":"state_changed"}`)
+				case "turn.submit":
+					t.Error("Desktop submitted a second Turn while the proactive Turn was active")
+					_ = conn.WriteJSON(map[string]any{
+						"type": "result", "requestId": requestID,
+						"payload": json.RawMessage(`{"outcome":{"conversationId":"c1","turnId":"unexpected","responseText":""}}`),
+					})
+				case "turn.cancel":
+					var conversation, turnID string
+					_ = json.Unmarshal(frame["conversationId"], &conversation)
+					_ = json.Unmarshal(frame["turnId"], &turnID)
+					cancelled <- struct {
+						conversation string
+						turnID       string
+					}{conversation: conversation, turnID: turnID}
+					_ = conn.WriteJSON(map[string]any{"type": "result", "requestId": requestID, "payload": json.RawMessage(`{"ok":true}`)})
+					writeTurnEventFixture(conn, "proactive-turn", 2, "interrupted", `{"type":"state_changed"}`)
+					return
+				}
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	service := NewCoreService()
+	service.connections = &memoryConnectionStore{connection: desktopConnection{
+		Endpoint: server.URL, EndpointKey: "desktop-test", Token: "desktop-test-token",
+	}}
+	service.newCache = func() (*visualCache, error) { return newVisualCacheAt(t.TempDir()) }
+	turns := make(chan desktopTurnEvent, 4)
+	service.attachEmitter(func(name string, payload any) {
+		if name == "desktop:turn" {
+			turns <- payload.(desktopTurnEvent)
+		}
+	})
+	if _, err := service.Connect(); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	defer service.ServiceShutdown()
+
+	assertTurnTypes(t, turns, "state_changed")
+	if err := service.Send("must be rejected", true); err == nil || err.Error() != "a turn is already active" {
+		t.Fatalf("Send() error = %v, want active Turn error", err)
+	}
+	if err := service.Cancel(); err != nil {
+		t.Fatalf("Cancel() error = %v", err)
+	}
+	select {
+	case got := <-cancelled:
+		if got.conversation != "c1" || got.turnID != "proactive-turn" {
+			t.Fatalf("cancel identity = (%q, %q), want (%q, %q)", got.conversation, got.turnID, "c1", "proactive-turn")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("proactive Turn cancel was not received")
+	}
+	assertTurnTypes(t, turns, "state_changed")
+	service.mu.Lock()
+	active, activeTurnID := service.active, service.activeTurnID
+	service.mu.Unlock()
+	if active || activeTurnID != "" {
+		t.Fatalf("interrupted proactive Turn left active state = (%t, %q)", active, activeTurnID)
 	}
 }
 
@@ -552,17 +723,27 @@ func TestCoreServiceReportsStickerFetchFailure(t *testing.T) {
 
 func TestForwardTurnEventsClearsActiveWhenStreamCloses(t *testing.T) {
 	service := NewCoreService()
-	service.active = true
 	service.socket = nil
-	turns := make(chan desktopTurnEvent, 1)
+	turns := make(chan desktopTurnEvent, 2)
 	service.attachEmitter(func(name string, payload any) {
 		if name == "desktop:turn" {
 			turns <- payload.(desktopTurnEvent)
 		}
 	})
 	events := make(chan coreclient.TurnEvent)
+	done := make(chan struct{})
+	go func() {
+		service.forwardTurnEvents(nil, "c1", events)
+		close(done)
+	}()
+	events <- coreclient.TurnEvent{
+		ConversationID: "c1",
+		TurnID:         "proactive-turn",
+		State:          "responding",
+		Payload:        json.RawMessage(`{"type":"state_changed"}`),
+	}
+	assertTurnTypes(t, turns, "state_changed")
 	close(events)
-	service.forwardTurnEvents(nil, "c1", events)
 	select {
 	case event := <-turns:
 		if event.Type != "stream.closed" {
@@ -571,8 +752,96 @@ func TestForwardTurnEventsClearsActiveWhenStreamCloses(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("stream closure did not emit terminal event")
 	}
-	if service.active {
-		t.Fatal("closed stream left service active")
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("turn event forwarder did not stop")
+	}
+	if service.active || service.activeTurnID != "" {
+		t.Fatalf("closed stream left active state = (%t, %q)", service.active, service.activeTurnID)
+	}
+}
+
+func TestForwardTurnEventsTracksProactiveTurnUntilMatchingTerminal(t *testing.T) {
+	service := NewCoreService()
+	turns := make(chan desktopTurnEvent, 4)
+	service.attachEmitter(func(name string, payload any) {
+		if name == "desktop:turn" {
+			turns <- payload.(desktopTurnEvent)
+		}
+	})
+	events := make(chan coreclient.TurnEvent)
+	done := make(chan struct{})
+	go func() {
+		service.forwardTurnEvents(nil, "c1", events)
+		close(done)
+	}()
+
+	events <- coreclient.TurnEvent{
+		ConversationID: "c1",
+		TurnID:         "proactive-turn",
+		State:          "interpreting",
+		Payload:        json.RawMessage(`{"type":"state_changed"}`),
+	}
+	assertTurnTypes(t, turns, "state_changed")
+	service.mu.Lock()
+	active, activeTurnID := service.active, service.activeTurnID
+	service.mu.Unlock()
+	if !active || activeTurnID != "proactive-turn" {
+		t.Fatalf("proactive active state = (%t, %q), want (true, %q)", active, activeTurnID, "proactive-turn")
+	}
+
+	events <- coreclient.TurnEvent{
+		ConversationID: "c1",
+		TurnID:         "older-turn",
+		State:          "completed",
+		Payload:        json.RawMessage(`{"type":"completed"}`),
+	}
+	assertTurnTypes(t, turns, "completed")
+	service.mu.Lock()
+	active, activeTurnID = service.active, service.activeTurnID
+	service.mu.Unlock()
+	if !active || activeTurnID != "proactive-turn" {
+		t.Fatalf("unrelated terminal changed active state to (%t, %q)", active, activeTurnID)
+	}
+
+	events <- coreclient.TurnEvent{
+		ConversationID: "c1",
+		TurnID:         "proactive-turn",
+		State:          "completed",
+		Payload:        json.RawMessage(`{"type":"completed"}`),
+	}
+	assertTurnTypes(t, turns, "completed")
+	service.mu.Lock()
+	active, activeTurnID = service.active, service.activeTurnID
+	service.mu.Unlock()
+	if active || activeTurnID != "" {
+		t.Fatalf("matching terminal left active state = (%t, %q)", active, activeTurnID)
+	}
+
+	close(events)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("turn event forwarder did not stop")
+	}
+}
+
+func TestDesktopTurnStateClassification(t *testing.T) {
+	for _, state := range []string{"interpreting", "gathering", "planning", "responding"} {
+		if !isDesktopTurnActive(state) || isDesktopTurnTerminal(state) {
+			t.Fatalf("state %q was not classified as active only", state)
+		}
+	}
+	for _, state := range []string{"completed", "failed", "interrupted"} {
+		if isDesktopTurnActive(state) || !isDesktopTurnTerminal(state) {
+			t.Fatalf("state %q was not classified as terminal only", state)
+		}
+	}
+	for _, state := range []string{"", "unknown"} {
+		if isDesktopTurnActive(state) || isDesktopTurnTerminal(state) {
+			t.Fatalf("state %q was unexpectedly classified", state)
+		}
 	}
 }
 
