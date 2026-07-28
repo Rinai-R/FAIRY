@@ -20,6 +20,7 @@ type turnGate struct {
 	mu         sync.Mutex
 	activeTurn *activeTurn
 	compacting bool
+	users      int
 }
 
 type turnRegistry struct {
@@ -32,23 +33,51 @@ func newTurnRegistry(cancelHook turnCancelHook) *turnRegistry {
 	return &turnRegistry{gates: make(map[string]*turnGate), cancelHook: cancelHook}
 }
 
-func (r *turnRegistry) gateFor(conversationID string) *turnGate {
+func (r *turnRegistry) acquire(conversationID string, create bool) *turnGate {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.gates == nil {
+		if !create {
+			return nil
+		}
 		r.gates = make(map[string]*turnGate)
 	}
 	g := r.gates[conversationID]
-	if g == nil {
+	if g == nil && create {
 		g = &turnGate{}
 		r.gates[conversationID] = g
+	}
+	if g != nil {
+		g.users++
 	}
 	return g
 }
 
+func (r *turnRegistry) release(conversationID string, g *turnGate) {
+	if r == nil || g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.gates[conversationID] != g {
+		return
+	}
+	g.users--
+	if g.users != 0 {
+		return
+	}
+	idle := g.activeTurn == nil && !g.compacting
+	if idle {
+		delete(r.gates, conversationID)
+	}
+}
+
 // Reserve acquires the conversation slot before persistence.
 func (r *turnRegistry) Reserve(conversationID string) (context.Context, error) {
-	g := r.gateFor(conversationID)
+	g := r.acquire(conversationID, true)
+	defer r.release(conversationID, g)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.activeTurn != nil || g.compacting {
@@ -60,7 +89,11 @@ func (r *turnRegistry) Reserve(conversationID string) (context.Context, error) {
 }
 
 func (r *turnRegistry) Bind(conversationID, turnID string) {
-	g := r.gateFor(conversationID)
+	g := r.acquire(conversationID, false)
+	if g == nil {
+		return
+	}
+	defer r.release(conversationID, g)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.activeTurn != nil {
@@ -69,7 +102,11 @@ func (r *turnRegistry) Bind(conversationID, turnID string) {
 }
 
 func (r *turnRegistry) MarkDelivering(conversationID, turnID string) {
-	g := r.gateFor(conversationID)
+	g := r.acquire(conversationID, false)
+	if g == nil {
+		return
+	}
+	defer r.release(conversationID, g)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.activeTurn != nil && g.activeTurn.turnID == turnID {
@@ -79,10 +116,11 @@ func (r *turnRegistry) MarkDelivering(conversationID, turnID string) {
 
 // CancelBeforeDelivery cancels only a turn that has not entered final delivery.
 func (r *turnRegistry) CancelBeforeDelivery(conversationID string) (bool, error) {
-	g := r.lookup(conversationID)
+	g := r.acquire(conversationID, false)
 	if g == nil {
 		return false, nil
 	}
+	defer r.release(conversationID, g)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.activeTurn == nil || g.activeTurn.delivering {
@@ -100,10 +138,11 @@ func (r *turnRegistry) CancelBeforeDelivery(conversationID string) (bool, error)
 
 // Cancel cancels a specific active turn and its external execution.
 func (r *turnRegistry) Cancel(conversationID, turnID string) error {
-	g := r.lookup(conversationID)
+	g := r.acquire(conversationID, false)
 	if g == nil {
 		return ErrTurnNotActive
 	}
+	defer r.release(conversationID, g)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.activeTurn == nil || g.activeTurn.turnID != turnID {
@@ -122,7 +161,11 @@ func (r *turnRegistry) Cancel(conversationID, turnID string) error {
 }
 
 func (r *turnRegistry) End(conversationID, turnID string) {
-	g := r.gateFor(conversationID)
+	g := r.acquire(conversationID, false)
+	if g == nil {
+		return
+	}
+	defer r.release(conversationID, g)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.activeTurn == nil {
@@ -136,7 +179,8 @@ func (r *turnRegistry) End(conversationID, turnID string) {
 }
 
 func (r *turnRegistry) BeginCompaction(conversationID string) error {
-	g := r.gateFor(conversationID)
+	g := r.acquire(conversationID, true)
+	defer r.release(conversationID, g)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.activeTurn != nil || g.compacting {
@@ -147,32 +191,35 @@ func (r *turnRegistry) BeginCompaction(conversationID string) error {
 }
 
 func (r *turnRegistry) EndCompaction(conversationID string) {
-	g := r.gateFor(conversationID)
+	g := r.acquire(conversationID, false)
+	if g == nil {
+		return
+	}
+	defer r.release(conversationID, g)
 	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.compacting = false
-	g.mu.Unlock()
 }
 
 func (r *turnRegistry) CancelAll() {
+	type gateRef struct {
+		conversationID string
+		gate           *turnGate
+	}
 	r.mu.Lock()
-	gates := make([]*turnGate, 0, len(r.gates))
-	for _, g := range r.gates {
-		gates = append(gates, g)
+	gates := make([]gateRef, 0, len(r.gates))
+	for conversationID, g := range r.gates {
+		g.users++
+		gates = append(gates, gateRef{conversationID: conversationID, gate: g})
 	}
 	r.mu.Unlock()
-	for _, g := range gates {
-		g.mu.Lock()
-		if g.activeTurn != nil {
-			g.activeTurn.cancel()
-			g.activeTurn = nil
+	for _, ref := range gates {
+		ref.gate.mu.Lock()
+		if ref.gate.activeTurn != nil {
+			ref.gate.activeTurn.cancel()
+			ref.gate.activeTurn = nil
 		}
-		g.mu.Unlock()
+		ref.gate.mu.Unlock()
+		r.release(ref.conversationID, ref.gate)
 	}
-}
-
-func (r *turnRegistry) lookup(conversationID string) *turnGate {
-	r.mu.Lock()
-	g := r.gates[conversationID]
-	r.mu.Unlock()
-	return g
 }

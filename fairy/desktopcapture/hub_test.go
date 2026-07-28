@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -28,22 +29,87 @@ type fakeCaptureStore struct {
 	allowComplete   chan struct{}
 	completeWon     chan struct{}
 	releaseComplete chan struct{}
+	settleCount     int
+	settleErr       error
 }
 
-func (s *fakeCaptureStore) ListRecoverableToolExecutions(context.Context) ([]memory.ToolExecutionRecord, error) {
+type countingCaptureStore struct {
+	*fakeCaptureStore
+	created int
+}
+
+func (s *countingCaptureStore) CreateToolExecution(_ context.Context, input memory.CreateToolExecutionInput) (memory.ToolExecutionRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.record.ID == "" {
-		return nil, nil
+	s.created++
+	record := memory.ToolExecutionRecord{
+		ID: fmt.Sprintf("execution-%d", s.created), ConversationID: input.ConversationID,
+		TurnID: input.TurnID, CallID: input.CallID, ToolName: input.ToolName,
+		Status: memory.ToolExecutionPending, DeadlineAtUnixMS: input.DeadlineAtUnixMS,
 	}
-	return []memory.ToolExecutionRecord{s.record}, nil
+	s.record = record
+	return record, nil
 }
 
-func (s *fakeCaptureStore) FailTurn(_, _, code, _ string, _ bool) error {
+type blockingBeginCaptureStore struct {
+	*fakeCaptureStore
+	started    chan struct{}
+	release    chan struct{}
+	failedCode string
+	created    int
+}
+
+func (s *blockingBeginCaptureStore) CreateToolExecution(_ context.Context, input memory.CreateToolExecutionInput) (memory.ToolExecutionRecord, error) {
+	close(s.started)
+	<-s.release
 	s.mu.Lock()
-	s.turnFailureCode = code
-	s.mu.Unlock()
-	return nil
+	defer s.mu.Unlock()
+	s.created++
+	record := memory.ToolExecutionRecord{
+		ID: "execution-blocked", ConversationID: input.ConversationID, TurnID: input.TurnID,
+		CallID: input.CallID, ToolName: input.ToolName, Status: memory.ToolExecutionPending,
+		DeadlineAtUnixMS: input.DeadlineAtUnixMS,
+	}
+	s.record = record
+	return record, nil
+}
+
+func (s *blockingBeginCaptureStore) FailToolExecution(_ context.Context, id, code, message string) (memory.ToolExecutionRecord, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.record.ID != id || s.record.Status != memory.ToolExecutionPending {
+		return memory.ToolExecutionRecord{}, false, nil
+	}
+	s.failedCode = code
+	s.record.Status = memory.ToolExecutionFailed
+	s.record.ErrorCode = &code
+	s.record.ErrorMessage = &message
+	return s.record, true, nil
+}
+
+func (s *fakeCaptureStore) SettleRecoveredToolExecutions(context.Context) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.settleCount++
+	if s.settleErr != nil {
+		return 0, s.settleErr
+	}
+	if s.record.ID == "" {
+		return 0, nil
+	}
+	switch s.record.Status {
+	case memory.ToolExecutionPending:
+		code := "core_restarted"
+		s.record.Status = memory.ToolExecutionFailed
+		s.record.ErrorCode = &code
+		s.turnFailureCode = "DESKTOP_CAPTURE_RECOVERY_FAILED"
+		return 1, nil
+	case memory.ToolExecutionCompleted:
+		s.turnFailureCode = "DESKTOP_CAPTURE_RECOVERY_FAILED"
+		return 1, nil
+	default:
+		return 0, nil
+	}
 }
 
 func (s *fakeCaptureStore) CreateToolExecution(_ context.Context, input memory.CreateToolExecutionInput) (memory.ToolExecutionRecord, error) {
@@ -139,11 +205,183 @@ func TestCaptureHubSettlesRecoveredPendingAndCompletedTurns(t *testing.T) {
 			if store.turnFailureCode != "DESKTOP_CAPTURE_RECOVERY_FAILED" {
 				t.Fatalf("turn failure code = %q", store.turnFailureCode)
 			}
+			if store.settleCount != 1 {
+				t.Fatalf("settle calls = %d, want 1", store.settleCount)
+			}
 			if status == memory.ToolExecutionPending && (store.record.Status != memory.ToolExecutionFailed || store.record.ErrorCode == nil || *store.record.ErrorCode != "core_restarted") {
 				t.Fatalf("pending recovery = %#v", store.record)
 			}
 		})
 	}
+}
+
+func TestCaptureHubSettleRecoveredPropagatesStoreFailure(t *testing.T) {
+	want := errors.New("recovery unavailable")
+	store := &fakeCaptureStore{settleErr: want}
+	hub := NewCaptureHub(store)
+	if err := hub.SettleRecovered(t.Context()); !errors.Is(err, want) {
+		t.Fatalf("SettleRecovered error = %v, want %v", err, want)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.settleCount != 1 {
+		t.Fatalf("settle calls = %d, want 1", store.settleCount)
+	}
+}
+
+func TestCaptureHubActiveExecutionCapacityRejectsBeforeDurableCreateAndRecovers(t *testing.T) {
+	store := &countingCaptureStore{fakeCaptureStore: &fakeCaptureStore{}}
+	hub := NewCaptureHub(store)
+	hub.executionCapacity = 2
+	privateContext := session.Context{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied}
+	_, unregister, err := hub.Register("conversation-1", session.EndpointDesktop, privateContext, func(session.DesktopCaptureRequest) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unregister()
+
+	executions := make([]Execution, 0, 2)
+	for index := 1; index <= 2; index++ {
+		execution, beginErr := hub.Begin(t.Context(), ToolRequest{
+			ConversationID: "conversation-1", TurnID: fmt.Sprintf("turn-%d", index),
+			CallID: fmt.Sprintf("call-%d", index), Deadline: time.Now().Add(time.Minute),
+		}, func() {})
+		if beginErr != nil {
+			t.Fatalf("Begin(%d) error = %v", index, beginErr)
+		}
+		executions = append(executions, execution)
+	}
+	if _, beginErr := hub.Begin(t.Context(), ToolRequest{
+		ConversationID: "conversation-1", TurnID: "turn-overload",
+		CallID: "call-overload", Deadline: time.Now().Add(time.Minute),
+	}, func() {}); toolErrorCode(beginErr) != "capture_overloaded" {
+		t.Fatalf("overload error = %v, want capture_overloaded", beginErr)
+	}
+	store.mu.Lock()
+	created := store.created
+	store.mu.Unlock()
+	if created != 2 {
+		t.Fatalf("durable creates = %d, want 2", created)
+	}
+	hub.mu.Lock()
+	active, beginning := len(hub.turns), hub.beginning
+	hub.mu.Unlock()
+	if active != 2 || beginning != 0 {
+		t.Fatalf("registry active=%d beginning=%d, want 2/0", active, beginning)
+	}
+
+	hub.release(executions[0].ID)
+	if _, beginErr := hub.Begin(t.Context(), ToolRequest{
+		ConversationID: "conversation-1", TurnID: "turn-replacement",
+		CallID: "call-replacement", Deadline: time.Now().Add(time.Minute),
+	}, func() {}); beginErr != nil {
+		t.Fatalf("Begin after release error = %v", beginErr)
+	}
+	store.mu.Lock()
+	created = store.created
+	store.mu.Unlock()
+	if created != 3 {
+		t.Fatalf("durable creates after release = %d, want 3", created)
+	}
+	hub.Close()
+}
+
+func TestCaptureHubCloseSealsOwnersAndWaitsForInFlightBegin(t *testing.T) {
+	store := &blockingBeginCaptureStore{
+		fakeCaptureStore: &fakeCaptureStore{},
+		started:          make(chan struct{}),
+		release:          make(chan struct{}),
+	}
+	hub := NewCaptureHub(store)
+	hub.executionCapacity = 2
+	privateContext := session.Context{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied}
+	_, unregister, err := hub.Register("conversation-1", session.EndpointDesktop, privateContext, func(session.DesktopCaptureRequest) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unregister()
+
+	beginResult := make(chan error, 1)
+	go func() {
+		_, beginErr := hub.Begin(t.Context(), ToolRequest{
+			ConversationID: "conversation-1", TurnID: "turn-1", CallID: "call-1",
+			Deadline: time.Now().Add(time.Minute),
+		}, func() {
+			t.Error("closed in-flight Begin invoked completion")
+		})
+		beginResult <- beginErr
+	}()
+	<-store.started
+
+	closeDone := make(chan struct{})
+	go func() {
+		hub.Close()
+		close(closeDone)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		hub.mu.Lock()
+		closed := hub.closed
+		hub.mu.Unlock()
+		if closed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Close did not select closed state")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case <-closeDone:
+		t.Fatal("Close returned while durable Begin was still blocked")
+	default:
+	}
+
+	close(store.release)
+	if beginErr := <-beginResult; toolErrorCode(beginErr) != "capture_unavailable" {
+		t.Fatalf("in-flight Begin error = %v, want capture_unavailable", beginErr)
+	}
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish after Begin settled")
+	}
+	store.mu.Lock()
+	created, failedCode := store.created, store.failedCode
+	store.mu.Unlock()
+	if created != 1 || failedCode != "capture_unavailable" {
+		t.Fatalf("durable state created=%d failedCode=%q", created, failedCode)
+	}
+	hub.mu.Lock()
+	counts := []int{len(hub.routes), len(hub.turns), len(hub.completions), len(hub.timers), len(hub.evidence), hub.beginning}
+	hub.mu.Unlock()
+	for index, count := range counts {
+		if count != 0 {
+			t.Fatalf("closed registry count[%d] = %d, want 0", index, count)
+		}
+	}
+	if _, _, registerErr := hub.Register("conversation-2", session.EndpointDesktop, privateContext, func(session.DesktopCaptureRequest) error { return nil }); registerErr == nil {
+		t.Fatal("Register succeeded after Close")
+	}
+	if _, beginErr := hub.Begin(t.Context(), ToolRequest{
+		ConversationID: "conversation-1", TurnID: "turn-late", CallID: "call-late", Deadline: time.Now().Add(time.Minute),
+	}, func() {}); toolErrorCode(beginErr) != "capture_unavailable" {
+		t.Fatalf("Begin after Close error = %v, want capture_unavailable", beginErr)
+	}
+	store.mu.Lock()
+	created = store.created
+	store.mu.Unlock()
+	if created != 1 {
+		t.Fatalf("durable creates after Close = %d, want 1", created)
+	}
+}
+
+func toolErrorCode(err error) string {
+	var toolErr *ToolError
+	if errors.As(err, &toolErr) {
+		return toolErr.Code
+	}
+	return ""
 }
 
 func TestCaptureHubPrivateRouteCorrelationCASAndEvidence(t *testing.T) {

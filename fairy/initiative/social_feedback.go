@@ -19,6 +19,7 @@ const (
 	SocialFeedbackMaxOutputTokens    uint32 = 96
 	FeedbackQueueCapacity                   = 8
 	socialFeedbackMaxPendingPerGroup        = 4
+	socialFeedbackPendingCapacity           = 256
 	socialFeedbackObservationLimit          = 6
 	socialFeedbackObservationWindow         = 2 * time.Minute
 )
@@ -59,13 +60,17 @@ type FeedbackEngine struct {
 	wg     sync.WaitGroup
 	once   sync.Once
 
-	mu         sync.Mutex
-	closed     bool
-	pending    map[string]map[string]*pendingFeedback
-	registered atomic.Int64
-	dropped    atomic.Int64
-	succeeded  atomic.Int64
-	failed     atomic.Int64
+	mu                sync.Mutex
+	closed            bool
+	pending           map[string]map[string]*pendingFeedback
+	pendingCapacity   int
+	pendingCount      int
+	window            time.Duration
+	timerCallbackHook func()
+	registered        atomic.Int64
+	dropped           atomic.Int64
+	succeeded         atomic.Int64
+	failed            atomic.Int64
 }
 
 type feedbackPromptPayload struct {
@@ -79,13 +84,25 @@ type feedbackResult struct {
 }
 
 func NewFeedbackEngine(host FeedbackHost, capacity int) *FeedbackEngine {
-	if capacity < 1 {
-		capacity = 1
+	return newFeedbackEngine(host, capacity, socialFeedbackPendingCapacity, socialFeedbackObservationWindow)
+}
+
+func newFeedbackEngine(host FeedbackHost, queueCapacity, pendingCapacity int, window time.Duration) *FeedbackEngine {
+	if queueCapacity < 1 {
+		queueCapacity = 1
+	}
+	if pendingCapacity < 1 {
+		pendingCapacity = 1
+	}
+	if window <= 0 {
+		window = socialFeedbackObservationWindow
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	engine := &FeedbackEngine{
-		host: host, ctx: ctx, cancel: cancel, queue: newBoundedQueue[feedbackSnapshot](capacity),
-		pending: make(map[string]map[string]*pendingFeedback),
+		host: host, ctx: ctx, cancel: cancel,
+		queue:           newBoundedQueue[feedbackSnapshot](queueCapacity),
+		pending:         make(map[string]map[string]*pendingFeedback),
+		pendingCapacity: pendingCapacity, window: window,
 	}
 	engine.wg.Add(1)
 	go engine.run()
@@ -106,19 +123,35 @@ func (e *FeedbackEngine) Register(registration FeedbackRegistration) bool {
 		return false
 	}
 	group := e.pending[registration.ConversationID]
-	if group == nil {
-		group = make(map[string]*pendingFeedback)
-		e.pending[registration.ConversationID] = group
+	if group != nil {
+		if _, exists := group[registration.TurnID]; exists {
+			e.dropped.Add(1)
+			return false
+		}
+	}
+	if e.pendingCount >= e.pendingCapacity {
+		e.dropped.Add(1)
+		return false
 	}
 	if len(group) >= socialFeedbackMaxPendingPerGroup {
 		e.dropped.Add(1)
 		return false
 	}
+	if group == nil {
+		group = make(map[string]*pendingFeedback)
+		e.pending[registration.ConversationID] = group
+	}
 	pending := &pendingFeedback{registration: registration}
-	pending.timer = time.AfterFunc(socialFeedbackObservationWindow, func() {
+	e.wg.Add(1)
+	pending.timer = time.AfterFunc(e.window, func() {
+		defer e.wg.Done()
+		if e.timerCallbackHook != nil {
+			e.timerCallbackHook()
+		}
 		e.finalize(registration.ConversationID, registration.TurnID)
 	})
 	group[registration.TurnID] = pending
+	e.pendingCount++
 	e.registered.Add(1)
 	return true
 }
@@ -135,8 +168,9 @@ func (e *FeedbackEngine) Observe(conversationID string, observation AmbientObser
 		if len(pending.observations) < socialFeedbackObservationLimit {
 			continue
 		}
-		pending.timer.Stop()
+		e.stopPendingTimer(pending)
 		delete(group, turnID)
+		e.pendingCount--
 		ready = append(ready, snapshotSocialFeedback(pending))
 	}
 	if len(group) == 0 {
@@ -154,6 +188,7 @@ func (e *FeedbackEngine) finalize(conversationID, turnID string) {
 	pending := group[turnID]
 	if pending != nil {
 		delete(group, turnID)
+		e.pendingCount--
 		if len(group) == 0 {
 			delete(e.pending, conversationID)
 		}
@@ -161,6 +196,12 @@ func (e *FeedbackEngine) finalize(conversationID, turnID string) {
 	e.mu.Unlock()
 	if pending != nil {
 		e.enqueue(snapshotSocialFeedback(pending))
+	}
+}
+
+func (e *FeedbackEngine) stopPendingTimer(pending *pendingFeedback) {
+	if pending != nil && pending.timer != nil && pending.timer.Stop() {
+		e.wg.Done()
 	}
 }
 
@@ -288,10 +329,11 @@ func (e *FeedbackEngine) Close() {
 		e.closed = true
 		for _, group := range e.pending {
 			for _, pending := range group {
-				pending.timer.Stop()
+				e.stopPendingTimer(pending)
 			}
 		}
 		e.pending = make(map[string]map[string]*pendingFeedback)
+		e.pendingCount = 0
 		e.mu.Unlock()
 		e.cancel()
 		e.wg.Wait()

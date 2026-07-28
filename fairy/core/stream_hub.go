@@ -25,37 +25,52 @@ func (s streamSubscription[E]) Unsubscribe() {
 type streamHub[K comparable, E any] struct {
 	mu          sync.Mutex
 	buffer      int
+	capacity    int
 	overflowErr error
+	capacityErr error
 	subs        map[K]map[*streamSubscriber[E]]struct{}
+	subscribers int
 	closed      bool
 }
 
-func newStreamHub[K comparable, E any](buffer int, overflowErr error) *streamHub[K, E] {
+func newStreamHub[K comparable, E any](buffer, capacity int, overflowErr, capacityErr error) *streamHub[K, E] {
 	if buffer <= 0 {
 		panic("event stream buffer must be positive")
+	}
+	if capacity <= 0 {
+		panic("event stream subscriber capacity must be positive")
 	}
 	if overflowErr == nil {
 		panic("event stream overflow error is required")
 	}
-	return &streamHub[K, E]{buffer: buffer, overflowErr: overflowErr, subs: make(map[K]map[*streamSubscriber[E]]struct{})}
+	if capacityErr == nil {
+		panic("event stream capacity error is required")
+	}
+	return &streamHub[K, E]{
+		buffer: buffer, capacity: capacity, overflowErr: overflowErr, capacityErr: capacityErr,
+		subs: make(map[K]map[*streamSubscriber[E]]struct{}),
+	}
 }
 
-func (h *streamHub[K, E]) Subscribe(key K) streamSubscription[E] {
+func (h *streamHub[K, E]) Subscribe(key K) (streamSubscription[E], error) {
 	if h == nil {
-		return closedStreamSubscription[E]()
+		return closedStreamSubscription[E](), nil
 	}
-	sub := &streamSubscriber[E]{events: make(chan E, h.buffer), failures: make(chan error, 1)}
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
-		close(sub.events)
-		close(sub.failures)
-		return streamSubscription[E]{Events: sub.events, Failures: sub.failures, unsubscribe: func() {}}
+		return closedStreamSubscription[E](), nil
 	}
+	if h.subscribers >= h.capacity {
+		h.mu.Unlock()
+		return streamSubscription[E]{}, h.capacityErr
+	}
+	sub := &streamSubscriber[E]{events: make(chan E, h.buffer), failures: make(chan error, 1)}
 	if h.subs[key] == nil {
 		h.subs[key] = make(map[*streamSubscriber[E]]struct{})
 	}
 	h.subs[key][sub] = struct{}{}
+	h.subscribers++
 	h.mu.Unlock()
 
 	var once sync.Once
@@ -65,7 +80,7 @@ func (h *streamHub[K, E]) Subscribe(key K) streamSubscription[E] {
 			h.removeLocked(key, sub, nil)
 			h.mu.Unlock()
 		})
-	}}
+	}}, nil
 }
 
 func closedStreamSubscription[E any]() streamSubscription[E] {
@@ -100,6 +115,7 @@ func (h *streamHub[K, E]) removeLocked(key K, sub *streamSubscriber[E], failure 
 		return
 	}
 	delete(subscribers, sub)
+	h.subscribers--
 	if len(subscribers) == 0 {
 		delete(h.subs, key)
 	}
@@ -116,11 +132,7 @@ func (h *streamHub[K, E]) SubscriberCount() uint64 {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	var count uint64
-	for _, subscribers := range h.subs {
-		count += uint64(len(subscribers))
-	}
-	return count
+	return uint64(h.subscribers)
 }
 
 func (h *streamHub[K, E]) Close() {

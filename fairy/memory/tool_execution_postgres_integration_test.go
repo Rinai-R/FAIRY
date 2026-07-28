@@ -106,13 +106,31 @@ VALUES
 	if err != nil {
 		t.Fatalf("NewStoreFromPool(restart): %v", err)
 	}
-	recovered, err := restarted.ListPendingToolExecutions(ctx, now)
-	if err != nil || len(recovered) != 1 || recovered[0].ID != pending.ID {
-		t.Fatalf("ListPendingToolExecutions = (%#v, %v)", recovered, err)
+	settledCount, err := restarted.SettleRecoveredToolExecutions(ctx)
+	if err != nil || settledCount != 2 {
+		t.Fatalf("SettleRecoveredToolExecutions = (%d, %v), want (2, nil)", settledCount, err)
 	}
-	unsettled, err := restarted.ListRecoverableToolExecutions(ctx)
-	if err != nil || len(unsettled) != 2 || unsettled[0].ID != created.ID || unsettled[0].Status != ToolExecutionCompleted || unsettled[1].ID != pending.ID || unsettled[1].Status != ToolExecutionPending {
-		t.Fatalf("ListRecoverableToolExecutions = (%#v, %v)", unsettled, err)
+	recoveredPending, ok, err := restarted.LoadToolExecution(ctx, pending.ID)
+	if err != nil || !ok || recoveredPending.Status != ToolExecutionFailed || recoveredPending.ErrorCode == nil || *recoveredPending.ErrorCode != "core_restarted" {
+		t.Fatalf("recovered pending execution = (%#v, %v, %v)", recoveredPending, ok, err)
+	}
+	recoveredCompleted, ok, err := restarted.LoadToolExecution(ctx, created.ID)
+	if err != nil || !ok || recoveredCompleted.Status != ToolExecutionCompleted {
+		t.Fatalf("recovered completed execution = (%#v, %v, %v)", recoveredCompleted, ok, err)
+	}
+	var pendingTurnStatus, pendingTurnCode, pendingTurnMessage string
+	if err := pool.Raw().QueryRow(ctx, "SELECT status, error_code, error_message FROM conversation_turns WHERE id = $1", pending.TurnID).Scan(&pendingTurnStatus, &pendingTurnCode, &pendingTurnMessage); err != nil {
+		t.Fatalf("load recovered pending turn: %v", err)
+	}
+	if pendingTurnStatus != "failed" || pendingTurnCode != "DESKTOP_CAPTURE_RECOVERY_FAILED" || pendingTurnMessage != "desktop capture was interrupted by Core restart" {
+		t.Fatalf("recovered pending turn = (%q, %q, %q)", pendingTurnStatus, pendingTurnCode, pendingTurnMessage)
+	}
+	var completedTurnStatus, completedTurnCode, completedTurnMessage string
+	if err := pool.Raw().QueryRow(ctx, "SELECT status, error_code, error_message FROM conversation_turns WHERE id = $1", completed.TurnID).Scan(&completedTurnStatus, &completedTurnCode, &completedTurnMessage); err != nil {
+		t.Fatalf("load recovered completed turn: %v", err)
+	}
+	if completedTurnStatus != "failed" || completedTurnCode != "DESKTOP_CAPTURE_RECOVERY_FAILED" || completedTurnMessage != "desktop capture evidence was lost during Core restart" {
+		t.Fatalf("recovered completed turn = (%q, %q, %q)", completedTurnStatus, completedTurnCode, completedTurnMessage)
 	}
 
 	rows, err := pool.Raw().Query(ctx, `

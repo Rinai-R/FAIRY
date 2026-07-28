@@ -12,40 +12,84 @@ import (
 	"fairy/persona"
 )
 
-const knowledgeIngestBatchLimit = 8
+const (
+	knowledgeIngestBatchLimit = 8
+	retentionJobCapacity      = 8
+	retentionIdleCapacity     = 256
+)
+
+var (
+	errRetentionClosed     = errors.New("retention background runtime is closed")
+	errRetentionOverloaded = errors.New("retention background capacity exhausted")
+)
+
+type retentionIdleTimer struct {
+	owner  uint64
+	cancel context.CancelFunc
+}
 
 type retentionEngine struct {
-	service   *CompanionService
-	closed    atomic.Bool
-	jobs      atomic.Int64
-	admission sync.Mutex
-	idleMu    sync.Mutex
-	idle      map[string]context.CancelFunc
-	closeOnce sync.Once
+	service      *CompanionService
+	closed       atomic.Bool
+	jobs         atomic.Int64
+	admission    sync.Mutex
+	slots        chan struct{}
+	wg           sync.WaitGroup
+	idleMu       sync.Mutex
+	idle         map[string]retentionIdleTimer
+	idleCapacity int
+	idleOwner    uint64
+	closeOnce    sync.Once
 }
 
 func newRetentionEngine(service *CompanionService) *retentionEngine {
-	return &retentionEngine{service: service, idle: make(map[string]context.CancelFunc)}
+	return newRetentionEngineWithCapacity(service, retentionJobCapacity, retentionIdleCapacity)
 }
 
-// Run starts one bounded background job and tracks it until completion.
-// It returns false after Close, so shutdown cannot admit new work.
-func (e *retentionEngine) run(job func()) bool {
+func newRetentionEngineWithCapacity(service *CompanionService, jobCapacity, idleCapacity int) *retentionEngine {
+	if jobCapacity < 1 {
+		jobCapacity = 1
+	}
+	if idleCapacity < 1 {
+		idleCapacity = 1
+	}
+	return &retentionEngine{
+		service:      service,
+		slots:        make(chan struct{}, jobCapacity),
+		idle:         make(map[string]retentionIdleTimer),
+		idleCapacity: idleCapacity,
+	}
+}
+
+// run starts one capacity-bounded background job and tracks it until
+// completion. Admission never waits for a slot.
+func (e *retentionEngine) run(job func()) error {
 	if e == nil || job == nil {
-		return false
+		return errRetentionClosed
 	}
 	e.admission.Lock()
 	if e.closed.Load() {
 		e.admission.Unlock()
-		return false
+		return errRetentionClosed
 	}
+	select {
+	case e.slots <- struct{}{}:
+	default:
+		e.admission.Unlock()
+		return errRetentionOverloaded
+	}
+	e.wg.Add(1)
 	e.jobs.Add(1)
 	e.admission.Unlock()
 	go func() {
-		defer e.jobs.Add(-1)
+		defer func() {
+			<-e.slots
+			e.jobs.Add(-1)
+			e.wg.Done()
+		}()
 		job()
 	}()
-	return true
+	return nil
 }
 
 func (e *retentionEngine) activeJobs() int64 {
@@ -70,7 +114,9 @@ func (e *retentionEngine) scheduleExtraction(conversationID string) {
 		return
 	}
 	if pending >= extractionThreshold {
-		e.run(func() { e.claimAndRunExtraction(conversationID) })
+		if err := e.run(func() { e.claimAndRunExtraction(conversationID) }); err != nil {
+			e.service.setBackgroundError(err)
+		}
 		return
 	}
 	if pending == 0 {
@@ -84,9 +130,21 @@ func (e *retentionEngine) scheduleExtraction(conversationID string) {
 		cancel()
 		return
 	}
-	e.idle[conversationID] = cancel
+	if len(e.idle) >= e.idleCapacity {
+		e.idleMu.Unlock()
+		cancel()
+		if err := e.run(func() { e.claimAndRunExtraction(conversationID) }); err != nil {
+			e.service.setBackgroundError(err)
+		}
+		return
+	}
+	e.idleOwner++
+	owner := e.idleOwner
+	e.idle[conversationID] = retentionIdleTimer{owner: owner, cancel: cancel}
+	e.wg.Add(1)
 	e.idleMu.Unlock()
 	go func() {
+		defer e.wg.Done()
 		timer := time.NewTimer(extractionIdleSeconds * time.Second)
 		defer timer.Stop()
 		select {
@@ -94,9 +152,16 @@ func (e *retentionEngine) scheduleExtraction(conversationID string) {
 			return
 		case <-timer.C:
 			e.idleMu.Lock()
+			current, exists := e.idle[conversationID]
+			if !exists || current.owner != owner {
+				e.idleMu.Unlock()
+				return
+			}
 			delete(e.idle, conversationID)
 			e.idleMu.Unlock()
-			e.run(func() { e.claimAndRunExtraction(conversationID) })
+			if err := e.run(func() { e.claimAndRunExtraction(conversationID) }); err != nil {
+				e.service.setBackgroundError(err)
+			}
 		}
 	}()
 }
@@ -145,7 +210,7 @@ func (e *retentionEngine) executeExtractionBatch(store extractionStore, batch *m
 	}
 	configSource := e.service.configSource()
 	if configSource == nil {
-		return ErrRespondRuntimeNotMigrated
+		return ErrTurnRuntimeUnavailable
 	}
 	connection, err := configSource.ModelConnection()
 	if err != nil {
@@ -159,7 +224,7 @@ func (e *retentionEngine) executeExtractionBatch(store extractionStore, batch *m
 	cacheInput.CharacterRevision = record.Revision
 	modelPort := e.service.modelPort()
 	if modelPort == nil {
-		return ErrRespondRuntimeNotMigrated
+		return ErrTurnRuntimeUnavailable
 	}
 	events, err := modelPort.ExecuteRequestContext(context.Background(), model.CompiledPromptRequest{
 		Shape: model.ModelRequestShape{
@@ -192,7 +257,7 @@ func (e *retentionEngine) scheduleKnowledgeIngest(snapshots []memory.KnowledgeIn
 		return
 	}
 	copySnapshots := append([]memory.KnowledgeIngestSnapshot(nil), snapshots...)
-	e.run(func() {
+	if err := e.run(func() {
 		if err := store.EnqueueKnowledgeIngestSnapshots(copySnapshots); err != nil {
 			e.service.setBackgroundError(err)
 			return
@@ -200,7 +265,9 @@ func (e *retentionEngine) scheduleKnowledgeIngest(snapshots []memory.KnowledgeIn
 		if _, err := store.ProcessKnowledgeIngestJobs(knowledgeIngestBatchLimit); err != nil {
 			e.service.setBackgroundError(err)
 		}
-	})
+	}); err != nil {
+		e.service.setBackgroundError(err)
+	}
 }
 
 func (e *retentionEngine) close() {
@@ -213,22 +280,23 @@ func (e *retentionEngine) close() {
 		e.admission.Unlock()
 		e.idleMu.Lock()
 		idle := e.idle
-		e.idle = make(map[string]context.CancelFunc)
+		e.idle = make(map[string]retentionIdleTimer)
 		e.idleMu.Unlock()
-		for _, cancel := range idle {
-			if cancel != nil {
-				cancel()
+		for _, timer := range idle {
+			if timer.cancel != nil {
+				timer.cancel()
 			}
 		}
+		e.wg.Wait()
 	})
 }
 
 func (e *retentionEngine) cancelIdle(conversationID string) {
 	e.idleMu.Lock()
-	cancel := e.idle[conversationID]
+	timer := e.idle[conversationID]
 	delete(e.idle, conversationID)
 	e.idleMu.Unlock()
-	if cancel != nil {
-		cancel()
+	if timer.cancel != nil {
+		timer.cancel()
 	}
 }

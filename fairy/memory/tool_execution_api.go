@@ -30,10 +30,6 @@ func (s *Store) LoadToolExecution(ctx context.Context, id string) (ToolExecution
 	return s.loadToolExecutionPostgres(ctx, id)
 }
 
-func (s *Store) ListPendingToolExecutions(ctx context.Context, nowUnixMS int64) ([]ToolExecutionRecord, error) {
-	return s.listPendingToolExecutionsPostgres(ctx, nowUnixMS)
-}
-
-func (s *Store) ListRecoverableToolExecutions(ctx context.Context) ([]ToolExecutionRecord, error) {
-	return s.listRecoverableToolExecutionsPostgres(ctx)
+func (s *Store) SettleRecoveredToolExecutions(ctx context.Context) (int64, error) {
+	return s.settleRecoveredToolExecutionsPostgres(ctx)
 }

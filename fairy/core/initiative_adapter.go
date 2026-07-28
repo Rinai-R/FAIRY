@@ -34,28 +34,28 @@ type observedMessages interface {
 
 func (a initiativeAdapter) ResolveInteraction(conversationID string) (session.Resolved, error) {
 	if a.companion == nil {
-		return session.Resolved{}, companion.ErrRespondRuntimeNotMigrated
+		return session.Resolved{}, companion.ErrTurnRuntimeUnavailable
 	}
 	return a.companion.ResolveInteraction(conversationID)
 }
 
 func (a initiativeAdapter) LoadConversationActivity(conversationID string, nowUnixMS int64) (memory.ConversationActivity, error) {
 	if a.memory == nil {
-		return memory.ConversationActivity{}, companion.ErrRespondRuntimeNotMigrated
+		return memory.ConversationActivity{}, companion.ErrTurnRuntimeUnavailable
 	}
 	return a.memory.LoadConversationActivity(conversationID, nowUnixMS)
 }
 
 func (a initiativeAdapter) LoadConversationRecord(conversationID string) (memory.ConversationRecord, error) {
 	if a.memory == nil {
-		return memory.ConversationRecord{}, companion.ErrRespondRuntimeNotMigrated
+		return memory.ConversationRecord{}, companion.ErrTurnRuntimeUnavailable
 	}
 	return a.memory.LoadConversationRecord(conversationID)
 }
 
 func (a initiativeAdapter) ActiveCharacter(characterID string) (character.Record, error) {
 	if a.characters == nil || a.characters.CatalogStore() == nil {
-		return character.Record{}, companion.ErrRespondRuntimeNotMigrated
+		return character.Record{}, companion.ErrTurnRuntimeUnavailable
 	}
 	record, found, err := a.characters.CatalogStore().Lookup(characterID)
 	if err != nil {
@@ -69,49 +69,49 @@ func (a initiativeAdapter) ActiveCharacter(characterID string) (character.Record
 
 func (a initiativeAdapter) ListSocialPersonNotes(ctx context.Context, characterID, conversationID string, senderIDs []string) ([]memory.SocialPersonNote, error) {
 	if a.memory == nil {
-		return nil, companion.ErrRespondRuntimeNotMigrated
+		return nil, companion.ErrTurnRuntimeUnavailable
 	}
 	return a.memory.ListSocialPersonNotes(ctx, characterID, conversationID, senderIDs)
 }
 
 func (a initiativeAdapter) RetrieveSocialMemoryContext(ctx context.Context, characterID, conversationID, query string) (memory.SocialMemoryContext, error) {
 	if a.memory == nil {
-		return memory.SocialMemoryContext{}, companion.ErrRespondRuntimeNotMigrated
+		return memory.SocialMemoryContext{}, companion.ErrTurnRuntimeUnavailable
 	}
 	return a.memory.RetrieveSocialMemoryContext(ctx, characterID, conversationID, query)
 }
 
 func (a initiativeAdapter) ModelConnection() (config.ModelConnection, error) {
 	if a.config == nil {
-		return config.ModelConnection{}, companion.ErrRespondRuntimeNotMigrated
+		return config.ModelConnection{}, companion.ErrTurnRuntimeUnavailable
 	}
 	return a.config.ModelConnection()
 }
 
 func (a initiativeAdapter) ExecuteRequest(ctx context.Context, request model.CompiledPromptRequest) ([]model.StreamEvent, error) {
 	if a.model == nil {
-		return nil, companion.ErrRespondRuntimeNotMigrated
+		return nil, companion.ErrTurnRuntimeUnavailable
 	}
 	return a.model.ExecuteRequestContext(ctx, request)
 }
 
 func (a initiativeAdapter) StoreSocialMemoryEntries(ctx context.Context, input memory.SocialMemoryBatchInput) ([]memory.SocialMemoryEntry, error) {
 	if a.memory == nil {
-		return nil, companion.ErrRespondRuntimeNotMigrated
+		return nil, companion.ErrTurnRuntimeUnavailable
 	}
 	return a.memory.StoreSocialMemoryEntries(ctx, input)
 }
 
 func (a initiativeAdapter) UpsertSocialPersonNote(ctx context.Context, input memory.SocialPersonNoteInput) (memory.SocialPersonNote, error) {
 	if a.memory == nil {
-		return memory.SocialPersonNote{}, companion.ErrRespondRuntimeNotMigrated
+		return memory.SocialPersonNote{}, companion.ErrTurnRuntimeUnavailable
 	}
 	return a.memory.UpsertSocialPersonNote(ctx, input)
 }
 
 func (a initiativeAdapter) RecordSocialReplyFeedback(ctx context.Context, input memory.SocialReplyFeedbackInput) (memory.SocialReplyFeedback, error) {
 	if a.memory == nil {
-		return memory.SocialReplyFeedback{}, companion.ErrRespondRuntimeNotMigrated
+		return memory.SocialReplyFeedback{}, companion.ErrTurnRuntimeUnavailable
 	}
 	return a.memory.RecordSocialReplyFeedback(ctx, input)
 }
@@ -132,7 +132,7 @@ func (a initiativeAdapter) CancelTurnBeforeDelivery(conversationID string) {
 
 func (a initiativeAdapter) SubmitTurn(request initiative.TurnRequest) (initiative.TurnOutcome, error) {
 	if a.companion == nil {
-		return initiative.TurnOutcome{}, companion.ErrRespondRuntimeNotMigrated
+		return initiative.TurnOutcome{}, companion.ErrTurnRuntimeUnavailable
 	}
 	var intent *companion.ReplyIntent
 	if request.ReplyIntent != nil {
@@ -156,7 +156,7 @@ func (a initiativeAdapter) SubmitTurn(request initiative.TurnRequest) (initiativ
 
 func (a initiativeAdapter) ScheduleDesktopInitiation(conversationID string, evidenceIDs []string, observation session.DesktopObservation) error {
 	if a.companion == nil {
-		return companion.ErrRespondRuntimeNotMigrated
+		return companion.ErrTurnRuntimeUnavailable
 	}
 	return a.companion.ScheduleDesktopInitiation(companion.DesktopInitiationRequest{
 		ConversationID: conversationID, ObservationEvidenceIDs: append([]string(nil), evidenceIDs...),

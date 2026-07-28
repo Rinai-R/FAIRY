@@ -1,6 +1,8 @@
 package observability
 
 import (
+	"fmt"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -43,6 +45,54 @@ func TestHTTPMetricsConcurrentRecordAndSnapshot(t *testing.T) {
 	snapshot := metrics.Snapshot()
 	if snapshot.Total != 800 || snapshot.InFlight != 0 || snapshot.Routes[0].RequestCount != 800 {
 		t.Fatalf("snapshot = %#v", snapshot)
+	}
+}
+
+func TestHTTPMetricsBoundsExtensionMethodCardinality(t *testing.T) {
+	metrics := NewHTTPMetrics()
+	const requests = 10_000
+	for index := 0; index < requests; index++ {
+		metrics.Finish(fmt.Sprintf("FAIRY-EXTENSION-%d", index), "/v1/status", http.StatusNotFound, time.Now())
+	}
+
+	snapshot := metrics.Snapshot()
+	if snapshot.Total != requests || snapshot.Status4xx != requests {
+		t.Fatalf("snapshot totals = %#v", snapshot)
+	}
+	if len(snapshot.Routes) != 1 {
+		t.Fatalf("route series = %d, want 1", len(snapshot.Routes))
+	}
+	route := snapshot.Routes[0]
+	if route.Method != "OTHER" || route.Route != "/v1/status" || route.RequestCount != requests || route.ErrorCount != requests {
+		t.Fatalf("extension route = %#v", route)
+	}
+}
+
+func TestHTTPMetricsPreservesStandardMethods(t *testing.T) {
+	methods := []string{
+		http.MethodConnect,
+		http.MethodDelete,
+		http.MethodGet,
+		http.MethodHead,
+		http.MethodOptions,
+		http.MethodPatch,
+		http.MethodPost,
+		http.MethodPut,
+		http.MethodTrace,
+	}
+	metrics := NewHTTPMetrics()
+	for _, method := range methods {
+		metrics.Finish(method, "/v1/status", http.StatusOK, time.Now())
+	}
+
+	snapshot := metrics.Snapshot()
+	if len(snapshot.Routes) != len(methods) {
+		t.Fatalf("route series = %d, want %d: %#v", len(snapshot.Routes), len(methods), snapshot.Routes)
+	}
+	for index, method := range methods {
+		if snapshot.Routes[index].Method != method || snapshot.Routes[index].RequestCount != 1 {
+			t.Fatalf("route[%d] = %#v, want method %q", index, snapshot.Routes[index], method)
+		}
 	}
 }
 

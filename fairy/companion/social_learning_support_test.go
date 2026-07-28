@@ -167,7 +167,9 @@ func newSocialLearningTestService(memoryPort *socialLearningMemory, modelPort Mo
 	service.model = modelPort
 	service.characterLookup = socialLearningCharacterLookup{}
 	service.cfg = socialLearningConfig{}
-	service.interactions["conversation-1"] = publicAmbientBinding()
+	if err := service.BindInteraction("conversation-1", publicAmbientBinding()); err != nil {
+		panic(err)
+	}
 	return service
 }
 

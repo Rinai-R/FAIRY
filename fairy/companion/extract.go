@@ -1,7 +1,7 @@
 package companion
 
 func (s *CompanionService) scheduleBackgroundExtraction(conversationID string) {
-	if s == nil || !s.RespondRuntimeMigrated() || s.retention == nil {
+	if s == nil || !s.TurnRuntimeReady() || s.retention == nil {
 		return
 	}
 	s.retention.scheduleExtraction(conversationID)

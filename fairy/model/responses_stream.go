@@ -11,8 +11,10 @@ import (
 // responsesStreamState accumulates Responses SSE the same way as
 // crates/fairy-model-openai/src/response_stream.rs.
 type responsesStreamState struct {
-	output        string
-	functionCalls []FunctionCall
+	output                strings.Builder
+	outputBytes           int
+	functionCalls         []FunctionCall
+	functionArgumentBytes int
 }
 
 func (s *responsesStreamState) handle(payload string, onEvent func(StreamEvent)) (done bool, err error) {
@@ -40,7 +42,9 @@ func (s *responsesStreamState) handle(payload string, onEvent func(StreamEvent))
 		if event.Delta == "" {
 			return false, nil
 		}
-		s.output += event.Delta
+		if err := s.appendOutput(event.Delta); err != nil {
+			return false, err
+		}
 		if onEvent != nil {
 			onEvent(StreamEvent{Type: "text_delta", Data: event.Delta})
 		}
@@ -50,12 +54,17 @@ func (s *responsesStreamState) handle(payload string, onEvent func(StreamEvent))
 		return false, nil
 	case "response.output_item.done":
 		if call, ok := parseResponsesFunctionCallItem(event.Item); ok {
-			s.functionCalls = append(s.functionCalls, call)
+			if err := appendBoundedFunctionCall(&s.functionCalls, &s.functionArgumentBytes, call); err != nil {
+				return false, err
+			}
 		}
 		return false, nil
 	case "response.completed":
 		if len(event.Response) == 0 {
 			return false, errors.New("completed event missing response")
+		}
+		if len(event.Response) > MaxModelCompletedResponseBytes {
+			return false, fmt.Errorf("%w: completed response limit %d bytes", ErrModelStreamCapacity, MaxModelCompletedResponseBytes)
 		}
 		var response struct {
 			ID     string `json:"id"`
@@ -76,6 +85,7 @@ func (s *responsesStreamState) handle(payload string, onEvent func(StreamEvent))
 			return false, fmt.Errorf("parsing completed response: %w", err)
 		}
 		calls := make([]FunctionCall, 0)
+		callArgumentBytes := 0
 		for _, item := range response.Output {
 			if item.Type != "function_call" {
 				continue
@@ -84,25 +94,33 @@ func (s *responsesStreamState) handle(payload string, onEvent func(StreamEvent))
 			if callID == "" {
 				callID = strings.TrimSpace(item.ID)
 			}
-			calls = append(calls, FunctionCall{
+			if err := appendBoundedFunctionCall(&calls, &callArgumentBytes, FunctionCall{
 				CallID:    callID,
 				Name:      strings.TrimSpace(item.Name),
 				Arguments: item.Arguments,
-			})
+			}); err != nil {
+				return false, err
+			}
 		}
 		if len(calls) == 0 && len(s.functionCalls) > 0 {
 			calls = append(calls, s.functionCalls...)
 		}
-		completedText := extractResponsesOutputText(response.Output)
-		if s.output == "" && completedText != "" {
-			s.output = completedText
+		completedText, err := extractResponsesOutputText(response.Output)
+		if err != nil {
+			return false, err
+		}
+		streamedText := s.output.String()
+		if streamedText == "" && completedText != "" {
+			if err := s.appendOutput(completedText); err != nil {
+				return false, err
+			}
 			if onEvent != nil {
 				onEvent(StreamEvent{Type: "text_delta", Data: completedText})
 			}
-		} else if completedText != "" && completedText != s.output {
+		} else if completedText != "" && completedText != streamedText {
 			return false, errors.New("model completion text diverged from streamed deltas")
 		}
-		if s.output == "" && len(calls) == 0 {
+		if s.outputBytes == 0 && len(calls) == 0 {
 			return false, errors.New("model completed without returning text")
 		}
 		if onEvent != nil {
@@ -130,6 +148,33 @@ func (s *responsesStreamState) handle(payload string, onEvent func(StreamEvent))
 		}
 		return false, fmt.Errorf("responses SSE event type %q is not supported", event.Type)
 	}
+}
+
+func (s *responsesStreamState) appendOutput(value string) error {
+	if len(value) > MaxModelStreamPayloadBytes-s.outputBytes {
+		return fmt.Errorf("%w: response text limit %d bytes", ErrModelStreamCapacity, MaxModelStreamPayloadBytes)
+	}
+	s.output.WriteString(value)
+	s.outputBytes += len(value)
+	return nil
+}
+
+func appendBoundedFunctionCall(calls *[]FunctionCall, argumentBytes *int, call FunctionCall) error {
+	if len(*calls) >= MaxModelFunctionCalls {
+		return fmt.Errorf("%w: function call limit %d", ErrModelStreamCapacity, MaxModelFunctionCalls)
+	}
+	if len(call.CallID) > maxModelFunctionIdentifierBytes || len(call.Name) > maxModelFunctionIdentifierBytes {
+		return fmt.Errorf("%w: function call identifier limit %d bytes", ErrModelStreamCapacity, maxModelFunctionIdentifierBytes)
+	}
+	if len(call.Arguments) > MaxModelFunctionArgumentsBytes {
+		return fmt.Errorf("%w: function arguments limit %d bytes", ErrModelStreamCapacity, MaxModelFunctionArgumentsBytes)
+	}
+	if len(call.Arguments) > MaxModelStreamPayloadBytes-*argumentBytes {
+		return fmt.Errorf("%w: function arguments total limit %d bytes", ErrModelStreamCapacity, MaxModelStreamPayloadBytes)
+	}
+	*calls = append(*calls, call)
+	*argumentBytes += len(call.Arguments)
+	return nil
 }
 
 func parseResponsesFunctionCallItem(raw json.RawMessage) (FunctionCall, bool) {
@@ -170,20 +215,26 @@ func extractResponsesOutputText(output []struct {
 		Text    string `json:"text"`
 		Refusal string `json:"refusal"`
 	} `json:"content"`
-}) string {
+}) (string, error) {
 	var builder strings.Builder
 	for _, item := range output {
 		for _, part := range item.Content {
 			if part.Text != "" {
+				if len(part.Text) > MaxModelStreamPayloadBytes-builder.Len() {
+					return "", fmt.Errorf("%w: response text limit %d bytes", ErrModelStreamCapacity, MaxModelStreamPayloadBytes)
+				}
 				builder.WriteString(part.Text)
 				continue
 			}
 			if part.Refusal != "" {
+				if len(part.Refusal) > MaxModelStreamPayloadBytes-builder.Len() {
+					return "", fmt.Errorf("%w: response text limit %d bytes", ErrModelStreamCapacity, MaxModelStreamPayloadBytes)
+				}
 				builder.WriteString(part.Refusal)
 			}
 		}
 	}
-	return builder.String()
+	return builder.String(), nil
 }
 
 func isIgnorableResponsesEvent(eventType string) bool {

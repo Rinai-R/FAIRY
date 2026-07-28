@@ -55,9 +55,14 @@ func TestEndpointSessionIsolatesKeysAndPersistsNoRawKeyIntegration(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	sessionSocket, err := client.DialSession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sessionSocket.Close() })
 	imContext := session.Context{Audience: session.AudienceMulti, Initiation: session.InitiationAmbient, Presentation: session.PresentationChat}
 	open := func(key string) coreclient.OpenSessionResponse {
-		result, err := client.OpenSession(context.Background(), coreclient.OpenSessionRequest{
+		result, err := sessionSocket.OpenSession(context.Background(), coreclient.OpenSessionRequest{
 			Endpoint: session.EndpointIM, EndpointKey: key, Interaction: imContext,
 			OutputCapabilities: session.OutputCapabilities{Sticker: true},
 		})
@@ -75,7 +80,7 @@ func TestEndpointSessionIsolatesKeysAndPersistsNoRawKeyIntegration(t *testing.T)
 	if !rt.Companion.OutputCapabilities(groupA.ConversationID).Sticker {
 		t.Fatal("session.open did not bind advertised sticker capability")
 	}
-	desktop, err := client.OpenSession(context.Background(), coreclient.OpenSessionRequest{
+	desktop, err := sessionSocket.OpenSession(context.Background(), coreclient.OpenSessionRequest{
 		Endpoint: session.EndpointDesktop, EndpointKey: "desktop-installation",
 		Interaction: session.Context{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied},
 	})
@@ -84,6 +89,12 @@ func TestEndpointSessionIsolatesKeysAndPersistsNoRawKeyIntegration(t *testing.T)
 	}
 	if rt.Companion.OutputCapabilities(desktop.ConversationID).Sticker {
 		t.Fatal("missing outputCapabilities defaulted to sticker support")
+	}
+	if err := sessionSocket.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if rt.Companion.OutputCapabilities(groupA.ConversationID).Sticker || rt.Companion.OutputCapabilities(groupB.ConversationID).Sticker {
+		t.Fatal("closed SessionSocket retained advertised sticker capability")
 	}
 
 	pool, err := pgxpool.New(context.Background(), databaseURL)

@@ -437,6 +437,489 @@ func TestSessionSocketCloseWhileReceivingTurnEventIsRaceFree(t *testing.T) {
 	wg.Wait()
 }
 
+func TestSessionSocketRequestCapacityRejectsBeforeWireAndRecovers(t *testing.T) {
+	var received atomic.Int64
+	firstTwo := make(chan struct{})
+	server := newSessionWSServer(t, func(conn *websocket.Conn) {
+		for {
+			var frame sessionClientFrame
+			if err := conn.ReadJSON(&frame); err != nil {
+				return
+			}
+			count := received.Add(1)
+			if count == 2 {
+				close(firstTwo)
+			}
+			if count > 2 {
+				if err := conn.WriteJSON(sessionServerFrame{Type: "ack", RequestID: frame.RequestID}); err != nil {
+					return
+				}
+			}
+		}
+	})
+	defer server.Close()
+	client, _ := New(Options{Endpoint: server.URL})
+	socket, err := client.DialSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer socket.Close()
+	socket.mu.Lock()
+	socket.requestCapacity = 2
+	socket.mu.Unlock()
+
+	requestCtx, cancelRequests := context.WithCancel(t.Context())
+	var requests sync.WaitGroup
+	requests.Add(2)
+	for index := 0; index < 2; index++ {
+		go func(index int) {
+			defer requests.Done()
+			_ = socket.ObserveAmbient(requestCtx, "conversation-1", AmbientObservation{MessageID: fmt.Sprintf("message-%d", index)})
+		}(index)
+	}
+	select {
+	case <-firstTwo:
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive the admitted requests")
+	}
+	if err := socket.ObserveAmbient(t.Context(), "conversation-1", AmbientObservation{MessageID: "overload"}); !errors.Is(err, ErrSessionRequestCapacity) {
+		t.Fatalf("overload error = %v, want ErrSessionRequestCapacity", err)
+	}
+	if got := received.Load(); got != 2 {
+		t.Fatalf("wire frames = %d, want 2", got)
+	}
+
+	cancelRequests()
+	requests.Wait()
+	socket.mu.Lock()
+	pending := len(socket.pending)
+	socket.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("pending requests after cancellation = %d", pending)
+	}
+	if err := socket.ObserveAmbient(t.Context(), "conversation-1", AmbientObservation{MessageID: "replacement"}); err != nil {
+		t.Fatalf("request after release error = %v", err)
+	}
+	if got := received.Load(); got != 3 {
+		t.Fatalf("wire frames after release = %d, want 3", got)
+	}
+}
+
+func TestSessionSocketWatchCapacityAndCommittedReuse(t *testing.T) {
+	var received atomic.Int64
+	server := newSessionWSServer(t, func(conn *websocket.Conn) {
+		for {
+			var frame sessionClientFrame
+			if err := conn.ReadJSON(&frame); err != nil {
+				return
+			}
+			received.Add(1)
+			if err := conn.WriteJSON(sessionServerFrame{Type: "ack", RequestID: frame.RequestID}); err != nil {
+				return
+			}
+		}
+	})
+	defer server.Close()
+	client, _ := New(Options{Endpoint: server.URL})
+	socket, err := client.DialSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer socket.Close()
+	socket.mu.Lock()
+	socket.watchCapacity = 2
+	socket.mu.Unlock()
+
+	first, err := socket.Watch(t.Context(), "conversation-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := socket.Watch(t.Context(), "conversation-2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := socket.Watch(t.Context(), "conversation-3"); !errors.Is(err, ErrSessionWatchCapacity) {
+		t.Fatalf("watch overload error = %v, want ErrSessionWatchCapacity", err)
+	}
+	reused, err := socket.Watch(t.Context(), "conversation-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused != first {
+		t.Fatal("committed Watch did not reuse the turn channel")
+	}
+	if got := received.Load(); got != 2 {
+		t.Fatalf("watch wire frames = %d, want 2", got)
+	}
+	socket.mu.Lock()
+	turnOwners, participationOwners, attempts := len(socket.turnEvents), len(socket.participationEvents), len(socket.watchAttempts)
+	socket.mu.Unlock()
+	if turnOwners != 2 || participationOwners != 2 || attempts != 0 {
+		t.Fatalf("watch owners turn=%d participation=%d attempts=%d", turnOwners, participationOwners, attempts)
+	}
+}
+
+func TestSessionSocketConcurrentWatchUsesSingleWireOwner(t *testing.T) {
+	var received atomic.Int64
+	firstReceived := make(chan struct{})
+	releaseReply := make(chan struct{})
+	server := newSessionWSServer(t, func(conn *websocket.Conn) {
+		for {
+			var frame sessionClientFrame
+			if err := conn.ReadJSON(&frame); err != nil {
+				return
+			}
+			if received.Add(1) == 1 {
+				close(firstReceived)
+				<-releaseReply
+			}
+			if err := conn.WriteJSON(sessionServerFrame{Type: "ack", RequestID: frame.RequestID}); err != nil {
+				return
+			}
+		}
+	})
+	defer server.Close()
+	client, _ := New(Options{Endpoint: server.URL})
+	socket, err := client.DialSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer socket.Close()
+
+	type watchResult struct {
+		ch  <-chan TurnEvent
+		err error
+	}
+	leader := make(chan watchResult, 1)
+	follower := make(chan watchResult, 1)
+	go func() {
+		ch, watchErr := socket.Watch(t.Context(), "conversation-1")
+		leader <- watchResult{ch: ch, err: watchErr}
+	}()
+	<-firstReceived
+	go func() {
+		ch, watchErr := socket.Watch(t.Context(), "conversation-1")
+		follower <- watchResult{ch: ch, err: watchErr}
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		socket.mu.Lock()
+		attempt := socket.watchAttempts["conversation-1"]
+		waiters := 0
+		if attempt != nil {
+			waiters = attempt.waiters
+		}
+		socket.mu.Unlock()
+		if waiters == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("concurrent Watch did not join the existing attempt")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(releaseReply)
+	leaderResult := <-leader
+	followerResult := <-follower
+	if leaderResult.err != nil || followerResult.err != nil {
+		t.Fatalf("watch errors leader=%v follower=%v", leaderResult.err, followerResult.err)
+	}
+	if leaderResult.ch != followerResult.ch {
+		t.Fatal("concurrent Watch calls returned different channels")
+	}
+	if got := received.Load(); got != 1 {
+		t.Fatalf("watch wire frames = %d, want 1", got)
+	}
+}
+
+func TestSessionSocketConcurrentWatchFollowerCancellationKeepsOwner(t *testing.T) {
+	var received atomic.Int64
+	firstReceived := make(chan struct{})
+	releaseReply := make(chan struct{})
+	server := newSessionWSServer(t, func(conn *websocket.Conn) {
+		for {
+			var frame sessionClientFrame
+			if err := conn.ReadJSON(&frame); err != nil {
+				return
+			}
+			if received.Add(1) == 1 {
+				close(firstReceived)
+				<-releaseReply
+			}
+			if err := conn.WriteJSON(sessionServerFrame{Type: "ack", RequestID: frame.RequestID}); err != nil {
+				return
+			}
+		}
+	})
+	defer server.Close()
+	client, _ := New(Options{Endpoint: server.URL})
+	socket, err := client.DialSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer socket.Close()
+
+	type watchResult struct {
+		ch  <-chan TurnEvent
+		err error
+	}
+	leader := make(chan watchResult, 1)
+	go func() {
+		ch, watchErr := socket.Watch(t.Context(), "conversation-1")
+		leader <- watchResult{ch: ch, err: watchErr}
+	}()
+	<-firstReceived
+
+	followerCtx, cancelFollower := context.WithCancel(t.Context())
+	follower := make(chan error, 1)
+	go func() {
+		_, watchErr := socket.Watch(followerCtx, "conversation-1")
+		follower <- watchErr
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		socket.mu.Lock()
+		attempt := socket.watchAttempts["conversation-1"]
+		waiters := 0
+		if attempt != nil {
+			waiters = attempt.waiters
+		}
+		socket.mu.Unlock()
+		if waiters == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("canceling Watch did not join the existing attempt")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancelFollower()
+	if followerErr := <-follower; !errors.Is(followerErr, context.Canceled) {
+		t.Fatalf("follower error = %v, want context.Canceled", followerErr)
+	}
+	socket.mu.Lock()
+	attempt := socket.watchAttempts["conversation-1"]
+	waiters := 0
+	if attempt != nil {
+		waiters = attempt.waiters
+	}
+	socket.mu.Unlock()
+	if attempt == nil || waiters != 0 {
+		t.Fatalf("leader attempt after follower cancellation = %v, waiters = %d", attempt != nil, waiters)
+	}
+	if got := received.Load(); got != 1 {
+		t.Fatalf("watch wire frames before leader reply = %d, want 1", got)
+	}
+
+	close(releaseReply)
+	leaderResult := <-leader
+	if leaderResult.err != nil {
+		t.Fatalf("leader Watch error = %v", leaderResult.err)
+	}
+	reused, err := socket.Watch(t.Context(), "conversation-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused != leaderResult.ch {
+		t.Fatal("follower cancellation replaced the leader channel")
+	}
+	if got := received.Load(); got != 1 {
+		t.Fatalf("watch wire frames after committed reuse = %d, want 1", got)
+	}
+}
+
+func TestSessionSocketWatchDrainsAckedEventBeforeDisconnect(t *testing.T) {
+	server := newSessionWSServer(t, func(conn *websocket.Conn) {
+		var frame sessionClientFrame
+		if err := conn.ReadJSON(&frame); err != nil {
+			return
+		}
+		if err := conn.WriteJSON(sessionServerFrame{Type: "ack", RequestID: frame.RequestID}); err != nil {
+			return
+		}
+		if err := conn.WriteJSON(sessionServerFrame{
+			Type: "turn.event", ConversationID: "conversation-1",
+			Event: &TurnEvent{
+				ConversationID: "conversation-1", TurnID: "turn-1", Sequence: 1,
+				State: "responding", Payload: json.RawMessage(`{"type":"state_changed"}`),
+			},
+		}); err != nil {
+			return
+		}
+		_ = conn.Close()
+	})
+	defer server.Close()
+	client, _ := New(Options{Endpoint: server.URL})
+	socket, err := client.DialSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer socket.Close()
+
+	events, err := socket.Watch(t.Context(), "conversation-1")
+	if err != nil {
+		t.Fatalf("Watch error after ack = %v", err)
+	}
+	select {
+	case event, ok := <-events:
+		if !ok {
+			t.Fatal("event channel closed before draining the acknowledged event")
+		}
+		if event.TurnID != "turn-1" {
+			t.Fatalf("turn ID = %q, want turn-1", event.TurnID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("acknowledged event was not delivered")
+	}
+	select {
+	case _, ok := <-events:
+		if ok {
+			t.Fatal("event channel remained open after disconnect")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("event channel did not close after disconnect")
+	}
+}
+
+func TestSessionSocketConcurrentWatchSharesFailureAndAllowsRetry(t *testing.T) {
+	var received atomic.Int64
+	firstReceived := make(chan struct{})
+	releaseFailure := make(chan struct{})
+	server := newSessionWSServer(t, func(conn *websocket.Conn) {
+		for {
+			var frame sessionClientFrame
+			if err := conn.ReadJSON(&frame); err != nil {
+				return
+			}
+			count := received.Add(1)
+			if count == 1 {
+				close(firstReceived)
+				<-releaseFailure
+				if err := conn.WriteJSON(sessionServerFrame{Type: "error", RequestID: frame.RequestID, Error: "watch rejected"}); err != nil {
+					return
+				}
+				continue
+			}
+			if err := conn.WriteJSON(sessionServerFrame{Type: "ack", RequestID: frame.RequestID}); err != nil {
+				return
+			}
+		}
+	})
+	defer server.Close()
+	client, _ := New(Options{Endpoint: server.URL})
+	socket, err := client.DialSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer socket.Close()
+
+	results := make(chan error, 2)
+	go func() {
+		_, watchErr := socket.Watch(t.Context(), "conversation-1")
+		results <- watchErr
+	}()
+	<-firstReceived
+	go func() {
+		_, watchErr := socket.Watch(t.Context(), "conversation-1")
+		results <- watchErr
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		socket.mu.Lock()
+		attempt := socket.watchAttempts["conversation-1"]
+		waiters := 0
+		if attempt != nil {
+			waiters = attempt.waiters
+		}
+		socket.mu.Unlock()
+		if waiters == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("failing Watch did not share the existing attempt")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(releaseFailure)
+	for index := 0; index < 2; index++ {
+		if watchErr := <-results; watchErr == nil || watchErr.Error() != "watch rejected" {
+			t.Fatalf("shared watch error = %v", watchErr)
+		}
+	}
+	socket.mu.Lock()
+	_, turnRetained := socket.turnEvents["conversation-1"]
+	_, participationRetained := socket.participationEvents["conversation-1"]
+	_, attemptRetained := socket.watchAttempts["conversation-1"]
+	socket.mu.Unlock()
+	if turnRetained || participationRetained || attemptRetained {
+		t.Fatal("failed Watch retained temporary owners")
+	}
+	if _, err := socket.Watch(t.Context(), "conversation-1"); err != nil {
+		t.Fatalf("Watch retry error = %v", err)
+	}
+	if got := received.Load(); got != 2 {
+		t.Fatalf("watch wire frames after retry = %d, want 2", got)
+	}
+}
+
+func TestSessionSocketOpenedConversationCapacityTerminatesSocket(t *testing.T) {
+	var received atomic.Int64
+	server := newSessionWSServer(t, func(conn *websocket.Conn) {
+		for {
+			var frame sessionClientFrame
+			if err := conn.ReadJSON(&frame); err != nil {
+				return
+			}
+			index := received.Add(1)
+			if err := conn.WriteJSON(sessionServerFrame{
+				Type: "session.opened", RequestID: frame.RequestID,
+				ConversationID: fmt.Sprintf("conversation-%d", index), CharacterID: "character-1",
+				Endpoint: session.EndpointDesktop,
+			}); err != nil {
+				return
+			}
+		}
+	})
+	defer server.Close()
+	client, _ := New(Options{Endpoint: server.URL})
+	socket, err := client.DialSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket.mu.Lock()
+	socket.openedConversationCapacity = 2
+	socket.mu.Unlock()
+	request := OpenSessionRequest{
+		Endpoint: session.EndpointDesktop, EndpointKey: "desktop:test",
+		Interaction: session.Context{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied},
+	}
+	if _, err := socket.OpenSession(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := socket.OpenSession(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := socket.OpenSession(t.Context(), request); !errors.Is(err, ErrSessionOpenedConversationCapacity) {
+		t.Fatalf("opened overload error = %v, want ErrSessionOpenedConversationCapacity", err)
+	}
+	select {
+	case <-socket.done:
+	case <-time.After(time.Second):
+		t.Fatal("socket did not terminate after opened projection overflow")
+	}
+	socket.mu.Lock()
+	opened, pending, attempts := len(socket.openedConversations), len(socket.pending), len(socket.watchAttempts)
+	socket.mu.Unlock()
+	if opened != 0 || pending != 0 || attempts != 0 {
+		t.Fatalf("closed socket retained opened=%d pending=%d attempts=%d", opened, pending, attempts)
+	}
+	if got := received.Load(); got != 3 {
+		t.Fatalf("open wire frames = %d, want 3", got)
+	}
+	if err := socket.Close(); err != nil && !errors.Is(err, websocket.ErrCloseSent) {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
 func TestClientRejectsSecretWhitespaceAndRedactsServerErrors(t *testing.T) {
 	if _, err := New(Options{Token: " secret "}); err == nil {
 		t.Fatal("token whitespace accepted")

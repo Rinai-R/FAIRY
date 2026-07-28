@@ -65,7 +65,16 @@ func (t SDKTransport) Execute(ctx context.Context, draft RequestDraft, bearerKey
 		err = fmt.Errorf("model protocol %q is not supported", draft.Protocol)
 	}
 	if err != nil {
-		return scrubSecret(err, bearerKey)
+		scrubbed := scrubSecret(err, bearerKey)
+		if errors.Is(err, ErrModelStreamCapacity) {
+			detail := strings.TrimPrefix(scrubbed.Error(), ErrModelStreamCapacity.Error())
+			detail = strings.TrimPrefix(detail, ": ")
+			if detail == "" {
+				return ErrModelStreamCapacity
+			}
+			return fmt.Errorf("%w: %s", ErrModelStreamCapacity, detail)
+		}
+		return scrubbed
 	}
 	return nil
 }
@@ -114,6 +123,7 @@ func (t SDKTransport) executeChatCompletions(ctx context.Context, client openai.
 		Arguments strings.Builder
 	}
 	pending := map[int64]*pendingToolCall{}
+	pendingArgumentBytes := 0
 	completed := false
 	for stream.Next() {
 		if err := ctx.Err(); err != nil {
@@ -142,17 +152,34 @@ func (t SDKTransport) executeChatCompletions(ctx context.Context, client openai.
 			index := toolCall.Index
 			slot, ok := pending[index]
 			if !ok {
+				if len(pending) >= MaxModelFunctionCalls {
+					return fmt.Errorf("%w: function call limit %d", ErrModelStreamCapacity, MaxModelFunctionCalls)
+				}
 				slot = &pendingToolCall{}
 				pending[index] = slot
 			}
 			if toolCall.ID != "" {
+				if len(toolCall.ID) > maxModelFunctionIdentifierBytes {
+					return fmt.Errorf("%w: function call identifier limit %d bytes", ErrModelStreamCapacity, maxModelFunctionIdentifierBytes)
+				}
 				slot.ID = toolCall.ID
 			}
 			if toolCall.Function.Name != "" {
+				if len(toolCall.Function.Name) > maxModelFunctionIdentifierBytes {
+					return fmt.Errorf("%w: function call identifier limit %d bytes", ErrModelStreamCapacity, maxModelFunctionIdentifierBytes)
+				}
 				slot.Name = toolCall.Function.Name
 			}
 			if toolCall.Function.Arguments != "" {
+				arguments := toolCall.Function.Arguments
+				if len(arguments) > MaxModelFunctionArgumentsBytes-slot.Arguments.Len() {
+					return fmt.Errorf("%w: function arguments limit %d bytes", ErrModelStreamCapacity, MaxModelFunctionArgumentsBytes)
+				}
+				if len(arguments) > MaxModelStreamPayloadBytes-pendingArgumentBytes {
+					return fmt.Errorf("%w: function arguments total limit %d bytes", ErrModelStreamCapacity, MaxModelStreamPayloadBytes)
+				}
 				slot.Arguments.WriteString(toolCall.Function.Arguments)
+				pendingArgumentBytes += len(arguments)
 			}
 		}
 		if choice.FinishReason != "" {
@@ -218,7 +245,9 @@ func mapResponsesSDKEvent(event responses.ResponseStreamEventUnion, state *respo
 		if variant.Delta == "" {
 			return false, nil
 		}
-		state.output += variant.Delta
+		if err := state.appendOutput(variant.Delta); err != nil {
+			return false, err
+		}
 		if onEvent != nil {
 			onEvent(StreamEvent{Type: "text_delta", Data: variant.Delta})
 		}
@@ -227,7 +256,9 @@ func mapResponsesSDKEvent(event responses.ResponseStreamEventUnion, state *respo
 		if variant.Delta == "" {
 			return false, nil
 		}
-		state.output += variant.Delta
+		if err := state.appendOutput(variant.Delta); err != nil {
+			return false, err
+		}
 		if onEvent != nil {
 			onEvent(StreamEvent{Type: "text_delta", Data: variant.Delta})
 		}
@@ -238,6 +269,9 @@ func mapResponsesSDKEvent(event responses.ResponseStreamEventUnion, state *respo
 		raw := variant.Response.RawJSON()
 		if raw == "" {
 			return false, errors.New("completed event missing response")
+		}
+		if len(raw) > MaxModelCompletedResponseBytes {
+			return false, fmt.Errorf("%w: completed response limit %d bytes", ErrModelStreamCapacity, MaxModelCompletedResponseBytes)
 		}
 		return state.handle(`{"type":"response.completed","response":`+raw+`}`, onEvent)
 	case responses.ResponseFailedEvent:

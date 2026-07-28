@@ -81,7 +81,82 @@ func (s *ModelService) ExecuteRequestContextStream(ctx context.Context, request 
 	if err != nil {
 		return err
 	}
-	return s.transport.Execute(ctx, draft, bearerKey, onEvent)
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	eventCount := 0
+	payloadBytes := 0
+	var capacityErr error
+	transportErr := s.transport.Execute(streamCtx, draft, bearerKey, func(event StreamEvent) {
+		if capacityErr != nil {
+			return
+		}
+		if err := validateModelStreamEventCapacity(event); err != nil {
+			capacityErr = err
+			cancel()
+			return
+		}
+		if eventCount >= MaxModelStreamEvents {
+			capacityErr = fmt.Errorf("%w: event limit %d", ErrModelStreamCapacity, MaxModelStreamEvents)
+			cancel()
+			return
+		}
+		eventBytes := modelStreamEventPayloadBytes(event)
+		if eventBytes > MaxModelStreamPayloadBytes-payloadBytes {
+			capacityErr = fmt.Errorf("%w: payload limit %d bytes", ErrModelStreamCapacity, MaxModelStreamPayloadBytes)
+			cancel()
+			return
+		}
+		eventCount++
+		payloadBytes += eventBytes
+		onEvent(event)
+	})
+	if capacityErr != nil {
+		return capacityErr
+	}
+	return transportErr
+}
+
+func validateModelStreamEventCapacity(event StreamEvent) error {
+	if len(event.FunctionCalls) > MaxModelFunctionCalls {
+		return fmt.Errorf("%w: function call limit %d", ErrModelStreamCapacity, MaxModelFunctionCalls)
+	}
+	argumentBytes := 0
+	for _, call := range event.FunctionCalls {
+		if len(call.CallID) > maxModelFunctionIdentifierBytes || len(call.Name) > maxModelFunctionIdentifierBytes {
+			return fmt.Errorf("%w: function call identifier limit %d bytes", ErrModelStreamCapacity, maxModelFunctionIdentifierBytes)
+		}
+		if len(call.Arguments) > MaxModelFunctionArgumentsBytes {
+			return fmt.Errorf("%w: function arguments limit %d bytes", ErrModelStreamCapacity, MaxModelFunctionArgumentsBytes)
+		}
+		if len(call.Arguments) > MaxModelStreamPayloadBytes-argumentBytes {
+			return fmt.Errorf("%w: function arguments total limit %d bytes", ErrModelStreamCapacity, MaxModelStreamPayloadBytes)
+		}
+		argumentBytes += len(call.Arguments)
+	}
+	return nil
+}
+
+func modelStreamEventPayloadBytes(event StreamEvent) int {
+	total := 0
+	add := func(value string) {
+		if total > MaxModelStreamPayloadBytes {
+			return
+		}
+		if len(value) > MaxModelStreamPayloadBytes-total {
+			total = MaxModelStreamPayloadBytes + 1
+			return
+		}
+		total += len(value)
+	}
+	add(event.Type)
+	add(event.Data)
+	add(event.FinishReason)
+	for _, call := range event.FunctionCalls {
+		add(call.CallID)
+		add(call.Name)
+		add(call.Arguments)
+	}
+	return total
 }
 
 func LaneCacheKey(conversationID string, lane PromptLane) string {

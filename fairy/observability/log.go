@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"errors"
 	"regexp"
 	"sort"
 	"strings"
@@ -9,20 +10,22 @@ import (
 )
 
 const (
-	DefaultLogCapacity      = 2000
-	DefaultSubscriberBuffer = 128
-	MaxMessageRunes         = 2048
-	MaxLoggerRunes          = 128
-	MaxFields               = 32
-	MaxFieldKeyRunes        = 64
-	MaxFieldValueRunes      = 2048
+	DefaultLogCapacity        = 2000
+	DefaultSubscriberBuffer   = 128
+	DefaultSubscriberCapacity = 64
+	MaxMessageRunes           = 2048
+	MaxLoggerRunes            = 128
+	MaxFields                 = 32
+	MaxFieldKeyRunes          = 64
+	MaxFieldValueRunes        = 2048
 )
 
 const RedactedValue = "[REDACTED]"
 
 var (
-	bearerPattern       = regexp.MustCompile(`(?i)bearer\s+\S+`)
-	inlineSecretPattern = regexp.MustCompile(`(?i)(api[_-]?key|access[_-]?token|authorization|credential|secret|password|token)(\s*[:=]\s*)\S+`)
+	ErrLogSubscriberCapacity = errors.New("log subscriber capacity reached")
+	bearerPattern            = regexp.MustCompile(`(?i)bearer\s+\S+`)
+	inlineSecretPattern      = regexp.MustCompile(`(?i)(api[_-]?key|access[_-]?token|authorization|credential|secret|password|token)(\s*[:=]\s*)\S+`)
 )
 
 // LogField is the bounded public representation of a structured zap field.
@@ -93,6 +96,7 @@ type LogStore struct {
 	mu                        sync.Mutex
 	capacity                  int
 	subscriberBuffer          int
+	subscriberCapacity        int
 	entries                   []LogEntry
 	sequence                  uint64
 	droppedEntries            uint64
@@ -113,10 +117,11 @@ func newLogStore(capacity, subscriberBuffer int) *LogStore {
 		subscriberBuffer = DefaultSubscriberBuffer
 	}
 	return &LogStore{
-		capacity:         capacity,
-		subscriberBuffer: subscriberBuffer,
-		entries:          make([]LogEntry, 0, capacity),
-		subscribers:      make(map[chan LogEntry]subscriber),
+		capacity:           capacity,
+		subscriberBuffer:   subscriberBuffer,
+		subscriberCapacity: DefaultSubscriberCapacity,
+		entries:            make([]LogEntry, 0, capacity),
+		subscribers:        make(map[chan LogEntry]subscriber),
 	}
 }
 
@@ -172,20 +177,29 @@ func (s *LogStore) Query(filter LogFilter) LogSnapshot {
 }
 
 // Subscribe atomically captures backlog and registers the live channel.
-func (s *LogStore) Subscribe(filter LogFilter) ([]LogEntry, <-chan LogEntry, func()) {
+func (s *LogStore) Subscribe(filter LogFilter) ([]LogEntry, <-chan LogEntry, func(), error) {
 	if s == nil {
 		ch := make(chan LogEntry)
 		close(ch)
-		return []LogEntry{}, ch, func() {}
+		return []LogEntry{}, ch, func() {}, nil
 	}
 	s.mu.Lock()
 	backlog := filterEntries(s.entries, filter)
-	ch := make(chan LogEntry, s.subscriberBuffer)
 	if s.closed {
+		ch := make(chan LogEntry)
 		close(ch)
 		s.mu.Unlock()
-		return backlog, ch, func() {}
+		return backlog, ch, func() {}, nil
 	}
+	capacity := s.subscriberCapacity
+	if capacity <= 0 {
+		capacity = DefaultSubscriberCapacity
+	}
+	if len(s.subscribers) >= capacity {
+		s.mu.Unlock()
+		return backlog, nil, func() {}, ErrLogSubscriberCapacity
+	}
+	ch := make(chan LogEntry, s.subscriberBuffer)
 	s.subscribers[ch] = subscriber{filter: filter, ch: ch}
 	s.mu.Unlock()
 
@@ -200,7 +214,7 @@ func (s *LogStore) Subscribe(filter LogFilter) ([]LogEntry, <-chan LogEntry, fun
 			s.mu.Unlock()
 		})
 	}
-	return backlog, ch, unsubscribe
+	return backlog, ch, unsubscribe, nil
 }
 
 func (s *LogStore) Stats() LogStats {

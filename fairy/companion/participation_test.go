@@ -502,21 +502,21 @@ func decideParticipation(service *CompanionService, ctx context.Context, request
 
 func (h participationDecisionHost) LoadConversationActivity(conversationID string, nowUnixMS int64) (memory.ConversationActivity, error) {
 	if h.service == nil || h.service.memory.ambient.activity == nil {
-		return memory.ConversationActivity{}, ErrRespondRuntimeNotMigrated
+		return memory.ConversationActivity{}, ErrTurnRuntimeUnavailable
 	}
 	return h.service.memory.ambient.activity.LoadConversationActivity(conversationID, nowUnixMS)
 }
 
 func (h participationDecisionHost) ResolveInteraction(conversationID string) (session.Resolved, error) {
 	if h.service == nil {
-		return session.Resolved{}, ErrRespondRuntimeNotMigrated
+		return session.Resolved{}, ErrTurnRuntimeUnavailable
 	}
 	return h.service.ResolveInteraction(conversationID)
 }
 
 func (h participationDecisionHost) ActiveCharacter(characterID string) (character.Record, error) {
 	if h.service == nil {
-		return character.Record{}, ErrRespondRuntimeNotMigrated
+		return character.Record{}, ErrTurnRuntimeUnavailable
 	}
 	return h.service.activeCharacter(characterID)
 }

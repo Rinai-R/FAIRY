@@ -362,6 +362,17 @@ func (s *CoreService) HideSpeechBubble() {
 	}
 }
 
+func (s *CoreService) showSpeechBubble() {
+	s.RepositionSpeechBubble()
+	s.mu.Lock()
+	bubble := s.speechBubble
+	s.mu.Unlock()
+	if bubble == nil {
+		return
+	}
+	bubble.Show()
+}
+
 func (s *CoreService) SaveConnection(endpoint, token, endpointKey string) (CoreSettings, error) {
 	endpoint, err := validateEndpoint(endpoint)
 	if err != nil {
@@ -523,13 +534,7 @@ func (s *CoreService) Send(input string, speechEnabled bool) error {
 	// Emit waiting before SubmitTurn so the floating dots appear immediately and
 	// before any harness events that the forwarder may deliver concurrently.
 	s.emitTurnEvent(desktopTurnEvent{Type: "state_changed", State: "planning"})
-	s.mu.Lock()
-	bubble := s.speechBubble
-	s.mu.Unlock()
-	if bubble != nil {
-		s.RepositionSpeechBubble()
-		bubble.Show()
-	}
+	s.showSpeechBubble()
 	if _, err := socket.SubmitTurn(context.Background(), conversation, coreclient.SubmitTurnRequest{Input: input, SpeechEnabled: speechEnabled}); err != nil {
 		s.clearActive()
 		s.emitTurnEvent(desktopTurnEvent{Type: "failed", Message: "提交对话失败：" + err.Error()})
@@ -607,13 +612,21 @@ func (s *CoreService) forwardTurnEvents(socket *coreclient.SessionSocket, conver
 		if event.ConversationID != conversation {
 			continue
 		}
+		s.mu.Lock()
+		current := s.socket == socket
+		s.mu.Unlock()
+		if !current {
+			continue
+		}
 		converted := decodeDesktopTurnEvent(event)
 		if converted.Beat != nil && converted.Beat.Part != nil && converted.Beat.Part.Kind == session.ExpressionSticker {
 			s.prepareDesktopSticker(socket, event, converted.Beat)
 		}
 		s.mu.Lock()
-		current := s.socket == socket
+		current = s.socket == socket
+		showBubble := false
 		if current && isDesktopTurnActive(event.State) {
+			showBubble = s.activeTurnID != event.TurnID
 			s.active = true
 			s.activeTurnID = event.TurnID
 		}
@@ -622,6 +635,9 @@ func (s *CoreService) forwardTurnEvents(socket *coreclient.SessionSocket, conver
 		}
 		s.mu.Unlock()
 		if current {
+			if showBubble {
+				s.showSpeechBubble()
+			}
 			s.emitTurnEvent(converted)
 		}
 	}
@@ -644,6 +660,12 @@ func (s *CoreService) prepareDesktopSticker(socket *coreclient.SessionSocket, ev
 		if strings.TrimSpace(beat.BeatID) == "" || strings.TrimSpace(event.TurnID) == "" {
 			return
 		}
+		s.mu.Lock()
+		current := s.socket == socket
+		s.mu.Unlock()
+		if !current {
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := socket.ReportExpressionDelivery(ctx, coreclient.ExpressionDeliveryResult{
@@ -664,7 +686,10 @@ func (s *CoreService) prepareDesktopSticker(socket *coreclient.SessionSocket, ev
 	s.mu.Lock()
 	client, cache, current := s.client, s.visualCache, s.socket == socket
 	s.mu.Unlock()
-	if !current || client == nil || cache == nil {
+	if !current {
+		return
+	}
+	if client == nil || cache == nil {
 		fail("Desktop 表情包读取链路不可用")
 		return
 	}
@@ -679,7 +704,13 @@ func (s *CoreService) prepareDesktopSticker(socket *coreclient.SessionSocket, ev
 		fail("Core 表情包 MIME 与回复快照不一致")
 		return
 	}
+	s.mu.Lock()
+	if s.socket != socket || s.visualCache != cache {
+		s.mu.Unlock()
+		return
+	}
 	route, err := cache.PutSticker(beat.BeatID, content)
+	s.mu.Unlock()
 	if err != nil {
 		fail("无法准备 Desktop 表情包")
 		return

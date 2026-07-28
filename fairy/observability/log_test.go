@@ -2,6 +2,7 @@ package observability
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -65,7 +66,10 @@ func TestLogStoreRedactsAndBoundsPublicFields(t *testing.T) {
 func TestLogStoreSubscribeBacklogLiveAndSlowDisconnect(t *testing.T) {
 	store := newLogStore(10, 1)
 	store.Append(EntryInput{Level: "info", Logger: "companion", Message: "backlog"})
-	backlog, ch, unsubscribe := store.Subscribe(LogFilter{MinimumLevel: "warn"})
+	backlog, ch, unsubscribe, err := store.Subscribe(LogFilter{MinimumLevel: "warn"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer unsubscribe()
 	if len(backlog) != 0 {
 		t.Fatalf("backlog = %#v", backlog)
@@ -82,17 +86,56 @@ func TestLogStoreSubscribeBacklogLiveAndSlowDisconnect(t *testing.T) {
 	if _, ok := <-ch; ok {
 		t.Fatal("slow subscriber channel remains open")
 	}
+	_, _, replacement, err := store.Subscribe(LogFilter{})
+	if err != nil {
+		t.Fatalf("Subscribe after slow disconnect error = %v", err)
+	}
+	replacement()
 }
 
 func TestLogStoreCloseAndUnsubscribeAreIdempotent(t *testing.T) {
 	store := NewLogStore(2)
-	_, ch, unsubscribe := store.Subscribe(LogFilter{})
+	_, ch, unsubscribe, err := store.Subscribe(LogFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	store.Close()
 	store.Close()
 	unsubscribe()
 	unsubscribe()
 	if _, ok := <-ch; ok {
 		t.Fatal("channel remains open")
+	}
+}
+
+func TestLogStoreBoundsSubscribersAndRecoversAfterRelease(t *testing.T) {
+	store := NewLogStore(2)
+	store.subscriberCapacity = 2
+	_, _, unsubscribeFirst, err := store.Subscribe(LogFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribeFirst()
+	_, _, unsubscribeSecond, err := store.Subscribe(LogFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribeSecond()
+	if _, ch, unsubscribe, err := store.Subscribe(LogFilter{}); !errors.Is(err, ErrLogSubscriberCapacity) || ch != nil {
+		unsubscribe()
+		t.Fatalf("overload subscription channel=%v error=%v", ch != nil, err)
+	}
+	if got := store.Stats().ActiveSubscribers; got != 2 {
+		t.Fatalf("active subscribers = %d, want 2", got)
+	}
+	unsubscribeFirst()
+	_, _, replacement, err := store.Subscribe(LogFilter{})
+	if err != nil {
+		t.Fatalf("Subscribe after release error = %v", err)
+	}
+	defer replacement()
+	if got := store.Stats().ActiveSubscribers; got != 2 {
+		t.Fatalf("active subscribers after replacement = %d, want 2", got)
 	}
 }
 

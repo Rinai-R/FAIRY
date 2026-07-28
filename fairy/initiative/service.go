@@ -81,6 +81,9 @@ func (s *Service) Close() {
 	if s.feedback != nil {
 		s.feedback.Close()
 	}
+	if s.attention != nil {
+		s.attention.Clear()
+	}
 }
 
 func (s *Service) EvidenceValidator() *EvidenceRegistry {

@@ -77,6 +77,74 @@ type usageLedgerRow struct {
 	createdAtUnixMS int64
 }
 
+type usageReportCollector struct {
+	limit     int
+	overall   map[string]*UsageLaneAggregate
+	recent    []UsageTurn
+	turnCount uint64
+}
+
+func newUsageReportCollector(limit int) *usageReportCollector {
+	if limit <= 0 {
+		limit = DefaultUsageTurnLimit
+	}
+	if limit > maxUsageTurnLimit {
+		limit = maxUsageTurnLimit
+	}
+	return &usageReportCollector{
+		limit:   limit,
+		overall: make(map[string]*UsageLaneAggregate),
+		recent:  make([]UsageTurn, 0, limit),
+	}
+}
+
+func (c *usageReportCollector) Add(accumulator *usageTurnAccumulator, characterID string) {
+	if c == nil || accumulator == nil {
+		return
+	}
+	for lane, aggregate := range accumulator.lanes {
+		mergeLaneAggregate(c.overall, lane, aggregate)
+	}
+	turn := UsageTurn{
+		ConversationID:  accumulator.conversationID,
+		TurnID:          accumulator.turnID,
+		CharacterID:     characterID,
+		CreatedAtUnixMS: accumulator.createdAtUnixMS,
+		Status:          accumulator.status,
+		Lanes:           sortedLaneAggregateSlice(accumulator.lanes),
+	}
+	index := 0
+	for index < len(c.recent) && !usageTurnComesBefore(turn, c.recent[index]) {
+		index++
+	}
+	c.recent = append(c.recent, UsageTurn{})
+	copy(c.recent[index+1:], c.recent[index:])
+	c.recent[index] = turn
+	if len(c.recent) > c.limit {
+		c.recent = c.recent[:c.limit]
+	}
+	c.turnCount++
+}
+
+func (c *usageReportCollector) Report() UsageReport {
+	if c == nil {
+		return UsageReport{Overall: []UsageLaneAggregate{}, Turns: []UsageTurn{}}
+	}
+	return UsageReport{
+		Overall:   sortedLaneAggregateSlice(c.overall),
+		Turns:     append([]UsageTurn(nil), c.recent...),
+		TurnCount: c.turnCount,
+		Truncated: c.turnCount > uint64(len(c.recent)),
+	}
+}
+
+func usageTurnComesBefore(left, right UsageTurn) bool {
+	if left.CreatedAtUnixMS != right.CreatedAtUnixMS {
+		return left.CreatedAtUnixMS > right.CreatedAtUnixMS
+	}
+	return left.TurnID > right.TurnID
+}
+
 // AggregateTokenUsage rolls up token usage across every conversation turn from
 // the runtime ledger. Token figures come solely from `model` events (each model
 // call carries its own lane-tagged usage) so tool-calling loops with several
@@ -84,12 +152,6 @@ type usageLedgerRow struct {
 // `terminal` events only supply each turn's final status.
 
 func aggregateUsageRows(characterByConversation map[string]string, ledgerRows []usageLedgerRow, limit int) (UsageReport, error) {
-	if limit <= 0 {
-		limit = DefaultUsageTurnLimit
-	}
-	if limit > maxUsageTurnLimit {
-		limit = maxUsageTurnLimit
-	}
 	accumulators := make(map[string]*usageTurnAccumulator)
 	order := make([]string, 0)
 	for _, row := range ledgerRows {
@@ -105,58 +167,32 @@ func aggregateUsageRows(characterByConversation map[string]string, ledgerRows []
 			accumulators[key] = accumulator
 			order = append(order, key)
 		}
-		if row.createdAtUnixMS > accumulator.createdAtUnixMS {
-			accumulator.createdAtUnixMS = row.createdAtUnixMS
-		}
-		switch row.eventType {
-		case "model":
-			if err := accumulateModelUsage(accumulator, row.metadataJSON); err != nil {
-				return UsageReport{}, err
-			}
-		case "terminal":
-			if row.state != nil && *row.state != "" {
-				accumulator.status = *row.state
-			}
+		if err := applyUsageLedgerRow(accumulator, row); err != nil {
+			return UsageReport{}, err
 		}
 	}
 
-	overall := make(map[string]*UsageLaneAggregate)
-	turns := make([]UsageTurn, 0, len(order))
+	collector := newUsageReportCollector(limit)
 	for _, key := range order {
 		accumulator := accumulators[key]
-		for lane, aggregate := range accumulator.lanes {
-			mergeLaneAggregate(overall, lane, aggregate)
-		}
-		turns = append(turns, UsageTurn{
-			ConversationID:  accumulator.conversationID,
-			TurnID:          accumulator.turnID,
-			CharacterID:     characterByConversation[accumulator.conversationID],
-			CreatedAtUnixMS: accumulator.createdAtUnixMS,
-			Status:          accumulator.status,
-			Lanes:           sortedLaneAggregateSlice(accumulator.lanes),
-		})
+		collector.Add(accumulator, characterByConversation[accumulator.conversationID])
 	}
+	return collector.Report(), nil
+}
 
-	sort.SliceStable(turns, func(a, b int) bool {
-		if turns[a].CreatedAtUnixMS != turns[b].CreatedAtUnixMS {
-			return turns[a].CreatedAtUnixMS > turns[b].CreatedAtUnixMS
-		}
-		return turns[a].TurnID > turns[b].TurnID
-	})
-
-	turnCount := uint64(len(turns))
-	truncated := false
-	if len(turns) > limit {
-		turns = turns[:limit]
-		truncated = true
+func applyUsageLedgerRow(accumulator *usageTurnAccumulator, row usageLedgerRow) error {
+	if row.createdAtUnixMS > accumulator.createdAtUnixMS {
+		accumulator.createdAtUnixMS = row.createdAtUnixMS
 	}
-
-	return UsageReport{
-		Overall:   sortedLaneAggregateSlice(overall),
-		Turns:     turns,
-		TurnCount: turnCount,
-		Truncated: truncated,
-	}, nil
+	switch row.eventType {
+	case "model":
+		return accumulateModelUsage(accumulator, row.metadataJSON)
+	case "terminal":
+		if row.state != nil && *row.state != "" {
+			accumulator.status = *row.state
+		}
+	}
+	return nil
 }
 
 func accumulateModelUsage(accumulator *usageTurnAccumulator, metadataJSON string) error {

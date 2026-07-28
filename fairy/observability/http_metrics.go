@@ -1,10 +1,13 @@
 package observability
 
 import (
+	"net/http"
 	"sort"
 	"sync"
 	"time"
 )
+
+const httpMetricMethodOther = "OTHER"
 
 type HTTPRouteMetrics struct {
 	Method          string `json:"method"`
@@ -57,6 +60,7 @@ func (m *HTTPMetrics) Finish(method, route string, status int, started time.Time
 	if m == nil {
 		return
 	}
+	method = normalizeHTTPMetricMethod(method)
 	if route == "" {
 		route = "unmatched"
 	}
@@ -92,6 +96,23 @@ func (m *HTTPMetrics) Finish(method, route string, status int, started time.Time
 	aggregate.TotalDurationMS += durationMS
 	if durationMS > aggregate.MaxDurationMS {
 		aggregate.MaxDurationMS = durationMS
+	}
+}
+
+func normalizeHTTPMetricMethod(method string) string {
+	switch method {
+	case http.MethodConnect,
+		http.MethodDelete,
+		http.MethodGet,
+		http.MethodHead,
+		http.MethodOptions,
+		http.MethodPatch,
+		http.MethodPost,
+		http.MethodPut,
+		http.MethodTrace:
+		return method
+	default:
+		return httpMetricMethodOther
 	}
 }
 

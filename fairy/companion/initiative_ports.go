@@ -49,15 +49,15 @@ func (s *CompanionService) CancelTurnBeforeDelivery(conversationID string) {
 
 func (s *CompanionService) ScheduleDesktopInitiation(request DesktopInitiationRequest, observation session.DesktopObservation) error {
 	if s == nil || s.retention == nil {
-		return ErrRespondRuntimeNotMigrated
+		return ErrTurnRuntimeUnavailable
 	}
-	if !s.retention.run(func() {
+	if err := s.retention.run(func() {
 		_, err := s.SubmitDesktopInitiation(request, observation)
 		if err != nil {
 			s.setBackgroundError(err)
 		}
-	}) {
-		return ErrRespondRuntimeNotMigrated
+	}); err != nil {
+		return err
 	}
 	return nil
 }

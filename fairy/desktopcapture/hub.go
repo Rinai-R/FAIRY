@@ -26,6 +26,8 @@ var (
 	ErrDesktopCaptureResultRejected     = errors.New("desktop capture result was rejected")
 )
 
+const captureHubExecutionCapacity = 64
+
 type ToolRequest struct {
 	ConversationID string
 	TurnID         string
@@ -70,41 +72,20 @@ type captureExecutionStore interface {
 	FailToolExecution(context.Context, string, string, string) (memory.ToolExecutionRecord, bool, error)
 	LoadToolExecution(context.Context, string) (memory.ToolExecutionRecord, bool, error)
 	CancelToolExecutionsForTurn(context.Context, string, string, string, string) (int64, error)
-	ListRecoverableToolExecutions(context.Context) ([]memory.ToolExecutionRecord, error)
-	FailTurn(string, string, string, string, bool) error
+	SettleRecoveredToolExecutions(context.Context) (int64, error)
 }
 
 func (h *CaptureHub) SettleRecovered(ctx context.Context) error {
 	if h == nil || h.store == nil {
 		return nil
 	}
-	records, err := h.store.ListRecoverableToolExecutions(ctx)
-	if err != nil {
-		return err
-	}
-	for _, record := range records {
-		code := "evidence_lost"
-		message := "desktop capture evidence was lost during Core restart"
-		if record.Status == memory.ToolExecutionPending {
-			code = "core_restarted"
-			message = "desktop capture was interrupted by Core restart"
-			if _, _, err := h.store.FailToolExecution(ctx, record.ID, code, message); err != nil {
-				return err
-			}
-		}
-		if err := h.store.FailTurn(record.ConversationID, record.TurnID, "DESKTOP_CAPTURE_RECOVERY_FAILED", message, false); err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err := h.store.SettleRecoveredToolExecutions(ctx)
+	return err
 }
 
 func (h *CaptureHub) Begin(ctx context.Context, request ToolRequest, completed func()) (Execution, error) {
 	if h == nil || h.store == nil || ctx == nil {
 		return Execution{}, &ToolError{Code: "capture_unavailable"}
-	}
-	if !h.Available(request.ConversationID) {
-		return Execution{}, &ToolError{Code: "surface_unavailable"}
 	}
 	if request.Deadline.IsZero() || !request.Deadline.After(time.Now()) {
 		return Execution{}, &ToolError{Code: "deadline_exceeded"}
@@ -112,21 +93,67 @@ func (h *CaptureHub) Begin(ctx context.Context, request ToolRequest, completed f
 	if completed == nil {
 		return Execution{}, errors.New("desktop capture completion callback is required")
 	}
+	if err := h.reserveBegin(); err != nil {
+		return Execution{}, err
+	}
+	if !h.Available(request.ConversationID) {
+		h.abortBegin()
+		return Execution{}, &ToolError{Code: "surface_unavailable"}
+	}
 	record, err := h.store.CreateToolExecution(ctx, memory.CreateToolExecutionInput{
 		ConversationID: request.ConversationID, TurnID: request.TurnID, CallID: request.CallID,
 		ToolName: memory.ToolNameDesktopObserve, DeadlineAtUnixMS: request.Deadline.UnixMilli(),
 	})
 	if err != nil {
+		h.abortBegin()
 		return Execution{}, err
 	}
-	h.mu.Lock()
-	h.turns[record.ID] = captureTurnRef{conversationID: record.ConversationID, turnID: record.TurnID}
-	h.completions[record.ID] = completed
-	h.mu.Unlock()
+	if !h.commitBegin(record, completed) {
+		_, _, _ = h.store.FailToolExecution(context.Background(), record.ID, "capture_unavailable", "desktop capture hub closed")
+		return Execution{}, &ToolError{Code: "capture_unavailable"}
+	}
 	return Execution{
 		ID: record.ID, ConversationID: record.ConversationID, TurnID: record.TurnID,
 		CallID: record.CallID, DeadlineUnixMS: record.DeadlineAtUnixMS,
 	}, nil
+}
+
+func (h *CaptureHub) reserveBegin() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return &ToolError{Code: "capture_unavailable"}
+	}
+	capacity := h.executionCapacity
+	if capacity <= 0 {
+		capacity = captureHubExecutionCapacity
+	}
+	if len(h.turns)+h.beginning >= capacity {
+		return &ToolError{Code: "capture_overloaded"}
+	}
+	h.beginning++
+	h.beginWG.Add(1)
+	return nil
+}
+
+func (h *CaptureHub) abortBegin() {
+	h.mu.Lock()
+	h.beginning--
+	h.mu.Unlock()
+	h.beginWG.Done()
+}
+
+func (h *CaptureHub) commitBegin(record memory.ToolExecutionRecord, completed func()) bool {
+	h.mu.Lock()
+	h.beginning--
+	accepted := !h.closed
+	if accepted {
+		h.turns[record.ID] = captureTurnRef{conversationID: record.ConversationID, turnID: record.TurnID}
+		h.completions[record.ID] = completed
+	}
+	h.mu.Unlock()
+	h.beginWG.Done()
+	return accepted
 }
 
 func (h *CaptureHub) DispatchExecution(ctx context.Context, execution Execution) error {
@@ -246,12 +273,16 @@ type CaptureEvidence struct {
 type CaptureHub struct {
 	store captureExecutionStore
 
-	mu          sync.Mutex
-	routes      map[string]captureRoute
-	evidence    map[string]CaptureEvidence
-	completions map[string]func()
-	timers      map[string]*time.Timer
-	turns       map[string]captureTurnRef
+	mu                sync.Mutex
+	routes            map[string]captureRoute
+	evidence          map[string]CaptureEvidence
+	completions       map[string]func()
+	timers            map[string]*time.Timer
+	turns             map[string]captureTurnRef
+	executionCapacity int
+	beginning         int
+	beginWG           sync.WaitGroup
+	closed            bool
 }
 
 type captureTurnRef struct {
@@ -264,6 +295,7 @@ func NewCaptureHub(store captureExecutionStore) *CaptureHub {
 		store: store, routes: make(map[string]captureRoute),
 		evidence: make(map[string]CaptureEvidence), completions: make(map[string]func()),
 		timers: make(map[string]*time.Timer), turns: make(map[string]captureTurnRef),
+		executionCapacity: captureHubExecutionCapacity,
 	}
 }
 
@@ -281,6 +313,10 @@ func (h *CaptureHub) Register(conversationID string, endpoint session.EndpointKi
 	}
 	id := uuid.NewString()
 	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return "", nil, errors.New("capture hub is closed")
+	}
 	h.routes[conversationID] = captureRoute{id: id, send: send}
 	h.mu.Unlock()
 	var once sync.Once
@@ -418,6 +454,12 @@ func (h *CaptureHub) Close() {
 		return
 	}
 	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		h.beginWG.Wait()
+		return
+	}
+	h.closed = true
 	completions := h.completions
 	timers := h.timers
 	h.routes = make(map[string]captureRoute)
@@ -429,6 +471,7 @@ func (h *CaptureHub) Close() {
 	for _, timer := range timers {
 		timer.Stop()
 	}
+	h.beginWG.Wait()
 	for executionID, completed := range completions {
 		_, _, _ = h.store.FailToolExecution(context.Background(), executionID, "capture_unavailable", "desktop capture hub closed")
 		completed()

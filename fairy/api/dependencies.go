@@ -22,6 +22,8 @@ import (
 var (
 	ErrEventSubscriberOverflow         = errors.New("event subscriber overflow")
 	ErrParticipationSubscriberOverflow = errors.New("participation subscriber overflow")
+	ErrEventSubscriberCapacity         = errors.New("event subscriber capacity reached")
+	ErrParticipationSubscriberCapacity = errors.New("participation subscriber capacity reached")
 )
 
 type EventSubscription struct {
@@ -74,7 +76,7 @@ type Dependencies struct {
 	Messages    *observability.MessageMetrics
 
 	BootstrapStatus          func() (any, error)
-	SubscribeTurnEvents      func(conversationID string) EventSubscription
-	SubscribeParticipation   func(conversationID string) ParticipationSubscription
+	SubscribeTurnEvents      func(conversationID string) (EventSubscription, error)
+	SubscribeParticipation   func(conversationID string) (ParticipationSubscription, error)
 	TurnEventSubscriberCount func() uint64
 }

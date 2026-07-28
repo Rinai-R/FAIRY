@@ -79,7 +79,10 @@ func (h *learningTestHost) ExecuteRequest(ctx context.Context, request model.Com
 	h.mu.Unlock()
 	if block {
 		if started != nil {
-			close(started)
+			select {
+			case started <- struct{}{}:
+			default:
+			}
 		}
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -194,18 +197,12 @@ func TestLearningInvalidBatchDoesNotWrite(t *testing.T) {
 }
 
 func TestLearningQueueIsNonBlockingAndCloseCancelsModel(t *testing.T) {
-	engine := NewLearningEngine(nil, 1)
 	snapshot := LearningSnapshot{ConversationID: "conversation-1", Messages: learningObservations()}
-	if !engine.Enqueue(snapshot) || engine.Enqueue(snapshot) {
-		t.Fatalf("queue stats = %#v", engine.Stats())
-	}
-	engine.Close()
-
-	started := make(chan struct{})
+	started := make(chan struct{}, 1)
 	host := newLearningTestHost()
 	host.block = true
 	host.started = started
-	engine = NewLearningEngine(host, 1)
+	engine := NewLearningEngine(host, 1)
 	if !engine.Enqueue(snapshot) {
 		t.Fatal("enqueue blocked model = false")
 	}
@@ -213,6 +210,12 @@ func TestLearningQueueIsNonBlockingAndCloseCancelsModel(t *testing.T) {
 	case <-started:
 	case <-time.After(time.Second):
 		t.Fatal("worker did not start model request")
+	}
+	if !engine.Enqueue(snapshot) || engine.Enqueue(snapshot) {
+		t.Fatalf("queue stats = %#v", engine.Stats())
+	}
+	if stats := engine.Stats(); stats.Enqueued != 2 || stats.Dropped != 1 {
+		t.Fatalf("queue stats = %#v, want enqueued=2 dropped=1", stats)
 	}
 	done := make(chan struct{})
 	go func() { engine.Close(); close(done) }()

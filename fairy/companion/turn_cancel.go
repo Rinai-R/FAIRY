@@ -8,8 +8,8 @@ import (
 
 func (e *TurnEngine) CancelTurn(conversationID string, turnID string) error {
 	s := e.host
-	if s == nil || !s.RespondRuntimeMigrated() {
-		return ErrRespondRuntimeNotMigrated
+	if s == nil || !s.TurnRuntimeReady() {
+		return ErrTurnRuntimeUnavailable
 	}
 	if conversationID == "" || turnID == "" {
 		return errors.New("conversation_id and turn_id are required")

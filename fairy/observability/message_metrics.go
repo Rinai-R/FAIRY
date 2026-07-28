@@ -101,8 +101,10 @@ type MessageMetrics struct {
 	closeOnce      sync.Once
 	stopped        atomic.Bool
 	dropped        atomic.Uint64
+	retentionDrops atomic.Uint64
 	sequence       atomic.Uint64
 	recentCapacity int
+	activeCapacity int
 	snapshot       atomic.Value
 }
 
@@ -120,6 +122,10 @@ func newMessageMetrics(queueCapacity, recentCapacity int, start bool) *MessageMe
 	m := &MessageMetrics{
 		events: make(chan messageEvent, queueCapacity), stop: make(chan struct{}), done: make(chan struct{}),
 		recentCapacity: recentCapacity,
+		// Keep active retention independent from the recent terminal history.
+		// A lost terminal event cannot consume more than one queue's worth of
+		// process-local trace state.
+		activeCapacity: queueCapacity,
 	}
 	m.snapshot.Store(MessageMetricsSnapshot{Recent: []MessageTrace{}})
 	if start {
@@ -171,7 +177,7 @@ func (m *MessageMetrics) Snapshot() MessageMetricsSnapshot {
 		return MessageMetricsSnapshot{Recent: []MessageTrace{}}
 	}
 	snapshot := m.snapshot.Load().(MessageMetricsSnapshot)
-	snapshot.DroppedEvents = m.dropped.Load()
+	snapshot.DroppedEvents = m.totalDropped()
 	snapshot.Recent = append([]MessageTrace{}, snapshot.Recent...)
 	return snapshot
 }
@@ -199,24 +205,32 @@ func (m *MessageMetrics) submit(event messageEvent) {
 	}
 }
 
+func (m *MessageMetrics) totalDropped() uint64 {
+	if m == nil {
+		return 0
+	}
+	return m.dropped.Load() + m.retentionDrops.Load()
+}
+
 func (m *MessageMetrics) run() {
 	defer close(m.done)
 	state := messageMetricsState{
 		traces: make(map[string]*messageTraceState), turns: make(map[string]string),
-		recentCapacity: m.recentCapacity,
+		recentCapacity: m.recentCapacity, activeCapacity: m.activeCapacity,
+		retentionDrops: &m.retentionDrops,
 	}
 	for {
 		select {
 		case event := <-m.events:
 			state.apply(event)
-			m.snapshot.Store(state.snapshot(m.dropped.Load()))
+			m.snapshot.Store(state.snapshot(m.totalDropped()))
 		case <-m.stop:
 			for {
 				select {
 				case event := <-m.events:
 					state.apply(event)
 				default:
-					m.snapshot.Store(state.snapshot(m.dropped.Load()))
+					m.snapshot.Store(state.snapshot(m.totalDropped()))
 					return
 				}
 			}
@@ -230,6 +244,8 @@ type messageMetricsState struct {
 	turns          map[string]string
 	recentIDs      []string
 	recentCapacity int
+	activeCapacity int
+	retentionDrops *atomic.Uint64
 }
 
 func (s *messageMetricsState) apply(event messageEvent) {
@@ -251,6 +267,11 @@ func (s *messageMetricsState) begin(event messageEvent) {
 	if event.traceID == "" || s.traces[event.traceID] != nil {
 		return
 	}
+	if s.snapshotBase.Active >= uint64(s.activeCapacity) {
+		if !s.evictOldestActive() {
+			return
+		}
+	}
 	trace := &messageTraceState{
 		trace: MessageTrace{
 			TraceID: event.traceID, Source: event.source, ConversationID: event.conversation,
@@ -266,6 +287,35 @@ func (s *messageMetricsState) begin(event messageEvent) {
 	} else {
 		s.snapshotBase.DirectReceived++
 	}
+}
+
+func (s *messageMetricsState) evictOldestActive() bool {
+	oldestID := ""
+	var oldestAt time.Time
+	for traceID, trace := range s.traces {
+		if trace == nil || trace.terminal {
+			continue
+		}
+		if oldestID == "" || trace.receivedAt.Before(oldestAt) || (trace.receivedAt.Equal(oldestAt) && traceID < oldestID) {
+			oldestID = traceID
+			oldestAt = trace.receivedAt
+		}
+	}
+	if oldestID == "" {
+		return false
+	}
+	trace := s.traces[oldestID]
+	if trace.trace.TurnID != "" {
+		delete(s.turns, trace.trace.TurnID)
+	}
+	delete(s.traces, oldestID)
+	if s.snapshotBase.Active > 0 {
+		s.snapshotBase.Active--
+	}
+	if s.retentionDrops != nil {
+		s.retentionDrops.Add(1)
+	}
+	return true
 }
 
 func (s *messageMetricsState) participation(event messageEvent) {

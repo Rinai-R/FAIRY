@@ -1,6 +1,20 @@
 package model
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+const (
+	MaxModelStreamEvents            = 4096
+	MaxModelStreamPayloadBytes      = 1 << 20
+	MaxModelFunctionCalls           = 64
+	MaxModelFunctionArgumentsBytes  = 256 << 10
+	MaxModelCompletedResponseBytes  = 4 << 20
+	maxModelFunctionIdentifierBytes = 4 << 10
+)
+
+var ErrModelStreamCapacity = errors.New("model stream capacity reached")
 
 // Protocol identifies which OpenAI-compatible HTTP resource executes a draft.
 type Protocol string

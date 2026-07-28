@@ -2,6 +2,8 @@ package model
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -174,6 +176,81 @@ func TestExecuteRequestParsesChatCompletionsSSE(t *testing.T) {
 	}
 	if events[3].Type != "completed" || events[3].FinishReason != "stop" {
 		t.Fatalf("completed event = %#v", events[3])
+	}
+}
+
+func TestExecuteRequestBoundsChatPendingToolCalls(t *testing.T) {
+	events, err := executeWithServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for index := 0; index <= MaxModelFunctionCalls; index++ {
+			payload, marshalErr := json.Marshal(map[string]any{
+				"choices": []any{map[string]any{
+					"delta": map[string]any{"tool_calls": []any{map[string]any{
+						"index": index, "id": fmt.Sprintf("call-%d", index),
+						"function": map[string]any{"name": "tool", "arguments": "{}"},
+					}}},
+				}},
+			})
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			fmt.Fprintf(w, "data: %s\n\n", payload)
+		}
+	}, ProtocolChatCompletions, AuthRequirementNone)
+	if !errors.Is(err, ErrModelStreamCapacity) {
+		t.Fatalf("Execute error = %v, want ErrModelStreamCapacity", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("events = %#v, want none", events)
+	}
+}
+
+func TestExecuteRequestBoundsChatToolArguments(t *testing.T) {
+	events, err := executeWithServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		payload, marshalErr := json.Marshal(map[string]any{
+			"choices": []any{map[string]any{
+				"delta": map[string]any{"tool_calls": []any{map[string]any{
+					"index": 0, "id": "call", "function": map[string]any{
+						"name": "tool", "arguments": strings.Repeat("x", MaxModelFunctionArgumentsBytes+1),
+					},
+				}}},
+			}},
+		})
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		fmt.Fprintf(w, "data: %s\n\n", payload)
+	}, ProtocolChatCompletions, AuthRequirementNone)
+	if !errors.Is(err, ErrModelStreamCapacity) || len(events) != 0 {
+		t.Fatalf("error=%v events=%#v", err, events)
+	}
+}
+
+func TestExecuteRequestBoundsChatTotalToolArguments(t *testing.T) {
+	events, err := executeWithServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		chunk := func(index int, arguments string) {
+			payload, marshalErr := json.Marshal(map[string]any{
+				"choices": []any{map[string]any{
+					"delta": map[string]any{"tool_calls": []any{map[string]any{
+						"index": index, "id": fmt.Sprintf("call-%d", index),
+						"function": map[string]any{"name": "tool", "arguments": arguments},
+					}}},
+				}},
+			})
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			fmt.Fprintf(w, "data: %s\n\n", payload)
+		}
+		for index := 0; index < MaxModelStreamPayloadBytes/MaxModelFunctionArgumentsBytes; index++ {
+			chunk(index, strings.Repeat("x", MaxModelFunctionArgumentsBytes))
+		}
+		chunk(MaxModelFunctionCalls-1, "x")
+	}, ProtocolChatCompletions, AuthRequirementNone)
+	if !errors.Is(err, ErrModelStreamCapacity) || len(events) != 0 {
+		t.Fatalf("error=%v events=%#v", err, events)
 	}
 }
 

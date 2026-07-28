@@ -2,6 +2,8 @@ package memory
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 )
@@ -57,6 +59,51 @@ func TestAggregateUsageRowsRejectsInvalidModelMetadata(t *testing.T) {
 	_, err := aggregateUsageRows(nil, []usageLedgerRow{{conversationID: "conversation-1", turnID: "turn-1", eventType: "model", metadataJSON: `{`}}, 10)
 	if err == nil || !strings.Contains(err.Error(), "decoding model usage metadata") {
 		t.Fatalf("aggregateUsageRows() error = %v", err)
+	}
+}
+
+func TestUsageReportCollectorBoundsRecentAcrossLargeHistory(t *testing.T) {
+	const (
+		turns = 10_000
+		limit = 100
+	)
+	collector := newUsageReportCollector(limit)
+	for index := 0; index < turns; index++ {
+		collector.Add(&usageTurnAccumulator{
+			conversationID:  fmt.Sprintf("conversation-%05d", index),
+			turnID:          fmt.Sprintf("turn-%05d", index),
+			createdAtUnixMS: int64(index),
+			status:          "completed",
+			lanes: map[string]*UsageLaneAggregate{
+				"respond": {Lane: "respond", InputTokens: 2, OutputTokens: 1, CallCount: 1},
+			},
+		}, "character")
+		if len(collector.recent) > limit {
+			t.Fatalf("retained recent = %d at turn %d", len(collector.recent), index)
+		}
+	}
+	report := collector.Report()
+	if report.TurnCount != turns || len(report.Turns) != limit || !report.Truncated {
+		t.Fatalf("report bounds = %#v", report)
+	}
+	overall := findUsageLane(report.Overall, "respond")
+	if overall.InputTokens != turns*2 || overall.OutputTokens != turns || overall.CallCount != turns {
+		t.Fatalf("overall = %#v", overall)
+	}
+	if report.Turns[0].TurnID != "turn-09999" || report.Turns[len(report.Turns)-1].TurnID != "turn-09900" {
+		t.Fatalf("recent order = first %q last %q", report.Turns[0].TurnID, report.Turns[len(report.Turns)-1].TurnID)
+	}
+}
+
+func TestProductionUsageReportDoesNotLoadFullHistoryCollections(t *testing.T) {
+	source, err := os.ReadFile("store_usage.go")
+	if err != nil {
+		t.Fatalf("ReadFile(store_usage.go) error = %v", err)
+	}
+	for _, forbidden := range []string{"LoadConversationCharacters(", "LoadUsageLedgerEvents(", "usageLedgerRowsFromAdapter("} {
+		if strings.Contains(string(source), forbidden) {
+			t.Fatalf("production usage report still uses full-history loader %q", forbidden)
+		}
 	}
 }
 

@@ -5,9 +5,15 @@ import (
 	"fairy/session"
 )
 
-const eventHubBuffer = 64
+const (
+	eventHubBuffer             = 64
+	eventHubSubscriberCapacity = 256
+)
 
-var ErrEventSubscriberOverflow = api.ErrEventSubscriberOverflow
+var (
+	ErrEventSubscriberOverflow = api.ErrEventSubscriberOverflow
+	ErrEventSubscriberCapacity = api.ErrEventSubscriberCapacity
+)
 
 // EventSubscription is one ordered per-conversation turn-event stream.
 type EventSubscription struct {
@@ -26,16 +32,18 @@ type EventHub struct {
 }
 
 func NewEventHub() *EventHub {
-	return &EventHub{inner: newStreamHub[string, session.Event](eventHubBuffer, ErrEventSubscriberOverflow)}
+	return &EventHub{inner: newStreamHub[string, session.Event](
+		eventHubBuffer, eventHubSubscriberCapacity, ErrEventSubscriberOverflow, ErrEventSubscriberCapacity,
+	)}
 }
 
 // Subscribe returns one ordered stream and a separate terminal-failure signal.
-func (h *EventHub) Subscribe(conversationID string) EventSubscription {
+func (h *EventHub) Subscribe(conversationID string) (EventSubscription, error) {
 	if h == nil || conversationID == "" {
-		return closedEventSubscription()
+		return closedEventSubscription(), nil
 	}
-	inner := h.inner.Subscribe(conversationID)
-	return EventSubscription{Events: inner.Events, Failures: inner.Failures, inner: inner}
+	inner, err := h.inner.Subscribe(conversationID)
+	return EventSubscription{Events: inner.Events, Failures: inner.Failures, inner: inner}, err
 }
 
 func closedEventSubscription() EventSubscription {

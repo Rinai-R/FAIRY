@@ -16,8 +16,8 @@ func (e *TurnEngine) SubmitDesktopVisionInitiation(request DesktopVisionInitiati
 	if strings.TrimSpace(request.ConversationID) == "" {
 		return TurnOutcome{}, errors.New("conversation_id is required")
 	}
-	if s == nil || !s.RespondRuntimeMigrated() {
-		return TurnOutcome{}, ErrRespondRuntimeNotMigrated
+	if s == nil || !s.TurnRuntimeReady() {
+		return TurnOutcome{}, ErrTurnRuntimeUnavailable
 	}
 	resolved, err := s.ResolveInteraction(request.ConversationID)
 	if err != nil {
@@ -46,8 +46,8 @@ func (e *TurnEngine) SubmitDesktopInitiation(request DesktopInitiationRequest, o
 	if err := ValidateDesktopInitiationRequest(request); err != nil {
 		return TurnOutcome{}, err
 	}
-	if s == nil || !s.RespondRuntimeMigrated() {
-		return TurnOutcome{}, ErrRespondRuntimeNotMigrated
+	if s == nil || !s.TurnRuntimeReady() {
+		return TurnOutcome{}, ErrTurnRuntimeUnavailable
 	}
 	now := time.Now()
 	if err := observation.Validate(now); err != nil {
@@ -87,8 +87,8 @@ func (e *TurnEngine) SubmitTurn(request SubmitTurnRequest) (TurnOutcome, error) 
 	if err := ValidateSubmitTurnRequest(request); err != nil {
 		return TurnOutcome{}, err
 	}
-	if s == nil || !s.RespondRuntimeMigrated() {
-		return TurnOutcome{}, ErrRespondRuntimeNotMigrated
+	if s == nil || !s.TurnRuntimeReady() {
+		return TurnOutcome{}, ErrTurnRuntimeUnavailable
 	}
 	var resolved *session.Resolved
 	if request.MessageSource == "" || request.MessageSource == "direct" {

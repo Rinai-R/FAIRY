@@ -38,7 +38,7 @@ func speechExceedsSoftLimit(value string) bool {
 	return reply.SpeechExceedsSoftLimit(value)
 }
 
-var ErrRespondRuntimeNotMigrated = errors.New("companion respond runtime is not migrated to Go")
+var ErrTurnRuntimeUnavailable = errors.New("companion turn runtime is unavailable")
 
 type SubmitTurnRequest struct {
 	ConversationID      string                     `json:"conversationId"`

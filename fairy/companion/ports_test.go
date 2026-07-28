@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"fairy/character"
+	"fairy/memory"
 )
 
 type stubCharacterLookup struct {
@@ -18,14 +19,24 @@ func (s stubCharacterLookup) Lookup(string) (character.Record, bool, error) {
 	return s.record, s.found, s.err
 }
 
-func TestRespondRuntimeMigratedRequiresPorts(t *testing.T) {
-	if NewCompanionService().RespondRuntimeMigrated() {
-		t.Fatal("empty companion must not report migrated")
+func TestTurnRuntimeReadyRequiresPorts(t *testing.T) {
+	service := NewCompanionService()
+	if service.TurnRuntimeReady() {
+		t.Fatal("empty companion must not report ready")
+	}
+	if _, err := service.SubmitTurn(SubmitTurnRequest{ConversationID: "conversation-1", Input: "hello"}); !errors.Is(err, ErrTurnRuntimeUnavailable) {
+		t.Fatalf("SubmitTurn() error = %v, want %v", err, ErrTurnRuntimeUnavailable)
+	} else if strings.Contains(strings.ToLower(err.Error()), "migrat") {
+		t.Fatalf("SubmitTurn() retains migration semantics: %v", err)
 	}
 	root := t.TempDir()
-	service := NewCompanionServiceWithRuntime(root, nil, nil, nil)
-	if service.RespondRuntimeMigrated() {
-		t.Fatal("nil memory/model must not report migrated")
+	incomplete := NewCompanionServiceWithRuntime(root, nil, nil, nil)
+	if incomplete.TurnRuntimeReady() {
+		t.Fatal("nil memory/model must not report ready")
+	}
+	ready := NewCompanionServiceWithRuntime(t.TempDir(), &memory.Store{}, &socialLearningModel{}, nil)
+	if !ready.TurnRuntimeReady() {
+		t.Fatal("fully injected companion must report ready")
 	}
 }
 

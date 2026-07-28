@@ -5,9 +5,15 @@ import (
 	"fairy/initiative"
 )
 
-const participationHubBuffer = 64
+const (
+	participationHubBuffer             = 64
+	participationHubSubscriberCapacity = 256
+)
 
-var ErrParticipationSubscriberOverflow = api.ErrParticipationSubscriberOverflow
+var (
+	ErrParticipationSubscriberOverflow = api.ErrParticipationSubscriberOverflow
+	ErrParticipationSubscriberCapacity = api.ErrParticipationSubscriberCapacity
+)
 
 type ParticipationSubscription struct {
 	Events   <-chan initiative.Event
@@ -24,15 +30,18 @@ type ParticipationHub struct {
 }
 
 func NewParticipationHub() *ParticipationHub {
-	return &ParticipationHub{inner: newStreamHub[string, initiative.Event](participationHubBuffer, ErrParticipationSubscriberOverflow)}
+	return &ParticipationHub{inner: newStreamHub[string, initiative.Event](
+		participationHubBuffer, participationHubSubscriberCapacity,
+		ErrParticipationSubscriberOverflow, ErrParticipationSubscriberCapacity,
+	)}
 }
 
-func (h *ParticipationHub) Subscribe(conversationID string) ParticipationSubscription {
+func (h *ParticipationHub) Subscribe(conversationID string) (ParticipationSubscription, error) {
 	if h == nil || conversationID == "" {
-		return closedParticipationSubscription()
+		return closedParticipationSubscription(), nil
 	}
-	inner := h.inner.Subscribe(conversationID)
-	return ParticipationSubscription{Events: inner.Events, Failures: inner.Failures, inner: inner}
+	inner, err := h.inner.Subscribe(conversationID)
+	return ParticipationSubscription{Events: inner.Events, Failures: inner.Failures, inner: inner}, err
 }
 
 func closedParticipationSubscription() ParticipationSubscription {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/common/adaptor"
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 
@@ -27,6 +28,17 @@ const (
 	wsPingInterval   = 30 * time.Second
 	wsPongWait       = 60 * time.Second
 	maxWSRequestJSON = 1 << 20
+
+	sessionConnectionWatchCapacity       = 64
+	sessionConnectionAssociationCapacity = 64
+	sessionConnectionTurnCapacity        = 16
+)
+
+var (
+	errSessionWatchCapacity       = errors.New("session watch capacity exhausted")
+	errSessionAssociationCapacity = errors.New("session association capacity exhausted")
+	errSessionTurnCapacity        = errors.New("session turn submission capacity exhausted")
+	errSessionConnectionClosed    = errors.New("session connection is closed")
 )
 
 var sessionUpgrader = websocket.Upgrader{
@@ -112,24 +124,46 @@ func (s *Server) handleSessionWebSocket() app.HandlerFunc {
 			s.logger.Warn("session websocket upgrade", zap.Error(err))
 			return
 		}
-		session := &sessionConn{server: s, conn: conn, watches: make(map[string]func()), captureRoutes: make(map[string]captureRegistration)}
+		session := newSessionConn(s, conn)
 		session.run(r.Context())
 	}))
 }
 
 type sessionConn struct {
-	server        *Server
-	conn          *websocket.Conn
-	writeMu       sync.Mutex
-	watchMu       sync.Mutex
-	watches       map[string]func()
-	captureRoutes map[string]captureRegistration
-	closeOnce     sync.Once
+	server              *Server
+	conn                *websocket.Conn
+	ownerID             string
+	writeMu             sync.Mutex
+	watchMu             sync.Mutex
+	watches             map[string]func()
+	captureRoutes       map[string]captureRegistration
+	capabilityBindings  map[string]struct{}
+	watchCapacity       int
+	associationCapacity int
+	turnCapacity        int
+	turnSlots           chan struct{}
+	closed              bool
+	closeOnce           sync.Once
 }
 
 type captureRegistration struct {
 	id         string
 	unregister func()
+}
+
+func newSessionConn(server *Server, conn *websocket.Conn) *sessionConn {
+	return &sessionConn{
+		server:              server,
+		conn:                conn,
+		ownerID:             uuid.NewString(),
+		watches:             make(map[string]func()),
+		captureRoutes:       make(map[string]captureRegistration),
+		capabilityBindings:  make(map[string]struct{}),
+		watchCapacity:       sessionConnectionWatchCapacity,
+		associationCapacity: sessionConnectionAssociationCapacity,
+		turnCapacity:        sessionConnectionTurnCapacity,
+		turnSlots:           make(chan struct{}, sessionConnectionTurnCapacity),
+	}
 }
 
 func (c *sessionConn) run(parent context.Context) {
@@ -233,8 +267,12 @@ func (c *sessionConn) handleExpressionDelivery(frame wsClientFrame) {
 }
 
 func (c *sessionConn) handleOpen(ctx context.Context, frame wsClientFrame) {
-	result, err := c.server.openSession(ctx, frame.Endpoint, frame.EndpointKey, frame.Interaction, frame.OutputCapabilities)
+	result, err := c.server.openSession(ctx, frame.Endpoint, frame.EndpointKey, frame.Interaction)
 	if err != nil {
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
+		return
+	}
+	if err := c.bindOutputCapabilities(result.ConversationID, frame.OutputCapabilities); err != nil {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 		return
 	}
@@ -248,6 +286,12 @@ func (c *sessionConn) handleOpen(ctx context.Context, frame wsClientFrame) {
 			return
 		}
 		c.watchMu.Lock()
+		if c.closed {
+			c.watchMu.Unlock()
+			unregister()
+			_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: errSessionConnectionClosed.Error()})
+			return
+		}
 		if previous, ok := c.captureRoutes[result.ConversationID]; ok {
 			previous.unregister()
 		}
@@ -259,6 +303,60 @@ func (c *sessionConn) handleOpen(ctx context.Context, frame wsClientFrame) {
 		ConversationID: result.ConversationID, CharacterID: result.CharacterID,
 		MessageCount: result.MessageCount, Endpoint: result.Endpoint,
 	})
+}
+
+func (c *sessionConn) bindOutputCapabilities(conversationID string, capabilities session.OutputCapabilities) error {
+	if c == nil || c.server == nil || c.server.rt == nil || c.server.rt.Companion == nil {
+		return errors.New("companion service is unavailable")
+	}
+	added, err := c.reserveCapabilityBinding(conversationID)
+	if err != nil {
+		return err
+	}
+	if err := c.server.rt.Companion.BindOutputCapabilities(c.ownerID, conversationID, capabilities); err != nil {
+		if added {
+			c.rollbackCapabilityBinding(conversationID)
+		}
+		return err
+	}
+	c.watchMu.Lock()
+	if c.closed {
+		delete(c.capabilityBindings, conversationID)
+		c.watchMu.Unlock()
+		c.server.rt.Companion.UnbindOutputCapabilities(c.ownerID, conversationID)
+		return errSessionConnectionClosed
+	}
+	c.watchMu.Unlock()
+	return nil
+}
+
+func (c *sessionConn) reserveCapabilityBinding(conversationID string) (bool, error) {
+	c.watchMu.Lock()
+	defer c.watchMu.Unlock()
+	if c.closed {
+		return false, errSessionConnectionClosed
+	}
+	if c.capabilityBindings == nil {
+		c.capabilityBindings = make(map[string]struct{})
+	}
+	if _, exists := c.capabilityBindings[conversationID]; exists {
+		return false, nil
+	}
+	capacity := c.associationCapacity
+	if capacity <= 0 {
+		capacity = sessionConnectionAssociationCapacity
+	}
+	if len(c.capabilityBindings) >= capacity {
+		return false, errSessionAssociationCapacity
+	}
+	c.capabilityBindings[conversationID] = struct{}{}
+	return true, nil
+}
+
+func (c *sessionConn) rollbackCapabilityBinding(conversationID string) {
+	c.watchMu.Lock()
+	delete(c.capabilityBindings, conversationID)
+	c.watchMu.Unlock()
 }
 
 func (c *sessionConn) handleCaptureResult(ctx context.Context, frame wsClientFrame) {
@@ -287,27 +385,89 @@ func (c *sessionConn) handleWatch(frame wsClientFrame) {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "conversationId is required"})
 		return
 	}
-	c.watchMu.Lock()
-	if _, exists := c.watches[conversationID]; exists {
-		c.watchMu.Unlock()
-		_ = c.write(wsServerFrame{Type: "ack", RequestID: frame.RequestID, ConversationID: conversationID})
-		return
-	}
 	if c.server.rt.SubscribeTurnEvents == nil || c.server.rt.SubscribeParticipation == nil {
-		c.watchMu.Unlock()
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "event subscriptions are unavailable"})
 		return
 	}
-	subscription := c.server.rt.SubscribeTurnEvents(conversationID)
-	participation := c.server.rt.SubscribeParticipation(conversationID)
-	c.watches[conversationID] = func() {
+	exists, err := c.reserveWatch(conversationID)
+	if err != nil {
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
+		return
+	}
+	if exists {
+		_ = c.write(wsServerFrame{Type: "ack", RequestID: frame.RequestID, ConversationID: conversationID})
+		return
+	}
+	subscription, err := c.server.rt.SubscribeTurnEvents(conversationID)
+	if err != nil {
+		c.rollbackWatchReservation(conversationID)
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
+		return
+	}
+	participation, err := c.server.rt.SubscribeParticipation(conversationID)
+	if err != nil {
+		subscription.Unsubscribe()
+		c.rollbackWatchReservation(conversationID)
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
+		return
+	}
+	unsubscribe := func() {
 		subscription.Unsubscribe()
 		participation.Unsubscribe()
 	}
-	c.watchMu.Unlock()
+	if err := c.commitWatch(conversationID, unsubscribe); err != nil {
+		unsubscribe()
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
+		return
+	}
 	go c.forwardTurnEvents(conversationID, subscription)
 	go c.forwardParticipationEvents(conversationID, participation)
 	_ = c.write(wsServerFrame{Type: "ack", RequestID: frame.RequestID, ConversationID: conversationID})
+}
+
+func (c *sessionConn) rollbackWatchReservation(conversationID string) {
+	c.watchMu.Lock()
+	if unsubscribe, reserved := c.watches[conversationID]; reserved && unsubscribe == nil {
+		delete(c.watches, conversationID)
+	}
+	c.watchMu.Unlock()
+}
+
+func (c *sessionConn) reserveWatch(conversationID string) (bool, error) {
+	c.watchMu.Lock()
+	defer c.watchMu.Unlock()
+	if c.closed {
+		return false, errSessionConnectionClosed
+	}
+	if c.watches == nil {
+		c.watches = make(map[string]func())
+	}
+	if _, exists := c.watches[conversationID]; exists {
+		return true, nil
+	}
+	capacity := c.watchCapacity
+	if capacity <= 0 {
+		capacity = sessionConnectionWatchCapacity
+	}
+	if len(c.watches) >= capacity {
+		return false, errSessionWatchCapacity
+	}
+	c.watches[conversationID] = nil
+	return false, nil
+}
+
+func (c *sessionConn) commitWatch(conversationID string, unsubscribe func()) error {
+	c.watchMu.Lock()
+	defer c.watchMu.Unlock()
+	if c.closed {
+		delete(c.watches, conversationID)
+		return errSessionConnectionClosed
+	}
+	if _, reserved := c.watches[conversationID]; !reserved {
+		return errSessionConnectionClosed
+	}
+	c.watches[conversationID] = unsubscribe
+	return nil
 }
 
 func (c *sessionConn) forwardParticipationEvents(conversationID string, subscription ParticipationSubscription) {
@@ -434,7 +594,13 @@ func (c *sessionConn) handleSubmitTurn(frame wsClientFrame) {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "input is required"})
 		return
 	}
+	release, err := c.acquireTurnSubmission()
+	if err != nil {
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
+		return
+	}
 	go func() {
+		defer release()
 		outcome, err := c.server.rt.Companion.SubmitTurn(companion.SubmitTurnRequest{
 			ConversationID: frame.ConversationID,
 			Input:          frame.Input,
@@ -451,6 +617,38 @@ func (c *sessionConn) handleSubmitTurn(frame wsClientFrame) {
 		}
 		_ = c.write(wsServerFrame{Type: "result", RequestID: frame.RequestID, Payload: payload})
 	}()
+}
+
+func (c *sessionConn) acquireTurnSubmission() (func(), error) {
+	if c == nil {
+		return nil, errSessionConnectionClosed
+	}
+	c.watchMu.Lock()
+	if c.closed {
+		c.watchMu.Unlock()
+		return nil, errSessionConnectionClosed
+	}
+	if c.turnSlots == nil {
+		capacity := c.turnCapacity
+		if capacity <= 0 {
+			capacity = sessionConnectionTurnCapacity
+		}
+		c.turnSlots = make(chan struct{}, capacity)
+	}
+	slots := c.turnSlots
+	select {
+	case slots <- struct{}{}:
+		c.watchMu.Unlock()
+	default:
+		c.watchMu.Unlock()
+		return nil, errSessionTurnCapacity
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			<-slots
+		})
+	}, nil
 }
 
 func (c *sessionConn) handleCancelTurn(frame wsClientFrame) {
@@ -485,9 +683,12 @@ func (c *sessionConn) shutdown(reason error) {
 			c.writeMu.Unlock()
 		}
 		c.watchMu.Lock()
+		c.closed = true
 		unsubscribes := make([]func(), 0, len(c.watches))
 		for id, unsubscribe := range c.watches {
-			unsubscribes = append(unsubscribes, unsubscribe)
+			if unsubscribe != nil {
+				unsubscribes = append(unsubscribes, unsubscribe)
+			}
 			delete(c.watches, id)
 		}
 		captureUnregisters := make([]func(), 0, len(c.captureRoutes))
@@ -495,12 +696,22 @@ func (c *sessionConn) shutdown(reason error) {
 			captureUnregisters = append(captureUnregisters, registration.unregister)
 			delete(c.captureRoutes, id)
 		}
+		capabilityBindings := make([]string, 0, len(c.capabilityBindings))
+		for conversationID := range c.capabilityBindings {
+			capabilityBindings = append(capabilityBindings, conversationID)
+			delete(c.capabilityBindings, conversationID)
+		}
 		c.watchMu.Unlock()
 		for _, unsubscribe := range unsubscribes {
 			unsubscribe()
 		}
 		for _, unregister := range captureUnregisters {
 			unregister()
+		}
+		if c.server != nil && c.server.rt != nil && c.server.rt.Companion != nil {
+			for _, conversationID := range capabilityBindings {
+				c.server.rt.Companion.UnbindOutputCapabilities(c.ownerID, conversationID)
+			}
 		}
 		_ = c.conn.Close()
 	})
@@ -513,7 +724,7 @@ type openSessionResult struct {
 	Endpoint       session.EndpointKind
 }
 
-func (s *Server) openSession(ctx context.Context, endpoint session.EndpointKind, endpointKey string, interactionContext session.Context, outputCapabilities session.OutputCapabilities) (openSessionResult, error) {
+func (s *Server) openSession(ctx context.Context, endpoint session.EndpointKind, endpointKey string, interactionContext session.Context) (openSessionResult, error) {
 	if err := interactionContext.Validate(endpoint); err != nil {
 		return openSessionResult{}, err
 	}
@@ -547,9 +758,6 @@ func (s *Server) openSession(ctx context.Context, endpoint session.EndpointKind,
 		return openSessionResult{}, err
 	}
 	if err := s.rt.Companion.BindInteraction(bootstrap.Conversation.ID, binding); err != nil {
-		return openSessionResult{}, err
-	}
-	if err := s.rt.Companion.BindOutputCapabilities(bootstrap.Conversation.ID, outputCapabilities); err != nil {
 		return openSessionResult{}, err
 	}
 	return openSessionResult{

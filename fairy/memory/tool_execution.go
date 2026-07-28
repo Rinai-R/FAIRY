@@ -279,72 +279,62 @@ func (s *Store) loadToolExecutionPostgres(ctx context.Context, id string) (ToolE
 	return record, err == nil, err
 }
 
-func (s *Store) listPendingToolExecutionsPostgres(ctx context.Context, now int64) ([]ToolExecutionRecord, error) {
-	if now < 0 {
-		return nil, errors.New("pending lookup time is invalid")
-	}
+func (s *Store) settleRecoveredToolExecutionsPostgres(ctx context.Context) (int64, error) {
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
-	rows, err := s.pool.Raw().Query(queryCtx, "SELECT "+toolExecutionColumns+" FROM tool_executions WHERE status = 'pending' AND deadline_at_ms > $1 ORDER BY created_at_ms ASC, id ASC", now)
-	if err != nil {
-		return nil, fmt.Errorf("listing pending tool executions: %w", err)
+	var settled int64
+	if err := s.pool.Raw().QueryRow(queryCtx, settleRecoveredToolExecutionsSQL, ToolNameDesktopObserve, nowUnixMS()).Scan(&settled); err != nil {
+		return 0, fmt.Errorf("settling recovered tool executions: %w", err)
 	}
-	defer rows.Close()
-	records := make([]ToolExecutionRecord, 0)
-	for rows.Next() {
-		record, err := scanToolExecution(rows)
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, record)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating pending tool executions: %w", err)
-	}
-	return records, nil
+	return settled, nil
 }
 
-func (s *Store) listRecoverableToolExecutionsPostgres(ctx context.Context) ([]ToolExecutionRecord, error) {
-	queryCtx, cancel := s.pool.QueryContext(ctx)
-	defer cancel()
-	rows, err := s.pool.Raw().Query(queryCtx, `
-SELECT `+prefixedToolExecutionColumns("execution")+`
-FROM tool_executions execution
-JOIN conversation_turns turn ON turn.id = execution.turn_id AND turn.conversation_id = execution.conversation_id
-WHERE execution.tool_name = $1
-  AND execution.status IN ('pending', 'completed')
-  AND turn.status IN ('interpreting', 'planning')
-ORDER BY execution.created_at_ms ASC, execution.id ASC`, ToolNameDesktopObserve)
-	if err != nil {
-		return nil, fmt.Errorf("listing recoverable tool executions: %w", err)
-	}
-	defer rows.Close()
-	records := make([]ToolExecutionRecord, 0)
-	for rows.Next() {
-		record, err := scanToolExecution(rows)
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, record)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating recoverable tool executions: %w", err)
-	}
-	return records, nil
-}
+const settleRecoveredToolExecutionsSQL = `
+WITH recoverable AS MATERIALIZED (
+    SELECT execution.id, execution.conversation_id, execution.turn_id, execution.status
+    FROM tool_executions execution
+    JOIN conversation_turns turn
+      ON turn.id = execution.turn_id
+     AND turn.conversation_id = execution.conversation_id
+    WHERE execution.tool_name = $1
+      AND execution.status IN ('pending', 'completed')
+      AND turn.status IN ('interpreting', 'planning')
+),
+failed_executions AS (
+    UPDATE tool_executions execution
+    SET status = 'failed',
+        error_code = 'core_restarted',
+        error_message = 'desktop capture was interrupted by Core restart',
+        updated_at_ms = $2
+    FROM recoverable
+    WHERE execution.id = recoverable.id
+      AND recoverable.status = 'pending'
+      AND execution.status = 'pending'
+    RETURNING execution.id
+),
+failed_turns AS (
+    UPDATE conversation_turns turn
+    SET status = 'failed',
+        extraction_state = 'ineligible',
+        error_code = 'DESKTOP_CAPTURE_RECOVERY_FAILED',
+        error_message = CASE recoverable.status
+            WHEN 'pending' THEN 'desktop capture was interrupted by Core restart'
+            ELSE 'desktop capture evidence was lost during Core restart'
+        END,
+        error_retryable = FALSE,
+        updated_at_ms = $2
+    FROM recoverable
+    WHERE turn.id = recoverable.turn_id
+      AND turn.conversation_id = recoverable.conversation_id
+      AND turn.status IN ('interpreting', 'planning')
+    RETURNING turn.id
+)
+SELECT COUNT(*) FROM failed_turns`
 
 const toolExecutionColumns = `id, conversation_id, turn_id, call_id, tool_name, status,
 deadline_at_ms, attempt_count, last_dispatched_at_ms, error_code, error_message,
 result_media_type, result_width, result_height, result_byte_count, result_sha256,
 created_at_ms, updated_at_ms`
-
-func prefixedToolExecutionColumns(prefix string) string {
-	columns := strings.Split(toolExecutionColumns, ",")
-	for index := range columns {
-		columns[index] = prefix + "." + strings.TrimSpace(columns[index])
-	}
-	return strings.Join(columns, ", ")
-}
 
 func scanToolExecution(row scanner) (ToolExecutionRecord, error) {
 	var record ToolExecutionRecord

@@ -15,6 +15,27 @@ import (
 
 const pngSignature = "\x89PNG\r\n\x1a\n"
 
+const (
+	maxPackageManifestBytes = 256 << 10
+	maxPackageImageBytes    = 8 << 20
+	maxPackageImagesBytes   = 64 << 20
+	maxPackageStates        = 16
+)
+
+var ErrPackageCapacity = errors.New("character package capacity exceeded")
+
+type packageReadLimits struct {
+	manifestBytes int64
+	imageBytes    int64
+	imagesBytes   int64
+}
+
+var defaultPackageReadLimits = packageReadLimits{
+	manifestBytes: maxPackageManifestBytes,
+	imageBytes:    maxPackageImageBytes,
+	imagesBytes:   maxPackageImagesBytes,
+}
+
 type packageManifest struct {
 	SchemaVersion int           `json:"schemaVersion"`
 	PackageID     string        `json:"packageId"`
@@ -112,63 +133,106 @@ func (s *Store) ExportPackage(characterID string, outputPath string) error {
 }
 
 func readDirectoryPackage(dir string) (packageManifest, map[string][]byte, error) {
-	data, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	return readDirectoryPackageWithLimits(dir, defaultPackageReadLimits)
+}
+
+func readDirectoryPackageWithLimits(dir string, limits packageReadLimits) (packageManifest, map[string][]byte, error) {
+	data, exceeded, err := fileBytesWithin(filepath.Join(dir, "manifest.json"), limits.manifestBytes)
 	if err != nil {
 		return packageManifest{}, nil, fmt.Errorf("reading package manifest: %w", err)
+	}
+	if exceeded {
+		return packageManifest{}, nil, packageCapacityError("manifest", limits.manifestBytes)
 	}
 	manifest, err := parsePackageManifest(data)
 	if err != nil {
 		return packageManifest{}, nil, err
 	}
-	files := make(map[string][]byte, len(manifest.Visual.States))
-	for _, state := range manifest.Visual.States {
-		relative, err := validatePackageFile(state.File)
-		if err != nil {
-			return packageManifest{}, nil, err
-		}
-		bytes, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(relative)))
-		if err != nil {
-			return packageManifest{}, nil, fmt.Errorf("reading package image: %w", err)
-		}
-		if err := validatePNG(bytes); err != nil {
-			return packageManifest{}, nil, err
-		}
-		files[relative] = bytes
+	if err := validatePackageManifest(manifest); err != nil {
+		return packageManifest{}, nil, err
+	}
+	files, err := readPackageImages(manifest, limits, func(relative string, limit int64) ([]byte, bool, error) {
+		return fileBytesWithin(filepath.Join(dir, filepath.FromSlash(relative)), limit)
+	})
+	if err != nil {
+		return packageManifest{}, nil, err
 	}
 	return manifest, files, nil
 }
 
 func readArchivePackage(path string) (packageManifest, map[string][]byte, error) {
+	return readArchivePackageWithLimits(path, defaultPackageReadLimits)
+}
+
+func readArchivePackageWithLimits(path string, limits packageReadLimits) (packageManifest, map[string][]byte, error) {
 	reader, err := zip.OpenReader(path)
 	if err != nil {
 		return packageManifest{}, nil, fmt.Errorf("reading package archive: %w", err)
 	}
 	defer reader.Close()
 	root := archiveRoot(reader.File)
-	manifestBytes, err := archiveFileBytes(reader.File, root+"manifest.json")
+	manifestBytes, exceeded, err := archiveFileBytesWithin(reader.File, root+"manifest.json", limits.manifestBytes)
 	if err != nil {
 		return packageManifest{}, nil, err
+	}
+	if exceeded {
+		return packageManifest{}, nil, packageCapacityError("manifest", limits.manifestBytes)
 	}
 	manifest, err := parsePackageManifest(manifestBytes)
 	if err != nil {
 		return packageManifest{}, nil, err
 	}
+	if err := validatePackageManifest(manifest); err != nil {
+		return packageManifest{}, nil, err
+	}
+	files, err := readPackageImages(manifest, limits, func(relative string, limit int64) ([]byte, bool, error) {
+		return archiveFileBytesWithin(reader.File, root+relative, limit)
+	})
+	if err != nil {
+		return packageManifest{}, nil, err
+	}
+	return manifest, files, nil
+}
+
+type packageImageReader func(relative string, limit int64) ([]byte, bool, error)
+
+func readPackageImages(manifest packageManifest, limits packageReadLimits, read packageImageReader) (map[string][]byte, error) {
+	if limits.imageBytes < 1 || limits.imagesBytes < 1 {
+		return nil, packageCapacityError("image", 0)
+	}
 	files := make(map[string][]byte, len(manifest.Visual.States))
+	var total int64
 	for _, state := range manifest.Visual.States {
 		relative, err := validatePackageFile(state.File)
 		if err != nil {
-			return packageManifest{}, nil, err
+			return nil, err
 		}
-		bytes, err := archiveFileBytes(reader.File, root+relative)
+		remaining := limits.imagesBytes - total
+		if remaining < 1 {
+			return nil, packageCapacityError("total image content", limits.imagesBytes)
+		}
+		limit := limits.imageBytes
+		resource := "image"
+		reportedLimit := limits.imageBytes
+		if remaining < limit {
+			limit = remaining
+			resource = "total image content"
+			reportedLimit = limits.imagesBytes
+		}
+		data, exceeded, err := read(relative, limit)
 		if err != nil {
-			return packageManifest{}, nil, err
+			return nil, fmt.Errorf("reading package image %s: %w", relative, err)
 		}
-		if err := validatePNG(bytes); err != nil {
-			return packageManifest{}, nil, err
+		if exceeded {
+			return nil, packageCapacityError(resource, reportedLimit)
 		}
-		files[relative] = bytes
+		total += int64(len(data))
+		if err := validatePNG(data); err != nil {
+			return nil, err
+		}
+		files[relative] = data
 	}
-	return manifest, files, nil
+	return files, nil
 }
 
 func parsePackageManifest(data []byte) (packageManifest, error) {
@@ -194,6 +258,9 @@ func validatePackageManifest(manifest packageManifest) error {
 	}
 	if manifest.Visual.Renderer != "state_images" || len(manifest.Visual.States) == 0 {
 		return errors.New("package visual manifest is invalid")
+	}
+	if len(manifest.Visual.States) > maxPackageStates {
+		return fmt.Errorf("%w: character package declares more than %d states", ErrPackageCapacity, maxPackageStates)
 	}
 	return nil
 }
@@ -272,11 +339,28 @@ func writeArchive(outputPath string, manifest packageManifest, files map[string]
 	if _, err := manifestEntry.Write(manifestBytes); err != nil {
 		return err
 	}
+	var totalImageBytes int64
 	for archiveName, sourcePath := range files {
-		data, err := os.ReadFile(sourcePath)
+		remaining := int64(maxPackageImagesBytes) - totalImageBytes
+		if remaining < 1 {
+			return packageCapacityError("total image content", maxPackageImagesBytes)
+		}
+		limit := int64(maxPackageImageBytes)
+		resource := "image"
+		reportedLimit := int64(maxPackageImageBytes)
+		if remaining < limit {
+			limit = remaining
+			resource = "total image content"
+			reportedLimit = maxPackageImagesBytes
+		}
+		data, exceeded, err := fileBytesWithin(sourcePath, limit)
 		if err != nil {
 			return err
 		}
+		if exceeded {
+			return packageCapacityError(resource, reportedLimit)
+		}
+		totalImageBytes += int64(len(data))
 		if err := validatePNG(data); err != nil {
 			return err
 		}
@@ -312,18 +396,73 @@ func archiveRoot(files []*zip.File) string {
 }
 
 func archiveFileBytes(files []*zip.File, name string) ([]byte, error) {
+	data, exceeded, err := archiveFileBytesWithin(files, name, maxPackageImagesBytes)
+	if err != nil {
+		return nil, err
+	}
+	if exceeded {
+		return nil, packageCapacityError("archive entry", maxPackageImagesBytes)
+	}
+	return data, nil
+}
+
+func archiveFileBytesWithin(files []*zip.File, name string, limit int64) ([]byte, bool, error) {
 	for _, file := range files {
 		if file.Name != name || file.FileInfo().IsDir() {
 			continue
 		}
+		if limit < 0 || file.UncompressedSize64 > uint64(limit) {
+			return nil, true, nil
+		}
 		reader, err := file.Open()
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		defer reader.Close()
-		return io.ReadAll(reader)
+		data, exceeded, readErr := bytesWithin(reader, limit)
+		closeErr := reader.Close()
+		if readErr != nil {
+			return nil, false, readErr
+		}
+		if closeErr != nil {
+			return nil, false, closeErr
+		}
+		return data, exceeded, nil
 	}
-	return nil, fmt.Errorf("archive entry %s not found", name)
+	return nil, false, fmt.Errorf("archive entry %s not found", name)
+}
+
+func fileBytesWithin(path string, limit int64) ([]byte, bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, false, err
+	}
+	data, exceeded, readErr := bytesWithin(file, limit)
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, false, readErr
+	}
+	if closeErr != nil {
+		return nil, false, closeErr
+	}
+	return data, exceeded, nil
+}
+
+func bytesWithin(reader io.Reader, limit int64) ([]byte, bool, error) {
+	if limit < 0 {
+		return nil, true, nil
+	}
+	data, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(data)) > limit {
+		return nil, true, nil
+	}
+	return data, false, nil
+}
+
+func packageCapacityError(resource string, limit int64) error {
+	return fmt.Errorf("%w: %s exceeds %d bytes", ErrPackageCapacity, resource, limit)
 }
 
 func validatePackageFile(value string) (string, error) {

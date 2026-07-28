@@ -34,6 +34,8 @@ type visualCache struct {
 	assets       map[string]string
 	stickers     map[string]cachedStickerAsset
 	stickerOrder []string
+	activeKey    string
+	visualClosed bool
 }
 
 func newVisualCache() (*visualCache, error) {
@@ -47,6 +49,10 @@ func newVisualCache() (*visualCache, error) {
 func newVisualCacheAt(root string) (*visualCache, error) {
 	if root == "" {
 		return nil, errors.New("visual cache root is required")
+	}
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("normalizing visual cache root: %w", err)
 	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, fmt.Errorf("creating visual cache root: %w", err)
@@ -69,6 +75,18 @@ func (c *visualCache) Sync(ctx context.Context, client *coreclient.Client, visua
 	if err != nil {
 		return coreclient.VisualManifest{}, err
 	}
+	c.mu.RLock()
+	closed := c.visualClosed
+	c.mu.RUnlock()
+	if closed {
+		return coreclient.VisualManifest{}, errors.New("visual cache is closed")
+	}
+	if err := beginVisualCacheSync(c.root, key); err != nil {
+		return coreclient.VisualManifest{}, err
+	}
+	abortSync := func(cause error) error {
+		return errors.Join(cause, abortVisualCacheSync(c.root, key))
+	}
 	local := visual
 	localStates := make([]coreclient.VisualState, 0, len(visual.States))
 	stagedAssets := make(map[string]string, len(visual.States))
@@ -77,34 +95,39 @@ func (c *visualCache) Sync(ctx context.Context, client *coreclient.Client, visua
 	for _, state := range visual.States {
 		assetPath, err := visualAssetPath(visual.PackID, state.ImagePath)
 		if err != nil {
-			return coreclient.VisualManifest{}, fmt.Errorf("normalizing %q state image: %w", state.ID, err)
+			return coreclient.VisualManifest{}, abortSync(fmt.Errorf("normalizing %q state image: %w", state.ID, err))
 		}
 		image, err := client.VisualAsset(ctx, visual.PackID, assetPath)
 		if err != nil {
-			return coreclient.VisualManifest{}, fmt.Errorf("downloading %q state image: %w", state.ID, err)
+			return coreclient.VisualManifest{}, abortSync(fmt.Errorf("downloading %q state image: %w", state.ID, err))
 		}
 		if len(image) < 8 || string(image[:8]) != "\x89PNG\r\n\x1a\n" {
-			return coreclient.VisualManifest{}, fmt.Errorf("downloading %q state image: response is not a PNG", state.ID)
+			return coreclient.VisualManifest{}, abortSync(fmt.Errorf("downloading %q state image: response is not a PNG", state.ID))
 		}
 		total += len(image)
 		if total > maxVisualPackBytes {
-			return coreclient.VisualManifest{}, fmt.Errorf("visual pack exceeds %d bytes", maxVisualPackBytes)
+			return coreclient.VisualManifest{}, abortSync(fmt.Errorf("visual pack exceeds %d bytes", maxVisualPackBytes))
 		}
 		filename := visualStateFilename(state.ID)
 		target := pathologize.Join(c.root, key, filename)
-		if err := moveVisualAsset(image, target); err != nil {
-			return coreclient.VisualManifest{}, fmt.Errorf("caching %q state image: %w", state.ID, err)
+		finalPath, err := moveVisualAsset(image, target)
+		if err != nil {
+			return coreclient.VisualManifest{}, abortSync(fmt.Errorf("caching %q state image: %w", state.ID, err))
 		}
 		route := "/" + key + "/" + filename
-		stagedAssets[route] = target
+		stagedAssets[route] = finalPath
 		state.ImagePath = "/characters" + route
 		localStates = append(localStates, state)
 	}
 	local.States = localStates
 
-	c.mu.Lock()
-	c.assets = stagedAssets
-	c.mu.Unlock()
+	committed, err := commitVisualCacheSync(c, key, stagedAssets)
+	if !committed {
+		return coreclient.VisualManifest{}, abortSync(err)
+	}
+	if err != nil {
+		return coreclient.VisualManifest{}, err
+	}
 	return local, nil
 }
 
@@ -223,15 +246,25 @@ func (c *visualCache) Close() error {
 	if c == nil {
 		return nil
 	}
-	// The visual cache root is shared by sequential session instances. It is
-	// intentionally retained so reconnecting (including React StrictMode's
-	// development remount) cannot remove a newer instance's character assets.
+	visualCacheRoots.Lock()
 	c.mu.Lock()
+	if c.visualClosed {
+		c.mu.Unlock()
+		visualCacheRoots.Unlock()
+		return nil
+	}
+	c.visualClosed = true
+	state := visualCacheRootStateLocked(c.root)
+	removeVisualCacheActiveLocked(state, c.activeKey, c.assets)
 	c.assets = make(map[string]string)
 	c.stickers = make(map[string]cachedStickerAsset)
 	c.stickerOrder = nil
+	c.activeKey = ""
 	c.mu.Unlock()
-	return nil
+	err := pruneVisualCacheRootLocked(c.root, state)
+	deleteVisualCacheRootStateIfIdleLocked(c.root, state)
+	visualCacheRoots.Unlock()
+	return err
 }
 
 func validateVisualManifest(visual coreclient.VisualManifest) error {
@@ -273,23 +306,20 @@ func visualStateFilename(stateID string) string {
 	return hex.EncodeToString(digest[:]) + ".png"
 }
 
-func moveVisualAsset(image []byte, target string) error {
+func moveVisualAsset(image []byte, target string) (string, error) {
 	temporary, err := os.CreateTemp("", "fairy-visual-*.png")
 	if err != nil {
-		return fmt.Errorf("creating temporary visual asset: %w", err)
+		return "", fmt.Errorf("creating temporary visual asset: %w", err)
 	}
 	temporaryName := temporary.Name()
 	defer os.Remove(temporaryName)
 	if _, err := temporary.Write(image); err != nil {
 		_ = temporary.Close()
-		return fmt.Errorf("writing temporary visual asset: %w", err)
+		return "", fmt.Errorf("writing temporary visual asset: %w", err)
 	}
 	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("closing temporary visual asset: %w", err)
+		return "", fmt.Errorf("closing temporary visual asset: %w", err)
 	}
 	flow := fileflow.Flow{DirMode: 0o700}
-	if _, err := flow.Move(temporaryName, target); err != nil {
-		return err
-	}
-	return nil
+	return flow.Move(temporaryName, target)
 }

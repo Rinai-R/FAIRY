@@ -20,36 +20,38 @@ import (
 )
 
 type CompanionService struct {
-	root                 string
-	memory               memoryPorts
-	semanticEmbedder     memory.SemanticEmbedder
-	vectorIndex          VectorIndex
-	model                ModelPort
-	webSearch            WebSearchBackend
-	stickers             StickerSearchPort
-	speech               SpeechRuntime
-	characterLookup      CharacterLookup
-	profiles             ProfileSource
-	cfg                  ConfigSource
-	logger               *zap.Logger
-	backgroundErrorMu    sync.Mutex
-	backgroundError      error
-	loopMetrics          agentLoopMetrics
-	interactionMu        sync.RWMutex
-	interactions         map[string]session.Binding
-	capabilityMu         sync.RWMutex
-	outputCapabilities   map[string]session.OutputCapabilities
-	identities           OwnerIdentityPort
-	emitMu               sync.Mutex
-	emit                 eventEmitter
-	messageTelemetry     MessageTelemetry
-	turnRegistry         *turnRegistry
-	expressionDeliveries *expressionDeliveryRegistry
-	retention            *retentionEngine
-	turns                *TurnEngine
-	desktopEvidence      DesktopEvidenceValidator
-	desktopTool          DesktopToolCoordinator
-	ambientReplies       AmbientReplyObserver
+	root                     string
+	memory                   memoryPorts
+	semanticEmbedder         memory.SemanticEmbedder
+	vectorIndex              VectorIndex
+	model                    ModelPort
+	webSearch                WebSearchBackend
+	stickers                 StickerSearchPort
+	speech                   SpeechRuntime
+	characterLookup          CharacterLookup
+	profiles                 ProfileSource
+	cfg                      ConfigSource
+	logger                   *zap.Logger
+	backgroundErrorMu        sync.Mutex
+	backgroundError          error
+	loopMetrics              agentLoopMetrics
+	interactionMu            sync.Mutex
+	interactions             *interactionBindingCache
+	capabilityMu             sync.RWMutex
+	outputCapabilities       map[string]map[string]session.OutputCapabilities
+	outputCapabilityLeases   int
+	outputCapabilityCapacity int
+	identities               OwnerIdentityPort
+	emitMu                   sync.Mutex
+	emit                     eventEmitter
+	messageTelemetry         MessageTelemetry
+	turnRegistry             *turnRegistry
+	expressionDeliveries     *expressionDeliveryRegistry
+	retention                *retentionEngine
+	turns                    *TurnEngine
+	desktopEvidence          DesktopEvidenceValidator
+	desktopTool              DesktopToolCoordinator
+	ambientReplies           AmbientReplyObserver
 }
 
 // SpeechRuntime is the speech capability Companion consumes. The reply package
@@ -173,9 +175,10 @@ func (s *CompanionService) endMessageTrace(traceID, status string) {
 
 func NewCompanionService() *CompanionService {
 	service := &CompanionService{
-		logger:             zap.NewNop(),
-		interactions:       make(map[string]session.Binding),
-		outputCapabilities: make(map[string]session.OutputCapabilities),
+		logger:                   zap.NewNop(),
+		interactions:             newInteractionBindingCache(interactionBindingCacheCapacity),
+		outputCapabilities:       make(map[string]map[string]session.OutputCapabilities),
+		outputCapabilityCapacity: OutputCapabilityLeaseCapacity,
 	}
 	service.wireEngines()
 	return service
@@ -191,13 +194,14 @@ func NewCompanionServiceWithRuntime(root string, store *memory.Store, model Mode
 
 func newCompanionServiceWithPorts(root string, ports memoryPorts, model ModelPort, webSearch WebSearchBackend) *CompanionService {
 	service := &CompanionService{
-		root:               root,
-		memory:             ports,
-		model:              model,
-		webSearch:          webSearch,
-		logger:             zap.NewNop(),
-		interactions:       make(map[string]session.Binding),
-		outputCapabilities: make(map[string]session.OutputCapabilities),
+		root:                     root,
+		memory:                   ports,
+		model:                    model,
+		webSearch:                webSearch,
+		logger:                   zap.NewNop(),
+		interactions:             newInteractionBindingCache(interactionBindingCacheCapacity),
+		outputCapabilities:       make(map[string]map[string]session.OutputCapabilities),
+		outputCapabilityCapacity: OutputCapabilityLeaseCapacity,
 	}
 	if strings.TrimSpace(root) != "" {
 		service.characterLookup = character.NewStore(root)
@@ -306,10 +310,15 @@ func (s *CompanionService) Close() error {
 	if s == nil {
 		return nil
 	}
+	s.cancelActiveTurns()
+	if s.expressionDeliveries != nil {
+		s.expressionDeliveries.close()
+	}
 	if s.retention != nil {
 		s.retention.close()
 	}
-	s.cancelActiveTurns()
+	s.clearInteractionBindings()
+	s.clearOutputCapabilities()
 	if s.webSearch == nil {
 		return nil
 	}
@@ -339,40 +348,40 @@ func (s *CompanionService) wireEngines() {
 
 func (s *CompanionService) SubmitTurn(request SubmitTurnRequest) (TurnOutcome, error) {
 	if s == nil || s.turns == nil {
-		return TurnOutcome{}, ErrRespondRuntimeNotMigrated
+		return TurnOutcome{}, ErrTurnRuntimeUnavailable
 	}
 	return s.turns.SubmitTurn(request)
 }
 
 func (s *CompanionService) SubmitCompiledTurn(request SubmitCompiledTurnRequest) (TurnOutcome, error) {
 	if s == nil || s.turns == nil {
-		return TurnOutcome{}, ErrRespondRuntimeNotMigrated
+		return TurnOutcome{}, ErrTurnRuntimeUnavailable
 	}
 	return s.turns.SubmitCompiledTurn(request)
 }
 
 func (s *CompanionService) SubmitDesktopInitiation(request DesktopInitiationRequest, observation session.DesktopObservation) (TurnOutcome, error) {
 	if s == nil || s.turns == nil {
-		return TurnOutcome{}, ErrRespondRuntimeNotMigrated
+		return TurnOutcome{}, ErrTurnRuntimeUnavailable
 	}
 	return s.turns.SubmitDesktopInitiation(request, observation)
 }
 
 func (s *CompanionService) SubmitDesktopVisionInitiation(request DesktopVisionInitiationRequest) (TurnOutcome, error) {
 	if s == nil || s.turns == nil {
-		return TurnOutcome{}, ErrRespondRuntimeNotMigrated
+		return TurnOutcome{}, ErrTurnRuntimeUnavailable
 	}
 	return s.turns.SubmitDesktopVisionInitiation(request)
 }
 
 func (s *CompanionService) CancelTurn(conversationID string, turnID string) error {
 	if s == nil || s.turns == nil {
-		return ErrRespondRuntimeNotMigrated
+		return ErrTurnRuntimeUnavailable
 	}
 	return s.turns.CancelTurn(conversationID, turnID)
 }
 
-func (s *CompanionService) RespondRuntimeMigrated() bool {
+func (s *CompanionService) TurnRuntimeReady() bool {
 	return s != nil &&
 		s.memory.ready() &&
 		s.model != nil &&
@@ -488,8 +497,8 @@ func (s *CompanionService) handleSpeechResult(life *turnLifecycle, conversationI
 }
 
 func (s *CompanionService) CompactConversation(conversationID string) (memory.CompactionResult, error) {
-	if !s.RespondRuntimeMigrated() {
-		return memory.CompactionResult{}, ErrRespondRuntimeNotMigrated
+	if !s.TurnRuntimeReady() {
+		return memory.CompactionResult{}, ErrTurnRuntimeUnavailable
 	}
 	if err := s.beginCompaction(conversationID); err != nil {
 		return memory.CompactionResult{}, err

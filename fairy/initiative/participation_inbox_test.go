@@ -3,6 +3,7 @@ package initiative
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -140,6 +141,146 @@ func TestInboxKeepsRecentReplyPerSender(t *testing.T) {
 	}
 }
 
+func TestInboxEvictsLeastRecentlyObservedQuiescentConversation(t *testing.T) {
+	inbox := NewInbox(t.Context(), fakeInboxHost{})
+	defer inbox.Close()
+	inbox.stateCapacity = 2
+	inbox.decideHook = func(context.Context, ambientBatch) (ParticipationResult, error) {
+		return ParticipationResult{Action: ParticipationSilent}, nil
+	}
+	observeAndWaitForIdle(t, inbox, "conversation-1", testObservation(1))
+	observeAndWaitForIdle(t, inbox, "conversation-2", testObservation(2))
+	observeAndWaitForIdle(t, inbox, "conversation-1", testObservation(3))
+	observeAndWaitForIdle(t, inbox, "conversation-3", testObservation(4))
+
+	inbox.mu.Lock()
+	_, firstFound := inbox.states["conversation-1"]
+	_, secondFound := inbox.states["conversation-2"]
+	_, thirdFound := inbox.states["conversation-3"]
+	stateCount := len(inbox.states)
+	inbox.mu.Unlock()
+	if !firstFound || secondFound || !thirdFound || stateCount != 2 {
+		t.Fatalf("states after LRU eviction: first=%t second=%t third=%t count=%d", firstFound, secondFound, thirdFound, stateCount)
+	}
+
+	observeAndWaitForIdle(t, inbox, "conversation-2", testObservation(5))
+	inbox.mu.Lock()
+	recreated := inbox.states["conversation-2"]
+	inbox.mu.Unlock()
+	if recreated == nil || recreated.generation != 1 {
+		t.Fatalf("recreated state = %#v, want fresh generation 1", recreated)
+	}
+}
+
+func TestInboxRejectsNewConversationWhenAllStateIsActiveBeforeHostSideEffects(t *testing.T) {
+	host := &countingInboxHost{}
+	inbox := NewInbox(t.Context(), host)
+	defer inbox.Close()
+	inbox.stateCapacity = 2
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	inbox.decideHook = func(context.Context, ambientBatch) (ParticipationResult, error) {
+		started <- struct{}{}
+		<-release
+		return ParticipationResult{Action: ParticipationSilent}, nil
+	}
+	if err := inbox.Observe("conversation-1", testObservation(1)); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if err := inbox.Observe("conversation-2", testObservation(2)); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+
+	if err := inbox.Observe("conversation-3", testObservation(3)); err == nil || !strings.Contains(err.Error(), "capacity") {
+		t.Fatalf("capacity error = %v", err)
+	}
+	if got := host.begins.Load(); got != 2 {
+		t.Fatalf("BeginMessageTrace calls = %d, want 2", got)
+	}
+	if got := host.feedback.Load(); got != 2 {
+		t.Fatalf("ObserveSocialFeedback calls = %d, want 2", got)
+	}
+	if got := host.cancels.Load(); got != 2 {
+		t.Fatalf("CancelTurnBeforeDelivery calls = %d, want 2", got)
+	}
+	inbox.mu.Lock()
+	_, rejectedStateExists := inbox.states["conversation-3"]
+	stateCount := len(inbox.states)
+	inbox.mu.Unlock()
+	if rejectedStateExists || stateCount != 2 {
+		t.Fatalf("rejected state exists=%t count=%d", rejectedStateExists, stateCount)
+	}
+	close(release)
+}
+
+func TestInboxDoesNotEvictWaitingConversationAtCapacity(t *testing.T) {
+	inbox := NewInbox(t.Context(), fakeInboxHost{})
+	defer inbox.Close()
+	inbox.stateCapacity = 1
+	waitSeconds := 300
+	inbox.decideHook = func(context.Context, ambientBatch) (ParticipationResult, error) {
+		return ParticipationResult{Action: ParticipationWait, WaitSeconds: &waitSeconds}, nil
+	}
+	if err := inbox.Observe("conversation-waiting", testObservation(1)); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, func() bool {
+		inbox.mu.Lock()
+		defer inbox.mu.Unlock()
+		state := inbox.states["conversation-waiting"]
+		return state != nil && state.timer != nil && !state.running
+	})
+	if err := inbox.Observe("conversation-new", testObservation(2)); err == nil || !strings.Contains(err.Error(), "capacity") {
+		t.Fatalf("capacity error = %v", err)
+	}
+	inbox.mu.Lock()
+	waiting := inbox.states["conversation-waiting"]
+	_, rejectedStateExists := inbox.states["conversation-new"]
+	inbox.mu.Unlock()
+	if waiting == nil || waiting.timer == nil || rejectedStateExists {
+		t.Fatalf("waiting=%#v rejectedStateExists=%t", waiting, rejectedStateExists)
+	}
+}
+
+func TestAmbientStateBoundsRecentRepliesBySenderAndRefreshesHotSender(t *testing.T) {
+	state := &ambientState{}
+	for index := 1; index <= maxAmbientRecentReplies; index++ {
+		state.rememberRecentReply(fmt.Sprintf("sender-%02d", index), fmt.Sprintf("reply-%02d", index))
+	}
+	state.rememberRecentReply("sender-01", "reply-hot")
+	state.rememberRecentReply("sender-new", "reply-new")
+
+	if got := len(state.recentRepliesBySender); got != maxAmbientRecentReplies {
+		t.Fatalf("recent reply count = %d, want %d", got, maxAmbientRecentReplies)
+	}
+	if got := state.recentRepliesBySender["sender-01"]; got != "reply-hot" {
+		t.Fatalf("hot sender reply = %q", got)
+	}
+	if _, found := state.recentRepliesBySender["sender-02"]; found {
+		t.Fatal("least recently used sender reply was retained")
+	}
+	if got := state.recentRepliesBySender["sender-new"]; got != "reply-new" {
+		t.Fatalf("new sender reply = %q", got)
+	}
+}
+
+func TestInboxCloseClearsConversationStates(t *testing.T) {
+	inbox := NewInbox(t.Context(), fakeInboxHost{})
+	inbox.decideHook = func(context.Context, ambientBatch) (ParticipationResult, error) {
+		return ParticipationResult{Action: ParticipationSilent}, nil
+	}
+	observeAndWaitForIdle(t, inbox, "conversation-1", testObservation(1))
+	inbox.Close()
+	inbox.mu.Lock()
+	stateCount := len(inbox.states)
+	inbox.mu.Unlock()
+	if stateCount != 0 {
+		t.Fatalf("states after Close = %d, want 0", stateCount)
+	}
+}
+
 func TestInboxEnqueuesLearningEveryObservationThresholdOnce(t *testing.T) {
 	host := &learningInboxHost{}
 	inbox := NewInbox(t.Context(), host)
@@ -185,6 +326,39 @@ func (fakeInboxHost) EndMessageTrace(string, string)               {}
 func (fakeInboxHost) EmitParticipation(Event)                      {}
 func (fakeInboxHost) RecordParticipation([]string, string, string) {}
 func (fakeInboxHost) WarnAmbient(string, string, uint64, error)    {}
+
+type countingInboxHost struct {
+	fakeInboxHost
+	begins   atomic.Int32
+	feedback atomic.Int32
+	cancels  atomic.Int32
+}
+
+func (h *countingInboxHost) BeginMessageTrace(_, _, traceID string) string {
+	h.begins.Add(1)
+	return traceID
+}
+
+func (h *countingInboxHost) ObserveSocialFeedback(string, AmbientObservation) {
+	h.feedback.Add(1)
+}
+
+func (h *countingInboxHost) CancelTurnBeforeDelivery(string) {
+	h.cancels.Add(1)
+}
+
+func observeAndWaitForIdle(t *testing.T, inbox *Inbox, conversationID string, observation AmbientObservation) {
+	t.Helper()
+	if err := inbox.Observe(conversationID, observation); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, func() bool {
+		inbox.mu.Lock()
+		defer inbox.mu.Unlock()
+		state := inbox.states[conversationID]
+		return state != nil && !state.running
+	})
+}
 
 func testObservation(index int) AmbientObservation {
 	return AmbientObservation{MessageID: fmt.Sprintf("m%d", index), SenderID: "u1", SenderName: "n", Text: "t", TimestampUnixMS: int64(index + 1)}

@@ -59,10 +59,12 @@ type Inbox struct {
 	decideHook func(context.Context, ambientBatch) (ParticipationResult, error)
 	submitHook func(TurnRequest) (TurnOutcome, error)
 
-	mu     sync.Mutex
-	states map[string]*ambientState
-	closed bool
-	wg     sync.WaitGroup
+	mu             sync.Mutex
+	states         map[string]*ambientState
+	stateCapacity  int
+	accessSequence uint64
+	closed         bool
+	wg             sync.WaitGroup
 }
 
 type stoppableTimer interface {
@@ -85,7 +87,9 @@ type ambientState struct {
 	decisionOwner         uint64
 	decisionCancel        context.CancelFunc
 	lastLearnedGeneration uint64
+	lastObservedSequence  uint64
 	recentRepliesBySender map[string]string
+	recentReplyOrder      []string
 	consecutiveSilent     int
 	backoffUntil          time.Time
 }
@@ -98,7 +102,11 @@ type ambientBatch struct {
 	cacheMessages    []AmbientObservation
 }
 
-const socialLearningObservationThreshold = 20
+const (
+	socialLearningObservationThreshold = 20
+	maxAmbientConversationStates       = 256
+	maxAmbientRecentReplies            = MaxAmbientObservations
+)
 
 func NewInbox(parent context.Context, host Host) *Inbox {
 	if parent == nil {
@@ -106,11 +114,12 @@ func NewInbox(parent context.Context, host Host) *Inbox {
 	}
 	ctx, cancel := context.WithCancel(parent)
 	return &Inbox{
-		host:   host,
-		ctx:    ctx,
-		cancel: cancel,
-		after:  func(delay time.Duration, callback func()) stoppableTimer { return time.AfterFunc(delay, callback) },
-		states: make(map[string]*ambientState),
+		host:          host,
+		ctx:           ctx,
+		cancel:        cancel,
+		after:         func(delay time.Duration, callback func()) stoppableTimer { return time.AfterFunc(delay, callback) },
+		states:        make(map[string]*ambientState),
+		stateCapacity: maxAmbientConversationStates,
 	}
 }
 
@@ -131,14 +140,13 @@ func (a *Inbox) Observe(conversationID string, observation AmbientObservation) e
 	if a.closed {
 		return context.Canceled
 	}
+	state, err := a.observeStateLocked(conversationID)
+	if err != nil {
+		return err
+	}
 	if a.host != nil {
 		observation.TraceID = a.host.BeginMessageTrace("ambient", conversationID, observation.TraceID)
 		a.host.ObserveSocialFeedback(conversationID, observation)
-	}
-	state := a.states[conversationID]
-	if state == nil {
-		state = &ambientState{}
-		a.states[conversationID] = state
 	}
 	state.generation++
 	entry := sequencedObservation{sequence: state.generation, observation: observation}
@@ -169,6 +177,45 @@ func (a *Inbox) Observe(conversationID string, observation AmbientObservation) e
 	return nil
 }
 
+func (a *Inbox) observeStateLocked(conversationID string) (*ambientState, error) {
+	if state := a.states[conversationID]; state != nil {
+		a.touchStateLocked(state)
+		return state, nil
+	}
+	capacity := a.stateCapacity
+	if capacity < 1 {
+		capacity = maxAmbientConversationStates
+	}
+	if len(a.states) >= capacity {
+		victimID := ""
+		var victimSequence uint64
+		for candidateID, candidate := range a.states {
+			if candidate.running || candidate.timer != nil || candidate.decisionCancel != nil {
+				continue
+			}
+			if victimID == "" ||
+				candidate.lastObservedSequence < victimSequence ||
+				(candidate.lastObservedSequence == victimSequence && candidateID < victimID) {
+				victimID = candidateID
+				victimSequence = candidate.lastObservedSequence
+			}
+		}
+		if victimID == "" {
+			return nil, fmt.Errorf("ambient inbox conversation capacity %d exhausted", capacity)
+		}
+		delete(a.states, victimID)
+	}
+	state := &ambientState{}
+	a.touchStateLocked(state)
+	a.states[conversationID] = state
+	return state, nil
+}
+
+func (a *Inbox) touchStateLocked(state *ambientState) {
+	a.accessSequence++
+	state.lastObservedSequence = a.accessSequence
+}
+
 func (a *Inbox) Close() {
 	if a == nil {
 		return
@@ -192,6 +239,7 @@ func (a *Inbox) stop() {
 			state.decisionCancel = nil
 		}
 	}
+	clear(a.states)
 }
 
 func (a *Inbox) startLocked(conversationID string, state *ambientState, reason ParticipationEvaluationReason) {
@@ -337,10 +385,7 @@ func (a *Inbox) run(batch ambientBatch, decisionCtx context.Context, decisionOwn
 					a.mu.Lock()
 					current := a.states[conversationID]
 					if current != nil {
-						if current.recentRepliesBySender == nil {
-							current.recentRepliesBySender = make(map[string]string)
-						}
-						current.recentRepliesBySender[targetSenderID] = strings.TrimSpace(outcome.ResponseText)
+						current.rememberRecentReply(targetSenderID, outcome.ResponseText)
 					}
 					a.mu.Unlock()
 				}
@@ -372,6 +417,38 @@ func (a *Inbox) run(batch ambientBatch, decisionCtx context.Context, decisionOwn
 			return
 		}
 	}
+}
+
+func (state *ambientState) rememberRecentReply(senderID, replyText string) {
+	if state == nil {
+		return
+	}
+	senderID = strings.TrimSpace(senderID)
+	replyText = strings.TrimSpace(replyText)
+	if senderID == "" || replyText == "" {
+		return
+	}
+	if state.recentRepliesBySender == nil {
+		state.recentRepliesBySender = make(map[string]string, maxAmbientRecentReplies)
+	}
+	for index, existing := range state.recentReplyOrder {
+		if existing != senderID {
+			continue
+		}
+		copy(state.recentReplyOrder[index:], state.recentReplyOrder[index+1:])
+		state.recentReplyOrder[len(state.recentReplyOrder)-1] = ""
+		state.recentReplyOrder = state.recentReplyOrder[:len(state.recentReplyOrder)-1]
+		break
+	}
+	if _, found := state.recentRepliesBySender[senderID]; !found && len(state.recentReplyOrder) >= maxAmbientRecentReplies {
+		oldest := state.recentReplyOrder[0]
+		delete(state.recentRepliesBySender, oldest)
+		copy(state.recentReplyOrder, state.recentReplyOrder[1:])
+		state.recentReplyOrder[len(state.recentReplyOrder)-1] = ""
+		state.recentReplyOrder = state.recentReplyOrder[:len(state.recentReplyOrder)-1]
+	}
+	state.recentRepliesBySender[senderID] = replyText
+	state.recentReplyOrder = append(state.recentReplyOrder, senderID)
 }
 
 func (a *Inbox) publishParticipation(batch ambientBatch, action, targetMessageID string, waitSeconds int, usage []model.LaneModelUsage) {

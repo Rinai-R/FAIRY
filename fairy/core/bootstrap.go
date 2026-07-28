@@ -6,18 +6,14 @@ import (
 
 // BootstrapOptions configures the Core process identity reported by /v1/status.
 type BootstrapOptions struct {
-	AppName                string
-	MigrationStage         string
-	CoreVersion            string
-	RespondRuntimeMigrated bool
+	AppName     string
+	CoreVersion string
 }
 
 // BootstrapStatus is returned by GET /v1/status.
 type BootstrapStatus struct {
-	AppName                string `json:"appName"`
-	MigrationStage         string `json:"migrationStage"`
-	CoreVersion            string `json:"coreVersion"`
-	RespondRuntimeMigrated bool   `json:"respondRuntimeMigrated"`
+	AppName     string `json:"appName"`
+	CoreVersion string `json:"coreVersion"`
 }
 
 // BootstrapService exposes immutable Core bootstrap status.
@@ -27,10 +23,8 @@ type BootstrapService struct {
 
 func NewBootstrapService(options BootstrapOptions) *BootstrapService {
 	return &BootstrapService{status: BootstrapStatus{
-		AppName:                options.AppName,
-		MigrationStage:         options.MigrationStage,
-		CoreVersion:            options.CoreVersion,
-		RespondRuntimeMigrated: options.RespondRuntimeMigrated,
+		AppName:     options.AppName,
+		CoreVersion: options.CoreVersion,
 	}}
 }
 
@@ -40,9 +34,6 @@ func (s *BootstrapService) Status() (BootstrapStatus, error) {
 	}
 	if s.status.AppName == "" {
 		return BootstrapStatus{}, errors.New("bootstrap status missing app name")
-	}
-	if s.status.MigrationStage == "" {
-		return BootstrapStatus{}, errors.New("bootstrap status missing migration stage")
 	}
 	if s.status.CoreVersion == "" {
 		return BootstrapStatus{}, errors.New("bootstrap status missing core version")

@@ -107,7 +107,18 @@ func TestServiceObserveDesktopAppliesAttentionBudgetAndSchedulesInitiation(t *te
 
 func TestServiceCloseStopsInitiativeWorkers(t *testing.T) {
 	service := NewService(t.Context(), ServiceOptions{})
+	if action, err := service.attention.Evaluate(
+		"conversation-1",
+		DesktopActionInitiate,
+		DesktopRulebook{AttentionBudget: 1, MinSpacing: time.Minute},
+		time.UnixMilli(100000),
+	); err != nil || action != DesktopActionInitiate {
+		t.Fatalf("attention setup = %s, %v", action, err)
+	}
 	service.Close()
+	if got := attentionStateCount(service.attention); got != 0 {
+		t.Fatalf("attention states after Close = %d, want 0", got)
+	}
 	if service.learning.Enqueue(LearningSnapshot{
 		ConversationID: "conversation-1",
 		Messages:       []AmbientObservation{{MessageID: "m1"}},

@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -42,5 +43,40 @@ func TestCreateToolExecutionRequiresDesktopToolAndFutureDeadline(t *testing.T) {
 	input.DeadlineAtUnixMS = 100
 	if err := validateCreateToolExecution(input, 100); err == nil {
 		t.Fatal("expired deadline accepted")
+	}
+}
+
+func TestRecoveredToolExecutionSettlementRemainsSetBased(t *testing.T) {
+	implementation, err := os.ReadFile("tool_execution.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	api, err := os.ReadFile("tool_execution_api.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	production := string(implementation) + string(api)
+	for _, forbidden := range []string{
+		"ListRecoverableToolExecutions",
+		"ListPendingToolExecutions",
+		"listRecoverableToolExecutionsPostgres",
+		"listPendingToolExecutionsPostgres",
+		"make([]ToolExecutionRecord",
+	} {
+		if strings.Contains(production, forbidden) {
+			t.Fatalf("production tool execution recovery contains full-history marker %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"WITH recoverable AS MATERIALIZED",
+		"failed_executions AS",
+		"failed_turns AS",
+		"SELECT COUNT(*) FROM failed_turns",
+		"desktop capture was interrupted by Core restart",
+		"desktop capture evidence was lost during Core restart",
+	} {
+		if !strings.Contains(production, required) {
+			t.Fatalf("set-based recovery is missing %q", required)
+		}
 	}
 }

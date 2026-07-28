@@ -71,7 +71,7 @@ func buildCompactInput(
 }
 
 func (s *CompanionService) scheduleAutoCompaction(conversationID string, events []model.StreamEvent) {
-	if s == nil || !s.RespondRuntimeMigrated() {
+	if s == nil || !s.TurnRuntimeReady() {
 		return
 	}
 	promptTokens, known := lastPromptTokens(events)
@@ -95,7 +95,10 @@ func (s *CompanionService) scheduleAutoCompaction(conversationID string, events 
 	if !policy.shouldCompactWindow(compactionTriggerAfterCompletedTurn, promptTokens, true, windowPtr) {
 		return
 	}
-	if s.retention == nil || !s.retention.run(func() {
+	if s.retention == nil {
+		return
+	}
+	if err := s.retention.run(func() {
 		if _, err := s.CompactConversation(conversationID); err != nil {
 			if recordErr := s.recordContextWindowFailure(conversationID); recordErr != nil {
 				s.setBackgroundError(recordErr)
@@ -105,7 +108,8 @@ func (s *CompanionService) scheduleAutoCompaction(conversationID string, events 
 			return
 		}
 		s.clearBackgroundError()
-	}) {
+	}); err != nil {
+		s.setBackgroundError(err)
 		return
 	}
 }
@@ -121,7 +125,7 @@ func (s *CompanionService) prepareBeforeTurn(
 	deriveVisualStates bool,
 ) (preTurnPreparation, error) {
 	result := preTurnPreparation{visualStates: request.AvailableVisualStates}
-	if s == nil || !s.RespondRuntimeMigrated() {
+	if s == nil || !s.TurnRuntimeReady() {
 		return result, nil
 	}
 	bootstrap, err := s.memory.turn.promptContext.LoadConversationPrompt(request.ConversationID)

@@ -17,7 +17,7 @@ var (
 // SubmitCompiledTurn calls fail with TURN_IN_PROGRESS without writing a second user turn.
 func (s *CompanionService) reserveTurn(conversationID string) (context.Context, error) {
 	if s == nil || s.turnRegistry == nil {
-		return nil, ErrRespondRuntimeNotMigrated
+		return nil, ErrTurnRuntimeUnavailable
 	}
 	return s.turnRegistry.Reserve(conversationID)
 }
@@ -55,7 +55,7 @@ func (s *CompanionService) endTurn(conversationID string, turnID string) {
 
 func (s *CompanionService) beginCompaction(conversationID string) error {
 	if s == nil || s.turnRegistry == nil {
-		return ErrRespondRuntimeNotMigrated
+		return ErrTurnRuntimeUnavailable
 	}
 	return s.turnRegistry.BeginCompaction(conversationID)
 }

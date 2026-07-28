@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -56,6 +57,7 @@ type Brief struct {
 
 const DefaultSpeakingLanguage = "ja"
 const DefaultTextLanguage = "zh"
+const revisionCandidateBatchSize = 64
 
 func NewStore(root string) *Store {
 	return &Store{root: root}
@@ -202,46 +204,112 @@ func (s *Store) Activate(characterID string, revision uint64) (Record, error) {
 
 func (s *Store) latestValid(characterID string) (Record, bool, []Diagnostic, error) {
 	revisionsDir := filepath.Join(s.root, "characters", characterID, "revisions")
-	entries, err := os.ReadDir(revisionsDir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return Record{}, false, nil, nil
-		}
-		return Record{}, false, nil, fmt.Errorf("reading character revisions: %w", err)
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() > entries[j].Name() })
 	diagnostics := make([]Diagnostic, 0)
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
+	var before *revisionCandidate
+	collectInvalidNames := true
+	for {
+		candidates, scanDiagnostics, err := scanRevisionCandidates(revisionsDir, characterID, before, revisionCandidateBatchSize, collectInvalidNames)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return Record{}, false, nil, nil
+			}
+			return Record{}, false, nil, err
 		}
-		revision, ok := parseRevisionFile(entry.Name())
-		if !ok {
-			diagnostics = append(diagnostics, Diagnostic{CharacterID: &characterID, Code: "STORAGE_CORRUPTED", Message: "角色 revision 文件名无效"})
-			continue
+		diagnostics = append(diagnostics, scanDiagnostics...)
+		if len(candidates) == 0 {
+			return Record{}, false, diagnostics, nil
 		}
-		snapshot, err := readCharacterSnapshot(filepath.Join(revisionsDir, entry.Name()))
-		if err != nil || snapshot.CharacterID != characterID || snapshot.Revision != revision {
-			rev := revision
-			diagnostics = append(diagnostics, Diagnostic{CharacterID: &characterID, Revision: &rev, Code: "STORAGE_CORRUPTED", Message: "角色 revision 已损坏，已从列表结果中隔离"})
-			continue
+		for _, candidate := range candidates {
+			snapshot, err := readCharacterSnapshot(filepath.Join(revisionsDir, candidate.name))
+			if err != nil || snapshot.CharacterID != characterID || snapshot.Revision != candidate.revision {
+				revision := candidate.revision
+				diagnostics = append(diagnostics, Diagnostic{CharacterID: &characterID, Revision: &revision, Code: "STORAGE_CORRUPTED", Message: "角色 revision 已损坏，已从列表结果中隔离"})
+				continue
+			}
+			appearance, appearanceDiagnostic := s.appearance(characterID)
+			if appearanceDiagnostic != nil {
+				diagnostics = append(diagnostics, *appearanceDiagnostic)
+			}
+			return Record{
+				CharacterID:      snapshot.CharacterID,
+				Revision:         snapshot.Revision,
+				Name:             snapshot.Identity.Name,
+				Description:      snapshot.Identity.Description,
+				DialogueStyle:    snapshot.Identity.DialogueStyle,
+				TextLanguage:     textLanguageOrDefault(snapshot.Identity.TextLanguage),
+				SpeakingLanguage: speakingLanguageOrDefault(snapshot.Identity.SpeakingLanguage),
+				Appearance:       appearance,
+			}, true, diagnostics, nil
 		}
-		appearance, appearanceDiagnostic := s.appearance(characterID)
-		if appearanceDiagnostic != nil {
-			diagnostics = append(diagnostics, *appearanceDiagnostic)
-		}
-		return Record{
-			CharacterID:      snapshot.CharacterID,
-			Revision:         snapshot.Revision,
-			Name:             snapshot.Identity.Name,
-			Description:      snapshot.Identity.Description,
-			DialogueStyle:    snapshot.Identity.DialogueStyle,
-			TextLanguage:     textLanguageOrDefault(snapshot.Identity.TextLanguage),
-			SpeakingLanguage: speakingLanguageOrDefault(snapshot.Identity.SpeakingLanguage),
-			Appearance:       appearance,
-		}, true, diagnostics, nil
+		cursor := candidates[len(candidates)-1]
+		before = &cursor
+		collectInvalidNames = false
 	}
-	return Record{}, false, diagnostics, nil
+}
+
+type revisionCandidate struct {
+	name     string
+	revision uint64
+}
+
+func scanRevisionCandidates(revisionsDir, characterID string, before *revisionCandidate, limit int, collectInvalidNames bool) ([]revisionCandidate, []Diagnostic, error) {
+	directory, err := os.Open(revisionsDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading character revisions: %w", err)
+	}
+	defer directory.Close()
+
+	candidates := make([]revisionCandidate, 0, limit)
+	diagnostics := make([]Diagnostic, 0)
+	for {
+		entries, readErr := directory.ReadDir(128)
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+				continue
+			}
+			revision, ok := parseRevisionFile(entry.Name())
+			if !ok {
+				if collectInvalidNames {
+					diagnostics = append(diagnostics, Diagnostic{CharacterID: &characterID, Code: "STORAGE_CORRUPTED", Message: "角色 revision 文件名无效"})
+				}
+				continue
+			}
+			candidate := revisionCandidate{name: entry.Name(), revision: revision}
+			if before != nil && !revisionCandidateNewer(*before, candidate) {
+				continue
+			}
+			if len(candidates) < limit {
+				candidates = append(candidates, candidate)
+				continue
+			}
+			oldest := 0
+			for index := 1; index < len(candidates); index++ {
+				if revisionCandidateNewer(candidates[oldest], candidates[index]) {
+					oldest = index
+				}
+			}
+			if revisionCandidateNewer(candidate, candidates[oldest]) {
+				candidates[oldest] = candidate
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return nil, nil, fmt.Errorf("reading character revisions: %w", readErr)
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return revisionCandidateNewer(candidates[i], candidates[j])
+	})
+	return candidates, diagnostics, nil
+}
+
+func revisionCandidateNewer(left, right revisionCandidate) bool {
+	if left.revision != right.revision {
+		return left.revision > right.revision
+	}
+	return left.name > right.name
 }
 
 func (s *Store) active(characters []Record) (*Record, error) {
@@ -376,24 +444,14 @@ func validID(value string) bool {
 
 func (s *Store) latestRevision(characterID string) (uint64, error) {
 	revisionsDir := filepath.Join(s.root, "characters", characterID, "revisions")
-	entries, err := os.ReadDir(revisionsDir)
+	candidates, _, err := scanRevisionCandidates(revisionsDir, characterID, nil, 1, false)
 	if err != nil {
-		return 0, fmt.Errorf("reading character revisions: %w", err)
+		return 0, err
 	}
-	var latest uint64
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		revision, ok := parseRevisionFile(entry.Name())
-		if ok && revision > latest {
-			latest = revision
-		}
-	}
-	if latest == 0 {
+	if len(candidates) == 0 {
 		return 0, errors.New("character revision is not available")
 	}
-	return latest, nil
+	return candidates[0].revision, nil
 }
 
 func compileSnapshot(characterID string, revision uint64, brief Brief) (characterSnapshot, error) {

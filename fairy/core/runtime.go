@@ -89,17 +89,17 @@ func (rt *Runtime) APIDependencies() *api.Dependencies {
 		BootstrapStatus: func() (any, error) {
 			return rt.Bootstrap.Status()
 		},
-		SubscribeTurnEvents: func(conversationID string) api.EventSubscription {
-			subscription := rt.Events.Subscribe(conversationID)
+		SubscribeTurnEvents: func(conversationID string) (api.EventSubscription, error) {
+			subscription, err := rt.Events.Subscribe(conversationID)
 			return api.EventSubscription{
 				Events: subscription.Events, Failures: subscription.Failures, Cancel: subscription.Unsubscribe,
-			}
+			}, err
 		},
-		SubscribeParticipation: func(conversationID string) api.ParticipationSubscription {
-			subscription := rt.Participation.Subscribe(conversationID)
+		SubscribeParticipation: func(conversationID string) (api.ParticipationSubscription, error) {
+			subscription, err := rt.Participation.Subscribe(conversationID)
 			return api.ParticipationSubscription{
 				Events: subscription.Events, Failures: subscription.Failures, Cancel: subscription.Unsubscribe,
-			}
+			}, err
 		},
 		TurnEventSubscriberCount: rt.Events.SubscriberCount,
 	}
@@ -194,10 +194,8 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 		Stickers:      stickerStore,
 		WebSearch:     services.WebSearch,
 		Bootstrap: NewBootstrapService(BootstrapOptions{
-			AppName:                "FAIRY",
-			MigrationStage:         "session-core",
-			CoreVersion:            "0.1.0",
-			RespondRuntimeMigrated: true,
+			AppName:     "FAIRY",
+			CoreVersion: "0.1.0",
 		}),
 		ownDatabase: opened.OwnDatabase,
 		ownVector:   opened.OwnVector,

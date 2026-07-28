@@ -2,6 +2,8 @@ package initiative
 
 import (
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -125,5 +127,160 @@ func TestFeedbackWindowBoundCloseAndEmptyEntryIDs(t *testing.T) {
 	engine.Close()
 	if engine.Register(FeedbackRegistration{CharacterID: "character-1", ConversationID: "conversation-1", TurnID: "after-close", ReplyText: "reply"}) {
 		t.Fatal("post-close registration accepted")
+	}
+}
+
+func TestFeedbackEngineBoundsGlobalPendingWithoutCreatingGroup(t *testing.T) {
+	engine := newFeedbackEngine(newLearningTestHost(), 1, 2, time.Hour)
+	defer engine.Close()
+	for index, conversationID := range []string{"conversation-1", "conversation-2"} {
+		registration := feedbackTestSnapshot(0).registration
+		registration.ConversationID = conversationID
+		registration.TurnID = "turn-" + conversationID
+		if !engine.Register(registration) {
+			t.Fatalf("Register(%d) = false", index)
+		}
+	}
+	overflow := feedbackTestSnapshot(0).registration
+	overflow.ConversationID = "conversation-3"
+	overflow.TurnID = "turn-3"
+	if engine.Register(overflow) {
+		t.Fatal("global pending overflow accepted")
+	}
+	engine.mu.Lock()
+	pendingCount := engine.pendingCount
+	_, createdOverflowGroup := engine.pending[overflow.ConversationID]
+	engine.mu.Unlock()
+	if pendingCount != 2 {
+		t.Fatalf("pending count = %d, want 2", pendingCount)
+	}
+	if createdOverflowGroup {
+		t.Fatal("overflow registration created an empty group")
+	}
+	if stats := engine.Stats(); stats.Dropped != 1 {
+		t.Fatalf("stats = %#v, want dropped=1", stats)
+	}
+}
+
+func TestFeedbackEngineRejectsDuplicateTurnWithoutReplacingOwner(t *testing.T) {
+	engine := newFeedbackEngine(newLearningTestHost(), 1, 2, time.Hour)
+	defer engine.Close()
+	original := feedbackTestSnapshot(0).registration
+	if !engine.Register(original) {
+		t.Fatal("initial Register = false")
+	}
+	duplicate := original
+	duplicate.ReplyText = "replacement"
+	duplicate.EntryIDs = []string{"replacement-entry"}
+	if engine.Register(duplicate) {
+		t.Fatal("duplicate Register = true")
+	}
+	engine.mu.Lock()
+	pending := engine.pending[original.ConversationID][original.TurnID]
+	pendingCount := engine.pendingCount
+	engine.mu.Unlock()
+	if pendingCount != 1 {
+		t.Fatalf("pending count = %d, want 1", pendingCount)
+	}
+	if pending == nil || pending.registration.ReplyText != original.ReplyText || len(pending.registration.EntryIDs) != 1 || pending.registration.EntryIDs[0] != original.EntryIDs[0] {
+		t.Fatalf("duplicate replaced owner: %#v", pending)
+	}
+	if stats := engine.Stats(); stats.Dropped != 1 {
+		t.Fatalf("stats = %#v, want dropped=1", stats)
+	}
+}
+
+func TestFeedbackEngineCloseWaitsForStartedTimerCallback(t *testing.T) {
+	engine := newFeedbackEngine(newLearningTestHost(), 1, 1, time.Millisecond)
+	callbackStarted := make(chan struct{})
+	callbackRelease := make(chan struct{})
+	var callbackCalls atomic.Int64
+	engine.timerCallbackHook = func() {
+		if callbackCalls.Add(1) == 1 {
+			close(callbackStarted)
+		}
+		<-callbackRelease
+	}
+	if !engine.Register(feedbackTestSnapshot(0).registration) {
+		t.Fatal("Register = false")
+	}
+	select {
+	case <-callbackStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timer callback did not start")
+	}
+	closed := make(chan struct{})
+	go func() {
+		engine.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		t.Fatal("Close returned before timer callback exited")
+	default:
+	}
+	close(callbackRelease)
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not return after timer callback exited")
+	}
+	engine.mu.Lock()
+	pendingCount := engine.pendingCount
+	pendingGroups := len(engine.pending)
+	engine.mu.Unlock()
+	if pendingCount != 0 || pendingGroups != 0 {
+		t.Fatalf("pending after Close = %d/%d", pendingCount, pendingGroups)
+	}
+	if engine.Register(feedbackTestSnapshot(0).registration) {
+		t.Fatal("post-close Register = true")
+	}
+}
+
+func TestFeedbackEngineConcurrentRegisterObserveAndClose(t *testing.T) {
+	engine := newFeedbackEngine(newLearningTestHost(), 2, 8, time.Hour)
+	for index := 0; index < 4; index++ {
+		registration := feedbackTestSnapshot(0).registration
+		registration.ConversationID = "conversation-" + strings.Repeat("x", index+1)
+		registration.TurnID = "turn-" + strings.Repeat("x", index+1)
+		if !engine.Register(registration) {
+			t.Fatalf("initial Register(%d) = false", index)
+		}
+	}
+	var concurrent sync.WaitGroup
+	concurrent.Add(4)
+	go func() {
+		defer concurrent.Done()
+		for index := 0; index < 64; index++ {
+			registration := feedbackTestSnapshot(0).registration
+			registration.ConversationID = "new-" + strings.Repeat("c", index+1)
+			registration.TurnID = "new-" + strings.Repeat("t", index+1)
+			engine.Register(registration)
+		}
+	}()
+	go func() {
+		defer concurrent.Done()
+		for index := 0; index < 64; index++ {
+			engine.Observe("conversation-x", AmbientObservation{MessageID: "observation"})
+		}
+	}()
+	go func() {
+		defer concurrent.Done()
+		for index := 0; index < 64; index++ {
+			engine.Observe("conversation-xx", AmbientObservation{MessageID: "second-observation"})
+		}
+	}()
+	go func() {
+		defer concurrent.Done()
+		engine.Close()
+	}()
+	concurrent.Wait()
+	engine.Close()
+	engine.mu.Lock()
+	pendingCount := engine.pendingCount
+	pendingGroups := len(engine.pending)
+	engine.mu.Unlock()
+	if pendingCount != 0 || pendingGroups != 0 {
+		t.Fatalf("pending after concurrent Close = %d/%d", pendingCount, pendingGroups)
 	}
 }

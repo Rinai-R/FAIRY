@@ -2,7 +2,9 @@ package companion
 
 import (
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"fairy/character"
@@ -13,6 +15,26 @@ import (
 
 	"fairy/session"
 )
+
+type interactionBindingStoreStub struct {
+	mu       sync.Mutex
+	bindings map[string]session.Binding
+	calls    map[string]int
+}
+
+func (s *interactionBindingStoreStub) LookupEndpointForConversation(conversationID string) (session.Binding, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls[conversationID]++
+	binding, found := s.bindings[conversationID]
+	return binding, found, nil
+}
+
+func (s *interactionBindingStoreStub) callCount(conversationID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls[conversationID]
+}
 
 func TestInteractionMemoryPolicySelectsToolsAndInstructions(t *testing.T) {
 	public := publicAmbientResolved()
@@ -148,25 +170,203 @@ func TestBindResolveInteractionAndMissingBindingFailure(t *testing.T) {
 	}
 }
 
+func TestInteractionBindingCacheBoundsLRUAndRejectsConflict(t *testing.T) {
+	cache := newInteractionBindingCache(2)
+	binding := publicAmbientBinding()
+	if err := cache.Put("conversation-1", binding); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.Put("conversation-2", binding); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := cache.Get("conversation-1"); !found {
+		t.Fatal("expected conversation-1 cache hit")
+	}
+	if err := cache.Put("conversation-3", binding); err != nil {
+		t.Fatal(err)
+	}
+	if got := cache.Len(); got != 2 {
+		t.Fatalf("cache length = %d, want 2", got)
+	}
+	if _, found := cache.Get("conversation-2"); found {
+		t.Fatal("least recently used binding was not evicted")
+	}
+	if _, found := cache.Get("conversation-1"); !found {
+		t.Fatal("recently used binding was evicted")
+	}
+	conflict := session.Binding{
+		Endpoint: session.EndpointDesktop,
+		Facts: session.Facts{
+			Audience:     session.AudienceSingle,
+			Initiation:   session.InitiationDirect,
+			Presentation: session.PresentationEmbodied,
+		},
+	}
+	if err := cache.Put("conversation-1", conflict); err == nil || !strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("conflicting binding error = %v", err)
+	}
+}
+
+func TestInteractionBindingCacheReloadsEvictedBindingFromDurableStore(t *testing.T) {
+	binding := publicAmbientBinding()
+	store := &interactionBindingStoreStub{
+		bindings: map[string]session.Binding{
+			"conversation-1": binding,
+			"conversation-2": binding,
+			"conversation-3": binding,
+		},
+		calls: make(map[string]int),
+	}
+	service := NewCompanionService()
+	service.interactions = newInteractionBindingCache(2)
+	service.memory.ambient.bindings = store
+
+	for _, conversationID := range []string{"conversation-1", "conversation-2"} {
+		resolved, err := service.ResolveInteraction(conversationID)
+		if err != nil || resolved != publicAmbientResolved() {
+			t.Fatalf("ResolveInteraction(%q) = %#v, %v", conversationID, resolved, err)
+		}
+	}
+	if _, found := service.BoundInteraction("conversation-1"); !found {
+		t.Fatal("expected conversation-1 cache hit")
+	}
+	if _, err := service.ResolveInteraction("conversation-3"); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := service.BoundInteraction("conversation-2"); found {
+		t.Fatal("least recently used durable binding was not evicted")
+	}
+	resolved, err := service.ResolveInteraction("conversation-2")
+	if err != nil || resolved != publicAmbientResolved() {
+		t.Fatalf("reloaded resolved = %#v, %v", resolved, err)
+	}
+	if got := store.callCount("conversation-2"); got != 2 {
+		t.Fatalf("durable lookup count = %d, want 2", got)
+	}
+	if got := service.interactions.Len(); got != 2 {
+		t.Fatalf("cache length after reload = %d, want 2", got)
+	}
+}
+
+func TestInteractionBindingCacheConcurrentAccessRemainsBounded(t *testing.T) {
+	const capacity = 8
+	cache := newInteractionBindingCache(capacity)
+	binding := publicAmbientBinding()
+	var workers sync.WaitGroup
+	for index := 0; index < 64; index++ {
+		workers.Add(1)
+		go func(index int) {
+			defer workers.Done()
+			conversationID := fmt.Sprintf("conversation-%d", index)
+			if err := cache.Put(conversationID, binding); err != nil {
+				t.Errorf("Put(%q): %v", conversationID, err)
+				return
+			}
+			cache.Get(conversationID)
+		}(index)
+	}
+	workers.Wait()
+	if got := cache.Len(); got != capacity {
+		t.Fatalf("cache length = %d, want %d", got, capacity)
+	}
+}
+
 func TestOutputCapabilitiesAreExplicitLiveSessionFacts(t *testing.T) {
 	service := NewCompanionService()
 	if service.OutputCapabilities("conversation-1").Sticker {
 		t.Fatal("missing live capability defaulted to supported")
 	}
-	if err := service.BindOutputCapabilities("conversation-1", session.OutputCapabilities{Sticker: true}); err != nil {
+	if err := service.BindOutputCapabilities("owner-1", "conversation-1", session.OutputCapabilities{Sticker: true}); err != nil {
 		t.Fatal(err)
 	}
 	if !service.OutputCapabilities("conversation-1").Sticker {
 		t.Fatal("advertised sticker capability was not retained")
 	}
-	if err := service.BindOutputCapabilities("conversation-1", session.OutputCapabilities{}); err != nil {
+	if err := service.BindOutputCapabilities("owner-2", "conversation-1", session.OutputCapabilities{}); err != nil {
+		t.Fatal(err)
+	}
+	if !service.OutputCapabilities("conversation-1").Sticker {
+		t.Fatal("false capability from a second owner overwrote a live true capability")
+	}
+	if err := service.BindOutputCapabilities("owner-1", "conversation-1", session.OutputCapabilities{}); err != nil {
 		t.Fatal(err)
 	}
 	if service.OutputCapabilities("conversation-1").Sticker {
-		t.Fatal("latest live session capability did not replace prior value")
+		t.Fatal("same owner capability did not replace its prior value")
 	}
-	if err := service.BindOutputCapabilities(" ", session.OutputCapabilities{}); err == nil {
+	if got := len(service.outputCapabilities["conversation-1"]); got != 2 {
+		t.Fatalf("lease count after same-owner replacement = %d, want 2", got)
+	}
+	service.UnbindOutputCapabilities("owner-1", "conversation-1")
+	if _, exists := service.outputCapabilities["conversation-1"]["owner-1"]; exists {
+		t.Fatal("owner lease remained after unbind")
+	}
+	if err := service.BindOutputCapabilities("owner-2", "conversation-1", session.OutputCapabilities{Sticker: true}); err != nil {
+		t.Fatal(err)
+	}
+	service.UnbindOutputCapabilities("owner-1", "conversation-1")
+	if !service.OutputCapabilities("conversation-1").Sticker {
+		t.Fatal("idempotent unbind removed another owner's capability")
+	}
+	service.UnbindOutputCapabilities("owner-2", "conversation-1")
+	if service.OutputCapabilities("conversation-1").Sticker {
+		t.Fatal("last owner unbind did not restore zero capabilities")
+	}
+	if _, exists := service.outputCapabilities["conversation-1"]; exists {
+		t.Fatal("empty conversation capability registry entry was retained")
+	}
+	if err := service.BindOutputCapabilities(" ", "conversation-1", session.OutputCapabilities{}); err == nil {
+		t.Fatal("blank owner capability binding accepted")
+	}
+	if err := service.BindOutputCapabilities("owner-1", " ", session.OutputCapabilities{}); err == nil {
 		t.Fatal("blank conversation capability binding accepted")
+	}
+}
+
+func TestOutputCapabilitiesAreClearedWhenCompanionCloses(t *testing.T) {
+	service := NewCompanionService()
+	if err := service.BindOutputCapabilities("owner-1", "conversation-1", session.OutputCapabilities{Sticker: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if service.OutputCapabilities("conversation-1").Sticker || len(service.outputCapabilities) != 0 {
+		t.Fatal("closing Companion retained process-local capability leases")
+	}
+}
+
+func TestOutputCapabilityLeasesBoundReplaceAndRecover(t *testing.T) {
+	service := NewCompanionService()
+	service.outputCapabilityCapacity = 2
+	if err := service.BindOutputCapabilities("owner-1", "conversation-1", session.OutputCapabilities{Sticker: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.BindOutputCapabilities("owner-2", "conversation-1", session.OutputCapabilities{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.BindOutputCapabilities("owner-1", "conversation-1", session.OutputCapabilities{}); err != nil {
+		t.Fatalf("replacement at capacity error = %v", err)
+	}
+	if err := service.BindOutputCapabilities("owner-3", "conversation-2", session.OutputCapabilities{Sticker: true}); !errors.Is(err, ErrOutputCapabilityCapacity) {
+		t.Fatalf("overload error = %v, want ErrOutputCapabilityCapacity", err)
+	}
+	if service.outputCapabilityLeases != 2 || len(service.outputCapabilities) != 1 {
+		t.Fatalf("leases=%d conversations=%d, want 2/1", service.outputCapabilityLeases, len(service.outputCapabilities))
+	}
+	service.UnbindOutputCapabilities("owner-2", "conversation-1")
+	if service.outputCapabilityLeases != 1 {
+		t.Fatalf("leases after unbind = %d, want 1", service.outputCapabilityLeases)
+	}
+	if err := service.BindOutputCapabilities("owner-3", "conversation-2", session.OutputCapabilities{Sticker: true}); err != nil {
+		t.Fatalf("Bind after release error = %v", err)
+	}
+	if service.outputCapabilityLeases != 2 || len(service.outputCapabilities) != 2 {
+		t.Fatalf("leases=%d conversations=%d after replacement", service.outputCapabilityLeases, len(service.outputCapabilities))
+	}
+	service.clearOutputCapabilities()
+	if service.outputCapabilityLeases != 0 || len(service.outputCapabilities) != 0 {
+		t.Fatalf("clear retained leases=%d conversations=%d", service.outputCapabilityLeases, len(service.outputCapabilities))
 	}
 }
 

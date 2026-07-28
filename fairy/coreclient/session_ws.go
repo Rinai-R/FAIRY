@@ -18,16 +18,24 @@ import (
 )
 
 const (
-	sessionWSPath    = "/v1/session/ws"
-	wsReadyTimeout   = 15 * time.Second
-	wsRequestTimeout = 15 * time.Second
-	maxWSFrameBytes  = 4 << 20
+	sessionWSPath                     = "/v1/session/ws"
+	wsReadyTimeout                    = 15 * time.Second
+	wsRequestTimeout                  = 15 * time.Second
+	maxWSFrameBytes                   = 4 << 20
+	sessionSocketRequestCapacity      = 64
+	sessionSocketWatchCapacity        = 64
+	sessionSocketConversationCapacity = 64
+	sessionSocketCaptureCapacity      = 64
 )
 
 var (
-	ErrTurnEventConsumerOverflow     = errors.New("session turn-event consumer overflow")
-	ErrParticipationConsumerOverflow = errors.New("session participation-event consumer overflow")
-	errSessionSocketClosed           = errors.New("session websocket closed")
+	ErrTurnEventConsumerOverflow         = errors.New("session turn-event consumer overflow")
+	ErrParticipationConsumerOverflow     = errors.New("session participation-event consumer overflow")
+	ErrSessionRequestCapacity            = errors.New("session websocket request capacity reached")
+	ErrSessionWatchCapacity              = errors.New("session websocket watch capacity reached")
+	ErrSessionOpenedConversationCapacity = errors.New("session websocket opened conversation capacity reached")
+	ErrSessionCaptureDispatchCapacity    = errors.New("session websocket capture dispatch capacity reached")
+	errSessionSocketClosed               = errors.New("session websocket closed")
 )
 
 type sessionClientFrame struct {
@@ -64,24 +72,37 @@ type sessionServerFrame struct {
 	cause          error
 }
 
+type sessionWatchAttempt struct {
+	turnEvents          chan TurnEvent
+	participationEvents chan ParticipationEvent
+	done                chan struct{}
+	err                 error
+	waiters             int
+}
+
 // SessionSocket is a long-lived session-plane WebSocket.
 type SessionSocket struct {
 	conn    *websocket.Conn
 	writeMu sync.Mutex
 
-	mu                  sync.Mutex
-	pending             map[string]chan sessionServerFrame
-	turnEvents          map[string]chan TurnEvent
-	participationEvents map[string]chan ParticipationEvent
-	openedConversations map[string]session.EndpointKind
-	captureHandler      func(context.Context, DesktopCaptureRequest) DesktopCaptureResult
-	captureSlot         chan struct{}
-	done                chan struct{}
-	connOnce            sync.Once
-	connErr             error
-	closing             bool
-	closed              bool
-	closeErr            error
+	mu                         sync.Mutex
+	pending                    map[string]chan sessionServerFrame
+	turnEvents                 map[string]chan TurnEvent
+	participationEvents        map[string]chan ParticipationEvent
+	watchAttempts              map[string]*sessionWatchAttempt
+	openedConversations        map[string]session.EndpointKind
+	requestCapacity            int
+	watchCapacity              int
+	openedConversationCapacity int
+	captureHandler             func(context.Context, DesktopCaptureRequest) DesktopCaptureResult
+	captureSlot                chan struct{}
+	captureDispatchSlots       chan struct{}
+	done                       chan struct{}
+	connOnce                   sync.Once
+	connErr                    error
+	closing                    bool
+	closed                     bool
+	closeErr                   error
 }
 
 // DialSession upgrades to the Core session WebSocket and waits for ready.
@@ -112,13 +133,18 @@ func (c *Client) DialSession(ctx context.Context) (*SessionSocket, error) {
 		return nil, &Error{Action: "dial session websocket", Endpoint: wsURL, Status: status, Message: message}
 	}
 	socket := &SessionSocket{
-		conn:                conn,
-		pending:             make(map[string]chan sessionServerFrame),
-		turnEvents:          make(map[string]chan TurnEvent),
-		participationEvents: make(map[string]chan ParticipationEvent),
-		openedConversations: make(map[string]session.EndpointKind),
-		captureSlot:         make(chan struct{}, 1),
-		done:                make(chan struct{}),
+		conn:                       conn,
+		pending:                    make(map[string]chan sessionServerFrame),
+		turnEvents:                 make(map[string]chan TurnEvent),
+		participationEvents:        make(map[string]chan ParticipationEvent),
+		watchAttempts:              make(map[string]*sessionWatchAttempt),
+		openedConversations:        make(map[string]session.EndpointKind),
+		requestCapacity:            sessionSocketRequestCapacity,
+		watchCapacity:              sessionSocketWatchCapacity,
+		openedConversationCapacity: sessionSocketConversationCapacity,
+		captureSlot:                make(chan struct{}, 1),
+		captureDispatchSlots:       make(chan struct{}, sessionSocketCaptureCapacity),
+		done:                       make(chan struct{}),
 	}
 	conn.SetReadLimit(maxWSFrameBytes)
 	readyCtx, cancel := context.WithTimeout(ctx, readyTimeoutOr(c.timeout))
@@ -244,14 +270,17 @@ func (s *SessionSocket) readLoop() {
 			endpoint, opened := s.openedConversations[request.ConversationID]
 			s.mu.Unlock()
 			if !opened || endpoint != session.EndpointDesktop {
-				go s.submitAutomaticCaptureFailure(request, "session_mismatch")
+				if err := s.dispatchCapture(func() {
+					s.submitAutomaticCaptureFailure(request, "session_mismatch")
+				}); err != nil {
+					terminalErr = err
+					return
+				}
 				continue
 			}
-			select {
-			case s.captureSlot <- struct{}{}:
-				go s.handleCaptureRequest(request, handler)
-			default:
-				go s.submitAutomaticCaptureFailure(request, "capture_busy")
+			if err := s.dispatchOpenedCapture(request, handler); err != nil {
+				terminalErr = err
+				return
 			}
 		default:
 			if frame.RequestID == "" {
@@ -259,6 +288,15 @@ func (s *SessionSocket) readLoop() {
 			}
 			s.mu.Lock()
 			if frame.Type == "session.opened" && frame.ConversationID != "" && frame.Endpoint != "" {
+				capacity := s.openedConversationCapacity
+				if capacity <= 0 {
+					capacity = sessionSocketConversationCapacity
+				}
+				if _, exists := s.openedConversations[frame.ConversationID]; !exists && len(s.openedConversations) >= capacity {
+					s.mu.Unlock()
+					terminalErr = fmt.Errorf("%w: limit %d", ErrSessionOpenedConversationCapacity, capacity)
+					return
+				}
 				s.openedConversations[frame.ConversationID] = frame.Endpoint
 			}
 			ch := s.pending[frame.RequestID]
@@ -271,6 +309,42 @@ func (s *SessionSocket) readLoop() {
 			default:
 			}
 		}
+	}
+}
+
+func (s *SessionSocket) dispatchCapture(work func()) error {
+	if s == nil || work == nil {
+		return errors.New("capture dispatch is unavailable")
+	}
+	s.mu.Lock()
+	slots := s.captureDispatchSlots
+	s.mu.Unlock()
+	select {
+	case slots <- struct{}{}:
+		go func() {
+			defer func() { <-slots }()
+			work()
+		}()
+		return nil
+	default:
+		return fmt.Errorf("%w: limit %d", ErrSessionCaptureDispatchCapacity, cap(slots))
+	}
+}
+
+func (s *SessionSocket) dispatchOpenedCapture(request DesktopCaptureRequest, handler func(context.Context, DesktopCaptureRequest) DesktopCaptureResult) error {
+	select {
+	case s.captureSlot <- struct{}{}:
+		if err := s.dispatchCapture(func() {
+			s.handleCaptureRequest(request, handler)
+		}); err != nil {
+			<-s.captureSlot
+			return err
+		}
+		return nil
+	default:
+		return s.dispatchCapture(func() {
+			s.submitAutomaticCaptureFailure(request, "capture_busy")
+		})
 	}
 }
 
@@ -317,7 +391,9 @@ func (s *SessionSocket) finish(err error) {
 		return
 	}
 	s.closed = true
-	if errors.Is(err, ErrTurnEventConsumerOverflow) || errors.Is(err, ErrParticipationConsumerOverflow) {
+	if errors.Is(err, ErrTurnEventConsumerOverflow) ||
+		errors.Is(err, ErrParticipationConsumerOverflow) ||
+		errors.Is(err, ErrSessionCaptureDispatchCapacity) {
 		s.closeErr = err
 	} else if s.closing {
 		s.closeErr = errSessionSocketClosed
@@ -340,6 +416,11 @@ func (s *SessionSocket) finish(err error) {
 	for id, ch := range s.participationEvents {
 		close(ch)
 		delete(s.participationEvents, id)
+	}
+	for id, attempt := range s.watchAttempts {
+		attempt.err = s.closeErr
+		close(attempt.done)
+		delete(s.watchAttempts, id)
 	}
 	clear(s.openedConversations)
 	close(s.done)
@@ -388,6 +469,14 @@ func (s *SessionSocket) request(ctx context.Context, frame sessionClientFrame, e
 			err = errSessionSocketClosed
 		}
 		return sessionServerFrame{}, err
+	}
+	capacity := s.requestCapacity
+	if capacity <= 0 {
+		capacity = sessionSocketRequestCapacity
+	}
+	if len(s.pending) >= capacity {
+		s.mu.Unlock()
+		return sessionServerFrame{}, ErrSessionRequestCapacity
 	}
 	s.pending[frame.RequestID] = ch
 	s.mu.Unlock()
@@ -492,27 +581,94 @@ func (s *SessionSocket) Watch(ctx context.Context, conversationID string) (<-cha
 	if conversationID == "" {
 		return nil, errors.New("conversation ID is required")
 	}
+	if ctx == nil {
+		return nil, errors.New("context is required")
+	}
 	s.mu.Lock()
-	ch := s.turnEvents[conversationID]
-	if ch == nil {
-		ch = make(chan TurnEvent, 64)
-		s.turnEvents[conversationID] = ch
-	}
-	if s.participationEvents[conversationID] == nil {
-		s.participationEvents[conversationID] = make(chan ParticipationEvent, 64)
-	}
-	s.mu.Unlock()
-	_, err := s.request(ctx, sessionClientFrame{Type: "session.watch", ConversationID: conversationID}, "ack")
-	if err != nil {
-		s.mu.Lock()
-		if s.turnEvents[conversationID] == ch {
-			delete(s.turnEvents, conversationID)
-		}
-		delete(s.participationEvents, conversationID)
+	if s.closed || s.closing {
+		err := s.closeErr
 		s.mu.Unlock()
+		if err == nil {
+			err = errSessionSocketClosed
+		}
 		return nil, err
 	}
-	return ch, nil
+	if attempt := s.watchAttempts[conversationID]; attempt != nil {
+		attempt.waiters++
+		s.mu.Unlock()
+		return s.waitForWatchAttempt(ctx, attempt)
+	}
+	if ch := s.turnEvents[conversationID]; ch != nil {
+		s.mu.Unlock()
+		return ch, nil
+	}
+	capacity := s.watchCapacity
+	if capacity <= 0 {
+		capacity = sessionSocketWatchCapacity
+	}
+	if len(s.turnEvents) >= capacity {
+		s.mu.Unlock()
+		return nil, ErrSessionWatchCapacity
+	}
+	attempt := &sessionWatchAttempt{
+		turnEvents:          make(chan TurnEvent, 64),
+		participationEvents: make(chan ParticipationEvent, 64),
+		done:                make(chan struct{}),
+	}
+	s.turnEvents[conversationID] = attempt.turnEvents
+	s.participationEvents[conversationID] = attempt.participationEvents
+	s.watchAttempts[conversationID] = attempt
+	s.mu.Unlock()
+	_, err := s.request(ctx, sessionClientFrame{Type: "session.watch", ConversationID: conversationID}, "ack")
+	if err = s.completeWatchAttempt(conversationID, attempt, err); err != nil {
+		return nil, err
+	}
+	return attempt.turnEvents, nil
+}
+
+func (s *SessionSocket) waitForWatchAttempt(ctx context.Context, attempt *sessionWatchAttempt) (<-chan TurnEvent, error) {
+	defer func() {
+		s.mu.Lock()
+		attempt.waiters--
+		s.mu.Unlock()
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-attempt.done:
+		if attempt.err != nil {
+			return nil, attempt.err
+		}
+		return attempt.turnEvents, nil
+	}
+}
+
+func (s *SessionSocket) completeWatchAttempt(conversationID string, attempt *sessionWatchAttempt, requestErr error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.watchAttempts[conversationID] != attempt {
+		if requestErr == nil {
+			return nil
+		}
+		if attempt.err != nil {
+			return attempt.err
+		}
+		return requestErr
+	}
+	delete(s.watchAttempts, conversationID)
+	attempt.err = requestErr
+	if requestErr != nil {
+		if s.turnEvents[conversationID] == attempt.turnEvents {
+			delete(s.turnEvents, conversationID)
+			close(attempt.turnEvents)
+		}
+		if s.participationEvents[conversationID] == attempt.participationEvents {
+			delete(s.participationEvents, conversationID)
+			close(attempt.participationEvents)
+		}
+	}
+	close(attempt.done)
+	return requestErr
 }
 
 func (s *SessionSocket) ParticipationEvents(conversationID string) (<-chan ParticipationEvent, error) {

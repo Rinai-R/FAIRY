@@ -3,6 +3,7 @@ package observability
 import (
 	"encoding/json"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -97,6 +98,101 @@ func TestMessageMetricsSnapshotIsBoundedAndContainsNoContentFields(t *testing.T)
 		if strings.Contains(strings.ToLower(string(payload)), strings.ToLower(forbidden)) {
 			t.Fatalf("snapshot contains forbidden field %q: %s", forbidden, payload)
 		}
+	}
+}
+
+func TestMessageMetricsBoundsActiveTracesWhenTerminalTelemetryIsLost(t *testing.T) {
+	var retentionDrops atomic.Uint64
+	state := messageMetricsState{
+		traces: make(map[string]*messageTraceState), turns: make(map[string]string),
+		recentCapacity: 1, activeCapacity: 2, retentionDrops: &retentionDrops,
+	}
+	now := time.Now()
+	state.begin(messageEvent{traceID: "trace-1", source: "direct", conversation: "c1", at: now})
+	state.turnStarted(messageEvent{traceID: "trace-1", conversation: "c1", turnID: "turn-1", at: now.Add(time.Millisecond)})
+	state.begin(messageEvent{traceID: "trace-2", source: "direct", conversation: "c2", at: now.Add(2 * time.Millisecond)})
+
+	// Simulate terminal events being dropped by the non-blocking producer queue:
+	// both accepted traces remain active when the next Begin reaches the owner.
+	state.begin(messageEvent{traceID: "trace-3", source: "direct", conversation: "c3", at: now.Add(3 * time.Millisecond)})
+
+	if len(state.traces) != 2 || state.snapshotBase.Active != 2 || state.snapshotBase.Received != 3 {
+		t.Fatalf("bounded active trace state = traces:%d active:%d received:%d", len(state.traces), state.snapshotBase.Active, state.snapshotBase.Received)
+	}
+	if state.traces["trace-1"] != nil || state.traces["trace-3"] == nil {
+		t.Fatalf("retained traces = %#v, want newest trace and no oldest trace", state.traces)
+	}
+	if _, exists := state.turns["turn-1"]; exists {
+		t.Fatal("evicted active trace retained its turn mapping")
+	}
+	if retentionDrops.Load() != 1 {
+		t.Fatalf("retention drops = %d, want 1", retentionDrops.Load())
+	}
+
+	state.turnStage(messageEvent{turnID: "turn-1", stage: "first_beat", at: now.Add(4 * time.Millisecond)})
+	state.end("trace-1", "failed", now.Add(5*time.Millisecond))
+	if state.snapshotBase.Sent != 0 || state.snapshotBase.Failed != 0 || state.snapshotBase.Active != 2 {
+		t.Fatalf("late evicted-trace events changed metrics: %#v", state.snapshotBase)
+	}
+
+	metrics := newMessageMetrics(1, 1, false)
+	metrics.dropped.Store(4)
+	metrics.retentionDrops.Store(retentionDrops.Load())
+	if dropped := metrics.Snapshot().DroppedEvents; dropped != 5 {
+		t.Fatalf("combined dropped events = %d, want 5", dropped)
+	}
+}
+
+func TestMessageMetricsWorkerRecoversAfterActiveRetentionEviction(t *testing.T) {
+	metrics := newMessageMetrics(1, 1, true)
+	t.Cleanup(metrics.Close)
+
+	oldest := metrics.Begin("direct", "conversation-old")
+	first := waitForMessageSnapshot(t, metrics, func(value MessageMetricsSnapshot) bool {
+		return value.Received == 1
+	})
+	if first.Active != 1 || len(first.Recent) != 1 || first.Recent[0].TraceID != oldest {
+		t.Fatalf("first worker snapshot = %#v", first)
+	}
+
+	latest := metrics.Begin("direct", "conversation-latest")
+	recovered := waitForMessageSnapshot(t, metrics, func(value MessageMetricsSnapshot) bool {
+		return value.Received == 2 && value.DroppedEvents == 1
+	})
+	if recovered.Active != 1 || len(recovered.Recent) != 1 || recovered.Recent[0].TraceID != latest {
+		t.Fatalf("recovered worker snapshot = %#v", recovered)
+	}
+
+	metrics.End(oldest, "failed")
+	metrics.End(latest, "completed")
+	completed := waitForMessageSnapshot(t, metrics, func(value MessageMetricsSnapshot) bool {
+		return value.Completed == 1
+	})
+	if completed.Active != 0 || completed.Failed != 0 || completed.DroppedEvents != 1 {
+		t.Fatalf("late terminal worker snapshot = %#v", completed)
+	}
+}
+
+func TestMessageMetricsSeparatelyBoundsActiveAndRecentTraces(t *testing.T) {
+	state := messageMetricsState{
+		traces: make(map[string]*messageTraceState), turns: make(map[string]string),
+		recentCapacity: 1, activeCapacity: 2,
+	}
+	now := time.Now()
+	state.begin(messageEvent{traceID: "trace-1", at: now})
+	state.begin(messageEvent{traceID: "trace-2", at: now.Add(time.Millisecond)})
+	state.end("trace-2", "completed", now.Add(2*time.Millisecond))
+	state.begin(messageEvent{traceID: "trace-3", at: now.Add(3 * time.Millisecond)})
+	if len(state.traces) != 3 || state.snapshotBase.Active != 2 || len(state.recentIDs) != 1 {
+		t.Fatalf("full active/recent state = traces:%d active:%d recent:%d", len(state.traces), state.snapshotBase.Active, len(state.recentIDs))
+	}
+
+	state.end("trace-1", "failed", now.Add(4*time.Millisecond))
+	if len(state.traces) != 2 || state.snapshotBase.Active != 1 || len(state.recentIDs) != 1 {
+		t.Fatalf("rotated active/recent state = traces:%d active:%d recent:%d", len(state.traces), state.snapshotBase.Active, len(state.recentIDs))
+	}
+	if state.traces["trace-2"] != nil || state.traces["trace-1"] == nil || state.traces["trace-3"] == nil {
+		t.Fatalf("retained active/recent traces = %#v", state.traces)
 	}
 }
 

@@ -70,7 +70,15 @@ func (s *Server) handleLogStream(ctx context.Context, c *app.RequestContext) {
 		writeErr(c, http.StatusBadRequest, err)
 		return
 	}
-	backlog, live, unsubscribe := s.rt.Logs.Subscribe(filter)
+	backlog, live, unsubscribe, err := s.rt.Logs.Subscribe(filter)
+	if err != nil {
+		if errors.Is(err, observability.ErrLogSubscriberCapacity) {
+			writeErr(c, http.StatusServiceUnavailable, err)
+			return
+		}
+		writeErr(c, http.StatusInternalServerError, err)
+		return
+	}
 	defer unsubscribe()
 	w := sse.NewWriter(c)
 	defer w.Close()

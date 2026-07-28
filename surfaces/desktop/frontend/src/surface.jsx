@@ -25,6 +25,14 @@ function renderableVisual(visual) {
   return visual;
 }
 
+function isDesktopTurnAborted(turn) {
+  return turn?.state === "failed"
+    || turn?.state === "interrupted"
+    || turn?.type === "failed"
+    || turn?.type === "interrupted"
+    || turn?.type === "stream.closed";
+}
+
 function CompanionSurface() {
   const [session, setSession] = useState(null);
   const [dockOpen, setDockOpen] = useState(false);
@@ -264,7 +272,7 @@ function SettingsSurface() {
       setStatus(observationEnabled ? "桌面观察已启用。" : "桌面观察已关闭。");
     } catch (cause) { setStatus(cause?.message || "观察设置失败"); }
   }
-  return <main className="cp-stage"><Card className="cp-shell"><div className="cp-drag-region" /><header className="cp-header"><Text as="h1" size="3" weight="medium">Core 设置</Text><IconButton type="button" size="1" variant="ghost" color="gray" aria-label="关闭设置" onClick={() => CloseControlPanel()}><Cross2Icon /></IconButton></header><section className="cp-page"><form className="cp-form" onSubmit={save}><label className="cp-field"><Text size="1" weight="medium">Core 地址</Text><TextField.Root size="1" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} /></label><label className="cp-field"><Text size="1" weight="medium">访问令牌</Text><TextField.Root size="1" type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="留空则保留已有令牌" /></label><button className="cp-save" type="submit">保存并连接</button></form><div className="cp-form"><label className="cp-field cp-field--inline"><input type="checkbox" checked={observationEnabled} onChange={(event) => setObservationEnabled(event.target.checked)} /><Text size="1" weight="medium">定期观察</Text></label><label className="cp-field"><Text size="1" weight="medium">隐私状态</Text><select value={privacy} onChange={(event) => setPrivacy(event.target.value)}><option value="normal">正常</option><option value="locked">已锁屏</option><option value="meeting">会议中</option><option value="do_not_disturb">勿扰</option><option value="protected">受保护</option></select></label><label className="cp-field"><Text size="1" weight="medium">采样间隔（分钟）</Text><input type="number" min="1" max="60" value={observationInterval} onChange={(event) => setObservationInterval(Number(event.target.value))} /></label><label className="cp-field"><Text size="1" weight="medium">离开阈值（分钟）</Text><input type="number" min="1" max="240" value={idleThreshold} onChange={(event) => setIdleThreshold(Number(event.target.value))} /></label><button className="cp-save" type="button" onClick={applyObservation}>应用观察设置</button>{status ? <Text size="1" color="gray">{status}</Text> : null}</div></section></Card></main>;
+  return <main className="cp-stage"><Card className="cp-shell"><div className="cp-drag-region" /><header className="cp-header"><Text as="h1" size="3" weight="medium">Core 设置</Text><IconButton type="button" size="1" variant="ghost" color="gray" aria-label="关闭设置" onClick={() => CloseControlPanel()}><Cross2Icon /></IconButton></header><section className="cp-page"><form className="cp-form" onSubmit={save}><label className="cp-field"><Text size="1" weight="medium">Core 地址</Text><TextField.Root size="1" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} /></label><label className="cp-field"><Text size="1" weight="medium">访问令牌</Text><TextField.Root size="1" type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="留空则保留已有令牌" /></label><button className="cp-save" type="submit">保存连接配置</button></form><div className="cp-form"><label className="cp-field cp-field--inline"><input type="checkbox" checked={observationEnabled} onChange={(event) => setObservationEnabled(event.target.checked)} /><Text size="1" weight="medium">定期观察</Text></label><label className="cp-field"><Text size="1" weight="medium">隐私状态</Text><select value={privacy} onChange={(event) => setPrivacy(event.target.value)}><option value="normal">正常</option><option value="locked">已锁屏</option><option value="meeting">会议中</option><option value="do_not_disturb">勿扰</option><option value="protected">受保护</option></select></label><label className="cp-field"><Text size="1" weight="medium">采样间隔（分钟）</Text><input type="number" min="1" max="60" value={observationInterval} onChange={(event) => setObservationInterval(Number(event.target.value))} /></label><label className="cp-field"><Text size="1" weight="medium">离开阈值（分钟）</Text><input type="number" min="1" max="240" value={idleThreshold} onChange={(event) => setIdleThreshold(Number(event.target.value))} /></label><button className="cp-save" type="button" onClick={applyObservation}>应用观察设置</button>{status ? <Text size="1" color="gray">{status}</Text> : null}</div></section></Card></main>;
 }
 
 function SpeechSurface() {
@@ -296,6 +304,16 @@ function SpeechSurface() {
     playbackRef.current = player;
     const off = Events.On("desktop:turn", (event) => {
       const turn = event?.data ?? event;
+      if (isDesktopTurnAborted(turn)) {
+        fadePendingRef.current = false;
+        player.stop();
+        if (bubbleRef.current.parts.some((part) => part.kind === "sticker" && part.unavailable)) {
+          setBubble((current) => ({ ...current, visible: true, waiting: false, settled: true }));
+        } else {
+          hideBubble();
+        }
+        return;
+      }
       if (turn.type === "state_changed") {
         const waitingPhase = turn.state === "planning"
           || turn.state === "interpreting"
@@ -311,6 +329,11 @@ function SpeechSurface() {
           setAudioError("");
         }
         setBubble((current) => {
+          if (newIdentifiedTurn || localPendingTurn) {
+            return waitingPhase
+              ? { visible: true, waiting: true, settled: false, turnId: nextTurnId, parts: [] }
+              : current;
+          }
           if (current.parts.length > 0) {
             return { ...current, visible: true, waiting: false };
           }
@@ -352,15 +375,6 @@ function SpeechSurface() {
         }
         hideBubble();
         return;
-      }
-      if (turn.type === "failed" || turn.type === "interrupted" || turn.type === "stream.closed") {
-        fadePendingRef.current = false;
-        player.stop();
-        if (bubbleRef.current.parts.some((part) => part.kind === "sticker" && part.unavailable)) {
-          setBubble((current) => ({ ...current, visible: true, waiting: false, settled: true }));
-        } else {
-          hideBubble();
-        }
       }
     });
     return () => {

@@ -24,6 +24,7 @@ type fakeWindow struct {
 	shown, hidden bool
 	visible       bool
 	focused       bool
+	showCount     int
 }
 
 type memoryConnectionStore struct {
@@ -54,6 +55,7 @@ func (w *fakeWindow) Position() (int, int) { return w.x, w.y }
 func (w *fakeWindow) SetPosition(x, y int) { w.x, w.y = x, y }
 func (w *fakeWindow) Show() application.Window {
 	w.shown, w.visible = true, true
+	w.showCount++
 	return w
 }
 func (w *fakeWindow) Hide() application.Window {
@@ -764,6 +766,9 @@ func TestForwardTurnEventsClearsActiveWhenStreamCloses(t *testing.T) {
 
 func TestForwardTurnEventsTracksProactiveTurnUntilMatchingTerminal(t *testing.T) {
 	service := NewCoreService()
+	companion := &fakeWindow{x: 700, y: 350}
+	bubble := &fakeWindow{}
+	service.attachWindows(companion, nil, nil, bubble)
 	turns := make(chan desktopTurnEvent, 4)
 	service.attachEmitter(func(name string, payload any) {
 		if name == "desktop:turn" {
@@ -789,6 +794,20 @@ func TestForwardTurnEventsTracksProactiveTurnUntilMatchingTerminal(t *testing.T)
 	service.mu.Unlock()
 	if !active || activeTurnID != "proactive-turn" {
 		t.Fatalf("proactive active state = (%t, %q), want (true, %q)", active, activeTurnID, "proactive-turn")
+	}
+	if !bubble.shown || bubble.x != 686 || bubble.y != 180 {
+		t.Fatalf("proactive speech bubble shown=%t position=(%d, %d), want true at (686, 180)", bubble.shown, bubble.x, bubble.y)
+	}
+
+	events <- coreclient.TurnEvent{
+		ConversationID: "c1",
+		TurnID:         "proactive-turn",
+		State:          "gathering",
+		Payload:        json.RawMessage(`{"type":"state_changed"}`),
+	}
+	assertTurnTypes(t, turns, "state_changed")
+	if bubble.showCount != 1 {
+		t.Fatalf("same proactive turn showed speech bubble %d times, want 1", bubble.showCount)
 	}
 
 	events <- coreclient.TurnEvent{
@@ -824,6 +843,110 @@ func TestForwardTurnEventsTracksProactiveTurnUntilMatchingTerminal(t *testing.T)
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("turn event forwarder did not stop")
+	}
+}
+
+func TestForwardTurnEventsDropsStaleSocketBeforeStickerDelivery(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	staleDelivery := make(chan struct{}, 1)
+	staleContentRead := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/stickers/sticker-1/content" {
+			staleContentRead <- struct{}{}
+			w.Header().Set("Content-Type", "image/gif")
+			_, _ = w.Write([]byte("GIF89a"))
+			return
+		}
+		if r.URL.Path != "/v1/session/ws" {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		_ = conn.WriteJSON(map[string]any{"type": "ready"})
+		for {
+			var frame map[string]json.RawMessage
+			if err := conn.ReadJSON(&frame); err != nil {
+				return
+			}
+			var kind, requestID string
+			_ = json.Unmarshal(frame["type"], &kind)
+			_ = json.Unmarshal(frame["requestId"], &requestID)
+			if kind != "expression.delivery" {
+				continue
+			}
+			staleDelivery <- struct{}{}
+			_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID})
+		}
+	}))
+	defer server.Close()
+
+	client, err := coreclient.New(coreclient.Options{Endpoint: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleSocket, err := client.DialSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer staleSocket.Close()
+
+	cache, err := newVisualCacheAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewCoreService()
+	service.client = client
+	service.socket = &coreclient.SessionSocket{}
+	service.visualCache = cache
+	staleEmission := make(chan struct{}, 1)
+	service.attachEmitter(func(name string, _ any) {
+		if name == "desktop:turn" {
+			staleEmission <- struct{}{}
+		}
+	})
+	events := make(chan coreclient.TurnEvent, 1)
+	done := make(chan struct{})
+	go func() {
+		service.forwardTurnEvents(staleSocket, "c1", events)
+		close(done)
+	}()
+	events <- coreclient.TurnEvent{
+		ConversationID: "c1",
+		TurnID:         "stale-turn",
+		State:          "responding",
+		Payload:        json.RawMessage(`{"type":"beat.ready","beatId":"b1","kind":"final","visualState":"idle","part":{"kind":"sticker","visualState":"idle","sticker":{"id":"sticker-1","description":"开心","mimeType":"image/gif"}}}`),
+	}
+	close(events)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("stale turn event forwarder did not stop")
+	}
+	select {
+	case <-staleDelivery:
+		t.Fatal("stale socket reported a Desktop sticker delivery result")
+	default:
+	}
+	select {
+	case <-staleContentRead:
+		t.Fatal("stale socket requested Desktop sticker content")
+	default:
+	}
+	cache.mu.RLock()
+	stickerCount := len(cache.stickers)
+	cache.mu.RUnlock()
+	if stickerCount != 0 {
+		t.Fatalf("stale socket cached %d Desktop stickers, want 0", stickerCount)
+	}
+	select {
+	case <-staleEmission:
+		t.Fatal("stale socket emitted a Desktop turn event")
+	default:
 	}
 }
 

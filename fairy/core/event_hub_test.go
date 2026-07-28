@@ -10,7 +10,10 @@ import (
 
 func TestEventHubFanOut(t *testing.T) {
 	hub := NewEventHub()
-	subscription := hub.Subscribe("c1")
+	subscription, err := hub.Subscribe("c1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer subscription.Unsubscribe()
 	hub.Publish(session.Event{ConversationID: "c1", TurnID: "t1", Sequence: 1})
 	select {
@@ -31,8 +34,14 @@ func TestEventHubFanOut(t *testing.T) {
 
 func TestEventHubOverflowFailsOnlySlowSubscriber(t *testing.T) {
 	hub := NewEventHub()
-	slow := hub.Subscribe("c1")
-	fast := hub.Subscribe("c1")
+	slow, err := hub.Subscribe("c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fast, err := hub.Subscribe("c1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer slow.Unsubscribe()
 	defer fast.Unsubscribe()
 
@@ -72,8 +81,14 @@ func TestEventHubOverflowFailsOnlySlowSubscriber(t *testing.T) {
 
 func TestEventHubSubscriberCountAndClose(t *testing.T) {
 	hub := NewEventHub()
-	subscriptionA := hub.Subscribe("conversation-a")
-	subscriptionB := hub.Subscribe("conversation-b")
+	subscriptionA, err := hub.Subscribe("conversation-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscriptionB, err := hub.Subscribe("conversation-b")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got := hub.SubscriberCount(); got != 2 {
 		t.Fatalf("subscriber count = %d", got)
 	}
@@ -92,6 +107,36 @@ func TestEventHubSubscriberCountAndClose(t *testing.T) {
 	}
 	if _, ok := <-subscriptionB.Failures; ok {
 		t.Fatal("failures channel remained open")
+	}
+}
+
+func TestEventHubBoundsTotalSubscribersAndRecovers(t *testing.T) {
+	hub := NewEventHub()
+	hub.inner.capacity = 2
+	first, err := hub.Subscribe("conversation-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Unsubscribe()
+	second, err := hub.Subscribe("conversation-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Unsubscribe()
+	if _, err := hub.Subscribe("conversation-c"); !errors.Is(err, ErrEventSubscriberCapacity) {
+		t.Fatalf("overload error = %v", err)
+	}
+	if got := hub.SubscriberCount(); got != 2 {
+		t.Fatalf("subscriber count = %d, want 2", got)
+	}
+	first.Unsubscribe()
+	replacement, err := hub.Subscribe("conversation-c")
+	if err != nil {
+		t.Fatalf("Subscribe after release error = %v", err)
+	}
+	defer replacement.Unsubscribe()
+	if got := hub.SubscriberCount(); got != 2 {
+		t.Fatalf("subscriber count after replacement = %d, want 2", got)
 	}
 }
 

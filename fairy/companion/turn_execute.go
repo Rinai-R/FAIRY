@@ -45,8 +45,8 @@ func (e *TurnEngine) submitCompiledTurn(
 	if err != nil {
 		return TurnOutcome{}, err
 	}
-	if !s.RespondRuntimeMigrated() {
-		return TurnOutcome{}, ErrRespondRuntimeNotMigrated
+	if !s.TurnRuntimeReady() {
+		return TurnOutcome{}, ErrTurnRuntimeUnavailable
 	}
 	request.TraceID = s.beginMessageTrace(request.MessageSource, request.ConversationID, request.TraceID)
 	defer func() {

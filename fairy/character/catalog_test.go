@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -20,7 +21,8 @@ func writeFile(t testing.TB, path string, data string) {
 
 func writeCharacter(t testing.TB, root string, characterID string, revision uint64, name string) {
 	t.Helper()
-	writeFile(t, filepath.Join(root, "characters", characterID, "revisions", "1.json"), `{"schema_version":1,"data":{"schema_version":1,"compiler_version":"fairy-character-v1","character_id":"`+characterID+`","revision":`+"1"+`,"identity":{"name":"`+name+`","description":"认真听用户说话。"},"worldview":"not_specified","attention_biases":["user_explicit_content"],"relationship_stance":"warm_respectful_non_possessive","response_drives":["understand_before_assuming"],"emotional_tendencies":["calm_attunement"],"speech_style":{"character_description_guidance":"认真听用户说话。","fallback":"natural_concise"},"hard_boundaries":["preserve_facts"],"fingerprint":"fixture"}}`)
+	revisionText := fmt.Sprint(revision)
+	writeFile(t, filepath.Join(root, "characters", characterID, "revisions", revisionText+".json"), `{"schema_version":1,"data":{"schema_version":1,"compiler_version":"fairy-character-v1","character_id":"`+characterID+`","revision":`+revisionText+`,"identity":{"name":"`+name+`","description":"认真听用户说话。"},"worldview":"not_specified","attention_biases":["user_explicit_content"],"relationship_stance":"warm_respectful_non_possessive","response_drives":["understand_before_assuming"],"emotional_tendencies":["calm_attunement"],"speech_style":{"character_description_guidance":"认真听用户说话。","fallback":"natural_concise"},"hard_boundaries":["preserve_facts"],"fingerprint":"fixture"}}`)
 }
 
 func writeVisual(t testing.TB, root string, packID string) {
@@ -152,6 +154,70 @@ func TestStoreLookupFallsBackToLatestValidRevision(t *testing.T) {
 	}
 	if !found || record.Revision != 1 || record.Name != "有效角色" {
 		t.Fatalf("Lookup() = (%#v, %v), want revision 1 fallback", record, found)
+	}
+}
+
+func TestStoreLookupOrdersRevisionsNumerically(t *testing.T) {
+	root := t.TempDir()
+	const characterID = "character-numeric-revision"
+	writeCharacter(t, root, characterID, 2, "旧角色")
+	writeCharacter(t, root, characterID, 10, "新角色")
+
+	record, found, err := NewStore(root).Lookup(characterID)
+	if err != nil {
+		t.Fatalf("Lookup() error = %v", err)
+	}
+	if !found || record.Revision != 10 || record.Name != "新角色" {
+		t.Fatalf("Lookup() = (%#v, %v), want numeric revision 10", record, found)
+	}
+}
+
+func TestStoreLookupFallsBackAcrossRevisionCandidateBatches(t *testing.T) {
+	root := t.TempDir()
+	const characterID = "character-batched-fallback"
+	writeCharacter(t, root, characterID, 1, "有效角色")
+	for revision := uint64(2); revision <= revisionCandidateBatchSize+2; revision++ {
+		writeFile(t, filepath.Join(root, "characters", characterID, "revisions", fmt.Sprintf("%d.json", revision)), `{broken`)
+	}
+
+	record, found, err := NewStore(root).Lookup(characterID)
+	if err != nil {
+		t.Fatalf("Lookup() error = %v", err)
+	}
+	if !found || record.Revision != 1 || record.Name != "有效角色" {
+		t.Fatalf("Lookup() = (%#v, %v), want cross-batch revision 1 fallback", record, found)
+	}
+	candidates, _, err := scanRevisionCandidates(filepath.Join(root, "characters", characterID, "revisions"), characterID, nil, revisionCandidateBatchSize, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != revisionCandidateBatchSize {
+		t.Fatalf("retained candidates = %d, want %d", len(candidates), revisionCandidateBatchSize)
+	}
+}
+
+func TestCharacterRevisionProductionScanRemainsBounded(t *testing.T) {
+	source, err := os.ReadFile("catalog.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	production := string(source)
+	for _, forbidden := range []string{
+		"os.ReadDir(revisionsDir)",
+		"entries[i].Name() > entries[j].Name()",
+	} {
+		if strings.Contains(production, forbidden) {
+			t.Fatalf("character revision scan contains full-directory marker %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"directory.ReadDir(128)",
+		"revisionCandidateBatchSize = 64",
+		"revisionCandidateNewer",
+	} {
+		if !strings.Contains(production, required) {
+			t.Fatalf("character revision scan is missing %q", required)
+		}
 	}
 }
 

@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -27,6 +28,21 @@ func (t blockingStreamTransport) Execute(ctx context.Context, _ RequestDraft, _ 
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+type overflowingStreamTransport struct {
+	events      []StreamEvent
+	sawCanceled bool
+}
+
+func (t *overflowingStreamTransport) Execute(ctx context.Context, _ RequestDraft, _ string, onEvent func(StreamEvent)) error {
+	for _, event := range t.events {
+		onEvent(event)
+		if ctx.Err() != nil {
+			t.sawCanceled = true
+		}
+	}
+	return nil
 }
 
 func writeModelConnection(t *testing.T, root string, protocol string) {
@@ -273,5 +289,68 @@ func TestModelServiceExecuteRequestContextStreamDeliversBeforeReturn(t *testing.
 	}
 	if event := <-events; event.Type != "completed" {
 		t.Fatalf("last event = %#v", event)
+	}
+}
+
+func TestModelServiceBoundsStreamEventsAndDropsCallbacksAfterCancellation(t *testing.T) {
+	root := t.TempDir()
+	writeModelConnectionWithEndpoint(t, root, "chat_completions", "http://model.test", "no_auth")
+	events := make([]StreamEvent, MaxModelStreamEvents+2)
+	for index := range events {
+		events[index] = StreamEvent{Type: "text_delta", Data: "x"}
+	}
+	events[len(events)-1] = StreamEvent{Type: "completed"}
+	transport := &overflowingStreamTransport{events: events}
+	service := NewModelServiceWithTransport(root, transport, nil)
+	delivered := 0
+	completed := false
+	err := service.ExecuteRequestContextStream(t.Context(), modelServiceRequest(), func(event StreamEvent) {
+		delivered++
+		completed = completed || event.Type == "completed"
+	})
+	if !errors.Is(err, ErrModelStreamCapacity) {
+		t.Fatalf("Execute error = %v, want ErrModelStreamCapacity", err)
+	}
+	if delivered != MaxModelStreamEvents || completed {
+		t.Fatalf("delivered=%d completed=%v", delivered, completed)
+	}
+	if !transport.sawCanceled {
+		t.Fatal("transport context was not canceled at capacity")
+	}
+}
+
+func TestModelServiceBoundsStreamPayloadBeforeConsumer(t *testing.T) {
+	root := t.TempDir()
+	writeModelConnectionWithEndpoint(t, root, "chat_completions", "http://model.test", "no_auth")
+	transport := &overflowingStreamTransport{events: []StreamEvent{{
+		Type: "text_delta", Data: strings.Repeat("x", MaxModelStreamPayloadBytes+1),
+	}}}
+	service := NewModelServiceWithTransport(root, transport, nil)
+	delivered := 0
+	err := service.ExecuteRequestContextStream(t.Context(), modelServiceRequest(), func(StreamEvent) {
+		delivered++
+	})
+	if !errors.Is(err, ErrModelStreamCapacity) || delivered != 0 {
+		t.Fatalf("error=%v delivered=%d", err, delivered)
+	}
+	if !transport.sawCanceled {
+		t.Fatal("transport context was not canceled for payload capacity")
+	}
+}
+
+func TestModelServiceRejectsOversizedFunctionCallEventBeforeConsumer(t *testing.T) {
+	root := t.TempDir()
+	writeModelConnectionWithEndpoint(t, root, "chat_completions", "http://model.test", "no_auth")
+	calls := make([]FunctionCall, MaxModelFunctionCalls+1)
+	transport := &overflowingStreamTransport{events: []StreamEvent{{
+		Type: "function_calls", FunctionCalls: calls,
+	}}}
+	service := NewModelServiceWithTransport(root, transport, nil)
+	delivered := 0
+	err := service.ExecuteRequestContextStream(t.Context(), modelServiceRequest(), func(StreamEvent) {
+		delivered++
+	})
+	if !errors.Is(err, ErrModelStreamCapacity) || delivered != 0 {
+		t.Fatalf("error=%v delivered=%d", err, delivered)
 	}
 }

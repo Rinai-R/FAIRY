@@ -23,7 +23,13 @@ test("Desktop requests Core speech and wires paired audio into the playback owne
   assert.match(surfaceSource, /const newIdentifiedTurn = nextTurnId && currentPlaybackTurn !== nextTurnId/);
   assert.match(surfaceSource, /if \(newIdentifiedTurn \|\| localPendingTurn\)/);
   assert.match(surfaceSource, /player\.beginTurn\(nextTurnId\)/);
+  assert.match(surfaceSource, /if \(newIdentifiedTurn \|\| localPendingTurn\) \{\s+return waitingPhase\s+\? \{ visible: true, waiting: true, settled: false, turnId: nextTurnId, parts: \[\] \}/);
+  assert.match(surfaceSource, /turn\?\.state === "interrupted"/);
+  assert.match(surfaceSource, /if \(isDesktopTurnAborted\(turn\)\) \{/);
   assert.match(surfaceSource, /player\.stop\(\)/);
+  const abortBranch = surfaceSource.indexOf("if (isDesktopTurnAborted(turn)) {");
+  const genericStateBranch = surfaceSource.indexOf('if (turn.type === "state_changed") {', abortBranch);
+  assert.ok(abortBranch >= 0 && genericStateBranch > abortBranch);
 });
 
 test("speech surface bounds sticker delivery receipt deduplication", () => {
@@ -41,6 +47,13 @@ test("companion surface projects direct and proactive Turn events into one activ
 test("Core connection settings stay in the Go backend rather than WebView storage", () => {
   assert.match(surfaceSource, /ConnectionSettings\(\)/);
   assert.match(surfaceSource, /Connect\(\)/);
+  assert.match(surfaceSource, />保存连接配置<\/button>/);
+  assert.match(surfaceSource, /重启后将自动连接/);
+  assert.doesNotMatch(surfaceSource, /保存并连接/);
+  const saveStart = surfaceSource.indexOf("async function save(event)");
+  const saveEnd = surfaceSource.indexOf("async function applyObservation()", saveStart);
+  assert.ok(saveStart >= 0 && saveEnd > saveStart);
+  assert.doesNotMatch(surfaceSource.slice(saveStart, saveEnd), /\bConnect\(\)/);
   assert.doesNotMatch(surfaceSource, /Keychain|keychain/);
   assert.doesNotMatch(surfaceSource, /fairy\.endpoint(?:Key)?/);
   assert.doesNotMatch(surfaceSource, /localStorage\.(?:getItem|setItem)\([^)]*(?:endpoint|token)/);
