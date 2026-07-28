@@ -275,18 +275,18 @@ func LoadExtractionBatchTurnIDs(ctx context.Context, tx pgx.Tx, batchID string) 
 	return allowedTurnIDs, nil
 }
 
-func FindDuplicateMemory(ctx context.Context, tx pgx.Tx, kind string, scope MemoryScope, content string) (string, error) {
+func FindDuplicateMemory(ctx context.Context, db Querier, kind string, scope MemoryScope, content string) (string, error) {
 	scopeKind, characterID, _ := MemoryScopeColumns(scope)
 	var rows pgx.Rows
 	var err error
 	if characterID == nil {
-		rows, err = tx.Query(ctx, `
+		rows, err = db.Query(ctx, `
 SELECT id, content FROM personal_memories
 WHERE kind = $1 AND scope_kind = $2 AND character_id IS NULL
   AND status = 'active' AND review_status = 'ready'
 ORDER BY updated_at_ms DESC, id ASC`, kind, scopeKind)
 	} else {
-		rows, err = tx.Query(ctx, `
+		rows, err = db.Query(ctx, `
 SELECT id, content FROM personal_memories
 WHERE kind = $1 AND scope_kind = $2 AND character_id = $3
   AND status = 'active' AND review_status = 'ready'

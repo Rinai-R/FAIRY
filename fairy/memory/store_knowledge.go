@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -25,18 +26,29 @@ func (s *Store) confirmKnowledgeCandidatePostgres(ctx context.Context, id string
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
+	snapshot, err := knowledgeByIDPostgres(queryCtx, s.pool.Raw(), id)
+	if err != nil {
+		return KnowledgeRecord{}, err
+	}
+	if snapshot.Status != "candidate" || snapshot.VerificationBasis != "unverified" || len(snapshot.Sources) != 0 {
+		return KnowledgeRecord{}, errors.New("knowledge entry is not a confirmable candidate")
+	}
+	embedding, err := s.embeddingForContent(snapshot.Topic + "\n" + snapshot.Statement)
+	if err != nil {
+		return KnowledgeRecord{}, err
+	}
 	tx, err := s.pool.Raw().Begin(queryCtx)
 	if err != nil {
 		return KnowledgeRecord{}, fmt.Errorf("beginning knowledge confirmation transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
 	now := nowUnixMS()
-	topic, statement, err := ConfirmKnowledgeCandidate(queryCtx, tx, id, now)
+	topic, statement, err := ConfirmKnowledgeCandidate(queryCtx, tx, id, now, embedding)
 	if err != nil {
 		return KnowledgeRecord{}, err
 	}
-	if err := enqueueKnowledgeEmbeddingJobPostgres(queryCtx, tx, id, topic, statement, now); err != nil {
-		return KnowledgeRecord{}, err
+	if topic != snapshot.Topic || statement != snapshot.Statement {
+		return KnowledgeRecord{}, errors.New("knowledge changed during confirmation")
 	}
 	if err := tx.Commit(queryCtx); err != nil {
 		return KnowledgeRecord{}, fmt.Errorf("committing knowledge confirmation transaction: %w", err)

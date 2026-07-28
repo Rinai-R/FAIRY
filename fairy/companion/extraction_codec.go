@@ -12,10 +12,9 @@ import (
 )
 
 const (
-	extractionThreshold          uint64 = 6
-	extractionBatchLimit                = memory.DefaultExtractionBatchLimit
-	extractionIdleSeconds               = 30
-	extractionEmbeddingPassLimit        = 8
+	extractionThreshold   uint64 = 6
+	extractionBatchLimit         = memory.DefaultExtractionBatchLimit
+	extractionIdleSeconds        = 30
 )
 
 type batchPromptPayload struct {

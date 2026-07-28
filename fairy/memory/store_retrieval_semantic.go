@@ -6,12 +6,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/pgvector/pgvector-go"
 )
-
-type SemanticVectorIndex interface {
-	Ready(context.Context) error
-	Search(context.Context, []float32, string, string, int) ([]VectorSearchHit, error)
-}
 
 type vectorPersonalTruth struct {
 	record RetrievedPersonalMemory
@@ -23,7 +19,7 @@ type vectorKnowledgeTruth struct {
 	score  float64
 }
 
-func (s *Store) RetrieveWithSemanticVectorIndex(ctx context.Context, characterID, query string, embedder SemanticEmbedder, index SemanticVectorIndex) (RetrievalContext, error) {
+func (s *Store) retrievePostgresHybrid(ctx context.Context, characterID, query string) (RetrievalContext, error) {
 	if s == nil || s.pool == nil {
 		return RetrievalContext{}, ErrDatabasePoolEmpty
 	}
@@ -38,39 +34,89 @@ func (s *Store) RetrieveWithSemanticVectorIndex(ctx context.Context, characterID
 	if err != nil {
 		return RetrievalContext{}, err
 	}
-	if embedder == nil || !embedder.Ready() || index == nil {
-		textContext.SemanticStatus = string(SemanticStatusUnavailable)
+	queryVector, semanticStatus, err := s.queryEmbedding(query)
+	if err != nil {
+		return RetrievalContext{}, err
+	}
+	if queryVector == nil {
+		textContext.SemanticStatus = string(semanticStatus)
 		return textContext, nil
 	}
-	if dims := embedder.Dims(); dims != SemanticEmbeddingDimensions {
-		return RetrievalContext{}, fmt.Errorf("embedding dimensions = %d, want %d", dims, SemanticEmbeddingDimensions)
+	queryCtx, cancel := s.pool.QueryContext(ctx)
+	defer cancel()
+	personal, err := retrievePersonalVectorPostgres(queryCtx, s.pool.Raw(), characterID, *queryVector)
+	if err != nil {
+		return RetrievalContext{}, err
+	}
+	knowledge, err := retrieveKnowledgeVectorPostgres(queryCtx, s.pool.Raw(), *queryVector)
+	if err != nil {
+		return RetrievalContext{}, err
+	}
+	return fusePostgresRetrieval(textContext, personal, knowledge), nil
+}
+
+func (s *Store) retrievePublicKnowledgePostgres(ctx context.Context, query string) (RetrievalContext, error) {
+	if s == nil || s.pool == nil {
+		return RetrievalContext{}, ErrDatabasePoolEmpty
+	}
+	normalized, err := normalizePostgresSearchQuery(query)
+	if err != nil {
+		return RetrievalContext{}, err
+	}
+	textContext := RetrievalContext{
+		PersonalMemories: []RetrievedPersonalMemory{},
+		Knowledge:        []RetrievedKnowledge{},
+		SemanticStatus:   string(SemanticStatusUnavailable),
+	}
+	if normalized != "" {
+		queryCtx, cancel := s.pool.QueryContext(ctx)
+		remaining := maxRetrievedContextChars
+		textContext.Knowledge, err = retrieveKnowledgeTrigramPostgres(queryCtx, s.pool.Raw(), normalized, &remaining)
+		cancel()
+		if err != nil {
+			return RetrievalContext{}, err
+		}
+	}
+	queryVector, semanticStatus, err := s.queryEmbedding(query)
+	if err != nil {
+		return RetrievalContext{}, err
+	}
+	if queryVector == nil {
+		textContext.SemanticStatus = string(semanticStatus)
+		return textContext, nil
+	}
+	queryCtx, cancel := s.pool.QueryContext(ctx)
+	defer cancel()
+	knowledge, err := retrieveKnowledgeVectorPostgres(queryCtx, s.pool.Raw(), *queryVector)
+	if err != nil {
+		return RetrievalContext{}, err
+	}
+	return fusePostgresRetrieval(textContext, nil, knowledge), nil
+}
+
+func (s *Store) queryEmbedding(query string) (*pgvector.Vector, SemanticStatus, error) {
+	if s.semanticEmbedder == nil || !s.semanticEmbedder.Ready() {
+		return nil, SemanticStatusUnavailable, nil
+	}
+	if dims := s.semanticEmbedder.Dims(); dims != SemanticEmbeddingDimensions {
+		return nil, SemanticStatusUnavailable, fmt.Errorf("embedding dimensions = %d, want %d", dims, SemanticEmbeddingDimensions)
 	}
 	semanticText := semanticQueryText(query)
 	if semanticText == "" {
-		textContext.SemanticStatus = string(SemanticStatusReady)
-		return textContext, nil
+		return nil, SemanticStatusReady, nil
 	}
-	vectors, err := embedder.Embed([]string{semanticText})
+	vectors, err := s.semanticEmbedder.Embed([]string{semanticText})
 	if err != nil {
-		textContext.SemanticStatus = string(SemanticStatusUnavailable)
-		return textContext, nil
+		return nil, SemanticStatusUnavailable, nil
 	}
 	if len(vectors) != 1 {
-		return RetrievalContext{}, fmt.Errorf("embedder returned %d vectors for one retrieval query", len(vectors))
+		return nil, SemanticStatusUnavailable, fmt.Errorf("embedding result count = %d, want 1", len(vectors))
 	}
 	if err := ValidateVector(vectors[0]); err != nil {
-		return RetrievalContext{}, err
+		return nil, SemanticStatusUnavailable, err
 	}
-	hits, err := index.Search(ctx, vectors[0], SemanticEmbeddingModelID, characterID, maxResultsPerKind*2)
-	if err != nil {
-		textContext.SemanticStatus = string(SemanticStatusUnavailable)
-		return textContext, nil
-	}
-	personalTruth, knowledgeTruth, err := s.truthCheckVectorHits(ctx, characterID, hits)
-	if err != nil {
-		return RetrievalContext{}, err
-	}
-	return fusePostgresRetrieval(textContext, personalTruth, knowledgeTruth), nil
+	vector := pgvector.NewVector(vectors[0])
+	return &vector, SemanticStatusReady, nil
 }
 
 func (s *Store) retrievePostgresTextContext(ctx context.Context, characterID, normalized string) (RetrievalContext, error) {
@@ -91,78 +137,38 @@ func (s *Store) retrievePostgresTextContext(ctx context.Context, characterID, no
 	return RetrievalContext{PersonalMemories: memories, Knowledge: knowledge, SemanticStatus: string(SemanticStatusUnavailable)}, nil
 }
 
-func (s *Store) truthCheckVectorHits(ctx context.Context, characterID string, hits []VectorSearchHit) (map[string]vectorPersonalTruth, map[string]vectorKnowledgeTruth, error) {
-	personalIDs := make([]string, 0)
-	knowledgeIDs := make([]string, 0)
-	for _, hit := range hits {
-		switch hit.ItemKind {
-		case ItemKindPersonalMemory:
-			personalIDs = append(personalIDs, hit.ItemID)
-		case ItemKindKnowledge:
-			knowledgeIDs = append(knowledgeIDs, hit.ItemID)
-		}
-	}
-	personal, err := s.truthCheckPersonalVectorHits(ctx, characterID, personalIDs)
+func retrievePersonalVectorPostgres(ctx context.Context, db Querier, characterID string, queryVector pgvector.Vector) (map[string]vectorPersonalTruth, error) {
+	rows, err := db.Query(ctx, `
+SELECT id, kind, scope_kind, character_id, content,
+       confidence_basis_points, updated_at_ms,
+       GREATEST(0.0, LEAST(1.0, 1.0 - (embedding OPERATOR(public.<=>) $1::public.vector))) AS similarity
+FROM personal_memories
+WHERE status = 'active'
+  AND review_status = 'ready'
+  AND embedding_model_id = $2
+  AND embedding IS NOT NULL
+  AND (
+    scope_kind = 'global'
+    OR (scope_kind = 'character' AND character_id = $3)
+  )
+ORDER BY embedding OPERATOR(public.<=>) $1::public.vector, id ASC
+LIMIT $4`, queryVector.String(), SemanticEmbeddingModelID, characterID, maxResultsPerKind*2)
 	if err != nil {
-		return nil, nil, err
-	}
-	knowledge, err := s.truthCheckKnowledgeVectorHits(ctx, knowledgeIDs)
-	if err != nil {
-		return nil, nil, err
-	}
-	validPersonal := make(map[string]vectorPersonalTruth)
-	validKnowledge := make(map[string]vectorKnowledgeTruth)
-	for _, hit := range hits {
-		switch hit.ItemKind {
-		case ItemKindPersonalMemory:
-			truth, ok := personal[hit.ItemID]
-			if ok && hit.ContentHash == semanticContentHash(truth.record.Content) {
-				truth.score = hit.Score
-				validPersonal[hit.ItemID] = truth
-			}
-		case ItemKindKnowledge:
-			truth, ok := knowledge[hit.ItemID]
-			if ok && hit.ContentHash == semanticContentHash(truth.record.Topic+"\n"+truth.record.Statement) {
-				truth.score = hit.Score
-				validKnowledge[hit.ItemID] = truth
-			}
-		}
-	}
-	return validPersonal, validKnowledge, nil
-}
-
-func (s *Store) truthCheckPersonalVectorHits(ctx context.Context, characterID string, ids []string) (map[string]vectorPersonalTruth, error) {
-	result := make(map[string]vectorPersonalTruth)
-	if len(ids) == 0 {
-		return result, nil
-	}
-	queryCtx, cancel := s.pool.QueryContext(ctx)
-	defer cancel()
-	rows, err := s.pool.Raw().Query(queryCtx, `
-SELECT p.id, p.kind, p.scope_kind, p.character_id, p.content,
-       p.confidence_basis_points, p.updated_at_ms
-FROM personal_memories p
-JOIN memory_embedding_items i
-  ON i.item_kind = $2 AND i.item_id = p.id AND i.model_id = $3
-WHERE p.id = ANY($1)
-  AND i.status = 'embedded'
-  AND p.status = 'active' AND p.review_status = 'ready'
-  AND (p.scope_kind = 'global' OR (p.scope_kind = 'character' AND p.character_id = $4))`,
-		ids, ItemKindPersonalMemory, SemanticEmbeddingModelID, characterID)
-	if err != nil {
-		return nil, fmt.Errorf("querying personal vector truth: %w", err)
+		return nil, fmt.Errorf("querying personal memory vectors: %w", err)
 	}
 	defer rows.Close()
+	result := make(map[string]vectorPersonalTruth)
 	for rows.Next() {
 		var record RetrievedPersonalMemory
 		var scopeKind string
 		var character pgtype.Text
 		var confidence int
-		if err := rows.Scan(&record.ID, &record.Kind, &scopeKind, &character, &record.Content, &confidence, &record.UpdatedAtUnixMS); err != nil {
-			return nil, fmt.Errorf("scanning personal vector truth: %w", err)
+		var similarity float64
+		if err := rows.Scan(&record.ID, &record.Kind, &scopeKind, &character, &record.Content, &confidence, &record.UpdatedAtUnixMS, &similarity); err != nil {
+			return nil, fmt.Errorf("scanning personal memory vector: %w", err)
 		}
 		if confidence < 0 || confidence > 10000 {
-			return nil, errors.New("personal vector truth confidence is invalid")
+			return nil, errors.New("personal memory vector confidence is invalid")
 		}
 		if err := ValidatePersistedPersonalMemoryContent(record.ID, record.Content); err != nil {
 			return nil, err
@@ -173,52 +179,57 @@ WHERE p.id = ANY($1)
 		}
 		record.Layer = PersonalMemoryLayer(record.Kind, record.Scope)
 		record.ConfidenceBasisPoints = uint16(confidence)
-		result[record.ID] = vectorPersonalTruth{record: record}
+		result[record.ID] = vectorPersonalTruth{record: record, score: similarity}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating personal vector truth: %w", err)
+		return nil, fmt.Errorf("iterating personal memory vectors: %w", err)
 	}
 	return result, nil
 }
 
-func (s *Store) truthCheckKnowledgeVectorHits(ctx context.Context, ids []string) (map[string]vectorKnowledgeTruth, error) {
-	result := make(map[string]vectorKnowledgeTruth)
-	if len(ids) == 0 {
-		return result, nil
-	}
-	queryCtx, cancel := s.pool.QueryContext(ctx)
-	defer cancel()
-	rows, err := s.pool.Raw().Query(queryCtx, `
-SELECT k.id, k.topic, k.statement, k.verification_basis,
-       k.confidence_basis_points, k.updated_at_ms
-FROM knowledge_entries k
-JOIN memory_embedding_items i
-  ON i.item_kind = $2 AND i.item_id = k.id AND i.model_id = $3
-WHERE k.id = ANY($1) AND i.status = 'embedded' AND k.status = 'verified'`,
-		ids, ItemKindKnowledge, SemanticEmbeddingModelID)
+func retrieveKnowledgeVectorPostgres(ctx context.Context, db ConversationDB, queryVector pgvector.Vector) (map[string]vectorKnowledgeTruth, error) {
+	rows, err := db.Query(ctx, `
+SELECT id, topic, statement, verification_basis,
+       confidence_basis_points, updated_at_ms,
+       GREATEST(0.0, LEAST(1.0, 1.0 - (embedding OPERATOR(public.<=>) $1::public.vector))) AS similarity
+FROM knowledge_entries
+WHERE status = 'verified'
+  AND embedding_model_id = $2
+  AND embedding IS NOT NULL
+ORDER BY embedding OPERATOR(public.<=>) $1::public.vector, id ASC
+LIMIT $3`, queryVector.String(), SemanticEmbeddingModelID, maxResultsPerKind*2)
 	if err != nil {
-		return nil, fmt.Errorf("querying knowledge vector truth: %w", err)
+		return nil, fmt.Errorf("querying knowledge vectors: %w", err)
 	}
-	defer rows.Close()
+	result := make(map[string]vectorKnowledgeTruth)
 	for rows.Next() {
 		var record RetrievedKnowledge
 		var confidence int
-		if err := rows.Scan(&record.ID, &record.Topic, &record.Statement, &record.VerificationBasis, &confidence, &record.UpdatedAtUnixMS); err != nil {
-			return nil, fmt.Errorf("scanning knowledge vector truth: %w", err)
+		var similarity float64
+		if err := rows.Scan(&record.ID, &record.Topic, &record.Statement, &record.VerificationBasis, &confidence, &record.UpdatedAtUnixMS, &similarity); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scanning knowledge vector: %w", err)
 		}
 		if confidence < 0 || confidence > 10000 {
-			return nil, errors.New("knowledge vector truth confidence is invalid")
+			rows.Close()
+			return nil, errors.New("knowledge vector confidence is invalid")
 		}
 		record.Layer = "knowledge"
 		record.ConfidenceBasisPoints = uint16(confidence)
-		record.Sources, err = knowledgeSourcesPostgres(queryCtx, s.pool.Raw(), record.ID)
+		result[record.ID] = vectorKnowledgeTruth{record: record, score: similarity}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterating knowledge vectors: %w", err)
+	}
+	rows.Close()
+	for id, truth := range result {
+		sources, err := knowledgeSourcesPostgres(ctx, db, id)
 		if err != nil {
 			return nil, err
 		}
-		result[record.ID] = vectorKnowledgeTruth{record: record}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating knowledge vector truth: %w", err)
+		truth.record.Sources = sources
+		result[id] = truth
 	}
 	return result, nil
 }

@@ -33,7 +33,6 @@ func mustUserHomeDir(t *testing.T) string {
 type fakeDatabaseOperations struct {
 	calls    []string
 	pageSize int
-	apply    bool
 	err      error
 }
 
@@ -50,33 +49,20 @@ func (f *fakeDatabaseOperations) Status(context.Context) (any, error) {
 	return f.record("status")
 }
 
-func (f *fakeDatabaseOperations) VectorMigrate(context.Context) (any, error) {
-	return f.record("vector-migrate")
-}
-
 func (f *fakeDatabaseOperations) VectorRebuild(_ context.Context, pageSize int) (any, error) {
 	f.pageSize = pageSize
 	return f.record("vector-rebuild")
 }
 
-func (f *fakeDatabaseOperations) VectorReconcile(_ context.Context, apply bool) (any, error) {
-	f.apply = apply
-	return f.record("vector-reconcile")
-}
-
 func TestDatabaseCommandsUseFreshRootAndCaptureOutput(t *testing.T) {
 	tests := []struct {
-		args      []string
-		wantCall  string
-		wantApply bool
-		wantPage  int
+		args     []string
+		wantCall string
+		wantPage int
 	}{
 		{args: []string{"db", "migrate"}, wantCall: "migrate"},
 		{args: []string{"db", "status", "--output", "table"}, wantCall: "status"},
-		{args: []string{"db", "vector", "migrate"}, wantCall: "vector-migrate"},
 		{args: []string{"db", "vector", "rebuild", "--page-size", "37"}, wantCall: "vector-rebuild", wantPage: 37},
-		{args: []string{"db", "vector", "reconcile"}, wantCall: "vector-reconcile"},
-		{args: []string{"db", "vector", "reconcile", "--apply"}, wantCall: "vector-reconcile", wantApply: true},
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
@@ -94,8 +80,8 @@ func TestDatabaseCommandsUseFreshRootAndCaptureOutput(t *testing.T) {
 			if len(operations.calls) != 1 || operations.calls[0] != tt.wantCall {
 				t.Fatalf("calls = %v", operations.calls)
 			}
-			if operations.apply != tt.wantApply || operations.pageSize != tt.wantPage {
-				t.Fatalf("apply=%v pageSize=%d", operations.apply, operations.pageSize)
+			if operations.pageSize != tt.wantPage {
+				t.Fatalf("pageSize=%d", operations.pageSize)
 			}
 			if !strings.Contains(output.String(), tt.wantCall) {
 				t.Fatalf("output = %q", output.String())

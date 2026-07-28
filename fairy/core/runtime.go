@@ -52,7 +52,6 @@ type Runtime struct {
 	Messages      *observability.MessageMetrics
 	StartedAt     time.Time
 	Database      *coredb.Pool
-	VectorIndex   *memory.VectorClient
 
 	MemoryStore  *memory.Store
 	Identity     *memory.IdentityStore
@@ -70,7 +69,6 @@ type Runtime struct {
 	WebSearch    *companion.WebSearchService
 	Bootstrap    *BootstrapService
 	ownDatabase  bool
-	ownVector    bool
 	closeOnce    sync.Once
 	closeErr     error
 }
@@ -81,7 +79,7 @@ func (rt *Runtime) APIDependencies() *api.Dependencies {
 	}
 	return &api.Dependencies{
 		ConfigRoot: rt.ConfigRoot, Logger: rt.Logger, StartedAt: rt.StartedAt,
-		Database: rt.Database, VectorIndex: rt.VectorIndex, MemoryStore: rt.MemoryStore,
+		Database: rt.Database, MemoryStore: rt.MemoryStore,
 		Identity: rt.Identity, Memory: rt.Memory, Secret: rt.Secret,
 		Companion: rt.Companion, Initiative: rt.Initiative, Character: rt.Character,
 		Config: rt.Config, Speech: rt.Speech, Profile: rt.Profile, Stickers: rt.Stickers, Captures: rt.Captures,
@@ -157,7 +155,22 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 		opened.closeOwned()
 	}()
 
-	services, err := wireCoreServices(configRoot, opened.Database, opened.MemoryStore, opened.SecretStore)
+	configReader := config.NewReader(configRoot)
+	modelService := model.NewModelService(configRoot, opened.SecretStore)
+	memoryStore := opened.MemoryStore
+	if memoryStore == nil {
+		embedder := semanticEmbedder(modelService, configReader, logger.Named("semantic"))
+		if embedder == nil {
+			memoryStore, err = memory.NewStoreFromPool(opened.Database)
+		} else {
+			memoryStore, err = memory.NewStoreFromPoolWithEmbedder(opened.Database, embedder)
+		}
+		if err != nil {
+			return nil, err
+		}
+		opened.MemoryStore = memoryStore
+	}
+	services, err := wireCoreServices(configRoot, opened.Database, memoryStore, opened.SecretStore, modelService, configReader)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +192,6 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 		Messages:      messageMetrics,
 		StartedAt:     time.Now(),
 		Database:      opened.Database,
-		VectorIndex:   opened.VectorIndex,
 		MemoryStore:   opened.MemoryStore,
 		Identity:      services.Identity,
 		Memory:        services.Memory,
@@ -198,7 +210,6 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 			CoreVersion: "0.1.0",
 		}),
 		ownDatabase: opened.OwnDatabase,
-		ownVector:   opened.OwnVector,
 	}
 	if err := rt.Captures.SettleRecovered(context.Background()); err != nil {
 		return nil, fmt.Errorf("settling recovered desktop captures: %w", err)
@@ -211,10 +222,6 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 	companion.AttachConfigSource(services.Companion, services.ConfigReader)
 	companion.AttachDesktopToolCoordinator(services.Companion, rt.Captures)
 	companion.AttachSpeechRuntime(services.Companion, companionSpeechAdapter{service: services.Speech})
-	attachSemanticEmbedder(services.Companion, services.Model, services.ConfigReader, logger.Named("semantic"))
-	if opened.VectorIndex != nil {
-		companion.AttachVectorIndex(services.Companion, opened.VectorIndex)
-	}
 	character.AttachLogger(services.Character, logger.Named("character"))
 	companion.AttachWebSearchLogger(services.WebSearch, logger.Named("openserp"))
 
@@ -259,11 +266,6 @@ func (rt *Runtime) Close() error {
 		rt.Captures.Close()
 		rt.Messages.Close()
 		rt.Logs.Close()
-		if rt.ownVector && rt.VectorIndex != nil {
-			if closeErr := rt.VectorIndex.Close(); rt.closeErr == nil {
-				rt.closeErr = closeErr
-			}
-		}
 		if rt.ownDatabase && rt.Database != nil {
 			rt.Database.Close()
 		}

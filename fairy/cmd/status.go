@@ -75,7 +75,6 @@ func runDoctor(ctx context.Context, client APIClient, endpoint string) (doctorRe
 		status coreclient.DependencyStatus
 	}{
 		{name: "database", status: status.Database},
-		{name: "qdrant", status: status.Qdrant},
 		{name: "secret-key", status: status.SecretKey},
 	} {
 		check := doctorCheck{Name: dependency.name, Status: "pass"}

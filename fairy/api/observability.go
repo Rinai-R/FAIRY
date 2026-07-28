@@ -38,7 +38,6 @@ type metricsResponse struct {
 	Runtime           runtimeMetrics                       `json:"runtime"`
 	Usage             memory.UsageReport                   `json:"usage"`
 	Database          databaseMetrics                      `json:"database"`
-	Qdrant            qdrantMetrics                        `json:"qdrant"`
 }
 
 func (s *Server) registerObservabilityRoutes() {
@@ -121,7 +120,7 @@ func (s *Server) handleMetrics(ctx context.Context, c *app.RequestContext) {
 		writeErr(c, http.StatusInternalServerError, errors.New("active background job count is negative"))
 		return
 	}
-	database, qdrant, err := s.infrastructureMetrics(ctx)
+	database, err := s.infrastructureMetrics(ctx)
 	if err != nil {
 		writeErr(c, http.StatusInternalServerError, fmt.Errorf("read infrastructure metrics: %w", err))
 		return
@@ -137,7 +136,6 @@ func (s *Server) handleMetrics(ctx context.Context, c *app.RequestContext) {
 		},
 		Usage:    usage,
 		Database: database,
-		Qdrant:   qdrant,
 	}
 	if s.rt.TurnEventSubscriberCount != nil {
 		response.Runtime.EventSubscribers = s.rt.TurnEventSubscriberCount()

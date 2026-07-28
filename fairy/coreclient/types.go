@@ -19,7 +19,6 @@ type Status struct {
 	Speech               json.RawMessage  `json:"speech,omitempty"`
 	SpeechError          string           `json:"speechError,omitempty"`
 	Database             DependencyStatus `json:"database"`
-	Qdrant               DependencyStatus `json:"qdrant"`
 	SecretKey            DependencyStatus `json:"secretKey"`
 }
 
@@ -202,7 +201,6 @@ type Metrics struct {
 	Runtime           RuntimeMetrics                       `json:"runtime"`
 	Usage             UsageReport                          `json:"usage"`
 	Database          json.RawMessage                      `json:"database"`
-	Qdrant            json.RawMessage                      `json:"qdrant"`
 }
 
 type LogQuery struct {

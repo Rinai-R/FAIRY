@@ -34,7 +34,3 @@ func ProfileFromEnv(getenv func(string) string) (Profile, error) {
 	}
 	return ParseProfile(getenv(EnvRuntimeProfile))
 }
-
-func (p Profile) RequiresVectorIndex() bool {
-	return p != ProfileDesktopLite
-}

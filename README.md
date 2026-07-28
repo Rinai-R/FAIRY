@@ -52,22 +52,19 @@ go -C fairy run . character activate --character <id> --revision <revision>
 - `--timeout` / `FAIRY_CLI_TIMEOUT`，默认 `15s`
 - `--output json|table` / `FAIRY_CLI_OUTPUT`，默认 `json`
 - `FAIRY_API_TOKEN`：必需的 Bearer token（含 loopback）；不提供 token flag，也不写配置文件。未设置时 `serve` / `NewServer` 失败。
-- `FAIRY_RUNTIME_PROFILE`：`full`（默认，强制 Qdrant）或 `desktop-lite`（Qdrant 可选，检索可降级 FTS）
+- `FAIRY_RUNTIME_PROFILE`：`full`（默认）或 `desktop-lite`；两者都要求 PostgreSQL current schema 与 master key，不再配置独立向量服务
 
 `turn send`、`events follow` 和 `logs --follow` 的流式生命周期由命令 context 控制，不会在默认 15 秒后自动断开。stream 断开时不会自动重连。
 
-数据库与向量索引使用显式运维命令：
+数据库与向量字段使用显式运维命令：
 
 ```bash
 go -C fairy run . db migrate
 go -C fairy run . db status
-go -C fairy run . db vector migrate
 go -C fairy run . db vector rebuild
-go -C fairy run . db vector reconcile          # 默认 dry-run
-go -C fairy run . db vector reconcile --apply  # 只删除确认 orphan
 ```
 
-PostgreSQL 初始化使用 GORM models 对空库或已有 schema 执行非破坏性的 additive migration：常规 CHECK、unique 与 B-tree index 随 model 迁移，外键、trigram/partial 等 PostgreSQL 特例显式创建，全部成功后才提交 current schema revision。迁移不自动删除、重命名或重写已有结构，也不读取或导入 SQLite 数据。
+PostgreSQL 初始化使用 GORM models 对空库或已有 schema 执行非破坏性的 additive migration：常规 CHECK、unique 与 B-tree index 随 model 迁移，`pg_trgm`、`pgvector`、外键、partial、GIN 与 HNSW 等 PostgreSQL 特例显式创建，全部成功后才提交 current schema revision。个人记忆与已验证知识的 512 维向量直接保存在权威业务行中；`db vector rebuild` 只重算并回写 PostgreSQL。迁移不自动删除、重命名或重写已有结构，也不读取或导入 SQLite 数据。
 
 ## 备份与恢复
 
@@ -102,7 +99,6 @@ go vet -C surfaces/qq-onebot ./...
 go build -C surfaces/qq-onebot .
 docker compose -f docker-compose.integration.yml up -d --wait
 FAIRY_TEST_DATABASE_URL='postgres://fairy:fairy_test_password@127.0.0.1:15432/fairy_test?sslmode=disable' \
-FAIRY_TEST_QDRANT_GRPC_URL='http://127.0.0.1:16334' \
 go test -C fairy ./... -tags integration -count=1
 docker compose -f docker-compose.integration.yml down
 pnpm --filter @fairy/web test

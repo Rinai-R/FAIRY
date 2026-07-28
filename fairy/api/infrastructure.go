@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"fairy/coredb"
-	"fairy/memory"
 )
 
 type databaseStatus struct {
@@ -16,31 +15,18 @@ type databaseStatus struct {
 	Error      string               `json:"error,omitempty"`
 }
 
-type qdrantStatus struct {
-	Ready      bool                           `json:"ready"`
-	Mode       string                         `json:"mode"`
-	Descriptor *memory.VectorDescriptor       `json:"descriptor,omitempty"`
-	Collection *memory.VectorCollectionStatus `json:"collection,omitempty"`
-	Error      string                         `json:"error,omitempty"`
-}
-
 type secretKeyStatus struct {
 	Ready bool   `json:"ready"`
 	Mode  string `json:"mode"`
 }
 
 type databaseMetrics struct {
-	Available bool                  `json:"available"`
-	Pool      *coredb.PoolStats     `json:"pool,omitempty"`
-	Vector    *memory.VectorMetrics `json:"vector,omitempty"`
+	Available  bool              `json:"available"`
+	Pool       *coredb.PoolStats `json:"pool,omitempty"`
+	VectorRows int64             `json:"vectorRows"`
 }
 
-type qdrantMetrics struct {
-	Available bool                          `json:"available"`
-	Snapshot  *memory.VectorMetricsSnapshot `json:"snapshot,omitempty"`
-}
-
-func (s *Server) infrastructureStatus(ctx context.Context) (databaseStatus, qdrantStatus, secretKeyStatus) {
+func (s *Server) infrastructureStatus(ctx context.Context) (databaseStatus, secretKeyStatus) {
 	database := databaseStatus{Mode: "production"}
 	if s.rt.Database == nil {
 		database.Mode = "injected_test_dependency"
@@ -66,50 +52,22 @@ func (s *Server) infrastructureStatus(ctx context.Context) (databaseStatus, qdra
 		}
 	}
 
-	qdrant := qdrantStatus{Mode: "production"}
-	if s.rt.VectorIndex == nil {
-		qdrant.Mode = "injected_test_dependency"
-		qdrant.Error = "qdrant dependency is not available"
-	} else {
-		descriptor, err := s.rt.VectorIndex.Descriptor()
-		if err != nil {
-			qdrant.Error = err.Error()
-		} else {
-			qdrant.Descriptor = &descriptor
-			collection, err := s.rt.VectorIndex.VerifyCollection(ctx)
-			if err != nil {
-				qdrant.Error = err.Error()
-			} else {
-				qdrant.Ready = true
-				qdrant.Collection = &collection
-			}
-		}
-	}
-
 	secretKey := secretKeyStatus{Ready: s.rt.Secret != nil && s.rt.Secret.Encrypted(), Mode: "production"}
 	if s.rt.Database == nil {
 		secretKey.Mode = "injected_test_dependency"
 	}
-	return database, qdrant, secretKey
+	return database, secretKey
 }
 
-func (s *Server) infrastructureMetrics(ctx context.Context) (databaseMetrics, qdrantMetrics, error) {
+func (s *Server) infrastructureMetrics(ctx context.Context) (databaseMetrics, error) {
 	database := databaseMetrics{}
 	if s.rt.Database != nil {
-		vectorMetrics, err := s.rt.MemoryStore.VectorMetricsContext(ctx)
+		semantic, err := s.rt.Memory.SemanticEmbeddingStatus()
 		if err != nil {
-			return databaseMetrics{}, qdrantMetrics{}, err
+			return databaseMetrics{}, err
 		}
 		stats := s.rt.Database.Stats()
-		database = databaseMetrics{Available: true, Pool: &stats, Vector: &vectorMetrics}
+		database = databaseMetrics{Available: true, Pool: &stats, VectorRows: semantic.VectorRows}
 	}
-	qdrant := qdrantMetrics{}
-	if s.rt.VectorIndex != nil {
-		snapshot, err := s.rt.VectorIndex.Metrics(ctx)
-		if err != nil {
-			return databaseMetrics{}, qdrantMetrics{}, err
-		}
-		qdrant = qdrantMetrics{Available: true, Snapshot: &snapshot}
-	}
-	return database, qdrant, nil
+	return database, nil
 }

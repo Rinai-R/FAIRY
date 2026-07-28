@@ -971,7 +971,7 @@ func TestDesktopTurnStateClassification(t *testing.T) {
 func serviceStatusFixture() coreclient.Status {
 	return coreclient.Status{
 		Bootstrap: json.RawMessage(`{}`), ConfigRoot: "test", WebSearch: json.RawMessage(`{}`), SemanticEmbedding: json.RawMessage(`{}`),
-		Database: coreclient.DependencyStatus{Ready: true, Mode: "test"}, Qdrant: coreclient.DependencyStatus{Ready: true, Mode: "test"}, SecretKey: coreclient.DependencyStatus{Ready: true, Mode: "test"},
+		Database: coreclient.DependencyStatus{Ready: true, Mode: "test"}, SecretKey: coreclient.DependencyStatus{Ready: true, Mode: "test"},
 	}
 }
 

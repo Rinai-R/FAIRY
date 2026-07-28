@@ -37,20 +37,27 @@ func (s *MemoryService) SemanticEmbeddingStatus() (SemanticEmbeddingReadiness, e
 	if s == nil || s.store == nil {
 		return SemanticEmbeddingReadiness{}, ErrDatabasePoolEmpty
 	}
-	metrics, err := s.store.VectorMetricsContext(context.Background())
+	queryCtx, cancel := s.store.pool.QueryContext(context.Background())
+	defer cancel()
+	vectorRows, err := countPostgresScalar(queryCtx, s.store.pool, `
+SELECT
+  (SELECT count(*) FROM personal_memories WHERE embedding IS NOT NULL)
+  + (SELECT count(*) FROM knowledge_entries WHERE embedding IS NOT NULL)`)
 	if err != nil {
 		return SemanticEmbeddingReadiness{}, err
+	}
+	status := SemanticStatusUnavailable
+	reason := "api_embedder_required"
+	if s.store.semanticEmbedder != nil && s.store.semanticEmbedder.Ready() {
+		status = SemanticStatusReady
+		reason = ""
 	}
 	return SemanticEmbeddingReadiness{
 		Dimensions:     SemanticEmbeddingDimensions,
 		DatabaseStatus: SemanticDatabaseStatusReady,
-		SemanticStatus: "unavailable",
-		Reason:         "api_embedder_required",
-		PendingJobs:    metrics.EmbeddingJobs.Pending,
-		RunningJobs:    metrics.EmbeddingJobs.Running,
-		FailedJobs:     metrics.EmbeddingJobs.Failed,
-		EmbeddedItems:  metrics.EmbeddingJobs.Embedded,
-		VectorRows:     metrics.EmbeddingJobs.Embedded,
+		SemanticStatus: string(status),
+		Reason:         reason,
+		VectorRows:     vectorRows,
 	}, nil
 }
 

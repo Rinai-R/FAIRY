@@ -23,13 +23,15 @@ type coreServices struct {
 	Memory       *memory.MemoryService
 }
 
-func wireCoreServices(configRoot string, database *coredb.Pool, memoryStore *memory.Store, secretStore *config.SecretStore) (*coreServices, error) {
+func wireCoreServices(configRoot string, database *coredb.Pool, memoryStore *memory.Store, secretStore *config.SecretStore, modelService *model.ModelService, configReader *config.Reader) (*coreServices, error) {
 	webSettings, err := config.ReadWebSearchSettings(configRoot)
 	if err != nil {
 		return nil, err
 	}
 	webSearch := companion.NewWebSearchService(config.ResolveWebSearchBaseURL(webSettings.BaseURL))
-	modelService := model.NewModelService(configRoot, secretStore)
+	if modelService == nil {
+		modelService = model.NewModelService(configRoot, secretStore)
+	}
 	companionService := companion.NewCompanionServiceWithRuntime(configRoot, memoryStore, modelService, webSearch)
 	identityStore, err := memory.NewIdentityStore(database)
 	if err != nil {
@@ -40,7 +42,9 @@ func wireCoreServices(configRoot string, database *coredb.Pool, memoryStore *mem
 	configService := config.NewConfigService(configRoot, secretStore)
 	speechService := speech.NewSpeechService(configRoot, secretStore)
 	profileService := config.NewProfileService(configRoot)
-	configReader := config.NewReader(configRoot)
+	if configReader == nil {
+		configReader = config.NewReader(configRoot)
+	}
 
 	return &coreServices{
 		WebSearch:    webSearch,

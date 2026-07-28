@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"fairy/coredb"
-	"fairy/memory"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,17 +22,15 @@ import (
 func TestProductionRuntimeCompositionAndClose(t *testing.T) {
 	databaseURL, cleanupSchema := isolatedRuntimeSchema(t, true)
 	defer cleanupSchema()
-	qdrantURL := testQdrantURL()
-	ensureRuntimeCollection(t, qdrantURL)
-	setRuntimeEnvironment(t, databaseURL, qdrantURL, testMasterKey())
+	setRuntimeEnvironment(t, databaseURL, testMasterKey())
 
 	root := t.TempDir()
 	rt, err := Open(RuntimeOptions{ConfigRoot: root})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rt.Database == nil || rt.MemoryStore == nil || rt.Secret == nil || rt.VectorIndex == nil {
-		t.Fatalf("runtime dependencies = database:%v memory:%v secret:%v vector:%v", rt.Database != nil, rt.MemoryStore != nil, rt.Secret != nil, rt.VectorIndex != nil)
+	if rt.Database == nil || rt.MemoryStore == nil || rt.Secret == nil {
+		t.Fatalf("runtime dependencies = database:%v memory:%v secret:%v", rt.Database != nil, rt.MemoryStore != nil, rt.Secret != nil)
 	}
 	if !rt.Secret.Encrypted() {
 		t.Fatal("runtime secret store is not encrypted")
@@ -59,8 +56,6 @@ func TestProductionRuntimeCompositionAndClose(t *testing.T) {
 }
 
 func TestProductionRuntimeRejectsMissingRequiredDependencies(t *testing.T) {
-	qdrantURL := testQdrantURL()
-	ensureRuntimeCollection(t, qdrantURL)
 	migratedURL, cleanupMigrated := isolatedRuntimeSchema(t, true)
 	defer cleanupMigrated()
 	unmigratedURL, cleanupUnmigrated := isolatedRuntimeSchema(t, false)
@@ -69,18 +64,16 @@ func TestProductionRuntimeRejectsMissingRequiredDependencies(t *testing.T) {
 	tests := []struct {
 		name        string
 		databaseURL string
-		qdrantURL   string
 		masterKey   string
 		want        string
 	}{
-		{name: "database URL", qdrantURL: qdrantURL, masterKey: testMasterKey(), want: "FAIRY_DATABASE_URL is required"},
-		{name: "schema", databaseURL: unmigratedURL, qdrantURL: qdrantURL, masterKey: testMasterKey(), want: "schema"},
-		{name: "qdrant URL", databaseURL: migratedURL, masterKey: testMasterKey(), want: "FAIRY_QDRANT_URL is required"},
-		{name: "master key", databaseURL: migratedURL, qdrantURL: qdrantURL, want: "FAIRY_SECRET_MASTER_KEY is required"},
+		{name: "database URL", masterKey: testMasterKey(), want: "FAIRY_DATABASE_URL is required"},
+		{name: "schema", databaseURL: unmigratedURL, masterKey: testMasterKey(), want: "schema"},
+		{name: "master key", databaseURL: migratedURL, want: "FAIRY_SECRET_MASTER_KEY is required"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			setRuntimeEnvironment(t, tt.databaseURL, tt.qdrantURL, tt.masterKey)
+			setRuntimeEnvironment(t, tt.databaseURL, tt.masterKey)
 			root := t.TempDir()
 			rt, err := Open(RuntimeOptions{ConfigRoot: root})
 			if rt != nil || err == nil || !strings.Contains(err.Error(), tt.want) {
@@ -152,37 +145,14 @@ func withRuntimeSearchPath(t *testing.T, rawURL, schema string) string {
 	return parsed.String()
 }
 
-func ensureRuntimeCollection(t *testing.T, rawURL string) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	client, err := memory.OpenVectorClient(ctx, memory.VectorConfig{URL: rawURL, Timeout: 5 * time.Second, CollectionName: memory.VectorCollectionName})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-	if err := client.MigrateCollection(ctx); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func setRuntimeEnvironment(t *testing.T, databaseURL, qdrantURL, masterKey string) {
+func setRuntimeEnvironment(t *testing.T, databaseURL, masterKey string) {
 	t.Helper()
 	t.Setenv(coredb.EnvDatabaseURL, databaseURL)
 	t.Setenv(coredb.EnvMaxConns, "4")
 	t.Setenv(coredb.EnvMinConns, "0")
 	t.Setenv(coredb.EnvConnectTimeout, "2s")
 	t.Setenv(coredb.EnvQueryTimeout, "2s")
-	t.Setenv(memory.VectorEnvURL, qdrantURL)
-	t.Setenv(memory.VectorEnvTimeout, "2s")
 	t.Setenv("FAIRY_SECRET_MASTER_KEY", masterKey)
-}
-
-func testQdrantURL() string {
-	if value := os.Getenv("FAIRY_TEST_QDRANT_GRPC_URL"); value != "" {
-		return value
-	}
-	return "http://127.0.0.1:16334"
 }
 
 func testMasterKey() string {

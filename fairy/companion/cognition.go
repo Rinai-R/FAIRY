@@ -34,13 +34,7 @@ func (s *CompanionService) retrieveMemoryForTool(characterID string, query strin
 	if s == nil || s.memory.turn.memoryRetrieval == nil {
 		return memory.RetrievalContext{}, errors.New("memory store is unavailable")
 	}
-	var result memory.RetrievalContext
-	var err error
-	if s.semanticEmbedder != nil && s.semanticEmbedder.Ready() {
-		result, err = s.memory.turn.memoryRetrieval.RetrieveWithSemanticVectorIndex(context.Background(), characterID, query, s.semanticEmbedder, s.vectorIndex)
-	} else {
-		result, err = s.memory.turn.memoryRetrieval.Retrieve(characterID, query)
-	}
+	result, err := s.memory.turn.memoryRetrieval.Retrieve(characterID, query)
 	if err != nil {
 		return memory.RetrievalContext{}, err
 	}

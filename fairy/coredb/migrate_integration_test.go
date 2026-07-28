@@ -52,7 +52,7 @@ func TestMigrateAndVerifySchemaIntegration(t *testing.T) {
 			assertRegclass(t, ctx, pool, index.Name, true)
 		}
 	}
-	for _, constraint := range postgresForeignKeys {
+	for _, constraint := range postgresConstraints {
 		assertConstraint(t, ctx, pool, constraint.Table, constraint.Name, true)
 	}
 	for _, index := range postgresIndexes {
@@ -64,7 +64,6 @@ func TestMigrateAndVerifySchemaIntegration(t *testing.T) {
 		{"extraction_batches", "attempt_count"},
 		{"knowledge_entries", "confidence_basis_points"},
 		{"knowledge_sources", "rank"},
-		{"memory_embedding_items", "dimensions"},
 		{"secret_values", "key_version"},
 	} {
 		assertColumnType(t, ctx, pool, column[0], column[1], "integer")
@@ -76,6 +75,13 @@ func TestMigrateAndVerifySchemaIntegration(t *testing.T) {
 	}
 	if !hasTrgm {
 		t.Fatal("pg_trgm extension is not installed")
+	}
+	var hasVector bool
+	if err := pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'vector')").Scan(&hasVector); err != nil {
+		t.Fatalf("checking pgvector: %v", err)
+	}
+	if !hasVector {
+		t.Fatal("vector extension is not installed")
 	}
 }
 

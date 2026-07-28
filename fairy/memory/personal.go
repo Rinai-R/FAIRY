@@ -43,12 +43,12 @@ func ListPersonalMemories(ctx context.Context, db Querier, scopeKind, characterI
 	return records, nil
 }
 
-func PersonalMemoryByID(ctx context.Context, tx pgx.Tx, id string, forUpdate bool) (PersonalMemoryRecord, error) {
+func PersonalMemoryByID(ctx context.Context, db ConversationDB, id string, forUpdate bool) (PersonalMemoryRecord, error) {
 	query := "SELECT id, kind, scope_kind, character_id, review_status, content, status, confidence_basis_points, source_conversation_id, source_turn_id, supersedes_id, created_at_ms, updated_at_ms FROM personal_memories WHERE id = $1"
 	if forUpdate {
 		query += " FOR UPDATE"
 	}
-	return ScanPersonalMemory(tx.QueryRow(ctx, query, id))
+	return ScanPersonalMemory(db.QueryRow(ctx, query, id))
 }
 
 func ScanPersonalMemory(row scanner) (PersonalMemoryRecord, error) {
@@ -84,17 +84,35 @@ func InsertPersonalMemory(
 	sourceConversationID, sourceTurnID string,
 	supersedesID *string,
 	now int64,
-	enqueueEmbedding func(context.Context, pgx.Tx, string, string, int64) error,
+	embedding EmbeddingValue,
 ) (PersonalMemoryRecord, error) {
 	scopeKind, characterID, reviewStatus := MemoryScopeColumns(scope)
-	_, err := tx.Exec(ctx, "INSERT INTO personal_memories(id, kind, scope_kind, character_id, review_status, content, status, confidence_basis_points, source_conversation_id, source_turn_id, supersedes_id, created_at_ms, updated_at_ms) VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8, $9, $10, $11, $11)", id, kind, scopeKind, characterID, reviewStatus, content, int(confidence), sourceConversationID, sourceTurnID, supersedesID, now)
+	if reviewStatus != "ready" && embedding.Enabled() {
+		return PersonalMemoryRecord{}, errors.New("needs-review memory cannot have an embedding")
+	}
+	if err := embedding.Validate(); err != nil {
+		return PersonalMemoryRecord{}, err
+	}
+	var modelID, contentHash any
+	var vector any
+	if embedding.Enabled() {
+		modelID = embedding.ModelID
+		contentHash = embedding.ContentHash
+		vector = embedding.Vector.String()
+	}
+	_, err := tx.Exec(ctx, `
+INSERT INTO personal_memories(
+  id, kind, scope_kind, character_id, review_status, content, status,
+  confidence_basis_points, source_conversation_id, source_turn_id,
+  supersedes_id, embedding_model_id, embedding_content_hash, embedding,
+  created_at_ms, updated_at_ms
+) VALUES (
+  $1, $2, $3, $4, $5, $6, 'active',
+  $7, $8, $9, $10, $11, $12, $13::public.vector,
+  $14, $14
+)`, id, kind, scopeKind, characterID, reviewStatus, content, int(confidence), sourceConversationID, sourceTurnID, supersedesID, modelID, contentHash, vector, now)
 	if err != nil {
 		return PersonalMemoryRecord{}, fmt.Errorf("inserting personal memory: %w", err)
-	}
-	if reviewStatus == "ready" {
-		if err := enqueueEmbedding(ctx, tx, id, content, now); err != nil {
-			return PersonalMemoryRecord{}, err
-		}
 	}
 	return PersonalMemoryRecord{
 		ID: id, Kind: kind, Scope: scope, ReviewStatus: reviewStatus, Content: content, Status: "active",

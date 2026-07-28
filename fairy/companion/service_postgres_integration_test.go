@@ -1300,7 +1300,6 @@ func compiledPromptContains(request model.CompiledPromptRequest, text string) bo
 
 type privacyJobCounts struct {
 	extraction int
-	embedding  int
 	ingest     int
 }
 
@@ -1309,7 +1308,6 @@ func groupPrivacyJobCounts(t *testing.T, pool *pgxpool.Pool) privacyJobCounts {
 	var counts privacyJobCounts
 	for query, destination := range map[string]*int{
 		"SELECT count(*) FROM extraction_batches":    &counts.extraction,
-		"SELECT count(*) FROM memory_embedding_jobs": &counts.embedding,
 		"SELECT count(*) FROM knowledge_ingest_jobs": &counts.ingest,
 	} {
 		if err := pool.QueryRow(context.Background(), query).Scan(destination); err != nil {

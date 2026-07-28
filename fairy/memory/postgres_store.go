@@ -28,15 +28,27 @@ const defaultJobLeaseDuration = 30 * time.Second
 
 type Store struct {
 	pool             *coredb.Pool
+	semanticEmbedder SemanticEmbedder
 	workerID         string
 	jobLeaseDuration time.Duration
 }
 
 func NewStoreFromPool(pool *coredb.Pool) (*Store, error) {
-	return NewStoreFromPoolWithLease(pool, "memory-"+newID(), defaultJobLeaseDuration)
+	return newStoreFromPool(pool, nil, "memory-"+newID(), defaultJobLeaseDuration)
+}
+
+func NewStoreFromPoolWithEmbedder(pool *coredb.Pool, embedder SemanticEmbedder) (*Store, error) {
+	if embedder == nil {
+		return nil, errors.New("semantic embedder is required")
+	}
+	return newStoreFromPool(pool, embedder, "memory-"+newID(), defaultJobLeaseDuration)
 }
 
 func NewStoreFromPoolWithLease(pool *coredb.Pool, workerID string, leaseDuration time.Duration) (*Store, error) {
+	return newStoreFromPool(pool, nil, workerID, leaseDuration)
+}
+
+func newStoreFromPool(pool *coredb.Pool, embedder SemanticEmbedder, workerID string, leaseDuration time.Duration) (*Store, error) {
 	if pool == nil || pool.Raw() == nil {
 		return nil, ErrDatabasePoolEmpty
 	}
@@ -46,7 +58,7 @@ func NewStoreFromPoolWithLease(pool *coredb.Pool, workerID string, leaseDuration
 	if leaseDuration <= 0 {
 		return nil, ErrJobLeaseInvalid
 	}
-	return &Store{pool: pool, workerID: workerID, jobLeaseDuration: leaseDuration}, nil
+	return &Store{pool: pool, semanticEmbedder: embedder, workerID: workerID, jobLeaseDuration: leaseDuration}, nil
 }
 
 func (s *Store) Summary() (Summary, error) {

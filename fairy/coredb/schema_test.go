@@ -49,11 +49,6 @@ func TestSchemaModelsDeclareMovedIndexes(t *testing.T) {
 		"endpoint_conversations_conversation",
 		"extraction_batch_turns_batch_sequence_key",
 		"knowledge_entries_status_updated",
-		"memory_embedding_items_item",
-		"memory_embedding_items_item_key",
-		"memory_embedding_items_status",
-		"memory_embedding_jobs_item",
-		"memory_embedding_jobs_item_content_key",
 		"personal_memories_scope_status",
 		"personal_memory_evidence_memory",
 		"social_memory_entries_scope_hash_key",
@@ -68,8 +63,6 @@ func TestSchemaModelsDeclareMovedIndexes(t *testing.T) {
 		"turn_runtime_events_conversation_turn_sequence_key",
 		"turn_runtime_events_turn_sequence",
 		"turn_runtime_events_type_created",
-		"vector_rebuild_runs_status",
-		"vector_reconciliation_runs_status",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("model indexes = %v, want %v", got, want)

@@ -191,9 +191,6 @@ func (e *retentionEngine) claimAndRunExtraction(conversationID string) {
 		return
 	}
 	e.service.clearBackgroundError()
-	if _, err := store.ProcessEmbeddingJobsWithVectorIndex(context.Background(), e.service.semanticEmbedder, e.service.vectorIndex, extractionEmbeddingPassLimit); err != nil {
-		e.service.setBackgroundError(err)
-	}
 }
 
 func (e *retentionEngine) executeExtractionBatch(store extractionStore, batch *memory.ExtractionBatchInput) error {

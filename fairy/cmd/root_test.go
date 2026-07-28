@@ -325,22 +325,21 @@ func TestDoctorStoppedCoreWritesFailure(t *testing.T) {
 
 func TestDoctorFailsRequiredInfrastructureDependency(t *testing.T) {
 	client := &fakeClient{status: coreclient.Status{
-		Database:  coreclient.DependencyStatus{Ready: true, Mode: "production"},
-		Qdrant:    coreclient.DependencyStatus{Ready: false, Mode: "production", Error: "collection contract mismatch"},
+		Database:  coreclient.DependencyStatus{Ready: false, Mode: "production", Error: "schema revision mismatch"},
 		SecretKey: coreclient.DependencyStatus{Ready: true, Mode: "production"},
 	}}
 	report, err := runDoctor(context.Background(), client, "http://core.test")
-	if err == nil || !strings.Contains(err.Error(), "collection contract mismatch") {
+	if err == nil || !strings.Contains(err.Error(), "schema revision mismatch") {
 		t.Fatalf("runDoctor() error = %v", err)
 	}
-	var qdrant doctorCheck
+	var database doctorCheck
 	for _, check := range report.Checks {
-		if check.Name == "qdrant" {
-			qdrant = check
+		if check.Name == "database" {
+			database = check
 		}
 	}
-	if qdrant.Status != "fail" || qdrant.Detail != "collection contract mismatch" {
-		t.Fatalf("qdrant check = %#v", qdrant)
+	if database.Status != "fail" || database.Detail != "schema revision mismatch" {
+		t.Fatalf("database check = %#v", database)
 	}
 }
 

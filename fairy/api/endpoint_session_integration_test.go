@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"fairy/character"
 	fairycore "fairy/core"
@@ -35,9 +36,7 @@ func TestEndpointSessionIsolatesKeysAndPersistsNoRawKeyIntegration(t *testing.T)
 	}
 	databaseURL, cleanup := isolatedAPISchema(t)
 	defer cleanup()
-	qdrantURL := apiTestQdrantURL()
-	ensureAPIQdrantCollection(t, qdrantURL)
-	setAPIProductionEnv(t, databaseURL, qdrantURL, base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789")))
+	setAPIProductionEnv(t, databaseURL, base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789")))
 	rt, err := fairycore.Open(fairycore.RuntimeOptions{ConfigRoot: root, Logger: zap.NewNop()})
 	if err != nil {
 		t.Fatal(err)
@@ -92,6 +91,12 @@ func TestEndpointSessionIsolatesKeysAndPersistsNoRawKeyIntegration(t *testing.T)
 	}
 	if err := sessionSocket.Close(); err != nil {
 		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) &&
+		(rt.Companion.OutputCapabilities(groupA.ConversationID).Sticker ||
+			rt.Companion.OutputCapabilities(groupB.ConversationID).Sticker) {
+		time.Sleep(10 * time.Millisecond)
 	}
 	if rt.Companion.OutputCapabilities(groupA.ConversationID).Sticker || rt.Companion.OutputCapabilities(groupB.ConversationID).Sticker {
 		t.Fatal("closed SessionSocket retained advertised sticker capability")

@@ -142,7 +142,7 @@ func TestThirdPartySDKImportsMatchMigrationInventory(t *testing.T) {
 			"fairy/sticker",
 		},
 		"gorm.io/":                     {"fairy/coredb"},
-		"github.com/qdrant/":           {"fairy/memory"},
+		"github.com/pgvector/":          {"fairy/coredb", "fairy/memory"},
 		"github.com/openai/":           {"fairy/model"},
 		"github.com/cloudwego/hertz/":  {"fairy/api"},
 		"github.com/gorilla/websocket": {"fairy/api", "fairy/coreclient"},

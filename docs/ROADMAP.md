@@ -5,7 +5,7 @@
 ## 已落地
 
 - [x] Session Core：显式 Agent Loop、可取消 Turn、白名单工具、节奏化回复、持久会话与分层记忆
-- [x] 数据底座：PostgreSQL 17、GORM additive migration、Qdrant 派生索引与 OpenSERP 可选公开检索
+- [x] 数据底座：PostgreSQL 17、GORM additive migration、pg_trgm + pgvector 单库混合召回与 OpenSERP 可选公开检索
 - [x] Desktop Surface：Wails v3 桌宠、快捷输入、历史消息、coarse observation 与受控的模型按需主屏捕获
 - [x] Web 控制台：角色、称呼、模型、语音、表情包、智能、用量与可观测性管理
 - [x] 公共社交陪伴：QQ 群聊接入，由 Core 判断是否自然参与

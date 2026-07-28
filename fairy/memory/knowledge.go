@@ -82,8 +82,30 @@ func KnowledgeSources(ctx context.Context, db Querier, id string) ([]AssistantSo
 	return sources, nil
 }
 
-func ConfirmKnowledgeCandidate(ctx context.Context, tx pgx.Tx, id string, now int64) (topic, statement string, err error) {
-	changed, err := tx.Exec(ctx, "UPDATE knowledge_entries SET status = 'verified', verification_basis = 'user_confirmed', updated_at_ms = $2 WHERE id = $1 AND status = 'candidate' AND verification_basis = 'unverified' AND NOT EXISTS (SELECT 1 FROM knowledge_sources s WHERE s.knowledge_id = knowledge_entries.id)", id, now)
+func ConfirmKnowledgeCandidate(ctx context.Context, tx pgx.Tx, id string, now int64, embedding EmbeddingValue) (topic, statement string, err error) {
+	if err := embedding.Validate(); err != nil {
+		return "", "", err
+	}
+	var modelID, contentHash, vector any
+	if embedding.Enabled() {
+		modelID = embedding.ModelID
+		contentHash = embedding.ContentHash
+		vector = embedding.Vector.String()
+	}
+	changed, err := tx.Exec(ctx, `
+UPDATE knowledge_entries
+SET status = 'verified',
+    verification_basis = 'user_confirmed',
+    embedding_model_id = $3,
+    embedding_content_hash = $4,
+    embedding = $5::public.vector,
+    updated_at_ms = $2
+WHERE id = $1
+  AND status = 'candidate'
+  AND verification_basis = 'unverified'
+  AND NOT EXISTS (
+    SELECT 1 FROM knowledge_sources s WHERE s.knowledge_id = knowledge_entries.id
+  )`, id, now, modelID, contentHash, vector)
 	if err != nil {
 		return "", "", fmt.Errorf("confirming knowledge candidate: %w", err)
 	}
@@ -109,9 +131,9 @@ func TombstoneKnowledge(ctx context.Context, exec interface {
 	return nil
 }
 
-func FindVerifiedKnowledgeIDByStatement(ctx context.Context, tx pgx.Tx, statement string) (string, bool, error) {
+func FindVerifiedKnowledgeIDByStatement(ctx context.Context, db ConversationDB, statement string) (string, bool, error) {
 	var existingID string
-	err := tx.QueryRow(ctx, "SELECT id FROM knowledge_entries WHERE status = 'verified' AND statement = $1 ORDER BY updated_at_ms DESC, id ASC LIMIT 1", statement).Scan(&existingID)
+	err := db.QueryRow(ctx, "SELECT id FROM knowledge_entries WHERE status = 'verified' AND statement = $1 ORDER BY updated_at_ms DESC, id ASC LIMIT 1", statement).Scan(&existingID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
@@ -127,12 +149,28 @@ func InsertVerifiedKnowledgeEntry(
 	id, topic, statement, conversationID, turnID string,
 	confidenceBasisPoints uint16,
 	now int64,
+	embedding EmbeddingValue,
 ) error {
+	if err := embedding.Validate(); err != nil {
+		return err
+	}
+	var modelID, contentHash, vector any
+	if embedding.Enabled() {
+		modelID = embedding.ModelID
+		contentHash = embedding.ContentHash
+		vector = embedding.Vector.String()
+	}
 	_, err := tx.Exec(ctx, `
 INSERT INTO knowledge_entries(
   id, topic, statement, status, verification_basis, confidence_basis_points,
-  source_conversation_id, source_turn_id, created_at_ms, updated_at_ms
-) VALUES ($1, $2, $3, 'verified', 'retrieval_ingest', $4, $5, $6, $7, $7)`, id, topic, statement, confidenceBasisPoints, conversationID, turnID, now)
+  source_conversation_id, source_turn_id,
+  embedding_model_id, embedding_content_hash, embedding,
+  created_at_ms, updated_at_ms
+) VALUES (
+  $1, $2, $3, 'verified', 'retrieval_ingest', $4, $5, $6,
+  $7, $8, $9::public.vector,
+  $10, $10
+)`, id, topic, statement, confidenceBasisPoints, conversationID, turnID, modelID, contentHash, vector, now)
 	if err != nil {
 		return fmt.Errorf("inserting verified knowledge: %w", err)
 	}

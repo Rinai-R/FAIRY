@@ -16,10 +16,8 @@ import (
 func TestProductionStickerManagementLifecycle(t *testing.T) {
 	databaseURL, cleanup := isolatedAPISchema(t)
 	defer cleanup()
-	qdrantURL := apiTestQdrantURL()
-	ensureAPIQdrantCollection(t, qdrantURL)
 	masterKey := base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789"))
-	setAPIProductionEnv(t, databaseURL, qdrantURL, masterKey)
+	setAPIProductionEnv(t, databaseURL, masterKey)
 
 	rt, err := fairycore.Open(fairycore.RuntimeOptions{ConfigRoot: t.TempDir(), Logger: zap.NewNop()})
 	if err != nil {

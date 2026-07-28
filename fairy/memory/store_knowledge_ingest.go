@@ -32,12 +32,77 @@ func (s *Store) insertVerifiedKnowledgePostgres(ctx context.Context, topic, stat
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
+	existingID, found, err := FindVerifiedKnowledgeIDByStatement(queryCtx, s.pool.Raw(), statement)
+	if err != nil {
+		return KnowledgeRecord{}, err
+	}
+	if found {
+		existing, err := knowledgeByIDPostgres(queryCtx, s.pool.Raw(), existingID)
+		if err != nil {
+			return KnowledgeRecord{}, err
+		}
+		if s.semanticEmbedder == nil {
+			return existing, nil
+		}
+		content := existing.Topic + "\n" + existing.Statement
+		current, err := knowledgeEmbeddingCurrent(queryCtx, s.pool.Raw(), existingID, semanticContentHash(content))
+		if err != nil {
+			return KnowledgeRecord{}, err
+		}
+		if current {
+			return existing, nil
+		}
+		embedding, err := s.embeddingForContent(content)
+		if err != nil {
+			return KnowledgeRecord{}, err
+		}
+		tx, err := s.pool.Raw().Begin(queryCtx)
+		if err != nil {
+			return KnowledgeRecord{}, fmt.Errorf("beginning knowledge backfill transaction: %w", err)
+		}
+		defer tx.Rollback(queryCtx)
+		changed, err := tx.Exec(queryCtx, `
+UPDATE knowledge_entries
+SET embedding_model_id = $2,
+    embedding_content_hash = $3,
+    embedding = $4::public.vector,
+    updated_at_ms = $5
+WHERE id = $1
+  AND status = 'verified'
+  AND topic = $6
+  AND statement = $7
+  AND (
+    embedding_model_id IS DISTINCT FROM $2
+    OR embedding_content_hash IS DISTINCT FROM $3
+    OR embedding IS NULL
+  )`, existingID, embedding.ModelID, embedding.ContentHash, embedding.Vector.String(), nowUnixMS(), existing.Topic, existing.Statement)
+		if err != nil {
+			return KnowledgeRecord{}, fmt.Errorf("backfilling knowledge embedding: %w", err)
+		}
+		if changed.RowsAffected() != 1 {
+			current, checkErr := knowledgeEmbeddingCurrent(queryCtx, tx, existingID, embedding.ContentHash)
+			if checkErr != nil {
+				return KnowledgeRecord{}, checkErr
+			}
+			if !current {
+				return KnowledgeRecord{}, errors.New("knowledge changed during embedding backfill")
+			}
+		}
+		if err := tx.Commit(queryCtx); err != nil {
+			return KnowledgeRecord{}, fmt.Errorf("committing knowledge embedding backfill: %w", err)
+		}
+		return knowledgeByIDPostgres(ctx, s.pool.Raw(), existingID)
+	}
+	embedding, err := s.embeddingForContent(topic + "\n" + statement)
+	if err != nil {
+		return KnowledgeRecord{}, err
+	}
 	tx, err := s.pool.Raw().Begin(queryCtx)
 	if err != nil {
 		return KnowledgeRecord{}, fmt.Errorf("beginning knowledge insert transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
-	existingID, found, err := FindVerifiedKnowledgeIDByStatement(queryCtx, tx, statement)
+	existingID, found, err = FindVerifiedKnowledgeIDByStatement(queryCtx, tx, statement)
 	if err != nil {
 		return KnowledgeRecord{}, err
 	}
@@ -49,7 +114,7 @@ func (s *Store) insertVerifiedKnowledgePostgres(ctx context.Context, topic, stat
 	}
 	now := nowUnixMS()
 	id := newID()
-	if err := InsertVerifiedKnowledgeEntry(queryCtx, tx, id, topic, statement, conversationID, turnID, confidenceBasisPoints, now); err != nil {
+	if err := InsertVerifiedKnowledgeEntry(queryCtx, tx, id, topic, statement, conversationID, turnID, confidenceBasisPoints, now, embedding); err != nil {
 		return KnowledgeRecord{}, err
 	}
 	for index, source := range sources {
@@ -57,13 +122,27 @@ func (s *Store) insertVerifiedKnowledgePostgres(ctx context.Context, topic, stat
 			return KnowledgeRecord{}, fmt.Errorf("inserting knowledge source[%d]: %w", index, err)
 		}
 	}
-	if err := enqueueKnowledgeEmbeddingJobPostgres(queryCtx, tx, id, topic, statement, now); err != nil {
-		return KnowledgeRecord{}, err
-	}
 	if err := tx.Commit(queryCtx); err != nil {
 		return KnowledgeRecord{}, fmt.Errorf("committing knowledge insert: %w", err)
 	}
 	return knowledgeByIDPostgres(ctx, s.pool.Raw(), id)
+}
+
+func knowledgeEmbeddingCurrent(ctx context.Context, db ConversationDB, id, contentHash string) (bool, error) {
+	var current bool
+	if err := db.QueryRow(ctx, `
+SELECT COALESCE(
+  embedding_model_id = $2
+  AND embedding_content_hash = $3
+  AND embedding IS NOT NULL,
+  false
+)
+FROM knowledge_entries
+WHERE id = $1
+`, id, SemanticEmbeddingModelID, contentHash).Scan(&current); err != nil {
+		return false, fmt.Errorf("checking knowledge embedding: %w", err)
+	}
+	return current, nil
 }
 
 func (s *Store) enqueueKnowledgeIngestSnapshotsPostgres(ctx context.Context, snapshots []KnowledgeIngestSnapshot) error {

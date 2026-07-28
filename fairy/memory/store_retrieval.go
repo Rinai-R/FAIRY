@@ -5,28 +5,7 @@ import (
 )
 
 func (s *Store) retrievePostgres(ctx context.Context, characterID, query string) (RetrievalContext, error) {
-	if err := ValidateID("character_id", characterID); err != nil {
-		return RetrievalContext{}, err
-	}
-	normalized, err := normalizePostgresSearchQuery(query)
-	if err != nil {
-		return RetrievalContext{}, err
-	}
-	if normalized == "" {
-		return RetrievalContext{SemanticStatus: string(SemanticStatusUnavailable)}, nil
-	}
-	queryCtx, cancel := s.pool.QueryContext(ctx)
-	defer cancel()
-	remaining := maxRetrievedContextChars
-	memories, err := retrievePersonalTrigramPostgres(queryCtx, s.pool.Raw(), characterID, normalized, &remaining)
-	if err != nil {
-		return RetrievalContext{}, err
-	}
-	knowledge, err := retrieveKnowledgeTrigramPostgres(queryCtx, s.pool.Raw(), normalized, &remaining)
-	if err != nil {
-		return RetrievalContext{}, err
-	}
-	return RetrievalContext{PersonalMemories: memories, Knowledge: knowledge, SemanticStatus: string(SemanticStatusUnavailable)}, nil
+	return s.retrievePostgresHybrid(ctx, characterID, query)
 }
 
 func normalizePostgresSearchQuery(query string) (string, error) {

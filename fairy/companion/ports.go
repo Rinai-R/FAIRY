@@ -42,7 +42,6 @@ type TurnStore interface {
 // public memory.
 type MemoryRetrievalStore interface {
 	Retrieve(characterID string, query string) (memory.RetrievalContext, error)
-	RetrieveWithSemanticVectorIndex(context.Context, string, string, memory.SemanticEmbedder, memory.SemanticVectorIndex) (memory.RetrievalContext, error)
 	RetrievePublicKnowledgeContext(context.Context, string) (memory.RetrievalContext, error)
 	RetrieveCharacterSocialMemoryContext(context.Context, string, string) (memory.SocialMemoryContext, error)
 }
@@ -70,14 +69,12 @@ type RuntimeStateStore interface {
 	LoadContextWindow(conversationID string, lane string) (memory.ContextWindowRecord, bool, error)
 }
 
-// extractionStore owns bounded extraction and embedding jobs coordinated after
-// a turn.
+// extractionStore owns bounded extraction jobs coordinated after a turn.
 type extractionStore interface {
 	PendingExtractionTurnCount(conversationID string) (uint64, error)
 	ClaimExtractionBatch(conversationID string, limit int) (*memory.ExtractionBatchInput, error)
 	FailExtractionBatch(batchID, code, message string, retryable bool) error
 	CommitMemoryMutations(batchID string, characterID string, allowedMemoryIDs []string, mutations []memory.MemoryMutation) ([]memory.MemoryMutationResult, error)
-	ProcessEmbeddingJobsWithVectorIndex(context.Context, memory.SemanticEmbedder, memory.VectorIndex, int) (memory.EmbeddingJobResult, error)
 }
 
 // knowledgeIngestStore owns the independent verified-knowledge ingest queue.

@@ -1,7 +1,6 @@
 package companion
 
 import (
-	"context"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -41,10 +40,6 @@ func (retentionExtractionStore) FailExtractionBatch(string, string, string, bool
 
 func (retentionExtractionStore) CommitMemoryMutations(string, string, []string, []memory.MemoryMutation) ([]memory.MemoryMutationResult, error) {
 	return nil, nil
-}
-
-func (retentionExtractionStore) ProcessEmbeddingJobsWithVectorIndex(context.Context, memory.SemanticEmbedder, memory.VectorIndex, int) (memory.EmbeddingJobResult, error) {
-	return memory.EmbeddingJobResult{}, nil
 }
 
 func TestRetentionEngineKnowledgeIngestIsAsyncAndTracked(t *testing.T) {

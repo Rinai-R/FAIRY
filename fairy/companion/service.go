@@ -22,8 +22,6 @@ import (
 type CompanionService struct {
 	root                     string
 	memory                   memoryPorts
-	semanticEmbedder         memory.SemanticEmbedder
-	vectorIndex              VectorIndex
 	model                    ModelPort
 	webSearch                WebSearchBackend
 	stickers                 StickerSearchPort
@@ -258,28 +256,6 @@ func AttachSpeechRuntime(s *CompanionService, runtime SpeechRuntime) {
 		return
 	}
 	s.speech = runtime
-}
-
-// AttachSemanticEmbedder injects the optional local semantic backend used by
-// memory_search and bounded embedding job passes. A nil or unavailable embedder
-// leaves the runtime on the existing FTS-only memory path.
-func AttachSemanticEmbedder(s *CompanionService, embedder memory.SemanticEmbedder) {
-	if s == nil || embedder == nil {
-		return
-	}
-	s.semanticEmbedder = embedder
-}
-
-type VectorIndex interface {
-	memory.VectorIndex
-	memory.SemanticVectorIndex
-}
-
-func AttachVectorIndex(s *CompanionService, index VectorIndex) {
-	if s == nil || index == nil {
-		return
-	}
-	s.vectorIndex = index
 }
 
 func (s *CompanionService) profileSource() ProfileSource {

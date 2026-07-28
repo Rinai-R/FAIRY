@@ -19,7 +19,6 @@ import (
 	"fairy/api"
 	fairycore "fairy/core"
 	"fairy/coredb"
-	"fairy/memory"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -29,18 +28,14 @@ import (
 func TestProductionInfrastructureStatusAndMetrics(t *testing.T) {
 	databaseURL, cleanup := isolatedAPISchema(t)
 	defer cleanup()
-	qdrantURL := apiTestQdrantURL()
-	ensureAPIQdrantCollection(t, qdrantURL)
 	masterKey := base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789"))
-	setAPIProductionEnv(t, databaseURL, qdrantURL, masterKey)
+	setAPIProductionEnv(t, databaseURL, masterKey)
 
 	rt, err := fairycore.Open(fairycore.RuntimeOptions{ConfigRoot: t.TempDir(), Logger: zap.NewNop()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = rt.Close() })
-	insertPendingEmbeddingMetric(t, rt.Database)
-
 	baseURL, token := startProductionAPIServer(t, rt)
 	statusResponse := doRequest(t, http.MethodGet, baseURL+"/v1/status", token)
 	statusBody, err := io.ReadAll(statusResponse.Body)
@@ -58,17 +53,14 @@ func TestProductionInfrastructureStatusAndMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertReadyDependency(t, status, "database")
-	assertReadyDependency(t, status, "qdrant")
 	assertReadyDependency(t, status, "secretKey")
 	database := status["database"].(map[string]any)
 	schema := database["schema"].(map[string]any)
 	if schema["current"] != true || schema["presentObjects"] != schema["expectedObjects"] {
 		t.Fatalf("database schema status = %#v", schema)
 	}
-	qdrant := status["qdrant"].(map[string]any)
-	collection := qdrant["collection"].(map[string]any)
-	if collection["dimensions"] != float64(memory.VectorDimensions) || collection["distance"] != memory.VectorDistance {
-		t.Fatalf("qdrant collection status = %#v", collection)
+	if _, ok := status["qdrant"]; ok {
+		t.Fatalf("status still exposes qdrant: %#v", status["qdrant"])
 	}
 
 	metricsResponse := doRequest(t, http.MethodGet, baseURL+"/v1/metrics", token)
@@ -84,25 +76,19 @@ func TestProductionInfrastructureStatusAndMetrics(t *testing.T) {
 	if databaseMetrics["available"] != true {
 		t.Fatalf("database metrics = %#v", databaseMetrics)
 	}
-	vectorMetrics := databaseMetrics["vector"].(map[string]any)
-	jobs := vectorMetrics["embeddingJobs"].(map[string]any)
-	if jobs["pending"] != float64(1) {
-		t.Fatalf("embedding job metrics = %#v", jobs)
+	if databaseMetrics["vectorRows"] != float64(0) {
+		t.Fatalf("database vector metrics = %#v", databaseMetrics)
 	}
-	qdrantMetrics := metrics["qdrant"].(map[string]any)
-	snapshot := qdrantMetrics["snapshot"].(map[string]any)
-	if snapshot["pointCount"] != collection["pointsCount"] {
-		t.Fatalf("qdrant metrics=%#v collection=%#v", snapshot, collection)
+	if _, ok := metrics["qdrant"]; ok {
+		t.Fatalf("metrics still exposes qdrant: %#v", metrics["qdrant"])
 	}
 }
 
 func TestProductionPersonalMemoryContentLimitReturnsBadRequest(t *testing.T) {
 	databaseURL, cleanup := isolatedAPISchema(t)
 	defer cleanup()
-	qdrantURL := apiTestQdrantURL()
-	ensureAPIQdrantCollection(t, qdrantURL)
 	masterKey := base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789"))
-	setAPIProductionEnv(t, databaseURL, qdrantURL, masterKey)
+	setAPIProductionEnv(t, databaseURL, masterKey)
 
 	rt, err := fairycore.Open(fairycore.RuntimeOptions{ConfigRoot: t.TempDir(), Logger: zap.NewNop()})
 	if err != nil {
@@ -158,23 +144,6 @@ func assertReadyDependency(t *testing.T, payload map[string]any, name string) {
 	dependency, ok := payload[name].(map[string]any)
 	if !ok || dependency["ready"] != true || dependency["mode"] != "production" {
 		t.Fatalf("%s status = %#v", name, payload[name])
-	}
-}
-
-func insertPendingEmbeddingMetric(t *testing.T, pool *coredb.Pool) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	_, err := pool.Raw().Exec(ctx, `
-INSERT INTO memory_embedding_jobs(
-  id, item_kind, item_id, model_id, dimensions, point_id, content_hash,
-  status, created_at_ms, updated_at_ms
-) VALUES (
-  'metric-job', 'personal_memory', 'metric-item', 'bge-small-zh-v1.5', 512,
-  '11111111-1111-1111-1111-111111111111', repeat('a', 64), 'pending', 1, 1
-)`)
-	if err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -250,37 +219,14 @@ func isolatedAPISchema(t *testing.T) (string, func()) {
 	}
 }
 
-func ensureAPIQdrantCollection(t *testing.T, rawURL string) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	client, err := memory.OpenVectorClient(ctx, memory.VectorConfig{URL: rawURL, Timeout: 5 * time.Second, CollectionName: memory.VectorCollectionName})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-	if err := client.MigrateCollection(ctx); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func setAPIProductionEnv(t *testing.T, databaseURL, qdrantURL, masterKey string) {
+func setAPIProductionEnv(t *testing.T, databaseURL, masterKey string) {
 	t.Helper()
 	t.Setenv(coredb.EnvDatabaseURL, databaseURL)
 	t.Setenv(coredb.EnvMaxConns, "4")
 	t.Setenv(coredb.EnvMinConns, "0")
 	t.Setenv(coredb.EnvConnectTimeout, "2s")
 	t.Setenv(coredb.EnvQueryTimeout, "2s")
-	t.Setenv(memory.VectorEnvURL, qdrantURL)
-	t.Setenv(memory.VectorEnvTimeout, "2s")
 	t.Setenv("FAIRY_SECRET_MASTER_KEY", masterKey)
-}
-
-func apiTestQdrantURL() string {
-	if value := os.Getenv("FAIRY_TEST_QDRANT_GRPC_URL"); value != "" {
-		return value
-	}
-	return "http://127.0.0.1:16334"
 }
 
 func doRequest(t *testing.T, method, rawURL, token string) *http.Response {

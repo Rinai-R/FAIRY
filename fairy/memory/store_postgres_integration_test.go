@@ -17,20 +17,9 @@ import (
 
 	"fairy/coredb"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-type staticSemanticIndex struct {
-	hits []VectorSearchHit
-}
-
-func (s staticSemanticIndex) Ready(context.Context) error { return nil }
-
-func (s staticSemanticIndex) Search(context.Context, []float32, string, string, int) ([]VectorSearchHit, error) {
-	return append([]VectorSearchHit(nil), s.hits...), nil
-}
 
 func TestPostgresStoreSummaryUsesInjectedPool(t *testing.T) {
 	ctx := context.Background()
@@ -1031,7 +1020,7 @@ func TestPostgresUsageLedgerPreservesCrossConversationFailureAndTruncation(t *te
 	}
 }
 
-func TestPostgresPersonalMemoryLifecycleQueuesDeterministicOutbox(t *testing.T) {
+func TestPostgresPersonalMemoryLifecycleKeepsTextOnlyVectorsNull(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
@@ -1057,7 +1046,7 @@ func TestPostgresPersonalMemoryLifecycleQueuesDeterministicOutbox(t *testing.T) 
 	if err != nil {
 		t.Fatalf("CreatePersonalMemoryContext: %v", err)
 	}
-	assertPostgresEmbeddingOutbox(t, ctx, pool, ItemKindPersonalMemory, created.ID, "喜欢安静")
+	assertPostgresEmbedding(t, ctx, pool, "personal_memories", created.ID, "喜欢安静", false)
 	revised, err := store.RevisePersonalMemoryContext(ctx, created.ID, "更喜欢安静的环境", 9200)
 	if err != nil {
 		t.Fatalf("RevisePersonalMemoryContext: %v", err)
@@ -1065,7 +1054,7 @@ func TestPostgresPersonalMemoryLifecycleQueuesDeterministicOutbox(t *testing.T) 
 	if revised.SupersedesID == nil || *revised.SupersedesID != created.ID {
 		t.Fatalf("revised = %#v", revised)
 	}
-	assertPostgresEmbeddingOutbox(t, ctx, pool, ItemKindPersonalMemory, revised.ID, "更喜欢安静的环境")
+	assertPostgresEmbedding(t, ctx, pool, "personal_memories", revised.ID, "更喜欢安静的环境", false)
 	var oldStatus string
 	if err := pool.Raw().QueryRow(ctx, "SELECT status FROM personal_memories WHERE id = $1", created.ID).Scan(&oldStatus); err != nil || oldStatus != "superseded" {
 		t.Fatalf("old status = %q, err=%v", oldStatus, err)
@@ -1081,15 +1070,12 @@ func TestPostgresPersonalMemoryLifecycleQueuesDeterministicOutbox(t *testing.T) 
 	if err != nil {
 		t.Fatalf("CreatePersonalMemoryContext legacy: %v", err)
 	}
-	var legacyJobs int
-	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM memory_embedding_jobs WHERE item_id = $1", legacy.ID).Scan(&legacyJobs); err != nil || legacyJobs != 0 {
-		t.Fatalf("legacy jobs = %d, err=%v", legacyJobs, err)
-	}
+	assertPostgresEmbedding(t, ctx, pool, "personal_memories", legacy.ID, "旧关系记忆", false)
 	assigned, err := store.AssignLegacyRelationshipContext(ctx, legacy.ID, "character-memory")
 	if err != nil {
 		t.Fatalf("AssignLegacyRelationshipContext: %v", err)
 	}
-	assertPostgresEmbeddingOutbox(t, ctx, pool, ItemKindPersonalMemory, assigned.ID, "旧关系记忆")
+	assertPostgresEmbedding(t, ctx, pool, "personal_memories", assigned.ID, "旧关系记忆", false)
 	catalog, err := store.PersonalMemoryCatalogContext(ctx, "character-memory")
 	if err != nil {
 		t.Fatalf("PersonalMemoryCatalogContext: %v", err)
@@ -1099,14 +1085,18 @@ func TestPostgresPersonalMemoryLifecycleQueuesDeterministicOutbox(t *testing.T) 
 	}
 }
 
-func TestPostgresPersonalMemoryRollsBackWhenOutboxWriteFails(t *testing.T) {
+func TestPostgresPersonalMemoryRollsBackWhenEmbeddingFails(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
 	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	store, err := NewStoreFromPool(pool)
+	store, err := NewStoreFromPoolWithEmbedder(pool, &fixedSemanticEmbedder{
+		ready: true,
+		dims:  SemanticEmbeddingDimensions,
+		err:   errors.New("embedding provider failed"),
+	})
 	if err != nil {
 		t.Fatalf("NewStoreFromPool: %v", err)
 	}
@@ -1121,21 +1111,15 @@ func TestPostgresPersonalMemoryRollsBackWhenOutboxWriteFails(t *testing.T) {
 	if _, err := store.CompleteTurnContext(ctx, bootstrap.Conversation.ID, turn.ID, "source reply"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Raw().Exec(ctx, "DROP TABLE memory_embedding_jobs"); err != nil {
-		t.Fatalf("drop outbox table: %v", err)
-	}
 	if _, err := store.CreatePersonalMemoryContext(ctx, "preference", MemoryScope{Type: "global"}, "must rollback", 9000); err == nil {
-		t.Fatal("CreatePersonalMemoryContext error = nil, want outbox failure")
+		t.Fatal("CreatePersonalMemoryContext error = nil, want embedding failure")
 	}
-	var memories, items int
+	var memories int
 	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM personal_memories WHERE content = 'must rollback'").Scan(&memories); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM memory_embedding_items").Scan(&items); err != nil {
-		t.Fatal(err)
-	}
-	if memories != 0 || items != 0 {
-		t.Fatalf("memories=%d items=%d, want zero after rollback", memories, items)
+	if memories != 0 {
+		t.Fatalf("memories=%d, want zero after rollback", memories)
 	}
 }
 
@@ -1167,7 +1151,7 @@ func TestPostgresPersonalMemoryContentLimitPreservesWritesAndRejectsOversizedHis
 	if err != nil {
 		t.Fatalf("creating exact-limit memory: %v", err)
 	}
-	assertPostgresEmbeddingOutbox(t, ctx, pool, ItemKindPersonalMemory, created.ID, exact)
+	assertPostgresEmbedding(t, ctx, pool, "personal_memories", created.ID, exact, false)
 	reviseSource, err := store.CreatePersonalMemoryContext(ctx, "profile", MemoryScope{Type: "global"}, "revise source", 8000)
 	if err != nil {
 		t.Fatalf("creating exact-limit revise source: %v", err)
@@ -1179,7 +1163,7 @@ func TestPostgresPersonalMemoryContentLimitPreservesWritesAndRejectsOversizedHis
 	if revisedExact.SupersedesID == nil || *revisedExact.SupersedesID != reviseSource.ID {
 		t.Fatalf("exact-limit revision = %#v", revisedExact)
 	}
-	assertPostgresEmbeddingOutbox(t, ctx, pool, ItemKindPersonalMemory, revisedExact.ID, exact)
+	assertPostgresEmbedding(t, ctx, pool, "personal_memories", revisedExact.ID, exact, false)
 	tooLong := exact + "界"
 	if _, err := store.CreatePersonalMemoryContext(ctx, "preference", MemoryScope{Type: "global"}, tooLong, 9000); err == nil || !strings.Contains(err.Error(), "2400") {
 		t.Fatalf("oversized create error = %v", err)
@@ -1199,7 +1183,7 @@ func TestPostgresPersonalMemoryContentLimitPreservesWritesAndRejectsOversizedHis
 	if err != nil || len(exactResult) != 1 || exactResult[0].Status != "applied" {
 		t.Fatalf("exact-limit extraction result = %#v, %v", exactResult, err)
 	}
-	assertPostgresEmbeddingOutbox(t, ctx, pool, ItemKindPersonalMemory, exactResult[0].MemoryID, exact)
+	assertPostgresEmbedding(t, ctx, pool, "personal_memories", exactResult[0].MemoryID, exact, false)
 
 	_, rollbackTurnID, rollbackBatchID := seedPostgresRunningExtractionBatch(t, ctx, pool, store, "character-content-limit")
 	_, err = store.CommitMemoryMutationsContext(ctx, rollbackBatchID, "character-content-limit", nil, []MemoryMutation{
@@ -1209,15 +1193,9 @@ func TestPostgresPersonalMemoryContentLimitPreservesWritesAndRejectsOversizedHis
 	if err == nil || !strings.Contains(err.Error(), "2400") {
 		t.Fatalf("oversized extraction error = %v", err)
 	}
-	var leakedMemories, leakedItems, leakedJobs int
+	var leakedMemories int
 	var rollbackBatchStatus, rollbackTurnState string
 	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM personal_memories WHERE content = 'valid-before-oversized'").Scan(&leakedMemories); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM memory_embedding_items WHERE item_id IN (SELECT id FROM personal_memories WHERE content = 'valid-before-oversized')").Scan(&leakedItems); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM memory_embedding_jobs WHERE item_id IN (SELECT id FROM personal_memories WHERE content = 'valid-before-oversized')").Scan(&leakedJobs); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.Raw().QueryRow(ctx, "SELECT status FROM extraction_batches WHERE id = $1", rollbackBatchID).Scan(&rollbackBatchStatus); err != nil {
@@ -1226,8 +1204,8 @@ func TestPostgresPersonalMemoryContentLimitPreservesWritesAndRejectsOversizedHis
 	if err := pool.Raw().QueryRow(ctx, "SELECT extraction_state FROM conversation_turns WHERE id = $1", rollbackTurnID).Scan(&rollbackTurnState); err != nil {
 		t.Fatal(err)
 	}
-	if leakedMemories != 0 || leakedItems != 0 || leakedJobs != 0 || rollbackBatchStatus != "running" || rollbackTurnState != "claimed" {
-		t.Fatalf("oversized extraction leaked memory=%d item=%d job=%d batch=%q turn=%q", leakedMemories, leakedItems, leakedJobs, rollbackBatchStatus, rollbackTurnState)
+	if leakedMemories != 0 || rollbackBatchStatus != "running" || rollbackTurnState != "claimed" {
+		t.Fatalf("oversized extraction leaked memory=%d batch=%q turn=%q", leakedMemories, rollbackBatchStatus, rollbackTurnState)
 	}
 
 	legacyID := "legacy-oversized-content"
@@ -1258,25 +1236,6 @@ func TestPostgresPersonalMemoryContentLimitPreservesWritesAndRejectsOversizedHis
 	if _, err := store.CompanionPortraitContext(ctx, "character-content-limit"); err == nil || !strings.Contains(err.Error(), historyID) || !strings.Contains(err.Error(), "2400") {
 		t.Fatalf("portrait oversized history error = %v", err)
 	}
-	pointID, err := VectorPointID(ItemKindPersonalMemory, historyID, SemanticEmbeddingModelID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Raw().Exec(ctx, `
-INSERT INTO memory_embedding_items(id, item_kind, item_id, model_id, dimensions, point_id, content_hash, status, embedded_at_ms, created_at_ms, updated_at_ms)
-VALUES ($1, 'personal_memory', $2, $3, $4, $5, $6, 'embedded', 1, 1, 1)`, uuid.NewString(), historyID, SemanticEmbeddingModelID, SemanticEmbeddingDimensions, pointID, semanticContentHash("历史超限标记"+tooLong)); err != nil {
-		t.Fatal(err)
-	}
-	vector := make([]float32, SemanticEmbeddingDimensions)
-	vector[0] = 1
-	_, err = store.RetrieveWithSemanticVectorIndex(ctx, "character-content-limit", "历史超限标记", postgresWorkerEmbedder{vector: vector}, staticSemanticIndex{hits: []VectorSearchHit{{
-		PointID: pointID, ItemKind: ItemKindPersonalMemory, ItemID: historyID,
-		ModelID: SemanticEmbeddingModelID, ScopeType: "global", ContentHash: semanticContentHash("历史超限标记" + tooLong), Score: 1,
-	}}})
-	if err == nil || !strings.Contains(err.Error(), historyID) || !strings.Contains(err.Error(), "2400") {
-		t.Fatalf("semantic truth oversized history error = %v", err)
-	}
-
 	revised, err := store.RevisePersonalMemoryContext(ctx, historyID, "历史记录已修复", 9200)
 	if err != nil {
 		t.Fatalf("repairing oversized history: %v", err)
@@ -1309,7 +1268,7 @@ func containsPersonalMemoryRecordID(records []PersonalMemoryRecord, id string) b
 	return false
 }
 
-func TestPostgresKnowledgeLifecyclePreservesSourcesAndOutbox(t *testing.T) {
+func TestPostgresKnowledgeLifecyclePreservesSourcesAndTextOnlyVectors(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
@@ -1349,7 +1308,7 @@ VALUES
 	if confirmed.Status != "verified" || confirmed.VerificationBasis != "user_confirmed" || len(confirmed.Sources) != 0 {
 		t.Fatalf("confirmed = %#v", confirmed)
 	}
-	assertPostgresEmbeddingOutbox(t, ctx, pool, ItemKindKnowledge, confirmed.ID, "主题一\n候选事实")
+	assertPostgresEmbedding(t, ctx, pool, "knowledge_entries", confirmed.ID, "主题一\n候选事实", false)
 	if _, err := store.ConfirmKnowledgeCandidateContext(ctx, "candidate-web"); err == nil {
 		t.Fatal("ConfirmKnowledgeCandidateContext sourced candidate error = nil")
 	}
@@ -1376,14 +1335,18 @@ VALUES
 	}
 }
 
-func TestPostgresKnowledgeConfirmationRollsBackWhenOutboxWriteFails(t *testing.T) {
+func TestPostgresKnowledgeConfirmationRollsBackWhenEmbeddingFails(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
 	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	store, err := NewStoreFromPool(pool)
+	store, err := NewStoreFromPoolWithEmbedder(pool, &fixedSemanticEmbedder{
+		ready: true,
+		dims:  SemanticEmbeddingDimensions,
+		err:   errors.New("embedding provider failed"),
+	})
 	if err != nil {
 		t.Fatalf("NewStoreFromPool: %v", err)
 	}
@@ -1401,22 +1364,15 @@ func TestPostgresKnowledgeConfirmationRollsBackWhenOutboxWriteFails(t *testing.T
 	if _, err := pool.Raw().Exec(ctx, "INSERT INTO knowledge_entries(id, topic, statement, status, verification_basis, confidence_basis_points, source_conversation_id, source_turn_id, created_at_ms, updated_at_ms) VALUES ('candidate-rollback', '主题', 'must rollback', 'candidate', 'unverified', 8000, $1, $2, 1, 1)", bootstrap.Conversation.ID, turn.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Raw().Exec(ctx, "DROP TABLE memory_embedding_jobs"); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := store.ConfirmKnowledgeCandidateContext(ctx, "candidate-rollback"); err == nil {
-		t.Fatal("ConfirmKnowledgeCandidateContext error = nil, want outbox failure")
+		t.Fatal("ConfirmKnowledgeCandidateContext error = nil, want embedding failure")
 	}
 	var status, basis string
-	var items int
 	if err := pool.Raw().QueryRow(ctx, "SELECT status, verification_basis FROM knowledge_entries WHERE id = 'candidate-rollback'").Scan(&status, &basis); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM memory_embedding_items").Scan(&items); err != nil {
-		t.Fatal(err)
-	}
-	if status != "candidate" || basis != "unverified" || items != 0 {
-		t.Fatalf("status=%q basis=%q items=%d", status, basis, items)
+	if status != "candidate" || basis != "unverified" {
+		t.Fatalf("status=%q basis=%q", status, basis)
 	}
 }
 
@@ -1529,7 +1485,7 @@ func TestPostgresCommitCompactionAtomicallySwitchesWindowAndContinuation(t *test
 	}
 }
 
-func TestPostgresCommitMemoryMutationsCommitsRowsAndOutboxAtomically(t *testing.T) {
+func TestPostgresCommitMemoryMutationsCommitsRowsAtomically(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
@@ -1551,8 +1507,8 @@ func TestPostgresCommitMemoryMutationsCommitsRowsAndOutboxAtomically(t *testing.
 	if len(results) != 2 || results[0].Status != "applied" || results[1].Status != "applied" {
 		t.Fatalf("results = %#v", results)
 	}
-	assertPostgresEmbeddingOutbox(t, ctx, pool, ItemKindPersonalMemory, results[0].MemoryID, "喜欢爵士乐")
-	assertPostgresEmbeddingOutbox(t, ctx, pool, ItemKindPersonalMemory, results[1].MemoryID, "愿意分享近况")
+	assertPostgresEmbedding(t, ctx, pool, "personal_memories", results[0].MemoryID, "喜欢爵士乐", false)
+	assertPostgresEmbedding(t, ctx, pool, "personal_memories", results[1].MemoryID, "愿意分享近况", false)
 	var batchStatus, extractionState string
 	if err := pool.Raw().QueryRow(ctx, "SELECT status FROM extraction_batches WHERE id = $1 AND conversation_id = $2", batchID, conversationID).Scan(&batchStatus); err != nil {
 		t.Fatal(err)
@@ -1665,15 +1621,9 @@ func TestPostgresCommitMemoryMutationsRollsBackEarlierMutationOnLaterFailure(t *
 	if err == nil || !strings.Contains(err.Error(), "not provided to the batch") {
 		t.Fatalf("CommitMemoryMutationsContext error = %v", err)
 	}
-	var memories, items, jobs int
+	var memories int
 	var batchStatus, extractionState string
 	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM personal_memories WHERE content = 'must rollback'").Scan(&memories); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM memory_embedding_items").Scan(&items); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM memory_embedding_jobs").Scan(&jobs); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.Raw().QueryRow(ctx, "SELECT status FROM extraction_batches WHERE id = $1", batchID).Scan(&batchStatus); err != nil {
@@ -1682,8 +1632,8 @@ func TestPostgresCommitMemoryMutationsRollsBackEarlierMutationOnLaterFailure(t *
 	if err := pool.Raw().QueryRow(ctx, "SELECT extraction_state FROM conversation_turns WHERE id = $1", turnID).Scan(&extractionState); err != nil {
 		t.Fatal(err)
 	}
-	if memories != 0 || items != 0 || jobs != 0 || batchStatus != "running" || extractionState != "claimed" {
-		t.Fatalf("memories=%d items=%d jobs=%d batch=%q turn=%q", memories, items, jobs, batchStatus, extractionState)
+	if memories != 0 || batchStatus != "running" || extractionState != "claimed" {
+		t.Fatalf("memories=%d batch=%q turn=%q", memories, batchStatus, extractionState)
 	}
 }
 
@@ -1729,7 +1679,7 @@ func TestPostgresCommitMemoryMutationsPreservesNoChangeAndSupersedeSemantics(t *
 	if oldStatus != "superseded" || newStatus != "active" || supersedesID != initialID || newSourceTurnID != turnID {
 		t.Fatalf("old=%q new=%q supersedes=%q source=%q", oldStatus, newStatus, supersedesID, newSourceTurnID)
 	}
-	assertPostgresEmbeddingOutbox(t, ctx, pool, ItemKindPersonalMemory, results[1].MemoryID, "喜欢清晨散步")
+	assertPostgresEmbedding(t, ctx, pool, "personal_memories", results[1].MemoryID, "喜欢清晨散步", false)
 }
 
 func TestPostgresCommitMemoryMutationsRejectsBatchExternalTurnAndKeepsEmptyCompletion(t *testing.T) {
@@ -2140,21 +2090,15 @@ func TestPostgresKnowledgeIngestWorkersClaimDisjointJobs(t *testing.T) {
 	if written != 6 {
 		t.Fatalf("written = %d, want 6", written)
 	}
-	var succeeded, knowledge, items, jobs int
+	var succeeded, knowledge int
 	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_ingest_jobs WHERE status = 'succeeded'").Scan(&succeeded); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_entries WHERE verification_basis = 'retrieval_ingest'").Scan(&knowledge); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM memory_embedding_items WHERE item_kind = 'knowledge'").Scan(&items); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM memory_embedding_jobs WHERE item_kind = 'knowledge'").Scan(&jobs); err != nil {
-		t.Fatal(err)
-	}
-	if succeeded != 6 || knowledge != 6 || items != 6 || jobs != 6 {
-		t.Fatalf("succeeded=%d knowledge=%d items=%d jobs=%d", succeeded, knowledge, items, jobs)
+	if succeeded != 6 || knowledge != 6 {
+		t.Fatalf("succeeded=%d knowledge=%d", succeeded, knowledge)
 	}
 }
 
@@ -2263,170 +2207,6 @@ func TestPostgresKnowledgeIngestDropsStructuralJunkAndValidatesLimits(t *testing
 	if _, err := store.CommitMemoryMutationsContext(ctx, "batch", "character", nil, mutations); err == nil || !strings.Contains(err.Error(), "mutation limit") {
 		t.Fatalf("mutation limit error = %v", err)
 	}
-}
-
-func TestPostgresEmbeddingLeaseClaimAndConditionalCompletion(t *testing.T) {
-	ctx := context.Background()
-	pool := openIsolatedPostgresStore(t, ctx)
-	defer pool.Close()
-	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
-		t.Fatal(err)
-	}
-	first, err := NewStoreFromPoolWithLease(pool, "embedding-first", time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bootstrap, err := first.OpenOrCreateCharacterConversationContext(ctx, "character-embedding")
-	if err != nil {
-		t.Fatal(err)
-	}
-	turn, err := first.BeginTurnContext(ctx, bootstrap.Conversation.ID, "source")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := first.CompleteTurnContext(ctx, bootstrap.Conversation.ID, turn.ID, "reply"); err != nil {
-		t.Fatal(err)
-	}
-	created, err := first.CreatePersonalMemoryContext(ctx, "preference", MemoryScope{Type: "global"}, "embedding content", 9000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	start := make(chan struct{})
-	type embeddingClaim struct {
-		workerID string
-		jobs     []EmbeddingJob
-		err      error
-	}
-	claims := make(chan embeddingClaim, 2)
-	for _, workerID := range []string{"embedding-first", "embedding-second"} {
-		go func() {
-			<-start
-			now := time.Now().UnixMilli()
-			jobs, err := ClaimEmbeddingJobs(ctx, pool.Raw(), SemanticEmbeddingModelID, SemanticEmbeddingDimensions, now, 1, workerID, now+time.Minute.Milliseconds())
-			claims <- embeddingClaim{workerID: workerID, jobs: jobs, err: err}
-		}()
-	}
-	close(start)
-	claimA := <-claims
-	claimB := <-claims
-	if claimA.err != nil || claimB.err != nil {
-		t.Fatalf("claim errors = %v, %v", claimA.err, claimB.err)
-	}
-	ownerClaim := claimA
-	otherClaim := claimB
-	if len(ownerClaim.jobs) == 0 {
-		ownerClaim, otherClaim = otherClaim, ownerClaim
-	}
-	if len(ownerClaim.jobs) != 1 || len(otherClaim.jobs) != 0 || ownerClaim.jobs[0].ItemID != created.ID {
-		t.Fatalf("claims = %#v, %#v", claimA.jobs, claimB.jobs)
-	}
-	job := ownerClaim.jobs[0]
-	payload, err := LoadEmbeddingJobPayload(ctx, pool.Raw(), job, "personal_memory", "knowledge")
-	if err != nil || payload.Content != "embedding content" {
-		t.Fatalf("content = %q, %v", payload.Content, err)
-	}
-	if err := finishEmbeddingJobSucceeded(ctx, pool, job, otherClaim.workerID); !errors.Is(err, ErrEmbeddingJobStaleCompletion) {
-		t.Fatalf("wrong owner completion error = %v", err)
-	}
-	if _, err := pool.Raw().Exec(ctx, "UPDATE memory_embedding_jobs SET lease_expires_at_ms = $2 WHERE id = $1", job.ID, time.Now().UnixMilli()-1); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UnixMilli()
-	reclaimed, err := ClaimEmbeddingJobs(ctx, pool.Raw(), SemanticEmbeddingModelID, SemanticEmbeddingDimensions, now, 1, otherClaim.workerID, now+time.Minute.Milliseconds())
-	if err != nil || len(reclaimed) != 1 || reclaimed[0].ID != job.ID {
-		t.Fatalf("reclaimed = %#v, %v", reclaimed, err)
-	}
-	if err := finishEmbeddingJobFailed(ctx, pool, job, ownerClaim.workerID, "STALE", "old owner", false); !errors.Is(err, ErrEmbeddingJobStaleCompletion) {
-		t.Fatalf("old owner failure completion error = %v", err)
-	}
-	if err := finishEmbeddingJobSucceeded(ctx, pool, reclaimed[0], otherClaim.workerID); err != nil {
-		t.Fatalf("new owner completion: %v", err)
-	}
-	var itemStatus, jobStatus string
-	var embeddedAt *int64
-	if err := pool.Raw().QueryRow(ctx, "SELECT status, embedded_at_ms FROM memory_embedding_items WHERE item_id = $1", created.ID).Scan(&itemStatus, &embeddedAt); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.Raw().QueryRow(ctx, "SELECT status FROM memory_embedding_jobs WHERE id = $1", job.ID).Scan(&jobStatus); err != nil {
-		t.Fatal(err)
-	}
-	if itemStatus != "embedded" || jobStatus != "succeeded" || embeddedAt == nil {
-		t.Fatalf("item=%q job=%q embeddedAt=%v", itemStatus, jobStatus, embeddedAt)
-	}
-}
-
-func TestPostgresEmbeddingStaleContentCannotMarkNewItemEmbedded(t *testing.T) {
-	ctx := context.Background()
-	pool := openIsolatedPostgresStore(t, ctx)
-	defer pool.Close()
-	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewStoreFromPoolWithLease(pool, "embedding-stale", time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bootstrap, err := store.OpenOrCreateCharacterConversationContext(ctx, "character-embedding-stale")
-	if err != nil {
-		t.Fatal(err)
-	}
-	turn, err := store.BeginTurnContext(ctx, bootstrap.Conversation.ID, "source")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.CompleteTurnContext(ctx, bootstrap.Conversation.ID, turn.ID, "reply"); err != nil {
-		t.Fatal(err)
-	}
-	created, err := store.CreatePersonalMemoryContext(ctx, "preference", MemoryScope{Type: "global"}, "old content", 9000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UnixMilli()
-	jobs, err := ClaimEmbeddingJobs(ctx, pool.Raw(), SemanticEmbeddingModelID, SemanticEmbeddingDimensions, now, 1, "embedding-stale", now+time.Minute.Milliseconds())
-	if err != nil || len(jobs) != 1 {
-		t.Fatalf("claim = %#v, %v", jobs, err)
-	}
-	newHash := semanticContentHash("new content")
-	if _, err := pool.Raw().Exec(ctx, "UPDATE memory_embedding_items SET content_hash = $2, status = 'pending', embedded_at_ms = NULL WHERE item_id = $1", created.ID, newHash); err != nil {
-		t.Fatal(err)
-	}
-	if err := finishEmbeddingJobSucceeded(ctx, pool, jobs[0], "embedding-stale"); !errors.Is(err, ErrEmbeddingJobStaleCompletion) {
-		t.Fatalf("stale completion error = %v", err)
-	}
-	var itemHash, itemStatus, jobStatus string
-	if err := pool.Raw().QueryRow(ctx, "SELECT content_hash, status FROM memory_embedding_items WHERE item_id = $1", created.ID).Scan(&itemHash, &itemStatus); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.Raw().QueryRow(ctx, "SELECT status FROM memory_embedding_jobs WHERE id = $1", jobs[0].ID).Scan(&jobStatus); err != nil {
-		t.Fatal(err)
-	}
-	if itemHash != newHash || itemStatus != "pending" || jobStatus != "running" {
-		t.Fatalf("itemHash=%q itemStatus=%q jobStatus=%q", itemHash, itemStatus, jobStatus)
-	}
-}
-
-func finishEmbeddingJobSucceeded(ctx context.Context, pool *coredb.Pool, job EmbeddingJob, workerID string) error {
-	tx, err := pool.Raw().Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if err := FinishEmbeddingJobSucceeded(ctx, tx, job, workerID, time.Now().UnixMilli()); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
-}
-
-func finishEmbeddingJobFailed(ctx context.Context, pool *coredb.Pool, job EmbeddingJob, workerID, code, message string, retryable bool) error {
-	tx, err := pool.Raw().Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if err := FinishEmbeddingJobFailed(ctx, tx, job, workerID, code, message, retryable, time.Now().UnixMilli()); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
 }
 
 func TestPostgresTrigramRetrievalPreservesScopeLimitsAndStableOrder(t *testing.T) {
@@ -2622,23 +2402,25 @@ func explainPostgresPlan(t *testing.T, ctx context.Context, tx pgx.Tx, query str
 	return strings.Join(lines, "\n")
 }
 
-func assertPostgresEmbeddingOutbox(t *testing.T, ctx context.Context, pool *coredb.Pool, itemKind, itemID, content string) {
+func assertPostgresEmbedding(t *testing.T, ctx context.Context, pool *coredb.Pool, table, itemID, content string, wantEnabled bool) {
 	t.Helper()
-	wantPointID, err := VectorPointID(itemKind, itemID, SemanticEmbeddingModelID)
-	if err != nil {
-		t.Fatal(err)
+	if table != "personal_memories" && table != "knowledge_entries" {
+		t.Fatalf("unsupported embedding table %q", table)
 	}
-	var itemPointID, jobPointID string
-	var itemHash, jobHash, itemStatus, jobStatus string
-	if err := pool.Raw().QueryRow(ctx, "SELECT point_id::text, content_hash, status FROM memory_embedding_items WHERE item_kind = $1 AND item_id = $2 AND model_id = $3", itemKind, itemID, SemanticEmbeddingModelID).Scan(&itemPointID, &itemHash, &itemStatus); err != nil {
-		t.Fatalf("query embedding item: %v", err)
+	query := "SELECT embedding_model_id, embedding_content_hash, embedding IS NOT NULL FROM " + table + " WHERE id = $1"
+	var modelID, contentHash *string
+	var vectorPresent bool
+	if err := pool.Raw().QueryRow(ctx, query, itemID).Scan(&modelID, &contentHash, &vectorPresent); err != nil {
+		t.Fatalf("query embedding: %v", err)
 	}
-	if err := pool.Raw().QueryRow(ctx, "SELECT point_id::text, content_hash, status FROM memory_embedding_jobs WHERE item_kind = $1 AND item_id = $2 AND model_id = $3", itemKind, itemID, SemanticEmbeddingModelID).Scan(&jobPointID, &jobHash, &jobStatus); err != nil {
-		t.Fatalf("query embedding job: %v", err)
+	if !wantEnabled {
+		if modelID != nil || contentHash != nil || vectorPresent {
+			t.Fatalf("embedding = (%v, %v, %v), want all NULL", modelID, contentHash, vectorPresent)
+		}
+		return
 	}
-	wantHash := semanticContentHash(content)
-	if itemPointID != wantPointID.String() || jobPointID != wantPointID.String() || itemHash != wantHash || jobHash != wantHash || itemStatus != "pending" || jobStatus != "pending" {
-		t.Fatalf("item=(%s,%s,%s) job=(%s,%s,%s), want point=%s hash=%s pending", itemPointID, itemHash, itemStatus, jobPointID, jobHash, jobStatus, wantPointID, wantHash)
+	if modelID == nil || *modelID != SemanticEmbeddingModelID || contentHash == nil || *contentHash != semanticContentHash(content) || !vectorPresent {
+		t.Fatalf("embedding = (%v, %v, %v), want model=%q hash=%q", modelID, contentHash, vectorPresent, SemanticEmbeddingModelID, semanticContentHash(content))
 	}
 }
 

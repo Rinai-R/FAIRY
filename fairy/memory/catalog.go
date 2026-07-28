@@ -152,23 +152,3 @@ type KnowledgeIngestSnapshot struct {
 	Rank            uint8
 	FetchedAtUnixMS int64
 }
-
-type EmbeddingJobMetrics struct {
-	Pending   int64 `json:"pending"`
-	Running   int64 `json:"running"`
-	Succeeded int64 `json:"succeeded"`
-	Failed    int64 `json:"failed"`
-	Embedded  int64 `json:"embeddedItems"`
-}
-
-type ReconciliationMetrics struct {
-	Observed      bool  `json:"observed"`
-	MissingPoints int64 `json:"missingPoints"`
-	StalePoints   int64 `json:"stalePoints"`
-	OrphanPoints  int64 `json:"orphanPoints"`
-}
-
-type VectorMetrics struct {
-	EmbeddingJobs  EmbeddingJobMetrics   `json:"embeddingJobs"`
-	Reconciliation ReconciliationMetrics `json:"reconciliation"`
-}

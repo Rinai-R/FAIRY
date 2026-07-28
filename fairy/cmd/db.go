@@ -25,9 +25,7 @@ const (
 type DatabaseOperations interface {
 	Migrate(context.Context) (any, error)
 	Status(context.Context) (any, error)
-	VectorMigrate(context.Context) (any, error)
 	VectorRebuild(context.Context, int) (any, error)
-	VectorReconcile(context.Context, bool) (any, error)
 }
 
 type localDatabaseOperations struct {
@@ -35,15 +33,13 @@ type localDatabaseOperations struct {
 }
 
 type databaseStatusResult struct {
-	DatabaseDescriptor coredb.Descriptor             `json:"database"`
-	Schema             coredb.SchemaStatus           `json:"schema"`
-	Pool               coredb.PoolStats              `json:"pool"`
-	QdrantDescriptor   memory.VectorDescriptor       `json:"qdrant"`
-	Collection         memory.VectorCollectionStatus `json:"collection"`
+	DatabaseDescriptor coredb.Descriptor   `json:"database"`
+	Schema             coredb.SchemaStatus `json:"schema"`
+	Pool               coredb.PoolStats    `json:"pool"`
 }
 
 func newDBCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
-	command := &cobra.Command{Use: "db", Short: "Manage PostgreSQL and Qdrant", Args: cobra.NoArgs, GroupID: "admin"}
+	command := &cobra.Command{Use: "db", Short: "Manage PostgreSQL", Args: cobra.NoArgs, GroupID: "admin"}
 	command.AddCommand(
 		newDBMigrateCmd(v, deps),
 		newDBStatusCmd(v, deps),
@@ -67,7 +63,7 @@ func newDBMigrateCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 
 func newDBStatusCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 	return &cobra.Command{
-		Use: "status", Short: "Verify PostgreSQL schema and Qdrant collection", Args: cobra.NoArgs,
+		Use: "status", Short: "Verify PostgreSQL schema", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
 			result, err := deps.Database.Status(command.Context())
 			if err != nil {
@@ -79,28 +75,15 @@ func newDBStatusCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 }
 
 func newDBVectorCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
-	command := &cobra.Command{Use: "vector", Short: "Manage the derived Qdrant vector index", Args: cobra.NoArgs}
-	command.AddCommand(
-		&cobra.Command{
-			Use: "migrate", Short: "Create or verify the Qdrant collection", Args: cobra.NoArgs,
-			RunE: func(command *cobra.Command, args []string) error {
-				result, err := deps.Database.VectorMigrate(command.Context())
-				if err != nil {
-					return err
-				}
-				return writeDatabaseOutput(command, v, result)
-			},
-		},
-		newDBVectorRebuildCmd(v, deps),
-		newDBVectorReconcileCmd(v, deps),
-	)
+	command := &cobra.Command{Use: "vector", Short: "Manage PostgreSQL vector columns", Args: cobra.NoArgs}
+	command.AddCommand(newDBVectorRebuildCmd(v, deps))
 	return command
 }
 
 func newDBVectorRebuildCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 	pageSize := defaultVectorPageSize
 	command := &cobra.Command{
-		Use: "rebuild", Short: "Rebuild Qdrant from authoritative PostgreSQL items", Args: cobra.NoArgs,
+		Use: "rebuild", Short: "Rebuild PostgreSQL vectors from authoritative records", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
 			if pageSize < 1 || pageSize > maxVectorPageSize {
 				return fmt.Errorf("page-size must be between 1 and %d", maxVectorPageSize)
@@ -113,22 +96,6 @@ func newDBVectorRebuildCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 		},
 	}
 	command.Flags().IntVar(&pageSize, "page-size", defaultVectorPageSize, "authoritative PostgreSQL items per page (1-100)")
-	return command
-}
-
-func newDBVectorReconcileCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
-	apply := false
-	command := &cobra.Command{
-		Use: "reconcile", Short: "Report vector drift or explicitly delete verified orphans", Args: cobra.NoArgs,
-		RunE: func(command *cobra.Command, args []string) error {
-			result, err := deps.Database.VectorReconcile(command.Context(), apply)
-			if err != nil {
-				return err
-			}
-			return writeDatabaseOutput(command, v, result)
-		},
-	}
-	command.Flags().BoolVar(&apply, "apply", false, "delete points confirmed as orphans after authoritative re-check")
 	return command
 }
 
@@ -166,47 +133,19 @@ func (o localDatabaseOperations) Status(ctx context.Context) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	index, err := o.openVector(ctx, true)
-	if err != nil {
-		return nil, err
-	}
-	defer index.Close()
-	collection, err := index.VerifyCollection(ctx)
-	if err != nil {
-		return nil, err
-	}
-	qdrantDescriptor, err := index.Descriptor()
-	if err != nil {
-		return nil, err
-	}
 	return databaseStatusResult{
 		DatabaseDescriptor: databaseDescriptor,
 		Schema:             schema,
 		Pool:               pool.Stats(),
-		QdrantDescriptor:   qdrantDescriptor,
-		Collection:         collection,
 	}, nil
 }
 
-func (o localDatabaseOperations) VectorMigrate(ctx context.Context) (any, error) {
-	index, err := o.openVector(ctx, false)
-	if err != nil {
-		return nil, err
-	}
-	defer index.Close()
-	if err := index.MigrateCollection(ctx); err != nil {
-		return nil, err
-	}
-	return index.VerifyCollection(ctx)
-}
-
 func (o localDatabaseOperations) VectorRebuild(ctx context.Context, pageSize int) (any, error) {
-	pool, store, index, err := o.openMaintenanceDependencies(ctx)
+	pool, err := o.openDatabase(ctx, true)
 	if err != nil {
 		return nil, err
 	}
 	defer pool.Close()
-	defer index.Close()
 	cipher, err := config.SecretCipherFromEnv(o.getenv)
 	if err != nil {
 		return nil, fmt.Errorf("secret master key: %w", err)
@@ -227,35 +166,11 @@ func (o localDatabaseOperations) VectorRebuild(ctx context.Context, pageSize int
 	if err != nil {
 		return nil, fmt.Errorf("construct semantic embedder: %w", err)
 	}
-	return store.RebuildVectorIndex(ctx, embedder, index, pageSize)
-}
-
-func (o localDatabaseOperations) VectorReconcile(ctx context.Context, apply bool) (any, error) {
-	pool, store, index, err := o.openMaintenanceDependencies(ctx)
+	store, err := memory.NewStoreFromPoolWithEmbedder(pool, embedder)
 	if err != nil {
 		return nil, err
 	}
-	defer pool.Close()
-	defer index.Close()
-	return store.ReconcileVectorIndex(ctx, index, apply)
-}
-
-func (o localDatabaseOperations) openMaintenanceDependencies(ctx context.Context) (*coredb.Pool, *memory.Store, *memory.VectorClient, error) {
-	pool, err := o.openDatabase(ctx, true)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	store, err := memory.NewStoreFromPool(pool)
-	if err != nil {
-		pool.Close()
-		return nil, nil, nil, err
-	}
-	index, err := o.openVector(ctx, true)
-	if err != nil {
-		pool.Close()
-		return nil, nil, nil, err
-	}
-	return pool, store, index, nil
+	return store.RebuildVectors(ctx, pageSize)
 }
 
 func (o localDatabaseOperations) openDatabase(ctx context.Context, verify bool) (*coredb.Pool, error) {
@@ -274,24 +189,6 @@ func (o localDatabaseOperations) openDatabase(ctx context.Context, verify bool) 
 		}
 	}
 	return pool, nil
-}
-
-func (o localDatabaseOperations) openVector(ctx context.Context, verify bool) (*memory.VectorClient, error) {
-	vectorConfig, err := memory.VectorConfigFromEnv(o.getenv)
-	if err != nil {
-		return nil, fmt.Errorf("qdrant configuration: %w", err)
-	}
-	index, err := memory.OpenVectorClient(ctx, vectorConfig)
-	if err != nil {
-		return nil, err
-	}
-	if verify {
-		if _, err := index.VerifyCollection(ctx); err != nil {
-			index.Close()
-			return nil, fmt.Errorf("qdrant collection: %w", err)
-		}
-	}
-	return index, nil
 }
 
 func (o localDatabaseOperations) configRoot() (string, error) {

@@ -44,7 +44,7 @@ type schemaIndex struct {
 	DDL  string
 }
 
-var postgresForeignKeys = []schemaConstraint{
+var postgresConstraints = []schemaConstraint{
 	{"conversation_turns", "conversation_turns_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
 	{"conversation_turn_evidence", "conversation_turn_evidence_turn_fk", "FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE CASCADE"},
 	{"conversation_messages", "conversation_messages_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
@@ -75,6 +75,8 @@ var postgresForeignKeys = []schemaConstraint{
 	{"social_reply_feedback", "social_reply_feedback_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
 	{"social_reply_feedback", "social_reply_feedback_turn_fk", "FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE CASCADE"},
 	{"social_person_notes", "social_person_notes_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
+	{"personal_memories", "personal_memories_embedding_check", "CHECK ((embedding_model_id IS NULL AND embedding_content_hash IS NULL AND embedding IS NULL) OR (embedding_model_id <> '' AND embedding_content_hash ~ '^[0-9a-f]{64}$' AND embedding IS NOT NULL))"},
+	{"knowledge_entries", "knowledge_entries_embedding_check", "CHECK ((embedding_model_id IS NULL AND embedding_content_hash IS NULL AND embedding IS NULL) OR (embedding_model_id <> '' AND embedding_content_hash ~ '^[0-9a-f]{64}$' AND embedding IS NOT NULL))"},
 }
 
 var postgresIndexes = []schemaIndex{
@@ -87,7 +89,8 @@ var postgresIndexes = []schemaIndex{
 	{"extraction_batches_one_running", "CREATE UNIQUE INDEX IF NOT EXISTS extraction_batches_one_running ON extraction_batches(conversation_id) WHERE status = 'running'"},
 	{"extraction_batches_claimable", "CREATE INDEX IF NOT EXISTS extraction_batches_claimable ON extraction_batches(status, lease_expires_at_ms ASC NULLS FIRST, updated_at_ms ASC, id ASC) WHERE status IN ('pending', 'running')"},
 	{"knowledge_ingest_jobs_status", "CREATE INDEX IF NOT EXISTS knowledge_ingest_jobs_status ON knowledge_ingest_jobs(status, lease_expires_at_ms ASC NULLS FIRST, created_at_ms ASC, id ASC)"},
-	{"memory_embedding_jobs_status", "CREATE INDEX IF NOT EXISTS memory_embedding_jobs_status ON memory_embedding_jobs(status, lease_expires_at_ms ASC NULLS FIRST, updated_at_ms ASC, id ASC)"},
+	{"personal_memories_embedding_hnsw", "CREATE INDEX IF NOT EXISTS personal_memories_embedding_hnsw ON personal_memories USING hnsw (embedding public.vector_cosine_ops) WHERE embedding IS NOT NULL AND status = 'active' AND review_status = 'ready'"},
+	{"knowledge_entries_embedding_hnsw", "CREATE INDEX IF NOT EXISTS knowledge_entries_embedding_hnsw ON knowledge_entries USING hnsw (embedding public.vector_cosine_ops) WHERE embedding IS NOT NULL AND status = 'verified'"},
 	{"social_memory_entries_situation_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_situation_trgm ON social_memory_entries USING gin (situation public.gin_trgm_ops)"},
 	{"social_memory_entries_content_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_content_trgm ON social_memory_entries USING gin (content public.gin_trgm_ops)"},
 	{"social_memory_entries_recall_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_recall_trgm ON social_memory_entries USING gin (recall_cue public.gin_trgm_ops)"},
@@ -106,10 +109,13 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		if err := tx.Exec("CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public").Error; err != nil {
 			return fmt.Errorf("creating pg_trgm extension: %w", err)
 		}
+		if err := tx.Exec("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public").Error; err != nil {
+			return fmt.Errorf("creating pgvector extension: %w", err)
+		}
 		if err := tx.AutoMigrate(schemaModels()...); err != nil {
 			return fmt.Errorf("auto-migrating PostgreSQL schema: %w", err)
 		}
-		for _, constraint := range postgresForeignKeys {
+		for _, constraint := range postgresConstraints {
 			exists, err := constraintExists(tx, constraint.Table, constraint.Name)
 			if err != nil {
 				return err

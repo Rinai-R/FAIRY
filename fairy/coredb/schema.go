@@ -1,6 +1,8 @@
 package coredb
 
-const currentSchemaRevision = "2026-07-28-gorm-1"
+import "github.com/pgvector/pgvector-go"
+
+const currentSchemaRevision = "2026-07-28-pgvector-1"
 
 type conversationSchema struct {
 	ID          string `gorm:"type:text;primaryKey;index:conversations_character_updated,priority:3"`
@@ -141,19 +143,22 @@ type contextWindowSchema struct {
 func (contextWindowSchema) TableName() string { return "context_windows" }
 
 type personalMemorySchema struct {
-	ID                    string  `gorm:"type:text;primaryKey;index:personal_memories_scope_status,priority:5"`
-	Kind                  string  `gorm:"type:text;not null"`
-	ScopeKind             string  `gorm:"type:text;not null;check:personal_memories_invariants_check,(scope_kind IN ('global', 'character', 'relationship', 'unassigned_legacy')) AND (content <> '') AND (status IN ('active', 'superseded', 'tombstone')) AND (confidence_basis_points BETWEEN 0 AND 10000) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms) AND ((scope_kind = 'character') = (character_id IS NOT NULL) OR scope_kind <> 'character');index:personal_memories_scope_status,priority:1"`
-	CharacterID           *string `gorm:"type:text;index:personal_memories_scope_status,priority:2"`
-	ReviewStatus          string  `gorm:"type:text;not null"`
-	Content               string  `gorm:"type:text;not null"`
-	Status                string  `gorm:"type:text;not null;index:personal_memories_scope_status,priority:3"`
-	ConfidenceBasisPoints int     `gorm:"type:integer;not null"`
-	SourceConversationID  string  `gorm:"type:text;not null"`
-	SourceTurnID          string  `gorm:"type:text;not null"`
-	SupersedesID          *string `gorm:"type:text"`
-	CreatedAtMS           int64   `gorm:"not null"`
-	UpdatedAtMS           int64   `gorm:"not null;index:personal_memories_scope_status,sort:desc,priority:4"`
+	ID                    string           `gorm:"type:text;primaryKey;index:personal_memories_scope_status,priority:5"`
+	Kind                  string           `gorm:"type:text;not null"`
+	ScopeKind             string           `gorm:"type:text;not null;check:personal_memories_invariants_check,(scope_kind IN ('global', 'character', 'relationship', 'unassigned_legacy')) AND (content <> '') AND (status IN ('active', 'superseded', 'tombstone')) AND (confidence_basis_points BETWEEN 0 AND 10000) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms) AND ((scope_kind = 'character') = (character_id IS NOT NULL) OR scope_kind <> 'character');index:personal_memories_scope_status,priority:1"`
+	CharacterID           *string          `gorm:"type:text;index:personal_memories_scope_status,priority:2"`
+	ReviewStatus          string           `gorm:"type:text;not null"`
+	Content               string           `gorm:"type:text;not null"`
+	Status                string           `gorm:"type:text;not null;index:personal_memories_scope_status,priority:3"`
+	ConfidenceBasisPoints int              `gorm:"type:integer;not null"`
+	SourceConversationID  string           `gorm:"type:text;not null"`
+	SourceTurnID          string           `gorm:"type:text;not null"`
+	SupersedesID          *string          `gorm:"type:text"`
+	EmbeddingModelID      *string          `gorm:"type:text"`
+	EmbeddingContentHash  *string          `gorm:"type:text"`
+	Embedding             *pgvector.Vector `gorm:"type:public.vector(512)"`
+	CreatedAtMS           int64            `gorm:"not null"`
+	UpdatedAtMS           int64            `gorm:"not null;index:personal_memories_scope_status,sort:desc,priority:4"`
 }
 
 func (personalMemorySchema) TableName() string { return "personal_memories" }
@@ -168,17 +173,20 @@ type personalMemoryEvidenceSchema struct {
 func (personalMemoryEvidenceSchema) TableName() string { return "personal_memory_evidence" }
 
 type knowledgeEntrySchema struct {
-	ID                    string  `gorm:"type:text;primaryKey;index:knowledge_entries_status_updated,priority:3"`
-	Topic                 string  `gorm:"type:text;not null;check:knowledge_entries_invariants_check,(topic <> '') AND (statement <> '') AND (status IN ('candidate', 'verified', 'superseded', 'rejected', 'tombstone')) AND (confidence_basis_points BETWEEN 0 AND 10000) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms)"`
-	Statement             string  `gorm:"type:text;not null"`
-	Status                string  `gorm:"type:text;not null;index:knowledge_entries_status_updated,priority:1"`
-	VerificationBasis     string  `gorm:"type:text;not null"`
-	ConfidenceBasisPoints int     `gorm:"type:integer;not null"`
-	SourceConversationID  string  `gorm:"type:text;not null"`
-	SourceTurnID          string  `gorm:"type:text;not null"`
-	SupersedesID          *string `gorm:"type:text"`
-	CreatedAtMS           int64   `gorm:"not null"`
-	UpdatedAtMS           int64   `gorm:"not null;index:knowledge_entries_status_updated,sort:desc,priority:2"`
+	ID                    string           `gorm:"type:text;primaryKey;index:knowledge_entries_status_updated,priority:3"`
+	Topic                 string           `gorm:"type:text;not null;check:knowledge_entries_invariants_check,(topic <> '') AND (statement <> '') AND (status IN ('candidate', 'verified', 'superseded', 'rejected', 'tombstone')) AND (confidence_basis_points BETWEEN 0 AND 10000) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms)"`
+	Statement             string           `gorm:"type:text;not null"`
+	Status                string           `gorm:"type:text;not null;index:knowledge_entries_status_updated,priority:1"`
+	VerificationBasis     string           `gorm:"type:text;not null"`
+	ConfidenceBasisPoints int              `gorm:"type:integer;not null"`
+	SourceConversationID  string           `gorm:"type:text;not null"`
+	SourceTurnID          string           `gorm:"type:text;not null"`
+	SupersedesID          *string          `gorm:"type:text"`
+	EmbeddingModelID      *string          `gorm:"type:text"`
+	EmbeddingContentHash  *string          `gorm:"type:text"`
+	Embedding             *pgvector.Vector `gorm:"type:public.vector(512)"`
+	CreatedAtMS           int64            `gorm:"not null"`
+	UpdatedAtMS           int64            `gorm:"not null;index:knowledge_entries_status_updated,sort:desc,priority:2"`
 }
 
 func (knowledgeEntrySchema) TableName() string { return "knowledge_entries" }
@@ -243,46 +251,6 @@ type knowledgeIngestJobSchema struct {
 
 func (knowledgeIngestJobSchema) TableName() string { return "knowledge_ingest_jobs" }
 
-type memoryEmbeddingItemSchema struct {
-	ID                string  `gorm:"type:text;primaryKey;index:memory_embedding_items_status,priority:3"`
-	ItemKind          string  `gorm:"type:text;not null;uniqueIndex:memory_embedding_items_item_key,priority:1;index:memory_embedding_items_item,priority:1"`
-	ItemID            string  `gorm:"type:text;not null;uniqueIndex:memory_embedding_items_item_key,priority:2;index:memory_embedding_items_item,priority:2"`
-	ModelID           string  `gorm:"type:text;not null;uniqueIndex:memory_embedding_items_item_key,priority:3;index:memory_embedding_items_item,priority:3"`
-	Dimensions        int     `gorm:"type:integer;not null;check:memory_embedding_items_invariants_check,(item_kind IN ('personal_memory', 'knowledge')) AND (dimensions = 512) AND (content_hash <> '') AND (status IN ('pending', 'embedded', 'failed')) AND (embedded_at_ms IS NULL OR embedded_at_ms >= 0) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms) AND ((status = 'embedded') = (embedded_at_ms IS NOT NULL))"`
-	PointID           string  `gorm:"type:uuid;not null;unique"`
-	ContentHash       string  `gorm:"type:text;not null"`
-	Status            string  `gorm:"type:text;not null;index:memory_embedding_items_status,priority:1"`
-	ErrorCode         *string `gorm:"type:text"`
-	ErrorMessage      *string `gorm:"type:text"`
-	EmbeddedAtMS      *int64
-	LegacyVectorRowID *int64 `gorm:"column:legacy_vector_rowid;unique"`
-	CreatedAtMS       int64  `gorm:"not null"`
-	UpdatedAtMS       int64  `gorm:"not null;index:memory_embedding_items_status,priority:2"`
-}
-
-func (memoryEmbeddingItemSchema) TableName() string { return "memory_embedding_items" }
-
-type memoryEmbeddingJobSchema struct {
-	ID               string  `gorm:"type:text;primaryKey"`
-	ItemKind         string  `gorm:"type:text;not null;uniqueIndex:memory_embedding_jobs_item_content_key,priority:1;index:memory_embedding_jobs_item,priority:1"`
-	ItemID           string  `gorm:"type:text;not null;uniqueIndex:memory_embedding_jobs_item_content_key,priority:2;index:memory_embedding_jobs_item,priority:2"`
-	ModelID          string  `gorm:"type:text;not null;uniqueIndex:memory_embedding_jobs_item_content_key,priority:3;index:memory_embedding_jobs_item,priority:3"`
-	Dimensions       int     `gorm:"type:integer;not null;check:memory_embedding_jobs_invariants_check,(item_kind IN ('personal_memory', 'knowledge')) AND (dimensions = 512) AND (content_hash <> '') AND (status IN ('pending', 'running', 'succeeded', 'failed')) AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms >= 0) AND (attempt_count >= 0) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms) AND ((lease_owner IS NULL) = (lease_expires_at_ms IS NULL)) AND (status = 'running' OR lease_owner IS NULL)"`
-	PointID          string  `gorm:"type:uuid;not null"`
-	ContentHash      string  `gorm:"type:text;not null;uniqueIndex:memory_embedding_jobs_item_content_key,priority:4;index:memory_embedding_jobs_item,priority:4"`
-	Status           string  `gorm:"type:text;not null"`
-	LeaseOwner       *string `gorm:"type:text"`
-	LeaseExpiresAtMS *int64
-	AttemptCount     int     `gorm:"type:integer;not null;default:0"`
-	ErrorCode        *string `gorm:"type:text"`
-	ErrorMessage     *string `gorm:"type:text"`
-	Retryable        bool    `gorm:"not null;default:false"`
-	CreatedAtMS      int64   `gorm:"not null"`
-	UpdatedAtMS      int64   `gorm:"not null"`
-}
-
-func (memoryEmbeddingJobSchema) TableName() string { return "memory_embedding_jobs" }
-
 type secretValueSchema struct {
 	Namespace   string `gorm:"type:text;primaryKey"`
 	Name        string `gorm:"type:text;primaryKey"`
@@ -295,37 +263,6 @@ type secretValueSchema struct {
 }
 
 func (secretValueSchema) TableName() string { return "secret_values" }
-
-type vectorRebuildRunSchema struct {
-	ID             string  `gorm:"type:text;primaryKey;index:vector_rebuild_runs_status,priority:3"`
-	CollectionName string  `gorm:"type:text;not null"`
-	ModelID        string  `gorm:"type:text;not null"`
-	Status         string  `gorm:"type:text;not null;check:vector_rebuild_runs_invariants_check,(status IN ('pending', 'running', 'succeeded', 'failed')) AND (scanned_items >= 0) AND (upserted_points >= 0) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms);index:vector_rebuild_runs_status,priority:1"`
-	ScannedItems   int64   `gorm:"not null;default:0"`
-	UpsertedPoints int64   `gorm:"not null;default:0"`
-	CheckpointJSON []byte  `gorm:"type:jsonb;not null;default:'{}'::jsonb"`
-	ErrorMessage   *string `gorm:"type:text"`
-	CreatedAtMS    int64   `gorm:"not null"`
-	UpdatedAtMS    int64   `gorm:"not null;index:vector_rebuild_runs_status,sort:desc,priority:2"`
-}
-
-func (vectorRebuildRunSchema) TableName() string { return "vector_rebuild_runs" }
-
-type vectorReconciliationRunSchema struct {
-	ID             string  `gorm:"type:text;primaryKey;index:vector_reconciliation_runs_status,priority:3"`
-	CollectionName string  `gorm:"type:text;not null"`
-	DryRun         bool    `gorm:"not null"`
-	Status         string  `gorm:"type:text;not null;check:vector_reconciliation_runs_invariants_check,(status IN ('running', 'succeeded', 'failed')) AND (missing_points >= 0) AND (stale_points >= 0) AND (orphan_points >= 0) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms);index:vector_reconciliation_runs_status,priority:1"`
-	MissingPoints  int64   `gorm:"not null;default:0"`
-	StalePoints    int64   `gorm:"not null;default:0"`
-	OrphanPoints   int64   `gorm:"not null;default:0"`
-	ReportJSON     []byte  `gorm:"type:jsonb;not null;default:'{}'::jsonb"`
-	ErrorMessage   *string `gorm:"type:text"`
-	CreatedAtMS    int64   `gorm:"not null"`
-	UpdatedAtMS    int64   `gorm:"not null;index:vector_reconciliation_runs_status,sort:desc,priority:2"`
-}
-
-func (vectorReconciliationRunSchema) TableName() string { return "vector_reconciliation_runs" }
 
 type endpointConversationSchema struct {
 	CharacterID        string  `gorm:"type:text;primaryKey"`
@@ -425,11 +362,7 @@ func schemaModels() []any {
 		&extractionBatchSchema{},
 		&extractionBatchTurnSchema{},
 		&knowledgeIngestJobSchema{},
-		&memoryEmbeddingItemSchema{},
-		&memoryEmbeddingJobSchema{},
 		&secretValueSchema{},
-		&vectorRebuildRunSchema{},
-		&vectorReconciliationRunSchema{},
 		&endpointConversationSchema{},
 		&ownerIdentitySchema{},
 		&socialMemoryEntrySchema{},

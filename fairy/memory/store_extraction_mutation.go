@@ -27,6 +27,28 @@ func (s *Store) commitMemoryMutationsPostgres(ctx context.Context, batchID, char
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
+	embeddings := make([]EmbeddingValue, len(mutations))
+	embeddingPrepared := make([]bool, len(mutations))
+	byContent := make(map[string]EmbeddingValue, len(mutations))
+	for index, mutation := range mutations {
+		existingID, err := FindDuplicateMemory(queryCtx, s.pool.Raw(), mutation.Kind, mutation.Scope, mutation.Content)
+		if err != nil {
+			return nil, err
+		}
+		if existingID != "" && (mutation.Operation == "create" || existingID != mutation.MemoryID) {
+			continue
+		}
+		embedding, ok := byContent[mutation.Content]
+		if !ok {
+			embedding, err = s.embeddingForContent(mutation.Content)
+			if err != nil {
+				return nil, err
+			}
+			byContent[mutation.Content] = embedding
+		}
+		embeddings[index] = embedding
+		embeddingPrepared[index] = true
+	}
 	tx, err := s.pool.Raw().Begin(queryCtx)
 	if err != nil {
 		return nil, fmt.Errorf("beginning memory mutation transaction: %w", err)
@@ -45,7 +67,7 @@ func (s *Store) commitMemoryMutationsPostgres(ctx context.Context, batchID, char
 	}
 	now := nowUnixMS()
 	results := make([]MemoryMutationResult, 0, len(mutations))
-	for _, mutation := range mutations {
+	for index, mutation := range mutations {
 		if _, ok := allowedTurnIDs[mutation.SourceTurnID]; !ok {
 			return nil, errors.New("memory mutation source turn is not provided to the batch")
 		}
@@ -59,7 +81,11 @@ func (s *Store) commitMemoryMutationsPostgres(ctx context.Context, batchID, char
 				results = append(results, MemoryMutationResult{Status: "no_change", ExistingMemoryID: existingID})
 				continue
 			}
-			record, err := insertPersonalMemoryPostgres(queryCtx, tx, newID(), mutation.Kind, mutation.Scope, mutation.Content, mutation.ConfidenceBasisPoints, conversationID, mutation.SourceTurnID, nil, now)
+			if !embeddingPrepared[index] {
+				return nil, errors.New("memory candidates changed during embedding preparation")
+			}
+			embedding := embeddings[index]
+			record, err := insertPersonalMemoryPostgres(queryCtx, tx, newID(), mutation.Kind, mutation.Scope, mutation.Content, mutation.ConfidenceBasisPoints, conversationID, mutation.SourceTurnID, nil, now, embedding)
 			if err != nil {
 				return nil, err
 			}
@@ -82,6 +108,9 @@ func (s *Store) commitMemoryMutationsPostgres(ctx context.Context, batchID, char
 				results = append(results, MemoryMutationResult{Status: "no_change", ExistingMemoryID: existingID})
 				continue
 			}
+			if !embeddingPrepared[index] {
+				return nil, errors.New("memory candidates changed during embedding preparation")
+			}
 			changed, err := tx.Exec(queryCtx, "UPDATE personal_memories SET status = 'superseded', updated_at_ms = $2 WHERE id = $1 AND status = 'active'", mutation.MemoryID, now)
 			if err != nil {
 				return nil, fmt.Errorf("superseding personal memory: %w", err)
@@ -90,7 +119,8 @@ func (s *Store) commitMemoryMutationsPostgres(ctx context.Context, batchID, char
 				return nil, errors.New("supersede target memory is not active")
 			}
 			supersedesID := mutation.MemoryID
-			record, err := insertPersonalMemoryPostgres(queryCtx, tx, newID(), mutation.Kind, mutation.Scope, mutation.Content, mutation.ConfidenceBasisPoints, conversationID, mutation.SourceTurnID, &supersedesID, now)
+			embedding := embeddings[index]
+			record, err := insertPersonalMemoryPostgres(queryCtx, tx, newID(), mutation.Kind, mutation.Scope, mutation.Content, mutation.ConfidenceBasisPoints, conversationID, mutation.SourceTurnID, &supersedesID, now, embedding)
 			if err != nil {
 				return nil, err
 			}

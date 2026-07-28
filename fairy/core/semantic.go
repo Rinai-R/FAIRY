@@ -1,16 +1,16 @@
 package core
 
 import (
-	"fairy/companion"
 	"fairy/config"
+	"fairy/memory"
 	"fairy/model"
 
 	"go.uber.org/zap"
 )
 
-func attachSemanticEmbedder(companionService *companion.CompanionService, modelService *model.ModelService, configReader *config.Reader, logger *zap.Logger) bool {
-	if companionService == nil || configReader == nil {
-		return false
+func semanticEmbedder(modelService *model.ModelService, configReader *config.Reader, logger *zap.Logger) memory.SemanticEmbedder {
+	if configReader == nil {
+		return nil
 	}
 	if logger == nil {
 		logger = zap.NewNop()
@@ -18,26 +18,25 @@ func attachSemanticEmbedder(companionService *companion.CompanionService, modelS
 	settings, err := configReader.SemanticEmbeddingSettings()
 	if err != nil {
 		logger.Warn("semantic embedding settings unavailable", zap.Error(err))
-		return false
+		return nil
 	}
 	switch settings.Provider {
 	case config.SemanticEmbeddingProviderNone, "":
 		logger.Info("semantic embedding disabled; FTS-only retrieval")
-		return false
+		return nil
 	case config.SemanticEmbeddingProviderOpenAICompatible:
 		if modelService == nil {
-			return false
+			return nil
 		}
 		embedder, err := modelService.SemanticAPIEmbedder(settings)
 		if err != nil {
 			logger.Warn("semantic API embedder unavailable", zap.Error(err))
-			return false
+			return nil
 		}
-		companion.AttachSemanticEmbedder(companionService, embedder)
 		logger.Info("semantic API embedder attached", zap.String("model", settings.Model), zap.Int("dimensions", settings.Dimensions))
-		return true
+		return embedder
 	default:
 		logger.Warn("semantic embedding provider unsupported", zap.String("provider", settings.Provider))
-		return false
+		return nil
 	}
 }

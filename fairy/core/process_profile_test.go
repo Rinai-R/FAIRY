@@ -26,12 +26,6 @@ func TestParseProfile(t *testing.T) {
 			t.Fatalf("ParseProfile(%q) = (%q, %v), want %q", tc.raw, got, err, tc.want)
 		}
 	}
-	if ProfileFull.RequiresVectorIndex() != true {
-		t.Fatal("full must require vector index")
-	}
-	if ProfileDesktopLite.RequiresVectorIndex() != false {
-		t.Fatal("desktop-lite must not require vector index")
-	}
 }
 
 func TestProfileFromEnvDefaultFull(t *testing.T) {

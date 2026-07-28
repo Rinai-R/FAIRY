@@ -58,7 +58,6 @@ type Dependencies struct {
 	StartedAt  time.Time
 
 	Database    *coredb.Pool
-	VectorIndex *memory.VectorClient
 	MemoryStore *memory.Store
 	Identity    *memory.IdentityStore
 	Memory      *memory.MemoryService
