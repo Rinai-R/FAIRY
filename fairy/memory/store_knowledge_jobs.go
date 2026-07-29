@@ -23,11 +23,11 @@ func (s *Store) KnowledgeIngestJobsContext(ctx context.Context, status string) (
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
 	rows, err := s.pool.Raw().Query(queryCtx, `
-SELECT id, conversation_id, turn_id, task_id, status, attempt_count,
+SELECT id, conversation_id, turn_id, payload_json->>'taskId', status, attempt_count,
        next_attempt_at_ms, COALESCE(error_category, ''), COALESCE(error_message, ''),
        created_at_ms, updated_at_ms
-FROM knowledge_ingest_jobs
-WHERE ($1 = '' OR status = $1)
+FROM feedback_events
+WHERE type = 'web_knowledge' AND ($1 = '' OR status = $1)
 ORDER BY updated_at_ms DESC, id ASC
 LIMIT 100`, status)
 	if err != nil {
@@ -64,15 +64,15 @@ func (s *Store) RetryKnowledgeIngestJobContext(ctx context.Context, id string) e
 	defer cancel()
 	now := nowUnixMS()
 	changed, err := s.pool.Raw().Exec(queryCtx, `
-UPDATE knowledge_ingest_jobs j
+UPDATE feedback_events j
 SET status = 'pending', attempt_count = 0, next_attempt_at_ms = 0,
-    lease_owner = NULL, lease_expires_at_ms = NULL,
+    lease_owner = NULL, lease_expires_at_ms = NULL, claim_group_id = NULL,
     error_category = NULL, error_message = NULL, updated_at_ms = $2
 FROM conversation_turns t
 WHERE j.id = $1
+  AND j.type = 'web_knowledge'
   AND t.id = j.turn_id
   AND t.status = 'completed'
-  AND j.task_id <> ''
   AND j.status IN ('failed', 'dropped')`, id, now)
 	if err != nil {
 		return fmt.Errorf("retrying knowledge ingest job: %w", err)
@@ -94,12 +94,13 @@ func (s *Store) DropKnowledgeIngestJobContext(ctx context.Context, id string) er
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
 	changed, err := s.pool.Raw().Exec(queryCtx, `
-UPDATE knowledge_ingest_jobs
+UPDATE feedback_events
 SET status = 'dropped', next_attempt_at_ms = 0,
-    lease_owner = NULL, lease_expires_at_ms = NULL,
+    lease_owner = NULL, lease_expires_at_ms = NULL, claim_group_id = NULL,
     error_category = 'manual_drop', error_message = 'dropped by operator',
     updated_at_ms = $2
-WHERE id = $1 AND status IN ('waiting_turn', 'pending', 'failed')`, id, nowUnixMS())
+WHERE id = $1 AND type = 'web_knowledge'
+  AND status IN ('waiting_turn', 'pending', 'failed')`, id, nowUnixMS())
 	if err != nil {
 		return fmt.Errorf("dropping knowledge ingest job: %w", err)
 	}

@@ -11,7 +11,7 @@ import (
 )
 
 func ListKnowledge(ctx context.Context, db Querier, status string) ([]KnowledgeRecord, error) {
-	rows, err := db.Query(ctx, "SELECT id, topic, statement, status, verification_basis, confidence_basis_points, source_conversation_id, source_turn_id, supersedes_id, subject, predicate, value, created_at_ms, updated_at_ms FROM knowledge_entries WHERE status = $1 ORDER BY updated_at_ms DESC, id ASC LIMIT 20", status)
+	rows, err := db.Query(ctx, "SELECT id, topic, statement, status, verification_basis, confidence_basis_points, source_conversation_id, source_turn_id, supersedes_id, created_at_ms, updated_at_ms FROM knowledge_entries WHERE status = $1 ORDER BY updated_at_ms DESC, id ASC LIMIT 20", status)
 	if err != nil {
 		return nil, fmt.Errorf("querying knowledge catalog: %w", err)
 	}
@@ -31,7 +31,7 @@ func ListKnowledge(ctx context.Context, db Querier, status string) ([]KnowledgeR
 }
 
 func KnowledgeByID(ctx context.Context, db ConversationDB, id string) (KnowledgeRecord, error) {
-	row := db.QueryRow(ctx, "SELECT id, topic, statement, status, verification_basis, confidence_basis_points, source_conversation_id, source_turn_id, supersedes_id, subject, predicate, value, created_at_ms, updated_at_ms FROM knowledge_entries WHERE id = $1", id)
+	row := db.QueryRow(ctx, "SELECT id, topic, statement, status, verification_basis, confidence_basis_points, source_conversation_id, source_turn_id, supersedes_id, created_at_ms, updated_at_ms FROM knowledge_entries WHERE id = $1", id)
 	return ScanKnowledge(ctx, db, row)
 }
 
@@ -39,8 +39,7 @@ func ScanKnowledge(ctx context.Context, db Querier, row scanner) (KnowledgeRecor
 	var record KnowledgeRecord
 	var confidence int
 	var supersedes pgtype.Text
-	var subject, predicate, value pgtype.Text
-	if err := row.Scan(&record.ID, &record.Topic, &record.Statement, &record.Status, &record.VerificationBasis, &confidence, &record.SourceConversationID, &record.SourceTurnID, &supersedes, &subject, &predicate, &value, &record.CreatedAtUnixMS, &record.UpdatedAtUnixMS); err != nil {
+	if err := row.Scan(&record.ID, &record.Topic, &record.Statement, &record.Status, &record.VerificationBasis, &confidence, &record.SourceConversationID, &record.SourceTurnID, &supersedes, &record.CreatedAtUnixMS, &record.UpdatedAtUnixMS); err != nil {
 		return KnowledgeRecord{}, fmt.Errorf("scanning knowledge: %w", err)
 	}
 	if confidence < 0 || confidence > 10000 {
@@ -49,15 +48,6 @@ func ScanKnowledge(ctx context.Context, db Querier, row scanner) (KnowledgeRecor
 	record.ConfidenceBasisPoints = uint16(confidence)
 	if supersedes.Valid {
 		record.SupersedesID = &supersedes.String
-	}
-	if subject.Valid {
-		record.Subject = &subject.String
-	}
-	if predicate.Valid {
-		record.Predicate = &predicate.String
-	}
-	if value.Valid {
-		record.Value = &value.String
 	}
 	sources, err := KnowledgeSources(ctx, db, record.ID)
 	if err != nil {
@@ -68,7 +58,13 @@ func ScanKnowledge(ctx context.Context, db Querier, row scanner) (KnowledgeRecor
 }
 
 func KnowledgeSources(ctx context.Context, db Querier, id string) ([]AssistantSource, error) {
-	rows, err := db.Query(ctx, "SELECT title, url, snippet, rank, fetched_at_ms FROM knowledge_sources WHERE knowledge_id = $1 ORDER BY rank ASC", id)
+	rows, err := db.Query(ctx, `
+SELECT document.title, document.canonical_url,
+       LEFT(CASE WHEN entry.evidence_text <> '' THEN entry.evidence_text ELSE document.content END, 1200),
+       1, document.fetched_at_ms
+FROM knowledge_entries AS entry
+JOIN knowledge_documents AS document ON document.id = entry.document_id
+WHERE entry.id = $1`, id)
 	if err != nil {
 		return nil, fmt.Errorf("querying knowledge sources: %w", err)
 	}
@@ -113,9 +109,7 @@ SET status = 'verified',
 WHERE id = $1
   AND status = 'candidate'
   AND verification_basis = 'unverified'
-  AND NOT EXISTS (
-    SELECT 1 FROM knowledge_sources s WHERE s.knowledge_id = knowledge_entries.id
-  )`, id, now, modelID, contentHash, vector)
+  AND document_id IS NULL`, id, now, modelID, contentHash, vector)
 	if err != nil {
 		return "", "", fmt.Errorf("confirming knowledge candidate: %w", err)
 	}
@@ -188,45 +182,42 @@ INSERT INTO knowledge_entries(
 }
 
 func InsertKnowledgeSource(ctx context.Context, tx pgx.Tx, knowledgeID, sourceID string, source AssistantSource) error {
-	_, err := tx.Exec(ctx, "INSERT INTO knowledge_sources(knowledge_id, source_id, title, url, snippet, rank, fetched_at_ms) VALUES ($1, $2, $3, $4, $5, $6, $7)", knowledgeID, sourceID, source.Title, source.URL, source.Snippet, source.Rank, source.FetchedAtUnixMS)
+	_, err := tx.Exec(ctx, `
+INSERT INTO knowledge_documents(
+  id, canonical_url, title, content, content_hash, content_type,
+  fetched_at_ms, created_at_ms, updated_at_ms
+) VALUES (
+  $1, $2, $3, $4, $5, 'text/plain',
+  $6, $7, $7
+)
+ON CONFLICT (canonical_url) DO UPDATE
+SET title = CASE WHEN EXCLUDED.fetched_at_ms > knowledge_documents.fetched_at_ms THEN EXCLUDED.title ELSE knowledge_documents.title END,
+    content = CASE WHEN EXCLUDED.fetched_at_ms > knowledge_documents.fetched_at_ms THEN EXCLUDED.content ELSE knowledge_documents.content END,
+    content_hash = CASE WHEN EXCLUDED.fetched_at_ms > knowledge_documents.fetched_at_ms THEN EXCLUDED.content_hash ELSE knowledge_documents.content_hash END,
+    fetched_at_ms = GREATEST(knowledge_documents.fetched_at_ms, EXCLUDED.fetched_at_ms),
+    updated_at_ms = GREATEST(knowledge_documents.updated_at_ms, EXCLUDED.updated_at_ms)`,
+		sourceID, source.URL, source.Title, source.Snippet,
+		semanticContentHash(source.Snippet), source.FetchedAtUnixMS, nowUnixMS())
 	if err != nil {
-		return fmt.Errorf("inserting knowledge source: %w", err)
+		return fmt.Errorf("upserting direct knowledge document: %w", err)
+	}
+	changed, err := tx.Exec(ctx, `
+UPDATE knowledge_entries AS entry
+SET document_id = document.id,
+    evidence_text = $3,
+    updated_at_ms = GREATEST(entry.updated_at_ms, $4)
+FROM knowledge_documents AS document
+WHERE entry.id = $1 AND document.canonical_url = $2
+  AND entry.document_id IS NULL`, knowledgeID, source.URL, source.Snippet, nowUnixMS())
+	if err != nil {
+		return fmt.Errorf("linking direct knowledge document: %w", err)
+	}
+	if changed.RowsAffected() != 1 {
+		return errors.New("knowledge entry already has a source document")
 	}
 	return nil
 }
 
 func InsertCanonicalKnowledgeSource(ctx context.Context, tx pgx.Tx, knowledgeID, sourceID string, source AssistantSource) error {
-	updated, err := tx.Exec(ctx, `
-UPDATE knowledge_sources
-SET title = CASE WHEN $6 > fetched_at_ms THEN $2 ELSE title END,
-    snippet = CASE WHEN $6 > fetched_at_ms THEN $4 ELSE snippet END,
-    rank = CASE WHEN $6 > fetched_at_ms THEN $5 ELSE rank END,
-    fetched_at_ms = GREATEST(fetched_at_ms, $6)
-WHERE knowledge_id = $1
-  AND (canonical_url = $3 OR url = $3)`,
-		knowledgeID, source.Title, source.URL, source.Snippet, source.Rank, source.FetchedAtUnixMS,
-	)
-	if err != nil {
-		return fmt.Errorf("refreshing canonical knowledge source: %w", err)
-	}
-	if updated.RowsAffected() > 0 {
-		return nil
-	}
-
-	_, err = tx.Exec(ctx, `
-INSERT INTO knowledge_sources(
-  knowledge_id, source_id, title, url, canonical_url, snippet, rank, fetched_at_ms
-) VALUES ($1, $2, $3, $4, $4, $5, $6, $7)
-ON CONFLICT (knowledge_id, canonical_url) WHERE canonical_url <> '' DO UPDATE
-SET title = EXCLUDED.title,
-    snippet = EXCLUDED.snippet,
-    rank = EXCLUDED.rank,
-    fetched_at_ms = EXCLUDED.fetched_at_ms
-WHERE EXCLUDED.fetched_at_ms > knowledge_sources.fetched_at_ms`,
-		knowledgeID, sourceID, source.Title, source.URL, source.Snippet, source.Rank, source.FetchedAtUnixMS,
-	)
-	if err != nil {
-		return fmt.Errorf("merging canonical knowledge source: %w", err)
-	}
-	return nil
+	return InsertKnowledgeSource(ctx, tx, knowledgeID, sourceID, source)
 }

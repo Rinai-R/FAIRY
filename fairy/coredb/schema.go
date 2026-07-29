@@ -2,7 +2,7 @@ package coredb
 
 import "github.com/pgvector/pgvector-go"
 
-const currentSchemaRevision = "2026-07-29-knowledge-ingest-task-columns-2"
+const currentSchemaRevision = "2026-07-29-direct-memory-knowledge-feedback-1"
 
 type conversationSchema struct {
 	ID          string `gorm:"type:text;primaryKey;index:conversations_character_updated,priority:3"`
@@ -153,6 +153,7 @@ type personalMemorySchema struct {
 	ConfidenceBasisPoints int              `gorm:"type:integer;not null"`
 	SourceConversationID  string           `gorm:"type:text;not null"`
 	SourceTurnID          string           `gorm:"type:text;not null"`
+	EvidenceIDsJSON       []byte           `gorm:"type:jsonb;not null;default:'[]'::jsonb"`
 	SupersedesID          *string          `gorm:"type:text"`
 	EmbeddingModelID      *string          `gorm:"type:text"`
 	EmbeddingContentHash  *string          `gorm:"type:text"`
@@ -163,15 +164,6 @@ type personalMemorySchema struct {
 
 func (personalMemorySchema) TableName() string { return "personal_memories" }
 
-type personalMemoryEvidenceSchema struct {
-	MemoryID    string `gorm:"type:text;primaryKey;index:personal_memory_evidence_memory,priority:1"`
-	TurnID      string `gorm:"type:text;primaryKey"`
-	EvidenceID  string `gorm:"type:text;primaryKey;index:personal_memory_evidence_memory,priority:2"`
-	CreatedAtMS int64  `gorm:"not null;check:personal_memory_evidence_invariants_check,(created_at_ms >= 0)"`
-}
-
-func (personalMemoryEvidenceSchema) TableName() string { return "personal_memory_evidence" }
-
 type knowledgeEntrySchema struct {
 	ID                    string           `gorm:"type:text;primaryKey;index:knowledge_entries_status_updated,priority:3"`
 	Topic                 string           `gorm:"type:text;not null;check:knowledge_entries_invariants_check,(topic <> '') AND (statement <> '') AND (status IN ('candidate', 'verified', 'superseded', 'rejected', 'tombstone')) AND (confidence_basis_points BETWEEN 0 AND 10000) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms)"`
@@ -181,11 +173,9 @@ type knowledgeEntrySchema struct {
 	ConfidenceBasisPoints int              `gorm:"type:integer;not null"`
 	SourceConversationID  string           `gorm:"type:text;not null"`
 	SourceTurnID          string           `gorm:"type:text;not null"`
+	DocumentID            *string          `gorm:"type:text;index:knowledge_entries_document"`
+	EvidenceText          string           `gorm:"type:text;not null;default:''"`
 	SupersedesID          *string          `gorm:"type:text"`
-	Subject               *string          `gorm:"type:text"`
-	Predicate             *string          `gorm:"type:text"`
-	Value                 *string          `gorm:"type:text"`
-	FactKey               *string          `gorm:"type:text"`
 	EmbeddingModelID      *string          `gorm:"type:text"`
 	EmbeddingContentHash  *string          `gorm:"type:text"`
 	Embedding             *pgvector.Vector `gorm:"type:public.vector(512)"`
@@ -195,124 +185,22 @@ type knowledgeEntrySchema struct {
 
 func (knowledgeEntrySchema) TableName() string { return "knowledge_entries" }
 
-type knowledgeSourceSchema struct {
-	KnowledgeID  string `gorm:"type:text;primaryKey"`
-	SourceID     string `gorm:"type:text;primaryKey"`
-	Title        string `gorm:"type:text;not null"`
-	URL          string `gorm:"type:text;not null"`
-	CanonicalURL string `gorm:"type:text;not null;default:''"`
-	Snippet      string `gorm:"type:text;not null"`
-	Rank         int    `gorm:"type:integer;not null;check:knowledge_sources_invariants_check,(rank >= 0) AND (fetched_at_ms >= 0)"`
-	FetchedAtMS  int64  `gorm:"not null"`
-}
-
-func (knowledgeSourceSchema) TableName() string { return "knowledge_sources" }
-
 type knowledgeDocumentSchema struct {
-	ID                 string  `gorm:"type:text;primaryKey"`
-	CanonicalURL       string  `gorm:"type:text;not null;uniqueIndex:knowledge_documents_canonical_key;check:knowledge_documents_invariants_check,(canonical_url ~ '^https?://[^[:space:]]+$') AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms)"`
-	Title              string  `gorm:"type:text;not null;default:''"`
-	CurrentVersionID   *string `gorm:"type:text"`
-	CurrentContentHash *string `gorm:"type:text"`
-	CreatedAtMS        int64   `gorm:"not null"`
-	UpdatedAtMS        int64   `gorm:"not null"`
-}
-
-func (knowledgeDocumentSchema) TableName() string { return "knowledge_documents" }
-
-type knowledgeDocumentVersionSchema struct {
-	ID                 string `gorm:"type:text;primaryKey;uniqueIndex:knowledge_document_versions_hash_key,priority:2"`
-	DocumentID         string `gorm:"type:text;not null;uniqueIndex:knowledge_document_versions_hash_key,priority:1"`
-	ContentHash        string `gorm:"type:text;not null;check:knowledge_document_versions_invariants_check,(content_hash ~ '^[0-9a-f]{64}$') AND (reconciler_revision = '' OR reconciler_revision ~ '^[0-9a-f]{64}$') AND (status IN ('staged', 'current', 'superseded')) AND (fetched_at_ms >= 0) AND (created_at_ms >= 0)"`
-	ContentType        string `gorm:"type:text;not null"`
-	Status             string `gorm:"type:text;not null"`
-	FetchedAtMS        int64  `gorm:"not null"`
+	ID                 string `gorm:"type:text;primaryKey"`
+	CanonicalURL       string `gorm:"type:text;not null;uniqueIndex:knowledge_documents_canonical_key;check:knowledge_documents_invariants_check,(canonical_url ~ '^https?://[^[:space:]]+$') AND (content_hash = '' OR content_hash ~ '^[0-9a-f]{64}$') AND (reconciler_revision = '' OR reconciler_revision ~ '^[0-9a-f]{64}$') AND (fetched_at_ms >= 0) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms)"`
+	Title              string `gorm:"type:text;not null;default:''"`
+	Content            string `gorm:"type:text;not null;default:''"`
+	ContentHash        string `gorm:"type:text;not null;default:''"`
+	ContentType        string `gorm:"type:text;not null;default:''"`
+	FetchedAtMS        int64  `gorm:"not null;default:0"`
 	ETag               string `gorm:"column:etag;type:text;not null;default:''"`
 	LastModified       string `gorm:"type:text;not null;default:''"`
 	ReconcilerRevision string `gorm:"type:text;not null;default:''"`
 	CreatedAtMS        int64  `gorm:"not null"`
+	UpdatedAtMS        int64  `gorm:"not null"`
 }
 
-func (knowledgeDocumentVersionSchema) TableName() string { return "knowledge_document_versions" }
-
-type knowledgeChunkSchema struct {
-	ID                   string           `gorm:"type:text;primaryKey"`
-	VersionID            string           `gorm:"type:text;not null;uniqueIndex:knowledge_chunks_version_ordinal_key,priority:1"`
-	Ordinal              int              `gorm:"not null;uniqueIndex:knowledge_chunks_version_ordinal_key,priority:2;check:knowledge_chunks_invariants_check,(ordinal >= 0) AND (text <> '') AND (text_hash ~ '^[0-9a-f]{64}$') AND ((embedding_model_id IS NULL AND embedding_content_hash IS NULL AND embedding IS NULL) OR (embedding_model_id <> '' AND embedding_content_hash ~ '^[0-9a-f]{64}$' AND embedding IS NOT NULL)) AND (created_at_ms >= 0)"`
-	Text                 string           `gorm:"type:text;not null"`
-	TextHash             string           `gorm:"type:text;not null"`
-	EmbeddingModelID     *string          `gorm:"type:text"`
-	EmbeddingContentHash *string          `gorm:"type:text"`
-	Embedding            *pgvector.Vector `gorm:"type:public.vector(512)"`
-	CreatedAtMS          int64            `gorm:"not null"`
-}
-
-func (knowledgeChunkSchema) TableName() string { return "knowledge_chunks" }
-
-type knowledgeEvidenceSchema struct {
-	KnowledgeID     string `gorm:"type:text;primaryKey"`
-	ChunkID         string `gorm:"type:text;primaryKey"`
-	VersionID       string `gorm:"type:text;not null;check:knowledge_evidence_invariants_check,(created_at_ms >= 0) AND (invalidated_at_ms IS NULL OR invalidated_at_ms >= created_at_ms)"`
-	Active          bool   `gorm:"not null;default:true"`
-	CreatedAtMS     int64  `gorm:"not null"`
-	InvalidatedAtMS *int64
-}
-
-func (knowledgeEvidenceSchema) TableName() string { return "knowledge_evidence" }
-
-type extractionBatchSchema struct {
-	ID                string  `gorm:"type:text;primaryKey"`
-	ConversationID    string  `gorm:"type:text;not null"`
-	CharacterID       string  `gorm:"type:text;not null"`
-	Status            string  `gorm:"type:text;not null;check:extraction_batches_invariants_check,(status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')) AND (first_turn_sequence > 0) AND (last_turn_sequence >= first_turn_sequence) AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms >= 0) AND (attempt_count >= 0) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms) AND ((lease_owner IS NULL) = (lease_expires_at_ms IS NULL)) AND (status = 'running' OR lease_owner IS NULL)"`
-	FirstTurnSequence int64   `gorm:"not null"`
-	LastTurnSequence  int64   `gorm:"not null"`
-	LeaseOwner        *string `gorm:"type:text"`
-	LeaseExpiresAtMS  *int64
-	AttemptCount      int     `gorm:"type:integer;not null;default:0"`
-	ErrorCode         *string `gorm:"type:text"`
-	ErrorMessage      *string `gorm:"type:text"`
-	ErrorRetryable    *bool
-	CreatedAtMS       int64 `gorm:"not null"`
-	UpdatedAtMS       int64 `gorm:"not null"`
-}
-
-func (extractionBatchSchema) TableName() string { return "extraction_batches" }
-
-type extractionBatchTurnSchema struct {
-	BatchID      string `gorm:"type:text;primaryKey;uniqueIndex:extraction_batch_turns_batch_sequence_key,priority:1"`
-	TurnID       string `gorm:"type:text;primaryKey"`
-	TurnSequence int64  `gorm:"not null;check:extraction_batch_turns_invariants_check,(turn_sequence > 0);uniqueIndex:extraction_batch_turns_batch_sequence_key,priority:2"`
-}
-
-func (extractionBatchTurnSchema) TableName() string { return "extraction_batch_turns" }
-
-type knowledgeIngestJobSchema struct {
-	ID                string  `gorm:"type:text;primaryKey"`
-	ConversationID    string  `gorm:"type:text;not null"`
-	TurnID            string  `gorm:"type:text;not null"`
-	TaskID            string  `gorm:"type:text;not null;default:''"`
-	SourceJSON        []byte  `gorm:"type:jsonb;not null;default:'{}'::jsonb"`
-	LegacyBatchID     string  `gorm:"column:batch_id;type:text;not null;default:''"`
-	LegacySourcesJSON []byte  `gorm:"column:sources_json;type:jsonb;not null;default:'[]'::jsonb"`
-	Query             string  `gorm:"type:text;not null;default:''"`
-	Title             string  `gorm:"type:text;not null;default:''"`
-	URL               string  `gorm:"type:text;not null;default:''"`
-	Snippet           string  `gorm:"type:text;not null;default:''"`
-	Rank              int     `gorm:"type:integer;not null;default:0;check:knowledge_ingest_jobs_invariants_check,(rank >= 0) AND (fetched_at_ms >= 0) AND (status IN ('waiting_turn', 'pending', 'running', 'succeeded', 'failed', 'dropped')) AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms >= 0) AND (attempt_count >= 0) AND (next_attempt_at_ms >= 0) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms) AND ((lease_owner IS NULL) = (lease_expires_at_ms IS NULL)) AND (status = 'running' OR lease_owner IS NULL)"`
-	FetchedAtMS       int64   `gorm:"not null;default:0"`
-	Status            string  `gorm:"type:text;not null"`
-	LeaseOwner        *string `gorm:"type:text"`
-	LeaseExpiresAtMS  *int64
-	AttemptCount      int     `gorm:"type:integer;not null;default:0"`
-	NextAttemptAtMS   int64   `gorm:"not null;default:0"`
-	ErrorCategory     *string `gorm:"type:text"`
-	ErrorMessage      *string `gorm:"type:text"`
-	CreatedAtMS       int64   `gorm:"not null"`
-	UpdatedAtMS       int64   `gorm:"not null"`
-}
-
-func (knowledgeIngestJobSchema) TableName() string { return "knowledge_ingest_jobs" }
+func (knowledgeDocumentSchema) TableName() string { return "knowledge_documents" }
 
 type secretValueSchema struct {
 	Namespace   string `gorm:"type:text;primaryKey"`
@@ -352,52 +240,50 @@ type ownerIdentitySchema struct {
 func (ownerIdentitySchema) TableName() string { return "owner_identities" }
 
 type socialMemoryEntrySchema struct {
-	ID             string `gorm:"type:text;primaryKey;index:social_memory_entries_scope_kind,priority:6"`
-	CharacterID    string `gorm:"type:text;not null;index:social_memory_entries_scope_kind,priority:1"`
-	ConversationID string `gorm:"type:text;not null;uniqueIndex:social_memory_entries_scope_hash_key,priority:1;index:social_memory_entries_scope_kind,priority:2"`
-	Kind           string `gorm:"type:text;not null;uniqueIndex:social_memory_entries_scope_hash_key,priority:2;index:social_memory_entries_scope_kind,priority:3"`
-	Situation      string `gorm:"type:text;not null;check:social_memory_entries_invariants_check,(kind IN ('episode', 'expression', 'behavior')) AND (situation <> '') AND (content <> '') AND (recall_cue <> '') AND (content_hash ~ '^[0-9a-f]{64}$') AND (status IN ('active', 'suppressed')) AND (source_start_ms > 0 AND source_end_ms >= source_start_ms) AND (use_count >= 0 AND positive_count >= 0 AND negative_count >= 0 AND unknown_count >= 0) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms)"`
-	Content        string `gorm:"type:text;not null"`
-	RecallCue      string `gorm:"type:text;not null"`
-	ContentHash    string `gorm:"type:text;not null;uniqueIndex:social_memory_entries_scope_hash_key,priority:3"`
-	Status         string `gorm:"type:text;not null;index:social_memory_entries_scope_kind,priority:4"`
-	SourceStartMS  int64  `gorm:"not null"`
-	SourceEndMS    int64  `gorm:"not null"`
-	UseCount       int64  `gorm:"not null;default:0"`
-	PositiveCount  int64  `gorm:"not null;default:0"`
-	NegativeCount  int64  `gorm:"not null;default:0"`
-	UnknownCount   int64  `gorm:"not null;default:0"`
-	CreatedAtMS    int64  `gorm:"not null"`
-	UpdatedAtMS    int64  `gorm:"not null;index:social_memory_entries_scope_kind,sort:desc,priority:5"`
+	ID                 string  `gorm:"type:text;primaryKey;index:social_memory_entries_scope_kind,priority:6"`
+	CharacterID        string  `gorm:"type:text;not null;index:social_memory_entries_scope_kind,priority:1;uniqueIndex:social_memory_entries_person_note_key,priority:1"`
+	ConversationID     string  `gorm:"type:text;not null;uniqueIndex:social_memory_entries_scope_hash_key,priority:1;index:social_memory_entries_scope_kind,priority:2;uniqueIndex:social_memory_entries_person_note_key,priority:2"`
+	Kind               string  `gorm:"type:text;not null;uniqueIndex:social_memory_entries_scope_hash_key,priority:2;index:social_memory_entries_scope_kind,priority:3"`
+	Situation          string  `gorm:"type:text;not null;check:social_memory_entries_invariants_check,(kind IN ('episode', 'expression', 'behavior', 'person_note')) AND (situation <> '') AND (content <> '') AND (recall_cue <> '') AND (content_hash ~ '^[0-9a-f]{64}$') AND (status IN ('active', 'suppressed')) AND (source_start_ms > 0 AND source_end_ms >= source_start_ms) AND (use_count >= 0 AND positive_count >= 0 AND negative_count >= 0 AND unknown_count >= 0) AND ((kind = 'person_note') = (sender_id IS NOT NULL)) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms)"`
+	Content            string  `gorm:"type:text;not null"`
+	RecallCue          string  `gorm:"type:text;not null"`
+	ContentHash        string  `gorm:"type:text;not null;uniqueIndex:social_memory_entries_scope_hash_key,priority:3"`
+	SenderID           *string `gorm:"type:text;uniqueIndex:social_memory_entries_person_note_key,priority:3"`
+	SenderName         string  `gorm:"type:text;not null;default:''"`
+	LastFeedbackTurnID *string `gorm:"type:text"`
+	Status             string  `gorm:"type:text;not null;index:social_memory_entries_scope_kind,priority:4"`
+	SourceStartMS      int64   `gorm:"not null"`
+	SourceEndMS        int64   `gorm:"not null"`
+	UseCount           int64   `gorm:"not null;default:0"`
+	PositiveCount      int64   `gorm:"not null;default:0"`
+	NegativeCount      int64   `gorm:"not null;default:0"`
+	UnknownCount       int64   `gorm:"not null;default:0"`
+	CreatedAtMS        int64   `gorm:"not null"`
+	UpdatedAtMS        int64   `gorm:"not null;index:social_memory_entries_scope_kind,sort:desc,priority:5"`
 }
 
 func (socialMemoryEntrySchema) TableName() string { return "social_memory_entries" }
 
-type socialReplyFeedbackSchema struct {
-	ID                   string `gorm:"type:text;primaryKey;index:social_reply_feedback_scope_created,priority:4"`
-	CharacterID          string `gorm:"type:text;not null;index:social_reply_feedback_scope_created,priority:1"`
-	ConversationID       string `gorm:"type:text;not null;index:social_reply_feedback_scope_created,priority:2"`
-	TurnID               string `gorm:"type:text;not null;unique"`
-	Outcome              string `gorm:"type:text;not null;check:social_reply_feedback_invariants_check,(outcome IN ('positive', 'negative', 'unknown')) AND (jsonb_typeof(entry_ids_json) = 'array') AND (observed_message_count >= 0) AND (created_at_ms >= 0)"`
-	EntryIDsJSON         []byte `gorm:"type:jsonb;not null;default:'[]'::jsonb"`
-	ObservedMessageCount int    `gorm:"type:integer;not null"`
-	CreatedAtMS          int64  `gorm:"not null;index:social_reply_feedback_scope_created,sort:desc,priority:3"`
+type feedbackEventSchema struct {
+	ID               string  `gorm:"type:text;primaryKey;index:feedback_events_claim,priority:5"`
+	Type             string  `gorm:"type:text;not null;index:feedback_events_claim,priority:1"`
+	ConversationID   string  `gorm:"type:text;not null;index:feedback_events_scope,priority:1"`
+	TurnID           string  `gorm:"type:text;not null;index:feedback_events_scope,priority:2"`
+	CharacterID      string  `gorm:"type:text;not null;index:feedback_events_scope,priority:3"`
+	PayloadJSON      []byte  `gorm:"type:jsonb;not null;check:feedback_events_invariants_check,(type IN ('personal_memory', 'web_knowledge', 'social_learning', 'social_reply_feedback')) AND (jsonb_typeof(payload_json) = 'object') AND (status IN ('waiting_turn', 'pending', 'running', 'succeeded', 'failed', 'dropped')) AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms >= 0) AND (attempt_count >= 0) AND (next_attempt_at_ms >= 0) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms) AND ((lease_owner IS NULL) = (lease_expires_at_ms IS NULL)) AND ((status = 'running') = (lease_owner IS NOT NULL)) AND ((status = 'running') = (claim_group_id IS NOT NULL))"`
+	Status           string  `gorm:"type:text;not null;index:feedback_events_claim,priority:2"`
+	LeaseOwner       *string `gorm:"type:text"`
+	LeaseExpiresAtMS *int64
+	ClaimGroupID     *string `gorm:"type:text;index:feedback_events_group"`
+	AttemptCount     int     `gorm:"type:integer;not null;default:0"`
+	NextAttemptAtMS  int64   `gorm:"not null;default:0;index:feedback_events_claim,priority:3"`
+	ErrorCategory    *string `gorm:"type:text"`
+	ErrorMessage     *string `gorm:"type:text"`
+	CreatedAtMS      int64   `gorm:"not null"`
+	UpdatedAtMS      int64   `gorm:"not null;index:feedback_events_claim,priority:4"`
 }
 
-func (socialReplyFeedbackSchema) TableName() string { return "social_reply_feedback" }
-
-type socialPersonNoteSchema struct {
-	ID             string `gorm:"type:text;primaryKey;index:social_person_notes_scope_sender,priority:5"`
-	CharacterID    string `gorm:"type:text;not null;uniqueIndex:social_person_notes_scope_sender_key,priority:1;index:social_person_notes_scope_sender,priority:1"`
-	ConversationID string `gorm:"type:text;not null;uniqueIndex:social_person_notes_scope_sender_key,priority:2;index:social_person_notes_scope_sender,priority:2"`
-	SenderID       string `gorm:"type:text;not null;uniqueIndex:social_person_notes_scope_sender_key,priority:3;index:social_person_notes_scope_sender,priority:3"`
-	SenderName     string `gorm:"type:text;not null;default:''"`
-	Note           string `gorm:"type:text;not null;check:social_person_notes_invariants_check,(note <> '') AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms)"`
-	CreatedAtMS    int64  `gorm:"not null"`
-	UpdatedAtMS    int64  `gorm:"not null;index:social_person_notes_scope_sender,sort:desc,priority:4"`
-}
-
-func (socialPersonNoteSchema) TableName() string { return "social_person_notes" }
+func (feedbackEventSchema) TableName() string { return "feedback_events" }
 
 type schemaState struct {
 	ID       int16  `gorm:"primaryKey;check:fairy_schema_state_invariants_check,id = 1"`
@@ -419,22 +305,13 @@ func schemaModels() []any {
 		&laneContinuationSchema{},
 		&contextWindowSchema{},
 		&personalMemorySchema{},
-		&personalMemoryEvidenceSchema{},
 		&knowledgeEntrySchema{},
-		&knowledgeSourceSchema{},
 		&knowledgeDocumentSchema{},
-		&knowledgeDocumentVersionSchema{},
-		&knowledgeChunkSchema{},
-		&knowledgeEvidenceSchema{},
-		&extractionBatchSchema{},
-		&extractionBatchTurnSchema{},
-		&knowledgeIngestJobSchema{},
 		&secretValueSchema{},
 		&endpointConversationSchema{},
 		&ownerIdentitySchema{},
 		&socialMemoryEntrySchema{},
-		&socialReplyFeedbackSchema{},
-		&socialPersonNoteSchema{},
+		&feedbackEventSchema{},
 		&schemaState{},
 	}
 }

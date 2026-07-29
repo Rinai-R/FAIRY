@@ -18,27 +18,6 @@ import (
 
 const migrationLockKey int64 = 0x46414952595f4442
 
-const knowledgeIngestSourcesJSONConstraintDefinition = `CHECK (
-  CASE jsonb_typeof(sources_json)
-    WHEN 'object' THEN batch_id <> ''
-    WHEN 'array' THEN batch_id = '' OR jsonb_array_length(sources_json) BETWEEN 1 AND 5
-    ELSE FALSE
-  END
-)`
-
-const knowledgeIngestTaskJSONConstraintDefinition = `CHECK (
-  (
-    task_id = ''
-    AND source_json = '{}'::jsonb
-    AND status IN ('succeeded', 'failed', 'dropped')
-  )
-  OR (
-    task_id <> ''
-    AND jsonb_typeof(source_json) = 'object'
-    AND source_json <> '{}'::jsonb
-  )
-)`
-
 var (
 	ErrSchemaAbsent     = errors.New("postgres schema is absent")
 	ErrSchemaNotCurrent = errors.New("postgres schema is not current")
@@ -80,29 +59,16 @@ var postgresConstraints = []schemaConstraint{
 	{"personal_memories", "personal_memories_source_conversation_fk", "FOREIGN KEY (source_conversation_id) REFERENCES conversations(id) ON DELETE RESTRICT"},
 	{"personal_memories", "personal_memories_source_turn_fk", "FOREIGN KEY (source_turn_id) REFERENCES conversation_turns(id) ON DELETE RESTRICT"},
 	{"personal_memories", "personal_memories_supersedes_fk", "FOREIGN KEY (supersedes_id) REFERENCES personal_memories(id) ON DELETE RESTRICT"},
-	{"personal_memory_evidence", "personal_memory_evidence_memory_fk", "FOREIGN KEY (memory_id) REFERENCES personal_memories(id) ON DELETE CASCADE"},
-	{"personal_memory_evidence", "personal_memory_evidence_turn_evidence_fk", "FOREIGN KEY (turn_id, evidence_id) REFERENCES conversation_turn_evidence(turn_id, evidence_id) ON DELETE RESTRICT"},
+	{"personal_memories", "personal_memories_evidence_ids_check", "CHECK (jsonb_typeof(evidence_ids_json) = 'array' AND jsonb_array_length(evidence_ids_json) <= 8)"},
 	{"knowledge_entries", "knowledge_entries_source_conversation_fk", "FOREIGN KEY (source_conversation_id) REFERENCES conversations(id) ON DELETE RESTRICT"},
 	{"knowledge_entries", "knowledge_entries_source_turn_fk", "FOREIGN KEY (source_turn_id) REFERENCES conversation_turns(id) ON DELETE RESTRICT"},
 	{"knowledge_entries", "knowledge_entries_supersedes_fk", "FOREIGN KEY (supersedes_id) REFERENCES knowledge_entries(id) ON DELETE RESTRICT"},
-	{"knowledge_sources", "knowledge_sources_knowledge_fk", "FOREIGN KEY (knowledge_id) REFERENCES knowledge_entries(id) ON DELETE CASCADE"},
-	{"knowledge_document_versions", "knowledge_document_versions_document_fk", "FOREIGN KEY (document_id) REFERENCES knowledge_documents(id) ON DELETE CASCADE"},
-	{"knowledge_chunks", "knowledge_chunks_version_fk", "FOREIGN KEY (version_id) REFERENCES knowledge_document_versions(id) ON DELETE CASCADE"},
-	{"knowledge_evidence", "knowledge_evidence_knowledge_fk", "FOREIGN KEY (knowledge_id) REFERENCES knowledge_entries(id) ON DELETE CASCADE"},
-	{"knowledge_evidence", "knowledge_evidence_chunk_fk", "FOREIGN KEY (chunk_id) REFERENCES knowledge_chunks(id) ON DELETE CASCADE"},
-	{"knowledge_evidence", "knowledge_evidence_version_fk", "FOREIGN KEY (version_id) REFERENCES knowledge_document_versions(id) ON DELETE CASCADE"},
-	{"extraction_batches", "extraction_batches_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
-	{"extraction_batch_turns", "extraction_batch_turns_batch_fk", "FOREIGN KEY (batch_id) REFERENCES extraction_batches(id) ON DELETE CASCADE"},
-	{"extraction_batch_turns", "extraction_batch_turns_turn_fk", "FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE RESTRICT"},
-	{"knowledge_ingest_jobs", "knowledge_ingest_jobs_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
-	{"knowledge_ingest_jobs", "knowledge_ingest_jobs_turn_fk", "FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE CASCADE"},
-	{"knowledge_ingest_jobs", "knowledge_ingest_jobs_sources_json_check", knowledgeIngestSourcesJSONConstraintDefinition},
-	{"knowledge_sources", "knowledge_sources_canonical_url_check", "CHECK (canonical_url = '' OR canonical_url ~ '^https?://[^[:space:]]+$')"},
+	{"knowledge_entries", "knowledge_entries_document_fk", "FOREIGN KEY (document_id) REFERENCES knowledge_documents(id) ON DELETE SET NULL"},
+	{"knowledge_entries", "knowledge_entries_direct_evidence_check", "CHECK ((document_id IS NULL AND evidence_text = '') OR (document_id IS NOT NULL AND evidence_text <> ''))"},
 	{"endpoint_conversations", "endpoint_conversations_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
 	{"social_memory_entries", "social_memory_entries_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
-	{"social_reply_feedback", "social_reply_feedback_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
-	{"social_reply_feedback", "social_reply_feedback_turn_fk", "FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE CASCADE"},
-	{"social_person_notes", "social_person_notes_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
+	{"feedback_events", "feedback_events_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
+	{"feedback_events", "feedback_events_turn_fk", "FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE CASCADE"},
 	{"personal_memories", "personal_memories_embedding_check", "CHECK ((embedding_model_id IS NULL AND embedding_content_hash IS NULL AND embedding IS NULL) OR (embedding_model_id <> '' AND embedding_content_hash ~ '^[0-9a-f]{64}$' AND embedding IS NOT NULL))"},
 	{"knowledge_entries", "knowledge_entries_embedding_check", "CHECK ((embedding_model_id IS NULL AND embedding_content_hash IS NULL AND embedding IS NULL) OR (embedding_model_id <> '' AND embedding_content_hash ~ '^[0-9a-f]{64}$' AND embedding IS NOT NULL))"},
 }
@@ -114,21 +80,12 @@ var postgresIndexes = []schemaIndex{
 	{"personal_memories_content_trgm", "CREATE INDEX IF NOT EXISTS personal_memories_content_trgm ON personal_memories USING gin (content public.gin_trgm_ops)"},
 	{"knowledge_entries_topic_trgm", "CREATE INDEX IF NOT EXISTS knowledge_entries_topic_trgm ON knowledge_entries USING gin (topic public.gin_trgm_ops)"},
 	{"knowledge_entries_statement_trgm", "CREATE INDEX IF NOT EXISTS knowledge_entries_statement_trgm ON knowledge_entries USING gin (statement public.gin_trgm_ops)"},
-	{"extraction_batches_one_running", "CREATE UNIQUE INDEX IF NOT EXISTS extraction_batches_one_running ON extraction_batches(conversation_id) WHERE status = 'running'"},
-	{"extraction_batches_claimable", "CREATE INDEX IF NOT EXISTS extraction_batches_claimable ON extraction_batches(status, lease_expires_at_ms ASC NULLS FIRST, updated_at_ms ASC, id ASC) WHERE status IN ('pending', 'running')"},
-	{"knowledge_ingest_jobs_status", "CREATE INDEX IF NOT EXISTS knowledge_ingest_jobs_status ON knowledge_ingest_jobs(status, lease_expires_at_ms ASC NULLS FIRST, created_at_ms ASC, id ASC)"},
-	{"knowledge_ingest_jobs_retry", "CREATE INDEX IF NOT EXISTS knowledge_ingest_jobs_retry ON knowledge_ingest_jobs(status, next_attempt_at_ms ASC, updated_at_ms ASC, id ASC) WHERE status IN ('waiting_turn', 'pending', 'running')"},
-	{"knowledge_ingest_jobs_batch_key", "CREATE UNIQUE INDEX IF NOT EXISTS knowledge_ingest_jobs_batch_key ON knowledge_ingest_jobs(batch_id) WHERE batch_id <> ''"},
-	{"knowledge_ingest_jobs_task_key", "CREATE UNIQUE INDEX IF NOT EXISTS knowledge_ingest_jobs_task_key ON knowledge_ingest_jobs(task_id) WHERE task_id <> ''"},
-	{"knowledge_sources_canonical_key", "CREATE UNIQUE INDEX IF NOT EXISTS knowledge_sources_canonical_key ON knowledge_sources(knowledge_id, canonical_url) WHERE canonical_url <> ''"},
-	{"knowledge_entries_active_fact_key", "CREATE UNIQUE INDEX IF NOT EXISTS knowledge_entries_active_fact_key ON knowledge_entries(fact_key) WHERE fact_key IS NOT NULL AND status = 'verified'"},
-	{"knowledge_evidence_active_version", "CREATE INDEX IF NOT EXISTS knowledge_evidence_active_version ON knowledge_evidence(version_id, knowledge_id) WHERE active"},
-	{"knowledge_chunks_embedding_hnsw", "CREATE INDEX IF NOT EXISTS knowledge_chunks_embedding_hnsw ON knowledge_chunks USING hnsw (embedding public.vector_cosine_ops) WHERE embedding IS NOT NULL"},
 	{"personal_memories_embedding_hnsw", "CREATE INDEX IF NOT EXISTS personal_memories_embedding_hnsw ON personal_memories USING hnsw (embedding public.vector_cosine_ops) WHERE embedding IS NOT NULL AND status = 'active' AND review_status = 'ready'"},
 	{"knowledge_entries_embedding_hnsw", "CREATE INDEX IF NOT EXISTS knowledge_entries_embedding_hnsw ON knowledge_entries USING hnsw (embedding public.vector_cosine_ops) WHERE embedding IS NOT NULL AND status = 'verified'"},
 	{"social_memory_entries_situation_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_situation_trgm ON social_memory_entries USING gin (situation public.gin_trgm_ops)"},
 	{"social_memory_entries_content_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_content_trgm ON social_memory_entries USING gin (content public.gin_trgm_ops)"},
 	{"social_memory_entries_recall_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_recall_trgm ON social_memory_entries USING gin (recall_cue public.gin_trgm_ops)"},
+	{"feedback_events_social_reply_turn_key", "CREATE UNIQUE INDEX IF NOT EXISTS feedback_events_social_reply_turn_key ON feedback_events(turn_id) WHERE type = 'social_reply_feedback'"},
 }
 
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
@@ -150,16 +107,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		if err := tx.AutoMigrate(schemaModels()...); err != nil {
 			return fmt.Errorf("auto-migrating PostgreSQL schema: %w", err)
 		}
-		if err := replaceKnowledgeIngestInvariant(tx); err != nil {
-			return err
-		}
-		if err := replaceKnowledgeIngestSourcesJSONConstraint(tx); err != nil {
-			return err
-		}
-		if err := migrateKnowledgeIngestTaskColumns(tx); err != nil {
-			return err
-		}
-		if err := replaceKnowledgeIngestTaskJSONConstraint(tx); err != nil {
+		if err := migrateDirectMemoryKnowledgeSchema(tx); err != nil {
 			return err
 		}
 		for _, constraint := range postgresConstraints {
@@ -196,130 +144,238 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	})
 }
 
-func replaceKnowledgeIngestInvariant(tx *gorm.DB) error {
-	if err := tx.Exec("ALTER TABLE knowledge_ingest_jobs DROP CONSTRAINT IF EXISTS knowledge_ingest_jobs_invariants_check").Error; err != nil {
-		return fmt.Errorf("dropping legacy knowledge ingest invariant: %w", err)
+func migrateDirectMemoryKnowledgeSchema(tx *gorm.DB) error {
+	var legacy bool
+	if err := tx.Raw(`SELECT to_regclass(current_schema() || '.knowledge_document_versions') IS NOT NULL`).Scan(&legacy).Error; err != nil {
+		return fmt.Errorf("checking legacy memory schema: %w", err)
 	}
-	if err := tx.Exec(`ALTER TABLE knowledge_ingest_jobs ADD CONSTRAINT knowledge_ingest_jobs_invariants_check CHECK (
-  rank >= 0
+	if !legacy {
+		return nil
+	}
+	statements := []struct {
+		name string
+		sql  string
+	}{
+		{
+			name: "projecting personal memory evidence",
+			sql: `
+UPDATE personal_memories AS memory
+SET evidence_ids_json = evidence.ids
+FROM (
+  SELECT memory_id, jsonb_agg(evidence_id ORDER BY created_at_ms, evidence_id) AS ids
+  FROM personal_memory_evidence
+  GROUP BY memory_id
+) AS evidence
+WHERE memory.id = evidence.memory_id`,
+		},
+		{
+			name: "projecting social person notes",
+			sql: `
+INSERT INTO social_memory_entries(
+  id, character_id, conversation_id, kind, situation, content, recall_cue,
+  content_hash, sender_id, sender_name, status, source_start_ms, source_end_ms,
+  use_count, positive_count, negative_count, unknown_count, created_at_ms, updated_at_ms
+)
+SELECT
+  id, character_id, conversation_id, 'person_note',
+  COALESCE(NULLIF(sender_name, ''), sender_id),
+  note,
+  COALESCE(NULLIF(sender_name, ''), sender_id),
+  encode(sha256(convert_to(note, 'UTF8')), 'hex'),
+  sender_id, sender_name, 'active',
+  GREATEST(created_at_ms, 1), GREATEST(updated_at_ms, created_at_ms, 1),
+  0, 0, 0, 0, created_at_ms, updated_at_ms
+FROM social_person_notes
+ON CONFLICT (character_id, conversation_id, sender_id)
+DO UPDATE SET
+  situation = EXCLUDED.situation,
+  content = EXCLUDED.content,
+  recall_cue = EXCLUDED.recall_cue,
+  content_hash = EXCLUDED.content_hash,
+  sender_name = EXCLUDED.sender_name,
+  updated_at_ms = GREATEST(social_memory_entries.updated_at_ms, EXCLUDED.updated_at_ms)`,
+		},
+		{
+			name: "projecting current knowledge documents",
+			sql: `
+WITH current_documents AS (
+  SELECT
+    document.id,
+    version.content_hash,
+    version.content_type,
+    version.fetched_at_ms,
+    version.etag,
+    version.last_modified,
+    version.reconciler_revision,
+    COALESCE(string_agg(chunk.text, '' ORDER BY chunk.ordinal), '') AS content
+  FROM knowledge_documents AS document
+  JOIN knowledge_document_versions AS version ON version.id = document.current_version_id
+  LEFT JOIN knowledge_chunks AS chunk ON chunk.version_id = version.id
+  GROUP BY document.id, version.content_hash, version.content_type, version.fetched_at_ms,
+           version.etag, version.last_modified, version.reconciler_revision
+)
+UPDATE knowledge_documents AS document
+SET content = current.content,
+    content_hash = current.content_hash,
+    content_type = current.content_type,
+    fetched_at_ms = current.fetched_at_ms,
+    etag = current.etag,
+    last_modified = current.last_modified,
+    reconciler_revision = current.reconciler_revision
+FROM current_documents AS current
+WHERE document.id = current.id`,
+		},
+		{
+			name: "projecting direct knowledge evidence",
+			sql: `
+WITH ranked_evidence AS (
+  SELECT
+    evidence.knowledge_id,
+    version.document_id,
+    chunk.text,
+    row_number() OVER (
+      PARTITION BY evidence.knowledge_id
+      ORDER BY version.fetched_at_ms DESC, evidence.created_at_ms DESC, chunk.id
+    ) AS rank
+  FROM knowledge_evidence AS evidence
+  JOIN knowledge_chunks AS chunk ON chunk.id = evidence.chunk_id
+  JOIN knowledge_document_versions AS version ON version.id = evidence.version_id
+  WHERE evidence.active
+)
+UPDATE knowledge_entries AS knowledge
+SET document_id = evidence.document_id,
+    evidence_text = evidence.text
+FROM ranked_evidence AS evidence
+WHERE knowledge.id = evidence.knowledge_id
+  AND evidence.rank = 1`,
+		},
+		{
+			name: "projecting personal feedback events",
+			sql: `
+INSERT INTO feedback_events(
+  id, type, conversation_id, turn_id, character_id, payload_json, status,
+  attempt_count, next_attempt_at_ms, created_at_ms, updated_at_ms
+)
+SELECT
+  'personal-' || turn.turn_id,
+  'personal_memory',
+  batch.conversation_id,
+  turn.turn_id,
+  batch.character_id,
+  '{}'::jsonb,
+  'pending',
+  CASE WHEN batch.status = 'running' THEN GREATEST(0, batch.attempt_count - 1) ELSE batch.attempt_count END,
+  0,
+  batch.created_at_ms,
+  batch.updated_at_ms
+FROM extraction_batches AS batch
+JOIN extraction_batch_turns AS turn ON turn.batch_id = batch.id
+WHERE batch.status IN ('pending', 'running')
+ON CONFLICT (id) DO NOTHING`,
+		},
+		{
+			name: "projecting web knowledge feedback events",
+			sql: `
+INSERT INTO feedback_events(
+  id, type, conversation_id, turn_id, character_id, payload_json, status,
+  attempt_count, next_attempt_at_ms, error_category, error_message, created_at_ms, updated_at_ms
+)
+SELECT
+  job.id,
+  'web_knowledge',
+  job.conversation_id,
+  job.turn_id,
+  conversation.character_id,
+  jsonb_build_object('taskId', job.task_id, 'source', job.source_json),
+  CASE WHEN job.status = 'running' THEN 'pending' ELSE job.status END,
+  CASE WHEN job.status = 'running' THEN GREATEST(0, job.attempt_count - 1) ELSE job.attempt_count END,
+  CASE WHEN job.status = 'running' THEN 0 ELSE job.next_attempt_at_ms END,
+  job.error_category,
+  job.error_message,
+  job.created_at_ms,
+  job.updated_at_ms
+FROM knowledge_ingest_jobs AS job
+JOIN conversations AS conversation ON conversation.id = job.conversation_id
+WHERE job.status IN ('waiting_turn', 'pending', 'running')
+  AND job.task_id <> ''
+  AND jsonb_typeof(job.source_json) = 'object'
+  AND job.source_json <> '{}'::jsonb
+ON CONFLICT (id) DO NOTHING`,
+		},
+		{
+			name: "releasing projected extraction turns",
+			sql: `
+UPDATE conversation_turns
+SET extraction_state = 'pending'
+WHERE extraction_state = 'claimed'
+  AND id IN (
+    SELECT turn_id
+    FROM feedback_events
+    WHERE type = 'personal_memory' AND status = 'pending'
+  )`,
+		},
+		{
+			name: "dropping legacy memory tables",
+			sql: `
+DROP TABLE social_reply_feedback;
+DROP TABLE social_person_notes;
+DROP TABLE personal_memory_evidence;
+DROP TABLE knowledge_evidence;
+DROP TABLE knowledge_sources;
+DROP TABLE knowledge_chunks;
+DROP TABLE knowledge_document_versions;
+DROP TABLE extraction_batch_turns;
+DROP TABLE extraction_batches;
+DROP TABLE knowledge_ingest_jobs`,
+		},
+		{
+			name: "dropping legacy knowledge columns",
+			sql: `
+ALTER TABLE knowledge_documents
+  DROP COLUMN current_version_id,
+  DROP COLUMN current_content_hash;
+ALTER TABLE knowledge_entries
+  DROP COLUMN subject,
+  DROP COLUMN predicate,
+  DROP COLUMN value,
+  DROP COLUMN fact_key`,
+		},
+		{
+			name: "replacing direct record invariants",
+			sql: `
+ALTER TABLE knowledge_documents DROP CONSTRAINT IF EXISTS knowledge_documents_invariants_check;
+ALTER TABLE knowledge_documents ADD CONSTRAINT knowledge_documents_invariants_check CHECK (
+  canonical_url ~ '^https?://[^[:space:]]+$'
+  AND (content_hash = '' OR content_hash ~ '^[0-9a-f]{64}$')
+  AND (reconciler_revision = '' OR reconciler_revision ~ '^[0-9a-f]{64}$')
   AND fetched_at_ms >= 0
-  AND status IN ('waiting_turn', 'pending', 'running', 'succeeded', 'failed', 'dropped')
-  AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms >= 0)
-  AND attempt_count >= 0
-  AND next_attempt_at_ms >= 0
   AND created_at_ms >= 0
   AND updated_at_ms >= created_at_ms
-  AND ((lease_owner IS NULL) = (lease_expires_at_ms IS NULL))
-  AND (status = 'running' OR lease_owner IS NULL)
-)`).Error; err != nil {
-		return fmt.Errorf("creating knowledge ingest invariant: %w", err)
+);
+ALTER TABLE social_memory_entries DROP CONSTRAINT IF EXISTS social_memory_entries_invariants_check;
+ALTER TABLE social_memory_entries ADD CONSTRAINT social_memory_entries_invariants_check CHECK (
+  kind IN ('episode', 'expression', 'behavior', 'person_note')
+  AND situation <> ''
+  AND content <> ''
+  AND recall_cue <> ''
+  AND content_hash ~ '^[0-9a-f]{64}$'
+  AND status IN ('active', 'suppressed')
+  AND source_start_ms > 0
+  AND source_end_ms >= source_start_ms
+  AND use_count >= 0
+  AND positive_count >= 0
+  AND negative_count >= 0
+  AND unknown_count >= 0
+  AND ((kind = 'person_note') = (sender_id IS NOT NULL))
+  AND created_at_ms >= 0
+  AND updated_at_ms >= created_at_ms
+)`,
+		},
 	}
-	return nil
-}
-
-func replaceKnowledgeIngestSourcesJSONConstraint(tx *gorm.DB) error {
-	if err := tx.Exec("ALTER TABLE knowledge_ingest_jobs DROP CONSTRAINT IF EXISTS knowledge_ingest_jobs_sources_json_check").Error; err != nil {
-		return fmt.Errorf("dropping legacy knowledge ingest source payload constraint: %w", err)
-	}
-	statement := "ALTER TABLE knowledge_ingest_jobs ADD CONSTRAINT knowledge_ingest_jobs_sources_json_check " +
-		knowledgeIngestSourcesJSONConstraintDefinition
-	if err := tx.Exec(statement).Error; err != nil {
-		return fmt.Errorf("creating knowledge ingest source payload constraint: %w", err)
-	}
-	return nil
-}
-
-func migrateKnowledgeIngestTaskColumns(tx *gorm.DB) error {
-	if err := tx.Exec(`
-WITH legacy_candidates AS (
-  SELECT
-    id,
-    CASE
-      WHEN batch_id <> '' THEN batch_id
-      WHEN batch_id = '' AND url ~ '^https?://[^[:space:]]+$' AND rank BETWEEN 1 AND 5
-        THEN 'legacy-' || id
-      ELSE ''
-    END AS migrated_task_id,
-    CASE
-      WHEN batch_id <> '' AND jsonb_typeof(sources_json) = 'object'
-        THEN sources_json
-      WHEN batch_id <> '' AND jsonb_typeof(sources_json) = 'array'
-        AND jsonb_array_length(sources_json) = 1
-        THEN sources_json -> 0
-      WHEN batch_id = '' AND url ~ '^https?://[^[:space:]]+$' AND rank BETWEEN 1 AND 5
-        THEN jsonb_build_object(
-          'id', 'legacy-source-' || id,
-          'title', title,
-          'url', url,
-          'snippet', snippet,
-          'rank', rank,
-          'fetchedAtUnixMs', fetched_at_ms
-        )
-      ELSE NULL
-    END AS migrated_source
-  FROM knowledge_ingest_jobs
-  WHERE task_id = ''
-),
-valid_candidates AS (
-  SELECT id, migrated_task_id, migrated_source
-  FROM legacy_candidates
-  WHERE migrated_task_id <> ''
-    AND jsonb_typeof(migrated_source) = 'object'
-    AND migrated_source - ARRAY['id', 'title', 'url', 'snippet', 'rank', 'fetchedAtUnixMs'] = '{}'::jsonb
-    AND jsonb_typeof(migrated_source -> 'id') = 'string'
-    AND migrated_source ->> 'id' <> ''
-    AND jsonb_typeof(migrated_source -> 'title') = 'string'
-    AND jsonb_typeof(migrated_source -> 'url') = 'string'
-    AND migrated_source ->> 'url' ~ '^https?://[^[:space:]]+$'
-    AND jsonb_typeof(migrated_source -> 'snippet') = 'string'
-    AND (migrated_source ->> 'title' <> '' OR migrated_source ->> 'snippet' <> '')
-    AND jsonb_typeof(migrated_source -> 'rank') = 'number'
-    AND migrated_source ->> 'rank' ~ '^[1-5]$'
-    AND jsonb_typeof(migrated_source -> 'fetchedAtUnixMs') = 'number'
-    AND migrated_source ->> 'fetchedAtUnixMs' ~ '^[0-9]+$'
-)
-UPDATE knowledge_ingest_jobs AS jobs
-SET task_id = candidates.migrated_task_id,
-    source_json = candidates.migrated_source,
-    status = CASE WHEN jobs.status = 'running' THEN 'pending' ELSE jobs.status END,
-    attempt_count = CASE
-      WHEN jobs.status = 'running' THEN GREATEST(0, jobs.attempt_count - 1)
-      ELSE jobs.attempt_count
-    END,
-    lease_owner = CASE WHEN jobs.status = 'running' THEN NULL ELSE jobs.lease_owner END,
-    lease_expires_at_ms = CASE WHEN jobs.status = 'running' THEN NULL ELSE jobs.lease_expires_at_ms END,
-    next_attempt_at_ms = CASE WHEN jobs.status = 'running' THEN 0 ELSE jobs.next_attempt_at_ms END,
-    updated_at_ms = CASE WHEN jobs.status = 'running' THEN GREATEST(jobs.updated_at_ms, 0) ELSE jobs.updated_at_ms END
-FROM valid_candidates AS candidates
-WHERE jobs.id = candidates.id
-`).Error; err != nil {
-		return fmt.Errorf("migrating singular knowledge ingest tasks: %w", err)
-	}
-	if err := tx.Exec(`
-UPDATE knowledge_ingest_jobs
-SET status = 'failed',
-    lease_owner = NULL,
-    lease_expires_at_ms = NULL,
-    next_attempt_at_ms = 0,
-    error_category = 'legacy_payload_not_singular',
-    error_message = 'legacy knowledge ingest payload cannot be represented as one task',
-    updated_at_ms = GREATEST(updated_at_ms, 0)
-WHERE task_id = ''
-  AND status IN ('waiting_turn', 'pending', 'running')
-`).Error; err != nil {
-		return fmt.Errorf("settling non-singular legacy knowledge ingest jobs: %w", err)
-	}
-	return nil
-}
-
-func replaceKnowledgeIngestTaskJSONConstraint(tx *gorm.DB) error {
-	if err := tx.Exec("ALTER TABLE knowledge_ingest_jobs DROP CONSTRAINT IF EXISTS knowledge_ingest_jobs_task_json_check").Error; err != nil {
-		return fmt.Errorf("dropping knowledge ingest task payload constraint: %w", err)
-	}
-	statement := "ALTER TABLE knowledge_ingest_jobs ADD CONSTRAINT knowledge_ingest_jobs_task_json_check " +
-		knowledgeIngestTaskJSONConstraintDefinition
-	if err := tx.Exec(statement).Error; err != nil {
-		return fmt.Errorf("creating knowledge ingest task payload constraint: %w", err)
+	for _, statement := range statements {
+		if err := tx.Exec(statement.sql).Error; err != nil {
+			return fmt.Errorf("%s: %w", statement.name, err)
+		}
 	}
 	return nil
 }

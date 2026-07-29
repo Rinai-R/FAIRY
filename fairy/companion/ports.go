@@ -34,6 +34,7 @@ type PromptContextStore interface {
 type TurnStore interface {
 	BeginTurn(conversationID string, userMessage string) (memory.PersistedTurn, error)
 	BeginInitiationTurn(conversationID string, evidenceIDs []string) (memory.PersistedTurn, error)
+	EnqueuePersonalMemoryFeedback(conversationID string, turnID string, characterID string) error
 	CompleteExpressionTurn(conversationID string, turnID string, assistantMessage string, parts []memory.ExpressionPart) (memory.MessageRecord, error)
 	InterruptExpressionTurn(conversationID string, turnID string, publishedPrefix string, parts []memory.ExpressionPart) (*memory.MessageRecord, error)
 	FailTurn(conversationID string, turnID string, code string, message string, retryable bool) error

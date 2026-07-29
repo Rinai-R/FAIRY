@@ -25,7 +25,6 @@ type preparedKnowledgeDocumentAction struct {
 
 type currentKnowledgeDocument struct {
 	documentID         string
-	versionID          *string
 	contentHash        string
 	fetchedAtUnixMS    int64
 	reconcilerRevision string
@@ -73,8 +72,6 @@ func (s *Store) commitKnowledgeDocumentActionsPostgres(
 			!strings.Contains(document.Content, action.Evidence) {
 			return 0, fmt.Errorf("knowledge document action[%d] evidence is invalid", index)
 		}
-		statement := action.Content
-		confidence := action.ConfidenceBasisPoints
 		switch action.Operation {
 		case KnowledgeMutationAdd:
 			if action.MemoryID != "" {
@@ -85,7 +82,7 @@ func (s *Store) commitKnowledgeDocumentActionsPostgres(
 				return 0, fmt.Errorf("knowledge document action[%d] UPDATE is invalid", index)
 			}
 		case KnowledgeMutationDelete, KnowledgeMutationNone:
-			if _, ok := supplied[action.MemoryID]; !ok || statement != "" || confidence != 0 {
+			if _, ok := supplied[action.MemoryID]; !ok || action.Content != "" || action.ConfidenceBasisPoints != 0 {
 				return 0, fmt.Errorf("knowledge document action[%d] target is invalid", index)
 			}
 		default:
@@ -99,32 +96,25 @@ func (s *Store) commitKnowledgeDocumentActionsPostgres(
 			targetIDs = append(targetIDs, action.MemoryID)
 		}
 		if action.Operation == KnowledgeMutationAdd || action.Operation == KnowledgeMutationUpdate {
-			statementRunes := utf8.RuneCountInString(statement)
-			if strings.TrimSpace(statement) != statement ||
+			statementRunes := utf8.RuneCountInString(action.Content)
+			if strings.TrimSpace(action.Content) != action.Content ||
 				statementRunes < 8 || statementRunes > maxKnowledgeDocumentActionContentRunes ||
-				ContainsDisallowedControl(statement) ||
-				confidence == 0 || confidence > 10000 {
+				ContainsDisallowedControl(action.Content) ||
+				action.ConfidenceBasisPoints == 0 || action.ConfidenceBasisPoints > 10000 {
 				return 0, fmt.Errorf("knowledge document action[%d] content is invalid", index)
 			}
-			if _, duplicate := seenContents[statement]; duplicate {
+			if _, duplicate := seenContents[action.Content]; duplicate {
 				return 0, errors.New("knowledge document action content is duplicated")
 			}
-			seenContents[statement] = struct{}{}
+			seenContents[action.Content] = struct{}{}
 			embeddingIndexes = append(embeddingIndexes, index)
-			embeddingContents = append(embeddingContents, topic+"\n"+statement)
+			embeddingContents = append(embeddingContents, topic+"\n"+action.Content)
 		}
-		prepared[index] = preparedKnowledgeDocumentAction{
-			action: action,
-			topic:  topic,
-		}
+		prepared[index] = preparedKnowledgeDocumentAction{action: action, topic: topic}
 	}
 	return s.commitPreparedKnowledgeDocumentActionsPostgres(
-		ctx, jobID, taskID,
-		document,
-		prepared,
-		targetIDs,
-		embeddingIndexes,
-		embeddingContents,
+		ctx, jobID, taskID, document, prepared, targetIDs,
+		embeddingIndexes, embeddingContents,
 	)
 }
 
@@ -134,7 +124,9 @@ func validateKnowledgeDocument(task KnowledgeIngestTask, document KnowledgeDocum
 		return errors.New("knowledge document does not match the claimed task source")
 	}
 	parsed, err := url.Parse(document.CanonicalURL)
-	if err != nil || parsed.User != nil || parsed.Hostname() == "" || parsed.Fragment != "" || parsed.String() != document.CanonicalURL || parsed.Scheme != "http" && parsed.Scheme != "https" {
+	if err != nil || parsed.User != nil || parsed.Hostname() == "" || parsed.Fragment != "" ||
+		parsed.String() != document.CanonicalURL ||
+		parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return errors.New("knowledge document URL is invalid")
 	}
 	if !validContentHash(document.ContentHash) ||
@@ -158,15 +150,11 @@ func lockCurrentKnowledgeDocument(
 ) (currentKnowledgeDocument, bool, error) {
 	var current currentKnowledgeDocument
 	err := tx.QueryRow(ctx, `
-SELECT d.id, d.current_version_id,
-       COALESCE(v.content_hash, ''), COALESCE(v.fetched_at_ms, 0),
-       COALESCE(v.reconciler_revision, '')
-FROM knowledge_documents d
-LEFT JOIN knowledge_document_versions v ON v.id = d.current_version_id
-WHERE d.canonical_url = $1
-FOR UPDATE OF d`, canonicalURL).Scan(
+SELECT id, content_hash, fetched_at_ms, reconciler_revision
+FROM knowledge_documents
+WHERE canonical_url = $1
+FOR UPDATE`, canonicalURL).Scan(
 		&current.documentID,
-		&current.versionID,
 		&current.contentHash,
 		&current.fetchedAtUnixMS,
 		&current.reconcilerRevision,
@@ -185,88 +173,28 @@ func knowledgeDocumentReconcilerIsCurrent(current currentKnowledgeDocument, docu
 		current.reconcilerRevision == document.ReconcilerRevision
 }
 
-func advanceKnowledgeDocumentVersionMetadata(
-	ctx context.Context,
-	tx pgx.Tx,
-	versionID string,
-	document KnowledgeDocument,
-) error {
-	changed, err := tx.Exec(ctx, `
-UPDATE knowledge_document_versions
-SET fetched_at_ms = GREATEST(fetched_at_ms, $2),
-    etag = CASE WHEN $2 > fetched_at_ms THEN $3 ELSE etag END,
-    last_modified = CASE WHEN $2 > fetched_at_ms THEN $4 ELSE last_modified END
-WHERE id = $1`,
-		versionID,
-		document.FetchedAtUnixMS,
-		document.ETag,
-		document.LastModified,
-	)
-	if err != nil {
-		return fmt.Errorf("advancing knowledge document version metadata: %w", err)
-	}
-	if changed.RowsAffected() != 1 {
-		return errors.New("knowledge document version no longer exists")
-	}
-	return nil
-}
-
 func refreshSameHashKnowledgeDocumentMetadata(
 	ctx context.Context,
 	tx pgx.Tx,
-	task KnowledgeIngestTask,
 	current currentKnowledgeDocument,
 	document KnowledgeDocument,
 	now int64,
 ) error {
-	if current.versionID == nil {
-		return errors.New("knowledge document current version is unavailable")
-	}
-	versionID := *current.versionID
-	if err := advanceKnowledgeDocumentVersionMetadata(ctx, tx, versionID, document); err != nil {
-		return err
-	}
-	if document.FetchedAtUnixMS > current.fetchedAtUnixMS {
-		changed, err := tx.Exec(ctx, `
+	changed, err := tx.Exec(ctx, `
 UPDATE knowledge_documents
-SET title = $2, updated_at_ms = $3
-WHERE id = $1 AND current_version_id = $4`,
-			current.documentID,
-			document.Title,
-			now,
-			versionID,
-		)
-		if err != nil {
-			return fmt.Errorf("refreshing same-hash knowledge document metadata: %w", err)
-		}
-		if changed.RowsAffected() != 1 {
-			return errors.New("knowledge document current version changed")
-		}
+SET title = CASE WHEN $2 > fetched_at_ms THEN $3 ELSE title END,
+    fetched_at_ms = GREATEST(fetched_at_ms, $2),
+    etag = CASE WHEN $2 > fetched_at_ms THEN $4 ELSE etag END,
+    last_modified = CASE WHEN $2 > fetched_at_ms THEN $5 ELSE last_modified END,
+    updated_at_ms = $6
+WHERE id = $1 AND content_hash = $7`,
+		current.documentID, document.FetchedAtUnixMS, document.Title,
+		document.ETag, document.LastModified, now, current.contentHash)
+	if err != nil {
+		return fmt.Errorf("refreshing direct knowledge document metadata: %w", err)
 	}
-	source := task.Source
-	if _, err := tx.Exec(ctx, `
-UPDATE knowledge_sources AS s
-SET title = $2,
-    snippet = $3,
-    rank = $4,
-    fetched_at_ms = $5
-WHERE (s.canonical_url = $1 OR s.url = $1)
-  AND s.fetched_at_ms < $5
-  AND EXISTS (
-    SELECT 1
-    FROM knowledge_evidence AS e
-    WHERE e.knowledge_id = s.knowledge_id
-      AND e.version_id = $6
-      AND e.active
-  )`,
-		document.CanonicalURL,
-		document.Title,
-		source.Snippet,
-		source.Rank,
-		document.FetchedAtUnixMS,
-		versionID,
-	); err != nil {
-		return fmt.Errorf("refreshing same-hash knowledge sources: %w", err)
+	if changed.RowsAffected() != 1 {
+		return errors.New("knowledge document changed during refresh")
 	}
 	return nil
 }
@@ -299,39 +227,28 @@ func (s *Store) settleKnowledgeDocumentWithoutExtraction(
 	if err != nil {
 		return false, err
 	}
-	if !exists || current.versionID == nil {
+	if !exists {
 		return false, nil
 	}
-	if current.contentHash == document.ContentHash {
-		if !knowledgeDocumentReconcilerIsCurrent(current, document) {
-			return false, nil
-		}
-		if err := refreshSameHashKnowledgeDocumentMetadata(
-			queryCtx,
-			tx,
-			task,
-			current,
-			document,
-			nowUnixMS(),
-		); err != nil {
+	settled := false
+	now := nowUnixMS()
+	switch {
+	case current.contentHash == document.ContentHash && knowledgeDocumentReconcilerIsCurrent(current, document):
+		if err := refreshSameHashKnowledgeDocumentMetadata(queryCtx, tx, current, document, now); err != nil {
 			return false, err
 		}
-	} else if current.fetchedAtUnixMS >= document.FetchedAtUnixMS {
-		if err := FinishKnowledgeIngestJob(queryCtx, tx, jobID, s.workerID, "succeeded", "", nowUnixMS()); err != nil {
-			return false, err
-		}
-		if err := tx.Commit(queryCtx); err != nil {
-			return false, fmt.Errorf("committing stale knowledge document job: %w", err)
-		}
-		return true, nil
-	} else {
+		settled = true
+	case current.contentHash != document.ContentHash && current.fetchedAtUnixMS >= document.FetchedAtUnixMS:
+		settled = true
+	}
+	if !settled {
 		return false, nil
 	}
-	if err := FinishKnowledgeIngestJob(queryCtx, tx, jobID, s.workerID, "succeeded", "", nowUnixMS()); err != nil {
+	if err := FinishKnowledgeIngestJob(queryCtx, tx, jobID, s.workerID, "succeeded", "", now); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(queryCtx); err != nil {
-		return false, fmt.Errorf("committing unchanged knowledge document job: %w", err)
+		return false, fmt.Errorf("committing settled knowledge document feedback: %w", err)
 	}
 	return true, nil
 }
@@ -363,12 +280,7 @@ func (s *Store) commitPreparedKnowledgeDocumentActionsPostgres(
 	if err := validateKnowledgeDocument(task, document); err != nil {
 		return 0, err
 	}
-	settled, err := s.settleKnowledgeDocumentWithoutExtraction(
-		ctx,
-		jobID,
-		taskID,
-		document,
-	)
+	settled, err := s.settleKnowledgeDocumentWithoutExtraction(ctx, jobID, taskID, document)
 	if err != nil {
 		return 0, err
 	}
@@ -386,7 +298,7 @@ func (s *Store) commitPreparedKnowledgeDocumentActionsPostgres(
 
 	tx, err := s.pool.Raw().Begin(queryCtx)
 	if err != nil {
-		return 0, fmt.Errorf("beginning knowledge document transaction: %w", err)
+		return 0, fmt.Errorf("beginning direct knowledge document transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
 	lockedJob, err := loadOwnedKnowledgeIngestJob(queryCtx, tx, jobID, s.workerID, true)
@@ -402,127 +314,61 @@ func (s *Store) commitPreparedKnowledgeDocumentActionsPostgres(
 	if err != nil {
 		return 0, err
 	}
-	var documentID string
-	var previousVersionID *string
-	refreshDocumentTitle := true
-	if !exists {
-		documentID = newID()
-		if _, err := tx.Exec(queryCtx, `
-INSERT INTO knowledge_documents(id, canonical_url, title, created_at_ms, updated_at_ms)
-VALUES ($1, $2, $3, $4, $4)`, documentID, document.CanonicalURL, document.Title, now); err != nil {
-			return 0, fmt.Errorf("inserting knowledge document: %w", err)
+	if exists {
+		if current.contentHash == document.ContentHash && knowledgeDocumentReconcilerIsCurrent(current, document) {
+			if err := refreshSameHashKnowledgeDocumentMetadata(queryCtx, tx, current, document, now); err != nil {
+				return 0, err
+			}
+			if err := FinishKnowledgeIngestJob(queryCtx, tx, jobID, s.workerID, "succeeded", "", now); err != nil {
+				return 0, err
+			}
+			if err := tx.Commit(queryCtx); err != nil {
+				return 0, fmt.Errorf("committing unchanged direct knowledge document: %w", err)
+			}
+			return 0, nil
 		}
-		previousVersionID = nil
-	} else {
+		if current.contentHash != document.ContentHash && current.fetchedAtUnixMS >= document.FetchedAtUnixMS {
+			if err := FinishKnowledgeIngestJob(queryCtx, tx, jobID, s.workerID, "succeeded", "", now); err != nil {
+				return 0, err
+			}
+			if err := tx.Commit(queryCtx); err != nil {
+				return 0, fmt.Errorf("committing stale direct knowledge document: %w", err)
+			}
+			return 0, nil
+		}
+	}
+	documentID := newID()
+	if exists {
 		documentID = current.documentID
-		previousVersionID = current.versionID
-		sameContent := current.versionID != nil && current.contentHash == document.ContentHash
-		if sameContent && knowledgeDocumentReconcilerIsCurrent(current, document) {
-			if err := refreshSameHashKnowledgeDocumentMetadata(
-				queryCtx,
-				tx,
-				lockedTask,
-				current,
-				document,
-				now,
-			); err != nil {
-				return 0, err
-			}
-			if err := FinishKnowledgeIngestJob(queryCtx, tx, jobID, s.workerID, "succeeded", "", now); err != nil {
-				return 0, err
-			}
-			if err := tx.Commit(queryCtx); err != nil {
-				return 0, fmt.Errorf("committing stale knowledge document job: %w", err)
-			}
-			return 0, nil
-		}
-		if sameContent {
-			refreshDocumentTitle = document.FetchedAtUnixMS > current.fetchedAtUnixMS
-			if err := refreshSameHashKnowledgeDocumentMetadata(
-				queryCtx,
-				tx,
-				lockedTask,
-				current,
-				document,
-				now,
-			); err != nil {
-				return 0, err
-			}
-		} else if current.versionID != nil &&
-			current.fetchedAtUnixMS >= document.FetchedAtUnixMS {
-			if err := FinishKnowledgeIngestJob(queryCtx, tx, jobID, s.workerID, "succeeded", "", now); err != nil {
-				return 0, err
-			}
-			if err := tx.Commit(queryCtx); err != nil {
-				return 0, fmt.Errorf("committing stale knowledge document job: %w", err)
-			}
-			return 0, nil
-		}
-	}
-	var versionID string
-	err = tx.QueryRow(queryCtx, `
-SELECT id FROM knowledge_document_versions
-WHERE document_id = $1 AND content_hash = $2`, documentID, document.ContentHash).Scan(&versionID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		versionID = newID()
-		if _, err := tx.Exec(queryCtx, `
-INSERT INTO knowledge_document_versions(
-  id, document_id, content_hash, content_type, status, fetched_at_ms, etag, last_modified, created_at_ms
-) VALUES ($1, $2, $3, $4, 'staged', $5, $6, $7, $8)`,
-			versionID, documentID, document.ContentHash, document.ContentType,
-			document.FetchedAtUnixMS, document.ETag, document.LastModified, now,
-		); err != nil {
-			return 0, fmt.Errorf("inserting knowledge document version: %w", err)
-		}
-		if _, err := tx.Exec(queryCtx, `
-INSERT INTO knowledge_chunks(id, version_id, ordinal, text, text_hash, created_at_ms)
-VALUES ($1, $2, $3, $4, $5, $6)`,
-			document.EvidenceID, versionID, 0, document.Content, document.ContentHash, now,
-		); err != nil {
-			return 0, fmt.Errorf("inserting complete knowledge document evidence: %w", err)
-		}
-	} else if err != nil {
-		return 0, fmt.Errorf("loading knowledge document version: %w", err)
-	} else if document.Content != "" {
-		if err := ensureCompleteKnowledgeDocumentEvidence(queryCtx, tx, versionID, document, now); err != nil {
-			return 0, err
-		}
-		if err := advanceKnowledgeDocumentVersionMetadata(queryCtx, tx, versionID, document); err != nil {
-			return 0, err
-		}
-	}
-	if previousVersionID != nil && *previousVersionID != versionID {
-		if _, err := tx.Exec(queryCtx, "UPDATE knowledge_document_versions SET status = 'superseded' WHERE id = $1", *previousVersionID); err != nil {
-			return 0, err
-		}
-	}
-	if _, err := tx.Exec(queryCtx, "UPDATE knowledge_document_versions SET status = 'current' WHERE id = $1", versionID); err != nil {
-		return 0, err
-	}
-	if _, err := tx.Exec(queryCtx, `
+		_, err = tx.Exec(queryCtx, `
 UPDATE knowledge_documents
-SET title = CASE WHEN $6 THEN $2 ELSE title END,
-    current_version_id = $3,
-    current_content_hash = $4,
-    updated_at_ms = $5
+SET title = $2, content = $3, content_hash = $4, content_type = $5,
+    fetched_at_ms = $6, etag = $7, last_modified = $8,
+    reconciler_revision = $9, updated_at_ms = $10
 WHERE id = $1`,
-		documentID,
-		document.Title,
-		versionID,
-		document.ContentHash,
-		now,
-		refreshDocumentTitle,
-	); err != nil {
-		return 0, err
+			documentID, document.Title, document.Content, document.ContentHash,
+			document.ContentType, document.FetchedAtUnixMS, document.ETag,
+			document.LastModified, document.ReconcilerRevision, now)
+	} else {
+		_, err = tx.Exec(queryCtx, `
+INSERT INTO knowledge_documents(
+  id, canonical_url, title, content, content_hash, content_type,
+  fetched_at_ms, etag, last_modified, reconciler_revision,
+  created_at_ms, updated_at_ms
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)`,
+			documentID, document.CanonicalURL, document.Title, document.Content,
+			document.ContentHash, document.ContentType, document.FetchedAtUnixMS,
+			document.ETag, document.LastModified, document.ReconcilerRevision, now)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("storing direct knowledge document: %w", err)
 	}
 
 	for _, targetID := range targetIDs {
 		var status string
 		if err := tx.QueryRow(queryCtx, `
-SELECT status
-FROM knowledge_entries
-WHERE id = $1
-FOR UPDATE`, targetID).Scan(&status); err != nil {
+SELECT status FROM knowledge_entries WHERE id = $1 FOR UPDATE`,
+			targetID).Scan(&status); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return 0, errors.New("knowledge ingest mutation target no longer exists")
 			}
@@ -534,22 +380,24 @@ FOR UPDATE`, targetID).Scan(&status); err != nil {
 	}
 	changed := 0
 	for index, item := range prepared {
-		knowledgeID := ""
 		switch item.action.Operation {
 		case KnowledgeMutationNone:
-			knowledgeID = item.action.MemoryID
+			// NONE deliberately leaves the supplied entry and its source
+			// ownership untouched. The current document is not appended as a
+			// hidden second source.
 		case KnowledgeMutationDelete:
-			knowledgeID = item.action.MemoryID
 			result, err := tx.Exec(queryCtx, `
 UPDATE knowledge_entries
-SET status = 'tombstone', updated_at_ms = $2
-WHERE id = $1 AND status = 'verified'`, item.action.MemoryID, now)
+SET status = 'tombstone', document_id = $2, evidence_text = $3, updated_at_ms = $4
+WHERE id = $1 AND status = 'verified'`,
+				item.action.MemoryID, documentID, item.action.Evidence, now)
 			if err != nil {
 				return 0, fmt.Errorf("deleting recalled knowledge: %w", err)
 			}
 			if result.RowsAffected() != 1 {
 				return 0, errors.New("knowledge ingest DELETE lost its target")
 			}
+			changed++
 		case KnowledgeMutationUpdate:
 			result, err := tx.Exec(queryCtx, `
 UPDATE knowledge_entries
@@ -561,13 +409,9 @@ WHERE id = $1 AND status = 'verified'`, item.action.MemoryID, now)
 			if result.RowsAffected() != 1 {
 				return 0, errors.New("knowledge ingest UPDATE lost its target")
 			}
+			fallthrough
 		case KnowledgeMutationAdd:
-		default:
-			return 0, errors.New("knowledge ingest mutation operation is invalid")
-		}
-
-		if item.action.Operation == KnowledgeMutationAdd || item.action.Operation == KnowledgeMutationUpdate {
-			knowledgeID = newID()
+			knowledgeID := newID()
 			var supersedesID any
 			if item.action.Operation == KnowledgeMutationUpdate {
 				supersedesID = item.action.MemoryID
@@ -581,120 +425,31 @@ WHERE id = $1 AND status = 'verified'`, item.action.MemoryID, now)
 			if _, err := tx.Exec(queryCtx, `
 INSERT INTO knowledge_entries(
   id, topic, statement, status, verification_basis, confidence_basis_points,
-  source_conversation_id, source_turn_id, supersedes_id,
-  subject, predicate, value, fact_key,
-  embedding_model_id, embedding_content_hash, embedding,
+  source_conversation_id, source_turn_id, document_id, evidence_text,
+  supersedes_id, embedding_model_id, embedding_content_hash, embedding,
   created_at_ms, updated_at_ms
 ) VALUES (
   $1, $2, $3, 'verified', 'retrieval_ingest', $4,
-  $5, $6, $7, $8, $9, $10, NULL,
-  $11, $12, $13::public.vector, $14, $14
+  $5, $6, $7, $8, $9, $10, $11, $12::public.vector, $13, $13
 )`,
-				knowledgeID, item.topic, item.action.Content, item.action.ConfidenceBasisPoints,
-				lockedTask.ConversationID, lockedTask.TurnID, supersedesID,
-				nil, nil, nil,
+				knowledgeID, item.topic, item.action.Content,
+				item.action.ConfidenceBasisPoints,
+				lockedTask.ConversationID, lockedTask.TurnID,
+				documentID, item.action.Evidence, supersedesID,
 				modelID, contentHash, vector, now,
 			); err != nil {
-				return 0, fmt.Errorf("inserting reconciled knowledge action[%d]: %w", index, err)
+				return 0, fmt.Errorf("inserting direct knowledge action[%d]: %w", index, err)
 			}
-		}
-		if item.action.MemoryID != "" {
-			if _, err := tx.Exec(queryCtx, `
-UPDATE knowledge_evidence AS e
-SET active = false, invalidated_at_ms = $3
-FROM knowledge_document_versions AS v
-JOIN knowledge_documents AS d ON d.id = v.document_id
-WHERE e.knowledge_id = $1
-  AND e.version_id = v.id
-  AND d.canonical_url = $2
-  AND e.chunk_id <> $4
-  AND e.active`,
-				item.action.MemoryID,
-				document.CanonicalURL,
-				now,
-				document.EvidenceID,
-			); err != nil {
-				return 0, fmt.Errorf("invalidating reconciled knowledge evidence: %w", err)
-			}
-		}
-		if _, err := tx.Exec(queryCtx, `
-INSERT INTO knowledge_evidence(knowledge_id, chunk_id, version_id, active, created_at_ms)
-VALUES ($1, $2, $3, true, $4)
-ON CONFLICT (knowledge_id, chunk_id) DO UPDATE
-SET active = true, invalidated_at_ms = NULL`,
-			knowledgeID, document.EvidenceID, versionID, now,
-		); err != nil {
-			return 0, fmt.Errorf("merging knowledge evidence: %w", err)
-		}
-		source := lockedTask.Source
-		if err := InsertCanonicalKnowledgeSource(queryCtx, tx, knowledgeID, newID(), AssistantSource{
-			Title: document.Title, URL: document.CanonicalURL, Snippet: source.Snippet,
-			Rank: source.Rank, FetchedAtUnixMS: document.FetchedAtUnixMS,
-		}); err != nil {
-			return 0, err
-		}
-		if item.action.Operation != KnowledgeMutationNone {
 			changed++
-		}
-	}
-	if document.ReconcilerRevision != "" {
-		updated, err := tx.Exec(queryCtx, `
-UPDATE knowledge_document_versions
-SET reconciler_revision = $2
-WHERE id = $1`,
-			versionID,
-			document.ReconcilerRevision,
-		)
-		if err != nil {
-			return 0, fmt.Errorf("updating knowledge document reconciler revision: %w", err)
-		}
-		if updated.RowsAffected() != 1 {
-			return 0, errors.New("knowledge document version no longer exists")
+		default:
+			return 0, errors.New("knowledge ingest mutation operation is invalid")
 		}
 	}
 	if err := FinishKnowledgeIngestJob(queryCtx, tx, jobID, s.workerID, "succeeded", "", now); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(queryCtx); err != nil {
-		return 0, fmt.Errorf("committing knowledge document actions: %w", err)
+		return 0, fmt.Errorf("committing direct knowledge document actions: %w", err)
 	}
 	return changed, nil
-}
-
-func ensureCompleteKnowledgeDocumentEvidence(
-	ctx context.Context,
-	tx pgx.Tx,
-	versionID string,
-	document KnowledgeDocument,
-	now int64,
-) error {
-	var existingVersionID, existingText, existingTextHash string
-	err := tx.QueryRow(ctx, `
-SELECT version_id, text, text_hash
-FROM knowledge_chunks
-WHERE id = $1`, document.EvidenceID).Scan(&existingVersionID, &existingText, &existingTextHash)
-	if err == nil {
-		if existingVersionID != versionID || existingText != document.Content || existingTextHash != document.ContentHash {
-			return errors.New("complete knowledge document evidence changed")
-		}
-		return nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("loading complete knowledge document evidence: %w", err)
-	}
-	var ordinal int
-	if err := tx.QueryRow(ctx, `
-SELECT COALESCE(MAX(ordinal), -1) + 1
-FROM knowledge_chunks
-WHERE version_id = $1`, versionID).Scan(&ordinal); err != nil {
-		return fmt.Errorf("selecting complete knowledge document evidence ordinal: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-INSERT INTO knowledge_chunks(id, version_id, ordinal, text, text_hash, created_at_ms)
-VALUES ($1, $2, $3, $4, $5, $6)`,
-		document.EvidenceID, versionID, ordinal, document.Content, document.ContentHash, now,
-	); err != nil {
-		return fmt.Errorf("inserting complete knowledge document evidence: %w", err)
-	}
-	return nil
 }

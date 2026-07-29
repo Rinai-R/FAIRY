@@ -18,9 +18,6 @@ type KnowledgeRecord struct {
 	SourceConversationID  string            `json:"sourceConversationId"`
 	SourceTurnID          string            `json:"sourceTurnId"`
 	SupersedesID          *string           `json:"supersedesId"`
-	Subject               *string           `json:"subject,omitempty"`
-	Predicate             *string           `json:"predicate,omitempty"`
-	Value                 *string           `json:"value,omitempty"`
 	Sources               []AssistantSource `json:"sources"`
 	CreatedAtUnixMS       int64             `json:"createdAtUnixMs"`
 	UpdatedAtUnixMS       int64             `json:"updatedAtUnixMs"`

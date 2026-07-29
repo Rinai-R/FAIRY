@@ -198,10 +198,18 @@ func RecordSocialReplyFeedback(
 		return SocialReplyFeedback{}, fmt.Errorf("serializing social feedback entry IDs: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
-INSERT INTO social_reply_feedback(
-    id, character_id, conversation_id, turn_id, outcome, entry_ids_json,
-    observed_message_count, created_at_ms
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+INSERT INTO feedback_events(
+    id, type, character_id, conversation_id, turn_id, payload_json,
+    status, created_at_ms, updated_at_ms
+) VALUES (
+    $1, 'social_reply_feedback', $2, $3, $4,
+    jsonb_build_object(
+      'outcome', $5::text,
+      'entryIds', $6::jsonb,
+      'observedMessageCount', $7::integer
+    ),
+    'succeeded', $8, $8
+)`,
 		id, input.CharacterID, input.ConversationID, input.TurnID, input.Outcome,
 		entryIDsJSON, input.ObservedMessageCount, now,
 	); err != nil {
@@ -223,9 +231,10 @@ SET use_count = use_count + 1,
     positive_count = positive_count + $4,
     negative_count = negative_count + $5,
     unknown_count = unknown_count + $6,
+    last_feedback_turn_id = $8,
     updated_at_ms = $7
 WHERE character_id = $1 AND conversation_id = $2 AND id = ANY($3)`,
-			input.CharacterID, input.ConversationID, input.EntryIDs, positive, negative, unknown, now,
+			input.CharacterID, input.ConversationID, input.EntryIDs, positive, negative, unknown, now, input.TurnID,
 		)
 		if err != nil {
 			return SocialReplyFeedback{}, fmt.Errorf("updating social memory feedback counters: %w", err)
@@ -254,9 +263,12 @@ WHERE character_id = $1 AND conversation_id = $2 AND id = ANY($3)
 
 func QueryRecentSocialFeedbackSummary(ctx context.Context, db Querier, characterID, conversationID string, limit int) (RecentSocialFeedbackSummary, error) {
 	rows, err := db.Query(ctx, `
-SELECT outcome, observed_message_count
-FROM social_reply_feedback
-WHERE character_id = $1 AND conversation_id = $2
+SELECT payload_json->>'outcome',
+       (payload_json->>'observedMessageCount')::integer
+FROM feedback_events
+WHERE type = 'social_reply_feedback'
+  AND status = 'succeeded'
+  AND character_id = $1 AND conversation_id = $2
 ORDER BY created_at_ms DESC, id ASC
 LIMIT $3`, characterID, conversationID, limit)
 	if err != nil {

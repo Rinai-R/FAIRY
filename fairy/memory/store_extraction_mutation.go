@@ -54,7 +54,7 @@ func (s *Store) commitMemoryMutationsPostgres(ctx context.Context, batchID, char
 		return nil, fmt.Errorf("beginning memory mutation transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
-	conversationID, batchCharacterID, err := LockRunningExtractionBatch(queryCtx, tx, batchID)
+	conversationID, batchCharacterID, err := LockRunningExtractionBatch(queryCtx, tx, batchID, s.workerID)
 	if err != nil {
 		return nil, err
 	}

@@ -124,6 +124,54 @@ func TestMemoryPackageDoesNotImportCompanion(t *testing.T) {
 	}
 }
 
+func TestProductionMemorySQLDoesNotUseRemovedAuxiliaryTables(t *testing.T) {
+	removedTables := []string{
+		"personal_memory_evidence",
+		"social_reply_feedback",
+		"social_person_notes",
+		"knowledge_sources",
+		"knowledge_document_versions",
+		"knowledge_chunks",
+		"knowledge_evidence",
+		"extraction_batches",
+		"extraction_batch_turns",
+		"knowledge_ingest_jobs",
+	}
+	for _, directory := range []string{"memory", "coredb"} {
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") ||
+				strings.HasSuffix(entry.Name(), "_test.go") ||
+				directory == "coredb" && entry.Name() == "migrate.go" {
+				continue
+			}
+			path := filepath.Join(directory, entry.Name())
+			content, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lower := strings.ToLower(string(content))
+			for _, table := range removedTables {
+				for _, prefix := range []string{
+					"from " + table,
+					"join " + table,
+					"into " + table,
+					"update " + table,
+					"table " + table,
+					`return "` + table + `"`,
+				} {
+					if strings.Contains(lower, prefix) {
+						t.Errorf("production source %s still uses removed table %s", path, table)
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestOrchestrationPackagesDoNotImportEachOther(t *testing.T) {
 	for _, pkg := range listPackages(t, "./companion", "./initiative") {
 		for _, imported := range pkg.Imports {
@@ -334,13 +382,6 @@ func TestProductionKnowledgeIngestHasOnlyWholeDocumentActionRuntime(t *testing.T
 		"batchIdHash": {},
 		"sourceCount": {},
 	}
-	knowledgeJobRuntimeSQLFiles := map[string]struct{}{
-		filepath.Join("memory", "postgres_knowledge_ingest.go"): {},
-		filepath.Join("memory", "store_knowledge_ingest.go"):    {},
-		filepath.Join("memory", "store_knowledge_jobs.go"):      {},
-	}
-	var foundTaskIDSQL bool
-	var foundSourceJSONSQL bool
 	var files []string
 	for _, directory := range []string{"memory", "companion"} {
 		matches, err := filepath.Glob(filepath.Join(directory, "*.go"))
@@ -374,24 +415,6 @@ func TestProductionKnowledgeIngestHasOnlyWholeDocumentActionRuntime(t *testing.T
 				if element, ok := value.Value.(*ast.Ident); ok && element.Name == "KnowledgeDocument" {
 					t.Errorf("production source %s retains a map of KnowledgeDocument values", filename)
 				}
-			case *ast.BasicLit:
-				if value.Kind != token.STRING {
-					return true
-				}
-				if _, checked := knowledgeJobRuntimeSQLFiles[filename]; !checked {
-					return true
-				}
-				decoded, err := strconv.Unquote(value.Value)
-				if err != nil {
-					return true
-				}
-				for _, legacyColumn := range []string{"batch_id", "sources_json"} {
-					if strings.Contains(decoded, legacyColumn) {
-						t.Errorf("production knowledge job SQL %s reads or writes legacy column %s", filename, legacyColumn)
-					}
-				}
-				foundTaskIDSQL = foundTaskIDSQL || strings.Contains(decoded, "task_id")
-				foundSourceJSONSQL = foundSourceJSONSQL || strings.Contains(decoded, "source_json")
 			}
 			return true
 		})
@@ -491,8 +514,5 @@ func TestProductionKnowledgeIngestHasOnlyWholeDocumentActionRuntime(t *testing.T
 				}
 			}
 		}
-	}
-	if !foundTaskIDSQL || !foundSourceJSONSQL {
-		t.Errorf("production knowledge job SQL must use task_id/source_json, found task_id=%t source_json=%t", foundTaskIDSQL, foundSourceJSONSQL)
 	}
 }

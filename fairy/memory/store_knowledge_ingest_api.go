@@ -127,10 +127,11 @@ func (s *Store) RetryClaimedKnowledgeIngestJobContext(ctx context.Context, jobID
 	defer cancel()
 	now := nowUnixMS()
 	changed, err := s.pool.Raw().Exec(queryCtx, `
-UPDATE knowledge_ingest_jobs
+UPDATE feedback_events
 SET status = CASE WHEN attempt_count >= $4 THEN 'failed' ELSE 'pending' END,
     lease_owner = NULL,
     lease_expires_at_ms = NULL,
+    claim_group_id = NULL,
     next_attempt_at_ms = CASE
       WHEN attempt_count >= $4 THEN 0
       ELSE $5::bigint + LEAST(30000::bigint, 1000::bigint * (1::bigint << GREATEST(0, attempt_count - 1)))
@@ -138,7 +139,8 @@ SET status = CASE WHEN attempt_count >= $4 THEN 'failed' ELSE 'pending' END,
     error_category = $2,
     error_message = NULLIF($3, ''),
     updated_at_ms = $5
-WHERE id = $1 AND status = 'running' AND lease_owner = $6`,
+WHERE id = $1 AND type = 'web_knowledge'
+  AND status = 'running' AND lease_owner = $6 AND claim_group_id = id`,
 		jobID, category, CleanEmbeddingErrorMessage(message), MaxKnowledgeIngestAttempts, now, s.workerID,
 	)
 	if err != nil {

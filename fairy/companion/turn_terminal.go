@@ -30,6 +30,15 @@ func (x *turnExecution) persist(gathered *turnContext, resolved session.Resolved
 	fullRequest := gathered.fullRequest
 	finalUsage := slices.Clone(gathered.finalUsage)
 	bootstrap := gathered.bootstrap
+	if resolved.AllowsPersonalMemory() {
+		if err := x.service.memory.turn.turns.EnqueuePersonalMemoryFeedback(
+			x.request.ConversationID,
+			x.persisted.ID,
+			bootstrap.Conversation.CharacterID,
+		); err != nil {
+			return x.service.terminalPersistenceFailure(x.life, x.request.ConversationID, x.persisted.ID, nil, err)
+		}
+	}
 	if _, err := x.service.memory.turn.turns.CompleteExpressionTurn(
 		x.request.ConversationID,
 		x.persisted.ID,

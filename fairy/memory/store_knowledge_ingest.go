@@ -120,9 +120,9 @@ WHERE id = $1
 	if err := InsertVerifiedKnowledgeEntry(queryCtx, tx, id, topic, statement, conversationID, turnID, confidenceBasisPoints, now, embedding); err != nil {
 		return KnowledgeRecord{}, err
 	}
-	for index, source := range sources {
-		if err := InsertKnowledgeSource(queryCtx, tx, id, newID(), source); err != nil {
-			return KnowledgeRecord{}, fmt.Errorf("inserting knowledge source[%d]: %w", index, err)
+	if len(sources) > 0 {
+		if err := InsertKnowledgeSource(queryCtx, tx, id, newID(), sources[0]); err != nil {
+			return KnowledgeRecord{}, fmt.Errorf("inserting direct knowledge source: %w", err)
 		}
 	}
 	if err := tx.Commit(queryCtx); err != nil {
@@ -206,9 +206,11 @@ func (s *Store) claimKnowledgeIngestTasksPostgres(ctx context.Context, limit int
 
 func loadOwnedKnowledgeIngestJob(ctx context.Context, db ConversationDB, jobID, workerID string, forUpdate bool) (KnowledgeIngestJob, error) {
 	query := `
-SELECT id, conversation_id, turn_id, task_id, source_json
-FROM knowledge_ingest_jobs
-WHERE id = $1 AND status = 'running' AND lease_owner = $2`
+SELECT id, conversation_id, turn_id,
+       payload_json->>'taskId', payload_json->'source'
+FROM feedback_events
+WHERE id = $1 AND type = 'web_knowledge'
+  AND status = 'running' AND lease_owner = $2 AND claim_group_id = id`
 	if forUpdate {
 		query += " FOR UPDATE"
 	}
