@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -25,10 +24,6 @@ const (
 	knowledgeFetchTimeout      = 12 * time.Second
 	knowledgeFetchMaxBodyBytes = 1 << 20
 	knowledgeFetchMaxRedirects = 5
-	knowledgeChunkRunes        = 1200
-	knowledgeChunkOverlapRunes = 120
-	knowledgeMaxChunksPerPage  = 32
-	knowledgeMaxChunksPerBatch = 128
 )
 
 var (
@@ -88,9 +83,6 @@ func (f *httpKnowledgeDocumentFetcher) FetchSource(ctx context.Context, source m
 	if err != nil {
 		return memory.KnowledgeDocument{}, err
 	}
-	if len(document.Chunks) > knowledgeMaxChunksPerBatch {
-		return memory.KnowledgeDocument{}, fmt.Errorf("%w: document chunk limit exceeded", errKnowledgeFetchRejected)
-	}
 	return document, nil
 }
 
@@ -108,6 +100,7 @@ func (f *httpKnowledgeDocumentFetcher) fetch(ctx context.Context, source memory.
 	}
 	request.Header.Set("Accept", "text/html, text/plain;q=0.8")
 	request.Header.Set("User-Agent", "FAIRY-KnowledgeFetcher/1")
+	requestStartedAtUnixMS := time.Now().UnixMilli()
 	response, err := f.client.Do(request)
 	if err != nil {
 		if errors.Is(err, errKnowledgeFetchRejected) {
@@ -139,16 +132,15 @@ func (f *httpKnowledgeDocumentFetcher) fetch(ctx context.Context, source memory.
 	}
 	contentSum := sha256.Sum256([]byte(text))
 	contentHash := fmt.Sprintf("%x", contentSum[:])
-	chunks := chunkKnowledgeDocument(parsed.String(), contentHash, text)
-	if len(chunks) == 0 {
-		return memory.KnowledgeDocument{}, fmt.Errorf("%w: document has no usable text", errKnowledgeFetchRejected)
-	}
+	evidenceSum := sha256.Sum256([]byte(parsed.String() + "\x00" + contentHash))
 	return memory.KnowledgeDocument{
 		SourceID: source.ID, CanonicalURL: parsed.String(), Title: source.Title,
-		ContentHash: contentHash, ContentType: mediaType,
+		Content: text, ContentHash: contentHash,
+		EvidenceID:      fmt.Sprintf("web-evidence-%x", evidenceSum[:12]),
+		ContentType:     mediaType,
 		ETag:            strings.TrimSpace(response.Header.Get("ETag")),
 		LastModified:    strings.TrimSpace(response.Header.Get("Last-Modified")),
-		FetchedAtUnixMS: time.Now().UnixMilli(), Chunks: chunks,
+		FetchedAtUnixMS: requestStartedAtUnixMS,
 	}, nil
 }
 
@@ -210,8 +202,8 @@ func isPublicKnowledgeAddress(address netip.Addr) bool {
 
 func cleanKnowledgeDocument(mediaType string, body []byte) (string, error) {
 	if mediaType == "text/plain" {
-		text := strings.Join(strings.Fields(string(body)), " ")
-		if !utf8.ValidString(text) || text == "" {
+		text := normalizeKnowledgeText(string(body))
+		if !utf8.ValidString(text) || text == "" || memory.ContainsDisallowedControl(text) {
 			return "", fmt.Errorf("%w: text body is invalid", errKnowledgeFetchRejected)
 		}
 		return text, nil
@@ -223,8 +215,8 @@ func cleanKnowledgeDocument(mediaType string, body []byte) (string, error) {
 		switch tokenType := tokenizer.Next(); tokenType {
 		case html.ErrorToken:
 			if errors.Is(tokenizer.Err(), io.EOF) {
-				cleaned := strings.Join(strings.Fields(text.String()), " ")
-				if cleaned == "" {
+				cleaned := normalizeKnowledgeText(text.String())
+				if !utf8.ValidString(cleaned) || cleaned == "" || memory.ContainsDisallowedControl(cleaned) {
 					return "", fmt.Errorf("%w: HTML has no usable text", errKnowledgeFetchRejected)
 				}
 				return cleaned, nil
@@ -232,13 +224,19 @@ func cleanKnowledgeDocument(mediaType string, body []byte) (string, error) {
 			return "", fmt.Errorf("%w: invalid HTML", errKnowledgeFetchRejected)
 		case html.StartTagToken:
 			name, _ := tokenizer.TagName()
-			if isSkippedKnowledgeElement(string(name)) {
+			element := string(name)
+			if isSkippedKnowledgeElement(element) {
 				skipDepth++
+			} else if skipDepth == 0 && isKnowledgeBlockElement(element) {
+				text.WriteByte('\n')
 			}
 		case html.EndTagToken:
 			name, _ := tokenizer.TagName()
-			if isSkippedKnowledgeElement(string(name)) && skipDepth > 0 {
+			element := string(name)
+			if isSkippedKnowledgeElement(element) && skipDepth > 0 {
 				skipDepth--
+			} else if skipDepth == 0 && isKnowledgeBlockElement(element) {
+				text.WriteByte('\n')
 			}
 		case html.TextToken:
 			if skipDepth == 0 {
@@ -247,6 +245,21 @@ func cleanKnowledgeDocument(mediaType string, body []byte) (string, error) {
 			}
 		}
 	}
+}
+
+func normalizeKnowledgeText(value string) string {
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	value = strings.ReplaceAll(value, "\r", "\n")
+	lines := strings.Split(value, "\n")
+	normalized := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.Join(strings.Fields(line), " ")
+		if line == "" {
+			continue
+		}
+		normalized = append(normalized, line)
+	}
+	return strings.Join(normalized, "\n")
 }
 
 func isSkippedKnowledgeElement(name string) bool {
@@ -258,27 +271,14 @@ func isSkippedKnowledgeElement(name string) bool {
 	}
 }
 
-func chunkKnowledgeDocument(canonicalURL, contentHash, text string) []memory.KnowledgeDocumentChunk {
-	runes := []rune(text)
-	if len(runes) == 0 {
-		return nil
+func isKnowledgeBlockElement(name string) bool {
+	switch strings.ToLower(name) {
+	case "article", "aside", "blockquote", "br", "dd", "div", "dl", "dt",
+		"figcaption", "figure", "h1", "h2", "h3", "h4", "h5", "h6",
+		"header", "li", "main", "ol", "p", "pre", "section", "table",
+		"tbody", "td", "tfoot", "th", "thead", "tr", "ul":
+		return true
+	default:
+		return false
 	}
-	chunks := make([]memory.KnowledgeDocumentChunk, 0, min((len(runes)+knowledgeChunkRunes-1)/knowledgeChunkRunes, knowledgeMaxChunksPerPage))
-	for start, ordinal := 0, 0; start < len(runes) && ordinal < knowledgeMaxChunksPerPage; ordinal++ {
-		end := min(start+knowledgeChunkRunes, len(runes))
-		chunkText := strings.TrimSpace(string(runes[start:end]))
-		if chunkText != "" {
-			textSum := sha256.Sum256([]byte(chunkText))
-			idSum := sha256.Sum256([]byte(canonicalURL + "\x00" + contentHash + "\x00" + fmt.Sprintf("%x", textSum[:]) + "\x00" + strconv.Itoa(ordinal)))
-			chunks = append(chunks, memory.KnowledgeDocumentChunk{
-				ID: fmt.Sprintf("web-chunk-%x", idSum[:12]), Ordinal: ordinal,
-				Text: chunkText, TextHash: fmt.Sprintf("%x", textSum[:]),
-			})
-		}
-		if end == len(runes) {
-			break
-		}
-		start = end - knowledgeChunkOverlapRunes
-	}
-	return chunks
 }

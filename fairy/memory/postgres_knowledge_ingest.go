@@ -18,55 +18,30 @@ type KnowledgeIngestJob struct {
 	ID             string
 	ConversationID string
 	TurnID         string
-	BatchID        string
-	SourcesJSON    []byte
-	Query          string
-	Title          string
-	URL            string
-	Snippet        string
-	Rank           uint8
-	FetchedAt      int64
+	TaskID         string
+	SourceJSON     []byte
 	AttemptCount   int
 	NextAttemptAt  int64
 	ErrorCategory  string
 }
 
-func EnqueueKnowledgeIngestBatch(
+func EnqueueKnowledgeIngestTask(
 	ctx context.Context,
 	tx pgx.Tx,
-	id, conversationID, turnID, batchID string,
-	sourcesJSON []byte,
+	id, conversationID, turnID, taskID string,
+	sourceJSON []byte,
 	now int64,
 ) error {
 	_, err := tx.Exec(ctx, `
 INSERT INTO knowledge_ingest_jobs(
-  id, conversation_id, turn_id, batch_id, sources_json, query,
-  title, url, snippet, rank, fetched_at_ms,
+  id, conversation_id, turn_id, task_id, source_json,
   status, created_at_ms, updated_at_ms
-) VALUES ($1, $2, $3, $4, $5::jsonb, '', '', '', '', 0, 0, 'waiting_turn', $6, $6)
-ON CONFLICT (batch_id) WHERE batch_id <> '' DO NOTHING`,
-		id, conversationID, turnID, batchID, sourcesJSON, now,
+) VALUES ($1, $2, $3, $4, $5::jsonb, 'waiting_turn', $6, $6)
+ON CONFLICT (task_id) WHERE task_id <> '' DO NOTHING`,
+		id, conversationID, turnID, taskID, sourceJSON, now,
 	)
 	if err != nil {
-		return fmt.Errorf("queueing knowledge ingest batch: %w", err)
-	}
-	return nil
-}
-
-func EnqueueKnowledgeIngestJob(
-	ctx context.Context,
-	tx pgx.Tx,
-	id, conversationID, turnID, query, title, url, snippet string,
-	rank uint8,
-	fetchedAt, now int64,
-) error {
-	_, err := tx.Exec(ctx, `
-INSERT INTO knowledge_ingest_jobs(
-  id, conversation_id, turn_id, query, title, url, snippet, rank, fetched_at_ms,
-  status, created_at_ms, updated_at_ms
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, $10)`, id, conversationID, turnID, query, title, url, snippet, rank, fetchedAt, now)
-	if err != nil {
-		return fmt.Errorf("queueing knowledge ingest job: %w", err)
+		return fmt.Errorf("queueing knowledge ingest task: %w", err)
 	}
 	return nil
 }
@@ -77,17 +52,20 @@ type knowledgeIngestQuerier interface {
 }
 
 func ClaimKnowledgeIngestJobs(ctx context.Context, db knowledgeIngestQuerier, limit int, now int64, workerID string, leaseExpires int64) ([]KnowledgeIngestJob, error) {
-	return claimKnowledgeIngestJobs(ctx, db, limit, now, workerID, leaseExpires, false)
-}
-
-func ClaimLegacyKnowledgeIngestJobs(ctx context.Context, db knowledgeIngestQuerier, limit int, now int64, workerID string, leaseExpires int64) ([]KnowledgeIngestJob, error) {
-	return claimKnowledgeIngestJobs(ctx, db, limit, now, workerID, leaseExpires, true)
-}
-
-func claimKnowledgeIngestJobs(ctx context.Context, db knowledgeIngestQuerier, limit int, now int64, workerID string, leaseExpires int64, legacyOnly bool) ([]KnowledgeIngestJob, error) {
-	legacyFilter := ""
-	if legacyOnly {
-		legacyFilter = " AND batch_id = ''"
+	if _, err := db.Exec(ctx, `
+UPDATE knowledge_ingest_jobs
+SET status = 'failed',
+    lease_owner = NULL,
+    lease_expires_at_ms = NULL,
+    next_attempt_at_ms = 0,
+    error_category = 'attempts_exhausted',
+    error_message = 'knowledge ingest lease expired after maximum attempts',
+    updated_at_ms = $1
+WHERE status = 'running'
+  AND lease_expires_at_ms <= $1
+  AND attempt_count >= `+fmt.Sprint(MaxKnowledgeIngestAttempts)+`
+  AND task_id <> ''`, now); err != nil {
+		return nil, fmt.Errorf("failing exhausted knowledge ingest jobs: %w", err)
 	}
 	if _, err := db.Exec(ctx, `
 UPDATE knowledge_ingest_jobs j
@@ -106,7 +84,8 @@ WITH candidates AS (
     (j.status = 'pending' AND t.status = 'completed' AND j.next_attempt_at_ms <= $1 AND j.attempt_count < `+fmt.Sprint(MaxKnowledgeIngestAttempts)+`)
     OR (j.status = 'waiting_turn' AND t.status = 'completed')
     OR (j.status = 'running' AND j.lease_expires_at_ms <= $1 AND j.attempt_count < `+fmt.Sprint(MaxKnowledgeIngestAttempts)+`)
-  )`+legacyFilter+`
+  )
+    AND j.task_id <> ''
   ORDER BY j.updated_at_ms ASC, j.id ASC
   LIMIT $2
   FOR UPDATE OF j SKIP LOCKED
@@ -116,8 +95,7 @@ SET status = 'running', lease_owner = $3, lease_expires_at_ms = $4,
     attempt_count = j.attempt_count + 1, updated_at_ms = $1
 FROM candidates c
 WHERE j.id = c.id
-RETURNING j.id, j.conversation_id, j.turn_id, j.query, j.title, j.url, j.snippet,
-          j.rank, j.fetched_at_ms, j.batch_id, j.sources_json,
+RETURNING j.id, j.conversation_id, j.turn_id, j.task_id, j.source_json,
           j.attempt_count, j.next_attempt_at_ms, COALESCE(j.error_category, '')`, now, limit, workerID, leaseExpires)
 	if err != nil {
 		return nil, fmt.Errorf("claiming knowledge ingest jobs: %w", err)
@@ -126,19 +104,12 @@ RETURNING j.id, j.conversation_id, j.turn_id, j.query, j.title, j.url, j.snippet
 	jobs := make([]KnowledgeIngestJob, 0, limit)
 	for rows.Next() {
 		var job KnowledgeIngestJob
-		var rank int
 		if err := rows.Scan(
-			&job.ID, &job.ConversationID, &job.TurnID, &job.Query,
-			&job.Title, &job.URL, &job.Snippet, &rank, &job.FetchedAt,
-			&job.BatchID, &job.SourcesJSON, &job.AttemptCount, &job.NextAttemptAt, &job.ErrorCategory,
+			&job.ID, &job.ConversationID, &job.TurnID,
+			&job.TaskID, &job.SourceJSON,
+			&job.AttemptCount, &job.NextAttemptAt, &job.ErrorCategory,
 		); err != nil {
 			return nil, fmt.Errorf("scanning claimed knowledge ingest job: %w", err)
-		}
-		if job.BatchID == "" && (rank < 1 || rank > 5) {
-			return nil, errors.New("claimed knowledge ingest rank is invalid")
-		}
-		if rank >= 0 && rank <= 255 {
-			job.Rank = uint8(rank)
 		}
 		jobs = append(jobs, job)
 	}
@@ -146,6 +117,57 @@ RETURNING j.id, j.conversation_id, j.turn_id, j.query, j.title, j.url, j.snippet
 		return nil, fmt.Errorf("iterating claimed knowledge ingest jobs: %w", err)
 	}
 	return jobs, nil
+}
+
+func RenewKnowledgeIngestJobLease(
+	ctx context.Context,
+	exec interface {
+		Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	},
+	id, workerID string,
+	leaseExpires, now int64,
+) error {
+	changed, err := exec.Exec(ctx, `
+UPDATE knowledge_ingest_jobs
+SET lease_expires_at_ms = $3, updated_at_ms = $4
+WHERE id = $1 AND status = 'running' AND lease_owner = $2`,
+		id, workerID, leaseExpires, now,
+	)
+	if err != nil {
+		return fmt.Errorf("renewing knowledge ingest job lease: %w", err)
+	}
+	if changed.RowsAffected() != 1 {
+		return errors.New("knowledge ingest job is not owned by this worker")
+	}
+	return nil
+}
+
+func ReleaseKnowledgeIngestJob(
+	ctx context.Context,
+	exec interface {
+		Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	},
+	id, workerID string,
+	now int64,
+) error {
+	changed, err := exec.Exec(ctx, `
+UPDATE knowledge_ingest_jobs
+SET status = 'pending',
+    attempt_count = GREATEST(0, attempt_count - 1),
+    lease_owner = NULL,
+    lease_expires_at_ms = NULL,
+    next_attempt_at_ms = 0,
+    updated_at_ms = $3
+WHERE id = $1 AND status = 'running' AND lease_owner = $2`,
+		id, workerID, now,
+	)
+	if err != nil {
+		return fmt.Errorf("releasing knowledge ingest job: %w", err)
+	}
+	if changed.RowsAffected() != 1 {
+		return errors.New("knowledge ingest job is not owned by this worker")
+	}
+	return nil
 }
 
 func FinishKnowledgeIngestJob(ctx context.Context, exec interface {

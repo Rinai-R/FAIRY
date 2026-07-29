@@ -23,7 +23,7 @@ func (s *Store) KnowledgeIngestJobsContext(ctx context.Context, status string) (
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
 	rows, err := s.pool.Raw().Query(queryCtx, `
-SELECT id, conversation_id, turn_id, batch_id, status, attempt_count,
+SELECT id, conversation_id, turn_id, task_id, status, attempt_count,
        next_attempt_at_ms, COALESCE(error_category, ''), COALESCE(error_message, ''),
        created_at_ms, updated_at_ms
 FROM knowledge_ingest_jobs
@@ -38,7 +38,7 @@ LIMIT 100`, status)
 	for rows.Next() {
 		var record KnowledgeIngestJobRecord
 		if err := rows.Scan(
-			&record.ID, &record.ConversationID, &record.TurnID, &record.BatchID,
+			&record.ID, &record.ConversationID, &record.TurnID, &record.TaskID,
 			&record.Status, &record.AttemptCount, &record.NextAttemptAtMS,
 			&record.ErrorCategory, &record.ErrorMessage, &record.CreatedAtMS, &record.UpdatedAtMS,
 		); err != nil {
@@ -72,6 +72,7 @@ FROM conversation_turns t
 WHERE j.id = $1
   AND t.id = j.turn_id
   AND t.status = 'completed'
+  AND j.task_id <> ''
   AND j.status IN ('failed', 'dropped')`, id, now)
 	if err != nil {
 		return fmt.Errorf("retrying knowledge ingest job: %w", err)

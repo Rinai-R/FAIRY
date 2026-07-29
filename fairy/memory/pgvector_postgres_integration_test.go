@@ -106,9 +106,11 @@ func TestPostgresPgvectorLifecycleHybridRecallAndPublicIsolation(t *testing.T) {
 	if len(public.Knowledge) == 0 || public.Knowledge[0].ID != knowledge.ID {
 		t.Fatalf("public knowledge recall = %#v", public.Knowledge)
 	}
-	ingestRecall, err := store.RecallKnowledgeForIngestContext(ctx, KnowledgeIngestFact{
-		Subject: "候选主题", Predicate: "状态", Value: "当前", Statement: "语义查询",
-	}, MaxKnowledgeIngestRecallCandidates)
+	ingestRecall, err := store.SearchKnowledgeForIngestContext(
+		ctx,
+		"语义查询",
+		MaxKnowledgeSearchCandidates,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,10 +145,12 @@ func TestPostgresPgvectorProviderFailureWritesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedCompletedTurn(t, ctx, store, "character-vector-failure")
-	if _, err := store.RecallKnowledgeForIngestContext(ctx, KnowledgeIngestFact{
-		Subject: "候选主题", Predicate: "状态", Value: "当前", Statement: "向量服务失败时必须重试当前任务。",
-	}, MaxKnowledgeIngestRecallCandidates); err == nil {
-		t.Fatal("RecallKnowledgeForIngestContext error = nil")
+	if _, err := store.SearchKnowledgeForIngestContext(
+		ctx,
+		"向量服务失败时必须重试当前任务。",
+		MaxKnowledgeSearchCandidates,
+	); err == nil {
+		t.Fatal("SearchKnowledgeForIngestContext error = nil")
 	}
 	if _, err := store.CreatePersonalMemoryContext(ctx, "preference", MemoryScope{Type: "global"}, "不能落库", 9000); err == nil {
 		t.Fatal("CreatePersonalMemoryContext error = nil")

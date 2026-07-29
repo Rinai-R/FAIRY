@@ -5,23 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 )
-
-const (
-	maxKnowledgeIngestFacts          = 8
-	maxKnowledgeIngestTopicRunes     = 300
-	maxKnowledgeIngestStatementRunes = 1200
-)
-
-type preparedKnowledgeIngestFact struct {
-	fact      KnowledgeIngestFact
-	embedding EmbeddingValue
-}
 
 func (s *Store) insertVerifiedKnowledgePostgres(ctx context.Context, topic, statement, conversationID, turnID string, confidenceBasisPoints uint16, sources []AssistantSource) (KnowledgeRecord, error) {
 	topic = strings.TrimSpace(topic)
@@ -161,79 +148,41 @@ WHERE id = $1
 	return current, nil
 }
 
-func (s *Store) enqueueKnowledgeIngestSnapshotsPostgres(ctx context.Context, snapshots []KnowledgeIngestSnapshot) error {
-	if len(snapshots) == 0 {
+func (s *Store) enqueueKnowledgeIngestTasksPostgres(ctx context.Context, tasks []KnowledgeIngestTask) error {
+	if len(tasks) == 0 {
 		return nil
 	}
-	queryCtx, cancel := s.pool.QueryContext(ctx)
-	defer cancel()
-	tx, err := s.pool.Raw().Begin(queryCtx)
-	if err != nil {
-		return fmt.Errorf("beginning knowledge ingest enqueue transaction: %w", err)
-	}
-	defer tx.Rollback(queryCtx)
-	now := nowUnixMS()
-	for _, snapshot := range snapshots {
-		if strings.TrimSpace(snapshot.Title) == "" && strings.TrimSpace(snapshot.Snippet) == "" {
-			continue
-		}
-		if err := ValidateID("conversation_id", snapshot.ConversationID); err != nil {
-			return err
-		}
-		if err := ValidateID("turn_id", snapshot.TurnID); err != nil {
-			return err
-		}
-		if snapshot.Rank < 1 || snapshot.Rank > 5 {
-			return errors.New("knowledge ingest rank is invalid")
-		}
-		if err := EnqueueKnowledgeIngestJob(queryCtx, tx, newID(), snapshot.ConversationID, snapshot.TurnID, snapshot.Query, snapshot.Title, snapshot.URL, snapshot.Snippet, snapshot.Rank, snapshot.FetchedAtUnixMS, now); err != nil {
-			return err
-		}
-	}
-	if err := tx.Commit(queryCtx); err != nil {
-		return fmt.Errorf("committing knowledge ingest enqueue: %w", err)
-	}
-	return nil
-}
-
-func (s *Store) enqueueKnowledgeIngestBatchesPostgres(ctx context.Context, batches []KnowledgeIngestBatch) error {
-	if len(batches) == 0 {
-		return nil
-	}
-	encoded := make([][]byte, len(batches))
-	for index, batch := range batches {
-		if len(batch.Sources) != 1 {
-			return fmt.Errorf("validating knowledge ingest batch[%d]: new knowledge ingest jobs require exactly one source", index)
-		}
+	encoded := make([][]byte, len(tasks))
+	for index, task := range tasks {
 		var err error
-		encoded[index], err = validateKnowledgeIngestBatch(batch)
+		encoded[index], err = validateKnowledgeIngestTask(task)
 		if err != nil {
-			return fmt.Errorf("validating knowledge ingest batch[%d]: %w", index, err)
+			return fmt.Errorf("validating knowledge ingest task[%d]: %w", index, err)
 		}
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
 	tx, err := s.pool.Raw().Begin(queryCtx)
 	if err != nil {
-		return fmt.Errorf("beginning knowledge ingest batch enqueue transaction: %w", err)
+		return fmt.Errorf("beginning knowledge ingest task enqueue transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
 	now := nowUnixMS()
-	for index, batch := range batches {
-		if err := EnqueueKnowledgeIngestBatch(
-			queryCtx, tx, newID(), batch.ConversationID, batch.TurnID,
-			batch.ID, encoded[index], now,
+	for index, task := range tasks {
+		if err := EnqueueKnowledgeIngestTask(
+			queryCtx, tx, newID(), task.ConversationID, task.TurnID,
+			task.ID, encoded[index], now,
 		); err != nil {
 			return err
 		}
 	}
 	if err := tx.Commit(queryCtx); err != nil {
-		return fmt.Errorf("committing knowledge ingest batch enqueue: %w", err)
+		return fmt.Errorf("committing knowledge ingest task enqueue: %w", err)
 	}
 	return nil
 }
 
-func (s *Store) claimKnowledgeIngestBatchesPostgres(ctx context.Context, limit int) ([]KnowledgeIngestClaim, error) {
+func (s *Store) claimKnowledgeIngestTasksPostgres(ctx context.Context, limit int) ([]KnowledgeIngestClaim, error) {
 	if limit < 1 || limit > MaxKnowledgeIngestJobsPerPass {
 		return nil, fmt.Errorf("knowledge ingest job limit must be between 1 and %d", MaxKnowledgeIngestJobsPerPass)
 	}
@@ -243,269 +192,57 @@ func (s *Store) claimKnowledgeIngestBatchesPostgres(ctx context.Context, limit i
 	}
 	claims := make([]KnowledgeIngestClaim, 0, len(jobs))
 	for _, job := range jobs {
-		batch, err := knowledgeIngestBatchFromJob(job)
+		task, err := knowledgeIngestTaskFromJob(job)
 		if err != nil {
 			if finishErr := s.finishKnowledgeIngestJobPostgres(ctx, job.ID, "failed", CleanEmbeddingErrorMessage(err.Error())); finishErr != nil {
 				return nil, errors.Join(err, finishErr)
 			}
 			continue
 		}
-		claims = append(claims, KnowledgeIngestClaim{JobID: job.ID, Batch: batch})
+		claims = append(claims, KnowledgeIngestClaim{JobID: job.ID, Task: task})
 	}
 	return claims, nil
 }
 
-func (s *Store) commitKnowledgeIngestBatchPostgres(ctx context.Context, jobID, batchID string, facts []KnowledgeIngestFact) (int, error) {
-	if err := ValidateID("knowledge_ingest_job_id", jobID); err != nil {
-		return 0, err
-	}
-	if err := ValidateID("knowledge_ingest_batch_id", batchID); err != nil {
-		return 0, err
-	}
-	if len(facts) == 0 || len(facts) > maxKnowledgeIngestFacts {
-		return 0, errors.New("knowledge ingest fact count is invalid")
-	}
-	queryCtx, cancel := s.pool.QueryContext(ctx)
-	defer cancel()
-
-	job, err := loadOwnedKnowledgeIngestJob(queryCtx, s.pool.Raw(), jobID, s.workerID, false)
-	if err != nil {
-		return 0, err
-	}
-	batch, err := knowledgeIngestBatchFromJob(job)
-	if err != nil {
-		return 0, err
-	}
-	if batch.ID != batchID {
-		return 0, errors.New("knowledge ingest batch does not match claimed job")
-	}
-	sourceByID := make(map[string]KnowledgeIngestSource, len(batch.Sources))
-	for _, source := range batch.Sources {
-		sourceByID[source.ID] = source
-	}
-	prepared := make([]preparedKnowledgeIngestFact, len(facts))
-	contents := make([]string, len(facts))
-	seenStatements := make(map[string]struct{}, len(facts))
-	for index, fact := range facts {
-		fact.Topic = strings.TrimSpace(fact.Topic)
-		fact.Statement = strings.TrimSpace(fact.Statement)
-		if fact.Topic == "" || utf8.RuneCountInString(fact.Topic) > maxKnowledgeIngestTopicRunes {
-			return 0, fmt.Errorf("knowledge ingest fact[%d] topic is invalid", index)
-		}
-		statementRunes := utf8.RuneCountInString(fact.Statement)
-		if statementRunes < 8 || statementRunes > maxKnowledgeIngestStatementRunes {
-			return 0, fmt.Errorf("knowledge ingest fact[%d] statement is invalid", index)
-		}
-		if fact.ConfidenceBasisPoints == 0 || fact.ConfidenceBasisPoints > 10000 {
-			return 0, fmt.Errorf("knowledge ingest fact[%d] confidence is invalid", index)
-		}
-		if _, duplicate := seenStatements[fact.Statement]; duplicate {
-			return 0, errors.New("knowledge ingest statements are duplicated")
-		}
-		seenStatements[fact.Statement] = struct{}{}
-		if len(fact.SourceHitIDs) == 0 || len(fact.SourceHitIDs) > MaxKnowledgeIngestSources {
-			return 0, fmt.Errorf("knowledge ingest fact[%d] source count is invalid", index)
-		}
-		seenSourceIDs := make(map[string]struct{}, len(fact.SourceHitIDs))
-		for _, sourceID := range fact.SourceHitIDs {
-			if _, exists := sourceByID[sourceID]; !exists {
-				return 0, fmt.Errorf("knowledge ingest fact[%d] references an unknown source", index)
-			}
-			if _, duplicate := seenSourceIDs[sourceID]; duplicate {
-				return 0, fmt.Errorf("knowledge ingest fact[%d] source is duplicated", index)
-			}
-			seenSourceIDs[sourceID] = struct{}{}
-		}
-		fact.SourceHitIDs = append([]string(nil), fact.SourceHitIDs...)
-		prepared[index].fact = fact
-		contents[index] = fact.Topic + "\n" + fact.Statement
-	}
-	embeddings, err := embeddingsForContents(s.semanticEmbedder, contents)
-	if err != nil {
-		return 0, err
-	}
-	for index := range prepared {
-		prepared[index].embedding = embeddings[index]
-	}
-	sort.Slice(prepared, func(left, right int) bool {
-		return prepared[left].fact.Statement < prepared[right].fact.Statement
-	})
-
-	tx, err := s.pool.Raw().Begin(queryCtx)
-	if err != nil {
-		return 0, fmt.Errorf("beginning knowledge ingest commit transaction: %w", err)
-	}
-	defer tx.Rollback(queryCtx)
-	lockedJob, err := loadOwnedKnowledgeIngestJob(queryCtx, tx, jobID, s.workerID, true)
-	if err != nil {
-		return 0, err
-	}
-	lockedBatch, err := knowledgeIngestBatchFromJob(lockedJob)
-	if err != nil {
-		return 0, err
-	}
-	if lockedBatch.ID != batchID ||
-		lockedBatch.ConversationID != batch.ConversationID ||
-		lockedBatch.TurnID != batch.TurnID {
-		return 0, errors.New("knowledge ingest batch changed before commit")
-	}
-	lockedSourceByID := make(map[string]KnowledgeIngestSource, len(lockedBatch.Sources))
-	for _, source := range lockedBatch.Sources {
-		lockedSourceByID[source.ID] = source
-	}
-	if len(lockedSourceByID) != len(sourceByID) {
-		return 0, errors.New("knowledge ingest batch sources changed before commit")
-	}
-	for sourceID, source := range sourceByID {
-		if lockedSource, exists := lockedSourceByID[sourceID]; !exists || lockedSource != source {
-			return 0, errors.New("knowledge ingest batch sources changed before commit")
-		}
-	}
-	sourceByID = lockedSourceByID
-	for index, item := range prepared {
-		for _, sourceID := range item.fact.SourceHitIDs {
-			if _, exists := sourceByID[sourceID]; !exists {
-				return 0, fmt.Errorf("knowledge ingest fact[%d] source changed before commit", index)
-			}
-		}
-	}
-	now := nowUnixMS()
-	for index, item := range prepared {
-		if _, err := tx.Exec(queryCtx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", item.fact.Statement); err != nil {
-			return 0, fmt.Errorf("locking knowledge statement[%d]: %w", index, err)
-		}
-		knowledgeID, found, err := FindVerifiedKnowledgeIDByStatement(queryCtx, tx, item.fact.Statement)
-		if err != nil {
-			return 0, err
-		}
-		if !found {
-			knowledgeID = newID()
-			if err := InsertVerifiedKnowledgeEntry(
-				queryCtx, tx, knowledgeID, item.fact.Topic, item.fact.Statement,
-				lockedBatch.ConversationID, lockedBatch.TurnID,
-				item.fact.ConfidenceBasisPoints, now, item.embedding,
-			); err != nil {
-				return 0, fmt.Errorf("inserting knowledge fact[%d]: %w", index, err)
-			}
-		}
-		for sourceIndex, sourceID := range item.fact.SourceHitIDs {
-			source := sourceByID[sourceID]
-			if err := InsertCanonicalKnowledgeSource(queryCtx, tx, knowledgeID, newID(), AssistantSource{
-				Title: source.Title, URL: source.URL, Snippet: source.Snippet,
-				Rank: source.Rank, FetchedAtUnixMS: source.FetchedAtUnixMS,
-			}); err != nil {
-				return 0, fmt.Errorf("merging knowledge fact[%d] source[%d]: %w", index, sourceIndex, err)
-			}
-		}
-	}
-	if err := FinishKnowledgeIngestJob(queryCtx, tx, jobID, s.workerID, "succeeded", "", now); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(queryCtx); err != nil {
-		return 0, fmt.Errorf("committing knowledge ingest batch: %w", err)
-	}
-	return len(prepared), nil
-}
-
 func loadOwnedKnowledgeIngestJob(ctx context.Context, db ConversationDB, jobID, workerID string, forUpdate bool) (KnowledgeIngestJob, error) {
 	query := `
-SELECT id, conversation_id, turn_id, query, title, url, snippet,
-       rank, fetched_at_ms, batch_id, sources_json
+SELECT id, conversation_id, turn_id, task_id, source_json
 FROM knowledge_ingest_jobs
 WHERE id = $1 AND status = 'running' AND lease_owner = $2`
 	if forUpdate {
 		query += " FOR UPDATE"
 	}
 	var job KnowledgeIngestJob
-	var rank int
 	if err := db.QueryRow(ctx, query, jobID, workerID).Scan(
-		&job.ID, &job.ConversationID, &job.TurnID, &job.Query,
-		&job.Title, &job.URL, &job.Snippet, &rank, &job.FetchedAt,
-		&job.BatchID, &job.SourcesJSON,
+		&job.ID, &job.ConversationID, &job.TurnID,
+		&job.TaskID, &job.SourceJSON,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return KnowledgeIngestJob{}, errors.New("knowledge ingest job is not owned by this worker")
 		}
 		return KnowledgeIngestJob{}, fmt.Errorf("loading claimed knowledge ingest job: %w", err)
 	}
-	if rank < 0 || rank > 255 || job.BatchID == "" && (rank < 1 || rank > 5) {
-		return KnowledgeIngestJob{}, errors.New("claimed knowledge ingest rank is invalid")
-	}
-	job.Rank = uint8(rank)
 	return job, nil
 }
 
-func knowledgeIngestBatchFromJob(job KnowledgeIngestJob) (KnowledgeIngestBatch, error) {
-	batchID := job.BatchID
-	sources := make([]KnowledgeIngestSource, 0, MaxKnowledgeIngestSources)
-	if batchID == "" {
-		batchID = "legacy-" + job.ID
-		sources = append(sources, KnowledgeIngestSource{
-			ID: "legacy-source-" + job.ID, Title: job.Title, URL: job.URL, Snippet: job.Snippet,
-			Rank: job.Rank, FetchedAtUnixMS: job.FetchedAt,
-		})
-	} else {
-		decoder := json.NewDecoder(strings.NewReader(string(job.SourcesJSON)))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&sources); err != nil {
-			return KnowledgeIngestBatch{}, errors.New("knowledge ingest sources JSON is invalid")
-		}
+func knowledgeIngestTaskFromJob(job KnowledgeIngestJob) (KnowledgeIngestTask, error) {
+	var source KnowledgeIngestSource
+	if job.TaskID == "" {
+		return KnowledgeIngestTask{}, errors.New("knowledge ingest task ID is required")
 	}
-	batch := KnowledgeIngestBatch{
-		ID: batchID, ConversationID: job.ConversationID, TurnID: job.TurnID,
-		Sources: sources,
+	decoder := json.NewDecoder(strings.NewReader(strings.TrimSpace(string(job.SourceJSON))))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&source); err != nil {
+		return KnowledgeIngestTask{}, errors.New("knowledge ingest source JSON is invalid")
 	}
-	if job.BatchID != "" {
-		if _, err := validateKnowledgeIngestBatch(batch); err != nil {
-			return KnowledgeIngestBatch{}, err
-		}
+	task := KnowledgeIngestTask{
+		ID: job.TaskID, ConversationID: job.ConversationID, TurnID: job.TurnID,
+		Source: source,
 	}
-	return batch, nil
-}
-
-func (s *Store) processKnowledgeIngestJobsPostgres(ctx context.Context, limit int) (int, error) {
-	if limit < 1 || limit > MaxKnowledgeIngestJobsPerPass {
-		return 0, fmt.Errorf("knowledge ingest job limit must be between 1 and %d", MaxKnowledgeIngestJobsPerPass)
+	if _, err := validateKnowledgeIngestTask(task); err != nil {
+		return KnowledgeIngestTask{}, err
 	}
-	queryCtx, cancel := s.pool.QueryContext(ctx)
-	defer cancel()
-	now := nowUnixMS()
-	jobs, err := ClaimLegacyKnowledgeIngestJobs(
-		queryCtx, s.pool.Raw(), limit, now, s.workerID,
-		now+s.jobLeaseDuration.Milliseconds(),
-	)
-	if err != nil {
-		return 0, err
-	}
-	written := 0
-	for _, job := range jobs {
-		topic := strings.TrimSpace(job.Title)
-		if topic == "" {
-			topic = strings.TrimSpace(job.Query)
-		}
-		statement := strings.TrimSpace(job.Snippet)
-		if statement == "" {
-			statement = topic
-		}
-		if !acceptKnowledgeIngest(topic, statement, job.URL, job.Rank) {
-			if err := s.finishKnowledgeIngestJobPostgres(ctx, job.ID, "dropped", ""); err != nil {
-				return written, err
-			}
-			continue
-		}
-		_, err := s.InsertVerifiedKnowledgeContext(ctx, topic, statement, job.ConversationID, job.TurnID, 7000, []AssistantSource{{Title: job.Title, URL: job.URL, Snippet: job.Snippet, Rank: job.Rank, FetchedAtUnixMS: job.FetchedAt}})
-		if err != nil {
-			if finishErr := s.finishKnowledgeIngestJobPostgres(ctx, job.ID, "failed", CleanEmbeddingErrorMessage(err.Error())); finishErr != nil {
-				return written, finishErr
-			}
-			continue
-		}
-		if err := s.finishKnowledgeIngestJobPostgres(ctx, job.ID, "succeeded", ""); err != nil {
-			return written, err
-		}
-		written++
-	}
-	return written, nil
+	return task, nil
 }
 
 func (s *Store) claimKnowledgeIngestJobsPostgres(ctx context.Context, limit int, now int64) ([]KnowledgeIngestJob, error) {

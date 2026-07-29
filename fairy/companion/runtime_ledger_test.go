@@ -57,24 +57,23 @@ func TestRuntimeBeatDeliveryLedgerMetadataContainsOnlyDiagnostics(t *testing.T) 
 	}
 }
 
-func TestKnowledgeIngestLedgerMetadataDoesNotContainBatchContent(t *testing.T) {
+func TestKnowledgeIngestLedgerMetadataContainsOnlyHashedTaskIdentity(t *testing.T) {
 	metadata := runtimeKnowledgeIngestLedgerMetadata(
 		[]model.StreamEvent{{Type: "text_delta", Data: "secret statement"}},
-		[]LaneModelUsage{{Lane: string(model.PromptLaneKnowledgeIngest)}},
-		"secret-batch-id",
-		3,
+		[]LaneModelUsage{{Lane: string(model.PromptLaneKnowledgeReconcile)}},
+		"secret-task-id",
 	)
 	raw, err := json.Marshal(metadata)
 	if err != nil {
 		t.Fatal(err)
 	}
 	wire := string(raw)
-	for _, required := range []string{`"status":"knowledge_ingest"`, `"batchIdHash":`, `"sourceCount":3`} {
+	for _, required := range []string{`"status":"knowledge_ingest"`, `"taskIdHash":`} {
 		if !strings.Contains(wire, required) {
 			t.Fatalf("metadata missing %s: %s", required, wire)
 		}
 	}
-	for _, forbidden := range []string{"secret statement", "secret-batch-id", "https://source.example", "snippet", "query"} {
+	for _, forbidden := range []string{"secret statement", "secret-task-id", "batchIdHash", "sourceCount", "https://source.example", "snippet", "query"} {
 		if strings.Contains(wire, forbidden) {
 			t.Fatalf("metadata leaked %q: %s", forbidden, wire)
 		}

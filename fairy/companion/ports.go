@@ -2,6 +2,7 @@ package companion
 
 import (
 	"context"
+	"time"
 
 	"fairy/character"
 	"fairy/config"
@@ -79,14 +80,20 @@ type extractionStore interface {
 
 // knowledgeIngestStore owns the independent verified-knowledge ingest queue.
 type knowledgeIngestStore interface {
-	EnqueueKnowledgeIngestBatches(batches []memory.KnowledgeIngestBatch) error
-	ClaimKnowledgeIngestBatches(limit int) ([]memory.KnowledgeIngestClaim, error)
-	KnowledgeDocumentsNeedExtraction(jobID, batchID string, documents []memory.KnowledgeDocument) (bool, error)
-	RecallKnowledgeForIngest(fact memory.KnowledgeIngestFact, limit int) ([]memory.RetrievedKnowledge, error)
-	CommitKnowledgeDocumentMutations(jobID, batchID string, documents []memory.KnowledgeDocument, facts []memory.KnowledgeIngestFact, recalls []memory.KnowledgeIngestRecall, mutations []memory.KnowledgeIngestMutation) (int, error)
-	FailKnowledgeIngestBatch(jobID, message string) error
-	RetryKnowledgeIngestBatch(jobID, category, message string) error
-	DropKnowledgeIngestBatch(jobID, message string) error
+	EnqueueKnowledgeIngestTasks(tasks []memory.KnowledgeIngestTask) error
+	ClaimKnowledgeIngestTasksContext(context.Context, int) ([]memory.KnowledgeIngestClaim, error)
+	KnowledgeDocumentNeedsExtractionContext(context.Context, string, string, memory.KnowledgeDocument) (bool, error)
+	SearchKnowledgeForIngestContext(context.Context, string, int) ([]memory.RetrievedKnowledge, error)
+	CommitKnowledgeDocumentActionsContext(context.Context, string, string, memory.KnowledgeDocument, []string, []memory.KnowledgeDocumentAction) (int, error)
+	FailClaimedKnowledgeIngestJob(jobID, message string) error
+	RetryClaimedKnowledgeIngestJob(jobID, category, message string) error
+	DropClaimedKnowledgeIngestJob(jobID, message string) error
+}
+
+type knowledgeIngestLeaseStore interface {
+	KnowledgeIngestLeaseDuration() time.Duration
+	RenewKnowledgeIngestLeaseContext(context.Context, string) error
+	ReleaseClaimedKnowledgeIngestJob(jobID string) error
 }
 
 // SocialContextStore reads public feedback and person-note context.
@@ -120,8 +127,9 @@ type ambientMemoryPorts struct {
 }
 
 type retentionMemoryPorts struct {
-	extraction extractionStore
-	knowledge  knowledgeIngestStore
+	extraction     extractionStore
+	knowledge      knowledgeIngestStore
+	knowledgeLease knowledgeIngestLeaseStore
 }
 
 type memoryPorts struct {
@@ -150,7 +158,7 @@ func memoryPortsFromStore(store *memory.Store) memoryPorts {
 			socialContext:   store,
 			socialLearning:  store,
 		},
-		retention: retentionMemoryPorts{extraction: store, knowledge: store},
+		retention: retentionMemoryPorts{extraction: store, knowledge: store, knowledgeLease: store},
 	}
 }
 
@@ -167,7 +175,8 @@ func (p memoryPorts) ready() bool {
 		p.ambient.socialContext != nil &&
 		p.ambient.socialLearning != nil &&
 		p.retention.extraction != nil &&
-		p.retention.knowledge != nil
+		p.retention.knowledge != nil &&
+		p.retention.knowledgeLease != nil
 }
 
 type OwnerIdentityPort interface {
@@ -220,6 +229,7 @@ var (
 	_ RuntimeStateStore         = (*memory.Store)(nil)
 	_ extractionStore           = (*memory.Store)(nil)
 	_ knowledgeIngestStore      = (*memory.Store)(nil)
+	_ knowledgeIngestLeaseStore = (*memory.Store)(nil)
 	_ SocialContextStore        = (*memory.Store)(nil)
 	_ SocialLearningStore       = (*memory.Store)(nil)
 	_ ModelPort                 = (*model.ModelService)(nil)

@@ -25,7 +25,6 @@ type agentLoopState struct {
 	events              []model.StreamEvent
 	fullRequest         model.CompiledPromptRequest
 	finalUsage          []LaneModelUsage
-	ingestBatches       []webSearchBatch
 	modelDrivenTools    int
 	modelCallAttempts   int
 	replyCompileRetries int

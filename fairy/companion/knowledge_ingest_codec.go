@@ -2,10 +2,12 @@ package companion
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -14,274 +16,419 @@ import (
 )
 
 const (
-	maxKnowledgeIngestFacts          = 8
-	maxKnowledgeIngestSubjectRunes   = 300
-	maxKnowledgeIngestPredicateRunes = 160
-	maxKnowledgeIngestValueRunes     = 600
-	maxKnowledgeIngestStatementRunes = 1200
+	knowledgeSearchToolName              = "knowledge_search"
+	maxKnowledgeAgentActions             = 8
+	maxKnowledgeAgentToolCalls           = 8
+	maxKnowledgeSearchQueryRunes         = 1200
+	minKnowledgeSearchQueryRunes         = 8
+	maxKnowledgeActionContentRunes       = 2400
+	minKnowledgeActionContentRunes       = 8
+	minKnowledgeActionEvidenceRunes      = 8
+	maxKnowledgeActionEvidenceRunes      = 1200
+	knowledgeAgentInputBudgetPercent     = 60
+	knowledgeAgentPromptReserveTokens    = 1024
+	knowledgeAgentMinimumContextTokens   = 4096
+	knowledgeAgentMaximumCallsPerRound   = 8
+	knowledgeAgentMaximumCandidateResult = memory.MaxKnowledgeSearchCandidates
+	knowledgeAgentContractRevision       = "whole-document-task-actions-v2"
 )
 
-type knowledgeIngestFact struct {
-	Subject               string   `json:"subject"`
-	Predicate             string   `json:"predicate"`
-	Value                 string   `json:"value"`
-	Statement             string   `json:"statement"`
-	ConfidenceBasisPoints uint16   `json:"confidenceBasisPoints"`
-	EvidenceChunkIDs      []string `json:"evidenceChunkIDs"`
+var knowledgeSearchToolParameters = json.RawMessage(`{
+  "type":"object",
+  "additionalProperties":false,
+  "properties":{"query":{"type":"string","minLength":8,"maxLength":1200}},
+  "required":["query"]
+}`)
+
+func knowledgeReconcilerRevision(instructions, contractRevision string) string {
+	material := instructions + "\x00" + contractRevision
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(material)))
 }
 
-type knowledgeIngestOutput struct {
-	Facts []knowledgeIngestFact `json:"facts"`
-}
-
-type knowledgeIngestPromptChunk struct {
-	ID      string `json:"id"`
-	Ordinal int    `json:"ordinal"`
-	Text    string `json:"text"`
-}
-
-type knowledgeIngestPromptDocument struct {
-	SourceID     string                       `json:"sourceId"`
-	CanonicalURL string                       `json:"canonicalUrl"`
-	Title        string                       `json:"title"`
-	Chunks       []knowledgeIngestPromptChunk `json:"chunks"`
-}
-
-type knowledgeIngestPromptBatch struct {
-	BatchID   string                          `json:"batchId"`
-	Documents []knowledgeIngestPromptDocument `json:"documents"`
-}
-
-func buildKnowledgeIngestInput(batch memory.KnowledgeIngestBatch, documents []memory.KnowledgeDocument) ([]model.PromptItem, error) {
-	if batch.ID == "" || len(documents) == 0 || len(documents) > memory.MaxKnowledgeIngestSources {
-		return nil, errors.New("knowledge ingest batch is invalid")
+func knowledgeSearchToolSpec() model.ToolSpec {
+	return model.ToolSpec{
+		Name:        knowledgeSearchToolName,
+		Description: "Search only existing verified public knowledge before deciding whether the current complete document should ADD, UPDATE, DELETE, or keep it unchanged. Use a self-contained query describing the knowledge to compare.",
+		Parameters:  append(json.RawMessage(nil), knowledgeSearchToolParameters...),
 	}
-	promptDocuments := make([]knowledgeIngestPromptDocument, 0, len(documents))
-	for _, document := range documents {
-		chunks := make([]knowledgeIngestPromptChunk, 0, len(document.Chunks))
-		for _, chunk := range document.Chunks {
-			chunks = append(chunks, knowledgeIngestPromptChunk{ID: chunk.ID, Ordinal: chunk.Ordinal, Text: chunk.Text})
-		}
-		promptDocuments = append(promptDocuments, knowledgeIngestPromptDocument{
-			SourceID: document.SourceID, CanonicalURL: document.CanonicalURL,
-			Title: document.Title, Chunks: chunks,
-		})
+}
+
+type knowledgeAgentPromptDocument struct {
+	SourceID     string `json:"sourceId"`
+	CanonicalURL string `json:"canonicalUrl"`
+	Title        string `json:"title"`
+	Content      string `json:"content"`
+}
+
+type knowledgeAgentPromptPayload struct {
+	TaskID   string                       `json:"taskId"`
+	Document knowledgeAgentPromptDocument `json:"document"`
+}
+
+func buildKnowledgeAgentInput(task memory.KnowledgeIngestTask, document memory.KnowledgeDocument) ([]model.PromptItem, error) {
+	if task.ID == "" || document.SourceID != task.Source.ID ||
+		document.CanonicalURL != task.Source.URL || strings.TrimSpace(document.Content) != document.Content ||
+		document.Content == "" || memory.ContainsDisallowedControl(document.Content) {
+		return nil, errors.New("knowledge agent document input is invalid")
 	}
 	payload, err := json.Marshal(struct {
-		FairyContextData knowledgeIngestPromptBatch `json:"fairy_context_data"`
+		FairyContextData knowledgeAgentPromptPayload `json:"fairy_context_data"`
 	}{
-		FairyContextData: knowledgeIngestPromptBatch{
-			BatchID: batch.ID, Documents: promptDocuments,
+		FairyContextData: knowledgeAgentPromptPayload{
+			TaskID: task.ID,
+			Document: knowledgeAgentPromptDocument{
+				SourceID: document.SourceID, CanonicalURL: document.CanonicalURL,
+				Title: document.Title, Content: document.Content,
+			},
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("serializing knowledge ingest batch: %w", err)
+		return nil, fmt.Errorf("serializing knowledge agent document: %w", err)
 	}
 	return []model.PromptItem{{Type: model.PromptItemContextData, Content: string(payload)}}, nil
 }
 
-func parseKnowledgeIngestOutput(raw string, documents []memory.KnowledgeDocument) (knowledgeIngestOutput, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return knowledgeIngestOutput{}, errors.New("knowledge ingest model returned empty output")
+func validateInitialKnowledgeAgentBudget(document memory.KnowledgeDocument, contextWindowTokens uint64, outputTokens uint32) error {
+	if contextWindowTokens < knowledgeAgentMinimumContextTokens {
+		return errors.New("knowledge agent model context window is too small")
 	}
-	decoder := json.NewDecoder(bytes.NewReader([]byte(trimmed)))
-	decoder.DisallowUnknownFields()
-	var output knowledgeIngestOutput
-	if err := decoder.Decode(&output); err != nil {
-		return knowledgeIngestOutput{}, errors.New("knowledge ingest model did not return strict JSON")
+	estimated := estimateKnowledgeTokens(document.Content)
+	available := contextWindowTokens - uint64(outputTokens)
+	if available <= knowledgeAgentPromptReserveTokens {
+		return errors.New("knowledge agent model context window has no input budget")
 	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return knowledgeIngestOutput{}, errors.New("knowledge ingest model returned trailing content")
+	available -= knowledgeAgentPromptReserveTokens
+	if estimated > available*knowledgeAgentInputBudgetPercent/100 {
+		return fmt.Errorf("complete knowledge document exceeds model context budget: estimated=%d available=%d", estimated, available)
 	}
-	if output.Facts == nil {
-		return knowledgeIngestOutput{}, errors.New("knowledge ingest facts are required")
-	}
-	if len(output.Facts) > maxKnowledgeIngestFacts {
-		return knowledgeIngestOutput{}, errors.New("knowledge ingest fact limit exceeded")
-	}
-	allowedChunks := make(map[string]struct{})
-	for _, document := range documents {
-		for _, chunk := range document.Chunks {
-			allowedChunks[chunk.ID] = struct{}{}
-		}
-	}
-	for index := range output.Facts {
-		fact := &output.Facts[index]
-		if strings.TrimSpace(fact.Subject) != fact.Subject || fact.Subject == "" || utf8.RuneCountInString(fact.Subject) > maxKnowledgeIngestSubjectRunes {
-			return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] subject is invalid", index)
-		}
-		if strings.TrimSpace(fact.Predicate) != fact.Predicate || fact.Predicate == "" || utf8.RuneCountInString(fact.Predicate) > maxKnowledgeIngestPredicateRunes {
-			return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] predicate is invalid", index)
-		}
-		if strings.TrimSpace(fact.Value) != fact.Value || fact.Value == "" || utf8.RuneCountInString(fact.Value) > maxKnowledgeIngestValueRunes {
-			return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] value is invalid", index)
-		}
-		if strings.TrimSpace(fact.Statement) != fact.Statement || utf8.RuneCountInString(fact.Statement) < 8 || utf8.RuneCountInString(fact.Statement) > maxKnowledgeIngestStatementRunes {
-			return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] statement is invalid", index)
-		}
-		if fact.ConfidenceBasisPoints == 0 || fact.ConfidenceBasisPoints > 10000 {
-			return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] confidence is invalid", index)
-		}
-		if len(fact.EvidenceChunkIDs) == 0 || len(fact.EvidenceChunkIDs) > knowledgeMaxChunksPerBatch {
-			return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] evidence is invalid", index)
-		}
-		seenEvidence := make(map[string]struct{}, len(fact.EvidenceChunkIDs))
-		for _, chunkID := range fact.EvidenceChunkIDs {
-			if _, ok := allowedChunks[chunkID]; !ok {
-				return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] references an unknown chunk", index)
-			}
-			if _, duplicate := seenEvidence[chunkID]; duplicate {
-				return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] repeats evidence", index)
-			}
-			seenEvidence[chunkID] = struct{}{}
-		}
-	}
-	return output, nil
+	return nil
 }
 
-type knowledgeReconcilePromptCandidate struct {
+func validateKnowledgeAgentPromptBudget(items []model.PromptItem, instructions string, contextWindowTokens uint64, outputTokens uint32) error {
+	if contextWindowTokens < knowledgeAgentMinimumContextTokens {
+		return errors.New("knowledge agent model context window is too small")
+	}
+	var builder strings.Builder
+	builder.WriteString(instructions)
+	for _, item := range items {
+		builder.WriteString(item.Content)
+		builder.WriteString(item.ToolCallID)
+		builder.WriteString(item.ToolName)
+		builder.WriteString(item.ToolArguments)
+		if item.Parts != nil {
+			for _, part := range *item.Parts {
+				builder.WriteString(part.Text)
+			}
+		}
+	}
+	estimated := estimateKnowledgeTokens(builder.String())
+	available := contextWindowTokens - uint64(outputTokens)
+	if available <= knowledgeAgentPromptReserveTokens || estimated > available-knowledgeAgentPromptReserveTokens {
+		return fmt.Errorf("knowledge agent prompt exceeds model context budget: estimated=%d available=%d", estimated, available)
+	}
+	return nil
+}
+
+func estimateKnowledgeTokens(value string) uint64 {
+	runes := utf8.RuneCountInString(value)
+	bytesEstimate := len(value) / 4
+	if bytesEstimate > runes {
+		runes = bytesEstimate
+	}
+	return uint64(runes)
+}
+
+type knowledgeSearchArguments struct {
+	Query string `json:"query"`
+}
+
+func parseKnowledgeSearchArguments(raw string) (string, error) {
+	var arguments knowledgeSearchArguments
+	if err := decodeStrictKnowledgeJSON(raw, &arguments); err != nil {
+		return "", errors.New("knowledge search arguments are not strict JSON")
+	}
+	if strings.TrimSpace(arguments.Query) != arguments.Query ||
+		utf8.RuneCountInString(arguments.Query) < minKnowledgeSearchQueryRunes ||
+		utf8.RuneCountInString(arguments.Query) > maxKnowledgeSearchQueryRunes ||
+		memory.ContainsDisallowedControl(arguments.Query) {
+		return "", errors.New("knowledge search query is invalid")
+	}
+	return arguments.Query, nil
+}
+
+type knowledgeAliasSet struct {
+	realToAlias map[string]string
+	aliasToReal map[string]string
+}
+
+func newKnowledgeAliasSet() *knowledgeAliasSet {
+	return &knowledgeAliasSet{
+		realToAlias: make(map[string]string),
+		aliasToReal: make(map[string]string),
+	}
+}
+
+func (s *knowledgeAliasSet) aliasFor(realID string) (string, error) {
+	if s == nil {
+		return "", errors.New("knowledge alias set is unavailable")
+	}
+	if alias := s.realToAlias[realID]; alias != "" {
+		return alias, nil
+	}
+	if err := memory.ValidateID("knowledge_id", realID); err != nil {
+		return "", err
+	}
+	alias := fmt.Sprintf("k%d", len(s.realToAlias))
+	s.realToAlias[realID] = alias
+	s.aliasToReal[alias] = realID
+	return alias, nil
+}
+
+func (s *knowledgeAliasSet) realID(alias string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	realID, ok := s.aliasToReal[alias]
+	return realID, ok
+}
+
+func (s *knowledgeAliasSet) suppliedIDs() []string {
+	if s == nil {
+		return nil
+	}
+	out := make([]string, 0, len(s.aliasToReal))
+	for _, realID := range s.aliasToReal {
+		out = append(out, realID)
+	}
+	sort.Strings(out)
+	return out
+}
+
+type knowledgeSearchPromptCandidate struct {
 	ID                    string `json:"id"`
+	Topic                 string `json:"topic"`
 	Statement             string `json:"statement"`
 	ConfidenceBasisPoints uint16 `json:"confidenceBasisPoints"`
 	UpdatedAtUnixMS       int64  `json:"updatedAtUnixMs"`
 }
 
-type knowledgeReconcilePromptFact struct {
-	Index      int                                 `json:"index"`
-	Fact       knowledgeIngestFact                 `json:"fact"`
-	Candidates []knowledgeReconcilePromptCandidate `json:"candidates"`
-}
-
-type knowledgeReconcilePromptPayload struct {
-	BatchID string                         `json:"batchId"`
-	Facts   []knowledgeReconcilePromptFact `json:"facts"`
-}
-
-type knowledgeReconcileMutation struct {
-	FactIndex int    `json:"factIndex"`
-	Operation string `json:"operation"`
-	MemoryID  string `json:"memoryId,omitempty"`
-}
-
-type knowledgeReconcileOutput struct {
-	Mutations []knowledgeReconcileMutation `json:"mutations"`
-}
-
-func buildKnowledgeReconcileInput(batchID string, facts []memory.KnowledgeIngestFact, recalls []memory.KnowledgeIngestRecall) ([]model.PromptItem, []map[string]string, error) {
-	if batchID == "" || len(facts) == 0 || len(recalls) != len(facts) {
-		return nil, nil, errors.New("knowledge reconcile input is invalid")
+func buildKnowledgeSearchToolItems(call model.FunctionCall, candidates []memory.RetrievedKnowledge, aliases *knowledgeAliasSet) ([]model.PromptItem, error) {
+	if call.CallID == "" || call.Name != knowledgeSearchToolName ||
+		len(candidates) > knowledgeAgentMaximumCandidateResult {
+		return nil, errors.New("knowledge search tool result is invalid")
 	}
-	recallByFact := make(map[int]memory.KnowledgeIngestRecall, len(recalls))
-	for _, recall := range recalls {
-		if recall.FactIndex < 0 || recall.FactIndex >= len(facts) {
-			return nil, nil, errors.New("knowledge reconcile recall index is invalid")
+	projected := make([]knowledgeSearchPromptCandidate, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if _, duplicate := seen[candidate.ID]; duplicate {
+			return nil, errors.New("knowledge search candidate is duplicated")
 		}
-		if _, duplicate := recallByFact[recall.FactIndex]; duplicate {
-			return nil, nil, errors.New("knowledge reconcile recall index is duplicated")
+		seen[candidate.ID] = struct{}{}
+		if strings.TrimSpace(candidate.Statement) == "" {
+			return nil, errors.New("knowledge search candidate statement is invalid")
 		}
-		if len(recall.Candidates) > memory.MaxKnowledgeIngestRecallCandidates {
-			return nil, nil, errors.New("knowledge reconcile candidate limit exceeded")
+		alias, err := aliases.aliasFor(candidate.ID)
+		if err != nil {
+			return nil, err
 		}
-		recallByFact[recall.FactIndex] = recall
+		projected = append(projected, knowledgeSearchPromptCandidate{
+			ID: alias, Topic: candidate.Topic, Statement: candidate.Statement,
+			ConfidenceBasisPoints: candidate.ConfidenceBasisPoints,
+			UpdatedAtUnixMS:       candidate.UpdatedAtUnixMS,
+		})
 	}
-	promptFacts := make([]knowledgeReconcilePromptFact, len(facts))
-	aliases := make([]map[string]string, len(facts))
-	for index, fact := range facts {
-		recall, exists := recallByFact[index]
-		if !exists {
-			return nil, nil, errors.New("knowledge reconcile recall is missing")
-		}
-		aliases[index] = make(map[string]string, len(recall.Candidates))
-		candidates := make([]knowledgeReconcilePromptCandidate, 0, len(recall.Candidates))
-		seenIDs := make(map[string]struct{}, len(recall.Candidates))
-		for candidateIndex, candidate := range recall.Candidates {
-			if candidate.ID == "" || strings.TrimSpace(candidate.Statement) == "" {
-				return nil, nil, errors.New("knowledge reconcile candidate is invalid")
-			}
-			if _, duplicate := seenIDs[candidate.ID]; duplicate {
-				return nil, nil, errors.New("knowledge reconcile candidate is duplicated")
-			}
-			seenIDs[candidate.ID] = struct{}{}
-			alias := fmt.Sprintf("f%dm%d", index, candidateIndex)
-			aliases[index][alias] = candidate.ID
-			candidates = append(candidates, knowledgeReconcilePromptCandidate{
-				ID: alias, Statement: candidate.Statement,
-				ConfidenceBasisPoints: candidate.ConfidenceBasisPoints,
-				UpdatedAtUnixMS:       candidate.UpdatedAtUnixMS,
-			})
-		}
-		promptFacts[index] = knowledgeReconcilePromptFact{
-			Index: index,
-			Fact: knowledgeIngestFact{
-				Subject: fact.Subject, Predicate: fact.Predicate, Value: fact.Value,
-				Statement: fact.Statement, ConfidenceBasisPoints: fact.ConfidenceBasisPoints,
-				EvidenceChunkIDs: append([]string(nil), fact.EvidenceChunkIDs...),
-			},
-			Candidates: candidates,
-		}
-	}
-	payload, err := json.Marshal(struct {
-		FairyContextData knowledgeReconcilePromptPayload `json:"fairy_context_data"`
-	}{
-		FairyContextData: knowledgeReconcilePromptPayload{BatchID: batchID, Facts: promptFacts},
-	})
+	result, err := json.Marshal(struct {
+		Candidates []knowledgeSearchPromptCandidate `json:"candidates"`
+	}{Candidates: projected})
 	if err != nil {
-		return nil, nil, fmt.Errorf("serializing knowledge reconcile input: %w", err)
+		return nil, fmt.Errorf("serializing knowledge search result: %w", err)
 	}
-	return []model.PromptItem{{Type: model.PromptItemContextData, Content: string(payload)}}, aliases, nil
+	parts := model.PromptContentParts{{Type: model.PromptContentText, Text: string(result)}}
+	return []model.PromptItem{
+		{
+			Type: model.PromptItemToolCall, ToolCallID: call.CallID,
+			ToolName: call.Name, ToolArguments: call.Arguments,
+		},
+		{Type: model.PromptItemToolResult, ToolCallID: call.CallID, Parts: &parts},
+	}, nil
 }
 
-func parseKnowledgeReconcileOutput(raw string, facts []memory.KnowledgeIngestFact, aliases []map[string]string) ([]memory.KnowledgeIngestMutation, error) {
+type knowledgeAgentAction struct {
+	Operation             string  `json:"operation"`
+	MemoryID              *string `json:"memoryId,omitempty"`
+	Content               *string `json:"content,omitempty"`
+	ConfidenceBasisPoints *uint16 `json:"confidenceBasisPoints,omitempty"`
+	Evidence              string  `json:"evidence"`
+}
+
+type knowledgeAgentOutput struct {
+	Actions []knowledgeAgentAction `json:"actions"`
+}
+
+func parseKnowledgeAgentOutput(raw string, document memory.KnowledgeDocument, aliases *knowledgeAliasSet) ([]memory.KnowledgeDocumentAction, error) {
+	var output knowledgeAgentOutput
+	if err := decodeStrictKnowledgeJSON(raw, &output); err != nil {
+		return nil, errors.New("knowledge agent did not return strict JSON")
+	}
+	if output.Actions == nil {
+		return nil, errors.New("knowledge agent actions are required")
+	}
+	if len(output.Actions) > maxKnowledgeAgentActions {
+		return nil, errors.New("knowledge agent action limit exceeded")
+	}
+	actions := make([]memory.KnowledgeDocumentAction, 0, len(output.Actions))
+	seenTargets := make(map[string]struct{})
+	seenContents := make(map[string]struct{})
+	for index, action := range output.Actions {
+		if strings.TrimSpace(action.Evidence) != action.Evidence || action.Evidence == "" ||
+			utf8.RuneCountInString(action.Evidence) < minKnowledgeActionEvidenceRunes ||
+			utf8.RuneCountInString(action.Evidence) > maxKnowledgeActionEvidenceRunes ||
+			memory.ContainsDisallowedControl(action.Evidence) ||
+			!strings.Contains(document.Content, action.Evidence) {
+			return nil, fmt.Errorf("knowledge action[%d] evidence is invalid", index)
+		}
+		operation := memory.KnowledgeMutationOperation(action.Operation)
+		item := memory.KnowledgeDocumentAction{Operation: operation, Evidence: action.Evidence}
+		switch operation {
+		case memory.KnowledgeMutationAdd:
+			if action.MemoryID != nil || action.Content == nil || action.ConfidenceBasisPoints == nil {
+				return nil, fmt.Errorf("knowledge action[%d] ADD fields are invalid", index)
+			}
+		case memory.KnowledgeMutationUpdate:
+			if action.MemoryID == nil || action.Content == nil || action.ConfidenceBasisPoints == nil {
+				return nil, fmt.Errorf("knowledge action[%d] UPDATE fields are invalid", index)
+			}
+			realID, ok := aliases.realID(*action.MemoryID)
+			if !ok {
+				return nil, fmt.Errorf("knowledge action[%d] UPDATE fields are invalid", index)
+			}
+			item.MemoryID = realID
+		case memory.KnowledgeMutationDelete, memory.KnowledgeMutationNone:
+			if action.MemoryID == nil || action.Content != nil || action.ConfidenceBasisPoints != nil {
+				return nil, fmt.Errorf("knowledge action[%d] target fields are invalid", index)
+			}
+			realID, ok := aliases.realID(*action.MemoryID)
+			if !ok {
+				return nil, fmt.Errorf("knowledge action[%d] target fields are invalid", index)
+			}
+			item.MemoryID = realID
+		default:
+			return nil, fmt.Errorf("knowledge action[%d] operation is invalid", index)
+		}
+		if item.MemoryID != "" {
+			if _, duplicate := seenTargets[item.MemoryID]; duplicate {
+				return nil, errors.New("knowledge action target is duplicated")
+			}
+			seenTargets[item.MemoryID] = struct{}{}
+		}
+		if operation == memory.KnowledgeMutationAdd || operation == memory.KnowledgeMutationUpdate {
+			content := *action.Content
+			if strings.TrimSpace(content) != content ||
+				utf8.RuneCountInString(content) < minKnowledgeActionContentRunes ||
+				utf8.RuneCountInString(content) > maxKnowledgeActionContentRunes ||
+				memory.ContainsDisallowedControl(content) ||
+				action.ConfidenceBasisPoints == nil || *action.ConfidenceBasisPoints == 0 ||
+				*action.ConfidenceBasisPoints > 10000 {
+				return nil, fmt.Errorf("knowledge action[%d] content is invalid", index)
+			}
+			if _, duplicate := seenContents[content]; duplicate {
+				return nil, errors.New("knowledge action content is duplicated")
+			}
+			seenContents[content] = struct{}{}
+			item.Content = content
+			item.ConfidenceBasisPoints = *action.ConfidenceBasisPoints
+		}
+		actions = append(actions, item)
+	}
+	return actions, nil
+}
+
+func decodeStrictKnowledgeJSON(raw string, target any) error {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return nil, errors.New("knowledge reconcile model returned empty output")
+		return errors.New("JSON is empty")
+	}
+	if err := rejectDuplicateKnowledgeJSONFields(trimmed); err != nil {
+		return err
 	}
 	decoder := json.NewDecoder(bytes.NewReader([]byte(trimmed)))
 	decoder.DisallowUnknownFields()
-	var output knowledgeReconcileOutput
-	if err := decoder.Decode(&output); err != nil {
-		return nil, errors.New("knowledge reconcile model did not return strict JSON")
+	if err := decoder.Decode(target); err != nil {
+		return err
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return nil, errors.New("knowledge reconcile model returned trailing content")
+		return errors.New("JSON has trailing content")
 	}
-	if output.Mutations == nil || len(output.Mutations) != len(facts) || len(aliases) != len(facts) {
-		return nil, errors.New("knowledge reconcile must return one mutation per fact")
+	return nil
+}
+
+func rejectDuplicateKnowledgeJSONFields(raw string) error {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	if err := walkKnowledgeJSONValue(decoder); err != nil {
+		return err
 	}
-	mutations := make([]memory.KnowledgeIngestMutation, len(facts))
-	seen := make(map[int]struct{}, len(facts))
-	for _, mutation := range output.Mutations {
-		if mutation.FactIndex < 0 || mutation.FactIndex >= len(facts) {
-			return nil, errors.New("knowledge reconcile fact index is invalid")
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return err
 		}
-		if _, duplicate := seen[mutation.FactIndex]; duplicate {
-			return nil, errors.New("knowledge reconcile fact index is duplicated")
-		}
-		seen[mutation.FactIndex] = struct{}{}
-		operation := memory.KnowledgeMutationOperation(mutation.Operation)
-		resolvedID := ""
-		switch operation {
-		case memory.KnowledgeMutationAdd:
-			if mutation.MemoryID != "" {
-				return nil, errors.New("knowledge reconcile ADD must not reference memory")
+		return errors.New("JSON has trailing content")
+	}
+	return nil
+}
+
+func walkKnowledgeJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
 			}
-		case memory.KnowledgeMutationUpdate, memory.KnowledgeMutationDelete, memory.KnowledgeMutationNone:
-			var exists bool
-			resolvedID, exists = aliases[mutation.FactIndex][mutation.MemoryID]
-			if mutation.MemoryID == "" || !exists {
-				return nil, errors.New("knowledge reconcile mutation references an unsupplied memory")
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("JSON object key is invalid")
 			}
-		default:
-			return nil, errors.New("knowledge reconcile operation is invalid")
+			if _, duplicate := seen[key]; duplicate {
+				return fmt.Errorf("JSON field %q is duplicated", key)
+			}
+			seen[key] = struct{}{}
+			if err := walkKnowledgeJSONValue(decoder); err != nil {
+				return err
+			}
 		}
-		mutations[mutation.FactIndex] = memory.KnowledgeIngestMutation{
-			FactIndex: mutation.FactIndex,
-			Operation: operation,
-			MemoryID:  resolvedID,
+		closing, err := decoder.Token()
+		if err != nil {
+			return err
 		}
+		if closing != json.Delim('}') {
+			return errors.New("JSON object is not closed")
+		}
+	case '[':
+		for decoder.More() {
+			if err := walkKnowledgeJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if closing != json.Delim(']') {
+			return errors.New("JSON array is not closed")
+		}
+	default:
+		return errors.New("JSON contains an unexpected closing delimiter")
 	}
-	return mutations, nil
+	return nil
 }

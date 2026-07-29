@@ -3,11 +3,15 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -142,7 +146,7 @@ func TestThirdPartySDKImportsMatchMigrationInventory(t *testing.T) {
 			"fairy/sticker",
 		},
 		"gorm.io/":                     {"fairy/coredb"},
-		"github.com/pgvector/":          {"fairy/coredb", "fairy/memory"},
+		"github.com/pgvector/":         {"fairy/coredb", "fairy/memory"},
 		"github.com/openai/":           {"fairy/model"},
 		"github.com/cloudwego/hertz/":  {"fairy/api"},
 		"github.com/gorilla/websocket": {"fairy/api", "fairy/coreclient"},
@@ -261,5 +265,234 @@ func TestApplicationDoesNotIntroduceDynamicWorkflowRuntime(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestProductionKnowledgeIngestHasOnlyWholeDocumentActionRuntime(t *testing.T) {
+	forbiddenTypes := map[string]struct{}{
+		"KnowledgeIngestSnapshot": {},
+		"KnowledgeDocumentChunk":  {},
+		"KnowledgeIngestFact":     {},
+		"KnowledgeIngestRecall":   {},
+		"KnowledgeIngestMutation": {},
+		"KnowledgeIngestBatch":    {},
+	}
+	forbiddenFunctions := map[string]struct{}{
+		"enqueueKnowledgeIngestSnapshotsPostgres":  {},
+		"commitKnowledgeIngestBatchPostgres":       {},
+		"processKnowledgeIngestJobsPostgres":       {},
+		"commitKnowledgeDocumentMutationsPostgres": {},
+	}
+	forbiddenStoreMethods := map[string]struct{}{
+		"EnqueueKnowledgeIngestSnapshots":          {},
+		"EnqueueKnowledgeIngestSnapshotsContext":   {},
+		"enqueueKnowledgeIngestSnapshotsPostgres":  {},
+		"EnqueueKnowledgeIngestJob":                {},
+		"CommitKnowledgeIngestBatch":               {},
+		"CommitKnowledgeIngestBatchContext":        {},
+		"commitKnowledgeIngestBatchPostgres":       {},
+		"RecallKnowledgeForIngest":                 {},
+		"RecallKnowledgeForIngestContext":          {},
+		"CommitKnowledgeDocumentMutations":         {},
+		"CommitKnowledgeDocumentMutationsContext":  {},
+		"commitKnowledgeDocumentMutationsPostgres": {},
+		"ProcessKnowledgeIngestJobs":               {},
+		"ProcessKnowledgeIngestJobsContext":        {},
+		"processKnowledgeIngestJobsPostgres":       {},
+	}
+	forbiddenPreflightIdentifiers := map[string]struct{}{
+		"KnowledgeDocumentsNeedExtraction":          {},
+		"KnowledgeDocumentsNeedExtractionContext":   {},
+		"knowledgeDocumentsNeedExtractionPostgres":  {},
+		"validateKnowledgeDocuments":                {},
+		"settleKnowledgeDocumentsWithoutExtraction": {},
+	}
+	forbiddenTaskRuntimeIdentifiers := map[string]struct{}{
+		"EnqueueKnowledgeIngestBatch":           {},
+		"EnqueueKnowledgeIngestBatches":         {},
+		"EnqueueKnowledgeIngestBatchesContext":  {},
+		"enqueueKnowledgeIngestBatchesPostgres": {},
+		"ClaimKnowledgeIngestBatches":           {},
+		"ClaimKnowledgeIngestBatchesContext":    {},
+		"claimKnowledgeIngestBatchesPostgres":   {},
+		"ReleaseKnowledgeIngestBatch":           {},
+		"ReleaseKnowledgeIngestBatchContext":    {},
+		"FailKnowledgeIngestBatch":              {},
+		"FailKnowledgeIngestBatchContext":       {},
+		"RetryKnowledgeIngestBatch":             {},
+		"RetryKnowledgeIngestBatchContext":      {},
+		"DropKnowledgeIngestBatch":              {},
+		"DropKnowledgeIngestBatchContext":       {},
+		"knowledgeIngestBatchFromJob":           {},
+		"ClaimLegacyKnowledgeIngestJobs":        {},
+		"memoryKnowledgeIngestBatches":          {},
+		"persistKnowledgeIngestBatch":           {},
+		"validateKnowledgeIngestBatch":          {},
+	}
+	forbiddenKnowledgeIdentityLiterals := map[string]struct{}{
+		"batchId":     {},
+		"batchIdHash": {},
+		"sourceCount": {},
+	}
+	knowledgeJobRuntimeSQLFiles := map[string]struct{}{
+		filepath.Join("memory", "postgres_knowledge_ingest.go"): {},
+		filepath.Join("memory", "store_knowledge_ingest.go"):    {},
+		filepath.Join("memory", "store_knowledge_jobs.go"):      {},
+	}
+	var foundTaskIDSQL bool
+	var foundSourceJSONSQL bool
+	var files []string
+	for _, directory := range []string{"memory", "companion"} {
+		matches, err := filepath.Glob(filepath.Join(directory, "*.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, matches...)
+	}
+	for _, filename := range files {
+		if strings.HasSuffix(filename, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), filename, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", filename, err)
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			switch value := node.(type) {
+			case *ast.Ident:
+				if _, forbidden := forbiddenPreflightIdentifiers[value.Name]; forbidden {
+					t.Errorf("production source %s retains plural knowledge preflight identifier %s", filename, value.Name)
+				}
+				if _, forbidden := forbiddenTaskRuntimeIdentifiers[value.Name]; forbidden {
+					t.Errorf("production source %s retains collection-shaped knowledge task identifier %s", filename, value.Name)
+				}
+			case *ast.ArrayType:
+				if element, ok := value.Elt.(*ast.Ident); ok && element.Name == "KnowledgeDocument" {
+					t.Errorf("production source %s retains a KnowledgeDocument collection", filename)
+				}
+			case *ast.MapType:
+				if element, ok := value.Value.(*ast.Ident); ok && element.Name == "KnowledgeDocument" {
+					t.Errorf("production source %s retains a map of KnowledgeDocument values", filename)
+				}
+			case *ast.BasicLit:
+				if value.Kind != token.STRING {
+					return true
+				}
+				if _, checked := knowledgeJobRuntimeSQLFiles[filename]; !checked {
+					return true
+				}
+				decoded, err := strconv.Unquote(value.Value)
+				if err != nil {
+					return true
+				}
+				for _, legacyColumn := range []string{"batch_id", "sources_json"} {
+					if strings.Contains(decoded, legacyColumn) {
+						t.Errorf("production knowledge job SQL %s reads or writes legacy column %s", filename, legacyColumn)
+					}
+				}
+				foundTaskIDSQL = foundTaskIDSQL || strings.Contains(decoded, "task_id")
+				foundSourceJSONSQL = foundSourceJSONSQL || strings.Contains(decoded, "source_json")
+			}
+			return true
+		})
+		for _, declaration := range file.Decls {
+			switch value := declaration.(type) {
+			case *ast.GenDecl:
+				for _, specification := range value.Specs {
+					typeSpec, ok := specification.(*ast.TypeSpec)
+					if !ok {
+						continue
+					}
+					if _, forbidden := forbiddenTypes[typeSpec.Name.Name]; forbidden {
+						t.Errorf("production source %s retains obsolete knowledge runtime type %s", filename, typeSpec.Name.Name)
+					}
+					if typeSpec.Name.Name == "KnowledgeIngestTask" || typeSpec.Name.Name == "KnowledgeIngestClaim" {
+						structure, ok := typeSpec.Type.(*ast.StructType)
+						if ok {
+							for _, field := range structure.Fields.List {
+								for _, name := range field.Names {
+									if name.Name == "Sources" {
+										t.Errorf("production source %s retains source collection on %s", filename, typeSpec.Name.Name)
+									}
+								}
+							}
+						}
+					}
+					if typeSpec.Name.Name == "knowledgeAgentPromptPayload" {
+						structure, ok := typeSpec.Type.(*ast.StructType)
+						if ok {
+							for _, field := range structure.Fields.List {
+								for _, name := range field.Names {
+									if name.Name == "BatchID" {
+										t.Errorf("production source %s retains batch identity on Knowledge Agent prompt", filename)
+									}
+								}
+								if field.Tag != nil && strings.Contains(field.Tag.Value, `json:"batchId"`) {
+									t.Errorf("production source %s retains batchId JSON field on Knowledge Agent prompt", filename)
+								}
+							}
+						}
+					}
+					if typeSpec.Name.Name == "KnowledgeIngestJobRecord" {
+						structure, ok := typeSpec.Type.(*ast.StructType)
+						if ok {
+							for _, field := range structure.Fields.List {
+								for _, name := range field.Names {
+									if name.Name == "BatchID" {
+										t.Errorf("production source %s retains batch identity on knowledge job management DTO", filename)
+									}
+								}
+								if field.Tag != nil && strings.Contains(field.Tag.Value, `json:"batchId"`) {
+									t.Errorf("production source %s retains batchId JSON field on knowledge job management DTO", filename)
+								}
+							}
+						}
+					}
+					if typeSpec.Name.Name != "KnowledgeDocument" {
+						continue
+					}
+					structure, ok := typeSpec.Type.(*ast.StructType)
+					if !ok {
+						continue
+					}
+					for _, field := range structure.Fields.List {
+						for _, name := range field.Names {
+							if name.Name == "Chunks" {
+								t.Errorf("production source %s retains incoming KnowledgeDocument.Chunks", filename)
+							}
+						}
+					}
+				}
+			case *ast.FuncDecl:
+				if value.Name.Name == "runtimeKnowledgeIngestLedgerMetadata" {
+					ast.Inspect(value, func(node ast.Node) bool {
+						literal, ok := node.(*ast.BasicLit)
+						if !ok || literal.Kind != token.STRING {
+							return true
+						}
+						decoded, err := strconv.Unquote(literal.Value)
+						if err != nil {
+							return true
+						}
+						if _, forbidden := forbiddenKnowledgeIdentityLiterals[decoded]; forbidden {
+							t.Errorf("production source %s retains %s in knowledge task ledger", filename, decoded)
+						}
+						return true
+					})
+				}
+				if value.Recv == nil {
+					if _, forbidden := forbiddenFunctions[value.Name.Name]; forbidden {
+						t.Errorf("production source %s retains obsolete knowledge runtime function %s", filename, value.Name.Name)
+					}
+					continue
+				}
+				if _, forbidden := forbiddenStoreMethods[value.Name.Name]; forbidden {
+					t.Errorf("production source %s retains obsolete Store method %s", filename, value.Name.Name)
+				}
+			}
+		}
+	}
+	if !foundTaskIDSQL || !foundSourceJSONSQL {
+		t.Errorf("production knowledge job SQL must use task_id/source_json, found task_id=%t source_json=%t", foundTaskIDSQL, foundSourceJSONSQL)
 	}
 }

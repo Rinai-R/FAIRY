@@ -3,6 +3,7 @@ package companion
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,7 +14,7 @@ import (
 )
 
 const (
-	knowledgeIngestBatchLimit = 8
+	knowledgeIngestClaimLimit = 1
 	knowledgeIngestPoll       = 2 * time.Second
 	retentionJobCapacity      = 8
 	retentionIdleCapacity     = 256
@@ -115,15 +116,19 @@ func (e *retentionEngine) drainKnowledgeIngest() {
 		return
 	}
 	store := e.service.memory.retention.knowledge
-	if store == nil {
+	leaseStore := e.service.memory.retention.knowledgeLease
+	if store == nil || leaseStore == nil {
 		return
 	}
 	if ready, ok := store.(interface{ KnowledgeIngestReady() bool }); ok && !ready.KnowledgeIngestReady() {
 		return
 	}
 	for {
-		claims, err := store.ClaimKnowledgeIngestBatches(knowledgeIngestBatchLimit)
+		claims, err := store.ClaimKnowledgeIngestTasksContext(e.workerCtx, knowledgeIngestClaimLimit)
 		if err != nil {
+			if workerErr := e.workerCtx.Err(); workerErr != nil && errors.Is(err, workerErr) {
+				return
+			}
 			e.service.setBackgroundError(err)
 			return
 		}
@@ -134,17 +139,23 @@ func (e *retentionEngine) drainKnowledgeIngest() {
 			if e.closed.Load() {
 				return
 			}
-			if err := e.executeKnowledgeIngestClaim(store, claim); err != nil {
+			if err := e.runKnowledgeIngestClaim(store, leaseStore, claim); err != nil {
+				if workerErr := e.workerCtx.Err(); workerErr != nil && errors.Is(err, workerErr) {
+					if releaseErr := leaseStore.ReleaseClaimedKnowledgeIngestJob(claim.JobID); releaseErr != nil {
+						e.service.setBackgroundError(errors.Join(err, releaseErr))
+					}
+					return
+				}
 				var transient transientKnowledgeIngestError
 				if errors.As(err, &transient) {
-					if retryErr := store.RetryKnowledgeIngestBatch(claim.JobID, transient.category, err.Error()); retryErr != nil {
+					if retryErr := store.RetryClaimedKnowledgeIngestJob(claim.JobID, transient.category, err.Error()); retryErr != nil {
 						e.service.setBackgroundError(errors.Join(err, retryErr))
 					} else {
 						e.service.setBackgroundError(err)
 					}
 					continue
 				}
-				if failErr := store.FailKnowledgeIngestBatch(claim.JobID, err.Error()); failErr != nil {
+				if failErr := store.FailClaimedKnowledgeIngestJob(claim.JobID, err.Error()); failErr != nil {
 					e.service.setBackgroundError(errors.Join(err, failErr))
 					continue
 				}
@@ -340,34 +351,82 @@ func (e *retentionEngine) executeExtractionBatch(store extractionStore, batch *m
 	return err
 }
 
+func (e *retentionEngine) runKnowledgeIngestClaim(store knowledgeIngestStore, leaseStore knowledgeIngestLeaseStore, claim memory.KnowledgeIngestClaim) error {
+	leaseDuration := leaseStore.KnowledgeIngestLeaseDuration()
+	if leaseDuration <= 0 {
+		return errors.New("knowledge ingest lease duration is invalid")
+	}
+	renewInterval := leaseDuration / 3
+	if renewInterval <= 0 {
+		renewInterval = leaseDuration
+	}
+	claimCtx, cancel := context.WithCancel(e.workerCtx)
+	renewalDone := make(chan error, 1)
+	go func() {
+		timer := time.NewTimer(renewInterval)
+		defer timer.Stop()
+		for {
+			select {
+			case <-claimCtx.Done():
+				renewalDone <- nil
+				return
+			case <-timer.C:
+				if err := leaseStore.RenewKnowledgeIngestLeaseContext(claimCtx, claim.JobID); err != nil {
+					if claimCtx.Err() != nil {
+						renewalDone <- nil
+						return
+					}
+					cancel()
+					renewalDone <- transientKnowledgeIngestError{category: "lease_renewal", err: err}
+					return
+				}
+				timer.Reset(renewInterval)
+			}
+		}
+	}()
+	executionErr := e.executeKnowledgeIngestClaimContext(claimCtx, store, claim)
+	cancel()
+	renewalErr := <-renewalDone
+	if executionErr == nil {
+		return nil
+	}
+	if renewalErr != nil {
+		return renewalErr
+	}
+	return executionErr
+}
+
 func (e *retentionEngine) executeKnowledgeIngestClaim(store knowledgeIngestStore, claim memory.KnowledgeIngestClaim) error {
+	return e.executeKnowledgeIngestClaimContext(e.workerCtx, store, claim)
+}
+
+func (e *retentionEngine) executeKnowledgeIngestClaimContext(ctx context.Context, store knowledgeIngestStore, claim memory.KnowledgeIngestClaim) error {
 	if e == nil || e.service == nil {
 		return errRetentionClosed
+	}
+	if ctx == nil {
+		return errors.New("knowledge ingest context is required")
 	}
 	if e.service.knowledgeDocuments == nil {
 		return errors.New("knowledge document fetcher is unavailable")
 	}
-	if len(claim.Batch.Sources) != 1 {
-		return errors.New("knowledge ingest source job must contain exactly one source")
-	}
-	document, err := e.service.knowledgeDocuments.FetchSource(e.workerCtx, claim.Batch.Sources[0])
+	document, err := e.service.knowledgeDocuments.FetchSource(ctx, claim.Task.Source)
 	if err != nil {
 		if errors.Is(err, errKnowledgeFetchTransient) {
 			return transientKnowledgeIngestError{category: "document_fetch", err: err}
 		}
 		return err
 	}
-	documents := []memory.KnowledgeDocument{document}
-	needsExtraction, err := store.KnowledgeDocumentsNeedExtraction(claim.JobID, claim.Batch.ID, documents)
+	document.ReconcilerRevision = knowledgeReconcilerRevision(
+		persona.KnowledgeReconcileInstructions,
+		knowledgeAgentContractRevision,
+	)
+	needsExtraction, err := store.KnowledgeDocumentNeedsExtractionContext(ctx, claim.JobID, claim.Task.ID, document)
 	if err != nil {
 		return transientKnowledgeIngestError{category: "document_state", err: err}
 	}
 	if !needsExtraction {
 		return nil
-	}
-	input, err := buildKnowledgeIngestInput(claim.Batch, documents)
-	if err != nil {
-		return err
 	}
 	configSource := e.service.configSource()
 	if configSource == nil {
@@ -377,119 +436,120 @@ func (e *retentionEngine) executeKnowledgeIngestClaim(store knowledgeIngestStore
 	if err != nil {
 		return err
 	}
+	if err := validateInitialKnowledgeAgentBudget(
+		document,
+		connection.ContextWindowTokens,
+		persona.KnowledgeReconcileMaxOutputTokens,
+	); err != nil {
+		return err
+	}
+	input, err := buildKnowledgeAgentInput(claim.Task, document)
+	if err != nil {
+		return err
+	}
 	cacheKey := ""
 	if connection.Capabilities.PromptCacheKey {
-		cacheKey = model.LaneCacheKey(claim.Batch.ConversationID, model.PromptLaneKnowledgeIngest)
+		cacheKey = model.LaneCacheKey(claim.Task.ConversationID, model.PromptLaneKnowledgeReconcile)
 	}
 	cacheInput := model.NewCacheKeyInput(
-		model.PromptLaneKnowledgeIngest,
+		model.PromptLaneKnowledgeReconcile,
 		connection.Model,
-		claim.Batch.ConversationID,
-		persona.KnowledgeIngestInstructions,
+		claim.Task.ConversationID,
+		persona.KnowledgeReconcileInstructions,
 	)
 	modelPort := e.service.modelPort()
 	if modelPort == nil {
 		return ErrTurnRuntimeUnavailable
 	}
-	events, err := modelPort.ExecuteRequestContext(context.Background(), model.CompiledPromptRequest{
-		Shape: model.ModelRequestShape{
-			Lane: model.PromptLaneKnowledgeIngest, Model: connection.Model,
-			Instructions:    persona.KnowledgeIngestInstructions,
-			MaxOutputTokens: persona.KnowledgeIngestMaxOutputTokens,
-			PromptCacheKey:  cacheKey,
-		},
-		Input: input, CacheInput: &cacheInput,
-	})
-	if err != nil {
-		return err
-	}
-	usage := model.LaneUsageFromEvents(model.PromptLaneKnowledgeIngest, events, 0)
-	e.service.appendRuntimeLedger(
-		claim.Batch.ConversationID,
-		claim.Batch.TurnID,
-		runtimeLedgerEventModel,
-		turnStateCompleted,
-		"",
-		runtimeKnowledgeIngestLedgerMetadata(events, usage, claim.Batch.ID, len(claim.Batch.Sources)),
-	)
-	output, err := parseKnowledgeIngestOutput(model.CollectTextFromEvents(events), documents)
-	if err != nil {
-		return err
-	}
-	facts := make([]memory.KnowledgeIngestFact, 0, len(output.Facts))
-	for _, fact := range output.Facts {
-		facts = append(facts, memory.KnowledgeIngestFact{
-			Subject: fact.Subject, Predicate: fact.Predicate, Value: fact.Value, Statement: fact.Statement,
-			ConfidenceBasisPoints: fact.ConfidenceBasisPoints,
-			EvidenceChunkIDs:      append([]string(nil), fact.EvidenceChunkIDs...),
-		})
-	}
-	recalls := make([]memory.KnowledgeIngestRecall, len(facts))
-	for index, fact := range facts {
-		candidates, err := store.RecallKnowledgeForIngest(fact, memory.MaxKnowledgeIngestRecallCandidates)
-		if err != nil {
-			return transientKnowledgeIngestError{category: "knowledge_recall", err: err}
-		}
-		recalls[index] = memory.KnowledgeIngestRecall{
-			FactIndex:  index,
-			Candidates: append([]memory.RetrievedKnowledge(nil), candidates...),
-		}
-	}
-	mutations := []memory.KnowledgeIngestMutation{}
-	if len(facts) > 0 {
-		reconcileInput, aliases, err := buildKnowledgeReconcileInput(claim.Batch.ID, facts, recalls)
-		if err != nil {
+	aliases := newKnowledgeAliasSet()
+	seenCallIDs := make(map[string]struct{})
+	toolCalls := 0
+	for round := 0; round <= maxKnowledgeAgentToolCalls; round++ {
+		if err := validateKnowledgeAgentPromptBudget(
+			input,
+			persona.KnowledgeReconcileInstructions,
+			connection.ContextWindowTokens,
+			persona.KnowledgeReconcileMaxOutputTokens,
+		); err != nil {
 			return err
 		}
-		reconcileCacheInput := model.NewCacheKeyInput(
-			model.PromptLaneKnowledgeReconcile,
-			connection.Model,
-			claim.Batch.ConversationID,
-			persona.KnowledgeReconcileInstructions,
-		)
-		reconcileCacheKey := ""
-		if connection.Capabilities.PromptCacheKey {
-			reconcileCacheKey = model.LaneCacheKey(claim.Batch.ConversationID, model.PromptLaneKnowledgeReconcile)
-		}
-		reconcileEvents, err := modelPort.ExecuteRequestContext(context.Background(), model.CompiledPromptRequest{
+		events, err := modelPort.ExecuteRequestContext(ctx, model.CompiledPromptRequest{
 			Shape: model.ModelRequestShape{
 				Lane: model.PromptLaneKnowledgeReconcile, Model: connection.Model,
 				Instructions:    persona.KnowledgeReconcileInstructions,
 				MaxOutputTokens: persona.KnowledgeReconcileMaxOutputTokens,
-				PromptCacheKey:  reconcileCacheKey,
+				PromptCacheKey:  cacheKey,
 			},
-			Input: reconcileInput, CacheInput: &reconcileCacheInput,
+			Input: input, Tools: []model.ToolSpec{knowledgeSearchToolSpec()},
+			CacheInput: &cacheInput,
 		})
 		if err != nil {
 			return transientKnowledgeIngestError{category: "model_provider", err: err}
 		}
-		reconcileUsage := model.LaneUsageFromEvents(model.PromptLaneKnowledgeReconcile, reconcileEvents, 0)
+		usage := model.LaneUsageFromEvents(model.PromptLaneKnowledgeReconcile, events, 0)
 		e.service.appendRuntimeLedger(
-			claim.Batch.ConversationID,
-			claim.Batch.TurnID,
+			claim.Task.ConversationID,
+			claim.Task.TurnID,
 			runtimeLedgerEventModel,
 			turnStateCompleted,
 			"",
-			runtimeKnowledgeIngestLedgerMetadata(reconcileEvents, reconcileUsage, claim.Batch.ID, len(claim.Batch.Sources)),
+			runtimeKnowledgeIngestLedgerMetadata(events, usage, claim.Task.ID),
 		)
-		mutations, err = parseKnowledgeReconcileOutput(model.CollectTextFromEvents(reconcileEvents), facts, aliases)
+		calls := model.FunctionCallsFromEvents(events)
+		text := model.CollectTextFromEvents(events)
+		if len(calls) > 0 {
+			if strings.TrimSpace(text) != "" {
+				return errors.New("knowledge agent mixed tool calls with final output")
+			}
+			if len(calls) > knowledgeAgentMaximumCallsPerRound ||
+				toolCalls+len(calls) > maxKnowledgeAgentToolCalls {
+				return errors.New("knowledge agent tool call budget exceeded")
+			}
+			for _, call := range calls {
+				if call.Name != knowledgeSearchToolName || call.CallID == "" {
+					return errors.New("knowledge agent requested an unknown tool")
+				}
+				if _, duplicate := seenCallIDs[call.CallID]; duplicate {
+					return errors.New("knowledge agent repeated a tool call ID")
+				}
+				seenCallIDs[call.CallID] = struct{}{}
+				query, err := parseKnowledgeSearchArguments(call.Arguments)
+				if err != nil {
+					return err
+				}
+				candidates, err := store.SearchKnowledgeForIngestContext(ctx, query, memory.MaxKnowledgeSearchCandidates)
+				if err != nil {
+					return transientKnowledgeIngestError{category: "knowledge_search", err: err}
+				}
+				toolItems, err := buildKnowledgeSearchToolItems(call, candidates, aliases)
+				if err != nil {
+					return err
+				}
+				input = append(input, toolItems...)
+				toolCalls++
+			}
+			continue
+		}
+		if strings.TrimSpace(text) == "" {
+			return errors.New("knowledge agent returned neither tool calls nor final output")
+		}
+		actions, err := parseKnowledgeAgentOutput(text, document, aliases)
 		if err != nil {
 			return err
 		}
+		if _, err := store.CommitKnowledgeDocumentActionsContext(
+			ctx,
+			claim.JobID,
+			claim.Task.ID,
+			document,
+			aliases.suppliedIDs(),
+			actions,
+		); err != nil {
+			return transientKnowledgeIngestError{category: "document_commit", err: err}
+		}
+		return nil
 	}
-	if _, err := store.CommitKnowledgeDocumentMutations(claim.JobID, claim.Batch.ID, documents, facts, recalls, mutations); err != nil {
-		return transientKnowledgeIngestError{category: "document_commit", err: err}
-	}
-	return nil
-}
-
-func cloneKnowledgeIngestBatches(batches []memory.KnowledgeIngestBatch) []memory.KnowledgeIngestBatch {
-	cloned := make([]memory.KnowledgeIngestBatch, len(batches))
-	for index, batch := range batches {
-		cloned[index] = batch
-		cloned[index].Sources = append([]memory.KnowledgeIngestSource(nil), batch.Sources...)
-	}
-	return cloned
+	return errors.New("knowledge agent did not produce final output within its bounded loop")
 }
 
 func (e *retentionEngine) close() {

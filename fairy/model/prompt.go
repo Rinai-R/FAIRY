@@ -11,7 +11,6 @@ const (
 	PromptLaneTranslate          PromptLane = "translate"
 	PromptLaneSocialLearn        PromptLane = "social_learn"
 	PromptLaneSocialFeedback     PromptLane = "social_feedback"
-	PromptLaneKnowledgeIngest    PromptLane = "knowledge_ingest"
 	PromptLaneKnowledgeReconcile PromptLane = "knowledge_reconcile"
 )
 

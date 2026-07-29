@@ -1,78 +1,128 @@
 package memory
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
 
-func TestAcceptKnowledgeIngestRequiresValidFactAndPublicSource(t *testing.T) {
-	tests := []struct {
-		name      string
-		topic     string
-		statement string
-		url       string
-		rank      uint8
-		want      bool
-	}{
-		{name: "public source", topic: "作品条目", statement: "这是一段长度足够的公开作品设定摘要。", url: "https://example.test/work", rank: 1, want: true},
-		{name: "topic agnostic", topic: "聊天", statement: "这是一段长度足够且来源公开的聊天内容。", url: "https://example.test/chat", rank: 1, want: true},
-		{name: "missing source", topic: "游戏", statement: "这是一段长度足够的游戏知识摘要。", rank: 1},
-		{name: "credential url", topic: "书", statement: "这是一段长度足够的书籍知识摘要。", url: "https://user:pass@example.test/book", rank: 1},
-		{name: "short body", topic: "书", statement: "太短", url: "https://example.test/book", rank: 1},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := acceptKnowledgeIngest(test.topic, test.statement, test.url, test.rank); got != test.want {
-				t.Fatalf("acceptKnowledgeIngest() = %v, want %v", got, test.want)
-			}
-		})
+func validKnowledgeIngestTask() KnowledgeIngestTask {
+	return KnowledgeIngestTask{
+		ID: "task-1", ConversationID: "conversation-1", TurnID: "turn-1",
+		Source: KnowledgeIngestSource{
+			ID: "source-1", Title: "作品标题", URL: "https://example.test/item?id=1",
+			Snippet: "这是一条足够完整的公开来源摘要。", Rank: 1, FetchedAtUnixMS: 1,
+		},
 	}
 }
 
-func TestValidateKnowledgeIngestBatchBoundsCanonicalSources(t *testing.T) {
-	valid := KnowledgeIngestBatch{
-		ID: "batch-1", ConversationID: "conversation-1", TurnID: "turn-1",
-		Sources: []KnowledgeIngestSource{{
-			ID: "source-1", Title: "作品标题", URL: "https://example.test/item?id=1",
-			Snippet: "这是一条足够完整的公开来源摘要。", Rank: 1, FetchedAtUnixMS: 1,
-		}},
+func TestValidateKnowledgeIngestTaskBoundsCanonicalSource(t *testing.T) {
+	valid := validKnowledgeIngestTask()
+	encoded, err := validateKnowledgeIngestTask(valid)
+	if err != nil || len(encoded) == 0 || encoded[0] != '{' {
+		t.Fatalf("valid task = (%q, %v)", encoded, err)
 	}
-	encoded, err := validateKnowledgeIngestBatch(valid)
-	if err != nil || len(encoded) == 0 {
-		t.Fatalf("valid batch = (%q, %v)", encoded, err)
+	var source KnowledgeIngestSource
+	if err := json.Unmarshal(encoded, &source); err != nil || source != valid.Source {
+		t.Fatalf("encoded source = (%#v, %v)", source, err)
 	}
-	tests := map[string]func(*KnowledgeIngestBatch){
-		"empty sources":  func(batch *KnowledgeIngestBatch) { batch.Sources = nil },
-		"fragment URL":   func(batch *KnowledgeIngestBatch) { batch.Sources[0].URL += "#fragment" },
-		"credential URL": func(batch *KnowledgeIngestBatch) { batch.Sources[0].URL = "https://user:pass@example.test/item" },
-		"invalid rank":   func(batch *KnowledgeIngestBatch) { batch.Sources[0].Rank = 0 },
-		"long snippet": func(batch *KnowledgeIngestBatch) {
-			batch.Sources[0].Snippet = strings.Repeat("长", MaxKnowledgeIngestSnippetRunes+1)
+	tests := map[string]func(*KnowledgeIngestTask){
+		"empty source":   func(task *KnowledgeIngestTask) { task.Source = KnowledgeIngestSource{} },
+		"fragment URL":   func(task *KnowledgeIngestTask) { task.Source.URL += "#fragment" },
+		"credential URL": func(task *KnowledgeIngestTask) { task.Source.URL = "https://user:pass@example.test/item" },
+		"invalid rank":   func(task *KnowledgeIngestTask) { task.Source.Rank = 0 },
+		"long snippet": func(task *KnowledgeIngestTask) {
+			task.Source.Snippet = strings.Repeat("长", MaxKnowledgeIngestSnippetRunes+1)
 		},
-		"duplicate source": func(batch *KnowledgeIngestBatch) { batch.Sources = append(batch.Sources, batch.Sources[0]) },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
-			batch := valid
-			batch.Sources = append([]KnowledgeIngestSource(nil), valid.Sources...)
-			mutate(&batch)
-			if _, err := validateKnowledgeIngestBatch(batch); err == nil {
-				t.Fatalf("expected invalid batch: %#v", batch)
+			task := valid
+			mutate(&task)
+			if _, err := validateKnowledgeIngestTask(task); err == nil {
+				t.Fatalf("expected invalid task: %#v", task)
 			}
 		})
 	}
 }
 
-func TestEnqueueKnowledgeIngestBatchesRejectsNewMultiSourceJobsBeforeDatabaseAccess(t *testing.T) {
+func TestEnqueueKnowledgeIngestTasksRejectsInvalidTaskBeforeDatabaseAccess(t *testing.T) {
 	store := &Store{}
-	err := store.enqueueKnowledgeIngestBatchesPostgres(t.Context(), []KnowledgeIngestBatch{{
-		ID: "batch-1", ConversationID: "conversation-1", TurnID: "turn-1",
-		Sources: []KnowledgeIngestSource{
-			{ID: "source-1", Title: "一", URL: "https://example.test/1", Snippet: "来源一", Rank: 1},
-			{ID: "source-2", Title: "二", URL: "https://example.test/2", Snippet: "来源二", Rank: 2},
-		},
-	}})
-	if err == nil || !strings.Contains(err.Error(), "exactly one source") {
+	valid := validKnowledgeIngestTask()
+	invalid := valid
+	invalid.ID = "task-2"
+	invalid.Source.ID = ""
+	err := store.enqueueKnowledgeIngestTasksPostgres(t.Context(), []KnowledgeIngestTask{valid, invalid})
+	if err == nil || !strings.Contains(err.Error(), "task[1]") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestKnowledgeIngestTaskFromJobDecodesCurrentPayload(t *testing.T) {
+	valid := validKnowledgeIngestTask()
+	payload, err := json.Marshal(valid.Source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := knowledgeIngestTaskFromJob(KnowledgeIngestJob{
+		ID:             "job-1",
+		ConversationID: valid.ConversationID,
+		TurnID:         valid.TurnID,
+		TaskID:         valid.ID,
+		SourceJSON:     payload,
+	})
+	if err != nil || task != valid {
+		t.Fatalf("task = (%#v, %v)", task, err)
+	}
+}
+
+func TestKnowledgeIngestTaskFromJobRejectsSourceCollections(t *testing.T) {
+	valid := validKnowledgeIngestTask()
+	second := valid.Source
+	second.ID = "source-2"
+	second.URL = "https://example.test/item?id=2"
+	payload, err := json.Marshal([]KnowledgeIngestSource{valid.Source, second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = knowledgeIngestTaskFromJob(KnowledgeIngestJob{
+		ID:             "job-1",
+		ConversationID: valid.ConversationID,
+		TurnID:         valid.TurnID,
+		TaskID:         valid.ID,
+		SourceJSON:     payload,
+	})
+	if err == nil || !strings.Contains(err.Error(), "source JSON is invalid") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestKnowledgeIngestTaskFromJobRequiresCurrentTaskIdentity(t *testing.T) {
+	valid := validKnowledgeIngestTask()
+	payload, err := json.Marshal(valid.Source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = knowledgeIngestTaskFromJob(KnowledgeIngestJob{
+		ID:             "job-legacy",
+		ConversationID: valid.ConversationID,
+		TurnID:         valid.TurnID,
+		SourceJSON:     payload,
+	})
+	if err == nil || !strings.Contains(err.Error(), "task ID is required") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestKnowledgeIngestJobRecordProjectsOnlyTaskIdentity(t *testing.T) {
+	encoded, err := json.Marshal(KnowledgeIngestJobRecord{
+		ID: "job-1", TaskID: "task-1", Status: "pending",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := string(encoded)
+	if !strings.Contains(payload, `"taskId":"task-1"`) || strings.Contains(payload, "batchId") {
+		t.Fatalf("job record JSON = %s", payload)
 	}
 }

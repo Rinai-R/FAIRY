@@ -489,7 +489,10 @@ func (c participationCharacterLookup) Lookup(characterID string) (character.Reco
 type participationConfig struct{ ConfigSource }
 
 func (participationConfig) ModelConnection() (config.ModelConnection, error) {
-	return config.ModelConnection{Model: "model-1", Capabilities: config.GatewayCapabilities{PromptCacheKey: true}}, nil
+	return config.ModelConnection{
+		Model: "model-1", ContextWindowTokens: 128000,
+		Capabilities: config.GatewayCapabilities{PromptCacheKey: true},
+	}, nil
 }
 
 type participationDecisionHost struct {

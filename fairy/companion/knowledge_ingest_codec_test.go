@@ -5,142 +5,200 @@ import (
 	"testing"
 
 	"fairy/memory"
+	"fairy/model"
 )
 
-func knowledgeIngestCodecBatch(t *testing.T) memory.KnowledgeIngestBatch {
+func knowledgeAgentCodecTask(t *testing.T) memory.KnowledgeIngestTask {
 	t.Helper()
-	batch, err := newWebSearchBatch(
+	searchBatch, err := newWebSearchBatch(
 		"conversation", "turn", "call",
-		[]WebSearchHit{
-			{Title: "来源一", URL: "https://one.example/item", Snippet: "这是第一条足够完整的公开来源摘要。"},
-			{Title: "来源二", URL: "https://two.example/item", Snippet: "这是第二条足够完整的公开来源摘要。"},
-		},
+		[]WebSearchHit{{Title: "来源一", URL: "https://one.example/item", Snippet: "这是足够完整的公开来源摘要。"}},
 		1,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return memoryKnowledgeIngestBatches(batch)[0]
+	return memoryKnowledgeIngestTasks(searchBatch)[0]
 }
 
-func knowledgeIngestCodecDocuments(t *testing.T, batch memory.KnowledgeIngestBatch) []memory.KnowledgeDocument {
-	t.Helper()
-	document, err := (testKnowledgeDocumentFetcher{}).FetchSource(t.Context(), batch.Sources[0])
-	if err != nil {
-		t.Fatal(err)
+func knowledgeAgentCodecDocument(task memory.KnowledgeIngestTask) memory.KnowledgeDocument {
+	return memory.KnowledgeDocument{
+		SourceID: task.Source.ID, CanonicalURL: task.Source.URL,
+		Title:       "来源一",
+		Content:     "项目过去处于内部测试阶段。\n项目现在已经进入公开测试阶段。\n官方同时明确撤回了旧发布日期。",
+		ContentHash: strings.Repeat("a", 64), EvidenceID: "web-evidence-a",
+		ContentType: "text/html", FetchedAtUnixMS: 1,
 	}
-	return []memory.KnowledgeDocument{document}
 }
 
-func TestBuildKnowledgeIngestInputContainsOnlyCurrentBatch(t *testing.T) {
-	batch := knowledgeIngestCodecBatch(t)
-	documents := knowledgeIngestCodecDocuments(t, batch)
-	items, err := buildKnowledgeIngestInput(batch, documents)
+func TestBuildKnowledgeAgentInputContainsCompleteCurrentDocument(t *testing.T) {
+	task := knowledgeAgentCodecTask(t)
+	document := knowledgeAgentCodecDocument(task)
+	items, err := buildKnowledgeAgentInput(task, document)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(items) != 1 {
 		t.Fatalf("items = %#v", items)
 	}
-	content := items[0].Content
-	for _, expected := range []string{batch.ID, documents[0].Chunks[0].ID, "https://one.example/item"} {
-		if !strings.Contains(content, expected) {
-			t.Fatalf("input missing %q: %s", expected, content)
+	for _, expected := range []string{`"taskId":"` + task.ID + `"`, document.CanonicalURL, "官方同时明确撤回了旧发布日期"} {
+		if !strings.Contains(items[0].Content, expected) {
+			t.Fatalf("input missing %q: %s", expected, items[0].Content)
 		}
 	}
-	for _, forbidden := range []string{"conversation", `"turn"`, `"call"`, `"snippet"`} {
-		if strings.Contains(content, forbidden) {
-			t.Fatalf("input leaked authority/fallback field %q: %s", forbidden, content)
+	for _, forbidden := range []string{`"batchId"`, `"conversationId"`, `"turnId"`, `"snippet"`, `"chunks"`, `"documents"`} {
+		if strings.Contains(items[0].Content, forbidden) {
+			t.Fatalf("input leaked forbidden field %q: %s", forbidden, items[0].Content)
 		}
 	}
 }
 
-func TestParseKnowledgeIngestOutputAcceptsGroundedFactsAndEmptyBatch(t *testing.T) {
-	batch := knowledgeIngestCodecBatch(t)
-	documents := knowledgeIngestCodecDocuments(t, batch)
-	raw := `{"facts":[{"subject":"作品主题","predicate":"公开状态","value":"已公布","statement":"这是一条由当前公开来源直接支持的完整稳定事实。","confidenceBasisPoints":8000,"evidenceChunkIDs":["` +
-		documents[0].Chunks[0].ID + `"]}]}`
-	output, err := parseKnowledgeIngestOutput(raw, documents)
-	if err != nil {
-		t.Fatal(err)
+func TestKnowledgeReconcilerRevisionTracksOnlyFixedContract(t *testing.T) {
+	const legacyContractRevision = "whole-document-actions-v1"
+	if knowledgeAgentContractRevision != "whole-document-task-actions-v2" {
+		t.Fatalf("current knowledge agent contract revision = %q, want v2", knowledgeAgentContractRevision)
 	}
-	if len(output.Facts) != 1 || len(output.Facts[0].EvidenceChunkIDs) != 1 {
-		t.Fatalf("output = %#v", output)
-	}
-	empty, err := parseKnowledgeIngestOutput(`{"facts":[]}`, documents)
-	if err != nil || len(empty.Facts) != 0 {
-		t.Fatalf("empty output = (%#v, %v)", empty, err)
+	first := knowledgeReconcilerRevision("fixed instructions", knowledgeAgentContractRevision)
+	repeated := knowledgeReconcilerRevision("fixed instructions", knowledgeAgentContractRevision)
+	changedInstructions := knowledgeReconcilerRevision("changed instructions", knowledgeAgentContractRevision)
+	legacy := knowledgeReconcilerRevision("fixed instructions", legacyContractRevision)
+	if len(first) != 64 || first != repeated ||
+		first == changedInstructions || first == legacy {
+		t.Fatalf(
+			"revisions first=%q repeated=%q instructions=%q legacy=%q",
+			first,
+			repeated,
+			changedInstructions,
+			legacy,
+		)
 	}
 }
 
-func TestKnowledgeReconcileCodecMapsOnlySuppliedPerFactAliases(t *testing.T) {
-	facts := []memory.KnowledgeIngestFact{
-		{Subject: "作品甲", Predicate: "状态", Value: "公测", Statement: "作品甲当前已经进入公开测试阶段。", ConfidenceBasisPoints: 8000, EvidenceChunkIDs: []string{"chunk-a"}},
-		{Subject: "作品乙", Predicate: "状态", Value: "发布", Statement: "作品乙已经正式公开发布新版本。", ConfidenceBasisPoints: 8100, EvidenceChunkIDs: []string{"chunk-b"}},
+func TestKnowledgeSearchCodecUsesStableRequestAliases(t *testing.T) {
+	query, err := parseKnowledgeSearchArguments(`{"query":"项目当前公开测试阶段"}`)
+	if err != nil || query != "项目当前公开测试阶段" {
+		t.Fatalf("query = (%q, %v)", query, err)
 	}
-	recalls := []memory.KnowledgeIngestRecall{
-		{FactIndex: 0, Candidates: []memory.RetrievedKnowledge{{ID: "knowledge-a", Statement: "作品甲此前处于内部测试阶段。", ConfidenceBasisPoints: 7000}}},
-		{FactIndex: 1, Candidates: []memory.RetrievedKnowledge{{ID: "knowledge-b", Statement: "作品乙已经正式公开发布新版本。", ConfidenceBasisPoints: 8000}}},
+	aliases := newKnowledgeAliasSet()
+	call := model.FunctionCall{
+		CallID: "call-1", Name: knowledgeSearchToolName,
+		Arguments: `{"query":"项目当前公开测试阶段"}`,
 	}
-	items, aliases, err := buildKnowledgeReconcileInput("batch-a", facts, recalls)
+	candidate := memory.RetrievedKnowledge{
+		ID: "knowledge-real-id", Topic: "项目状态",
+		Statement: "项目过去处于内部测试阶段。", ConfidenceBasisPoints: 8000,
+	}
+	items, err := buildKnowledgeSearchToolItems(call, []memory.RetrievedKnowledge{candidate}, aliases)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || strings.Contains(items[0].Content, "knowledge-a") || !strings.Contains(items[0].Content, "f0m0") {
-		t.Fatalf("reconcile input = %#v", items)
+	if len(items) != 2 || items[1].Parts == nil ||
+		strings.Contains((*items[1].Parts)[0].Text, candidate.ID) ||
+		!strings.Contains((*items[1].Parts)[0].Text, `"id":"k0"`) {
+		t.Fatalf("tool items = %#v", items)
 	}
-	mutations, err := parseKnowledgeReconcileOutput(
-		`{"mutations":[{"factIndex":0,"operation":"UPDATE","memoryId":"f0m0"},{"factIndex":1,"operation":"NONE","memoryId":"f1m0"}]}`,
-		facts,
+	repeated, err := buildKnowledgeSearchToolItems(
+		model.FunctionCall{CallID: "call-2", Name: knowledgeSearchToolName, Arguments: call.Arguments},
+		[]memory.RetrievedKnowledge{candidate},
 		aliases,
 	)
+	if err != nil || repeated[1].Parts == nil || !strings.Contains((*repeated[1].Parts)[0].Text, `"id":"k0"`) {
+		t.Fatalf("repeated alias = (%#v, %v)", repeated, err)
+	}
+	if realID, ok := aliases.realID("k0"); !ok || realID != candidate.ID {
+		t.Fatalf("alias resolution = (%q, %v)", realID, ok)
+	}
+}
+
+func TestParseKnowledgeAgentOutputAcceptsGroundedActions(t *testing.T) {
+	task := knowledgeAgentCodecTask(t)
+	document := knowledgeAgentCodecDocument(task)
+	aliases := newKnowledgeAliasSet()
+	if _, err := aliases.aliasFor("knowledge-update"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := aliases.aliasFor("knowledge-delete"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := aliases.aliasFor("knowledge-none"); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"actions":[` +
+		`{"operation":"ADD","content":"项目新增了一条由完整来源支持的稳定公开知识。","confidenceBasisPoints":8200,"evidence":"项目现在已经进入公开测试阶段。"},` +
+		`{"operation":"UPDATE","memoryId":"k0","content":"项目现在已经进入公开测试阶段，过去的内部测试状态已经失效。","confidenceBasisPoints":9000,"evidence":"项目现在已经进入公开测试阶段。"},` +
+		`{"operation":"DELETE","memoryId":"k1","evidence":"官方同时明确撤回了旧发布日期。"},` +
+		`{"operation":"NONE","memoryId":"k2","evidence":"项目过去处于内部测试阶段。"}` +
+		`]}`
+	actions, err := parseKnowledgeAgentOutput(raw, document, aliases)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mutations[0].MemoryID != "knowledge-a" || mutations[1].MemoryID != "knowledge-b" {
-		t.Fatalf("mutations = %#v", mutations)
+	if len(actions) != 4 || actions[1].MemoryID != "knowledge-update" ||
+		actions[2].MemoryID != "knowledge-delete" || actions[3].MemoryID != "knowledge-none" {
+		t.Fatalf("actions = %#v", actions)
+	}
+	empty, err := parseKnowledgeAgentOutput(`{"actions":[]}`, document, aliases)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("empty actions = (%#v, %v)", empty, err)
 	}
 }
 
-func TestKnowledgeReconcileCodecRejectsInvalidMutationAuthority(t *testing.T) {
-	facts := []memory.KnowledgeIngestFact{
-		{Statement: "作品甲当前已经进入公开测试阶段。"},
-		{Statement: "作品乙已经正式公开发布新版本。"},
+func TestKnowledgeAgentCodecRejectsInvalidAuthorityAndEvidence(t *testing.T) {
+	document := knowledgeAgentCodecDocument(knowledgeAgentCodecTask(t))
+	aliases := newKnowledgeAliasSet()
+	if _, err := aliases.aliasFor("knowledge-a"); err != nil {
+		t.Fatal(err)
 	}
-	aliases := []map[string]string{{"f0m0": "knowledge-a"}, {"f1m0": "knowledge-b"}}
 	for name, raw := range map[string]string{
-		"missing fact":   `{"mutations":[{"factIndex":0,"operation":"ADD"}]}`,
-		"duplicate fact": `{"mutations":[{"factIndex":0,"operation":"ADD"},{"factIndex":0,"operation":"ADD"}]}`,
-		"cross fact":     `{"mutations":[{"factIndex":0,"operation":"UPDATE","memoryId":"f1m0"},{"factIndex":1,"operation":"ADD"}]}`,
-		"add with id":    `{"mutations":[{"factIndex":0,"operation":"ADD","memoryId":"f0m0"},{"factIndex":1,"operation":"ADD"}]}`,
-		"unknown op":     `{"mutations":[{"factIndex":0,"operation":"UPSERT"},{"factIndex":1,"operation":"ADD"}]}`,
-		"unknown field":  `{"mutations":[{"factIndex":0,"operation":"ADD","reason":"x"},{"factIndex":1,"operation":"ADD"}]}`,
-		"trailing":       `{"mutations":[{"factIndex":0,"operation":"ADD"},{"factIndex":1,"operation":"ADD"}]} nope`,
+		"unknown alias":        `{"actions":[{"operation":"UPDATE","memoryId":"k9","content":"项目现在已经进入公开测试阶段。","confidenceBasisPoints":8000,"evidence":"项目现在已经进入公开测试阶段。"}]}`,
+		"fake evidence":        `{"actions":[{"operation":"ADD","content":"项目现在已经进入公开测试阶段。","confidenceBasisPoints":8000,"evidence":"正文里不存在的证据"}]}`,
+		"add with id":          `{"actions":[{"operation":"ADD","memoryId":"k0","content":"项目现在已经进入公开测试阶段。","confidenceBasisPoints":8000,"evidence":"项目现在已经进入公开测试阶段。"}]}`,
+		"add with empty id":    `{"actions":[{"operation":"ADD","memoryId":"","content":"项目现在已经进入公开测试阶段。","confidenceBasisPoints":8000,"evidence":"项目现在已经进入公开测试阶段。"}]}`,
+		"delete content":       `{"actions":[{"operation":"DELETE","memoryId":"k0","content":"不允许","evidence":"官方同时明确撤回了旧发布日期。"}]}`,
+		"delete empty content": `{"actions":[{"operation":"DELETE","memoryId":"k0","content":"","evidence":"官方同时明确撤回了旧发布日期。"}]}`,
+		"duplicate target":     `{"actions":[{"operation":"NONE","memoryId":"k0","evidence":"项目过去处于内部测试阶段。"},{"operation":"DELETE","memoryId":"k0","evidence":"官方同时明确撤回了旧发布日期。"}]}`,
+		"duplicate field":      `{"actions":[],"actions":[]}`,
+		"unknown field":        `{"actions":[{"operation":"NONE","memoryId":"k0","evidence":"项目过去处于内部测试阶段。","reason":"x"}]}`,
+		"trailing":             `{"actions":[]} nope`,
+		"missing actions":      `{}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := parseKnowledgeReconcileOutput(raw, facts, aliases); err == nil {
+			if _, err := parseKnowledgeAgentOutput(raw, document, aliases); err == nil {
 				t.Fatalf("expected rejection for %s", raw)
 			}
 		})
 	}
-}
-
-func TestParseKnowledgeIngestOutputRejectsUnknownChunksAndNonStrictJSON(t *testing.T) {
-	batch := knowledgeIngestCodecBatch(t)
-	documents := knowledgeIngestCodecDocuments(t, batch)
-	validFact := `{"subject":"作品主题","predicate":"状态","value":"已公布","statement":"这是一条长度足够并且完整的稳定事实。","confidenceBasisPoints":8000,"evidenceChunkIDs":["` + documents[0].Chunks[0].ID + `"]}`
 	for name, raw := range map[string]string{
-		"unknown chunk": `{"facts":[{"subject":"作品主题","predicate":"状态","value":"已公布","statement":"这是一条长度足够并且完整的稳定事实。","confidenceBasisPoints":8000,"evidenceChunkIDs":["other-batch-chunk"]}]}`,
-		"unknown field": `{"facts":[` + validFact + `],"reason":"hidden"}`,
-		"trailing text": `{"facts":[` + validFact + `]} explanation`,
-		"markdown":      "```json\n{\"facts\":[]}\n```",
-		"nil facts":     `{}`,
-		"duplicate IDs": `{"facts":[{"subject":"作品主题","predicate":"状态","value":"已公布","statement":"这是一条长度足够并且完整的稳定事实。","confidenceBasisPoints":8000,"evidenceChunkIDs":["` + documents[0].Chunks[0].ID + `","` + documents[0].Chunks[0].ID + `"]}]}`,
+		"short":     `{"query":"短"}`,
+		"space":     `{"query":" 项目当前公开测试阶段"}`,
+		"unknown":   `{"query":"项目当前公开测试阶段","scope":"personal"}`,
+		"duplicate": `{"query":"项目当前公开测试阶段","query":"项目当前公开测试阶段"}`,
+		"trailing":  `{"query":"项目当前公开测试阶段"} nope`,
 	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := parseKnowledgeIngestOutput(raw, documents); err == nil {
+		t.Run("query_"+name, func(t *testing.T) {
+			if _, err := parseKnowledgeSearchArguments(raw); err == nil {
 				t.Fatalf("expected rejection for %s", raw)
 			}
 		})
+	}
+	controlDocument := document
+	controlDocument.Content += "\n项目证据包含\u0000禁止控制符。"
+	if _, err := parseKnowledgeAgentOutput(
+		`{"actions":[{"operation":"ADD","content":"项目现在已经进入公开测试阶段。","confidenceBasisPoints":8000,"evidence":"项目证据包含\u0000禁止控制符。"}]}`,
+		controlDocument,
+		aliases,
+	); err == nil {
+		t.Fatal("control-character evidence was accepted")
+	}
+}
+
+func TestKnowledgeAgentBudgetRejectsCompleteDocumentWithoutTruncating(t *testing.T) {
+	document := knowledgeAgentCodecDocument(knowledgeAgentCodecTask(t))
+	document.Content = strings.Repeat("完整正文", 5000)
+	if err := validateInitialKnowledgeAgentBudget(document, 4096, KnowledgeReconcileMaxOutputTokens); err == nil {
+		t.Fatal("validateInitialKnowledgeAgentBudget() error = nil")
+	}
+	if len(document.Content) != len(strings.Repeat("完整正文", 5000)) {
+		t.Fatal("budget validation mutated the complete document")
 	}
 }

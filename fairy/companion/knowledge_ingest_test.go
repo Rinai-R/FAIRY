@@ -1,6 +1,7 @@
 package companion
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -16,38 +17,50 @@ type blockingKnowledgeMemory struct {
 	doneOnce sync.Once
 }
 
-func (m *blockingKnowledgeMemory) EnqueueKnowledgeIngestBatches([]memory.KnowledgeIngestBatch) error {
+func (m *blockingKnowledgeMemory) EnqueueKnowledgeIngestTasks([]memory.KnowledgeIngestTask) error {
 	close(m.started)
 	<-m.release
 	return nil
 }
 
-func (m *blockingKnowledgeMemory) ClaimKnowledgeIngestBatches(int) ([]memory.KnowledgeIngestClaim, error) {
+func (m *blockingKnowledgeMemory) ClaimKnowledgeIngestTasksContext(context.Context, int) ([]memory.KnowledgeIngestClaim, error) {
 	m.doneOnce.Do(func() { close(m.done) })
 	return nil, nil
 }
 
-func (*blockingKnowledgeMemory) KnowledgeDocumentsNeedExtraction(string, string, []memory.KnowledgeDocument) (bool, error) {
+func (*blockingKnowledgeMemory) KnowledgeIngestLeaseDuration() time.Duration {
+	return time.Minute
+}
+
+func (*blockingKnowledgeMemory) RenewKnowledgeIngestLeaseContext(context.Context, string) error {
+	return nil
+}
+
+func (*blockingKnowledgeMemory) ReleaseClaimedKnowledgeIngestJob(string) error {
+	return nil
+}
+
+func (*blockingKnowledgeMemory) KnowledgeDocumentNeedsExtractionContext(context.Context, string, string, memory.KnowledgeDocument) (bool, error) {
 	return true, nil
 }
 
-func (*blockingKnowledgeMemory) RecallKnowledgeForIngest(memory.KnowledgeIngestFact, int) ([]memory.RetrievedKnowledge, error) {
+func (*blockingKnowledgeMemory) SearchKnowledgeForIngestContext(context.Context, string, int) ([]memory.RetrievedKnowledge, error) {
 	return nil, nil
 }
 
-func (*blockingKnowledgeMemory) CommitKnowledgeDocumentMutations(string, string, []memory.KnowledgeDocument, []memory.KnowledgeIngestFact, []memory.KnowledgeIngestRecall, []memory.KnowledgeIngestMutation) (int, error) {
+func (*blockingKnowledgeMemory) CommitKnowledgeDocumentActionsContext(context.Context, string, string, memory.KnowledgeDocument, []string, []memory.KnowledgeDocumentAction) (int, error) {
 	return 0, nil
 }
 
-func (*blockingKnowledgeMemory) FailKnowledgeIngestBatch(string, string) error {
+func (*blockingKnowledgeMemory) FailClaimedKnowledgeIngestJob(string, string) error {
 	return nil
 }
 
-func (*blockingKnowledgeMemory) RetryKnowledgeIngestBatch(string, string, string) error {
+func (*blockingKnowledgeMemory) RetryClaimedKnowledgeIngestJob(string, string, string) error {
 	return nil
 }
 
-func (*blockingKnowledgeMemory) DropKnowledgeIngestBatch(string, string) error {
+func (*blockingKnowledgeMemory) DropClaimedKnowledgeIngestJob(string, string) error {
 	return nil
 }
 
@@ -55,7 +68,7 @@ type knowledgeIngestProfile struct{}
 
 func (knowledgeIngestProfile) Current() (*config.ProfileSnapshot, error) { return nil, nil }
 
-func TestKnowledgeIngestBatchesAreTopicAgnostic(t *testing.T) {
+func TestKnowledgeIngestTasksAreTopicAgnostic(t *testing.T) {
 	hits := []WebSearchHit{
 		{Title: "作品条目", URL: "https://example.test/work", Snippet: "这是一段来自公开来源并且长度足够的作品设定摘要。"},
 		{Title: "天气条目", URL: "https://example.test/weather", Snippet: "这是一段来自公开来源并且长度足够的天气记录摘要。"},
@@ -65,9 +78,11 @@ func TestKnowledgeIngestBatchesAreTopicAgnostic(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		persisted := memoryKnowledgeIngestBatches(batch)
-		if len(persisted) != 2 || len(persisted[0].Sources) != 1 || len(persisted[1].Sources) != 1 {
-			t.Fatalf("batches = %#v", persisted)
+		persisted := memoryKnowledgeIngestTasks(batch)
+		if len(persisted) != 2 ||
+			persisted[0].Source.ID != batch.Sources[0].ID ||
+			persisted[1].Source.ID != batch.Sources[1].ID {
+			t.Fatalf("tasks = %#v", persisted)
 		}
 		if persisted[0].ID == persisted[1].ID || persisted[0].ID != webSearchSourceJobID(batch.ID, batch.Sources[0].ID) {
 			t.Fatalf("source job IDs are not deterministic and isolated: %#v", persisted)
@@ -89,7 +104,7 @@ func TestPersistKnowledgeIngestWaitsForDurableStorage(t *testing.T) {
 
 	returned := make(chan struct{})
 	go func() {
-		_ = service.persistKnowledgeIngestBatch(webSearchBatch{
+		_ = service.persistKnowledgeIngestTasks(webSearchBatch{
 			ID: "batch", ConversationID: "conversation", TurnID: "turn",
 			Sources: []webSearchSource{{ID: "source", Title: "title", URL: "https://example.test", Snippet: "snippet", Rank: 1}},
 		})

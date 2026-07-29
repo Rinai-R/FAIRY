@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/url"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -36,46 +37,85 @@ func (s *Store) InsertVerifiedKnowledgeContext(
 	return s.insertVerifiedKnowledgePostgres(ctx, topic, statement, conversationID, turnID, confidenceBasisPoints, sources)
 }
 
-func (s *Store) EnqueueKnowledgeIngestSnapshots(snapshots []KnowledgeIngestSnapshot) error {
-	return s.EnqueueKnowledgeIngestSnapshotsContext(context.Background(), snapshots)
+func (s *Store) EnqueueKnowledgeIngestTasks(tasks []KnowledgeIngestTask) error {
+	return s.EnqueueKnowledgeIngestTasksContext(context.Background(), tasks)
 }
 
-func (s *Store) EnqueueKnowledgeIngestSnapshotsContext(ctx context.Context, snapshots []KnowledgeIngestSnapshot) error {
-	return s.enqueueKnowledgeIngestSnapshotsPostgres(ctx, snapshots)
+func (s *Store) EnqueueKnowledgeIngestTasksContext(ctx context.Context, tasks []KnowledgeIngestTask) error {
+	return s.enqueueKnowledgeIngestTasksPostgres(ctx, tasks)
 }
 
-func (s *Store) EnqueueKnowledgeIngestBatches(batches []KnowledgeIngestBatch) error {
-	return s.EnqueueKnowledgeIngestBatchesContext(context.Background(), batches)
+func (s *Store) ClaimKnowledgeIngestTasks(limit int) ([]KnowledgeIngestClaim, error) {
+	return s.ClaimKnowledgeIngestTasksContext(context.Background(), limit)
 }
 
-func (s *Store) EnqueueKnowledgeIngestBatchesContext(ctx context.Context, batches []KnowledgeIngestBatch) error {
-	return s.enqueueKnowledgeIngestBatchesPostgres(ctx, batches)
+func (s *Store) ClaimKnowledgeIngestTasksContext(ctx context.Context, limit int) ([]KnowledgeIngestClaim, error) {
+	return s.claimKnowledgeIngestTasksPostgres(ctx, limit)
 }
 
-func (s *Store) ClaimKnowledgeIngestBatches(limit int) ([]KnowledgeIngestClaim, error) {
-	return s.ClaimKnowledgeIngestBatchesContext(context.Background(), limit)
+func (s *Store) KnowledgeIngestLeaseDuration() time.Duration {
+	if s == nil {
+		return 0
+	}
+	return s.jobLeaseDuration
 }
 
-func (s *Store) ClaimKnowledgeIngestBatchesContext(ctx context.Context, limit int) ([]KnowledgeIngestClaim, error) {
-	return s.claimKnowledgeIngestBatchesPostgres(ctx, limit)
+func (s *Store) RenewKnowledgeIngestLease(jobID string) error {
+	return s.RenewKnowledgeIngestLeaseContext(context.Background(), jobID)
 }
 
-func (s *Store) FailKnowledgeIngestBatch(jobID, message string) error {
-	return s.FailKnowledgeIngestBatchContext(context.Background(), jobID, message)
+func (s *Store) RenewKnowledgeIngestLeaseContext(ctx context.Context, jobID string) error {
+	if err := ValidateID("knowledge_ingest_job_id", jobID); err != nil {
+		return err
+	}
+	queryCtx, cancel := s.pool.QueryContext(ctx)
+	defer cancel()
+	now := nowUnixMS()
+	return RenewKnowledgeIngestJobLease(
+		queryCtx,
+		s.pool.Raw(),
+		jobID,
+		s.workerID,
+		now+s.jobLeaseDuration.Milliseconds(),
+		now,
+	)
 }
 
-func (s *Store) FailKnowledgeIngestBatchContext(ctx context.Context, jobID, message string) error {
+func (s *Store) ReleaseClaimedKnowledgeIngestJob(jobID string) error {
+	return s.ReleaseClaimedKnowledgeIngestJobContext(context.Background(), jobID)
+}
+
+func (s *Store) ReleaseClaimedKnowledgeIngestJobContext(ctx context.Context, jobID string) error {
+	if err := ValidateID("knowledge_ingest_job_id", jobID); err != nil {
+		return err
+	}
+	queryCtx, cancel := s.pool.QueryContext(ctx)
+	defer cancel()
+	return ReleaseKnowledgeIngestJob(
+		queryCtx,
+		s.pool.Raw(),
+		jobID,
+		s.workerID,
+		nowUnixMS(),
+	)
+}
+
+func (s *Store) FailClaimedKnowledgeIngestJob(jobID, message string) error {
+	return s.FailClaimedKnowledgeIngestJobContext(context.Background(), jobID, message)
+}
+
+func (s *Store) FailClaimedKnowledgeIngestJobContext(ctx context.Context, jobID, message string) error {
 	if err := ValidateID("knowledge_ingest_job_id", jobID); err != nil {
 		return err
 	}
 	return s.finishKnowledgeIngestJobPostgres(ctx, jobID, "failed", CleanEmbeddingErrorMessage(message))
 }
 
-func (s *Store) RetryKnowledgeIngestBatch(jobID, category, message string) error {
-	return s.RetryKnowledgeIngestBatchContext(context.Background(), jobID, category, message)
+func (s *Store) RetryClaimedKnowledgeIngestJob(jobID, category, message string) error {
+	return s.RetryClaimedKnowledgeIngestJobContext(context.Background(), jobID, category, message)
 }
 
-func (s *Store) RetryKnowledgeIngestBatchContext(ctx context.Context, jobID, category, message string) error {
+func (s *Store) RetryClaimedKnowledgeIngestJobContext(ctx context.Context, jobID, category, message string) error {
 	if err := ValidateID("knowledge_ingest_job_id", jobID); err != nil {
 		return err
 	}
@@ -110,44 +150,36 @@ WHERE id = $1 AND status = 'running' AND lease_owner = $6`,
 	return nil
 }
 
-func (s *Store) DropKnowledgeIngestBatch(jobID, message string) error {
-	return s.DropKnowledgeIngestBatchContext(context.Background(), jobID, message)
+func (s *Store) DropClaimedKnowledgeIngestJob(jobID, message string) error {
+	return s.DropClaimedKnowledgeIngestJobContext(context.Background(), jobID, message)
 }
 
-func (s *Store) DropKnowledgeIngestBatchContext(ctx context.Context, jobID, message string) error {
+func (s *Store) DropClaimedKnowledgeIngestJobContext(ctx context.Context, jobID, message string) error {
 	if err := ValidateID("knowledge_ingest_job_id", jobID); err != nil {
 		return err
 	}
 	return s.finishKnowledgeIngestJobPostgres(ctx, jobID, "dropped", CleanEmbeddingErrorMessage(message))
 }
 
-func (s *Store) CommitKnowledgeIngestBatch(jobID, batchID string, facts []KnowledgeIngestFact) (int, error) {
-	return s.CommitKnowledgeIngestBatchContext(context.Background(), jobID, batchID, facts)
+func (s *Store) KnowledgeDocumentNeedsExtraction(jobID, taskID string, document KnowledgeDocument) (bool, error) {
+	return s.KnowledgeDocumentNeedsExtractionContext(context.Background(), jobID, taskID, document)
 }
 
-func (s *Store) CommitKnowledgeIngestBatchContext(ctx context.Context, jobID, batchID string, facts []KnowledgeIngestFact) (int, error) {
-	return s.commitKnowledgeIngestBatchPostgres(ctx, jobID, batchID, facts)
+func (s *Store) KnowledgeDocumentNeedsExtractionContext(ctx context.Context, jobID, taskID string, document KnowledgeDocument) (bool, error) {
+	return s.knowledgeDocumentNeedsExtractionPostgres(ctx, jobID, taskID, document)
 }
 
-func (s *Store) KnowledgeDocumentsNeedExtraction(jobID, batchID string, documents []KnowledgeDocument) (bool, error) {
-	return s.KnowledgeDocumentsNeedExtractionContext(context.Background(), jobID, batchID, documents)
+func (s *Store) SearchKnowledgeForIngest(query string, limit int) ([]RetrievedKnowledge, error) {
+	return s.SearchKnowledgeForIngestContext(context.Background(), query, limit)
 }
 
-func (s *Store) KnowledgeDocumentsNeedExtractionContext(ctx context.Context, jobID, batchID string, documents []KnowledgeDocument) (bool, error) {
-	return s.knowledgeDocumentsNeedExtractionPostgres(ctx, jobID, batchID, documents)
-}
-
-func (s *Store) RecallKnowledgeForIngest(fact KnowledgeIngestFact, limit int) ([]RetrievedKnowledge, error) {
-	return s.RecallKnowledgeForIngestContext(context.Background(), fact, limit)
-}
-
-func (s *Store) RecallKnowledgeForIngestContext(ctx context.Context, fact KnowledgeIngestFact, limit int) ([]RetrievedKnowledge, error) {
-	if limit < 1 || limit > MaxKnowledgeIngestRecallCandidates {
-		return nil, errors.New("knowledge ingest recall limit is invalid")
+func (s *Store) SearchKnowledgeForIngestContext(ctx context.Context, query string, limit int) ([]RetrievedKnowledge, error) {
+	if limit < 1 || limit > MaxKnowledgeSearchCandidates {
+		return nil, errors.New("knowledge ingest search limit is invalid")
 	}
-	query := strings.TrimSpace(strings.Join([]string{fact.Subject, fact.Predicate, fact.Value, fact.Statement}, " "))
+	query = strings.TrimSpace(query)
 	if query == "" {
-		return nil, errors.New("knowledge ingest recall query is required")
+		return nil, errors.New("knowledge ingest search query is required")
 	}
 	retrieved, err := s.retrievePublicKnowledgeForIngestPostgres(ctx, query)
 	if err != nil {
@@ -159,80 +191,42 @@ func (s *Store) RecallKnowledgeForIngestContext(ctx context.Context, fact Knowle
 	return append([]RetrievedKnowledge(nil), retrieved.Knowledge...), nil
 }
 
-func (s *Store) CommitKnowledgeDocumentMutations(jobID, batchID string, documents []KnowledgeDocument, facts []KnowledgeIngestFact, recalls []KnowledgeIngestRecall, mutations []KnowledgeIngestMutation) (int, error) {
-	return s.CommitKnowledgeDocumentMutationsContext(context.Background(), jobID, batchID, documents, facts, recalls, mutations)
+func (s *Store) CommitKnowledgeDocumentActions(jobID, taskID string, document KnowledgeDocument, suppliedKnowledgeIDs []string, actions []KnowledgeDocumentAction) (int, error) {
+	return s.CommitKnowledgeDocumentActionsContext(context.Background(), jobID, taskID, document, suppliedKnowledgeIDs, actions)
 }
 
-func (s *Store) CommitKnowledgeDocumentMutationsContext(ctx context.Context, jobID, batchID string, documents []KnowledgeDocument, facts []KnowledgeIngestFact, recalls []KnowledgeIngestRecall, mutations []KnowledgeIngestMutation) (int, error) {
-	return s.commitKnowledgeDocumentMutationsPostgres(ctx, jobID, batchID, documents, facts, recalls, mutations)
+func (s *Store) CommitKnowledgeDocumentActionsContext(ctx context.Context, jobID, taskID string, document KnowledgeDocument, suppliedKnowledgeIDs []string, actions []KnowledgeDocumentAction) (int, error) {
+	return s.commitKnowledgeDocumentActionsPostgres(ctx, jobID, taskID, document, suppliedKnowledgeIDs, actions)
 }
 
-func (s *Store) ProcessKnowledgeIngestJobs(limit int) (int, error) {
-	return s.ProcessKnowledgeIngestJobsContext(context.Background(), limit)
-}
-
-func (s *Store) ProcessKnowledgeIngestJobsContext(ctx context.Context, limit int) (int, error) {
-	return s.processKnowledgeIngestJobsPostgres(ctx, limit)
-}
-
-func acceptKnowledgeIngest(topic, statement, sourceURL string, rank uint8) bool {
-	topic = strings.TrimSpace(topic)
-	statement = strings.TrimSpace(statement)
-	if topic == "" || statement == "" || rank < 1 || rank > 5 {
-		return false
-	}
-	if utf8.RuneCountInString(statement) < 8 {
-		return false
-	}
-	parsed, err := url.Parse(strings.TrimSpace(sourceURL))
-	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Hostname() == "" || parsed.User != nil {
-		return false
-	}
-	return true
-}
-
-func validateKnowledgeIngestBatch(batch KnowledgeIngestBatch) ([]byte, error) {
-	if err := ValidateID("knowledge_ingest_batch_id", batch.ID); err != nil {
+func validateKnowledgeIngestTask(task KnowledgeIngestTask) ([]byte, error) {
+	if err := ValidateID("knowledge_ingest_task_id", task.ID); err != nil {
 		return nil, err
 	}
-	if err := ValidateID("conversation_id", batch.ConversationID); err != nil {
+	if err := ValidateID("conversation_id", task.ConversationID); err != nil {
 		return nil, err
 	}
-	if err := ValidateID("turn_id", batch.TurnID); err != nil {
+	if err := ValidateID("turn_id", task.TurnID); err != nil {
 		return nil, err
 	}
-	if len(batch.Sources) == 0 || len(batch.Sources) > MaxKnowledgeIngestSources {
-		return nil, errors.New("knowledge ingest source count is invalid")
+	source := task.Source
+	if err := ValidateID("knowledge_ingest_source_id", source.ID); err != nil {
+		return nil, err
 	}
-	seenIDs := make(map[string]struct{}, len(batch.Sources))
-	seenURLs := make(map[string]struct{}, len(batch.Sources))
-	for _, source := range batch.Sources {
-		if err := ValidateID("knowledge_ingest_source_id", source.ID); err != nil {
-			return nil, err
-		}
-		if _, duplicate := seenIDs[source.ID]; duplicate {
-			return nil, errors.New("knowledge ingest source ID is duplicated")
-		}
-		seenIDs[source.ID] = struct{}{}
-		if strings.TrimSpace(source.Title) != source.Title || strings.TrimSpace(source.Snippet) != source.Snippet || source.Title == "" && source.Snippet == "" {
-			return nil, errors.New("knowledge ingest source text is invalid")
-		}
-		if utf8.RuneCountInString(source.Title) > MaxKnowledgeIngestTitleRunes || utf8.RuneCountInString(source.Snippet) > MaxKnowledgeIngestSnippetRunes {
-			return nil, errors.New("knowledge ingest source text is too long")
-		}
-		parsed, err := url.Parse(source.URL)
-		if err != nil || parsed.User != nil || parsed.Hostname() == "" || parsed.Fragment != "" || parsed.String() != source.URL || parsed.Scheme != "http" && parsed.Scheme != "https" {
-			return nil, errors.New("knowledge ingest source URL is invalid")
-		}
-		if _, duplicate := seenURLs[source.URL]; duplicate {
-			return nil, errors.New("knowledge ingest canonical URL is duplicated")
-		}
-		seenURLs[source.URL] = struct{}{}
-		if source.Rank < 1 || source.Rank > MaxKnowledgeIngestSources || source.FetchedAtUnixMS < 0 {
-			return nil, errors.New("knowledge ingest source metadata is invalid")
-		}
+	if strings.TrimSpace(source.Title) != source.Title || strings.TrimSpace(source.Snippet) != source.Snippet || source.Title == "" && source.Snippet == "" {
+		return nil, errors.New("knowledge ingest source text is invalid")
 	}
-	encoded, err := json.Marshal(batch.Sources)
+	if utf8.RuneCountInString(source.Title) > MaxKnowledgeIngestTitleRunes || utf8.RuneCountInString(source.Snippet) > MaxKnowledgeIngestSnippetRunes {
+		return nil, errors.New("knowledge ingest source text is too long")
+	}
+	parsed, err := url.Parse(source.URL)
+	if err != nil || parsed.User != nil || parsed.Hostname() == "" || parsed.Fragment != "" || parsed.String() != source.URL || parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, errors.New("knowledge ingest source URL is invalid")
+	}
+	if source.Rank < 1 || source.Rank > MaxKnowledgeIngestSourceRank || source.FetchedAtUnixMS < 0 {
+		return nil, errors.New("knowledge ingest source metadata is invalid")
+	}
+	encoded, err := json.Marshal(source)
 	if err != nil {
 		return nil, err
 	}

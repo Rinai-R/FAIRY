@@ -650,7 +650,7 @@ func (e *TurnEngine) submitCompiledTurn(
 								if batchErr != nil {
 									return fail("MODEL_RESPONSE_INVALID", batchErr)
 								}
-								if err := s.persistKnowledgeIngestBatch(batch); err != nil {
+								if err := s.persistKnowledgeIngestTasks(batch); err != nil {
 									return fail("KNOWLEDGE_INGEST_PERSIST_FAILED", err)
 								}
 								extra := retrievalFromWebSearchBatch(batch)
@@ -797,7 +797,6 @@ func (e *TurnEngine) submitCompiledTurn(
 	gathered.events = append([]model.StreamEvent(nil), agent.events...)
 	gathered.fullRequest = agent.fullRequest
 	gathered.finalUsage = append([]LaneModelUsage(nil), agent.finalUsage...)
-	gathered.ingestBatches = cloneWebSearchBatches(agent.ingestBatches)
 	respondingOutcome, respondingErr := execution.deliverReply(turnCtx, gathered, turnStarted, lg)
 	if respondingErr != nil {
 		return respondingOutcome, respondingErr

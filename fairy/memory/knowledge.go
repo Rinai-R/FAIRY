@@ -196,21 +196,37 @@ func InsertKnowledgeSource(ctx context.Context, tx pgx.Tx, knowledgeID, sourceID
 }
 
 func InsertCanonicalKnowledgeSource(ctx context.Context, tx pgx.Tx, knowledgeID, sourceID string, source AssistantSource) error {
-	_, err := tx.Exec(ctx, `
+	updated, err := tx.Exec(ctx, `
+UPDATE knowledge_sources
+SET title = CASE WHEN $6 > fetched_at_ms THEN $2 ELSE title END,
+    snippet = CASE WHEN $6 > fetched_at_ms THEN $4 ELSE snippet END,
+    rank = CASE WHEN $6 > fetched_at_ms THEN $5 ELSE rank END,
+    fetched_at_ms = GREATEST(fetched_at_ms, $6)
+WHERE knowledge_id = $1
+  AND (canonical_url = $3 OR url = $3)`,
+		knowledgeID, source.Title, source.URL, source.Snippet, source.Rank, source.FetchedAtUnixMS,
+	)
+	if err != nil {
+		return fmt.Errorf("refreshing canonical knowledge source: %w", err)
+	}
+	if updated.RowsAffected() > 0 {
+		return nil
+	}
+
+	_, err = tx.Exec(ctx, `
 INSERT INTO knowledge_sources(
   knowledge_id, source_id, title, url, canonical_url, snippet, rank, fetched_at_ms
-) SELECT $1, $2, $3, $4, $4, $5, $6, $7
-WHERE NOT EXISTS (
-  SELECT 1
-  FROM knowledge_sources
-  WHERE knowledge_id = $1
-    AND (canonical_url = $4 OR url = $4)
-)
-ON CONFLICT (knowledge_id, canonical_url) WHERE canonical_url <> '' DO NOTHING`,
+) VALUES ($1, $2, $3, $4, $4, $5, $6, $7)
+ON CONFLICT (knowledge_id, canonical_url) WHERE canonical_url <> '' DO UPDATE
+SET title = EXCLUDED.title,
+    snippet = EXCLUDED.snippet,
+    rank = EXCLUDED.rank,
+    fetched_at_ms = EXCLUDED.fetched_at_ms
+WHERE EXCLUDED.fetched_at_ms > knowledge_sources.fetched_at_ms`,
 		knowledgeID, sourceID, source.Title, source.URL, source.Snippet, source.Rank, source.FetchedAtUnixMS,
 	)
 	if err != nil {
-		return fmt.Errorf("inserting canonical knowledge source: %w", err)
+		return fmt.Errorf("merging canonical knowledge source: %w", err)
 	}
 	return nil
 }

@@ -8,7 +8,9 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"fairy/memory"
 )
@@ -26,6 +28,32 @@ type knowledgeRoundTripper func(*http.Request) (*http.Response, error)
 
 func (f knowledgeRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+type blockingKnowledgeResponseBody struct {
+	reader  *strings.Reader
+	started chan struct{}
+	release <-chan struct{}
+	blocked bool
+}
+
+func (body *blockingKnowledgeResponseBody) Read(buffer []byte) (int, error) {
+	if !body.blocked {
+		body.blocked = true
+		close(body.started)
+		<-body.release
+	}
+	return body.reader.Read(buffer)
+}
+
+func (*blockingKnowledgeResponseBody) Close() error {
+	return nil
+}
+
+func waitForKnowledgeFetchClockAfter(timestamp int64) {
+	for time.Now().UnixMilli() <= timestamp {
+		<-time.After(time.Millisecond)
+	}
 }
 
 func TestKnowledgeFetchRejectsNonPublicAddresses(t *testing.T) {
@@ -60,7 +88,9 @@ func TestKnowledgeFetchRejectsRedirectToPrivateAddress(t *testing.T) {
 	}
 }
 
-func TestKnowledgeFetchCleansHashesAndChunksPublicHTML(t *testing.T) {
+func TestKnowledgeFetchCleansAndKeepsCompletePublicHTML(t *testing.T) {
+	bodyPrefix := strings.Repeat("稳定正文 ", 5000)
+	bodyTail := "旧固定窗口覆盖范围之后的完整尾部"
 	fetcher := &httpKnowledgeDocumentFetcher{
 		resolver: staticKnowledgeResolver{addresses: []netip.Addr{netip.MustParseAddr("93.184.216.34")}},
 		dialer:   &net.Dialer{},
@@ -70,7 +100,7 @@ func TestKnowledgeFetchCleansHashesAndChunksPublicHTML(t *testing.T) {
 				Header:     http.Header{"Content-Type": []string{"text/html; charset=utf-8"}, "ETag": []string{`"v1"`}},
 				Body: io.NopCloser(strings.NewReader(
 					`<html><head><style>hidden</style></head><body><nav>menu</nav><main><h1>标题</h1><p>` +
-						strings.Repeat("稳定正文 ", 300) + `</p></main><script>secret()</script></body></html>`,
+						bodyPrefix + bodyTail + `</p></main><script>secret()</script></body></html>`,
 				)),
 				Request: request,
 			}, nil
@@ -83,23 +113,87 @@ func TestKnowledgeFetchCleansHashesAndChunksPublicHTML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if document.ContentHash == "" || len(document.Chunks) < 2 {
+	if document.ContentHash == "" || document.EvidenceID == "" || document.Content == "" {
 		t.Fatalf("document = %#v", document)
 	}
-	for _, chunk := range document.Chunks {
-		if strings.Contains(chunk.Text, "hidden") || strings.Contains(chunk.Text, "menu") || strings.Contains(chunk.Text, "secret") {
-			t.Fatalf("chunk retained skipped content: %q", chunk.Text)
-		}
-		if chunk.ID == "" || chunk.TextHash == "" {
-			t.Fatalf("chunk identity = %#v", chunk)
-		}
+	if strings.Contains(document.Content, "hidden") || strings.Contains(document.Content, "menu") || strings.Contains(document.Content, "secret") {
+		t.Fatalf("document retained skipped content")
+	}
+	if !strings.Contains(document.Content, bodyTail) {
+		t.Fatalf("document lost its tail")
+	}
+	if !strings.Contains(document.Content, "标题\n") {
+		t.Fatalf("document did not preserve block structure: %q", document.Content[:min(len(document.Content), 80)])
 	}
 	again, err := fetcher.FetchSource(t.Context(), source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.ContentHash != document.ContentHash || again.Chunks[0].ID != document.Chunks[0].ID {
+	if again.ContentHash != document.ContentHash || again.EvidenceID != document.EvidenceID || again.Content != document.Content {
 		t.Fatalf("document identity is not deterministic: %#v %#v", document, again)
+	}
+}
+
+func TestKnowledgeFetchFreshnessUsesRequestOrderNotBodyCompletion(t *testing.T) {
+	firstBodyStarted := make(chan struct{})
+	releaseFirstBody := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(releaseFirstBody)
+		})
+	}
+	t.Cleanup(release)
+	callCount := 0
+	fetcher := &httpKnowledgeDocumentFetcher{
+		resolver: staticKnowledgeResolver{addresses: []netip.Addr{netip.MustParseAddr("93.184.216.34")}},
+		dialer:   &net.Dialer{},
+		client: &http.Client{Transport: knowledgeRoundTripper(func(request *http.Request) (*http.Response, error) {
+			callCount++
+			var body io.ReadCloser = io.NopCloser(strings.NewReader("后发请求返回的新正文。"))
+			if callCount == 1 {
+				body = &blockingKnowledgeResponseBody{
+					reader:  strings.NewReader("先发请求返回的旧正文。"),
+					started: firstBodyStarted,
+					release: releaseFirstBody,
+				}
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/plain"}},
+				Body:       body,
+				Request:    request,
+			}, nil
+		})},
+	}
+	source := memory.KnowledgeIngestSource{
+		ID: "freshness-source", Title: "来源", URL: "https://example.test/freshness", Rank: 1,
+	}
+	firstResult := make(chan memory.KnowledgeDocument, 1)
+	firstError := make(chan error, 1)
+	go func() {
+		document, err := fetcher.FetchSource(t.Context(), source)
+		firstResult <- document
+		firstError <- err
+	}()
+	<-firstBodyStarted
+	waitForKnowledgeFetchClockAfter(time.Now().UnixMilli())
+	second, err := fetcher.FetchSource(t.Context(), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForKnowledgeFetchClockAfter(second.FetchedAtUnixMS)
+	release()
+	first := <-firstResult
+	if err := <-firstError; err != nil {
+		t.Fatal(err)
+	}
+	if first.FetchedAtUnixMS >= second.FetchedAtUnixMS {
+		t.Fatalf(
+			"request-order freshness first=%d second=%d; slower first request must remain older",
+			first.FetchedAtUnixMS,
+			second.FetchedAtUnixMS,
+		)
 	}
 }
 
@@ -114,6 +208,16 @@ func TestKnowledgeFetchRejectsUnsupportedOrOversizedContent(t *testing.T) {
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"text/plain"}},
 			Body:       io.NopCloser(strings.NewReader(strings.Repeat("x", knowledgeFetchMaxBodyBytes+1))),
+		},
+		"control": {
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			Body:       io.NopCloser(strings.NewReader("合法正文中混入\x00禁止控制字符。")),
+		},
+		"invalid_html_utf8": {
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/html"}},
+			Body:       io.NopCloser(strings.NewReader("<html><body>合法正文混入\xff非法字节。</body></html>")),
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

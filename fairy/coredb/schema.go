@@ -2,7 +2,7 @@ package coredb
 
 import "github.com/pgvector/pgvector-go"
 
-const currentSchemaRevision = "2026-07-29-durable-web-knowledge-1"
+const currentSchemaRevision = "2026-07-29-knowledge-ingest-task-columns-2"
 
 type conversationSchema struct {
 	ID          string `gorm:"type:text;primaryKey;index:conversations_character_updated,priority:3"`
@@ -221,15 +221,16 @@ type knowledgeDocumentSchema struct {
 func (knowledgeDocumentSchema) TableName() string { return "knowledge_documents" }
 
 type knowledgeDocumentVersionSchema struct {
-	ID           string `gorm:"type:text;primaryKey;uniqueIndex:knowledge_document_versions_hash_key,priority:2"`
-	DocumentID   string `gorm:"type:text;not null;uniqueIndex:knowledge_document_versions_hash_key,priority:1"`
-	ContentHash  string `gorm:"type:text;not null;check:knowledge_document_versions_invariants_check,(content_hash ~ '^[0-9a-f]{64}$') AND (status IN ('staged', 'current', 'superseded')) AND (fetched_at_ms >= 0) AND (created_at_ms >= 0)"`
-	ContentType  string `gorm:"type:text;not null"`
-	Status       string `gorm:"type:text;not null"`
-	FetchedAtMS  int64  `gorm:"not null"`
-	ETag         string `gorm:"column:etag;type:text;not null;default:''"`
-	LastModified string `gorm:"type:text;not null;default:''"`
-	CreatedAtMS  int64  `gorm:"not null"`
+	ID                 string `gorm:"type:text;primaryKey;uniqueIndex:knowledge_document_versions_hash_key,priority:2"`
+	DocumentID         string `gorm:"type:text;not null;uniqueIndex:knowledge_document_versions_hash_key,priority:1"`
+	ContentHash        string `gorm:"type:text;not null;check:knowledge_document_versions_invariants_check,(content_hash ~ '^[0-9a-f]{64}$') AND (reconciler_revision = '' OR reconciler_revision ~ '^[0-9a-f]{64}$') AND (status IN ('staged', 'current', 'superseded')) AND (fetched_at_ms >= 0) AND (created_at_ms >= 0)"`
+	ContentType        string `gorm:"type:text;not null"`
+	Status             string `gorm:"type:text;not null"`
+	FetchedAtMS        int64  `gorm:"not null"`
+	ETag               string `gorm:"column:etag;type:text;not null;default:''"`
+	LastModified       string `gorm:"type:text;not null;default:''"`
+	ReconcilerRevision string `gorm:"type:text;not null;default:''"`
+	CreatedAtMS        int64  `gorm:"not null"`
 }
 
 func (knowledgeDocumentVersionSchema) TableName() string { return "knowledge_document_versions" }
@@ -287,26 +288,28 @@ type extractionBatchTurnSchema struct {
 func (extractionBatchTurnSchema) TableName() string { return "extraction_batch_turns" }
 
 type knowledgeIngestJobSchema struct {
-	ID               string  `gorm:"type:text;primaryKey"`
-	ConversationID   string  `gorm:"type:text;not null"`
-	TurnID           string  `gorm:"type:text;not null"`
-	BatchID          string  `gorm:"type:text;not null;default:''"`
-	SourcesJSON      []byte  `gorm:"type:jsonb;not null;default:'[]'::jsonb"`
-	Query            string  `gorm:"type:text;not null;default:''"`
-	Title            string  `gorm:"type:text;not null;default:''"`
-	URL              string  `gorm:"type:text;not null;default:''"`
-	Snippet          string  `gorm:"type:text;not null;default:''"`
-	Rank             int     `gorm:"type:integer;not null;default:0;check:knowledge_ingest_jobs_invariants_check,(rank >= 0) AND (fetched_at_ms >= 0) AND (status IN ('waiting_turn', 'pending', 'running', 'succeeded', 'failed', 'dropped')) AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms >= 0) AND (attempt_count >= 0) AND (next_attempt_at_ms >= 0) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms) AND ((lease_owner IS NULL) = (lease_expires_at_ms IS NULL)) AND (status = 'running' OR lease_owner IS NULL)"`
-	FetchedAtMS      int64   `gorm:"not null;default:0"`
-	Status           string  `gorm:"type:text;not null"`
-	LeaseOwner       *string `gorm:"type:text"`
-	LeaseExpiresAtMS *int64
-	AttemptCount     int     `gorm:"type:integer;not null;default:0"`
-	NextAttemptAtMS  int64   `gorm:"not null;default:0"`
-	ErrorCategory    *string `gorm:"type:text"`
-	ErrorMessage     *string `gorm:"type:text"`
-	CreatedAtMS      int64   `gorm:"not null"`
-	UpdatedAtMS      int64   `gorm:"not null"`
+	ID                string  `gorm:"type:text;primaryKey"`
+	ConversationID    string  `gorm:"type:text;not null"`
+	TurnID            string  `gorm:"type:text;not null"`
+	TaskID            string  `gorm:"type:text;not null;default:''"`
+	SourceJSON        []byte  `gorm:"type:jsonb;not null;default:'{}'::jsonb"`
+	LegacyBatchID     string  `gorm:"column:batch_id;type:text;not null;default:''"`
+	LegacySourcesJSON []byte  `gorm:"column:sources_json;type:jsonb;not null;default:'[]'::jsonb"`
+	Query             string  `gorm:"type:text;not null;default:''"`
+	Title             string  `gorm:"type:text;not null;default:''"`
+	URL               string  `gorm:"type:text;not null;default:''"`
+	Snippet           string  `gorm:"type:text;not null;default:''"`
+	Rank              int     `gorm:"type:integer;not null;default:0;check:knowledge_ingest_jobs_invariants_check,(rank >= 0) AND (fetched_at_ms >= 0) AND (status IN ('waiting_turn', 'pending', 'running', 'succeeded', 'failed', 'dropped')) AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms >= 0) AND (attempt_count >= 0) AND (next_attempt_at_ms >= 0) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms) AND ((lease_owner IS NULL) = (lease_expires_at_ms IS NULL)) AND (status = 'running' OR lease_owner IS NULL)"`
+	FetchedAtMS       int64   `gorm:"not null;default:0"`
+	Status            string  `gorm:"type:text;not null"`
+	LeaseOwner        *string `gorm:"type:text"`
+	LeaseExpiresAtMS  *int64
+	AttemptCount      int     `gorm:"type:integer;not null;default:0"`
+	NextAttemptAtMS   int64   `gorm:"not null;default:0"`
+	ErrorCategory     *string `gorm:"type:text"`
+	ErrorMessage      *string `gorm:"type:text"`
+	CreatedAtMS       int64   `gorm:"not null"`
+	UpdatedAtMS       int64   `gorm:"not null"`
 }
 
 func (knowledgeIngestJobSchema) TableName() string { return "knowledge_ingest_jobs" }

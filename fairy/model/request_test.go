@@ -312,10 +312,10 @@ func TestBuildChatCompletionsTranslateKeepsProviderNeutralBody(t *testing.T) {
 }
 
 func TestBuildChatCompletionsKnowledgeIngestUsesExplicitLane(t *testing.T) {
-	cacheInput := NewCacheKeyInput(PromptLaneKnowledgeIngest, "deepseek-v4-flash", "conversation", "strict knowledge ingest")
+	cacheInput := NewCacheKeyInput(PromptLaneKnowledgeReconcile, "deepseek-v4-flash", "conversation", "strict knowledge reconcile")
 	req := CompiledPromptRequest{
 		Shape: ModelRequestShape{
-			Lane:            PromptLaneKnowledgeIngest,
+			Lane:            PromptLaneKnowledgeReconcile,
 			Model:           "deepseek-v4-flash",
 			Instructions:    "strict knowledge ingest",
 			MaxOutputTokens: 800,

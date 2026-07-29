@@ -18,6 +18,27 @@ import (
 
 const migrationLockKey int64 = 0x46414952595f4442
 
+const knowledgeIngestSourcesJSONConstraintDefinition = `CHECK (
+  CASE jsonb_typeof(sources_json)
+    WHEN 'object' THEN batch_id <> ''
+    WHEN 'array' THEN batch_id = '' OR jsonb_array_length(sources_json) BETWEEN 1 AND 5
+    ELSE FALSE
+  END
+)`
+
+const knowledgeIngestTaskJSONConstraintDefinition = `CHECK (
+  (
+    task_id = ''
+    AND source_json = '{}'::jsonb
+    AND status IN ('succeeded', 'failed', 'dropped')
+  )
+  OR (
+    task_id <> ''
+    AND jsonb_typeof(source_json) = 'object'
+    AND source_json <> '{}'::jsonb
+  )
+)`
+
 var (
 	ErrSchemaAbsent     = errors.New("postgres schema is absent")
 	ErrSchemaNotCurrent = errors.New("postgres schema is not current")
@@ -75,7 +96,7 @@ var postgresConstraints = []schemaConstraint{
 	{"extraction_batch_turns", "extraction_batch_turns_turn_fk", "FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE RESTRICT"},
 	{"knowledge_ingest_jobs", "knowledge_ingest_jobs_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
 	{"knowledge_ingest_jobs", "knowledge_ingest_jobs_turn_fk", "FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE CASCADE"},
-	{"knowledge_ingest_jobs", "knowledge_ingest_jobs_sources_json_check", "CHECK (jsonb_typeof(sources_json) = 'array' AND (batch_id = '' OR jsonb_array_length(sources_json) BETWEEN 1 AND 5))"},
+	{"knowledge_ingest_jobs", "knowledge_ingest_jobs_sources_json_check", knowledgeIngestSourcesJSONConstraintDefinition},
 	{"knowledge_sources", "knowledge_sources_canonical_url_check", "CHECK (canonical_url = '' OR canonical_url ~ '^https?://[^[:space:]]+$')"},
 	{"endpoint_conversations", "endpoint_conversations_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
 	{"social_memory_entries", "social_memory_entries_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
@@ -98,6 +119,7 @@ var postgresIndexes = []schemaIndex{
 	{"knowledge_ingest_jobs_status", "CREATE INDEX IF NOT EXISTS knowledge_ingest_jobs_status ON knowledge_ingest_jobs(status, lease_expires_at_ms ASC NULLS FIRST, created_at_ms ASC, id ASC)"},
 	{"knowledge_ingest_jobs_retry", "CREATE INDEX IF NOT EXISTS knowledge_ingest_jobs_retry ON knowledge_ingest_jobs(status, next_attempt_at_ms ASC, updated_at_ms ASC, id ASC) WHERE status IN ('waiting_turn', 'pending', 'running')"},
 	{"knowledge_ingest_jobs_batch_key", "CREATE UNIQUE INDEX IF NOT EXISTS knowledge_ingest_jobs_batch_key ON knowledge_ingest_jobs(batch_id) WHERE batch_id <> ''"},
+	{"knowledge_ingest_jobs_task_key", "CREATE UNIQUE INDEX IF NOT EXISTS knowledge_ingest_jobs_task_key ON knowledge_ingest_jobs(task_id) WHERE task_id <> ''"},
 	{"knowledge_sources_canonical_key", "CREATE UNIQUE INDEX IF NOT EXISTS knowledge_sources_canonical_key ON knowledge_sources(knowledge_id, canonical_url) WHERE canonical_url <> ''"},
 	{"knowledge_entries_active_fact_key", "CREATE UNIQUE INDEX IF NOT EXISTS knowledge_entries_active_fact_key ON knowledge_entries(fact_key) WHERE fact_key IS NOT NULL AND status = 'verified'"},
 	{"knowledge_evidence_active_version", "CREATE INDEX IF NOT EXISTS knowledge_evidence_active_version ON knowledge_evidence(version_id, knowledge_id) WHERE active"},
@@ -129,6 +151,15 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 			return fmt.Errorf("auto-migrating PostgreSQL schema: %w", err)
 		}
 		if err := replaceKnowledgeIngestInvariant(tx); err != nil {
+			return err
+		}
+		if err := replaceKnowledgeIngestSourcesJSONConstraint(tx); err != nil {
+			return err
+		}
+		if err := migrateKnowledgeIngestTaskColumns(tx); err != nil {
+			return err
+		}
+		if err := replaceKnowledgeIngestTaskJSONConstraint(tx); err != nil {
 			return err
 		}
 		for _, constraint := range postgresConstraints {
@@ -182,6 +213,113 @@ func replaceKnowledgeIngestInvariant(tx *gorm.DB) error {
   AND (status = 'running' OR lease_owner IS NULL)
 )`).Error; err != nil {
 		return fmt.Errorf("creating knowledge ingest invariant: %w", err)
+	}
+	return nil
+}
+
+func replaceKnowledgeIngestSourcesJSONConstraint(tx *gorm.DB) error {
+	if err := tx.Exec("ALTER TABLE knowledge_ingest_jobs DROP CONSTRAINT IF EXISTS knowledge_ingest_jobs_sources_json_check").Error; err != nil {
+		return fmt.Errorf("dropping legacy knowledge ingest source payload constraint: %w", err)
+	}
+	statement := "ALTER TABLE knowledge_ingest_jobs ADD CONSTRAINT knowledge_ingest_jobs_sources_json_check " +
+		knowledgeIngestSourcesJSONConstraintDefinition
+	if err := tx.Exec(statement).Error; err != nil {
+		return fmt.Errorf("creating knowledge ingest source payload constraint: %w", err)
+	}
+	return nil
+}
+
+func migrateKnowledgeIngestTaskColumns(tx *gorm.DB) error {
+	if err := tx.Exec(`
+WITH legacy_candidates AS (
+  SELECT
+    id,
+    CASE
+      WHEN batch_id <> '' THEN batch_id
+      WHEN batch_id = '' AND url ~ '^https?://[^[:space:]]+$' AND rank BETWEEN 1 AND 5
+        THEN 'legacy-' || id
+      ELSE ''
+    END AS migrated_task_id,
+    CASE
+      WHEN batch_id <> '' AND jsonb_typeof(sources_json) = 'object'
+        THEN sources_json
+      WHEN batch_id <> '' AND jsonb_typeof(sources_json) = 'array'
+        AND jsonb_array_length(sources_json) = 1
+        THEN sources_json -> 0
+      WHEN batch_id = '' AND url ~ '^https?://[^[:space:]]+$' AND rank BETWEEN 1 AND 5
+        THEN jsonb_build_object(
+          'id', 'legacy-source-' || id,
+          'title', title,
+          'url', url,
+          'snippet', snippet,
+          'rank', rank,
+          'fetchedAtUnixMs', fetched_at_ms
+        )
+      ELSE NULL
+    END AS migrated_source
+  FROM knowledge_ingest_jobs
+  WHERE task_id = ''
+),
+valid_candidates AS (
+  SELECT id, migrated_task_id, migrated_source
+  FROM legacy_candidates
+  WHERE migrated_task_id <> ''
+    AND jsonb_typeof(migrated_source) = 'object'
+    AND migrated_source - ARRAY['id', 'title', 'url', 'snippet', 'rank', 'fetchedAtUnixMs'] = '{}'::jsonb
+    AND jsonb_typeof(migrated_source -> 'id') = 'string'
+    AND migrated_source ->> 'id' <> ''
+    AND jsonb_typeof(migrated_source -> 'title') = 'string'
+    AND jsonb_typeof(migrated_source -> 'url') = 'string'
+    AND migrated_source ->> 'url' ~ '^https?://[^[:space:]]+$'
+    AND jsonb_typeof(migrated_source -> 'snippet') = 'string'
+    AND (migrated_source ->> 'title' <> '' OR migrated_source ->> 'snippet' <> '')
+    AND jsonb_typeof(migrated_source -> 'rank') = 'number'
+    AND migrated_source ->> 'rank' ~ '^[1-5]$'
+    AND jsonb_typeof(migrated_source -> 'fetchedAtUnixMs') = 'number'
+    AND migrated_source ->> 'fetchedAtUnixMs' ~ '^[0-9]+$'
+)
+UPDATE knowledge_ingest_jobs AS jobs
+SET task_id = candidates.migrated_task_id,
+    source_json = candidates.migrated_source,
+    status = CASE WHEN jobs.status = 'running' THEN 'pending' ELSE jobs.status END,
+    attempt_count = CASE
+      WHEN jobs.status = 'running' THEN GREATEST(0, jobs.attempt_count - 1)
+      ELSE jobs.attempt_count
+    END,
+    lease_owner = CASE WHEN jobs.status = 'running' THEN NULL ELSE jobs.lease_owner END,
+    lease_expires_at_ms = CASE WHEN jobs.status = 'running' THEN NULL ELSE jobs.lease_expires_at_ms END,
+    next_attempt_at_ms = CASE WHEN jobs.status = 'running' THEN 0 ELSE jobs.next_attempt_at_ms END,
+    updated_at_ms = CASE WHEN jobs.status = 'running' THEN GREATEST(jobs.updated_at_ms, 0) ELSE jobs.updated_at_ms END
+FROM valid_candidates AS candidates
+WHERE jobs.id = candidates.id
+`).Error; err != nil {
+		return fmt.Errorf("migrating singular knowledge ingest tasks: %w", err)
+	}
+	if err := tx.Exec(`
+UPDATE knowledge_ingest_jobs
+SET status = 'failed',
+    lease_owner = NULL,
+    lease_expires_at_ms = NULL,
+    next_attempt_at_ms = 0,
+    error_category = 'legacy_payload_not_singular',
+    error_message = 'legacy knowledge ingest payload cannot be represented as one task',
+    updated_at_ms = GREATEST(updated_at_ms, 0)
+WHERE task_id = ''
+  AND status IN ('waiting_turn', 'pending', 'running')
+`).Error; err != nil {
+		return fmt.Errorf("settling non-singular legacy knowledge ingest jobs: %w", err)
+	}
+	return nil
+}
+
+func replaceKnowledgeIngestTaskJSONConstraint(tx *gorm.DB) error {
+	if err := tx.Exec("ALTER TABLE knowledge_ingest_jobs DROP CONSTRAINT IF EXISTS knowledge_ingest_jobs_task_json_check").Error; err != nil {
+		return fmt.Errorf("dropping knowledge ingest task payload constraint: %w", err)
+	}
+	statement := "ALTER TABLE knowledge_ingest_jobs ADD CONSTRAINT knowledge_ingest_jobs_task_json_check " +
+		knowledgeIngestTaskJSONConstraintDefinition
+	if err := tx.Exec(statement).Error; err != nil {
+		return fmt.Errorf("creating knowledge ingest task payload constraint: %w", err)
 	}
 	return nil
 }

@@ -69,8 +69,11 @@ func TestMigrateAndVerifySchemaIntegration(t *testing.T) {
 		assertColumnType(t, ctx, pool, column[0], column[1], "integer")
 	}
 	assertColumnType(t, ctx, pool, "knowledge_sources", "canonical_url", "text")
+	assertColumnType(t, ctx, pool, "knowledge_document_versions", "reconciler_revision", "text")
 	assertColumnType(t, ctx, pool, "knowledge_ingest_jobs", "batch_id", "text")
 	assertColumnType(t, ctx, pool, "knowledge_ingest_jobs", "sources_json", "jsonb")
+	assertColumnType(t, ctx, pool, "knowledge_ingest_jobs", "task_id", "text")
+	assertColumnType(t, ctx, pool, "knowledge_ingest_jobs", "source_json", "jsonb")
 
 	var hasTrgm bool
 	if err := pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')").Scan(&hasTrgm); err != nil {
@@ -107,6 +110,186 @@ func TestMigrateIsIdempotentIntegration(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("sentinel count = %d, want 1", count)
+	}
+}
+
+func TestMigrateUpgradesKnowledgeIngestTaskColumnsIntegration(t *testing.T) {
+	ctx := t.Context()
+	pool := openIsolatedPool(t, ctx)
+	defer pool.Close()
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+DELETE FROM fairy_schema_state WHERE id = 1;
+DROP INDEX knowledge_ingest_jobs_task_key;
+ALTER TABLE knowledge_ingest_jobs
+	DROP CONSTRAINT knowledge_ingest_jobs_task_json_check;
+ALTER TABLE knowledge_ingest_jobs
+	DROP COLUMN task_id,
+	DROP COLUMN source_json;
+
+INSERT INTO conversations(id, character_id, created_at_ms, updated_at_ms)
+VALUES ('payload-upgrade-conversation', 'character', 1, 1);
+INSERT INTO conversation_turns(id, conversation_id, sequence, status, origin, extraction_state, created_at_ms, updated_at_ms)
+VALUES ('payload-upgrade-turn', 'payload-upgrade-conversation', 1, 'completed', 'user', 'pending', 1, 1);
+INSERT INTO knowledge_ingest_jobs(
+	id, conversation_id, turn_id, batch_id, sources_json, status,
+	created_at_ms, updated_at_ms
+) VALUES (
+	'legacy-object-job', 'payload-upgrade-conversation', 'payload-upgrade-turn',
+	'legacy-object-task',
+	'{"id":"object-source","title":"Object","url":"https://object.example/item","snippet":"","rank":1,"fetchedAtUnixMs":1}'::jsonb,
+	'pending', 1, 1
+), (
+	'legacy-array-job', 'payload-upgrade-conversation', 'payload-upgrade-turn',
+	'legacy-array-task',
+	'[{"id":"array-source","title":"Array","url":"https://array.example/item","snippet":"","rank":2,"fetchedAtUnixMs":2}]'::jsonb,
+	'pending', 1, 1
+), (
+	'legacy-column-job', 'payload-upgrade-conversation', 'payload-upgrade-turn',
+	'', '[]'::jsonb, 'pending', 1, 1
+), (
+	'legacy-multi-job', 'payload-upgrade-conversation', 'payload-upgrade-turn',
+	'legacy-multi-task',
+	'[{"id":"multi-a"},{"id":"multi-b"}]'::jsonb,
+	'running', 1, 1
+), (
+	'legacy-running-job', 'payload-upgrade-conversation', 'payload-upgrade-turn',
+	'legacy-running-task',
+	'{"id":"running-source","title":"Running","url":"https://running.example/item","snippet":"","rank":3,"fetchedAtUnixMs":3}'::jsonb,
+	'running', 1, 1
+);
+UPDATE knowledge_ingest_jobs
+SET title = 'Column', url = 'https://column.example/item', snippet = '',
+    rank = 4, fetched_at_ms = 4
+WHERE id = 'legacy-column-job';
+UPDATE knowledge_ingest_jobs
+SET attempt_count = 2, lease_owner = 'old-owner', lease_expires_at_ms = 10
+WHERE id IN ('legacy-multi-job', 'legacy-running-job');
+`); err != nil {
+		t.Fatalf("prepare legacy knowledge ingest rows: %v", err)
+	}
+
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("Migrate(legacy knowledge ingest rows) error = %v", err)
+	}
+
+	type migratedJob struct {
+		taskID, sourceID, status, errorCategory string
+		attemptCount                            int
+		leaseOwner                              *string
+		oldPayloadMatches                       bool
+	}
+	checks := []struct {
+		id, wantTaskID, wantSourceID, wantStatus, wantError string
+		wantAttempt                                         int
+		oldPayload                                          string
+	}{
+		{
+			id: "legacy-object-job", wantTaskID: "legacy-object-task",
+			wantSourceID: "object-source", wantStatus: "pending", oldPayload: `{"id":"object-source","title":"Object","url":"https://object.example/item","snippet":"","rank":1,"fetchedAtUnixMs":1}`,
+		},
+		{
+			id: "legacy-array-job", wantTaskID: "legacy-array-task",
+			wantSourceID: "array-source", wantStatus: "pending", oldPayload: `[{"id":"array-source","title":"Array","url":"https://array.example/item","snippet":"","rank":2,"fetchedAtUnixMs":2}]`,
+		},
+		{
+			id: "legacy-column-job", wantTaskID: "legacy-legacy-column-job",
+			wantSourceID: "legacy-source-legacy-column-job", wantStatus: "pending", oldPayload: `[]`,
+		},
+		{
+			id: "legacy-running-job", wantTaskID: "legacy-running-task",
+			wantSourceID: "running-source", wantStatus: "pending", wantAttempt: 1, oldPayload: `{"id":"running-source","title":"Running","url":"https://running.example/item","snippet":"","rank":3,"fetchedAtUnixMs":3}`,
+		},
+		{
+			id: "legacy-multi-job", wantStatus: "failed",
+			wantError: "legacy_payload_not_singular", wantAttempt: 2, oldPayload: `[{"id":"multi-a"},{"id":"multi-b"}]`,
+		},
+	}
+	for _, check := range checks {
+		var got migratedJob
+		if err := pool.QueryRow(ctx, `
+SELECT task_id,
+       COALESCE(source_json ->> 'id', ''),
+       status,
+       COALESCE(error_category, ''),
+       attempt_count,
+       lease_owner,
+       sources_json = $2::jsonb
+FROM knowledge_ingest_jobs
+WHERE id = $1
+`, check.id, check.oldPayload).Scan(
+			&got.taskID, &got.sourceID, &got.status, &got.errorCategory,
+			&got.attemptCount, &got.leaseOwner, &got.oldPayloadMatches,
+		); err != nil {
+			t.Fatalf("read migrated job %s: %v", check.id, err)
+		}
+		if got.taskID != check.wantTaskID || got.sourceID != check.wantSourceID ||
+			got.status != check.wantStatus || got.errorCategory != check.wantError ||
+			got.attemptCount != check.wantAttempt || got.leaseOwner != nil || !got.oldPayloadMatches {
+			t.Errorf("migrated job %s = %#v, want task=%q source=%q status=%q error=%q attempt=%d preserved=true",
+				check.id, got, check.wantTaskID, check.wantSourceID, check.wantStatus, check.wantError, check.wantAttempt)
+		}
+	}
+
+	var before string
+	if err := pool.QueryRow(ctx, `
+SELECT jsonb_agg(to_jsonb(j) ORDER BY id)::text
+FROM knowledge_ingest_jobs AS j
+`).Scan(&before); err != nil {
+		t.Fatalf("snapshot migrated jobs: %v", err)
+	}
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("repeat Migrate() error = %v", err)
+	}
+	var after string
+	if err := pool.QueryRow(ctx, `
+SELECT jsonb_agg(to_jsonb(j) ORDER BY id)::text
+FROM knowledge_ingest_jobs AS j
+`).Scan(&after); err != nil {
+		t.Fatalf("snapshot repeated migration jobs: %v", err)
+	}
+	if before != after {
+		t.Fatal("repeated migration changed knowledge ingest rows")
+	}
+
+	if _, err := pool.Exec(ctx, `
+INSERT INTO knowledge_ingest_jobs(
+	id, conversation_id, turn_id, task_id, source_json, status,
+	created_at_ms, updated_at_ms
+) VALUES (
+	'current-object-job', 'payload-upgrade-conversation', 'payload-upgrade-turn',
+	'current-object-task',
+	'{"id":"current-source","title":"Current","url":"https://current.example/item","snippet":"","rank":1,"fetchedAtUnixMs":5}'::jsonb,
+	'pending', 2, 2
+)
+`); err != nil {
+		t.Fatalf("insert current task payload after migration: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO knowledge_ingest_jobs(
+	id, conversation_id, turn_id, task_id, source_json, status,
+	created_at_ms, updated_at_ms
+) VALUES (
+	'invalid-array-job', 'payload-upgrade-conversation', 'payload-upgrade-turn',
+	'invalid-array-task', '[{}]'::jsonb, 'pending', 3, 3
+)
+`); err == nil {
+		t.Fatal("current task source array must be rejected")
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO knowledge_ingest_jobs(
+	id, conversation_id, turn_id, task_id, source_json, status,
+	created_at_ms, updated_at_ms
+) VALUES (
+	'duplicate-task-job', 'payload-upgrade-conversation', 'payload-upgrade-turn',
+	'current-object-task',
+	'{"id":"duplicate-source","title":"Duplicate","url":"https://duplicate.example/item","snippet":"","rank":1,"fetchedAtUnixMs":6}'::jsonb,
+	'pending', 3, 3
+)
+`); err == nil {
+		t.Fatal("duplicate current task ID must be rejected")
 	}
 }
 
@@ -271,6 +454,71 @@ WHERE id = 'upgrade-message'
 	}
 	assertRegclass(t, ctx, pool, "stickers", true)
 	assertConstraint(t, ctx, pool, "conversations", "previous_conversations_character_check", true)
+}
+
+func TestMigrateAddsKnowledgeReconcilerRevisionAndPreservesVersionIntegration(t *testing.T) {
+	ctx := t.Context()
+	pool := openIsolatedPool(t, ctx)
+	defer pool.Close()
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	contentHash := fmt.Sprintf("%x", sha256.Sum256([]byte("legacy complete knowledge document")))
+	if _, err := pool.Exec(ctx, `
+INSERT INTO knowledge_documents(
+  id, canonical_url, title, current_version_id, current_content_hash, created_at_ms, updated_at_ms
+) VALUES (
+  'legacy-reconciler-document', 'https://public.example/legacy-reconciler',
+  'Legacy reconciler document', NULL, NULL, 1, 1
+)
+`); err != nil {
+		t.Fatalf("prepare previous knowledge document: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO knowledge_document_versions(
+  id, document_id, content_hash, content_type, status,
+  fetched_at_ms, etag, last_modified, reconciler_revision, created_at_ms
+) VALUES (
+  'legacy-reconciler-version', 'legacy-reconciler-document', $1, 'text/plain', 'current',
+  10, '"legacy"', 'Wed, 29 Jul 2026 00:00:00 GMT', '', 1
+)
+`, contentHash); err != nil {
+		t.Fatalf("prepare previous knowledge version: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE knowledge_documents
+SET current_version_id = 'legacy-reconciler-version', current_content_hash = $1
+WHERE id = 'legacy-reconciler-document'
+`, contentHash); err != nil {
+		t.Fatalf("prepare previous knowledge document rows: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+DELETE FROM fairy_schema_state WHERE id = 1;
+ALTER TABLE knowledge_document_versions
+  DROP CONSTRAINT knowledge_document_versions_invariants_check;
+ALTER TABLE knowledge_document_versions DROP COLUMN reconciler_revision;
+`); err != nil {
+		t.Fatalf("prepare previous knowledge document schema: %v", err)
+	}
+
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("Migrate(previous knowledge schema) error = %v", err)
+	}
+	var gotHash, revision, etag string
+	if err := pool.QueryRow(ctx, `
+SELECT content_hash, reconciler_revision, etag
+FROM knowledge_document_versions
+WHERE id = 'legacy-reconciler-version'
+`).Scan(&gotHash, &revision, &etag); err != nil {
+		t.Fatalf("read preserved knowledge version: %v", err)
+	}
+	if gotHash != contentHash || revision != "" || etag != `"legacy"` {
+		t.Fatalf("preserved version hash=%q revision=%q etag=%q", gotHash, revision, etag)
+	}
+	status, err := VerifySchema(ctx, pool)
+	if err != nil || !status.Current {
+		t.Fatalf("VerifySchema() after knowledge upgrade status = %#v, err = %v", status, err)
+	}
 }
 
 func TestMigrateAndVerifyAllowUnrelatedTablesIntegration(t *testing.T) {

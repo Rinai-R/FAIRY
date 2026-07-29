@@ -35,7 +35,7 @@ type KnowledgeIngestJobRecord struct {
 	ID              string `json:"id"`
 	ConversationID  string `json:"conversationId"`
 	TurnID          string `json:"turnId"`
-	BatchID         string `json:"batchId"`
+	TaskID          string `json:"taskId"`
 	Status          string `json:"status"`
 	AttemptCount    int    `json:"attemptCount"`
 	NextAttemptAtMS int64  `json:"nextAttemptAtMs"`
@@ -160,23 +160,12 @@ type MessagePage struct {
 	NextBeforeSequence *uint64         `json:"nextBeforeSequence,omitempty"`
 }
 
-type KnowledgeIngestSnapshot struct {
-	ConversationID  string
-	TurnID          string
-	Query           string
-	Title           string
-	URL             string
-	Snippet         string
-	Rank            uint8
-	FetchedAtUnixMS int64
-}
-
 const (
-	MaxKnowledgeIngestSources          = 5
-	MaxKnowledgeIngestSourceJSONBytes  = 16 << 10
-	MaxKnowledgeIngestTitleRunes       = 300
-	MaxKnowledgeIngestSnippetRunes     = 1200
-	MaxKnowledgeIngestRecallCandidates = 4
+	MaxKnowledgeIngestSourceRank      = 5
+	MaxKnowledgeIngestSourceJSONBytes = 16 << 10
+	MaxKnowledgeIngestTitleRunes      = 300
+	MaxKnowledgeIngestSnippetRunes    = 1200
+	MaxKnowledgeSearchCandidates      = 4
 )
 
 type KnowledgeIngestSource struct {
@@ -188,51 +177,30 @@ type KnowledgeIngestSource struct {
 	FetchedAtUnixMS int64  `json:"fetchedAtUnixMs"`
 }
 
-type KnowledgeIngestBatch struct {
-	ID             string                  `json:"id"`
-	ConversationID string                  `json:"conversationId"`
-	TurnID         string                  `json:"turnId"`
-	Sources        []KnowledgeIngestSource `json:"sources"`
+type KnowledgeIngestTask struct {
+	ID             string                `json:"id"`
+	ConversationID string                `json:"conversationId"`
+	TurnID         string                `json:"turnId"`
+	Source         KnowledgeIngestSource `json:"source"`
 }
 
 type KnowledgeIngestClaim struct {
-	JobID string               `json:"jobId"`
-	Batch KnowledgeIngestBatch `json:"batch"`
-}
-
-type KnowledgeDocumentChunk struct {
-	ID       string `json:"id"`
-	Ordinal  int    `json:"ordinal"`
-	Text     string `json:"text"`
-	TextHash string `json:"textHash"`
+	JobID string              `json:"jobId"`
+	Task  KnowledgeIngestTask `json:"task"`
 }
 
 type KnowledgeDocument struct {
-	SourceID        string                   `json:"sourceId"`
-	CanonicalURL    string                   `json:"canonicalUrl"`
-	Title           string                   `json:"title"`
-	ContentHash     string                   `json:"contentHash"`
-	ContentType     string                   `json:"contentType"`
-	ETag            string                   `json:"etag"`
-	LastModified    string                   `json:"lastModified"`
-	FetchedAtUnixMS int64                    `json:"fetchedAtUnixMs"`
-	Chunks          []KnowledgeDocumentChunk `json:"chunks"`
-}
-
-type KnowledgeIngestFact struct {
-	Topic                 string   `json:"topic,omitempty"`
-	Subject               string   `json:"subject"`
-	Predicate             string   `json:"predicate"`
-	Value                 string   `json:"value"`
-	Statement             string   `json:"statement"`
-	ConfidenceBasisPoints uint16   `json:"confidenceBasisPoints"`
-	SourceHitIDs          []string `json:"sourceHitIDs,omitempty"`
-	EvidenceChunkIDs      []string `json:"evidenceChunkIDs"`
-}
-
-type KnowledgeIngestRecall struct {
-	FactIndex  int                  `json:"factIndex"`
-	Candidates []RetrievedKnowledge `json:"candidates"`
+	SourceID           string `json:"sourceId"`
+	CanonicalURL       string `json:"canonicalUrl"`
+	Title              string `json:"title"`
+	Content            string `json:"content"`
+	ContentHash        string `json:"contentHash"`
+	EvidenceID         string `json:"evidenceId"`
+	ContentType        string `json:"contentType"`
+	ETag               string `json:"etag"`
+	LastModified       string `json:"lastModified"`
+	FetchedAtUnixMS    int64  `json:"fetchedAtUnixMs"`
+	ReconcilerRevision string `json:"reconcilerRevision,omitempty"`
 }
 
 type KnowledgeMutationOperation string
@@ -244,8 +212,10 @@ const (
 	KnowledgeMutationNone   KnowledgeMutationOperation = "NONE"
 )
 
-type KnowledgeIngestMutation struct {
-	FactIndex int                        `json:"factIndex"`
-	Operation KnowledgeMutationOperation `json:"operation"`
-	MemoryID  string                     `json:"memoryId,omitempty"`
+type KnowledgeDocumentAction struct {
+	Operation             KnowledgeMutationOperation `json:"operation"`
+	MemoryID              string                     `json:"memoryId,omitempty"`
+	Content               string                     `json:"content,omitempty"`
+	ConfidenceBasisPoints uint16                     `json:"confidenceBasisPoints,omitempty"`
+	Evidence              string                     `json:"evidence"`
 }

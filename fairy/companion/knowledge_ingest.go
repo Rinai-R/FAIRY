@@ -4,31 +4,22 @@ import (
 	"fairy/memory"
 )
 
-func cloneWebSearchBatches(batches []webSearchBatch) []webSearchBatch {
-	cloned := make([]webSearchBatch, len(batches))
-	for index, batch := range batches {
-		cloned[index] = batch
-		cloned[index].Sources = append([]webSearchSource(nil), batch.Sources...)
-	}
-	return cloned
-}
-
-func memoryKnowledgeIngestBatches(batch webSearchBatch) []memory.KnowledgeIngestBatch {
-	batches := make([]memory.KnowledgeIngestBatch, 0, len(batch.Sources))
+func memoryKnowledgeIngestTasks(batch webSearchBatch) []memory.KnowledgeIngestTask {
+	tasks := make([]memory.KnowledgeIngestTask, 0, len(batch.Sources))
 	for _, source := range batch.Sources {
 		persistedSource := memory.KnowledgeIngestSource{
 			ID: source.ID, Title: source.Title, URL: source.URL, Snippet: source.Snippet,
 			Rank: source.Rank, FetchedAtUnixMS: source.FetchedAtUnixMS,
 		}
-		batches = append(batches, memory.KnowledgeIngestBatch{
+		tasks = append(tasks, memory.KnowledgeIngestTask{
 			ID: webSearchSourceJobID(batch.ID, source.ID), ConversationID: batch.ConversationID, TurnID: batch.TurnID,
-			Sources: []memory.KnowledgeIngestSource{persistedSource},
+			Source: persistedSource,
 		})
 	}
-	return batches
+	return tasks
 }
 
-func (s *CompanionService) persistKnowledgeIngestBatch(batch webSearchBatch) error {
+func (s *CompanionService) persistKnowledgeIngestTasks(batch webSearchBatch) error {
 	if s == nil || len(batch.Sources) == 0 {
 		return nil
 	}
@@ -36,7 +27,7 @@ func (s *CompanionService) persistKnowledgeIngestBatch(batch webSearchBatch) err
 	if store == nil {
 		return ErrTurnRuntimeUnavailable
 	}
-	if err := store.EnqueueKnowledgeIngestBatches(memoryKnowledgeIngestBatches(batch)); err != nil {
+	if err := store.EnqueueKnowledgeIngestTasks(memoryKnowledgeIngestTasks(batch)); err != nil {
 		return err
 	}
 	if s.retention != nil {
