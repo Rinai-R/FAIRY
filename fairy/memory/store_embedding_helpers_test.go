@@ -74,6 +74,27 @@ func TestEmbeddingForContentBuildsPostgresValue(t *testing.T) {
 	}
 }
 
+func TestEmbeddingsForContentsUsesOneProviderBatch(t *testing.T) {
+	first := make([]float32, SemanticEmbeddingDimensions)
+	second := make([]float32, SemanticEmbeddingDimensions)
+	first[1] = 0.5
+	second[2] = 0.75
+	embedder := &fixedSemanticEmbedder{
+		ready: true, dims: SemanticEmbeddingDimensions,
+		vectors: [][]float32{first, second},
+	}
+	values, err := embeddingsForContents(embedder, []string{"first", "second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 2 || len(embedder.inputs) != 1 || len(embedder.inputs[0]) != 2 {
+		t.Fatalf("values=%d inputs=%#v", len(values), embedder.inputs)
+	}
+	if values[0].ContentHash != semanticContentHash("first") || values[1].ContentHash != semanticContentHash("second") {
+		t.Fatalf("values=%#v", values)
+	}
+}
+
 func TestEmbeddingForContentRejectsInvalidProviderResults(t *testing.T) {
 	tests := []struct {
 		name     string

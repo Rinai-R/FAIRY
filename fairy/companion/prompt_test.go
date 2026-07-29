@@ -424,6 +424,15 @@ func TestInstructionsForLane(t *testing.T) {
 	if err != nil || text != TranslateInstructions || tokens != TranslateMaxOutputTokens {
 		t.Fatalf("translate lane = (%q, %d, %v)", text, tokens, err)
 	}
+	text, tokens, err = InstructionsForLane(model.PromptLaneKnowledgeIngest)
+	if err != nil || text != KnowledgeIngestInstructions || tokens != KnowledgeIngestMaxOutputTokens {
+		t.Fatalf("knowledge ingest lane = (%q, %d, %v)", text, tokens, err)
+	}
+	for _, needle := range []string{"sourceHitIDs", "supplied batch", "Do not invent", "output Markdown"} {
+		if !strings.Contains(KnowledgeIngestInstructions, needle) {
+			t.Fatalf("KnowledgeIngestInstructions missing %q", needle)
+		}
+	}
 	for _, needle := range []string{"character", "dialogueStyle", "spoken", "do not invent", "do not answer as a companion"} {
 		if !strings.Contains(TranslateInstructions, needle) {
 			t.Fatalf("TranslateInstructions missing %q", needle)

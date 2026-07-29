@@ -2102,6 +2102,261 @@ func TestPostgresKnowledgeIngestWorkersClaimDisjointJobs(t *testing.T) {
 	}
 }
 
+func TestPostgresKnowledgeIngestBatchEnqueueClaimAndLegacyProjection(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStoreFromPoolWithLease(pool, "batch-owner", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := store.OpenOrCreateCharacterConversationContext(ctx, "character-ingest-batch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := store.BeginTurnContext(ctx, bootstrap.Conversation.ID, "batch source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteTurnContext(ctx, bootstrap.Conversation.ID, turn.ID, "batch reply"); err != nil {
+		t.Fatal(err)
+	}
+	batch := KnowledgeIngestBatch{
+		ID: "web-batch-1", ConversationID: bootstrap.Conversation.ID, TurnID: turn.ID, Category: "anime",
+		Sources: []KnowledgeIngestSource{
+			{ID: "web-source-1", Title: "来源一", URL: "https://one.example/item", Snippet: "这是第一条足够完整的公开摘要。", Rank: 1, FetchedAtUnixMS: 1},
+			{ID: "web-source-2", Title: "来源二", URL: "https://two.example/item", Snippet: "这是第二条足够完整的公开摘要。", Rank: 2, FetchedAtUnixMS: 1},
+		},
+	}
+	if err := store.EnqueueKnowledgeIngestBatchesContext(ctx, []KnowledgeIngestBatch{batch, batch}); err != nil {
+		t.Fatal(err)
+	}
+	var jobs int
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_ingest_jobs WHERE batch_id = $1", batch.ID).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 1 {
+		t.Fatalf("batch job count = %d, want 1", jobs)
+	}
+	if processed, err := store.ProcessKnowledgeIngestJobsContext(ctx, 1); err != nil || processed != 0 {
+		t.Fatalf("legacy processor handled new batch: processed=%d err=%v", processed, err)
+	}
+	claims, err := store.ClaimKnowledgeIngestBatchesContext(ctx, 2)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("claims = %#v, %v", claims, err)
+	}
+	if claims[0].Batch.ID != batch.ID || len(claims[0].Batch.Sources) != 2 || claims[0].Batch.Sources[1].ID != "web-source-2" {
+		t.Fatalf("claimed batch = %#v", claims[0])
+	}
+	if err := store.FailKnowledgeIngestBatchContext(ctx, claims[0].JobID, "model failed"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.EnqueueKnowledgeIngestSnapshotsContext(ctx, []KnowledgeIngestSnapshot{{
+		ConversationID: bootstrap.Conversation.ID, TurnID: turn.ID, Query: "game",
+		Title: "旧来源", URL: "https://legacy.example/item", Snippet: "这是一条旧格式但足够完整的公开摘要。", Rank: 1, FetchedAtUnixMS: 2,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	legacyClaims, err := store.ClaimKnowledgeIngestBatchesContext(ctx, 1)
+	if err != nil || len(legacyClaims) != 1 {
+		t.Fatalf("legacy claims = %#v, %v", legacyClaims, err)
+	}
+	legacy := legacyClaims[0].Batch
+	if !strings.HasPrefix(legacy.ID, "legacy-") || len(legacy.Sources) != 1 || !strings.HasPrefix(legacy.Sources[0].ID, "legacy-source-") || legacy.Sources[0].URL != "https://legacy.example/item" {
+		t.Fatalf("legacy batch = %#v", legacy)
+	}
+	if err := store.DropKnowledgeIngestBatchContext(ctx, legacyClaims[0].JobID, "legacy verified"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresKnowledgeIngestBatchCommitIsAtomicAndMergesCanonicalSources(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatal(err)
+	}
+	firstVector := make([]float32, SemanticEmbeddingDimensions)
+	secondVector := make([]float32, SemanticEmbeddingDimensions)
+	firstVector[0] = 1
+	secondVector[1] = 1
+	embedder := &fixedSemanticEmbedder{
+		ready: true, dims: SemanticEmbeddingDimensions,
+		vectors: [][]float32{firstVector, secondVector},
+	}
+	store, err := newStoreFromPool(pool, embedder, "batch-commit-owner", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversationID, turnID := seedCompletedTurn(t, ctx, store, "character-ingest-atomic")
+	batch := KnowledgeIngestBatch{
+		ID: "commit-batch-1", ConversationID: conversationID, TurnID: turnID, Category: "anime",
+		Sources: []KnowledgeIngestSource{
+			{ID: "source-one", Title: "来源一", URL: "https://one.example/item", Snippet: "公开来源一的摘要。", Rank: 1, FetchedAtUnixMS: 1},
+			{ID: "source-two", Title: "来源二", URL: "https://two.example/item", Snippet: "公开来源二的摘要。", Rank: 2, FetchedAtUnixMS: 2},
+		},
+	}
+	if err := store.EnqueueKnowledgeIngestBatchesContext(ctx, []KnowledgeIngestBatch{batch}); err != nil {
+		t.Fatal(err)
+	}
+	claims, err := store.ClaimKnowledgeIngestBatchesContext(ctx, 1)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("claims=%#v err=%v", claims, err)
+	}
+	facts := []KnowledgeIngestFact{
+		{Topic: "作品甲", Statement: "作品甲将在十月正式公开全新篇章。", ConfidenceBasisPoints: 8400, SourceHitIDs: []string{"source-one"}},
+		{Topic: "作品乙", Statement: "作品乙已经正式公布续作制作决定。", ConfidenceBasisPoints: 8300, SourceHitIDs: []string{"source-one", "source-two"}},
+	}
+	written, err := store.CommitKnowledgeIngestBatchContext(ctx, claims[0].JobID, batch.ID, facts)
+	if err != nil || written != 2 {
+		t.Fatalf("written=%d err=%v", written, err)
+	}
+	if len(embedder.inputs) != 1 || len(embedder.inputs[0]) != 2 {
+		t.Fatalf("embedding batches=%#v", embedder.inputs)
+	}
+	var knowledgeCount, sourceCount int
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_entries WHERE verification_basis = 'retrieval_ingest'").Scan(&knowledgeCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_sources WHERE canonical_url <> ''").Scan(&sourceCount); err != nil {
+		t.Fatal(err)
+	}
+	if knowledgeCount != 2 || sourceCount != 3 {
+		t.Fatalf("knowledge=%d sources=%d", knowledgeCount, sourceCount)
+	}
+
+	embedder.vectors = [][]float32{firstVector}
+	for index, sourceURL := range []string{"https://three.example/item", "https://three.example/item"} {
+		repeatBatch := KnowledgeIngestBatch{
+			ID: fmt.Sprintf("commit-batch-repeat-%d", index), ConversationID: conversationID, TurnID: turnID, Category: "anime",
+			Sources: []KnowledgeIngestSource{{
+				ID: "repeat-source", Title: "来源三", URL: sourceURL,
+				Snippet: "同一事实的补充公开来源。", Rank: 1, FetchedAtUnixMS: 3,
+			}},
+		}
+		if err := store.EnqueueKnowledgeIngestBatchesContext(ctx, []KnowledgeIngestBatch{repeatBatch}); err != nil {
+			t.Fatal(err)
+		}
+		repeatClaims, err := store.ClaimKnowledgeIngestBatchesContext(ctx, 1)
+		if err != nil || len(repeatClaims) != 1 {
+			t.Fatalf("repeat claims=%#v err=%v", repeatClaims, err)
+		}
+		repeatFact := facts[0]
+		repeatFact.SourceHitIDs = []string{"repeat-source"}
+		if _, err := store.CommitKnowledgeIngestBatchContext(ctx, repeatClaims[0].JobID, repeatBatch.ID, []KnowledgeIngestFact{repeatFact}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_entries WHERE statement = $1", facts[0].Statement).Scan(&knowledgeCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Raw().QueryRow(ctx, `
+SELECT count(*) FROM knowledge_sources s
+JOIN knowledge_entries k ON k.id = s.knowledge_id
+WHERE k.statement = $1`, facts[0].Statement).Scan(&sourceCount); err != nil {
+		t.Fatal(err)
+	}
+	if knowledgeCount != 1 || sourceCount != 2 {
+		t.Fatalf("deduplicated knowledge=%d merged sources=%d", knowledgeCount, sourceCount)
+	}
+}
+
+func TestPostgresKnowledgeIngestBatchFailureWritesNoPartialFacts(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStoreFromPoolWithLease(pool, "batch-failure-owner", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversationID, turnID := seedCompletedTurn(t, ctx, store, "character-ingest-failure")
+	batch := KnowledgeIngestBatch{
+		ID: "failure-batch", ConversationID: conversationID, TurnID: turnID, Category: "game",
+		Sources: []KnowledgeIngestSource{{
+			ID: "source-valid", Title: "来源", URL: "https://valid.example/item",
+			Snippet: "用于原子失败测试的公开来源。", Rank: 1, FetchedAtUnixMS: 1,
+		}},
+	}
+	if err := store.EnqueueKnowledgeIngestBatchesContext(ctx, []KnowledgeIngestBatch{batch}); err != nil {
+		t.Fatal(err)
+	}
+	claims, err := store.ClaimKnowledgeIngestBatchesContext(ctx, 1)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("claims=%#v err=%v", claims, err)
+	}
+	_, err = store.CommitKnowledgeIngestBatchContext(ctx, claims[0].JobID, batch.ID, []KnowledgeIngestFact{
+		{Topic: "有效主题", Statement: "这是一条本来有效但不应部分写入的事实。", ConfidenceBasisPoints: 8000, SourceHitIDs: []string{"source-valid"}},
+		{Topic: "无效主题", Statement: "这条事实引用了批次外来源。", ConfidenceBasisPoints: 8000, SourceHitIDs: []string{"source-other"}},
+	})
+	if err == nil {
+		t.Fatal("CommitKnowledgeIngestBatchContext() error = nil")
+	}
+	var knowledgeCount, sourceCount int
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_entries WHERE verification_basis = 'retrieval_ingest'").Scan(&knowledgeCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_sources").Scan(&sourceCount); err != nil {
+		t.Fatal(err)
+	}
+	if knowledgeCount != 0 || sourceCount != 0 {
+		t.Fatalf("partial writes: knowledge=%d sources=%d", knowledgeCount, sourceCount)
+	}
+}
+
+func TestPostgresKnowledgeIngestBatchEmbeddingFailureWritesNothing(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatal(err)
+	}
+	store, err := newStoreFromPool(pool, &fixedSemanticEmbedder{
+		ready: true, dims: SemanticEmbeddingDimensions, err: errors.New("embedding provider failed"),
+	}, "batch-embedding-failure-owner", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversationID, turnID := seedCompletedTurn(t, ctx, store, "character-ingest-embedding-failure")
+	batch := KnowledgeIngestBatch{
+		ID: "embedding-failure-batch", ConversationID: conversationID, TurnID: turnID, Category: "book",
+		Sources: []KnowledgeIngestSource{{
+			ID: "source-valid", Title: "来源", URL: "https://valid.example/book",
+			Snippet: "用于向量失败测试的公开来源。", Rank: 1, FetchedAtUnixMS: 1,
+		}},
+	}
+	if err := store.EnqueueKnowledgeIngestBatchesContext(ctx, []KnowledgeIngestBatch{batch}); err != nil {
+		t.Fatal(err)
+	}
+	claims, err := store.ClaimKnowledgeIngestBatchesContext(ctx, 1)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("claims=%#v err=%v", claims, err)
+	}
+	_, err = store.CommitKnowledgeIngestBatchContext(ctx, claims[0].JobID, batch.ID, []KnowledgeIngestFact{{
+		Topic: "作品", Statement: "这条事实必须等向量成功后才能原子写入。", ConfidenceBasisPoints: 8000, SourceHitIDs: []string{"source-valid"},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "embedding provider failed") {
+		t.Fatalf("commit error=%v", err)
+	}
+	var knowledgeCount, sourceCount int
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_entries WHERE verification_basis = 'retrieval_ingest'").Scan(&knowledgeCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_sources").Scan(&sourceCount); err != nil {
+		t.Fatal(err)
+	}
+	if knowledgeCount != 0 || sourceCount != 0 {
+		t.Fatalf("embedding failure writes: knowledge=%d sources=%d", knowledgeCount, sourceCount)
+	}
+}
+
 func TestPostgresKnowledgeIngestExpiredLeaseReclaimsAndRejectsOldOwner(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
@@ -2152,6 +2407,19 @@ func TestPostgresKnowledgeIngestExpiredLeaseReclaimsAndRejectsOldOwner(t *testin
 	}
 	if err := FinishKnowledgeIngestJob(ctx, pool.Raw(), claimed[0].ID, "ingest-owner-first", "succeeded", "", time.Now().UnixMilli()); err == nil {
 		t.Fatal("old owner completion error = nil")
+	}
+	if _, err := first.CommitKnowledgeIngestBatchContext(ctx, claimed[0].ID, "legacy-"+claimed[0].ID, []KnowledgeIngestFact{{
+		Topic: "过期 owner", Statement: "过期 owner 不得写入这条长期知识事实。", ConfidenceBasisPoints: 8000,
+		SourceHitIDs: []string{"legacy-source-" + claimed[0].ID},
+	}}); err == nil {
+		t.Fatal("old owner batch commit error = nil")
+	}
+	var staleKnowledge int
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_entries WHERE statement = '过期 owner 不得写入这条长期知识事实。'").Scan(&staleKnowledge); err != nil {
+		t.Fatal(err)
+	}
+	if staleKnowledge != 0 {
+		t.Fatalf("old owner wrote %d knowledge rows", staleKnowledge)
 	}
 	if err := FinishKnowledgeIngestJob(ctx, pool.Raw(), claimed[0].ID, "ingest-owner-second", "dropped", "", time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)

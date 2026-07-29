@@ -152,3 +152,39 @@ type KnowledgeIngestSnapshot struct {
 	Rank            uint8
 	FetchedAtUnixMS int64
 }
+
+const (
+	MaxKnowledgeIngestSources         = 5
+	MaxKnowledgeIngestSourceJSONBytes = 16 << 10
+	MaxKnowledgeIngestTitleRunes      = 300
+	MaxKnowledgeIngestSnippetRunes    = 1200
+)
+
+type KnowledgeIngestSource struct {
+	ID              string `json:"id"`
+	Title           string `json:"title"`
+	URL             string `json:"url"`
+	Snippet         string `json:"snippet"`
+	Rank            uint8  `json:"rank"`
+	FetchedAtUnixMS int64  `json:"fetchedAtUnixMs"`
+}
+
+type KnowledgeIngestBatch struct {
+	ID             string                  `json:"id"`
+	ConversationID string                  `json:"conversationId"`
+	TurnID         string                  `json:"turnId"`
+	Category       string                  `json:"category"`
+	Sources        []KnowledgeIngestSource `json:"sources"`
+}
+
+type KnowledgeIngestClaim struct {
+	JobID string               `json:"jobId"`
+	Batch KnowledgeIngestBatch `json:"batch"`
+}
+
+type KnowledgeIngestFact struct {
+	Topic                 string   `json:"topic"`
+	Statement             string   `json:"statement"`
+	ConfidenceBasisPoints uint16   `json:"confidenceBasisPoints"`
+	SourceHitIDs          []string `json:"sourceHitIDs"`
+}

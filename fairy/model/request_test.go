@@ -311,6 +311,32 @@ func TestBuildChatCompletionsTranslateKeepsProviderNeutralBody(t *testing.T) {
 	}
 }
 
+func TestBuildChatCompletionsKnowledgeIngestUsesExplicitLane(t *testing.T) {
+	cacheInput := NewCacheKeyInput(PromptLaneKnowledgeIngest, "deepseek-v4-flash", "conversation", "strict knowledge ingest")
+	req := CompiledPromptRequest{
+		Shape: ModelRequestShape{
+			Lane:            PromptLaneKnowledgeIngest,
+			Model:           "deepseek-v4-flash",
+			Instructions:    "strict knowledge ingest",
+			MaxOutputTokens: 800,
+			PromptCacheKey:  "fairy:conversation:knowledge_ingest",
+		},
+		Input:      []PromptItem{{Type: PromptItemContextData, Content: `{"fairy_context_data":{"batchId":"batch-1","sources":[]}}`}},
+		CacheInput: &cacheInput,
+	}
+	draft, err := BuildRequestDraft(connection(ProtocolChatCompletions), req)
+	if err != nil {
+		t.Fatalf("BuildRequestDraft() error = %v", err)
+	}
+	body := bodyMap(t, draft)
+	if body["max_tokens"] != float64(800) {
+		t.Fatalf("max_tokens = %#v", body["max_tokens"])
+	}
+	if body["response_format"] != nil {
+		t.Fatalf("knowledge ingest must rely on strict codec, got response_format %#v", body["response_format"])
+	}
+}
+
 func TestBuildRequestDraftRejectsUnsafeOrMismatchedInput(t *testing.T) {
 	tests := []struct {
 		name string

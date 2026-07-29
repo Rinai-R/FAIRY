@@ -56,3 +56,27 @@ func TestRuntimeBeatDeliveryLedgerMetadataContainsOnlyDiagnostics(t *testing.T) 
 		}
 	}
 }
+
+func TestKnowledgeIngestLedgerMetadataDoesNotContainBatchContent(t *testing.T) {
+	metadata := runtimeKnowledgeIngestLedgerMetadata(
+		[]model.StreamEvent{{Type: "text_delta", Data: "secret statement"}},
+		[]LaneModelUsage{{Lane: string(model.PromptLaneKnowledgeIngest)}},
+		"secret-batch-id",
+		3,
+	)
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := string(raw)
+	for _, required := range []string{`"status":"knowledge_ingest"`, `"batchIdHash":`, `"sourceCount":3`} {
+		if !strings.Contains(wire, required) {
+			t.Fatalf("metadata missing %s: %s", required, wire)
+		}
+	}
+	for _, forbidden := range []string{"secret statement", "secret-batch-id", "https://source.example", "snippet", "query"} {
+		if strings.Contains(wire, forbidden) {
+			t.Fatalf("metadata leaked %q: %s", forbidden, wire)
+		}
+	}
+}

@@ -68,6 +68,9 @@ func TestMigrateAndVerifySchemaIntegration(t *testing.T) {
 	} {
 		assertColumnType(t, ctx, pool, column[0], column[1], "integer")
 	}
+	assertColumnType(t, ctx, pool, "knowledge_sources", "canonical_url", "text")
+	assertColumnType(t, ctx, pool, "knowledge_ingest_jobs", "batch_id", "text")
+	assertColumnType(t, ctx, pool, "knowledge_ingest_jobs", "sources_json", "jsonb")
 
 	var hasTrgm bool
 	if err := pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')").Scan(&hasTrgm); err != nil {

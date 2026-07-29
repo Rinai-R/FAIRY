@@ -15,12 +15,36 @@ type KnowledgeIngestJob struct {
 	ID             string
 	ConversationID string
 	TurnID         string
+	BatchID        string
+	SourcesJSON    []byte
 	Query          string
 	Title          string
 	URL            string
 	Snippet        string
 	Rank           uint8
 	FetchedAt      int64
+}
+
+func EnqueueKnowledgeIngestBatch(
+	ctx context.Context,
+	tx pgx.Tx,
+	id, conversationID, turnID, batchID, category string,
+	sourcesJSON []byte,
+	now int64,
+) error {
+	_, err := tx.Exec(ctx, `
+INSERT INTO knowledge_ingest_jobs(
+  id, conversation_id, turn_id, batch_id, sources_json, query,
+  title, url, snippet, rank, fetched_at_ms,
+  status, created_at_ms, updated_at_ms
+) VALUES ($1, $2, $3, $4, $5::jsonb, $6, '', '', '', 0, 0, 'pending', $7, $7)
+ON CONFLICT (batch_id) WHERE batch_id <> '' DO NOTHING`,
+		id, conversationID, turnID, batchID, sourcesJSON, category, now,
+	)
+	if err != nil {
+		return fmt.Errorf("queueing knowledge ingest batch: %w", err)
+	}
+	return nil
 }
 
 func EnqueueKnowledgeIngestJob(
@@ -42,10 +66,22 @@ INSERT INTO knowledge_ingest_jobs(
 }
 
 func ClaimKnowledgeIngestJobs(ctx context.Context, db Querier, limit int, now int64, workerID string, leaseExpires int64) ([]KnowledgeIngestJob, error) {
+	return claimKnowledgeIngestJobs(ctx, db, limit, now, workerID, leaseExpires, false)
+}
+
+func ClaimLegacyKnowledgeIngestJobs(ctx context.Context, db Querier, limit int, now int64, workerID string, leaseExpires int64) ([]KnowledgeIngestJob, error) {
+	return claimKnowledgeIngestJobs(ctx, db, limit, now, workerID, leaseExpires, true)
+}
+
+func claimKnowledgeIngestJobs(ctx context.Context, db Querier, limit int, now int64, workerID string, leaseExpires int64, legacyOnly bool) ([]KnowledgeIngestJob, error) {
+	legacyFilter := ""
+	if legacyOnly {
+		legacyFilter = " AND batch_id = ''"
+	}
 	rows, err := db.Query(ctx, `
 WITH candidates AS (
   SELECT id FROM knowledge_ingest_jobs
-  WHERE status = 'pending' OR (status = 'running' AND lease_expires_at_ms <= $1)
+  WHERE (status = 'pending' OR (status = 'running' AND lease_expires_at_ms <= $1))`+legacyFilter+`
   ORDER BY updated_at_ms ASC, id ASC
   LIMIT $2
   FOR UPDATE SKIP LOCKED
@@ -55,7 +91,8 @@ SET status = 'running', lease_owner = $3, lease_expires_at_ms = $4,
     attempt_count = j.attempt_count + 1, updated_at_ms = $1
 FROM candidates c
 WHERE j.id = c.id
-RETURNING j.id, j.conversation_id, j.turn_id, j.query, j.title, j.url, j.snippet, j.rank, j.fetched_at_ms`, now, limit, workerID, leaseExpires)
+RETURNING j.id, j.conversation_id, j.turn_id, j.query, j.title, j.url, j.snippet,
+          j.rank, j.fetched_at_ms, j.batch_id, j.sources_json`, now, limit, workerID, leaseExpires)
 	if err != nil {
 		return nil, fmt.Errorf("claiming knowledge ingest jobs: %w", err)
 	}
@@ -64,13 +101,19 @@ RETURNING j.id, j.conversation_id, j.turn_id, j.query, j.title, j.url, j.snippet
 	for rows.Next() {
 		var job KnowledgeIngestJob
 		var rank int
-		if err := rows.Scan(&job.ID, &job.ConversationID, &job.TurnID, &job.Query, &job.Title, &job.URL, &job.Snippet, &rank, &job.FetchedAt); err != nil {
+		if err := rows.Scan(
+			&job.ID, &job.ConversationID, &job.TurnID, &job.Query,
+			&job.Title, &job.URL, &job.Snippet, &rank, &job.FetchedAt,
+			&job.BatchID, &job.SourcesJSON,
+		); err != nil {
 			return nil, fmt.Errorf("scanning claimed knowledge ingest job: %w", err)
 		}
-		if rank < 1 || rank > 5 {
+		if job.BatchID == "" && (rank < 1 || rank > 5) {
 			return nil, errors.New("claimed knowledge ingest rank is invalid")
 		}
-		job.Rank = uint8(rank)
+		if rank >= 0 && rank <= 255 {
+			job.Rank = uint8(rank)
+		}
 		jobs = append(jobs, job)
 	}
 	if err := rows.Err(); err != nil {

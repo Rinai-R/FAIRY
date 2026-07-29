@@ -150,7 +150,7 @@ func parseProtocol(value string) (Protocol, error) {
 
 func validateLane(lane PromptLane) error {
 	switch lane {
-	case PromptLaneRespond, PromptLaneParticipate, PromptLaneCompact, PromptLaneExtract, PromptLaneTranslate, PromptLaneSocialLearn, PromptLaneSocialFeedback:
+	case PromptLaneRespond, PromptLaneParticipate, PromptLaneCompact, PromptLaneExtract, PromptLaneTranslate, PromptLaneSocialLearn, PromptLaneSocialFeedback, PromptLaneKnowledgeIngest:
 		return nil
 	default:
 		return fmt.Errorf("prompt lane %q is not supported", lane)

@@ -79,8 +79,11 @@ type extractionStore interface {
 
 // knowledgeIngestStore owns the independent verified-knowledge ingest queue.
 type knowledgeIngestStore interface {
-	EnqueueKnowledgeIngestSnapshots(snapshots []memory.KnowledgeIngestSnapshot) error
-	ProcessKnowledgeIngestJobs(limit int) (int, error)
+	EnqueueKnowledgeIngestBatches(batches []memory.KnowledgeIngestBatch) error
+	ClaimKnowledgeIngestBatches(limit int) ([]memory.KnowledgeIngestClaim, error)
+	CommitKnowledgeIngestBatch(jobID, batchID string, facts []memory.KnowledgeIngestFact) (int, error)
+	FailKnowledgeIngestBatch(jobID, message string) error
+	DropKnowledgeIngestBatch(jobID, message string) error
 }
 
 // SocialContextStore reads public feedback and person-note context.

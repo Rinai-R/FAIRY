@@ -107,34 +107,34 @@ func mergeKnowledge(base, extra []memory.RetrievedKnowledge) []memory.RetrievedK
 	return out
 }
 
-func retrievalFromWebHits(hits []WebSearchHit) memory.RetrievalContext {
-	if len(hits) == 0 {
+func retrievalFromWebSearchBatch(batch webSearchBatch) memory.RetrievalContext {
+	if len(batch.Sources) == 0 {
 		return memory.RetrievalContext{}
 	}
 	now := time.Now().UnixMilli()
-	knowledge := make([]memory.RetrievedKnowledge, 0, len(hits))
-	for index, hit := range hits {
-		statement := strings.TrimSpace(hit.Title)
-		if hit.Snippet != "" {
+	knowledge := make([]memory.RetrievedKnowledge, 0, len(batch.Sources))
+	for _, source := range batch.Sources {
+		statement := strings.TrimSpace(source.Title)
+		if source.Snippet != "" {
 			if statement == "" {
-				statement = hit.Snippet
+				statement = source.Snippet
 			} else {
-				statement = statement + " — " + hit.Snippet
+				statement = statement + " — " + source.Snippet
 			}
 		}
 		knowledge = append(knowledge, memory.RetrievedKnowledge{
-			ID:                    fmt.Sprintf("web-search-%d", index+1),
+			ID:                    source.ID,
 			Layer:                 "knowledge",
 			Topic:                 "web_search",
 			Statement:             statement,
 			VerificationBasis:     "web_search",
 			ConfidenceBasisPoints: 5000,
 			Sources: []memory.AssistantSource{{
-				Title:           hit.Title,
-				URL:             hit.URL,
-				Snippet:         hit.Snippet,
-				Rank:            uint8(index + 1),
-				FetchedAtUnixMS: now,
+				Title:           source.Title,
+				URL:             source.URL,
+				Snippet:         source.Snippet,
+				Rank:            source.Rank,
+				FetchedAtUnixMS: source.FetchedAtUnixMS,
 			}},
 			UpdatedAtUnixMS: now,
 		})

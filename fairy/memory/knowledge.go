@@ -184,3 +184,23 @@ func InsertKnowledgeSource(ctx context.Context, tx pgx.Tx, knowledgeID, sourceID
 	}
 	return nil
 }
+
+func InsertCanonicalKnowledgeSource(ctx context.Context, tx pgx.Tx, knowledgeID, sourceID string, source AssistantSource) error {
+	_, err := tx.Exec(ctx, `
+INSERT INTO knowledge_sources(
+  knowledge_id, source_id, title, url, canonical_url, snippet, rank, fetched_at_ms
+) SELECT $1, $2, $3, $4, $4, $5, $6, $7
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM knowledge_sources
+  WHERE knowledge_id = $1
+    AND (canonical_url = $4 OR url = $4)
+)
+ON CONFLICT (knowledge_id, canonical_url) WHERE canonical_url <> '' DO NOTHING`,
+		knowledgeID, sourceID, source.Title, source.URL, source.Snippet, source.Rank, source.FetchedAtUnixMS,
+	)
+	if err != nil {
+		return fmt.Errorf("inserting canonical knowledge source: %w", err)
+	}
+	return nil
+}

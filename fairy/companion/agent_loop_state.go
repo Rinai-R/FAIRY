@@ -4,7 +4,6 @@ import (
 	"errors"
 
 	"fairy/config"
-	"fairy/memory"
 	"fairy/model"
 )
 
@@ -26,7 +25,7 @@ type agentLoopState struct {
 	events              []model.StreamEvent
 	fullRequest         model.CompiledPromptRequest
 	finalUsage          []LaneModelUsage
-	ingestSnapshots     []memory.KnowledgeIngestSnapshot
+	ingestBatches       []webSearchBatch
 	modelDrivenTools    int
 	modelCallAttempts   int
 	replyCompileRetries int

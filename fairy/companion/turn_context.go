@@ -30,7 +30,7 @@ type turnContext struct {
 	events              []model.StreamEvent
 	fullRequest         model.CompiledPromptRequest
 	finalUsage          []LaneModelUsage
-	ingestSnapshots     []memory.KnowledgeIngestSnapshot
+	ingestBatches       []webSearchBatch
 	profileRevision     *uint64
 }
 

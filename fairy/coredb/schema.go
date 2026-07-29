@@ -2,7 +2,7 @@ package coredb
 
 import "github.com/pgvector/pgvector-go"
 
-const currentSchemaRevision = "2026-07-28-pgvector-1"
+const currentSchemaRevision = "2026-07-28-web-search-batches-1"
 
 type conversationSchema struct {
 	ID          string `gorm:"type:text;primaryKey;index:conversations_character_updated,priority:3"`
@@ -192,13 +192,14 @@ type knowledgeEntrySchema struct {
 func (knowledgeEntrySchema) TableName() string { return "knowledge_entries" }
 
 type knowledgeSourceSchema struct {
-	KnowledgeID string `gorm:"type:text;primaryKey"`
-	SourceID    string `gorm:"type:text;primaryKey"`
-	Title       string `gorm:"type:text;not null"`
-	URL         string `gorm:"type:text;not null"`
-	Snippet     string `gorm:"type:text;not null"`
-	Rank        int    `gorm:"type:integer;not null;check:knowledge_sources_invariants_check,(rank >= 0) AND (fetched_at_ms >= 0)"`
-	FetchedAtMS int64  `gorm:"not null"`
+	KnowledgeID  string `gorm:"type:text;primaryKey"`
+	SourceID     string `gorm:"type:text;primaryKey"`
+	Title        string `gorm:"type:text;not null"`
+	URL          string `gorm:"type:text;not null"`
+	CanonicalURL string `gorm:"type:text;not null;default:''"`
+	Snippet      string `gorm:"type:text;not null"`
+	Rank         int    `gorm:"type:integer;not null;check:knowledge_sources_invariants_check,(rank >= 0) AND (fetched_at_ms >= 0)"`
+	FetchedAtMS  int64  `gorm:"not null"`
 }
 
 func (knowledgeSourceSchema) TableName() string { return "knowledge_sources" }
@@ -234,6 +235,8 @@ type knowledgeIngestJobSchema struct {
 	ID               string  `gorm:"type:text;primaryKey"`
 	ConversationID   string  `gorm:"type:text;not null"`
 	TurnID           string  `gorm:"type:text;not null"`
+	BatchID          string  `gorm:"type:text;not null;default:''"`
+	SourcesJSON      []byte  `gorm:"type:jsonb;not null;default:'[]'::jsonb"`
 	Query            string  `gorm:"type:text;not null;default:''"`
 	Title            string  `gorm:"type:text;not null;default:''"`
 	URL              string  `gorm:"type:text;not null;default:''"`

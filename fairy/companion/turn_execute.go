@@ -640,15 +640,29 @@ func (e *TurnEngine) submitCompiledTurn(
 									"modelDrivenIndex": agent.modelDrivenTools + 1,
 								})
 							} else {
-								extra := retrievalFromWebHits(hits)
+								batch, batchErr := newWebSearchBatch(
+									request.ConversationID,
+									persisted.ID,
+									call.CallID,
+									stableKnowledgeCategory(query),
+									hits,
+									time.Now().UnixMilli(),
+								)
+								if batchErr != nil {
+									return fail("MODEL_RESPONSE_INVALID", batchErr)
+								}
+								extra := retrievalFromWebSearchBatch(batch)
 								retrieval = mergeRetrievalContext(retrieval, extra)
-								agent.ingestSnapshots = append(agent.ingestSnapshots, knowledgeIngestSnapshots(request.ConversationID, persisted.ID, query, hits, time.Now().UnixMilli())...)
+								if len(batch.Sources) > 0 {
+									agent.ingestBatches = append(agent.ingestBatches, batch)
+								}
 								s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, turnStatePlanning, "", map[string]any{
 									"tool":             call.Name,
 									"phase":            "model_driven",
 									"status":           "ok",
 									"queryHash":        runtimeHash(query),
 									"webHitCount":      len(hits),
+									"webSourceCount":   len(batch.Sources),
 									"mergedKnowledge":  len(retrieval.Knowledge),
 									"modelDrivenIndex": agent.modelDrivenTools + 1,
 								})
@@ -656,6 +670,7 @@ func (e *TurnEngine) submitCompiledTurn(
 									zap.String("phase", "tool_done"),
 									zap.String("tool", call.Name),
 									zap.Int("webHits", len(hits)),
+									zap.Int("webSources", len(batch.Sources)),
 									zap.Int("mergedKnowledge", len(retrieval.Knowledge)),
 									zap.Int("index", agent.modelDrivenTools+1),
 								)
@@ -783,7 +798,7 @@ func (e *TurnEngine) submitCompiledTurn(
 	gathered.events = append([]model.StreamEvent(nil), agent.events...)
 	gathered.fullRequest = agent.fullRequest
 	gathered.finalUsage = append([]LaneModelUsage(nil), agent.finalUsage...)
-	gathered.ingestSnapshots = append([]memory.KnowledgeIngestSnapshot(nil), agent.ingestSnapshots...)
+	gathered.ingestBatches = cloneWebSearchBatches(agent.ingestBatches)
 	respondingOutcome, respondingErr := execution.deliverReply(turnCtx, gathered, turnStarted, lg)
 	if respondingErr != nil {
 		return respondingOutcome, respondingErr

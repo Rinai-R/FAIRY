@@ -179,6 +179,14 @@ func runtimeModelLedgerMetadata(events []model.StreamEvent, usage []LaneModelUsa
 	}
 }
 
+func runtimeKnowledgeIngestLedgerMetadata(events []model.StreamEvent, usage []LaneModelUsage, batchID string, sourceCount int) map[string]any {
+	metadata := runtimeModelLedgerMetadata(events, usage)
+	metadata["status"] = "knowledge_ingest"
+	metadata["batchIdHash"] = runtimeHash(batchID)
+	metadata["sourceCount"] = sourceCount
+	return metadata
+}
+
 func runtimeTerminalLedgerMetadata(status string, reply CompiledReply, usage []LaneModelUsage) map[string]any {
 	return map[string]any{
 		"status":          status,

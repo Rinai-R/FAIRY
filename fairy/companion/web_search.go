@@ -2,12 +2,15 @@ package companion
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +20,10 @@ import (
 )
 
 const (
-	defaultSearchLimit = 5
+	defaultSearchLimit    = 5
+	maxSearchTitleRunes   = 300
+	maxSearchSnippetRunes = 1200
+	maxSearchURLBytes     = 2048
 	// OpenSERP HTTP path segment is "duck"; response meta still says "duckduckgo".
 	defaultEngine  = "duck"
 	defaultBaseURL = "http://127.0.0.1:7000"
@@ -32,6 +38,24 @@ type WebSearchHit struct {
 	Title   string `json:"title"`
 	URL     string `json:"url"`
 	Snippet string `json:"snippet"`
+}
+
+type webSearchSource struct {
+	ID              string
+	Title           string
+	URL             string
+	Snippet         string
+	Rank            uint8
+	FetchedAtUnixMS int64
+}
+
+type webSearchBatch struct {
+	ID             string
+	ConversationID string
+	TurnID         string
+	ToolCallID     string
+	Category       string
+	Sources        []webSearchSource
 }
 
 // Service is an HTTP client for an externally managed OpenSERP instance
@@ -182,4 +206,117 @@ func parseSearchHits(body []byte, limit int) ([]WebSearchHit, error) {
 		hits = append(hits, WebSearchHit{Title: item.Title, URL: item.URL, Snippet: item.Snippet})
 	}
 	return hits, nil
+}
+
+var searchHTMLTagPattern = regexp.MustCompile(`<[^>]*>`)
+
+var searchTrackingParameters = map[string]struct{}{
+	"dclid":   {},
+	"fbclid":  {},
+	"gclid":   {},
+	"gbraid":  {},
+	"mc_cid":  {},
+	"mc_eid":  {},
+	"msclkid": {},
+	"wbraid":  {},
+	"yclid":   {},
+}
+
+func newWebSearchBatch(conversationID, turnID, toolCallID, category string, hits []WebSearchHit, fetchedAtUnixMS int64) (webSearchBatch, error) {
+	conversationID = strings.TrimSpace(conversationID)
+	turnID = strings.TrimSpace(turnID)
+	toolCallID = strings.TrimSpace(toolCallID)
+	category = strings.TrimSpace(category)
+	if conversationID == "" || turnID == "" || toolCallID == "" {
+		return webSearchBatch{}, errors.New("web search batch identity is required")
+	}
+	batch := webSearchBatch{
+		ID:             webSearchBatchID(conversationID, turnID, toolCallID),
+		ConversationID: conversationID,
+		TurnID:         turnID,
+		ToolCallID:     toolCallID,
+		Category:       category,
+		Sources:        make([]webSearchSource, 0, min(len(hits), defaultSearchLimit)),
+	}
+	seenURLs := make(map[string]struct{}, defaultSearchLimit)
+	seenContents := make(map[string]struct{}, defaultSearchLimit)
+	for index, hit := range hits {
+		if len(batch.Sources) >= defaultSearchLimit {
+			break
+		}
+		title := cleanWebSearchText(hit.Title)
+		snippet := cleanWebSearchText(hit.Snippet)
+		canonicalURL, ok := canonicalWebSearchURL(hit.URL)
+		if !ok || title == "" && snippet == "" {
+			continue
+		}
+		if utf8.RuneCountInString(title) > maxSearchTitleRunes || utf8.RuneCountInString(snippet) > maxSearchSnippetRunes {
+			continue
+		}
+		if _, exists := seenURLs[canonicalURL]; exists {
+			continue
+		}
+		contentKey := strings.ToLower(title + "\x00" + snippet)
+		if _, exists := seenContents[contentKey]; exists {
+			continue
+		}
+		source := webSearchSource{
+			ID:              webSearchSourceID(canonicalURL, title, snippet),
+			Title:           title,
+			URL:             canonicalURL,
+			Snippet:         snippet,
+			Rank:            uint8(index + 1),
+			FetchedAtUnixMS: fetchedAtUnixMS,
+		}
+		seenURLs[canonicalURL] = struct{}{}
+		seenContents[contentKey] = struct{}{}
+		batch.Sources = append(batch.Sources, source)
+	}
+	return batch, nil
+}
+
+func cleanWebSearchText(value string) string {
+	value = html.UnescapeString(strings.TrimSpace(value))
+	value = searchHTMLTagPattern.ReplaceAllString(value, " ")
+	return strings.Join(strings.Fields(value), " ")
+}
+
+func canonicalWebSearchURL(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || len(raw) > maxSearchURLBytes {
+		return "", false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.User != nil || parsed.Hostname() == "" {
+		return "", false
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", false
+	}
+	parsed.Host = strings.ToLower(parsed.Host)
+	parsed.Fragment = ""
+	query := parsed.Query()
+	for key := range query {
+		lower := strings.ToLower(key)
+		if strings.HasPrefix(lower, "utm_") {
+			query.Del(key)
+			continue
+		}
+		if _, drop := searchTrackingParameters[lower]; drop {
+			query.Del(key)
+		}
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), true
+}
+
+func webSearchBatchID(conversationID, turnID, toolCallID string) string {
+	sum := sha256.Sum256([]byte(conversationID + "\x00" + turnID + "\x00" + toolCallID))
+	return fmt.Sprintf("web-batch-%x", sum[:12])
+}
+
+func webSearchSourceID(canonicalURL, title, snippet string) string {
+	sum := sha256.Sum256([]byte(canonicalURL + "\x00" + title + "\x00" + snippet))
+	return fmt.Sprintf("web-source-%x", sum[:12])
 }

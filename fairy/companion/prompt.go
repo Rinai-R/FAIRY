@@ -12,14 +12,16 @@ import (
 )
 
 const (
-	RespondInstructions      = persona.RespondInstructions
-	CompactInstructions      = persona.CompactInstructions
-	ExtractInstructions      = persona.ExtractInstructions
-	TranslateInstructions    = persona.TranslateInstructions
-	RespondMaxOutputTokens   = persona.RespondMaxOutputTokens
-	CompactMaxOutputTokens   = persona.CompactMaxOutputTokens
-	ExtractMaxOutputTokens   = persona.ExtractMaxOutputTokens
-	TranslateMaxOutputTokens = persona.TranslateMaxOutputTokens
+	RespondInstructions            = persona.RespondInstructions
+	CompactInstructions            = persona.CompactInstructions
+	ExtractInstructions            = persona.ExtractInstructions
+	KnowledgeIngestInstructions    = persona.KnowledgeIngestInstructions
+	TranslateInstructions          = persona.TranslateInstructions
+	RespondMaxOutputTokens         = persona.RespondMaxOutputTokens
+	CompactMaxOutputTokens         = persona.CompactMaxOutputTokens
+	ExtractMaxOutputTokens         = persona.ExtractMaxOutputTokens
+	KnowledgeIngestMaxOutputTokens = persona.KnowledgeIngestMaxOutputTokens
+	TranslateMaxOutputTokens       = persona.TranslateMaxOutputTokens
 )
 
 type ContextSlot = persona.ContextSlot
@@ -99,6 +101,8 @@ func InstructionsForLane(lane model.PromptLane) (string, uint32, error) {
 		return CompactInstructions, CompactMaxOutputTokens, nil
 	case model.PromptLaneExtract:
 		return ExtractInstructions, ExtractMaxOutputTokens, nil
+	case model.PromptLaneKnowledgeIngest:
+		return KnowledgeIngestInstructions, KnowledgeIngestMaxOutputTokens, nil
 	case model.PromptLaneTranslate:
 		return TranslateInstructions, TranslateMaxOutputTokens, nil
 	default:

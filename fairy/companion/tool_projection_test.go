@@ -30,8 +30,12 @@ func TestMergeRetrievalContextDeduplicatesAndPreservesPriority(t *testing.T) {
 }
 
 func TestWebAndErrorProjectionPreserveExistingShape(t *testing.T) {
-	web := retrievalFromWebHits([]WebSearchHit{{Title: "Title", URL: "https://example.com", Snippet: "Snippet"}})
-	if len(web.Knowledge) != 1 || web.Knowledge[0].ID != "web-search-1" || web.Knowledge[0].Statement != "Title — Snippet" || len(web.Knowledge[0].Sources) != 1 {
+	batch, err := newWebSearchBatch("conversation", "turn", "call", "", []WebSearchHit{{Title: "Title", URL: "https://example.com", Snippet: "Snippet"}}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	web := retrievalFromWebSearchBatch(batch)
+	if len(web.Knowledge) != 1 || web.Knowledge[0].ID != batch.Sources[0].ID || web.Knowledge[0].Statement != "Title — Snippet" || len(web.Knowledge[0].Sources) != 1 || web.Knowledge[0].Sources[0].FetchedAtUnixMS != 1 {
 		t.Fatalf("web projection = %#v", web)
 	}
 	failure := retrievalFromToolError(toolMemorySearch, errors.New("unavailable"))

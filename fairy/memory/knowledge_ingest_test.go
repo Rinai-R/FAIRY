@@ -1,6 +1,9 @@
 package memory
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestAcceptKnowledgeIngestRequiresStableCategoryAndPublicSource(t *testing.T) {
 	tests := []struct {
@@ -22,6 +25,41 @@ func TestAcceptKnowledgeIngestRequiresStableCategoryAndPublicSource(t *testing.T
 		t.Run(test.name, func(t *testing.T) {
 			if got := acceptKnowledgeIngest(test.category, test.topic, test.statement, test.url, test.rank); got != test.want {
 				t.Fatalf("acceptKnowledgeIngest() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestValidateKnowledgeIngestBatchBoundsCanonicalSources(t *testing.T) {
+	valid := KnowledgeIngestBatch{
+		ID: "batch-1", ConversationID: "conversation-1", TurnID: "turn-1", Category: "anime",
+		Sources: []KnowledgeIngestSource{{
+			ID: "source-1", Title: "作品标题", URL: "https://example.test/item?id=1",
+			Snippet: "这是一条足够完整的公开来源摘要。", Rank: 1, FetchedAtUnixMS: 1,
+		}},
+	}
+	encoded, err := validateKnowledgeIngestBatch(valid)
+	if err != nil || len(encoded) == 0 {
+		t.Fatalf("valid batch = (%q, %v)", encoded, err)
+	}
+	tests := map[string]func(*KnowledgeIngestBatch){
+		"unknown category": func(batch *KnowledgeIngestBatch) { batch.Category = "chat" },
+		"empty sources":    func(batch *KnowledgeIngestBatch) { batch.Sources = nil },
+		"fragment URL":     func(batch *KnowledgeIngestBatch) { batch.Sources[0].URL += "#fragment" },
+		"credential URL":   func(batch *KnowledgeIngestBatch) { batch.Sources[0].URL = "https://user:pass@example.test/item" },
+		"invalid rank":     func(batch *KnowledgeIngestBatch) { batch.Sources[0].Rank = 0 },
+		"long snippet": func(batch *KnowledgeIngestBatch) {
+			batch.Sources[0].Snippet = strings.Repeat("长", MaxKnowledgeIngestSnippetRunes+1)
+		},
+		"duplicate source": func(batch *KnowledgeIngestBatch) { batch.Sources = append(batch.Sources, batch.Sources[0]) },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			batch := valid
+			batch.Sources = append([]KnowledgeIngestSource(nil), valid.Sources...)
+			mutate(&batch)
+			if _, err := validateKnowledgeIngestBatch(batch); err == nil {
+				t.Fatalf("expected invalid batch: %#v", batch)
 			}
 		})
 	}

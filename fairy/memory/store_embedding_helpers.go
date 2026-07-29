@@ -40,35 +40,49 @@ func (value EmbeddingValue) Validate() error {
 }
 
 func embeddingForContent(embedder SemanticEmbedder, content string) (EmbeddingValue, error) {
+	values, err := embeddingsForContents(embedder, []string{content})
+	if err != nil {
+		return EmbeddingValue{}, err
+	}
+	return values[0], nil
+}
+
+func embeddingsForContents(embedder SemanticEmbedder, contents []string) ([]EmbeddingValue, error) {
+	if len(contents) == 0 {
+		return nil, nil
+	}
 	if embedder == nil {
-		return EmbeddingValue{}, nil
+		return make([]EmbeddingValue, len(contents)), nil
 	}
 	if !embedder.Ready() {
-		return EmbeddingValue{}, ErrSemanticUnavailable
+		return nil, ErrSemanticUnavailable
 	}
 	if dims := embedder.Dims(); dims != SemanticEmbeddingDimensions {
-		return EmbeddingValue{}, fmt.Errorf("embedding dimensions = %d, want %d", dims, SemanticEmbeddingDimensions)
+		return nil, fmt.Errorf("embedding dimensions = %d, want %d", dims, SemanticEmbeddingDimensions)
 	}
-	vectors, err := embedder.Embed([]string{content})
+	vectors, err := embedder.Embed(contents)
 	if err != nil {
-		return EmbeddingValue{}, fmt.Errorf("embedding content: %w", err)
+		return nil, fmt.Errorf("embedding content: %w", err)
 	}
-	if len(vectors) != 1 {
-		return EmbeddingValue{}, fmt.Errorf("embedding result count = %d, want 1", len(vectors))
+	if len(vectors) != len(contents) {
+		return nil, fmt.Errorf("embedding result count = %d, want %d", len(vectors), len(contents))
 	}
-	if err := ValidateVector(vectors[0]); err != nil {
-		return EmbeddingValue{}, err
+	values := make([]EmbeddingValue, len(contents))
+	for index, vectorSlice := range vectors {
+		if err := ValidateVector(vectorSlice); err != nil {
+			return nil, fmt.Errorf("validating embedding[%d]: %w", index, err)
+		}
+		vector := pgvector.NewVector(vectorSlice)
+		values[index] = EmbeddingValue{
+			ModelID:     SemanticEmbeddingModelID,
+			ContentHash: semanticContentHash(contents[index]),
+			Vector:      &vector,
+		}
+		if err := values[index].Validate(); err != nil {
+			return nil, fmt.Errorf("validating embedding[%d]: %w", index, err)
+		}
 	}
-	vector := pgvector.NewVector(vectors[0])
-	value := EmbeddingValue{
-		ModelID:     SemanticEmbeddingModelID,
-		ContentHash: semanticContentHash(content),
-		Vector:      &vector,
-	}
-	if err := value.Validate(); err != nil {
-		return EmbeddingValue{}, err
-	}
-	return value, nil
+	return values, nil
 }
 
 func (s *Store) embeddingForContent(content string) (EmbeddingValue, error) {

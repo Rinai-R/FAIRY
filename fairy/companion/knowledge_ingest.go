@@ -6,25 +6,27 @@ import (
 	"fairy/memory"
 )
 
-func knowledgeIngestSnapshots(conversationID, turnID, query string, hits []WebSearchHit, fetchedAtUnixMS int64) []memory.KnowledgeIngestSnapshot {
-	category := stableKnowledgeCategory(query)
-	if category == "" {
-		return nil
+func cloneWebSearchBatches(batches []webSearchBatch) []webSearchBatch {
+	cloned := make([]webSearchBatch, len(batches))
+	for index, batch := range batches {
+		cloned[index] = batch
+		cloned[index].Sources = append([]webSearchSource(nil), batch.Sources...)
 	}
-	snapshots := make([]memory.KnowledgeIngestSnapshot, 0, len(hits))
-	for index, hit := range hits {
-		snapshots = append(snapshots, memory.KnowledgeIngestSnapshot{
-			ConversationID:  conversationID,
-			TurnID:          turnID,
-			Query:           category,
-			Title:           hit.Title,
-			URL:             hit.URL,
-			Snippet:         hit.Snippet,
-			Rank:            uint8(index + 1),
-			FetchedAtUnixMS: fetchedAtUnixMS,
+	return cloned
+}
+
+func memoryKnowledgeIngestBatch(batch webSearchBatch) memory.KnowledgeIngestBatch {
+	sources := make([]memory.KnowledgeIngestSource, 0, len(batch.Sources))
+	for _, source := range batch.Sources {
+		sources = append(sources, memory.KnowledgeIngestSource{
+			ID: source.ID, Title: source.Title, URL: source.URL, Snippet: source.Snippet,
+			Rank: source.Rank, FetchedAtUnixMS: source.FetchedAtUnixMS,
 		})
 	}
-	return snapshots
+	return memory.KnowledgeIngestBatch{
+		ID: batch.ID, ConversationID: batch.ConversationID, TurnID: batch.TurnID,
+		Category: batch.Category, Sources: sources,
+	}
 }
 
 func stableKnowledgeCategory(query string) string {
@@ -47,11 +49,15 @@ func stableKnowledgeCategory(query string) string {
 	return ""
 }
 
-// scheduleKnowledgeIngest enqueues retrieval snapshots and processes a bounded
-// batch asynchronously. Writes verified knowledge with no human Confirm.
-func (s *CompanionService) scheduleKnowledgeIngest(snapshots []memory.KnowledgeIngestSnapshot) {
-	if s == nil || s.retention == nil || len(snapshots) == 0 {
+func (s *CompanionService) scheduleKnowledgeIngestBatches(batches []webSearchBatch) {
+	if s == nil || s.retention == nil || len(batches) == 0 {
 		return
 	}
-	s.retention.scheduleKnowledgeIngest(snapshots)
+	persisted := make([]memory.KnowledgeIngestBatch, 0, len(batches))
+	for _, batch := range batches {
+		if batch.Category != "" && len(batch.Sources) > 0 {
+			persisted = append(persisted, memoryKnowledgeIngestBatch(batch))
+		}
+	}
+	s.retention.scheduleKnowledgeIngestBatches(persisted)
 }

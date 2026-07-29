@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -63,5 +64,93 @@ func TestParseSearchHits(t *testing.T) {
 	}
 	if len(hits) != 1 || hits[0].Title != "A" {
 		t.Fatalf("hits = %#v", hits)
+	}
+}
+
+func TestNewWebSearchBatchCleansCanonicalizesAndDeduplicatesSources(t *testing.T) {
+	hits := []WebSearchHit{
+		{
+			Title:   "  A &amp; B <b>作品</b> ",
+			URL:     "HTTPS://Example.COM/path?utm_source=test&id=2#section",
+			Snippet: " 第一段  <em>摘要</em>\n内容 ",
+		},
+		{
+			Title:   "重复 URL",
+			URL:     "https://example.com/path?id=2&utm_medium=social",
+			Snippet: "不应保留",
+		},
+		{
+			Title:   "A & B 作品",
+			URL:     "https://mirror.example/path",
+			Snippet: "第一段 摘要 内容",
+		},
+		{
+			Title:   "独立来源",
+			URL:     "https://second.example/item?version=1&fbclid=tracking",
+			Snippet: "另一条可靠摘要",
+		},
+		{Title: "非法来源", URL: "javascript:alert(1)", Snippet: "必须丢弃"},
+	}
+	batch, err := newWebSearchBatch("conversation-1", "turn-1", "call-1", "anime", hits, 123)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.ID == "" || batch.ConversationID != "conversation-1" || batch.TurnID != "turn-1" || batch.ToolCallID != "call-1" || batch.Category != "anime" {
+		t.Fatalf("batch identity = %#v", batch)
+	}
+	if len(batch.Sources) != 2 {
+		t.Fatalf("sources = %#v", batch.Sources)
+	}
+	first := batch.Sources[0]
+	if first.Title != "A & B 作品" || first.Snippet != "第一段 摘要 内容" || first.URL != "https://example.com/path?id=2" || first.Rank != 1 || first.FetchedAtUnixMS != 123 || first.ID == "" {
+		t.Fatalf("first source = %#v", first)
+	}
+	second := batch.Sources[1]
+	if second.URL != "https://second.example/item?version=1" || second.Rank != 4 || second.ID == first.ID {
+		t.Fatalf("second source = %#v", second)
+	}
+}
+
+func TestNewWebSearchBatchKeepsToolCallBoundaries(t *testing.T) {
+	hits := []WebSearchHit{{Title: "作品", URL: "https://example.test/item", Snippet: "足够清晰的摘要"}}
+	first, err := newWebSearchBatch("conversation", "turn", "call-a", "anime", hits, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := newWebSearchBatch("conversation", "turn", "call-b", "anime", hits, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextTurn, err := newWebSearchBatch("conversation", "turn-next", "call-a", "anime", hits, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID || first.ID == nextTurn.ID || second.ID == nextTurn.ID {
+		t.Fatalf("batch IDs are not isolated: %q %q %q", first.ID, second.ID, nextTurn.ID)
+	}
+	if first.Sources[0].ID != second.Sources[0].ID {
+		t.Fatalf("source identity should describe canonical evidence: %q != %q", first.Sources[0].ID, second.Sources[0].ID)
+	}
+}
+
+func TestNewWebSearchBatchBoundsAndRejectsInvalidInputs(t *testing.T) {
+	if _, err := newWebSearchBatch("", "turn", "call", "anime", nil, 0); err == nil {
+		t.Fatal("expected missing identity error")
+	}
+	hits := make([]WebSearchHit, 0, 8)
+	for index := 0; index < 7; index++ {
+		hits = append(hits, WebSearchHit{
+			Title:   "来源 " + string(rune('A'+index)),
+			URL:     "https://example.test/item/" + string(rune('a'+index)),
+			Snippet: "摘要 " + string(rune('A'+index)),
+		})
+	}
+	hits = append(hits, WebSearchHit{Title: strings.Repeat("长", maxSearchTitleRunes+1), URL: "https://too-long.example", Snippet: "摘要"})
+	batch, err := newWebSearchBatch("conversation", "turn", "call", "anime", hits, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Sources) != defaultSearchLimit {
+		t.Fatalf("source count = %d, want %d", len(batch.Sources), defaultSearchLimit)
 	}
 }

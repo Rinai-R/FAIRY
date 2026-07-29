@@ -245,26 +245,117 @@ func (e *retentionEngine) executeExtractionBatch(store extractionStore, batch *m
 	return err
 }
 
-func (e *retentionEngine) scheduleKnowledgeIngest(snapshots []memory.KnowledgeIngestSnapshot) {
-	if e == nil || e.closed.Load() || e.service == nil || len(snapshots) == 0 {
+func (e *retentionEngine) scheduleKnowledgeIngestBatches(batches []memory.KnowledgeIngestBatch) {
+	if e == nil || e.closed.Load() || e.service == nil || len(batches) == 0 {
 		return
 	}
 	store := e.service.memory.retention.knowledge
 	if store == nil {
 		return
 	}
-	copySnapshots := append([]memory.KnowledgeIngestSnapshot(nil), snapshots...)
+	copyBatches := cloneKnowledgeIngestBatches(batches)
 	if err := e.run(func() {
-		if err := store.EnqueueKnowledgeIngestSnapshots(copySnapshots); err != nil {
+		if err := store.EnqueueKnowledgeIngestBatches(copyBatches); err != nil {
 			e.service.setBackgroundError(err)
 			return
 		}
-		if _, err := store.ProcessKnowledgeIngestJobs(knowledgeIngestBatchLimit); err != nil {
+		claims, err := store.ClaimKnowledgeIngestBatches(knowledgeIngestBatchLimit)
+		if err != nil {
 			e.service.setBackgroundError(err)
+			return
+		}
+		for _, claim := range claims {
+			if err := e.executeKnowledgeIngestClaim(store, claim); err != nil {
+				if failErr := store.FailKnowledgeIngestBatch(claim.JobID, err.Error()); failErr != nil {
+					e.service.setBackgroundError(errors.Join(err, failErr))
+					continue
+				}
+				e.service.setBackgroundError(err)
+				continue
+			}
 		}
 	}); err != nil {
 		e.service.setBackgroundError(err)
 	}
+}
+
+func (e *retentionEngine) executeKnowledgeIngestClaim(store knowledgeIngestStore, claim memory.KnowledgeIngestClaim) error {
+	if e == nil || e.service == nil {
+		return errRetentionClosed
+	}
+	input, err := buildKnowledgeIngestInput(claim.Batch)
+	if err != nil {
+		return err
+	}
+	configSource := e.service.configSource()
+	if configSource == nil {
+		return ErrTurnRuntimeUnavailable
+	}
+	connection, err := configSource.ModelConnection()
+	if err != nil {
+		return err
+	}
+	cacheKey := ""
+	if connection.Capabilities.PromptCacheKey {
+		cacheKey = model.LaneCacheKey(claim.Batch.ConversationID, model.PromptLaneKnowledgeIngest)
+	}
+	cacheInput := model.NewCacheKeyInput(
+		model.PromptLaneKnowledgeIngest,
+		connection.Model,
+		claim.Batch.ConversationID,
+		persona.KnowledgeIngestInstructions,
+	)
+	modelPort := e.service.modelPort()
+	if modelPort == nil {
+		return ErrTurnRuntimeUnavailable
+	}
+	events, err := modelPort.ExecuteRequestContext(context.Background(), model.CompiledPromptRequest{
+		Shape: model.ModelRequestShape{
+			Lane: model.PromptLaneKnowledgeIngest, Model: connection.Model,
+			Instructions:    persona.KnowledgeIngestInstructions,
+			MaxOutputTokens: persona.KnowledgeIngestMaxOutputTokens,
+			PromptCacheKey:  cacheKey,
+		},
+		Input: input, CacheInput: &cacheInput,
+	})
+	if err != nil {
+		return err
+	}
+	usage := model.LaneUsageFromEvents(model.PromptLaneKnowledgeIngest, events, 0)
+	e.service.appendRuntimeLedger(
+		claim.Batch.ConversationID,
+		claim.Batch.TurnID,
+		runtimeLedgerEventModel,
+		turnStateCompleted,
+		"",
+		runtimeKnowledgeIngestLedgerMetadata(events, usage, claim.Batch.ID, len(claim.Batch.Sources)),
+	)
+	output, err := parseKnowledgeIngestOutput(model.CollectTextFromEvents(events), claim.Batch)
+	if err != nil {
+		return err
+	}
+	if len(output.Facts) == 0 {
+		return store.DropKnowledgeIngestBatch(claim.JobID, "")
+	}
+	facts := make([]memory.KnowledgeIngestFact, 0, len(output.Facts))
+	for _, fact := range output.Facts {
+		facts = append(facts, memory.KnowledgeIngestFact{
+			Topic: fact.Topic, Statement: fact.Statement,
+			ConfidenceBasisPoints: fact.ConfidenceBasisPoints,
+			SourceHitIDs:          append([]string(nil), fact.SourceHitIDs...),
+		})
+	}
+	_, err = store.CommitKnowledgeIngestBatch(claim.JobID, claim.Batch.ID, facts)
+	return err
+}
+
+func cloneKnowledgeIngestBatches(batches []memory.KnowledgeIngestBatch) []memory.KnowledgeIngestBatch {
+	cloned := make([]memory.KnowledgeIngestBatch, len(batches))
+	for index, batch := range batches {
+		cloned[index] = batch
+		cloned[index].Sources = append([]memory.KnowledgeIngestSource(nil), batch.Sources...)
+	}
+	return cloned
 }
 
 func (e *retentionEngine) close() {
