@@ -15,52 +15,63 @@ import (
 
 const (
 	maxKnowledgeIngestFacts          = 8
-	maxKnowledgeIngestTopicRunes     = 300
+	maxKnowledgeIngestSubjectRunes   = 300
+	maxKnowledgeIngestPredicateRunes = 160
+	maxKnowledgeIngestValueRunes     = 600
 	maxKnowledgeIngestStatementRunes = 1200
 )
 
 type knowledgeIngestFact struct {
-	Topic                 string   `json:"topic"`
+	Subject               string   `json:"subject"`
+	Predicate             string   `json:"predicate"`
+	Value                 string   `json:"value"`
 	Statement             string   `json:"statement"`
 	ConfidenceBasisPoints uint16   `json:"confidenceBasisPoints"`
-	SourceHitIDs          []string `json:"sourceHitIDs"`
+	EvidenceChunkIDs      []string `json:"evidenceChunkIDs"`
 }
 
 type knowledgeIngestOutput struct {
 	Facts []knowledgeIngestFact `json:"facts"`
 }
 
-type knowledgeIngestPromptSource struct {
-	ID              string `json:"id"`
-	Title           string `json:"title"`
-	URL             string `json:"url"`
-	Snippet         string `json:"snippet"`
-	Rank            uint8  `json:"rank"`
-	FetchedAtUnixMS int64  `json:"fetchedAtUnixMs"`
+type knowledgeIngestPromptChunk struct {
+	ID      string `json:"id"`
+	Ordinal int    `json:"ordinal"`
+	Text    string `json:"text"`
+}
+
+type knowledgeIngestPromptDocument struct {
+	SourceID     string                       `json:"sourceId"`
+	CanonicalURL string                       `json:"canonicalUrl"`
+	Title        string                       `json:"title"`
+	Chunks       []knowledgeIngestPromptChunk `json:"chunks"`
 }
 
 type knowledgeIngestPromptBatch struct {
-	BatchID  string                        `json:"batchId"`
-	Category string                        `json:"category"`
-	Sources  []knowledgeIngestPromptSource `json:"sources"`
+	BatchID   string                          `json:"batchId"`
+	Documents []knowledgeIngestPromptDocument `json:"documents"`
 }
 
-func buildKnowledgeIngestInput(batch memory.KnowledgeIngestBatch) ([]model.PromptItem, error) {
-	if batch.ID == "" || batch.Category == "" || len(batch.Sources) == 0 || len(batch.Sources) > memory.MaxKnowledgeIngestSources {
+func buildKnowledgeIngestInput(batch memory.KnowledgeIngestBatch, documents []memory.KnowledgeDocument) ([]model.PromptItem, error) {
+	if batch.ID == "" || len(documents) == 0 || len(documents) > memory.MaxKnowledgeIngestSources {
 		return nil, errors.New("knowledge ingest batch is invalid")
 	}
-	sources := make([]knowledgeIngestPromptSource, 0, len(batch.Sources))
-	for _, source := range batch.Sources {
-		sources = append(sources, knowledgeIngestPromptSource{
-			ID: source.ID, Title: source.Title, URL: source.URL, Snippet: source.Snippet,
-			Rank: source.Rank, FetchedAtUnixMS: source.FetchedAtUnixMS,
+	promptDocuments := make([]knowledgeIngestPromptDocument, 0, len(documents))
+	for _, document := range documents {
+		chunks := make([]knowledgeIngestPromptChunk, 0, len(document.Chunks))
+		for _, chunk := range document.Chunks {
+			chunks = append(chunks, knowledgeIngestPromptChunk{ID: chunk.ID, Ordinal: chunk.Ordinal, Text: chunk.Text})
+		}
+		promptDocuments = append(promptDocuments, knowledgeIngestPromptDocument{
+			SourceID: document.SourceID, CanonicalURL: document.CanonicalURL,
+			Title: document.Title, Chunks: chunks,
 		})
 	}
 	payload, err := json.Marshal(struct {
 		FairyContextData knowledgeIngestPromptBatch `json:"fairy_context_data"`
 	}{
 		FairyContextData: knowledgeIngestPromptBatch{
-			BatchID: batch.ID, Category: batch.Category, Sources: sources,
+			BatchID: batch.ID, Documents: promptDocuments,
 		},
 	})
 	if err != nil {
@@ -69,7 +80,7 @@ func buildKnowledgeIngestInput(batch memory.KnowledgeIngestBatch) ([]model.Promp
 	return []model.PromptItem{{Type: model.PromptItemContextData, Content: string(payload)}}, nil
 }
 
-func parseKnowledgeIngestOutput(raw string, batch memory.KnowledgeIngestBatch) (knowledgeIngestOutput, error) {
+func parseKnowledgeIngestOutput(raw string, documents []memory.KnowledgeDocument) (knowledgeIngestOutput, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return knowledgeIngestOutput{}, errors.New("knowledge ingest model returned empty output")
@@ -90,15 +101,23 @@ func parseKnowledgeIngestOutput(raw string, batch memory.KnowledgeIngestBatch) (
 	if len(output.Facts) > maxKnowledgeIngestFacts {
 		return knowledgeIngestOutput{}, errors.New("knowledge ingest fact limit exceeded")
 	}
-	allowedSources := make(map[string]struct{}, len(batch.Sources))
-	for _, source := range batch.Sources {
-		allowedSources[source.ID] = struct{}{}
+	allowedChunks := make(map[string]struct{})
+	for _, document := range documents {
+		for _, chunk := range document.Chunks {
+			allowedChunks[chunk.ID] = struct{}{}
+		}
 	}
-	seenStatements := make(map[string]struct{}, len(output.Facts))
+	seenSlots := make(map[string]struct{}, len(output.Facts))
 	for index := range output.Facts {
 		fact := &output.Facts[index]
-		if strings.TrimSpace(fact.Topic) != fact.Topic || fact.Topic == "" || utf8.RuneCountInString(fact.Topic) > maxKnowledgeIngestTopicRunes {
-			return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] topic is invalid", index)
+		if strings.TrimSpace(fact.Subject) != fact.Subject || fact.Subject == "" || utf8.RuneCountInString(fact.Subject) > maxKnowledgeIngestSubjectRunes {
+			return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] subject is invalid", index)
+		}
+		if strings.TrimSpace(fact.Predicate) != fact.Predicate || fact.Predicate == "" || utf8.RuneCountInString(fact.Predicate) > maxKnowledgeIngestPredicateRunes {
+			return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] predicate is invalid", index)
+		}
+		if strings.TrimSpace(fact.Value) != fact.Value || fact.Value == "" || utf8.RuneCountInString(fact.Value) > maxKnowledgeIngestValueRunes {
+			return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] value is invalid", index)
 		}
 		if strings.TrimSpace(fact.Statement) != fact.Statement || utf8.RuneCountInString(fact.Statement) < 8 || utf8.RuneCountInString(fact.Statement) > maxKnowledgeIngestStatementRunes {
 			return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] statement is invalid", index)
@@ -106,22 +125,23 @@ func parseKnowledgeIngestOutput(raw string, batch memory.KnowledgeIngestBatch) (
 		if fact.ConfidenceBasisPoints == 0 || fact.ConfidenceBasisPoints > 10000 {
 			return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] confidence is invalid", index)
 		}
-		if len(fact.SourceHitIDs) == 0 || len(fact.SourceHitIDs) > memory.MaxKnowledgeIngestSources {
-			return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] sources are invalid", index)
+		if len(fact.EvidenceChunkIDs) == 0 || len(fact.EvidenceChunkIDs) > knowledgeMaxChunksPerBatch {
+			return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] evidence is invalid", index)
 		}
-		if _, duplicate := seenStatements[fact.Statement]; duplicate {
-			return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] duplicates a statement", index)
+		slot := strings.ToLower(fact.Subject) + "\x00" + strings.ToLower(fact.Predicate)
+		if _, duplicate := seenSlots[slot]; duplicate {
+			return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] duplicates a fact slot", index)
 		}
-		seenStatements[fact.Statement] = struct{}{}
-		seenSources := make(map[string]struct{}, len(fact.SourceHitIDs))
-		for _, sourceID := range fact.SourceHitIDs {
-			if _, ok := allowedSources[sourceID]; !ok {
-				return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] references an unknown source", index)
+		seenSlots[slot] = struct{}{}
+		seenEvidence := make(map[string]struct{}, len(fact.EvidenceChunkIDs))
+		for _, chunkID := range fact.EvidenceChunkIDs {
+			if _, ok := allowedChunks[chunkID]; !ok {
+				return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] references an unknown chunk", index)
 			}
-			if _, duplicate := seenSources[sourceID]; duplicate {
-				return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] repeats a source", index)
+			if _, duplicate := seenEvidence[chunkID]; duplicate {
+				return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] repeats evidence", index)
 			}
-			seenSources[sourceID] = struct{}{}
+			seenEvidence[chunkID] = struct{}{}
 		}
 	}
 	return output, nil

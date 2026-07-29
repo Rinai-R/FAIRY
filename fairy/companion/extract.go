@@ -14,6 +14,12 @@ func (s *CompanionService) ActiveBackgroundJobs() int64 {
 	return s.retention.activeJobs()
 }
 
+func (s *CompanionService) WakeKnowledgeIngest() {
+	if s != nil && s.retention != nil {
+		s.retention.wakeKnowledgeIngest()
+	}
+}
+
 func (s *CompanionService) setBackgroundError(err error) {
 	if s == nil || err == nil {
 		return

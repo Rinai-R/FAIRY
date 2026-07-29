@@ -91,11 +91,11 @@ func TestNewWebSearchBatchCleansCanonicalizesAndDeduplicatesSources(t *testing.T
 		},
 		{Title: "非法来源", URL: "javascript:alert(1)", Snippet: "必须丢弃"},
 	}
-	batch, err := newWebSearchBatch("conversation-1", "turn-1", "call-1", "anime", hits, 123)
+	batch, err := newWebSearchBatch("conversation-1", "turn-1", "call-1", hits, 123)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if batch.ID == "" || batch.ConversationID != "conversation-1" || batch.TurnID != "turn-1" || batch.ToolCallID != "call-1" || batch.Category != "anime" {
+	if batch.ID == "" || batch.ConversationID != "conversation-1" || batch.TurnID != "turn-1" || batch.ToolCallID != "call-1" {
 		t.Fatalf("batch identity = %#v", batch)
 	}
 	if len(batch.Sources) != 2 {
@@ -113,15 +113,15 @@ func TestNewWebSearchBatchCleansCanonicalizesAndDeduplicatesSources(t *testing.T
 
 func TestNewWebSearchBatchKeepsToolCallBoundaries(t *testing.T) {
 	hits := []WebSearchHit{{Title: "作品", URL: "https://example.test/item", Snippet: "足够清晰的摘要"}}
-	first, err := newWebSearchBatch("conversation", "turn", "call-a", "anime", hits, 1)
+	first, err := newWebSearchBatch("conversation", "turn", "call-a", hits, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := newWebSearchBatch("conversation", "turn", "call-b", "anime", hits, 1)
+	second, err := newWebSearchBatch("conversation", "turn", "call-b", hits, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	nextTurn, err := newWebSearchBatch("conversation", "turn-next", "call-a", "anime", hits, 1)
+	nextTurn, err := newWebSearchBatch("conversation", "turn-next", "call-a", hits, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestNewWebSearchBatchKeepsToolCallBoundaries(t *testing.T) {
 }
 
 func TestNewWebSearchBatchBoundsAndRejectsInvalidInputs(t *testing.T) {
-	if _, err := newWebSearchBatch("", "turn", "call", "anime", nil, 0); err == nil {
+	if _, err := newWebSearchBatch("", "turn", "call", nil, 0); err == nil {
 		t.Fatal("expected missing identity error")
 	}
 	hits := make([]WebSearchHit, 0, 8)
@@ -146,7 +146,7 @@ func TestNewWebSearchBatchBoundsAndRejectsInvalidInputs(t *testing.T) {
 		})
 	}
 	hits = append(hits, WebSearchHit{Title: strings.Repeat("长", maxSearchTitleRunes+1), URL: "https://too-long.example", Snippet: "摘要"})
-	batch, err := newWebSearchBatch("conversation", "turn", "call", "anime", hits, 0)
+	batch, err := newWebSearchBatch("conversation", "turn", "call", hits, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

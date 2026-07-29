@@ -2,7 +2,7 @@ package coredb
 
 import "github.com/pgvector/pgvector-go"
 
-const currentSchemaRevision = "2026-07-28-web-search-batches-1"
+const currentSchemaRevision = "2026-07-29-durable-web-knowledge-1"
 
 type conversationSchema struct {
 	ID          string `gorm:"type:text;primaryKey;index:conversations_character_updated,priority:3"`
@@ -182,6 +182,10 @@ type knowledgeEntrySchema struct {
 	SourceConversationID  string           `gorm:"type:text;not null"`
 	SourceTurnID          string           `gorm:"type:text;not null"`
 	SupersedesID          *string          `gorm:"type:text"`
+	Subject               *string          `gorm:"type:text"`
+	Predicate             *string          `gorm:"type:text"`
+	Value                 *string          `gorm:"type:text"`
+	FactKey               *string          `gorm:"type:text"`
 	EmbeddingModelID      *string          `gorm:"type:text"`
 	EmbeddingContentHash  *string          `gorm:"type:text"`
 	Embedding             *pgvector.Vector `gorm:"type:public.vector(512)"`
@@ -203,6 +207,57 @@ type knowledgeSourceSchema struct {
 }
 
 func (knowledgeSourceSchema) TableName() string { return "knowledge_sources" }
+
+type knowledgeDocumentSchema struct {
+	ID                 string  `gorm:"type:text;primaryKey"`
+	CanonicalURL       string  `gorm:"type:text;not null;uniqueIndex:knowledge_documents_canonical_key;check:knowledge_documents_invariants_check,(canonical_url ~ '^https?://[^[:space:]]+$') AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms)"`
+	Title              string  `gorm:"type:text;not null;default:''"`
+	CurrentVersionID   *string `gorm:"type:text"`
+	CurrentContentHash *string `gorm:"type:text"`
+	CreatedAtMS        int64   `gorm:"not null"`
+	UpdatedAtMS        int64   `gorm:"not null"`
+}
+
+func (knowledgeDocumentSchema) TableName() string { return "knowledge_documents" }
+
+type knowledgeDocumentVersionSchema struct {
+	ID           string `gorm:"type:text;primaryKey;uniqueIndex:knowledge_document_versions_hash_key,priority:2"`
+	DocumentID   string `gorm:"type:text;not null;uniqueIndex:knowledge_document_versions_hash_key,priority:1"`
+	ContentHash  string `gorm:"type:text;not null;check:knowledge_document_versions_invariants_check,(content_hash ~ '^[0-9a-f]{64}$') AND (status IN ('staged', 'current', 'superseded')) AND (fetched_at_ms >= 0) AND (created_at_ms >= 0)"`
+	ContentType  string `gorm:"type:text;not null"`
+	Status       string `gorm:"type:text;not null"`
+	FetchedAtMS  int64  `gorm:"not null"`
+	ETag         string `gorm:"column:etag;type:text;not null;default:''"`
+	LastModified string `gorm:"type:text;not null;default:''"`
+	CreatedAtMS  int64  `gorm:"not null"`
+}
+
+func (knowledgeDocumentVersionSchema) TableName() string { return "knowledge_document_versions" }
+
+type knowledgeChunkSchema struct {
+	ID                   string           `gorm:"type:text;primaryKey"`
+	VersionID            string           `gorm:"type:text;not null;uniqueIndex:knowledge_chunks_version_ordinal_key,priority:1"`
+	Ordinal              int              `gorm:"not null;uniqueIndex:knowledge_chunks_version_ordinal_key,priority:2;check:knowledge_chunks_invariants_check,(ordinal >= 0) AND (text <> '') AND (text_hash ~ '^[0-9a-f]{64}$') AND ((embedding_model_id IS NULL AND embedding_content_hash IS NULL AND embedding IS NULL) OR (embedding_model_id <> '' AND embedding_content_hash ~ '^[0-9a-f]{64}$' AND embedding IS NOT NULL)) AND (created_at_ms >= 0)"`
+	Text                 string           `gorm:"type:text;not null"`
+	TextHash             string           `gorm:"type:text;not null"`
+	EmbeddingModelID     *string          `gorm:"type:text"`
+	EmbeddingContentHash *string          `gorm:"type:text"`
+	Embedding            *pgvector.Vector `gorm:"type:public.vector(512)"`
+	CreatedAtMS          int64            `gorm:"not null"`
+}
+
+func (knowledgeChunkSchema) TableName() string { return "knowledge_chunks" }
+
+type knowledgeEvidenceSchema struct {
+	KnowledgeID     string `gorm:"type:text;primaryKey"`
+	ChunkID         string `gorm:"type:text;primaryKey"`
+	VersionID       string `gorm:"type:text;not null;check:knowledge_evidence_invariants_check,(created_at_ms >= 0) AND (invalidated_at_ms IS NULL OR invalidated_at_ms >= created_at_ms)"`
+	Active          bool   `gorm:"not null;default:true"`
+	CreatedAtMS     int64  `gorm:"not null"`
+	InvalidatedAtMS *int64
+}
+
+func (knowledgeEvidenceSchema) TableName() string { return "knowledge_evidence" }
 
 type extractionBatchSchema struct {
 	ID                string  `gorm:"type:text;primaryKey"`
@@ -241,12 +296,14 @@ type knowledgeIngestJobSchema struct {
 	Title            string  `gorm:"type:text;not null;default:''"`
 	URL              string  `gorm:"type:text;not null;default:''"`
 	Snippet          string  `gorm:"type:text;not null;default:''"`
-	Rank             int     `gorm:"type:integer;not null;default:0;check:knowledge_ingest_jobs_invariants_check,(rank >= 0) AND (fetched_at_ms >= 0) AND (status IN ('pending', 'running', 'succeeded', 'failed', 'dropped')) AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms >= 0) AND (attempt_count >= 0) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms) AND ((lease_owner IS NULL) = (lease_expires_at_ms IS NULL)) AND (status = 'running' OR lease_owner IS NULL)"`
+	Rank             int     `gorm:"type:integer;not null;default:0;check:knowledge_ingest_jobs_invariants_check,(rank >= 0) AND (fetched_at_ms >= 0) AND (status IN ('waiting_turn', 'pending', 'running', 'succeeded', 'failed', 'dropped')) AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms >= 0) AND (attempt_count >= 0) AND (next_attempt_at_ms >= 0) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms) AND ((lease_owner IS NULL) = (lease_expires_at_ms IS NULL)) AND (status = 'running' OR lease_owner IS NULL)"`
 	FetchedAtMS      int64   `gorm:"not null;default:0"`
 	Status           string  `gorm:"type:text;not null"`
 	LeaseOwner       *string `gorm:"type:text"`
 	LeaseExpiresAtMS *int64
 	AttemptCount     int     `gorm:"type:integer;not null;default:0"`
+	NextAttemptAtMS  int64   `gorm:"not null;default:0"`
+	ErrorCategory    *string `gorm:"type:text"`
 	ErrorMessage     *string `gorm:"type:text"`
 	CreatedAtMS      int64   `gorm:"not null"`
 	UpdatedAtMS      int64   `gorm:"not null"`
@@ -362,6 +419,10 @@ func schemaModels() []any {
 		&personalMemoryEvidenceSchema{},
 		&knowledgeEntrySchema{},
 		&knowledgeSourceSchema{},
+		&knowledgeDocumentSchema{},
+		&knowledgeDocumentVersionSchema{},
+		&knowledgeChunkSchema{},
+		&knowledgeEvidenceSchema{},
 		&extractionBatchSchema{},
 		&extractionBatchTurnSchema{},
 		&knowledgeIngestJobSchema{},

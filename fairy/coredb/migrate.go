@@ -65,6 +65,11 @@ var postgresConstraints = []schemaConstraint{
 	{"knowledge_entries", "knowledge_entries_source_turn_fk", "FOREIGN KEY (source_turn_id) REFERENCES conversation_turns(id) ON DELETE RESTRICT"},
 	{"knowledge_entries", "knowledge_entries_supersedes_fk", "FOREIGN KEY (supersedes_id) REFERENCES knowledge_entries(id) ON DELETE RESTRICT"},
 	{"knowledge_sources", "knowledge_sources_knowledge_fk", "FOREIGN KEY (knowledge_id) REFERENCES knowledge_entries(id) ON DELETE CASCADE"},
+	{"knowledge_document_versions", "knowledge_document_versions_document_fk", "FOREIGN KEY (document_id) REFERENCES knowledge_documents(id) ON DELETE CASCADE"},
+	{"knowledge_chunks", "knowledge_chunks_version_fk", "FOREIGN KEY (version_id) REFERENCES knowledge_document_versions(id) ON DELETE CASCADE"},
+	{"knowledge_evidence", "knowledge_evidence_knowledge_fk", "FOREIGN KEY (knowledge_id) REFERENCES knowledge_entries(id) ON DELETE CASCADE"},
+	{"knowledge_evidence", "knowledge_evidence_chunk_fk", "FOREIGN KEY (chunk_id) REFERENCES knowledge_chunks(id) ON DELETE CASCADE"},
+	{"knowledge_evidence", "knowledge_evidence_version_fk", "FOREIGN KEY (version_id) REFERENCES knowledge_document_versions(id) ON DELETE CASCADE"},
 	{"extraction_batches", "extraction_batches_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
 	{"extraction_batch_turns", "extraction_batch_turns_batch_fk", "FOREIGN KEY (batch_id) REFERENCES extraction_batches(id) ON DELETE CASCADE"},
 	{"extraction_batch_turns", "extraction_batch_turns_turn_fk", "FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE RESTRICT"},
@@ -91,8 +96,12 @@ var postgresIndexes = []schemaIndex{
 	{"extraction_batches_one_running", "CREATE UNIQUE INDEX IF NOT EXISTS extraction_batches_one_running ON extraction_batches(conversation_id) WHERE status = 'running'"},
 	{"extraction_batches_claimable", "CREATE INDEX IF NOT EXISTS extraction_batches_claimable ON extraction_batches(status, lease_expires_at_ms ASC NULLS FIRST, updated_at_ms ASC, id ASC) WHERE status IN ('pending', 'running')"},
 	{"knowledge_ingest_jobs_status", "CREATE INDEX IF NOT EXISTS knowledge_ingest_jobs_status ON knowledge_ingest_jobs(status, lease_expires_at_ms ASC NULLS FIRST, created_at_ms ASC, id ASC)"},
+	{"knowledge_ingest_jobs_retry", "CREATE INDEX IF NOT EXISTS knowledge_ingest_jobs_retry ON knowledge_ingest_jobs(status, next_attempt_at_ms ASC, updated_at_ms ASC, id ASC) WHERE status IN ('waiting_turn', 'pending', 'running')"},
 	{"knowledge_ingest_jobs_batch_key", "CREATE UNIQUE INDEX IF NOT EXISTS knowledge_ingest_jobs_batch_key ON knowledge_ingest_jobs(batch_id) WHERE batch_id <> ''"},
 	{"knowledge_sources_canonical_key", "CREATE UNIQUE INDEX IF NOT EXISTS knowledge_sources_canonical_key ON knowledge_sources(knowledge_id, canonical_url) WHERE canonical_url <> ''"},
+	{"knowledge_entries_active_fact_key", "CREATE UNIQUE INDEX IF NOT EXISTS knowledge_entries_active_fact_key ON knowledge_entries(fact_key) WHERE fact_key IS NOT NULL AND status = 'verified'"},
+	{"knowledge_evidence_active_version", "CREATE INDEX IF NOT EXISTS knowledge_evidence_active_version ON knowledge_evidence(version_id, knowledge_id) WHERE active"},
+	{"knowledge_chunks_embedding_hnsw", "CREATE INDEX IF NOT EXISTS knowledge_chunks_embedding_hnsw ON knowledge_chunks USING hnsw (embedding public.vector_cosine_ops) WHERE embedding IS NOT NULL"},
 	{"personal_memories_embedding_hnsw", "CREATE INDEX IF NOT EXISTS personal_memories_embedding_hnsw ON personal_memories USING hnsw (embedding public.vector_cosine_ops) WHERE embedding IS NOT NULL AND status = 'active' AND review_status = 'ready'"},
 	{"knowledge_entries_embedding_hnsw", "CREATE INDEX IF NOT EXISTS knowledge_entries_embedding_hnsw ON knowledge_entries USING hnsw (embedding public.vector_cosine_ops) WHERE embedding IS NOT NULL AND status = 'verified'"},
 	{"social_memory_entries_situation_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_situation_trgm ON social_memory_entries USING gin (situation public.gin_trgm_ops)"},
@@ -118,6 +127,9 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		}
 		if err := tx.AutoMigrate(schemaModels()...); err != nil {
 			return fmt.Errorf("auto-migrating PostgreSQL schema: %w", err)
+		}
+		if err := replaceKnowledgeIngestInvariant(tx); err != nil {
+			return err
 		}
 		for _, constraint := range postgresConstraints {
 			exists, err := constraintExists(tx, constraint.Table, constraint.Name)
@@ -151,6 +163,27 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		}
 		return nil
 	})
+}
+
+func replaceKnowledgeIngestInvariant(tx *gorm.DB) error {
+	if err := tx.Exec("ALTER TABLE knowledge_ingest_jobs DROP CONSTRAINT IF EXISTS knowledge_ingest_jobs_invariants_check").Error; err != nil {
+		return fmt.Errorf("dropping legacy knowledge ingest invariant: %w", err)
+	}
+	if err := tx.Exec(`ALTER TABLE knowledge_ingest_jobs ADD CONSTRAINT knowledge_ingest_jobs_invariants_check CHECK (
+  rank >= 0
+  AND fetched_at_ms >= 0
+  AND status IN ('waiting_turn', 'pending', 'running', 'succeeded', 'failed', 'dropped')
+  AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms >= 0)
+  AND attempt_count >= 0
+  AND next_attempt_at_ms >= 0
+  AND created_at_ms >= 0
+  AND updated_at_ms >= created_at_ms
+  AND ((lease_owner IS NULL) = (lease_expires_at_ms IS NULL))
+  AND (status = 'running' OR lease_owner IS NULL)
+)`).Error; err != nil {
+		return fmt.Errorf("creating knowledge ingest invariant: %w", err)
+	}
+	return nil
 }
 
 func VerifySchema(ctx context.Context, pool *pgxpool.Pool) (SchemaStatus, error) {

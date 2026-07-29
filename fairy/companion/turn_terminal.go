@@ -29,7 +29,6 @@ func (x *turnExecution) persist(gathered *turnContext, resolved session.Resolved
 	events := slices.Clone(gathered.events)
 	fullRequest := gathered.fullRequest
 	finalUsage := slices.Clone(gathered.finalUsage)
-	ingestBatches := cloneWebSearchBatches(gathered.ingestBatches)
 	bootstrap := gathered.bootstrap
 	if _, err := x.service.memory.turn.turns.CompleteExpressionTurn(
 		x.request.ConversationID,
@@ -77,7 +76,9 @@ func (x *turnExecution) persist(gathered *turnContext, resolved session.Resolved
 		})
 	}
 	x.service.scheduleAutoCompaction(x.request.ConversationID, events)
-	x.service.scheduleKnowledgeIngestBatches(ingestBatches)
+	if x.service.retention != nil {
+		x.service.retention.wakeKnowledgeIngest()
+	}
 	return TurnOutcome{
 		ConversationID:  x.request.ConversationID,
 		TurnID:          x.persisted.ID,

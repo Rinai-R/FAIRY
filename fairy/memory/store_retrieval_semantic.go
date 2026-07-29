@@ -239,7 +239,7 @@ func fusePostgresRetrieval(text RetrievalContext, personal map[string]vectorPers
 	personalCandidates := make([]SemanticCandidate, 0, len(text.PersonalMemories)+len(personal))
 	for _, record := range text.PersonalMemories {
 		personalRecords[record.ID] = record
-		personalCandidates = append(personalCandidates, SemanticCandidate{ID: record.ID, Kind: record.Kind, FTSRank: 1, HasFTS: true, UpdatedAtMS: record.UpdatedAtUnixMS, ConfidenceBP: record.ConfidenceBasisPoints})
+		personalCandidates = append(personalCandidates, SemanticCandidate{ID: record.ID, Kind: record.Kind, TextScore: record.TextScore, HasText: true, UpdatedAtMS: record.UpdatedAtUnixMS, ConfidenceBP: record.ConfidenceBasisPoints})
 	}
 	for id, truth := range personal {
 		personalRecords[id] = truth.record
@@ -249,7 +249,7 @@ func fusePostgresRetrieval(text RetrievalContext, personal map[string]vectorPers
 	knowledgeCandidates := make([]SemanticCandidate, 0, len(text.Knowledge)+len(knowledge))
 	for _, record := range text.Knowledge {
 		knowledgeRecords[record.ID] = record
-		knowledgeCandidates = append(knowledgeCandidates, SemanticCandidate{ID: record.ID, Kind: "knowledge", FTSRank: 1, HasFTS: true, UpdatedAtMS: record.UpdatedAtUnixMS, ConfidenceBP: record.ConfidenceBasisPoints})
+		knowledgeCandidates = append(knowledgeCandidates, SemanticCandidate{ID: record.ID, Kind: "knowledge", TextScore: record.TextScore, HasText: true, UpdatedAtMS: record.UpdatedAtUnixMS, ConfidenceBP: record.ConfidenceBasisPoints})
 	}
 	for id, truth := range knowledge {
 		knowledgeRecords[id] = truth.record

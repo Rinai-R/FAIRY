@@ -9,6 +9,10 @@ import (
 	"unicode/utf8"
 )
 
+func (s *Store) KnowledgeIngestReady() bool {
+	return s != nil && s.pool != nil && s.pool.Raw() != nil
+}
+
 func (s *Store) InsertVerifiedKnowledge(
 	topic string,
 	statement string,
@@ -67,6 +71,45 @@ func (s *Store) FailKnowledgeIngestBatchContext(ctx context.Context, jobID, mess
 	return s.finishKnowledgeIngestJobPostgres(ctx, jobID, "failed", CleanEmbeddingErrorMessage(message))
 }
 
+func (s *Store) RetryKnowledgeIngestBatch(jobID, category, message string) error {
+	return s.RetryKnowledgeIngestBatchContext(context.Background(), jobID, category, message)
+}
+
+func (s *Store) RetryKnowledgeIngestBatchContext(ctx context.Context, jobID, category, message string) error {
+	if err := ValidateID("knowledge_ingest_job_id", jobID); err != nil {
+		return err
+	}
+	category = strings.TrimSpace(category)
+	if category == "" {
+		return errors.New("knowledge ingest retry category is required")
+	}
+	queryCtx, cancel := s.pool.QueryContext(ctx)
+	defer cancel()
+	now := nowUnixMS()
+	changed, err := s.pool.Raw().Exec(queryCtx, `
+UPDATE knowledge_ingest_jobs
+SET status = CASE WHEN attempt_count >= $4 THEN 'failed' ELSE 'pending' END,
+    lease_owner = NULL,
+    lease_expires_at_ms = NULL,
+    next_attempt_at_ms = CASE
+      WHEN attempt_count >= $4 THEN 0
+      ELSE $5::bigint + LEAST(30000::bigint, 1000::bigint * (1::bigint << GREATEST(0, attempt_count - 1)))
+    END,
+    error_category = $2,
+    error_message = NULLIF($3, ''),
+    updated_at_ms = $5
+WHERE id = $1 AND status = 'running' AND lease_owner = $6`,
+		jobID, category, CleanEmbeddingErrorMessage(message), MaxKnowledgeIngestAttempts, now, s.workerID,
+	)
+	if err != nil {
+		return err
+	}
+	if changed.RowsAffected() != 1 {
+		return errors.New("knowledge ingest job is not owned by this worker")
+	}
+	return nil
+}
+
 func (s *Store) DropKnowledgeIngestBatch(jobID, message string) error {
 	return s.DropKnowledgeIngestBatchContext(context.Background(), jobID, message)
 }
@@ -86,6 +129,22 @@ func (s *Store) CommitKnowledgeIngestBatchContext(ctx context.Context, jobID, ba
 	return s.commitKnowledgeIngestBatchPostgres(ctx, jobID, batchID, facts)
 }
 
+func (s *Store) KnowledgeDocumentsNeedExtraction(jobID, batchID string, documents []KnowledgeDocument) (bool, error) {
+	return s.KnowledgeDocumentsNeedExtractionContext(context.Background(), jobID, batchID, documents)
+}
+
+func (s *Store) KnowledgeDocumentsNeedExtractionContext(ctx context.Context, jobID, batchID string, documents []KnowledgeDocument) (bool, error) {
+	return s.knowledgeDocumentsNeedExtractionPostgres(ctx, jobID, batchID, documents)
+}
+
+func (s *Store) CommitKnowledgeDocumentBatch(jobID, batchID string, documents []KnowledgeDocument, facts []KnowledgeIngestFact) (int, error) {
+	return s.CommitKnowledgeDocumentBatchContext(context.Background(), jobID, batchID, documents, facts)
+}
+
+func (s *Store) CommitKnowledgeDocumentBatchContext(ctx context.Context, jobID, batchID string, documents []KnowledgeDocument, facts []KnowledgeIngestFact) (int, error) {
+	return s.commitKnowledgeDocumentBatchPostgres(ctx, jobID, batchID, documents, facts)
+}
+
 func (s *Store) ProcessKnowledgeIngestJobs(limit int) (int, error) {
 	return s.ProcessKnowledgeIngestJobsContext(context.Background(), limit)
 }
@@ -94,12 +153,7 @@ func (s *Store) ProcessKnowledgeIngestJobsContext(ctx context.Context, limit int
 	return s.processKnowledgeIngestJobsPostgres(ctx, limit)
 }
 
-func acceptKnowledgeIngest(category, topic, statement, sourceURL string, rank uint8) bool {
-	switch strings.TrimSpace(category) {
-	case "anime", "game", "book":
-	default:
-		return false
-	}
+func acceptKnowledgeIngest(topic, statement, sourceURL string, rank uint8) bool {
 	topic = strings.TrimSpace(topic)
 	statement = strings.TrimSpace(statement)
 	if topic == "" || statement == "" || rank < 1 || rank > 5 {
@@ -124,11 +178,6 @@ func validateKnowledgeIngestBatch(batch KnowledgeIngestBatch) ([]byte, error) {
 	}
 	if err := ValidateID("turn_id", batch.TurnID); err != nil {
 		return nil, err
-	}
-	switch strings.TrimSpace(batch.Category) {
-	case "anime", "game", "book":
-	default:
-		return nil, errors.New("knowledge ingest category is invalid")
 	}
 	if len(batch.Sources) == 0 || len(batch.Sources) > MaxKnowledgeIngestSources {
 		return nil, errors.New("knowledge ingest source count is invalid")

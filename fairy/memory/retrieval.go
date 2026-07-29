@@ -65,7 +65,11 @@ func BuildFTSQuery(query string) (string, error) {
 
 func RetrieveKnowledgeTrigram(ctx context.Context, db Querier, query string, remaining *int) ([]RetrievedKnowledge, error) {
 	rows, err := db.Query(ctx, `
-SELECT id, topic, statement, verification_basis, confidence_basis_points, updated_at_ms
+SELECT id, topic, statement, verification_basis, confidence_basis_points, updated_at_ms,
+       GREATEST(
+         public.similarity(topic, $1), public.similarity(statement, $1),
+         public.word_similarity($1, topic), public.word_similarity($1, statement)
+       ) AS text_score
 FROM knowledge_entries
 WHERE status = 'verified'
   AND (
@@ -89,7 +93,7 @@ LIMIT $2`, query, maxResultsPerKind)
 	for rows.Next() {
 		var record RetrievedKnowledge
 		var confidence int
-		if err := rows.Scan(&record.ID, &record.Topic, &record.Statement, &record.VerificationBasis, &confidence, &record.UpdatedAtUnixMS); err != nil {
+		if err := rows.Scan(&record.ID, &record.Topic, &record.Statement, &record.VerificationBasis, &confidence, &record.UpdatedAtUnixMS, &record.TextScore); err != nil {
 			return nil, fmt.Errorf("scanning retrieved knowledge: %w", err)
 		}
 		length := len([]rune(record.Topic)) + len([]rune(record.Statement))

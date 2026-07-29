@@ -2125,7 +2125,7 @@ func TestPostgresKnowledgeIngestBatchEnqueueClaimAndLegacyProjection(t *testing.
 		t.Fatal(err)
 	}
 	batch := KnowledgeIngestBatch{
-		ID: "web-batch-1", ConversationID: bootstrap.Conversation.ID, TurnID: turn.ID, Category: "anime",
+		ID: "web-batch-1", ConversationID: bootstrap.Conversation.ID, TurnID: turn.ID,
 		Sources: []KnowledgeIngestSource{
 			{ID: "web-source-1", Title: "来源一", URL: "https://one.example/item", Snippet: "这是第一条足够完整的公开摘要。", Rank: 1, FetchedAtUnixMS: 1},
 			{ID: "web-source-2", Title: "来源二", URL: "https://two.example/item", Snippet: "这是第二条足够完整的公开摘要。", Rank: 2, FetchedAtUnixMS: 1},
@@ -2195,7 +2195,7 @@ func TestPostgresKnowledgeIngestBatchCommitIsAtomicAndMergesCanonicalSources(t *
 	}
 	conversationID, turnID := seedCompletedTurn(t, ctx, store, "character-ingest-atomic")
 	batch := KnowledgeIngestBatch{
-		ID: "commit-batch-1", ConversationID: conversationID, TurnID: turnID, Category: "anime",
+		ID: "commit-batch-1", ConversationID: conversationID, TurnID: turnID,
 		Sources: []KnowledgeIngestSource{
 			{ID: "source-one", Title: "来源一", URL: "https://one.example/item", Snippet: "公开来源一的摘要。", Rank: 1, FetchedAtUnixMS: 1},
 			{ID: "source-two", Title: "来源二", URL: "https://two.example/item", Snippet: "公开来源二的摘要。", Rank: 2, FetchedAtUnixMS: 2},
@@ -2233,7 +2233,7 @@ func TestPostgresKnowledgeIngestBatchCommitIsAtomicAndMergesCanonicalSources(t *
 	embedder.vectors = [][]float32{firstVector}
 	for index, sourceURL := range []string{"https://three.example/item", "https://three.example/item"} {
 		repeatBatch := KnowledgeIngestBatch{
-			ID: fmt.Sprintf("commit-batch-repeat-%d", index), ConversationID: conversationID, TurnID: turnID, Category: "anime",
+			ID: fmt.Sprintf("commit-batch-repeat-%d", index), ConversationID: conversationID, TurnID: turnID,
 			Sources: []KnowledgeIngestSource{{
 				ID: "repeat-source", Title: "来源三", URL: sourceURL,
 				Snippet: "同一事实的补充公开来源。", Rank: 1, FetchedAtUnixMS: 3,
@@ -2266,6 +2266,240 @@ WHERE k.statement = $1`, facts[0].Statement).Scan(&sourceCount); err != nil {
 	}
 }
 
+func TestPostgresKnowledgeDocumentsVersionSupersedeRetractAndSkipUnchanged(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStoreFromPoolWithLease(pool, "document-lifecycle-owner", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversationID, turnID := seedCompletedTurn(t, ctx, store, "character-document-lifecycle")
+	source := KnowledgeIngestSource{
+		ID: "source-lifecycle", Title: "项目状态", URL: "https://public.example/project",
+		Snippet: "公开项目状态页。", Rank: 1, FetchedAtUnixMS: 1,
+	}
+	commit := func(batchID string, batchSource KnowledgeIngestSource, chunkID, text, value string, withFact bool) {
+		t.Helper()
+		batch := KnowledgeIngestBatch{
+			ID: batchID, ConversationID: conversationID, TurnID: turnID,
+			Sources: []KnowledgeIngestSource{batchSource},
+		}
+		if err := store.EnqueueKnowledgeIngestBatchesContext(ctx, []KnowledgeIngestBatch{batch}); err != nil {
+			t.Fatal(err)
+		}
+		claims, err := store.ClaimKnowledgeIngestBatchesContext(ctx, 1)
+		if err != nil || len(claims) != 1 {
+			t.Fatalf("claims=%#v err=%v", claims, err)
+		}
+		document := KnowledgeDocument{
+			SourceID: batchSource.ID, CanonicalURL: batchSource.URL, Title: batchSource.Title,
+			ContentHash: semanticContentHash("document\n" + text), ContentType: "text/plain",
+			FetchedAtUnixMS: time.Now().UnixMilli(),
+			Chunks: []KnowledgeDocumentChunk{{
+				ID: chunkID, Ordinal: 0, Text: text, TextHash: semanticContentHash(text),
+			}},
+		}
+		needs, err := store.KnowledgeDocumentsNeedExtractionContext(ctx, claims[0].JobID, batchID, []KnowledgeDocument{document})
+		if err != nil || !needs {
+			t.Fatalf("need extraction=(%v,%v)", needs, err)
+		}
+		facts := []KnowledgeIngestFact(nil)
+		if withFact {
+			facts = []KnowledgeIngestFact{{
+				Subject: "FAIRY 项目", Predicate: "发布状态", Value: value,
+				Statement:             "FAIRY 项目的发布状态是" + value + "。",
+				ConfidenceBasisPoints: 8500, EvidenceChunkIDs: []string{chunkID},
+			}}
+		}
+		if _, err := store.CommitKnowledgeDocumentBatchContext(ctx, claims[0].JobID, batchID, []KnowledgeDocument{document}, facts); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	commit("document-batch-v1", source, "web-chunk-v1", "FAIRY 项目当前状态为内测。", "内测", true)
+	mirrorSource := source
+	mirrorSource.ID = "source-lifecycle-mirror"
+	mirrorSource.URL = "https://mirror.example/project"
+	commit("document-batch-mirror", mirrorSource, "web-chunk-mirror", "镜像来源同样确认 FAIRY 项目当前状态为内测。", "内测", true)
+	var sameValueFacts, sameValueEvidence int
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_entries WHERE fact_key IS NOT NULL AND status = 'verified' AND value = '内测'").Scan(&sameValueFacts); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_evidence WHERE active").Scan(&sameValueEvidence); err != nil {
+		t.Fatal(err)
+	}
+	if sameValueFacts != 1 || sameValueEvidence != 2 {
+		t.Fatalf("same value facts=%d evidence=%d", sameValueFacts, sameValueEvidence)
+	}
+	commit("document-batch-v2", source, "web-chunk-v2", "FAIRY 项目当前状态为公测。", "公测", true)
+
+	var verified, superseded, activeOldEvidence int
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_entries WHERE fact_key IS NOT NULL AND status = 'verified' AND value = '公测'").Scan(&verified); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_entries WHERE fact_key IS NOT NULL AND status = 'superseded' AND value = '内测'").Scan(&superseded); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_evidence WHERE chunk_id = 'web-chunk-v1' AND active").Scan(&activeOldEvidence); err != nil {
+		t.Fatal(err)
+	}
+	if verified != 1 || superseded != 1 || activeOldEvidence != 0 {
+		t.Fatalf("verified=%d superseded=%d active old evidence=%d", verified, superseded, activeOldEvidence)
+	}
+
+	commit("document-batch-v3", source, "web-chunk-v3", "该页面不再包含项目发布状态。", "", false)
+	var tombstoned int
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_entries WHERE fact_key IS NOT NULL AND status = 'tombstone' AND value = '公测'").Scan(&tombstoned); err != nil {
+		t.Fatal(err)
+	}
+	if tombstoned != 1 {
+		t.Fatalf("tombstoned=%d", tombstoned)
+	}
+
+	batch := KnowledgeIngestBatch{
+		ID: "document-batch-unchanged", ConversationID: conversationID, TurnID: turnID,
+		Sources: []KnowledgeIngestSource{source},
+	}
+	if err := store.EnqueueKnowledgeIngestBatchesContext(ctx, []KnowledgeIngestBatch{batch}); err != nil {
+		t.Fatal(err)
+	}
+	claims, err := store.ClaimKnowledgeIngestBatchesContext(ctx, 1)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("unchanged claims=%#v err=%v", claims, err)
+	}
+	text := "该页面不再包含项目发布状态。"
+	document := KnowledgeDocument{
+		SourceID: source.ID, CanonicalURL: source.URL, Title: source.Title,
+		ContentHash: semanticContentHash("document\n" + text), ContentType: "text/plain",
+		FetchedAtUnixMS: time.Now().UnixMilli(),
+		Chunks:          []KnowledgeDocumentChunk{{ID: "web-chunk-v3", Ordinal: 0, Text: text, TextHash: semanticContentHash(text)}},
+	}
+	needs, err := store.KnowledgeDocumentsNeedExtractionContext(ctx, claims[0].JobID, batch.ID, []KnowledgeDocument{document})
+	if err != nil || needs {
+		t.Fatalf("unchanged need extraction=(%v,%v)", needs, err)
+	}
+	var versions int
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_document_versions").Scan(&versions); err != nil {
+		t.Fatal(err)
+	}
+	if versions != 4 {
+		t.Fatalf("document versions=%d", versions)
+	}
+}
+
+func TestPostgresKnowledgeIngestRetryBackoffAndManualOperations(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStoreFromPoolWithLease(pool, "retry-owner", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversationID, turnID := seedCompletedTurn(t, ctx, store, "character-retry")
+	batch := KnowledgeIngestBatch{
+		ID: "retry-batch", ConversationID: conversationID, TurnID: turnID,
+		Sources: []KnowledgeIngestSource{{
+			ID: "retry-source", Title: "来源", URL: "https://public.example/retry",
+			Snippet: "重试测试来源。", Rank: 1, FetchedAtUnixMS: 1,
+		}},
+	}
+	if err := store.EnqueueKnowledgeIngestBatchesContext(ctx, []KnowledgeIngestBatch{batch}); err != nil {
+		t.Fatal(err)
+	}
+	claims, err := store.ClaimKnowledgeIngestBatchesContext(ctx, 1)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("claims=%#v err=%v", claims, err)
+	}
+	before := time.Now().UnixMilli()
+	if err := store.RetryKnowledgeIngestBatchContext(ctx, claims[0].JobID, "model_provider", "temporary failure"); err != nil {
+		t.Fatal(err)
+	}
+	records, err := store.KnowledgeIngestJobsContext(ctx, "pending")
+	if err != nil || len(records) != 1 {
+		t.Fatalf("pending jobs=%#v err=%v", records, err)
+	}
+	if records[0].AttemptCount != 1 || records[0].NextAttemptAtMS <= before || records[0].ErrorCategory != "model_provider" {
+		t.Fatalf("pending retry=%#v", records[0])
+	}
+	if claims, err := store.ClaimKnowledgeIngestBatchesContext(ctx, 1); err != nil || len(claims) != 0 {
+		t.Fatalf("backoff claims=%#v err=%v", claims, err)
+	}
+	if _, err := pool.Raw().Exec(ctx, "UPDATE knowledge_ingest_jobs SET next_attempt_at_ms = 0 WHERE id = $1", records[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	claims, err = store.ClaimKnowledgeIngestBatchesContext(ctx, 1)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("second claims=%#v err=%v", claims, err)
+	}
+	if err := store.FailKnowledgeIngestBatchContext(ctx, claims[0].JobID, "invalid model output"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RetryKnowledgeIngestJobContext(ctx, claims[0].JobID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DropKnowledgeIngestJobContext(ctx, claims[0].JobID); err != nil {
+		t.Fatal(err)
+	}
+	dropped, err := store.KnowledgeIngestJobsContext(ctx, "dropped")
+	if err != nil || len(dropped) != 1 || dropped[0].ErrorCategory != "manual_drop" {
+		t.Fatalf("dropped jobs=%#v err=%v", dropped, err)
+	}
+}
+
+func TestPostgresKnowledgeIngestWaitsForCompletedTurnAndDropsFailedTurn(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStoreFromPoolWithLease(pool, "turn-gated-owner", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := store.OpenOrCreateCharacterConversation("character-turn-gated")
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := store.BeginTurn(bootstrap.Conversation.ID, "查询公开资料")
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := KnowledgeIngestBatch{
+		ID: "turn-gated-batch", ConversationID: bootstrap.Conversation.ID, TurnID: turn.ID,
+		Sources: []KnowledgeIngestSource{{
+			ID: "turn-gated-source", Title: "来源", URL: "https://public.example/gated",
+			Snippet: "等待 Turn 终态。", Rank: 1, FetchedAtUnixMS: 1,
+		}},
+	}
+	if err := store.EnqueueKnowledgeIngestBatchesContext(ctx, []KnowledgeIngestBatch{batch}); err != nil {
+		t.Fatal(err)
+	}
+	if claims, err := store.ClaimKnowledgeIngestBatchesContext(ctx, 1); err != nil || len(claims) != 0 {
+		t.Fatalf("interpreting turn claims=%#v err=%v", claims, err)
+	}
+	if err := store.FailTurn(bootstrap.Conversation.ID, turn.ID, "TEST_FAILURE", "test failure", false); err != nil {
+		t.Fatal(err)
+	}
+	if claims, err := store.ClaimKnowledgeIngestBatchesContext(ctx, 1); err != nil || len(claims) != 0 {
+		t.Fatalf("failed turn claims=%#v err=%v", claims, err)
+	}
+	var status string
+	if err := pool.Raw().QueryRow(ctx, "SELECT status FROM knowledge_ingest_jobs WHERE batch_id = $1", batch.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "dropped" {
+		t.Fatalf("failed turn job status=%q", status)
+	}
+}
+
 func TestPostgresKnowledgeIngestBatchFailureWritesNoPartialFacts(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
@@ -2279,7 +2513,7 @@ func TestPostgresKnowledgeIngestBatchFailureWritesNoPartialFacts(t *testing.T) {
 	}
 	conversationID, turnID := seedCompletedTurn(t, ctx, store, "character-ingest-failure")
 	batch := KnowledgeIngestBatch{
-		ID: "failure-batch", ConversationID: conversationID, TurnID: turnID, Category: "game",
+		ID: "failure-batch", ConversationID: conversationID, TurnID: turnID,
 		Sources: []KnowledgeIngestSource{{
 			ID: "source-valid", Title: "来源", URL: "https://valid.example/item",
 			Snippet: "用于原子失败测试的公开来源。", Rank: 1, FetchedAtUnixMS: 1,
@@ -2326,7 +2560,7 @@ func TestPostgresKnowledgeIngestBatchEmbeddingFailureWritesNothing(t *testing.T)
 	}
 	conversationID, turnID := seedCompletedTurn(t, ctx, store, "character-ingest-embedding-failure")
 	batch := KnowledgeIngestBatch{
-		ID: "embedding-failure-batch", ConversationID: conversationID, TurnID: turnID, Category: "book",
+		ID: "embedding-failure-batch", ConversationID: conversationID, TurnID: turnID,
 		Sources: []KnowledgeIngestSource{{
 			ID: "source-valid", Title: "来源", URL: "https://valid.example/book",
 			Snippet: "用于向量失败测试的公开来源。", Rank: 1, FetchedAtUnixMS: 1,

@@ -11,7 +11,7 @@ import (
 )
 
 func ListKnowledge(ctx context.Context, db Querier, status string) ([]KnowledgeRecord, error) {
-	rows, err := db.Query(ctx, "SELECT id, topic, statement, status, verification_basis, confidence_basis_points, source_conversation_id, source_turn_id, supersedes_id, created_at_ms, updated_at_ms FROM knowledge_entries WHERE status = $1 ORDER BY updated_at_ms DESC, id ASC LIMIT 20", status)
+	rows, err := db.Query(ctx, "SELECT id, topic, statement, status, verification_basis, confidence_basis_points, source_conversation_id, source_turn_id, supersedes_id, subject, predicate, value, created_at_ms, updated_at_ms FROM knowledge_entries WHERE status = $1 ORDER BY updated_at_ms DESC, id ASC LIMIT 20", status)
 	if err != nil {
 		return nil, fmt.Errorf("querying knowledge catalog: %w", err)
 	}
@@ -31,7 +31,7 @@ func ListKnowledge(ctx context.Context, db Querier, status string) ([]KnowledgeR
 }
 
 func KnowledgeByID(ctx context.Context, db ConversationDB, id string) (KnowledgeRecord, error) {
-	row := db.QueryRow(ctx, "SELECT id, topic, statement, status, verification_basis, confidence_basis_points, source_conversation_id, source_turn_id, supersedes_id, created_at_ms, updated_at_ms FROM knowledge_entries WHERE id = $1", id)
+	row := db.QueryRow(ctx, "SELECT id, topic, statement, status, verification_basis, confidence_basis_points, source_conversation_id, source_turn_id, supersedes_id, subject, predicate, value, created_at_ms, updated_at_ms FROM knowledge_entries WHERE id = $1", id)
 	return ScanKnowledge(ctx, db, row)
 }
 
@@ -39,7 +39,8 @@ func ScanKnowledge(ctx context.Context, db Querier, row scanner) (KnowledgeRecor
 	var record KnowledgeRecord
 	var confidence int
 	var supersedes pgtype.Text
-	if err := row.Scan(&record.ID, &record.Topic, &record.Statement, &record.Status, &record.VerificationBasis, &confidence, &record.SourceConversationID, &record.SourceTurnID, &supersedes, &record.CreatedAtUnixMS, &record.UpdatedAtUnixMS); err != nil {
+	var subject, predicate, value pgtype.Text
+	if err := row.Scan(&record.ID, &record.Topic, &record.Statement, &record.Status, &record.VerificationBasis, &confidence, &record.SourceConversationID, &record.SourceTurnID, &supersedes, &subject, &predicate, &value, &record.CreatedAtUnixMS, &record.UpdatedAtUnixMS); err != nil {
 		return KnowledgeRecord{}, fmt.Errorf("scanning knowledge: %w", err)
 	}
 	if confidence < 0 || confidence > 10000 {
@@ -48,6 +49,15 @@ func ScanKnowledge(ctx context.Context, db Querier, row scanner) (KnowledgeRecor
 	record.ConfidenceBasisPoints = uint16(confidence)
 	if supersedes.Valid {
 		record.SupersedesID = &supersedes.String
+	}
+	if subject.Valid {
+		record.Subject = &subject.String
+	}
+	if predicate.Valid {
+		record.Predicate = &predicate.String
+	}
+	if value.Valid {
+		record.Value = &value.String
 	}
 	sources, err := KnowledgeSources(ctx, db, record.ID)
 	if err != nil {

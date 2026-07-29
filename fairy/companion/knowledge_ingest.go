@@ -1,8 +1,6 @@
 package companion
 
 import (
-	"strings"
-
 	"fairy/memory"
 )
 
@@ -25,39 +23,23 @@ func memoryKnowledgeIngestBatch(batch webSearchBatch) memory.KnowledgeIngestBatc
 	}
 	return memory.KnowledgeIngestBatch{
 		ID: batch.ID, ConversationID: batch.ConversationID, TurnID: batch.TurnID,
-		Category: batch.Category, Sources: sources,
+		Sources: sources,
 	}
 }
 
-func stableKnowledgeCategory(query string) string {
-	lower := strings.ToLower(strings.TrimSpace(query))
-	categories := []struct {
-		name    string
-		markers []string
-	}{
-		{name: "anime", markers: []string{"动漫", "动画", "漫画", "anime", "manga"}},
-		{name: "game", markers: []string{"游戏", "game", "攻略", "世界观", "设定集"}},
-		{name: "book", markers: []string{"书籍", "小说", "作者", "文学", "novel", "book"}},
+func (s *CompanionService) persistKnowledgeIngestBatch(batch webSearchBatch) error {
+	if s == nil || len(batch.Sources) == 0 {
+		return nil
 	}
-	for _, category := range categories {
-		for _, marker := range category.markers {
-			if strings.Contains(lower, marker) {
-				return category.name
-			}
-		}
+	store := s.memory.retention.knowledge
+	if store == nil {
+		return ErrTurnRuntimeUnavailable
 	}
-	return ""
-}
-
-func (s *CompanionService) scheduleKnowledgeIngestBatches(batches []webSearchBatch) {
-	if s == nil || s.retention == nil || len(batches) == 0 {
-		return
+	if err := store.EnqueueKnowledgeIngestBatches([]memory.KnowledgeIngestBatch{memoryKnowledgeIngestBatch(batch)}); err != nil {
+		return err
 	}
-	persisted := make([]memory.KnowledgeIngestBatch, 0, len(batches))
-	for _, batch := range batches {
-		if batch.Category != "" && len(batch.Sources) > 0 {
-			persisted = append(persisted, memoryKnowledgeIngestBatch(batch))
-		}
+	if s.retention != nil {
+		s.retention.wakeKnowledgeIngest()
 	}
-	s.retention.scheduleKnowledgeIngestBatches(persisted)
+	return nil
 }

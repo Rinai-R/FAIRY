@@ -428,7 +428,7 @@ func TestInstructionsForLane(t *testing.T) {
 	if err != nil || text != KnowledgeIngestInstructions || tokens != KnowledgeIngestMaxOutputTokens {
 		t.Fatalf("knowledge ingest lane = (%q, %d, %v)", text, tokens, err)
 	}
-	for _, needle := range []string{"sourceHitIDs", "supplied batch", "Do not invent", "output Markdown"} {
+	for _, needle := range []string{"evidenceChunkIDs", "this batch", "Do not invent", "output Markdown"} {
 		if !strings.Contains(KnowledgeIngestInstructions, needle) {
 			t.Fatalf("KnowledgeIngestInstructions missing %q", needle)
 		}

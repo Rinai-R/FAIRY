@@ -118,6 +118,7 @@ type RetrievedPersonalMemory struct {
 	Content               string      `json:"content"`
 	ConfidenceBasisPoints uint16      `json:"confidenceBasisPoints"`
 	UpdatedAtUnixMS       int64       `json:"updatedAtUnixMs"`
+	TextScore             float64     `json:"-"`
 }
 
 type ExtractionTurn struct {

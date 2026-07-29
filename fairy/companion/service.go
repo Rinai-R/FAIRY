@@ -24,6 +24,7 @@ type CompanionService struct {
 	memory                   memoryPorts
 	model                    ModelPort
 	webSearch                WebSearchBackend
+	knowledgeDocuments       knowledgeDocumentFetcher
 	stickers                 StickerSearchPort
 	speech                   SpeechRuntime
 	characterLookup          CharacterLookup
@@ -196,6 +197,7 @@ func newCompanionServiceWithPorts(root string, ports memoryPorts, model ModelPor
 		memory:                   ports,
 		model:                    model,
 		webSearch:                webSearch,
+		knowledgeDocuments:       newHTTPKnowledgeDocumentFetcher(),
 		logger:                   zap.NewNop(),
 		interactions:             newInteractionBindingCache(interactionBindingCacheCapacity),
 		outputCapabilities:       make(map[string]map[string]session.OutputCapabilities),
@@ -319,6 +321,15 @@ func (s *CompanionService) wireEngines() {
 	})
 	s.expressionDeliveries = newExpressionDeliveryRegistry(expressionDeliveryTimeout)
 	s.retention = newRetentionEngine(s)
+	if store := s.memory.retention.knowledge; store != nil {
+		ready := true
+		if readiness, ok := store.(interface{ KnowledgeIngestReady() bool }); ok {
+			ready = readiness.KnowledgeIngestReady()
+		}
+		if ready {
+			s.retention.start()
+		}
+	}
 	s.turns = &TurnEngine{host: s}
 }
 

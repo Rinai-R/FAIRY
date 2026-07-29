@@ -30,7 +30,7 @@ func TestMergeRetrievalContextDeduplicatesAndPreservesPriority(t *testing.T) {
 }
 
 func TestWebAndErrorProjectionPreserveExistingShape(t *testing.T) {
-	batch, err := newWebSearchBatch("conversation", "turn", "call", "", []WebSearchHit{{Title: "Title", URL: "https://example.com", Snippet: "Snippet"}}, 1)
+	batch, err := newWebSearchBatch("conversation", "turn", "call", []WebSearchHit{{Title: "Title", URL: "https://example.com", Snippet: "Snippet"}}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

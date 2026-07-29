@@ -54,7 +54,6 @@ type webSearchBatch struct {
 	ConversationID string
 	TurnID         string
 	ToolCallID     string
-	Category       string
 	Sources        []webSearchSource
 }
 
@@ -222,11 +221,10 @@ var searchTrackingParameters = map[string]struct{}{
 	"yclid":   {},
 }
 
-func newWebSearchBatch(conversationID, turnID, toolCallID, category string, hits []WebSearchHit, fetchedAtUnixMS int64) (webSearchBatch, error) {
+func newWebSearchBatch(conversationID, turnID, toolCallID string, hits []WebSearchHit, fetchedAtUnixMS int64) (webSearchBatch, error) {
 	conversationID = strings.TrimSpace(conversationID)
 	turnID = strings.TrimSpace(turnID)
 	toolCallID = strings.TrimSpace(toolCallID)
-	category = strings.TrimSpace(category)
 	if conversationID == "" || turnID == "" || toolCallID == "" {
 		return webSearchBatch{}, errors.New("web search batch identity is required")
 	}
@@ -235,7 +233,6 @@ func newWebSearchBatch(conversationID, turnID, toolCallID, category string, hits
 		ConversationID: conversationID,
 		TurnID:         turnID,
 		ToolCallID:     toolCallID,
-		Category:       category,
 		Sources:        make([]webSearchSource, 0, min(len(hits), defaultSearchLimit)),
 	}
 	seenURLs := make(map[string]struct{}, defaultSearchLimit)

@@ -644,18 +644,17 @@ func (e *TurnEngine) submitCompiledTurn(
 									request.ConversationID,
 									persisted.ID,
 									call.CallID,
-									stableKnowledgeCategory(query),
 									hits,
 									time.Now().UnixMilli(),
 								)
 								if batchErr != nil {
 									return fail("MODEL_RESPONSE_INVALID", batchErr)
 								}
+								if err := s.persistKnowledgeIngestBatch(batch); err != nil {
+									return fail("KNOWLEDGE_INGEST_PERSIST_FAILED", err)
+								}
 								extra := retrievalFromWebSearchBatch(batch)
 								retrieval = mergeRetrievalContext(retrieval, extra)
-								if len(batch.Sources) > 0 {
-									agent.ingestBatches = append(agent.ingestBatches, batch)
-								}
 								s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, turnStatePlanning, "", map[string]any{
 									"tool":             call.Name,
 									"phase":            "model_driven",

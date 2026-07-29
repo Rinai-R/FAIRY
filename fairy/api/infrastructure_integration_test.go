@@ -139,6 +139,37 @@ func TestProductionPersonalMemoryContentLimitReturnsBadRequest(t *testing.T) {
 	}
 }
 
+func TestProductionKnowledgeManagementRoutesRequireAuthAndReturnCatalogs(t *testing.T) {
+	databaseURL, cleanup := isolatedAPISchema(t)
+	defer cleanup()
+	masterKey := base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789"))
+	setAPIProductionEnv(t, databaseURL, masterKey)
+
+	rt, err := fairycore.Open(fairycore.RuntimeOptions{ConfigRoot: t.TempDir(), Logger: zap.NewNop()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+	baseURL, token := startProductionAPIServer(t, rt)
+
+	unauthorized, err := http.Get(baseURL + "/v1/knowledge/jobs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthorized.Body.Close()
+	if unauthorized.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d", unauthorized.StatusCode)
+	}
+	for _, path := range []string{"/v1/knowledge", "/v1/knowledge/jobs"} {
+		response := doRequest(t, http.MethodGet, baseURL+path, token)
+		body, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil || response.StatusCode != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s err=%v", path, response.StatusCode, body, err)
+		}
+	}
+}
+
 func assertReadyDependency(t *testing.T, payload map[string]any, name string) {
 	t.Helper()
 	dependency, ok := payload[name].(map[string]any)

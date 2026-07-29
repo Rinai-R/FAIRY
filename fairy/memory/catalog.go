@@ -18,6 +18,9 @@ type KnowledgeRecord struct {
 	SourceConversationID  string            `json:"sourceConversationId"`
 	SourceTurnID          string            `json:"sourceTurnId"`
 	SupersedesID          *string           `json:"supersedesId"`
+	Subject               *string           `json:"subject,omitempty"`
+	Predicate             *string           `json:"predicate,omitempty"`
+	Value                 *string           `json:"value,omitempty"`
 	Sources               []AssistantSource `json:"sources"`
 	CreatedAtUnixMS       int64             `json:"createdAtUnixMs"`
 	UpdatedAtUnixMS       int64             `json:"updatedAtUnixMs"`
@@ -26,6 +29,20 @@ type KnowledgeRecord struct {
 type KnowledgeCatalog struct {
 	Candidates []KnowledgeRecord `json:"candidates"`
 	Verified   []KnowledgeRecord `json:"verified"`
+}
+
+type KnowledgeIngestJobRecord struct {
+	ID              string `json:"id"`
+	ConversationID  string `json:"conversationId"`
+	TurnID          string `json:"turnId"`
+	BatchID         string `json:"batchId"`
+	Status          string `json:"status"`
+	AttemptCount    int    `json:"attemptCount"`
+	NextAttemptAtMS int64  `json:"nextAttemptAtMs"`
+	ErrorCategory   string `json:"errorCategory,omitempty"`
+	ErrorMessage    string `json:"errorMessage,omitempty"`
+	CreatedAtMS     int64  `json:"createdAtMs"`
+	UpdatedAtMS     int64  `json:"updatedAtMs"`
 }
 
 type WireError struct {
@@ -60,6 +77,7 @@ type RetrievedKnowledge struct {
 	ConfidenceBasisPoints uint16            `json:"confidenceBasisPoints"`
 	Sources               []AssistantSource `json:"sources"`
 	UpdatedAtUnixMS       int64             `json:"updatedAtUnixMs"`
+	TextScore             float64           `json:"-"`
 }
 
 type RetrievalContext struct {
@@ -173,7 +191,6 @@ type KnowledgeIngestBatch struct {
 	ID             string                  `json:"id"`
 	ConversationID string                  `json:"conversationId"`
 	TurnID         string                  `json:"turnId"`
-	Category       string                  `json:"category"`
 	Sources        []KnowledgeIngestSource `json:"sources"`
 }
 
@@ -182,9 +199,32 @@ type KnowledgeIngestClaim struct {
 	Batch KnowledgeIngestBatch `json:"batch"`
 }
 
+type KnowledgeDocumentChunk struct {
+	ID       string `json:"id"`
+	Ordinal  int    `json:"ordinal"`
+	Text     string `json:"text"`
+	TextHash string `json:"textHash"`
+}
+
+type KnowledgeDocument struct {
+	SourceID        string                   `json:"sourceId"`
+	CanonicalURL    string                   `json:"canonicalUrl"`
+	Title           string                   `json:"title"`
+	ContentHash     string                   `json:"contentHash"`
+	ContentType     string                   `json:"contentType"`
+	ETag            string                   `json:"etag"`
+	LastModified    string                   `json:"lastModified"`
+	FetchedAtUnixMS int64                    `json:"fetchedAtUnixMs"`
+	Chunks          []KnowledgeDocumentChunk `json:"chunks"`
+}
+
 type KnowledgeIngestFact struct {
-	Topic                 string   `json:"topic"`
+	Topic                 string   `json:"topic,omitempty"`
+	Subject               string   `json:"subject"`
+	Predicate             string   `json:"predicate"`
+	Value                 string   `json:"value"`
 	Statement             string   `json:"statement"`
 	ConfidenceBasisPoints uint16   `json:"confidenceBasisPoints"`
-	SourceHitIDs          []string `json:"sourceHitIDs"`
+	SourceHitIDs          []string `json:"sourceHitIDs,omitempty"`
+	EvidenceChunkIDs      []string `json:"evidenceChunkIDs"`
 }

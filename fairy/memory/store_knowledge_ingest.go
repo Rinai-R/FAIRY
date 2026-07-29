@@ -219,7 +219,7 @@ func (s *Store) enqueueKnowledgeIngestBatchesPostgres(ctx context.Context, batch
 	for index, batch := range batches {
 		if err := EnqueueKnowledgeIngestBatch(
 			queryCtx, tx, newID(), batch.ConversationID, batch.TurnID,
-			batch.ID, batch.Category, encoded[index], now,
+			batch.ID, encoded[index], now,
 		); err != nil {
 			return err
 		}
@@ -343,8 +343,7 @@ func (s *Store) commitKnowledgeIngestBatchPostgres(ctx context.Context, jobID, b
 	}
 	if lockedBatch.ID != batchID ||
 		lockedBatch.ConversationID != batch.ConversationID ||
-		lockedBatch.TurnID != batch.TurnID ||
-		lockedBatch.Category != batch.Category {
+		lockedBatch.TurnID != batch.TurnID {
 		return 0, errors.New("knowledge ingest batch changed before commit")
 	}
 	lockedSourceByID := make(map[string]KnowledgeIngestSource, len(lockedBatch.Sources))
@@ -451,7 +450,7 @@ func knowledgeIngestBatchFromJob(job KnowledgeIngestJob) (KnowledgeIngestBatch, 
 	}
 	batch := KnowledgeIngestBatch{
 		ID: batchID, ConversationID: job.ConversationID, TurnID: job.TurnID,
-		Category: job.Query, Sources: sources,
+		Sources: sources,
 	}
 	if job.BatchID != "" {
 		if _, err := validateKnowledgeIngestBatch(batch); err != nil {
@@ -485,7 +484,7 @@ func (s *Store) processKnowledgeIngestJobsPostgres(ctx context.Context, limit in
 		if statement == "" {
 			statement = topic
 		}
-		if !acceptKnowledgeIngest(job.Query, topic, statement, job.URL, job.Rank) {
+		if !acceptKnowledgeIngest(topic, statement, job.URL, job.Rank) {
 			if err := s.finishKnowledgeIngestJobPostgres(ctx, job.ID, "dropped", ""); err != nil {
 				return written, err
 			}

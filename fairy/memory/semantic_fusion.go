@@ -1,7 +1,6 @@
 package memory
 
 import (
-	"math"
 	"sort"
 )
 
@@ -18,9 +17,9 @@ const (
 type SemanticCandidate struct {
 	ID           string
 	Kind         string // personal | knowledge
-	FTSRank      float64
+	TextScore    float64
 	VectorSim    float64 // 0..1 similarity; 0 if absent
-	HasFTS       bool
+	HasText      bool
 	HasVector    bool
 	UpdatedAtMS  int64
 	ConfidenceBP uint16
@@ -66,10 +65,10 @@ func FuseSemanticCandidates(candidates []SemanticCandidate, limit int) []Semanti
 
 func mergeCandidate(a, b SemanticCandidate) SemanticCandidate {
 	merged := a
-	if b.HasFTS {
-		merged.HasFTS = true
-		if !a.HasFTS || b.FTSRank < a.FTSRank {
-			merged.FTSRank = b.FTSRank
+	if b.HasText {
+		merged.HasText = true
+		if !a.HasText || b.TextScore > a.TextScore {
+			merged.TextScore = b.TextScore
 		}
 	}
 	if b.HasVector {
@@ -92,17 +91,16 @@ func mergeCandidate(a, b SemanticCandidate) SemanticCandidate {
 
 // score = 0.55 * fts_norm + 0.35 * vector_sim + 0.10 * confidence_norm
 func score(c SemanticCandidate) float64 {
-	fts := 0.0
-	if c.HasFTS {
-		// bm25-like ranks are lower-is-better; map into (0,1]
-		fts = 1.0 / (1.0 + math.Max(0, c.FTSRank))
+	text := 0.0
+	if c.HasText {
+		text = clamp01(c.TextScore)
 	}
 	vec := 0.0
 	if c.HasVector {
 		vec = clamp01(c.VectorSim)
 	}
 	conf := float64(c.ConfidenceBP) / 10000.0
-	return 0.55*fts + 0.35*vec + 0.10*conf
+	return 0.55*text + 0.35*vec + 0.10*conf
 }
 
 func clamp01(v float64) float64 {

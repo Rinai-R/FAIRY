@@ -7,10 +7,10 @@ import (
 
 func TestFuseIsDeterministicAndRespectsLimit(t *testing.T) {
 	in := []SemanticCandidate{
-		{ID: "b", Kind: "personal", HasFTS: true, FTSRank: 2, ConfidenceBP: 8000, UpdatedAtMS: 2},
+		{ID: "b", Kind: "personal", HasText: true, TextScore: 0.3, ConfidenceBP: 8000, UpdatedAtMS: 2},
 		{ID: "a", Kind: "personal", HasVector: true, VectorSim: 0.9, ConfidenceBP: 9000, UpdatedAtMS: 1},
-		{ID: "a", Kind: "personal", HasFTS: true, FTSRank: 1, ConfidenceBP: 9000, UpdatedAtMS: 3},
-		{ID: "c", Kind: "knowledge", HasFTS: true, FTSRank: 5, ConfidenceBP: 5000, UpdatedAtMS: 1},
+		{ID: "a", Kind: "personal", HasText: true, TextScore: 0.8, ConfidenceBP: 9000, UpdatedAtMS: 3},
+		{ID: "c", Kind: "knowledge", HasText: true, TextScore: 0.1, ConfidenceBP: 5000, UpdatedAtMS: 1},
 	}
 	first := FuseSemanticCandidates(in, 2)
 	second := FuseSemanticCandidates(in, 2)

@@ -14,6 +14,7 @@ import (
 
 const (
 	knowledgeIngestBatchLimit = 8
+	knowledgeIngestPoll       = 2 * time.Second
 	retentionJobCapacity      = 8
 	retentionIdleCapacity     = 256
 )
@@ -23,23 +24,34 @@ var (
 	errRetentionOverloaded = errors.New("retention background capacity exhausted")
 )
 
+type transientKnowledgeIngestError struct {
+	category string
+	err      error
+}
+
+func (e transientKnowledgeIngestError) Error() string { return e.err.Error() }
+func (e transientKnowledgeIngestError) Unwrap() error { return e.err }
+
 type retentionIdleTimer struct {
 	owner  uint64
 	cancel context.CancelFunc
 }
 
 type retentionEngine struct {
-	service      *CompanionService
-	closed       atomic.Bool
-	jobs         atomic.Int64
-	admission    sync.Mutex
-	slots        chan struct{}
-	wg           sync.WaitGroup
-	idleMu       sync.Mutex
-	idle         map[string]retentionIdleTimer
-	idleCapacity int
-	idleOwner    uint64
-	closeOnce    sync.Once
+	service       *CompanionService
+	closed        atomic.Bool
+	jobs          atomic.Int64
+	admission     sync.Mutex
+	slots         chan struct{}
+	wg            sync.WaitGroup
+	idleMu        sync.Mutex
+	idle          map[string]retentionIdleTimer
+	idleCapacity  int
+	idleOwner     uint64
+	closeOnce     sync.Once
+	knowledgeWake chan struct{}
+	workerCtx     context.Context
+	workerCancel  context.CancelFunc
 }
 
 func newRetentionEngine(service *CompanionService) *retentionEngine {
@@ -53,11 +65,94 @@ func newRetentionEngineWithCapacity(service *CompanionService, jobCapacity, idle
 	if idleCapacity < 1 {
 		idleCapacity = 1
 	}
+	workerCtx, workerCancel := context.WithCancel(context.Background())
 	return &retentionEngine{
-		service:      service,
-		slots:        make(chan struct{}, jobCapacity),
-		idle:         make(map[string]retentionIdleTimer),
-		idleCapacity: idleCapacity,
+		service:       service,
+		slots:         make(chan struct{}, jobCapacity),
+		idle:          make(map[string]retentionIdleTimer),
+		idleCapacity:  idleCapacity,
+		knowledgeWake: make(chan struct{}, 1),
+		workerCtx:     workerCtx,
+		workerCancel:  workerCancel,
+	}
+}
+
+func (e *retentionEngine) start() {
+	if e == nil || e.closed.Load() {
+		return
+	}
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		ticker := time.NewTicker(knowledgeIngestPoll)
+		defer ticker.Stop()
+		e.drainKnowledgeIngest()
+		for {
+			select {
+			case <-e.workerCtx.Done():
+				return
+			case <-e.knowledgeWake:
+				e.drainKnowledgeIngest()
+			case <-ticker.C:
+				e.drainKnowledgeIngest()
+			}
+		}
+	}()
+}
+
+func (e *retentionEngine) wakeKnowledgeIngest() {
+	if e == nil || e.closed.Load() {
+		return
+	}
+	select {
+	case e.knowledgeWake <- struct{}{}:
+	default:
+	}
+}
+
+func (e *retentionEngine) drainKnowledgeIngest() {
+	if e == nil || e.closed.Load() || e.service == nil {
+		return
+	}
+	store := e.service.memory.retention.knowledge
+	if store == nil {
+		return
+	}
+	if ready, ok := store.(interface{ KnowledgeIngestReady() bool }); ok && !ready.KnowledgeIngestReady() {
+		return
+	}
+	for {
+		claims, err := store.ClaimKnowledgeIngestBatches(knowledgeIngestBatchLimit)
+		if err != nil {
+			e.service.setBackgroundError(err)
+			return
+		}
+		if len(claims) == 0 {
+			return
+		}
+		for _, claim := range claims {
+			if e.closed.Load() {
+				return
+			}
+			if err := e.executeKnowledgeIngestClaim(store, claim); err != nil {
+				var transient transientKnowledgeIngestError
+				if errors.As(err, &transient) {
+					if retryErr := store.RetryKnowledgeIngestBatch(claim.JobID, transient.category, err.Error()); retryErr != nil {
+						e.service.setBackgroundError(errors.Join(err, retryErr))
+					} else {
+						e.service.setBackgroundError(err)
+					}
+					continue
+				}
+				if failErr := store.FailKnowledgeIngestBatch(claim.JobID, err.Error()); failErr != nil {
+					e.service.setBackgroundError(errors.Join(err, failErr))
+					continue
+				}
+				e.service.setBackgroundError(err)
+				continue
+			}
+			e.service.clearBackgroundError()
+		}
 	}
 }
 
@@ -231,7 +326,7 @@ func (e *retentionEngine) executeExtractionBatch(store extractionStore, batch *m
 		Input: input, CacheInput: &cacheInput,
 	})
 	if err != nil {
-		return err
+		return transientKnowledgeIngestError{category: "model_provider", err: err}
 	}
 	output, err := parseMemoryMutationOutput(model.CollectTextFromEvents(events))
 	if err != nil {
@@ -245,45 +340,28 @@ func (e *retentionEngine) executeExtractionBatch(store extractionStore, batch *m
 	return err
 }
 
-func (e *retentionEngine) scheduleKnowledgeIngestBatches(batches []memory.KnowledgeIngestBatch) {
-	if e == nil || e.closed.Load() || e.service == nil || len(batches) == 0 {
-		return
-	}
-	store := e.service.memory.retention.knowledge
-	if store == nil {
-		return
-	}
-	copyBatches := cloneKnowledgeIngestBatches(batches)
-	if err := e.run(func() {
-		if err := store.EnqueueKnowledgeIngestBatches(copyBatches); err != nil {
-			e.service.setBackgroundError(err)
-			return
-		}
-		claims, err := store.ClaimKnowledgeIngestBatches(knowledgeIngestBatchLimit)
-		if err != nil {
-			e.service.setBackgroundError(err)
-			return
-		}
-		for _, claim := range claims {
-			if err := e.executeKnowledgeIngestClaim(store, claim); err != nil {
-				if failErr := store.FailKnowledgeIngestBatch(claim.JobID, err.Error()); failErr != nil {
-					e.service.setBackgroundError(errors.Join(err, failErr))
-					continue
-				}
-				e.service.setBackgroundError(err)
-				continue
-			}
-		}
-	}); err != nil {
-		e.service.setBackgroundError(err)
-	}
-}
-
 func (e *retentionEngine) executeKnowledgeIngestClaim(store knowledgeIngestStore, claim memory.KnowledgeIngestClaim) error {
 	if e == nil || e.service == nil {
 		return errRetentionClosed
 	}
-	input, err := buildKnowledgeIngestInput(claim.Batch)
+	if e.service.knowledgeDocuments == nil {
+		return errors.New("knowledge document fetcher is unavailable")
+	}
+	documents, err := e.service.knowledgeDocuments.FetchBatch(e.workerCtx, claim.Batch)
+	if err != nil {
+		if errors.Is(err, errKnowledgeFetchTransient) {
+			return transientKnowledgeIngestError{category: "document_fetch", err: err}
+		}
+		return err
+	}
+	needsExtraction, err := store.KnowledgeDocumentsNeedExtraction(claim.JobID, claim.Batch.ID, documents)
+	if err != nil {
+		return transientKnowledgeIngestError{category: "document_state", err: err}
+	}
+	if !needsExtraction {
+		return nil
+	}
+	input, err := buildKnowledgeIngestInput(claim.Batch, documents)
 	if err != nil {
 		return err
 	}
@@ -330,23 +408,22 @@ func (e *retentionEngine) executeKnowledgeIngestClaim(store knowledgeIngestStore
 		"",
 		runtimeKnowledgeIngestLedgerMetadata(events, usage, claim.Batch.ID, len(claim.Batch.Sources)),
 	)
-	output, err := parseKnowledgeIngestOutput(model.CollectTextFromEvents(events), claim.Batch)
+	output, err := parseKnowledgeIngestOutput(model.CollectTextFromEvents(events), documents)
 	if err != nil {
 		return err
-	}
-	if len(output.Facts) == 0 {
-		return store.DropKnowledgeIngestBatch(claim.JobID, "")
 	}
 	facts := make([]memory.KnowledgeIngestFact, 0, len(output.Facts))
 	for _, fact := range output.Facts {
 		facts = append(facts, memory.KnowledgeIngestFact{
-			Topic: fact.Topic, Statement: fact.Statement,
+			Subject: fact.Subject, Predicate: fact.Predicate, Value: fact.Value, Statement: fact.Statement,
 			ConfidenceBasisPoints: fact.ConfidenceBasisPoints,
-			SourceHitIDs:          append([]string(nil), fact.SourceHitIDs...),
+			EvidenceChunkIDs:      append([]string(nil), fact.EvidenceChunkIDs...),
 		})
 	}
-	_, err = store.CommitKnowledgeIngestBatch(claim.JobID, claim.Batch.ID, facts)
-	return err
+	if _, err := store.CommitKnowledgeDocumentBatch(claim.JobID, claim.Batch.ID, documents, facts); err != nil {
+		return transientKnowledgeIngestError{category: "document_commit", err: err}
+	}
+	return nil
 }
 
 func cloneKnowledgeIngestBatches(batches []memory.KnowledgeIngestBatch) []memory.KnowledgeIngestBatch {
@@ -366,6 +443,9 @@ func (e *retentionEngine) close() {
 		e.admission.Lock()
 		e.closed.Store(true)
 		e.admission.Unlock()
+		if e.workerCancel != nil {
+			e.workerCancel()
+		}
 		e.idleMu.Lock()
 		idle := e.idle
 		e.idle = make(map[string]retentionIdleTimer)

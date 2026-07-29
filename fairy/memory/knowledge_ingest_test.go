@@ -5,25 +5,24 @@ import (
 	"testing"
 )
 
-func TestAcceptKnowledgeIngestRequiresStableCategoryAndPublicSource(t *testing.T) {
+func TestAcceptKnowledgeIngestRequiresValidFactAndPublicSource(t *testing.T) {
 	tests := []struct {
 		name      string
-		category  string
 		topic     string
 		statement string
 		url       string
 		rank      uint8
 		want      bool
 	}{
-		{name: "anime source", category: "anime", topic: "作品条目", statement: "这是一段长度足够的公开作品设定摘要。", url: "https://example.test/work", rank: 1, want: true},
-		{name: "unknown category", category: "chat", topic: "聊天", statement: "这是一段长度足够但不稳定的聊天内容。", url: "https://example.test/chat", rank: 1},
-		{name: "missing source", category: "game", topic: "游戏", statement: "这是一段长度足够的游戏知识摘要。", rank: 1},
-		{name: "credential url", category: "book", topic: "书", statement: "这是一段长度足够的书籍知识摘要。", url: "https://user:pass@example.test/book", rank: 1},
-		{name: "short body", category: "book", topic: "书", statement: "太短", url: "https://example.test/book", rank: 1},
+		{name: "public source", topic: "作品条目", statement: "这是一段长度足够的公开作品设定摘要。", url: "https://example.test/work", rank: 1, want: true},
+		{name: "topic agnostic", topic: "聊天", statement: "这是一段长度足够且来源公开的聊天内容。", url: "https://example.test/chat", rank: 1, want: true},
+		{name: "missing source", topic: "游戏", statement: "这是一段长度足够的游戏知识摘要。", rank: 1},
+		{name: "credential url", topic: "书", statement: "这是一段长度足够的书籍知识摘要。", url: "https://user:pass@example.test/book", rank: 1},
+		{name: "short body", topic: "书", statement: "太短", url: "https://example.test/book", rank: 1},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := acceptKnowledgeIngest(test.category, test.topic, test.statement, test.url, test.rank); got != test.want {
+			if got := acceptKnowledgeIngest(test.topic, test.statement, test.url, test.rank); got != test.want {
 				t.Fatalf("acceptKnowledgeIngest() = %v, want %v", got, test.want)
 			}
 		})
@@ -32,7 +31,7 @@ func TestAcceptKnowledgeIngestRequiresStableCategoryAndPublicSource(t *testing.T
 
 func TestValidateKnowledgeIngestBatchBoundsCanonicalSources(t *testing.T) {
 	valid := KnowledgeIngestBatch{
-		ID: "batch-1", ConversationID: "conversation-1", TurnID: "turn-1", Category: "anime",
+		ID: "batch-1", ConversationID: "conversation-1", TurnID: "turn-1",
 		Sources: []KnowledgeIngestSource{{
 			ID: "source-1", Title: "作品标题", URL: "https://example.test/item?id=1",
 			Snippet: "这是一条足够完整的公开来源摘要。", Rank: 1, FetchedAtUnixMS: 1,
@@ -43,11 +42,10 @@ func TestValidateKnowledgeIngestBatchBoundsCanonicalSources(t *testing.T) {
 		t.Fatalf("valid batch = (%q, %v)", encoded, err)
 	}
 	tests := map[string]func(*KnowledgeIngestBatch){
-		"unknown category": func(batch *KnowledgeIngestBatch) { batch.Category = "chat" },
-		"empty sources":    func(batch *KnowledgeIngestBatch) { batch.Sources = nil },
-		"fragment URL":     func(batch *KnowledgeIngestBatch) { batch.Sources[0].URL += "#fragment" },
-		"credential URL":   func(batch *KnowledgeIngestBatch) { batch.Sources[0].URL = "https://user:pass@example.test/item" },
-		"invalid rank":     func(batch *KnowledgeIngestBatch) { batch.Sources[0].Rank = 0 },
+		"empty sources":  func(batch *KnowledgeIngestBatch) { batch.Sources = nil },
+		"fragment URL":   func(batch *KnowledgeIngestBatch) { batch.Sources[0].URL += "#fragment" },
+		"credential URL": func(batch *KnowledgeIngestBatch) { batch.Sources[0].URL = "https://user:pass@example.test/item" },
+		"invalid rank":   func(batch *KnowledgeIngestBatch) { batch.Sources[0].Rank = 0 },
 		"long snippet": func(batch *KnowledgeIngestBatch) {
 			batch.Sources[0].Snippet = strings.Repeat("长", MaxKnowledgeIngestSnippetRunes+1)
 		},

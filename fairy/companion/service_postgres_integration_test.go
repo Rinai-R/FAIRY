@@ -1253,7 +1253,7 @@ func TestPostgresPublicTurnNaturalSocialQueryStaysInCurrentConversation(t *testi
 	}
 }
 
-func TestPostgresGroupWebSearchIsEphemeral(t *testing.T) {
+func TestPostgresGroupWebSearchKeepsPromptEphemeralAndPersistsDurableBatch(t *testing.T) {
 	store, pool, cleanup := openCompanionIntegrationStore(t)
 	defer cleanup()
 	const characterID = "character-group-web"
@@ -1284,8 +1284,16 @@ func TestPostgresGroupWebSearchIsEphemeral(t *testing.T) {
 	if !compiledPromptContains(requests[1], "公开新闻标题") {
 		t.Fatal("web result was not available to the current group turn")
 	}
-	if after := groupPrivacyJobCounts(t, pool); after != before {
-		t.Fatalf("group web search persisted jobs: before=%v after=%v", before, after)
+	after := groupPrivacyJobCounts(t, pool)
+	if after.extraction != before.extraction || after.ingest != before.ingest+1 {
+		t.Fatalf("durable group web job counts: before=%v after=%v", before, after)
+	}
+	var rawQuery string
+	if err := pool.QueryRow(t.Context(), "SELECT query FROM knowledge_ingest_jobs ORDER BY created_at_ms DESC LIMIT 1").Scan(&rawQuery); err != nil {
+		t.Fatal(err)
+	}
+	if rawQuery != "" {
+		t.Fatalf("durable batch persisted raw query %q", rawQuery)
 	}
 }
 
