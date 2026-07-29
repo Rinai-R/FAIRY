@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -23,24 +24,29 @@ func testKnowledgeChunkID(sourceURL, text string) string {
 	return fmt.Sprintf("web-chunk-%x", chunkSum[:12])
 }
 
-func (testKnowledgeDocumentFetcher) FetchBatch(_ context.Context, batch memory.KnowledgeIngestBatch) ([]memory.KnowledgeDocument, error) {
-	documents := make([]memory.KnowledgeDocument, 0, len(batch.Sources))
-	for _, source := range batch.Sources {
-		text := source.Snippet
-		if text == "" {
-			text = source.Title
-		}
-		textSum := sha256.Sum256([]byte(text))
-		contentHash := fmt.Sprintf("%x", textSum[:])
-		documents = append(documents, memory.KnowledgeDocument{
-			SourceID: source.ID, CanonicalURL: source.URL, Title: source.Title,
-			ContentHash: contentHash, ContentType: "text/plain", FetchedAtUnixMS: source.FetchedAtUnixMS,
-			Chunks: []memory.KnowledgeDocumentChunk{{
-				ID: testKnowledgeChunkID(source.URL, text), Ordinal: 0, Text: text, TextHash: contentHash,
-			}},
-		})
+type selectiveKnowledgeDocumentFetcher struct{}
+
+func (selectiveKnowledgeDocumentFetcher) FetchSource(ctx context.Context, source memory.KnowledgeIngestSource) (memory.KnowledgeDocument, error) {
+	if strings.Contains(source.URL, "failed.example") {
+		return memory.KnowledgeDocument{}, errors.New("source is permanently unavailable")
 	}
-	return documents, nil
+	return (testKnowledgeDocumentFetcher{}).FetchSource(ctx, source)
+}
+
+func (testKnowledgeDocumentFetcher) FetchSource(_ context.Context, source memory.KnowledgeIngestSource) (memory.KnowledgeDocument, error) {
+	text := source.Snippet
+	if text == "" {
+		text = source.Title
+	}
+	textSum := sha256.Sum256([]byte(text))
+	contentHash := fmt.Sprintf("%x", textSum[:])
+	return memory.KnowledgeDocument{
+		SourceID: source.ID, CanonicalURL: source.URL, Title: source.Title,
+		ContentHash: contentHash, ContentType: "text/plain", FetchedAtUnixMS: source.FetchedAtUnixMS,
+		Chunks: []memory.KnowledgeDocumentChunk{{
+			ID: testKnowledgeChunkID(source.URL, text), Ordinal: 0, Text: text, TextHash: contentHash,
+		}},
+	}, nil
 }
 
 type retentionKnowledgeStore struct{ calls *atomic.Int64 }
@@ -54,15 +60,15 @@ func (s retentionKnowledgeStore) ClaimKnowledgeIngestBatches(int) ([]memory.Know
 	return nil, nil
 }
 
-func (retentionKnowledgeStore) CommitKnowledgeIngestBatch(string, string, []memory.KnowledgeIngestFact) (int, error) {
-	return 0, nil
-}
-
 func (retentionKnowledgeStore) KnowledgeDocumentsNeedExtraction(string, string, []memory.KnowledgeDocument) (bool, error) {
 	return true, nil
 }
 
-func (retentionKnowledgeStore) CommitKnowledgeDocumentBatch(string, string, []memory.KnowledgeDocument, []memory.KnowledgeIngestFact) (int, error) {
+func (retentionKnowledgeStore) RecallKnowledgeForIngest(memory.KnowledgeIngestFact, int) ([]memory.RetrievedKnowledge, error) {
+	return nil, nil
+}
+
+func (retentionKnowledgeStore) CommitKnowledgeDocumentMutations(string, string, []memory.KnowledgeDocument, []memory.KnowledgeIngestFact, []memory.KnowledgeIngestRecall, []memory.KnowledgeIngestMutation) (int, error) {
 	return 0, nil
 }
 
@@ -80,11 +86,14 @@ func (retentionKnowledgeStore) DropKnowledgeIngestBatch(string, string) error {
 
 type capturingKnowledgeIngestStore struct {
 	commits []struct {
-		jobID   string
-		batchID string
-		facts   []memory.KnowledgeIngestFact
+		jobID     string
+		batchID   string
+		facts     []memory.KnowledgeIngestFact
+		recalls   []memory.KnowledgeIngestRecall
+		mutations []memory.KnowledgeIngestMutation
 	}
-	drops []string
+	drops  []string
+	recall []memory.RetrievedKnowledge
 }
 
 type claimedKnowledgeIngestStore struct {
@@ -92,6 +101,26 @@ type claimedKnowledgeIngestStore struct {
 	failed  string
 	done    chan struct{}
 	claimed atomic.Bool
+}
+
+type isolatedKnowledgeIngestStore struct {
+	capturingKnowledgeIngestStore
+	claims  []memory.KnowledgeIngestClaim
+	claimed bool
+	failed  []string
+}
+
+func (s *isolatedKnowledgeIngestStore) ClaimKnowledgeIngestBatches(int) ([]memory.KnowledgeIngestClaim, error) {
+	if s.claimed {
+		return nil, nil
+	}
+	s.claimed = true
+	return append([]memory.KnowledgeIngestClaim(nil), s.claims...), nil
+}
+
+func (s *isolatedKnowledgeIngestStore) FailKnowledgeIngestBatch(jobID, _ string) error {
+	s.failed = append(s.failed, jobID)
+	return nil
 }
 
 func (*claimedKnowledgeIngestStore) EnqueueKnowledgeIngestBatches([]memory.KnowledgeIngestBatch) error {
@@ -105,15 +134,15 @@ func (s *claimedKnowledgeIngestStore) ClaimKnowledgeIngestBatches(int) ([]memory
 	return []memory.KnowledgeIngestClaim{s.claim}, nil
 }
 
-func (*claimedKnowledgeIngestStore) CommitKnowledgeIngestBatch(string, string, []memory.KnowledgeIngestFact) (int, error) {
-	return 0, errors.New("unexpected commit")
-}
-
 func (*claimedKnowledgeIngestStore) KnowledgeDocumentsNeedExtraction(string, string, []memory.KnowledgeDocument) (bool, error) {
 	return true, nil
 }
 
-func (*claimedKnowledgeIngestStore) CommitKnowledgeDocumentBatch(string, string, []memory.KnowledgeDocument, []memory.KnowledgeIngestFact) (int, error) {
+func (*claimedKnowledgeIngestStore) RecallKnowledgeForIngest(memory.KnowledgeIngestFact, int) ([]memory.RetrievedKnowledge, error) {
+	return nil, nil
+}
+
+func (*claimedKnowledgeIngestStore) CommitKnowledgeDocumentMutations(string, string, []memory.KnowledgeDocument, []memory.KnowledgeIngestFact, []memory.KnowledgeIngestRecall, []memory.KnowledgeIngestMutation) (int, error) {
 	return 0, errors.New("unexpected commit")
 }
 
@@ -139,21 +168,28 @@ func (*capturingKnowledgeIngestStore) ClaimKnowledgeIngestBatches(int) ([]memory
 	return nil, nil
 }
 
-func (s *capturingKnowledgeIngestStore) CommitKnowledgeIngestBatch(jobID, batchID string, facts []memory.KnowledgeIngestFact) (int, error) {
+func (s *capturingKnowledgeIngestStore) RecallKnowledgeForIngest(memory.KnowledgeIngestFact, int) ([]memory.RetrievedKnowledge, error) {
+	return append([]memory.RetrievedKnowledge(nil), s.recall...), nil
+}
+
+func (s *capturingKnowledgeIngestStore) CommitKnowledgeDocumentMutations(jobID, batchID string, _ []memory.KnowledgeDocument, facts []memory.KnowledgeIngestFact, recalls []memory.KnowledgeIngestRecall, mutations []memory.KnowledgeIngestMutation) (int, error) {
 	s.commits = append(s.commits, struct {
-		jobID   string
-		batchID string
-		facts   []memory.KnowledgeIngestFact
-	}{jobID: jobID, batchID: batchID, facts: append([]memory.KnowledgeIngestFact(nil), facts...)})
+		jobID     string
+		batchID   string
+		facts     []memory.KnowledgeIngestFact
+		recalls   []memory.KnowledgeIngestRecall
+		mutations []memory.KnowledgeIngestMutation
+	}{
+		jobID: jobID, batchID: batchID,
+		facts:     append([]memory.KnowledgeIngestFact(nil), facts...),
+		recalls:   append([]memory.KnowledgeIngestRecall(nil), recalls...),
+		mutations: append([]memory.KnowledgeIngestMutation(nil), mutations...),
+	})
 	return len(facts), nil
 }
 
 func (*capturingKnowledgeIngestStore) KnowledgeDocumentsNeedExtraction(string, string, []memory.KnowledgeDocument) (bool, error) {
 	return true, nil
-}
-
-func (s *capturingKnowledgeIngestStore) CommitKnowledgeDocumentBatch(jobID, batchID string, _ []memory.KnowledgeDocument, facts []memory.KnowledgeIngestFact) (int, error) {
-	return s.CommitKnowledgeIngestBatch(jobID, batchID, facts)
 }
 
 func (*capturingKnowledgeIngestStore) FailKnowledgeIngestBatch(string, string) error {
@@ -208,10 +244,12 @@ func TestRetentionEngineKnowledgeIngestWorkerWakesAndPolls(t *testing.T) {
 	}
 }
 
-func TestKnowledgeIngestUsesOneStrictModelCallPerIsolatedBatch(t *testing.T) {
+func TestKnowledgeIngestExtractsAndReconcilesEachIsolatedSource(t *testing.T) {
 	modelPort := &participationModel{drafts: []string{
 		fmt.Sprintf(`{"facts":[{"subject":"作品甲","predicate":"新篇章公开时间","value":"十月","statement":"作品甲将在十月正式公开新篇章。","confidenceBasisPoints":8200,"evidenceChunkIDs":["%s"]}]}`, testKnowledgeChunkID("https://a.example/item", "作品甲的新篇章公开信息。")),
+		`{"mutations":[{"factIndex":0,"operation":"ADD"}]}`,
 		fmt.Sprintf(`{"facts":[{"subject":"作品乙","predicate":"续作状态","value":"已公布制作决定","statement":"作品乙的续作已经正式公布制作决定。","confidenceBasisPoints":8100,"evidenceChunkIDs":["%s"]}]}`, testKnowledgeChunkID("https://b.example/item", "作品乙续作制作决定。")),
+		`{"mutations":[{"factIndex":0,"operation":"ADD"}]}`,
 	}}
 	service := &CompanionService{model: modelPort, cfg: participationConfig{}, knowledgeDocuments: testKnowledgeDocumentFetcher{}}
 	engine := newRetentionEngine(service)
@@ -243,16 +281,20 @@ func TestKnowledgeIngestUsesOneStrictModelCallPerIsolatedBatch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(modelPort.requests) != 2 || len(store.commits) != 2 {
-		t.Fatalf("model calls=%d commits=%d, want 2/2", len(modelPort.requests), len(store.commits))
+	if len(modelPort.requests) != 4 || len(store.commits) != 2 {
+		t.Fatalf("model calls=%d commits=%d, want 4/2", len(modelPort.requests), len(store.commits))
 	}
 	for index, request := range modelPort.requests {
-		if request.Shape.Lane != model.PromptLaneKnowledgeIngest {
-			t.Fatalf("request[%d] lane = %q", index, request.Shape.Lane)
+		wantLane := model.PromptLaneKnowledgeIngest
+		if index%2 == 1 {
+			wantLane = model.PromptLaneKnowledgeReconcile
+		}
+		if request.Shape.Lane != wantLane {
+			t.Fatalf("request[%d] lane = %q, want %q", index, request.Shape.Lane, wantLane)
 		}
 	}
 	firstInput := fmt.Sprint(modelPort.requests[0].Input)
-	secondInput := fmt.Sprint(modelPort.requests[1].Input)
+	secondInput := fmt.Sprint(modelPort.requests[2].Input)
 	if !strings.Contains(firstInput, "source-a") || strings.Contains(firstInput, "source-b") ||
 		!strings.Contains(secondInput, "source-b") || strings.Contains(secondInput, "source-a") {
 		t.Fatalf("cross-batch input contamination: %#v", modelPort.requests)
@@ -260,6 +302,81 @@ func TestKnowledgeIngestUsesOneStrictModelCallPerIsolatedBatch(t *testing.T) {
 	if store.commits[0].batchID != "batch-a" || store.commits[0].facts[0].EvidenceChunkIDs[0] != testKnowledgeChunkID("https://a.example/item", "作品甲的新篇章公开信息。") ||
 		store.commits[1].batchID != "batch-b" || store.commits[1].facts[0].EvidenceChunkIDs[0] != testKnowledgeChunkID("https://b.example/item", "作品乙续作制作决定。") {
 		t.Fatalf("commits = %#v", store.commits)
+	}
+	if store.commits[0].mutations[0].Operation != memory.KnowledgeMutationAdd ||
+		store.commits[1].mutations[0].Operation != memory.KnowledgeMutationAdd {
+		t.Fatalf("mutations = %#v, %#v", store.commits[0].mutations, store.commits[1].mutations)
+	}
+}
+
+func TestKnowledgeIngestResolvesRecalledAliasBeforeCommit(t *testing.T) {
+	chunkID := testKnowledgeChunkID("https://a.example/update", "作品甲的状态已从内测调整为公测。")
+	modelPort := &participationModel{drafts: []string{
+		fmt.Sprintf(`{"facts":[{"subject":"作品甲","predicate":"状态","value":"公测","statement":"作品甲当前已经进入公开测试阶段。","confidenceBasisPoints":8300,"evidenceChunkIDs":["%s"]}]}`, chunkID),
+		`{"mutations":[{"factIndex":0,"operation":"UPDATE","memoryId":"f0m0"}]}`,
+	}}
+	service := &CompanionService{model: modelPort, cfg: participationConfig{}, knowledgeDocuments: testKnowledgeDocumentFetcher{}}
+	engine := newRetentionEngine(service)
+	store := &capturingKnowledgeIngestStore{recall: []memory.RetrievedKnowledge{{
+		ID: "knowledge-old", Statement: "作品甲此前处于内部测试阶段。", ConfidenceBasisPoints: 7800,
+	}}}
+	claim := memory.KnowledgeIngestClaim{
+		JobID: "job-update",
+		Batch: memory.KnowledgeIngestBatch{
+			ID: "batch-update", ConversationID: "conversation-a", TurnID: "turn-a",
+			Sources: []memory.KnowledgeIngestSource{{
+				ID: "source-a", Title: "状态页", URL: "https://a.example/update",
+				Snippet: "作品甲的状态已从内测调整为公测。", Rank: 1, FetchedAtUnixMS: 1,
+			}},
+		},
+	}
+	if err := engine.executeKnowledgeIngestClaim(store, claim); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.commits) != 1 || store.commits[0].mutations[0].MemoryID != "knowledge-old" ||
+		store.commits[0].mutations[0].Operation != memory.KnowledgeMutationUpdate {
+		t.Fatalf("commits = %#v", store.commits)
+	}
+	reconcileInput := fmt.Sprint(modelPort.requests[1].Input)
+	if strings.Contains(reconcileInput, "knowledge-old") || !strings.Contains(reconcileInput, "f0m0") {
+		t.Fatalf("reconcile input leaked storage ID: %s", reconcileInput)
+	}
+}
+
+func TestKnowledgeIngestSourceFailureDoesNotBlockSiblingJob(t *testing.T) {
+	goodText := "作品乙已经正式公布续作制作决定。"
+	modelPort := &participationModel{drafts: []string{
+		fmt.Sprintf(`{"facts":[{"subject":"作品乙","predicate":"续作状态","value":"已公布","statement":"作品乙已经正式公布续作制作决定。","confidenceBasisPoints":8100,"evidenceChunkIDs":["%s"]}]}`, testKnowledgeChunkID("https://good.example/item", goodText)),
+		`{"mutations":[{"factIndex":0,"operation":"ADD"}]}`,
+	}}
+	service := &CompanionService{model: modelPort, cfg: participationConfig{}, knowledgeDocuments: selectiveKnowledgeDocumentFetcher{}}
+	engine := newRetentionEngine(service)
+	store := &isolatedKnowledgeIngestStore{claims: []memory.KnowledgeIngestClaim{
+		{
+			JobID: "job-failed",
+			Batch: memory.KnowledgeIngestBatch{
+				ID: "batch-failed", ConversationID: "conversation-a", TurnID: "turn-a",
+				Sources: []memory.KnowledgeIngestSource{{
+					ID: "source-failed", Title: "坏来源", URL: "https://failed.example/item",
+					Snippet: "无法访问的来源。", Rank: 1, FetchedAtUnixMS: 1,
+				}},
+			},
+		},
+		{
+			JobID: "job-good",
+			Batch: memory.KnowledgeIngestBatch{
+				ID: "batch-good", ConversationID: "conversation-a", TurnID: "turn-a",
+				Sources: []memory.KnowledgeIngestSource{{
+					ID: "source-good", Title: "好来源", URL: "https://good.example/item",
+					Snippet: goodText, Rank: 2, FetchedAtUnixMS: 1,
+				}},
+			},
+		},
+	}}
+	service.memory.retention.knowledge = store
+	engine.drainKnowledgeIngest()
+	if !slices.Equal(store.failed, []string{"job-failed"}) || len(store.commits) != 1 || store.commits[0].jobID != "job-good" {
+		t.Fatalf("failed=%v commits=%#v", store.failed, store.commits)
 	}
 }
 

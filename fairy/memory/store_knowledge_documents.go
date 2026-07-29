@@ -2,10 +2,10 @@ package memory
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -14,7 +14,7 @@ import (
 
 type preparedDocumentFact struct {
 	fact      KnowledgeIngestFact
-	slotKey   string
+	mutation  KnowledgeIngestMutation
 	embedding EmbeddingValue
 }
 
@@ -104,8 +104,8 @@ WHERE canonical_url = $1`, document.CanonicalURL).Scan(&currentHash)
 	return false, nil
 }
 
-func (s *Store) commitKnowledgeDocumentBatchPostgres(ctx context.Context, jobID, batchID string, documents []KnowledgeDocument, facts []KnowledgeIngestFact) (int, error) {
-	if len(facts) > maxKnowledgeIngestFacts {
+func (s *Store) commitKnowledgeDocumentMutationsPostgres(ctx context.Context, jobID, batchID string, documents []KnowledgeDocument, facts []KnowledgeIngestFact, recalls []KnowledgeIngestRecall, mutations []KnowledgeIngestMutation) (int, error) {
+	if len(facts) > maxKnowledgeIngestFacts || len(recalls) != len(facts) || len(mutations) != len(facts) {
 		return 0, errors.New("knowledge ingest fact count is invalid")
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
@@ -118,13 +118,11 @@ func (s *Store) commitKnowledgeDocumentBatchPostgres(ctx context.Context, jobID,
 	if err != nil || batch.ID != batchID {
 		return 0, errors.New("knowledge document batch does not match claimed job")
 	}
-	documentByURL, chunkByID, err := validateKnowledgeDocuments(batch, documents)
+	_, chunkByID, err := validateKnowledgeDocuments(batch, documents)
 	if err != nil {
 		return 0, err
 	}
 	prepared := make([]preparedDocumentFact, len(facts))
-	contents := make([]string, len(facts))
-	seenSlots := make(map[string]struct{}, len(facts))
 	for index, fact := range facts {
 		fact.Subject = strings.TrimSpace(fact.Subject)
 		fact.Predicate = strings.TrimSpace(fact.Predicate)
@@ -137,12 +135,6 @@ func (s *Store) commitKnowledgeDocumentBatchPostgres(ctx context.Context, jobID,
 			fact.ConfidenceBasisPoints == 0 || fact.ConfidenceBasisPoints > 10000 {
 			return 0, fmt.Errorf("knowledge ingest fact[%d] is invalid", index)
 		}
-		slotSum := sha256.Sum256([]byte(normalizeFactPart(fact.Subject) + "\x00" + normalizeFactPart(fact.Predicate)))
-		slotKey := fmt.Sprintf("%x", slotSum[:])
-		if _, duplicate := seenSlots[slotKey]; duplicate {
-			return 0, errors.New("knowledge ingest fact slots are duplicated")
-		}
-		seenSlots[slotKey] = struct{}{}
 		if len(fact.EvidenceChunkIDs) == 0 || len(fact.EvidenceChunkIDs) > 128 {
 			return 0, fmt.Errorf("knowledge ingest fact[%d] evidence is invalid", index)
 		}
@@ -156,16 +148,75 @@ func (s *Store) commitKnowledgeDocumentBatchPostgres(ctx context.Context, jobID,
 			}
 			seenEvidence[chunkID] = struct{}{}
 		}
-		prepared[index] = preparedDocumentFact{fact: fact, slotKey: slotKey}
-		contents[index] = fact.Subject + "\n" + fact.Statement
+		prepared[index].fact = fact
 	}
-	embeddings, err := embeddingsForContents(s.semanticEmbedder, contents)
+	candidatesByFact := make([]map[string]struct{}, len(facts))
+	seenRecallIndexes := make(map[int]struct{}, len(recalls))
+	for _, recall := range recalls {
+		if recall.FactIndex < 0 || recall.FactIndex >= len(facts) || len(recall.Candidates) > MaxKnowledgeIngestRecallCandidates {
+			return 0, errors.New("knowledge ingest recall is invalid")
+		}
+		if _, duplicate := seenRecallIndexes[recall.FactIndex]; duplicate {
+			return 0, errors.New("knowledge ingest recall index is duplicated")
+		}
+		seenRecallIndexes[recall.FactIndex] = struct{}{}
+		candidatesByFact[recall.FactIndex] = make(map[string]struct{}, len(recall.Candidates))
+		for _, candidate := range recall.Candidates {
+			if err := ValidateID("knowledge_id", candidate.ID); err != nil {
+				return 0, err
+			}
+			if _, duplicate := candidatesByFact[recall.FactIndex][candidate.ID]; duplicate {
+				return 0, errors.New("knowledge ingest recalled candidate is duplicated")
+			}
+			candidatesByFact[recall.FactIndex][candidate.ID] = struct{}{}
+		}
+	}
+	seenMutationIndexes := make(map[int]struct{}, len(mutations))
+	seenTargetIDs := make(map[string]struct{})
+	targetIDs := make([]string, 0, len(mutations))
+	embeddingIndexes := make([]int, 0, len(mutations))
+	embeddingContents := make([]string, 0, len(mutations))
+	for _, mutation := range mutations {
+		if mutation.FactIndex < 0 || mutation.FactIndex >= len(facts) {
+			return 0, errors.New("knowledge ingest mutation fact index is invalid")
+		}
+		if _, duplicate := seenMutationIndexes[mutation.FactIndex]; duplicate {
+			return 0, errors.New("knowledge ingest mutation fact index is duplicated")
+		}
+		seenMutationIndexes[mutation.FactIndex] = struct{}{}
+		switch mutation.Operation {
+		case KnowledgeMutationAdd:
+			if mutation.MemoryID != "" {
+				return 0, errors.New("knowledge ingest ADD must not reference memory")
+			}
+			embeddingIndexes = append(embeddingIndexes, mutation.FactIndex)
+			embeddingContents = append(embeddingContents, facts[mutation.FactIndex].Subject+"\n"+facts[mutation.FactIndex].Statement)
+		case KnowledgeMutationUpdate, KnowledgeMutationDelete, KnowledgeMutationNone:
+			if _, supplied := candidatesByFact[mutation.FactIndex][mutation.MemoryID]; mutation.MemoryID == "" || !supplied {
+				return 0, errors.New("knowledge ingest mutation references an unsupplied memory")
+			}
+			if _, duplicate := seenTargetIDs[mutation.MemoryID]; duplicate {
+				return 0, errors.New("knowledge ingest mutation target is duplicated")
+			}
+			seenTargetIDs[mutation.MemoryID] = struct{}{}
+			targetIDs = append(targetIDs, mutation.MemoryID)
+			if mutation.Operation == KnowledgeMutationUpdate {
+				embeddingIndexes = append(embeddingIndexes, mutation.FactIndex)
+				embeddingContents = append(embeddingContents, facts[mutation.FactIndex].Subject+"\n"+facts[mutation.FactIndex].Statement)
+			}
+		default:
+			return 0, errors.New("knowledge ingest mutation operation is invalid")
+		}
+		prepared[mutation.FactIndex].mutation = mutation
+	}
+	embeddings, err := embeddingsForContents(s.semanticEmbedder, embeddingContents)
 	if err != nil {
 		return 0, err
 	}
-	for index := range prepared {
-		prepared[index].embedding = embeddings[index]
+	for index, factIndex := range embeddingIndexes {
+		prepared[factIndex].embedding = embeddings[index]
 	}
+	sort.Strings(targetIDs)
 
 	tx, err := s.pool.Raw().Begin(queryCtx)
 	if err != nil {
@@ -255,37 +306,63 @@ WHERE id = $1`, documentID, document.Title, versionID, document.ContentHash, now
 		}
 	}
 
-	for index, item := range prepared {
-		if _, err := tx.Exec(queryCtx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", item.slotKey); err != nil {
-			return 0, err
-		}
-		var knowledgeID, existingValue string
-		var found bool
-		err := tx.QueryRow(queryCtx, `
-SELECT id, COALESCE(value, '')
+	for _, targetID := range targetIDs {
+		var status string
+		if err := tx.QueryRow(queryCtx, `
+SELECT status
 FROM knowledge_entries
-WHERE fact_key = $1 AND status = 'verified'
-FOR UPDATE`, item.slotKey).Scan(&knowledgeID, &existingValue)
-		if errors.Is(err, pgx.ErrNoRows) {
-			knowledgeID = newID()
-		} else if err != nil {
-			return 0, err
-		} else {
-			found = true
+WHERE id = $1
+FOR UPDATE`, targetID).Scan(&status); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return 0, errors.New("knowledge ingest mutation target no longer exists")
+			}
+			return 0, fmt.Errorf("locking knowledge mutation target: %w", err)
 		}
-		supersedesID := any(nil)
-		if found && normalizeFactPart(existingValue) != normalizeFactPart(item.fact.Value) {
-			supersedesID = knowledgeID
-			if _, err := tx.Exec(queryCtx, `
+		if status != "verified" {
+			return 0, errors.New("knowledge ingest mutation target is no longer verified")
+		}
+	}
+	changed := 0
+	for index, item := range prepared {
+		knowledgeID := ""
+		switch item.mutation.Operation {
+		case KnowledgeMutationNone:
+			knowledgeID = item.mutation.MemoryID
+		case KnowledgeMutationDelete:
+			result, err := tx.Exec(queryCtx, `
+UPDATE knowledge_entries
+SET status = 'tombstone', updated_at_ms = $2
+WHERE id = $1 AND status = 'verified'`, item.mutation.MemoryID, now)
+			if err != nil {
+				return 0, fmt.Errorf("deleting recalled knowledge: %w", err)
+			}
+			if result.RowsAffected() != 1 {
+				return 0, errors.New("knowledge ingest DELETE lost its target")
+			}
+			changed++
+			continue
+		case KnowledgeMutationUpdate:
+			result, err := tx.Exec(queryCtx, `
 UPDATE knowledge_entries
 SET status = 'superseded', updated_at_ms = $2
-WHERE id = $1 AND status = 'verified'`, knowledgeID, now); err != nil {
-				return 0, err
+WHERE id = $1 AND status = 'verified'`, item.mutation.MemoryID, now)
+			if err != nil {
+				return 0, fmt.Errorf("superseding recalled knowledge: %w", err)
 			}
-			knowledgeID = newID()
-			found = false
+			if result.RowsAffected() != 1 {
+				return 0, errors.New("knowledge ingest UPDATE lost its target")
+			}
+		case KnowledgeMutationAdd:
+		default:
+			return 0, errors.New("knowledge ingest mutation operation is invalid")
 		}
-		if !found {
+
+		if item.mutation.Operation == KnowledgeMutationAdd || item.mutation.Operation == KnowledgeMutationUpdate {
+			knowledgeID = newID()
+			var supersedesID any
+			if item.mutation.Operation == KnowledgeMutationUpdate {
+				supersedesID = item.mutation.MemoryID
+			}
 			var modelID, contentHash, vector any
 			if item.embedding.Enabled() {
 				modelID = item.embedding.ModelID
@@ -301,15 +378,15 @@ INSERT INTO knowledge_entries(
   created_at_ms, updated_at_ms
 ) VALUES (
   $1, $2, $3, 'verified', 'retrieval_ingest', $4,
-  $5, $6, $7, $8, $9, $10, $11,
-  $12, $13, $14::public.vector, $15, $15
+  $5, $6, $7, $8, $9, $10, NULL,
+  $11, $12, $13::public.vector, $14, $14
 )`,
 				knowledgeID, item.fact.Subject, item.fact.Statement, item.fact.ConfidenceBasisPoints,
 				lockedBatch.ConversationID, lockedBatch.TurnID, supersedesID,
-				item.fact.Subject, item.fact.Predicate, item.fact.Value, item.slotKey,
+				item.fact.Subject, item.fact.Predicate, item.fact.Value,
 				modelID, contentHash, vector, now,
 			); err != nil {
-				return 0, fmt.Errorf("inserting structured knowledge fact[%d]: %w", index, err)
+				return 0, fmt.Errorf("inserting reconciled knowledge fact[%d]: %w", index, err)
 			}
 		}
 		for _, chunkID := range item.fact.EvidenceChunkIDs {
@@ -330,12 +407,19 @@ SET active = true, invalidated_at_ms = NULL`, knowledgeID, chunkID, versionID, n
 				return 0, err
 			}
 		}
+		if item.mutation.Operation != KnowledgeMutationNone {
+			changed++
+		}
 	}
 	if _, err := tx.Exec(queryCtx, `
 UPDATE knowledge_entries k
 SET status = 'tombstone', updated_at_ms = $1
 WHERE k.status = 'verified'
-  AND k.fact_key IS NOT NULL
+  AND k.verification_basis = 'retrieval_ingest'
+  AND EXISTS (
+    SELECT 1 FROM knowledge_evidence e
+    WHERE e.knowledge_id = k.id
+  )
   AND NOT EXISTS (
     SELECT 1 FROM knowledge_evidence e
     WHERE e.knowledge_id = k.id AND e.active
@@ -348,12 +432,7 @@ WHERE k.status = 'verified'
 	if err := tx.Commit(queryCtx); err != nil {
 		return 0, fmt.Errorf("committing knowledge document batch: %w", err)
 	}
-	_ = documentByURL
-	return len(prepared), nil
-}
-
-func normalizeFactPart(value string) string {
-	return strings.ToLower(strings.Join(strings.Fields(value), " "))
+	return changed, nil
 }
 
 func sourceForDocument(batch KnowledgeIngestBatch, sourceID string) KnowledgeIngestSource {

@@ -4,6 +4,7 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -20,6 +21,26 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func seedLegacyKnowledgeIngestBatch(t *testing.T, ctx context.Context, pool *coredb.Pool, batch KnowledgeIngestBatch) {
+	t.Helper()
+	sources, err := json.Marshal(batch.Sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	if _, err := pool.Raw().Exec(ctx, `
+INSERT INTO knowledge_ingest_jobs(
+  id, conversation_id, turn_id, batch_id, sources_json, query,
+  title, url, snippet, rank, fetched_at_ms,
+  status, created_at_ms, updated_at_ms
+) VALUES ($1, $2, $3, $4, $5::jsonb, '', '', '', '', 0, 0, 'waiting_turn', $6, $6)
+ON CONFLICT (batch_id) WHERE batch_id <> '' DO NOTHING`,
+		newID(), batch.ConversationID, batch.TurnID, batch.ID, sources, now,
+	); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestPostgresStoreSummaryUsesInjectedPool(t *testing.T) {
 	ctx := context.Background()
@@ -2131,9 +2152,11 @@ func TestPostgresKnowledgeIngestBatchEnqueueClaimAndLegacyProjection(t *testing.
 			{ID: "web-source-2", Title: "来源二", URL: "https://two.example/item", Snippet: "这是第二条足够完整的公开摘要。", Rank: 2, FetchedAtUnixMS: 1},
 		},
 	}
-	if err := store.EnqueueKnowledgeIngestBatchesContext(ctx, []KnowledgeIngestBatch{batch, batch}); err != nil {
-		t.Fatal(err)
+	if err := store.EnqueueKnowledgeIngestBatchesContext(ctx, []KnowledgeIngestBatch{batch}); err == nil {
+		t.Fatal("new enqueue accepted a legacy multi-source batch")
 	}
+	seedLegacyKnowledgeIngestBatch(t, ctx, pool, batch)
+	seedLegacyKnowledgeIngestBatch(t, ctx, pool, batch)
 	var jobs int
 	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_ingest_jobs WHERE batch_id = $1", batch.ID).Scan(&jobs); err != nil {
 		t.Fatal(err)
@@ -2201,9 +2224,7 @@ func TestPostgresKnowledgeIngestBatchCommitIsAtomicAndMergesCanonicalSources(t *
 			{ID: "source-two", Title: "来源二", URL: "https://two.example/item", Snippet: "公开来源二的摘要。", Rank: 2, FetchedAtUnixMS: 2},
 		},
 	}
-	if err := store.EnqueueKnowledgeIngestBatchesContext(ctx, []KnowledgeIngestBatch{batch}); err != nil {
-		t.Fatal(err)
-	}
+	seedLegacyKnowledgeIngestBatch(t, ctx, pool, batch)
 	claims, err := store.ClaimKnowledgeIngestBatchesContext(ctx, 1)
 	if err != nil || len(claims) != 1 {
 		t.Fatalf("claims=%#v err=%v", claims, err)
@@ -2266,7 +2287,7 @@ WHERE k.statement = $1`, facts[0].Statement).Scan(&sourceCount); err != nil {
 	}
 }
 
-func TestPostgresKnowledgeDocumentsVersionSupersedeRetractAndSkipUnchanged(t *testing.T) {
+func TestPostgresKnowledgeDocumentsRecallMutationAndSkipUnchanged(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
@@ -2282,7 +2303,7 @@ func TestPostgresKnowledgeDocumentsVersionSupersedeRetractAndSkipUnchanged(t *te
 		ID: "source-lifecycle", Title: "项目状态", URL: "https://public.example/project",
 		Snippet: "公开项目状态页。", Rank: 1, FetchedAtUnixMS: 1,
 	}
-	commit := func(batchID string, batchSource KnowledgeIngestSource, chunkID, text, value string, withFact bool) {
+	commit := func(batchID string, batchSource KnowledgeIngestSource, chunkID, text, value string, operation KnowledgeMutationOperation, targetID string) string {
 		t.Helper()
 		batch := KnowledgeIngestBatch{
 			ID: batchID, ConversationID: conversationID, TurnID: turnID,
@@ -2308,25 +2329,106 @@ func TestPostgresKnowledgeDocumentsVersionSupersedeRetractAndSkipUnchanged(t *te
 			t.Fatalf("need extraction=(%v,%v)", needs, err)
 		}
 		facts := []KnowledgeIngestFact(nil)
-		if withFact {
+		recalls := []KnowledgeIngestRecall(nil)
+		mutations := []KnowledgeIngestMutation(nil)
+		if operation != "" {
 			facts = []KnowledgeIngestFact{{
 				Subject: "FAIRY 项目", Predicate: "发布状态", Value: value,
 				Statement:             "FAIRY 项目的发布状态是" + value + "。",
 				ConfidenceBasisPoints: 8500, EvidenceChunkIDs: []string{chunkID},
 			}}
+			candidates := []RetrievedKnowledge(nil)
+			if targetID != "" {
+				candidates = []RetrievedKnowledge{{ID: targetID, Statement: "FAIRY 项目此前的发布状态。", ConfidenceBasisPoints: 8500}}
+			}
+			recalls = []KnowledgeIngestRecall{{FactIndex: 0, Candidates: candidates}}
+			mutations = []KnowledgeIngestMutation{{FactIndex: 0, Operation: operation, MemoryID: targetID}}
 		}
-		if _, err := store.CommitKnowledgeDocumentBatchContext(ctx, claims[0].JobID, batchID, []KnowledgeDocument{document}, facts); err != nil {
+		if _, err := store.CommitKnowledgeDocumentMutationsContext(ctx, claims[0].JobID, batchID, []KnowledgeDocument{document}, facts, recalls, mutations); err != nil {
 			t.Fatal(err)
 		}
+		if operation != KnowledgeMutationAdd && operation != KnowledgeMutationUpdate {
+			return targetID
+		}
+		var currentID string
+		if err := pool.Raw().QueryRow(ctx, `
+SELECT id FROM knowledge_entries
+WHERE status = 'verified' AND value = $1
+ORDER BY created_at_ms DESC, id DESC
+LIMIT 1`, value).Scan(&currentID); err != nil {
+			t.Fatal(err)
+		}
+		return currentID
 	}
 
-	commit("document-batch-v1", source, "web-chunk-v1", "FAIRY 项目当前状态为内测。", "内测", true)
+	internalID := commit("document-batch-v1", source, "web-chunk-v1", "FAIRY 项目当前状态为内测。", "内测", KnowledgeMutationAdd, "")
+	recalled, err := store.RecallKnowledgeForIngestContext(ctx, KnowledgeIngestFact{
+		Subject: "FAIRY 项目", Predicate: "目前阶段", Value: "内测",
+		Statement: "FAIRY 项目目前仍处于内部测试阶段。",
+	}, MaxKnowledgeIngestRecallCandidates)
+	if err != nil || !slices.ContainsFunc(recalled, func(item RetrievedKnowledge) bool { return item.ID == internalID }) {
+		t.Fatalf("initial ingest recall=%#v err=%v", recalled, err)
+	}
+	invalidBatch := KnowledgeIngestBatch{
+		ID: "document-batch-invalid-target", ConversationID: conversationID, TurnID: turnID,
+		Sources: []KnowledgeIngestSource{source},
+	}
+	if err := store.EnqueueKnowledgeIngestBatchesContext(ctx, []KnowledgeIngestBatch{invalidBatch}); err != nil {
+		t.Fatal(err)
+	}
+	invalidClaims, err := store.ClaimKnowledgeIngestBatchesContext(ctx, 1)
+	if err != nil || len(invalidClaims) != 1 {
+		t.Fatalf("invalid target claims=%#v err=%v", invalidClaims, err)
+	}
+	invalidText := "FAIRY 项目状态出现一条不能越权写入的变化。"
+	invalidDocument := KnowledgeDocument{
+		SourceID: source.ID, CanonicalURL: source.URL, Title: source.Title,
+		ContentHash: semanticContentHash("document\n" + invalidText), ContentType: "text/plain",
+		FetchedAtUnixMS: time.Now().UnixMilli(),
+		Chunks: []KnowledgeDocumentChunk{{
+			ID: "web-chunk-invalid-target", Ordinal: 0, Text: invalidText, TextHash: semanticContentHash(invalidText),
+		}},
+	}
+	invalidFact := KnowledgeIngestFact{
+		Subject: "FAIRY 项目", Predicate: "发布状态", Value: "越权值",
+		Statement:             "FAIRY 项目的发布状态被错误标记为越权值。",
+		ConfidenceBasisPoints: 8000, EvidenceChunkIDs: []string{"web-chunk-invalid-target"},
+	}
+	if _, err := store.CommitKnowledgeDocumentMutationsContext(
+		ctx,
+		invalidClaims[0].JobID,
+		invalidBatch.ID,
+		[]KnowledgeDocument{invalidDocument},
+		[]KnowledgeIngestFact{invalidFact},
+		[]KnowledgeIngestRecall{{FactIndex: 0, Candidates: []RetrievedKnowledge{{ID: internalID, Statement: "旧状态"}}}},
+		[]KnowledgeIngestMutation{{FactIndex: 0, Operation: KnowledgeMutationUpdate, MemoryID: "knowledge-not-supplied"}},
+	); err == nil {
+		t.Fatal("unsupplied mutation target error = nil")
+	}
+	var currentHash string
+	var versionCount int
+	if err := pool.Raw().QueryRow(ctx, "SELECT current_content_hash FROM knowledge_documents WHERE canonical_url = $1", source.URL).Scan(&currentHash); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Raw().QueryRow(ctx, `
+SELECT count(*)
+FROM knowledge_document_versions v
+JOIN knowledge_documents d ON d.id = v.document_id
+WHERE d.canonical_url = $1`, source.URL).Scan(&versionCount); err != nil {
+		t.Fatal(err)
+	}
+	if currentHash != semanticContentHash("document\nFAIRY 项目当前状态为内测。") || versionCount != 1 {
+		t.Fatalf("invalid mutation partially wrote document: hash=%q versions=%d", currentHash, versionCount)
+	}
+	if err := store.FailKnowledgeIngestBatchContext(ctx, invalidClaims[0].JobID, "expected invalid target"); err != nil {
+		t.Fatal(err)
+	}
 	mirrorSource := source
 	mirrorSource.ID = "source-lifecycle-mirror"
 	mirrorSource.URL = "https://mirror.example/project"
-	commit("document-batch-mirror", mirrorSource, "web-chunk-mirror", "镜像来源同样确认 FAIRY 项目当前状态为内测。", "内测", true)
+	commit("document-batch-mirror", mirrorSource, "web-chunk-mirror", "镜像来源同样确认 FAIRY 项目当前状态为内测。", "内测", KnowledgeMutationNone, internalID)
 	var sameValueFacts, sameValueEvidence int
-	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_entries WHERE fact_key IS NOT NULL AND status = 'verified' AND value = '内测'").Scan(&sameValueFacts); err != nil {
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_entries WHERE fact_key IS NULL AND status = 'verified' AND value = '内测'").Scan(&sameValueFacts); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_evidence WHERE active").Scan(&sameValueEvidence); err != nil {
@@ -2335,13 +2437,13 @@ func TestPostgresKnowledgeDocumentsVersionSupersedeRetractAndSkipUnchanged(t *te
 	if sameValueFacts != 1 || sameValueEvidence != 2 {
 		t.Fatalf("same value facts=%d evidence=%d", sameValueFacts, sameValueEvidence)
 	}
-	commit("document-batch-v2", source, "web-chunk-v2", "FAIRY 项目当前状态为公测。", "公测", true)
+	publicID := commit("document-batch-v2", source, "web-chunk-v2", "FAIRY 项目当前状态为公测。", "公测", KnowledgeMutationUpdate, internalID)
 
 	var verified, superseded, activeOldEvidence int
-	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_entries WHERE fact_key IS NOT NULL AND status = 'verified' AND value = '公测'").Scan(&verified); err != nil {
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_entries WHERE fact_key IS NULL AND status = 'verified' AND value = '公测' AND supersedes_id = $1", internalID).Scan(&verified); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_entries WHERE fact_key IS NOT NULL AND status = 'superseded' AND value = '内测'").Scan(&superseded); err != nil {
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_entries WHERE id = $1 AND status = 'superseded' AND value = '内测'", internalID).Scan(&superseded); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_evidence WHERE chunk_id = 'web-chunk-v1' AND active").Scan(&activeOldEvidence); err != nil {
@@ -2350,14 +2452,30 @@ func TestPostgresKnowledgeDocumentsVersionSupersedeRetractAndSkipUnchanged(t *te
 	if verified != 1 || superseded != 1 || activeOldEvidence != 0 {
 		t.Fatalf("verified=%d superseded=%d active old evidence=%d", verified, superseded, activeOldEvidence)
 	}
+	recalled, err = store.RecallKnowledgeForIngestContext(ctx, KnowledgeIngestFact{
+		Subject: "FAIRY 项目", Predicate: "发布状态", Value: "公测",
+		Statement: "FAIRY 项目当前已经进入公开测试阶段。",
+	}, MaxKnowledgeIngestRecallCandidates)
+	if err != nil ||
+		slices.ContainsFunc(recalled, func(item RetrievedKnowledge) bool { return item.ID == internalID }) ||
+		!slices.ContainsFunc(recalled, func(item RetrievedKnowledge) bool { return item.ID == publicID }) {
+		t.Fatalf("updated ingest recall=%#v err=%v", recalled, err)
+	}
 
-	commit("document-batch-v3", source, "web-chunk-v3", "该页面不再包含项目发布状态。", "", false)
+	commit("document-batch-v3", source, "web-chunk-v3", "该页面明确宣布此前公测状态已经终止。", "已终止", KnowledgeMutationDelete, publicID)
 	var tombstoned int
-	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_entries WHERE fact_key IS NOT NULL AND status = 'tombstone' AND value = '公测'").Scan(&tombstoned); err != nil {
+	if err := pool.Raw().QueryRow(ctx, "SELECT count(*) FROM knowledge_entries WHERE id = $1 AND status = 'tombstone' AND value = '公测'", publicID).Scan(&tombstoned); err != nil {
 		t.Fatal(err)
 	}
 	if tombstoned != 1 {
 		t.Fatalf("tombstoned=%d", tombstoned)
+	}
+	recalled, err = store.RecallKnowledgeForIngestContext(ctx, KnowledgeIngestFact{
+		Subject: "FAIRY 项目", Predicate: "发布状态", Value: "公测",
+		Statement: "FAIRY 项目此前处于公开测试阶段。",
+	}, MaxKnowledgeIngestRecallCandidates)
+	if err != nil || slices.ContainsFunc(recalled, func(item RetrievedKnowledge) bool { return item.ID == publicID }) {
+		t.Fatalf("deleted ingest recall=%#v err=%v", recalled, err)
 	}
 
 	batch := KnowledgeIngestBatch{
@@ -2371,7 +2489,7 @@ func TestPostgresKnowledgeDocumentsVersionSupersedeRetractAndSkipUnchanged(t *te
 	if err != nil || len(claims) != 1 {
 		t.Fatalf("unchanged claims=%#v err=%v", claims, err)
 	}
-	text := "该页面不再包含项目发布状态。"
+	text := "该页面明确宣布此前公测状态已经终止。"
 	document := KnowledgeDocument{
 		SourceID: source.ID, CanonicalURL: source.URL, Title: source.Title,
 		ContentHash: semanticContentHash("document\n" + text), ContentType: "text/plain",

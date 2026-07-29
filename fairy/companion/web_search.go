@@ -317,3 +317,8 @@ func webSearchSourceID(canonicalURL, title, snippet string) string {
 	sum := sha256.Sum256([]byte(canonicalURL + "\x00" + title + "\x00" + snippet))
 	return fmt.Sprintf("web-source-%x", sum[:12])
 }
+
+func webSearchSourceJobID(batchID, sourceID string) string {
+	sum := sha256.Sum256([]byte(batchID + "\x00" + sourceID))
+	return fmt.Sprintf("web-job-%x", sum[:12])
+}

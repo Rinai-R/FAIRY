@@ -202,6 +202,9 @@ func (s *Store) enqueueKnowledgeIngestBatchesPostgres(ctx context.Context, batch
 	}
 	encoded := make([][]byte, len(batches))
 	for index, batch := range batches {
+		if len(batch.Sources) != 1 {
+			return fmt.Errorf("validating knowledge ingest batch[%d]: new knowledge ingest jobs require exactly one source", index)
+		}
 		var err error
 		encoded[index], err = validateKnowledgeIngestBatch(batch)
 		if err != nil {

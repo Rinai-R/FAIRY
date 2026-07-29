@@ -76,20 +76,17 @@ func TestKnowledgeFetchCleansHashesAndChunksPublicHTML(t *testing.T) {
 			}, nil
 		})},
 	}
-	batch := memory.KnowledgeIngestBatch{
-		ID: "batch", ConversationID: "conversation", TurnID: "turn",
-		Sources: []memory.KnowledgeIngestSource{{
-			ID: "source", Title: "来源", URL: "https://example.test/page", Rank: 1,
-		}},
+	source := memory.KnowledgeIngestSource{
+		ID: "source", Title: "来源", URL: "https://example.test/page", Rank: 1,
 	}
-	documents, err := fetcher.FetchBatch(t.Context(), batch)
+	document, err := fetcher.FetchSource(t.Context(), source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(documents) != 1 || documents[0].ContentHash == "" || len(documents[0].Chunks) < 2 {
-		t.Fatalf("documents = %#v", documents)
+	if document.ContentHash == "" || len(document.Chunks) < 2 {
+		t.Fatalf("document = %#v", document)
 	}
-	for _, chunk := range documents[0].Chunks {
+	for _, chunk := range document.Chunks {
 		if strings.Contains(chunk.Text, "hidden") || strings.Contains(chunk.Text, "menu") || strings.Contains(chunk.Text, "secret") {
 			t.Fatalf("chunk retained skipped content: %q", chunk.Text)
 		}
@@ -97,12 +94,12 @@ func TestKnowledgeFetchCleansHashesAndChunksPublicHTML(t *testing.T) {
 			t.Fatalf("chunk identity = %#v", chunk)
 		}
 	}
-	again, err := fetcher.FetchBatch(t.Context(), batch)
+	again, err := fetcher.FetchSource(t.Context(), source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again[0].ContentHash != documents[0].ContentHash || again[0].Chunks[0].ID != documents[0].Chunks[0].ID {
-		t.Fatalf("document identity is not deterministic: %#v %#v", documents, again)
+	if again.ContentHash != document.ContentHash || again.Chunks[0].ID != document.Chunks[0].ID {
+		t.Fatalf("document identity is not deterministic: %#v %#v", document, again)
 	}
 }
 
@@ -128,12 +125,11 @@ func TestKnowledgeFetchRejectsUnsupportedOrOversizedContent(t *testing.T) {
 					return response, nil
 				})},
 			}
-			_, err := fetcher.FetchBatch(t.Context(), memory.KnowledgeIngestBatch{
-				ID: "batch", ConversationID: "conversation", TurnID: "turn",
-				Sources: []memory.KnowledgeIngestSource{{ID: "source", URL: "https://example.test/page", Rank: 1}},
+			_, err := fetcher.FetchSource(t.Context(), memory.KnowledgeIngestSource{
+				ID: "source", URL: "https://example.test/page", Rank: 1,
 			})
 			if err == nil {
-				t.Fatal("FetchBatch() error = nil")
+				t.Fatal("FetchSource() error = nil")
 			}
 		})
 	}

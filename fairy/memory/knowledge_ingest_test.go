@@ -62,3 +62,17 @@ func TestValidateKnowledgeIngestBatchBoundsCanonicalSources(t *testing.T) {
 		})
 	}
 }
+
+func TestEnqueueKnowledgeIngestBatchesRejectsNewMultiSourceJobsBeforeDatabaseAccess(t *testing.T) {
+	store := &Store{}
+	err := store.enqueueKnowledgeIngestBatchesPostgres(t.Context(), []KnowledgeIngestBatch{{
+		ID: "batch-1", ConversationID: "conversation-1", TurnID: "turn-1",
+		Sources: []KnowledgeIngestSource{
+			{ID: "source-1", Title: "一", URL: "https://example.test/1", Snippet: "来源一", Rank: 1},
+			{ID: "source-2", Title: "二", URL: "https://example.test/2", Snippet: "来源二", Rank: 2},
+		},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "exactly one source") {
+		t.Fatalf("error = %v", err)
+	}
+}

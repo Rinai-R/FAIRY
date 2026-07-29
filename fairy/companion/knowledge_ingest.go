@@ -13,18 +13,19 @@ func cloneWebSearchBatches(batches []webSearchBatch) []webSearchBatch {
 	return cloned
 }
 
-func memoryKnowledgeIngestBatch(batch webSearchBatch) memory.KnowledgeIngestBatch {
-	sources := make([]memory.KnowledgeIngestSource, 0, len(batch.Sources))
+func memoryKnowledgeIngestBatches(batch webSearchBatch) []memory.KnowledgeIngestBatch {
+	batches := make([]memory.KnowledgeIngestBatch, 0, len(batch.Sources))
 	for _, source := range batch.Sources {
-		sources = append(sources, memory.KnowledgeIngestSource{
+		persistedSource := memory.KnowledgeIngestSource{
 			ID: source.ID, Title: source.Title, URL: source.URL, Snippet: source.Snippet,
 			Rank: source.Rank, FetchedAtUnixMS: source.FetchedAtUnixMS,
+		}
+		batches = append(batches, memory.KnowledgeIngestBatch{
+			ID: webSearchSourceJobID(batch.ID, source.ID), ConversationID: batch.ConversationID, TurnID: batch.TurnID,
+			Sources: []memory.KnowledgeIngestSource{persistedSource},
 		})
 	}
-	return memory.KnowledgeIngestBatch{
-		ID: batch.ID, ConversationID: batch.ConversationID, TurnID: batch.TurnID,
-		Sources: sources,
-	}
+	return batches
 }
 
 func (s *CompanionService) persistKnowledgeIngestBatch(batch webSearchBatch) error {
@@ -35,7 +36,7 @@ func (s *CompanionService) persistKnowledgeIngestBatch(batch webSearchBatch) err
 	if store == nil {
 		return ErrTurnRuntimeUnavailable
 	}
-	if err := store.EnqueueKnowledgeIngestBatches([]memory.KnowledgeIngestBatch{memoryKnowledgeIngestBatch(batch)}); err != nil {
+	if err := store.EnqueueKnowledgeIngestBatches(memoryKnowledgeIngestBatches(batch)); err != nil {
 		return err
 	}
 	if s.retention != nil {

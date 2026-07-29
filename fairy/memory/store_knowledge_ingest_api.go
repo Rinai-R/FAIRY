@@ -137,12 +137,34 @@ func (s *Store) KnowledgeDocumentsNeedExtractionContext(ctx context.Context, job
 	return s.knowledgeDocumentsNeedExtractionPostgres(ctx, jobID, batchID, documents)
 }
 
-func (s *Store) CommitKnowledgeDocumentBatch(jobID, batchID string, documents []KnowledgeDocument, facts []KnowledgeIngestFact) (int, error) {
-	return s.CommitKnowledgeDocumentBatchContext(context.Background(), jobID, batchID, documents, facts)
+func (s *Store) RecallKnowledgeForIngest(fact KnowledgeIngestFact, limit int) ([]RetrievedKnowledge, error) {
+	return s.RecallKnowledgeForIngestContext(context.Background(), fact, limit)
 }
 
-func (s *Store) CommitKnowledgeDocumentBatchContext(ctx context.Context, jobID, batchID string, documents []KnowledgeDocument, facts []KnowledgeIngestFact) (int, error) {
-	return s.commitKnowledgeDocumentBatchPostgres(ctx, jobID, batchID, documents, facts)
+func (s *Store) RecallKnowledgeForIngestContext(ctx context.Context, fact KnowledgeIngestFact, limit int) ([]RetrievedKnowledge, error) {
+	if limit < 1 || limit > MaxKnowledgeIngestRecallCandidates {
+		return nil, errors.New("knowledge ingest recall limit is invalid")
+	}
+	query := strings.TrimSpace(strings.Join([]string{fact.Subject, fact.Predicate, fact.Value, fact.Statement}, " "))
+	if query == "" {
+		return nil, errors.New("knowledge ingest recall query is required")
+	}
+	retrieved, err := s.retrievePublicKnowledgeForIngestPostgres(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	if len(retrieved.Knowledge) > limit {
+		retrieved.Knowledge = retrieved.Knowledge[:limit]
+	}
+	return append([]RetrievedKnowledge(nil), retrieved.Knowledge...), nil
+}
+
+func (s *Store) CommitKnowledgeDocumentMutations(jobID, batchID string, documents []KnowledgeDocument, facts []KnowledgeIngestFact, recalls []KnowledgeIngestRecall, mutations []KnowledgeIngestMutation) (int, error) {
+	return s.CommitKnowledgeDocumentMutationsContext(context.Background(), jobID, batchID, documents, facts, recalls, mutations)
+}
+
+func (s *Store) CommitKnowledgeDocumentMutationsContext(ctx context.Context, jobID, batchID string, documents []KnowledgeDocument, facts []KnowledgeIngestFact, recalls []KnowledgeIngestRecall, mutations []KnowledgeIngestMutation) (int, error) {
+	return s.commitKnowledgeDocumentMutationsPostgres(ctx, jobID, batchID, documents, facts, recalls, mutations)
 }
 
 func (s *Store) ProcessKnowledgeIngestJobs(limit int) (int, error) {

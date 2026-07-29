@@ -48,11 +48,12 @@ func TestPostgresPgvectorLifecycleHybridRecallAndPublicIsolation(t *testing.T) {
 	unitY := testVector(0, 1)
 	knowledgeVector := testVector(0.9, 0.1)
 	embedder := &mappedSemanticEmbedder{vectors: map[string][]float32{
-		"私人向量目标":       unitX,
-		"其他角色私人目标":     unitX,
-		"公开主题\n公开向量事实": knowledgeVector,
-		"语义查询":         unitX,
-		"无关查询":         unitY,
+		"私人向量目标":          unitX,
+		"其他角色私人目标":        unitX,
+		"公开主题\n公开向量事实":    knowledgeVector,
+		"语义查询":            unitX,
+		"无关查询":            unitY,
+		"候选主题 状态 当前 语义查询": unitX,
 	}}
 	store, err := NewStoreFromPoolWithEmbedder(pool, embedder)
 	if err != nil {
@@ -105,6 +106,15 @@ func TestPostgresPgvectorLifecycleHybridRecallAndPublicIsolation(t *testing.T) {
 	if len(public.Knowledge) == 0 || public.Knowledge[0].ID != knowledge.ID {
 		t.Fatalf("public knowledge recall = %#v", public.Knowledge)
 	}
+	ingestRecall, err := store.RecallKnowledgeForIngestContext(ctx, KnowledgeIngestFact{
+		Subject: "候选主题", Predicate: "状态", Value: "当前", Statement: "语义查询",
+	}, MaxKnowledgeIngestRecallCandidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ingestRecall) == 0 || ingestRecall[0].ID != knowledge.ID {
+		t.Fatalf("knowledge ingest recall = %#v", ingestRecall)
+	}
 
 	if err := store.TombstonePersonalMemoryContext(ctx, personalA.ID); err != nil {
 		t.Fatal(err)
@@ -133,6 +143,11 @@ func TestPostgresPgvectorProviderFailureWritesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedCompletedTurn(t, ctx, store, "character-vector-failure")
+	if _, err := store.RecallKnowledgeForIngestContext(ctx, KnowledgeIngestFact{
+		Subject: "候选主题", Predicate: "状态", Value: "当前", Statement: "向量服务失败时必须重试当前任务。",
+	}, MaxKnowledgeIngestRecallCandidates); err == nil {
+		t.Fatal("RecallKnowledgeForIngestContext error = nil")
+	}
 	if _, err := store.CreatePersonalMemoryContext(ctx, "preference", MemoryScope{Type: "global"}, "不能落库", 9000); err == nil {
 		t.Fatal("CreatePersonalMemoryContext error = nil")
 	}

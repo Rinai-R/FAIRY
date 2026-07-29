@@ -4,14 +4,15 @@ package model
 type PromptLane string
 
 const (
-	PromptLaneRespond         PromptLane = "respond"
-	PromptLaneParticipate     PromptLane = "participate"
-	PromptLaneCompact         PromptLane = "compact"
-	PromptLaneExtract         PromptLane = "extract"
-	PromptLaneTranslate       PromptLane = "translate"
-	PromptLaneSocialLearn     PromptLane = "social_learn"
-	PromptLaneSocialFeedback  PromptLane = "social_feedback"
-	PromptLaneKnowledgeIngest PromptLane = "knowledge_ingest"
+	PromptLaneRespond            PromptLane = "respond"
+	PromptLaneParticipate        PromptLane = "participate"
+	PromptLaneCompact            PromptLane = "compact"
+	PromptLaneExtract            PromptLane = "extract"
+	PromptLaneTranslate          PromptLane = "translate"
+	PromptLaneSocialLearn        PromptLane = "social_learn"
+	PromptLaneSocialFeedback     PromptLane = "social_feedback"
+	PromptLaneKnowledgeIngest    PromptLane = "knowledge_ingest"
+	PromptLaneKnowledgeReconcile PromptLane = "knowledge_reconcile"
 )
 
 type PromptItemType string

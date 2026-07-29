@@ -81,9 +81,9 @@ type extractionStore interface {
 type knowledgeIngestStore interface {
 	EnqueueKnowledgeIngestBatches(batches []memory.KnowledgeIngestBatch) error
 	ClaimKnowledgeIngestBatches(limit int) ([]memory.KnowledgeIngestClaim, error)
-	CommitKnowledgeIngestBatch(jobID, batchID string, facts []memory.KnowledgeIngestFact) (int, error)
 	KnowledgeDocumentsNeedExtraction(jobID, batchID string, documents []memory.KnowledgeDocument) (bool, error)
-	CommitKnowledgeDocumentBatch(jobID, batchID string, documents []memory.KnowledgeDocument, facts []memory.KnowledgeIngestFact) (int, error)
+	RecallKnowledgeForIngest(fact memory.KnowledgeIngestFact, limit int) ([]memory.RetrievedKnowledge, error)
+	CommitKnowledgeDocumentMutations(jobID, batchID string, documents []memory.KnowledgeDocument, facts []memory.KnowledgeIngestFact, recalls []memory.KnowledgeIngestRecall, mutations []memory.KnowledgeIngestMutation) (int, error)
 	FailKnowledgeIngestBatch(jobID, message string) error
 	RetryKnowledgeIngestBatch(jobID, category, message string) error
 	DropKnowledgeIngestBatch(jobID, message string) error

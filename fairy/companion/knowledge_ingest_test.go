@@ -27,15 +27,15 @@ func (m *blockingKnowledgeMemory) ClaimKnowledgeIngestBatches(int) ([]memory.Kno
 	return nil, nil
 }
 
-func (*blockingKnowledgeMemory) CommitKnowledgeIngestBatch(string, string, []memory.KnowledgeIngestFact) (int, error) {
-	return 0, nil
-}
-
 func (*blockingKnowledgeMemory) KnowledgeDocumentsNeedExtraction(string, string, []memory.KnowledgeDocument) (bool, error) {
 	return true, nil
 }
 
-func (*blockingKnowledgeMemory) CommitKnowledgeDocumentBatch(string, string, []memory.KnowledgeDocument, []memory.KnowledgeIngestFact) (int, error) {
+func (*blockingKnowledgeMemory) RecallKnowledgeForIngest(memory.KnowledgeIngestFact, int) ([]memory.RetrievedKnowledge, error) {
+	return nil, nil
+}
+
+func (*blockingKnowledgeMemory) CommitKnowledgeDocumentMutations(string, string, []memory.KnowledgeDocument, []memory.KnowledgeIngestFact, []memory.KnowledgeIngestRecall, []memory.KnowledgeIngestMutation) (int, error) {
 	return 0, nil
 }
 
@@ -56,15 +56,21 @@ type knowledgeIngestProfile struct{}
 func (knowledgeIngestProfile) Current() (*config.ProfileSnapshot, error) { return nil, nil }
 
 func TestKnowledgeIngestBatchesAreTopicAgnostic(t *testing.T) {
-	hits := []WebSearchHit{{Title: "作品条目", URL: "https://example.test/work", Snippet: "这是一段来自公开来源并且长度足够的作品设定摘要。"}}
+	hits := []WebSearchHit{
+		{Title: "作品条目", URL: "https://example.test/work", Snippet: "这是一段来自公开来源并且长度足够的作品设定摘要。"},
+		{Title: "天气条目", URL: "https://example.test/weather", Snippet: "这是一段来自公开来源并且长度足够的天气记录摘要。"},
+	}
 	for _, callID := range []string{"call-anime", "call-weather", "call-chat"} {
 		batch, err := newWebSearchBatch("conversation", "turn", callID, hits, 1)
 		if err != nil {
 			t.Fatal(err)
 		}
-		persisted := memoryKnowledgeIngestBatch(batch)
-		if len(persisted.Sources) != 1 {
-			t.Fatalf("batch = %#v", persisted)
+		persisted := memoryKnowledgeIngestBatches(batch)
+		if len(persisted) != 2 || len(persisted[0].Sources) != 1 || len(persisted[1].Sources) != 1 {
+			t.Fatalf("batches = %#v", persisted)
+		}
+		if persisted[0].ID == persisted[1].ID || persisted[0].ID != webSearchSourceJobID(batch.ID, batch.Sources[0].ID) {
+			t.Fatalf("source job IDs are not deterministic and isolated: %#v", persisted)
 		}
 	}
 }

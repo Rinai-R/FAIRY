@@ -172,10 +172,11 @@ type KnowledgeIngestSnapshot struct {
 }
 
 const (
-	MaxKnowledgeIngestSources         = 5
-	MaxKnowledgeIngestSourceJSONBytes = 16 << 10
-	MaxKnowledgeIngestTitleRunes      = 300
-	MaxKnowledgeIngestSnippetRunes    = 1200
+	MaxKnowledgeIngestSources          = 5
+	MaxKnowledgeIngestSourceJSONBytes  = 16 << 10
+	MaxKnowledgeIngestTitleRunes       = 300
+	MaxKnowledgeIngestSnippetRunes     = 1200
+	MaxKnowledgeIngestRecallCandidates = 4
 )
 
 type KnowledgeIngestSource struct {
@@ -227,4 +228,24 @@ type KnowledgeIngestFact struct {
 	ConfidenceBasisPoints uint16   `json:"confidenceBasisPoints"`
 	SourceHitIDs          []string `json:"sourceHitIDs,omitempty"`
 	EvidenceChunkIDs      []string `json:"evidenceChunkIDs"`
+}
+
+type KnowledgeIngestRecall struct {
+	FactIndex  int                  `json:"factIndex"`
+	Candidates []RetrievedKnowledge `json:"candidates"`
+}
+
+type KnowledgeMutationOperation string
+
+const (
+	KnowledgeMutationAdd    KnowledgeMutationOperation = "ADD"
+	KnowledgeMutationUpdate KnowledgeMutationOperation = "UPDATE"
+	KnowledgeMutationDelete KnowledgeMutationOperation = "DELETE"
+	KnowledgeMutationNone   KnowledgeMutationOperation = "NONE"
+)
+
+type KnowledgeIngestMutation struct {
+	FactIndex int                        `json:"factIndex"`
+	Operation KnowledgeMutationOperation `json:"operation"`
+	MemoryID  string                     `json:"memoryId,omitempty"`
 }

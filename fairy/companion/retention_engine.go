@@ -347,13 +347,17 @@ func (e *retentionEngine) executeKnowledgeIngestClaim(store knowledgeIngestStore
 	if e.service.knowledgeDocuments == nil {
 		return errors.New("knowledge document fetcher is unavailable")
 	}
-	documents, err := e.service.knowledgeDocuments.FetchBatch(e.workerCtx, claim.Batch)
+	if len(claim.Batch.Sources) != 1 {
+		return errors.New("knowledge ingest source job must contain exactly one source")
+	}
+	document, err := e.service.knowledgeDocuments.FetchSource(e.workerCtx, claim.Batch.Sources[0])
 	if err != nil {
 		if errors.Is(err, errKnowledgeFetchTransient) {
 			return transientKnowledgeIngestError{category: "document_fetch", err: err}
 		}
 		return err
 	}
+	documents := []memory.KnowledgeDocument{document}
 	needsExtraction, err := store.KnowledgeDocumentsNeedExtraction(claim.JobID, claim.Batch.ID, documents)
 	if err != nil {
 		return transientKnowledgeIngestError{category: "document_state", err: err}
@@ -420,7 +424,60 @@ func (e *retentionEngine) executeKnowledgeIngestClaim(store knowledgeIngestStore
 			EvidenceChunkIDs:      append([]string(nil), fact.EvidenceChunkIDs...),
 		})
 	}
-	if _, err := store.CommitKnowledgeDocumentBatch(claim.JobID, claim.Batch.ID, documents, facts); err != nil {
+	recalls := make([]memory.KnowledgeIngestRecall, len(facts))
+	for index, fact := range facts {
+		candidates, err := store.RecallKnowledgeForIngest(fact, memory.MaxKnowledgeIngestRecallCandidates)
+		if err != nil {
+			return transientKnowledgeIngestError{category: "knowledge_recall", err: err}
+		}
+		recalls[index] = memory.KnowledgeIngestRecall{
+			FactIndex:  index,
+			Candidates: append([]memory.RetrievedKnowledge(nil), candidates...),
+		}
+	}
+	mutations := []memory.KnowledgeIngestMutation{}
+	if len(facts) > 0 {
+		reconcileInput, aliases, err := buildKnowledgeReconcileInput(claim.Batch.ID, facts, recalls)
+		if err != nil {
+			return err
+		}
+		reconcileCacheInput := model.NewCacheKeyInput(
+			model.PromptLaneKnowledgeReconcile,
+			connection.Model,
+			claim.Batch.ConversationID,
+			persona.KnowledgeReconcileInstructions,
+		)
+		reconcileCacheKey := ""
+		if connection.Capabilities.PromptCacheKey {
+			reconcileCacheKey = model.LaneCacheKey(claim.Batch.ConversationID, model.PromptLaneKnowledgeReconcile)
+		}
+		reconcileEvents, err := modelPort.ExecuteRequestContext(context.Background(), model.CompiledPromptRequest{
+			Shape: model.ModelRequestShape{
+				Lane: model.PromptLaneKnowledgeReconcile, Model: connection.Model,
+				Instructions:    persona.KnowledgeReconcileInstructions,
+				MaxOutputTokens: persona.KnowledgeReconcileMaxOutputTokens,
+				PromptCacheKey:  reconcileCacheKey,
+			},
+			Input: reconcileInput, CacheInput: &reconcileCacheInput,
+		})
+		if err != nil {
+			return transientKnowledgeIngestError{category: "model_provider", err: err}
+		}
+		reconcileUsage := model.LaneUsageFromEvents(model.PromptLaneKnowledgeReconcile, reconcileEvents, 0)
+		e.service.appendRuntimeLedger(
+			claim.Batch.ConversationID,
+			claim.Batch.TurnID,
+			runtimeLedgerEventModel,
+			turnStateCompleted,
+			"",
+			runtimeKnowledgeIngestLedgerMetadata(reconcileEvents, reconcileUsage, claim.Batch.ID, len(claim.Batch.Sources)),
+		)
+		mutations, err = parseKnowledgeReconcileOutput(model.CollectTextFromEvents(reconcileEvents), facts, aliases)
+		if err != nil {
+			return err
+		}
+	}
+	if _, err := store.CommitKnowledgeDocumentMutations(claim.JobID, claim.Batch.ID, documents, facts, recalls, mutations); err != nil {
 		return transientKnowledgeIngestError{category: "document_commit", err: err}
 	}
 	return nil

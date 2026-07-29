@@ -107,7 +107,6 @@ func parseKnowledgeIngestOutput(raw string, documents []memory.KnowledgeDocument
 			allowedChunks[chunk.ID] = struct{}{}
 		}
 	}
-	seenSlots := make(map[string]struct{}, len(output.Facts))
 	for index := range output.Facts {
 		fact := &output.Facts[index]
 		if strings.TrimSpace(fact.Subject) != fact.Subject || fact.Subject == "" || utf8.RuneCountInString(fact.Subject) > maxKnowledgeIngestSubjectRunes {
@@ -128,11 +127,6 @@ func parseKnowledgeIngestOutput(raw string, documents []memory.KnowledgeDocument
 		if len(fact.EvidenceChunkIDs) == 0 || len(fact.EvidenceChunkIDs) > knowledgeMaxChunksPerBatch {
 			return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] evidence is invalid", index)
 		}
-		slot := strings.ToLower(fact.Subject) + "\x00" + strings.ToLower(fact.Predicate)
-		if _, duplicate := seenSlots[slot]; duplicate {
-			return knowledgeIngestOutput{}, fmt.Errorf("knowledge ingest fact[%d] duplicates a fact slot", index)
-		}
-		seenSlots[slot] = struct{}{}
 		seenEvidence := make(map[string]struct{}, len(fact.EvidenceChunkIDs))
 		for _, chunkID := range fact.EvidenceChunkIDs {
 			if _, ok := allowedChunks[chunkID]; !ok {
@@ -145,4 +139,149 @@ func parseKnowledgeIngestOutput(raw string, documents []memory.KnowledgeDocument
 		}
 	}
 	return output, nil
+}
+
+type knowledgeReconcilePromptCandidate struct {
+	ID                    string `json:"id"`
+	Statement             string `json:"statement"`
+	ConfidenceBasisPoints uint16 `json:"confidenceBasisPoints"`
+	UpdatedAtUnixMS       int64  `json:"updatedAtUnixMs"`
+}
+
+type knowledgeReconcilePromptFact struct {
+	Index      int                                 `json:"index"`
+	Fact       knowledgeIngestFact                 `json:"fact"`
+	Candidates []knowledgeReconcilePromptCandidate `json:"candidates"`
+}
+
+type knowledgeReconcilePromptPayload struct {
+	BatchID string                         `json:"batchId"`
+	Facts   []knowledgeReconcilePromptFact `json:"facts"`
+}
+
+type knowledgeReconcileMutation struct {
+	FactIndex int    `json:"factIndex"`
+	Operation string `json:"operation"`
+	MemoryID  string `json:"memoryId,omitempty"`
+}
+
+type knowledgeReconcileOutput struct {
+	Mutations []knowledgeReconcileMutation `json:"mutations"`
+}
+
+func buildKnowledgeReconcileInput(batchID string, facts []memory.KnowledgeIngestFact, recalls []memory.KnowledgeIngestRecall) ([]model.PromptItem, []map[string]string, error) {
+	if batchID == "" || len(facts) == 0 || len(recalls) != len(facts) {
+		return nil, nil, errors.New("knowledge reconcile input is invalid")
+	}
+	recallByFact := make(map[int]memory.KnowledgeIngestRecall, len(recalls))
+	for _, recall := range recalls {
+		if recall.FactIndex < 0 || recall.FactIndex >= len(facts) {
+			return nil, nil, errors.New("knowledge reconcile recall index is invalid")
+		}
+		if _, duplicate := recallByFact[recall.FactIndex]; duplicate {
+			return nil, nil, errors.New("knowledge reconcile recall index is duplicated")
+		}
+		if len(recall.Candidates) > memory.MaxKnowledgeIngestRecallCandidates {
+			return nil, nil, errors.New("knowledge reconcile candidate limit exceeded")
+		}
+		recallByFact[recall.FactIndex] = recall
+	}
+	promptFacts := make([]knowledgeReconcilePromptFact, len(facts))
+	aliases := make([]map[string]string, len(facts))
+	for index, fact := range facts {
+		recall, exists := recallByFact[index]
+		if !exists {
+			return nil, nil, errors.New("knowledge reconcile recall is missing")
+		}
+		aliases[index] = make(map[string]string, len(recall.Candidates))
+		candidates := make([]knowledgeReconcilePromptCandidate, 0, len(recall.Candidates))
+		seenIDs := make(map[string]struct{}, len(recall.Candidates))
+		for candidateIndex, candidate := range recall.Candidates {
+			if candidate.ID == "" || strings.TrimSpace(candidate.Statement) == "" {
+				return nil, nil, errors.New("knowledge reconcile candidate is invalid")
+			}
+			if _, duplicate := seenIDs[candidate.ID]; duplicate {
+				return nil, nil, errors.New("knowledge reconcile candidate is duplicated")
+			}
+			seenIDs[candidate.ID] = struct{}{}
+			alias := fmt.Sprintf("f%dm%d", index, candidateIndex)
+			aliases[index][alias] = candidate.ID
+			candidates = append(candidates, knowledgeReconcilePromptCandidate{
+				ID: alias, Statement: candidate.Statement,
+				ConfidenceBasisPoints: candidate.ConfidenceBasisPoints,
+				UpdatedAtUnixMS:       candidate.UpdatedAtUnixMS,
+			})
+		}
+		promptFacts[index] = knowledgeReconcilePromptFact{
+			Index: index,
+			Fact: knowledgeIngestFact{
+				Subject: fact.Subject, Predicate: fact.Predicate, Value: fact.Value,
+				Statement: fact.Statement, ConfidenceBasisPoints: fact.ConfidenceBasisPoints,
+				EvidenceChunkIDs: append([]string(nil), fact.EvidenceChunkIDs...),
+			},
+			Candidates: candidates,
+		}
+	}
+	payload, err := json.Marshal(struct {
+		FairyContextData knowledgeReconcilePromptPayload `json:"fairy_context_data"`
+	}{
+		FairyContextData: knowledgeReconcilePromptPayload{BatchID: batchID, Facts: promptFacts},
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("serializing knowledge reconcile input: %w", err)
+	}
+	return []model.PromptItem{{Type: model.PromptItemContextData, Content: string(payload)}}, aliases, nil
+}
+
+func parseKnowledgeReconcileOutput(raw string, facts []memory.KnowledgeIngestFact, aliases []map[string]string) ([]memory.KnowledgeIngestMutation, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, errors.New("knowledge reconcile model returned empty output")
+	}
+	decoder := json.NewDecoder(bytes.NewReader([]byte(trimmed)))
+	decoder.DisallowUnknownFields()
+	var output knowledgeReconcileOutput
+	if err := decoder.Decode(&output); err != nil {
+		return nil, errors.New("knowledge reconcile model did not return strict JSON")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, errors.New("knowledge reconcile model returned trailing content")
+	}
+	if output.Mutations == nil || len(output.Mutations) != len(facts) || len(aliases) != len(facts) {
+		return nil, errors.New("knowledge reconcile must return one mutation per fact")
+	}
+	mutations := make([]memory.KnowledgeIngestMutation, len(facts))
+	seen := make(map[int]struct{}, len(facts))
+	for _, mutation := range output.Mutations {
+		if mutation.FactIndex < 0 || mutation.FactIndex >= len(facts) {
+			return nil, errors.New("knowledge reconcile fact index is invalid")
+		}
+		if _, duplicate := seen[mutation.FactIndex]; duplicate {
+			return nil, errors.New("knowledge reconcile fact index is duplicated")
+		}
+		seen[mutation.FactIndex] = struct{}{}
+		operation := memory.KnowledgeMutationOperation(mutation.Operation)
+		resolvedID := ""
+		switch operation {
+		case memory.KnowledgeMutationAdd:
+			if mutation.MemoryID != "" {
+				return nil, errors.New("knowledge reconcile ADD must not reference memory")
+			}
+		case memory.KnowledgeMutationUpdate, memory.KnowledgeMutationDelete, memory.KnowledgeMutationNone:
+			var exists bool
+			resolvedID, exists = aliases[mutation.FactIndex][mutation.MemoryID]
+			if mutation.MemoryID == "" || !exists {
+				return nil, errors.New("knowledge reconcile mutation references an unsupplied memory")
+			}
+		default:
+			return nil, errors.New("knowledge reconcile operation is invalid")
+		}
+		mutations[mutation.FactIndex] = memory.KnowledgeIngestMutation{
+			FactIndex: mutation.FactIndex,
+			Operation: operation,
+			MemoryID:  resolvedID,
+		}
+	}
+	return mutations, nil
 }

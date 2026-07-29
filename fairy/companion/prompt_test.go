@@ -428,9 +428,18 @@ func TestInstructionsForLane(t *testing.T) {
 	if err != nil || text != KnowledgeIngestInstructions || tokens != KnowledgeIngestMaxOutputTokens {
 		t.Fatalf("knowledge ingest lane = (%q, %d, %v)", text, tokens, err)
 	}
-	for _, needle := range []string{"evidenceChunkIDs", "this batch", "Do not invent", "output Markdown"} {
+	text, tokens, err = InstructionsForLane(model.PromptLaneKnowledgeReconcile)
+	if err != nil || text != KnowledgeReconcileInstructions || tokens != KnowledgeReconcileMaxOutputTokens {
+		t.Fatalf("knowledge reconcile lane = (%q, %d, %v)", text, tokens, err)
+	}
+	for _, needle := range []string{"evidenceChunkIDs", "this document", "Do not invent", "output Markdown"} {
 		if !strings.Contains(KnowledgeIngestInstructions, needle) {
 			t.Fatalf("KnowledgeIngestInstructions missing %q", needle)
+		}
+	}
+	for _, needle := range []string{"ADD", "UPDATE", "DELETE", "NONE", "same factIndex"} {
+		if !strings.Contains(KnowledgeReconcileInstructions, needle) {
+			t.Fatalf("KnowledgeReconcileInstructions missing %q", needle)
 		}
 	}
 	for _, needle := range []string{"character", "dialogueStyle", "spoken", "do not invent", "do not answer as a companion"} {

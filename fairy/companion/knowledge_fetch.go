@@ -41,7 +41,7 @@ type knowledgeResolver interface {
 }
 
 type knowledgeDocumentFetcher interface {
-	FetchBatch(context.Context, memory.KnowledgeIngestBatch) ([]memory.KnowledgeDocument, error)
+	FetchSource(context.Context, memory.KnowledgeIngestSource) (memory.KnowledgeDocument, error)
 }
 
 type httpKnowledgeDocumentFetcher struct {
@@ -80,27 +80,18 @@ func (f *httpKnowledgeDocumentFetcher) checkRedirect(req *http.Request, via []*h
 	return f.validateURL(req.Context(), req.URL)
 }
 
-func (f *httpKnowledgeDocumentFetcher) FetchBatch(ctx context.Context, batch memory.KnowledgeIngestBatch) ([]memory.KnowledgeDocument, error) {
+func (f *httpKnowledgeDocumentFetcher) FetchSource(ctx context.Context, source memory.KnowledgeIngestSource) (memory.KnowledgeDocument, error) {
 	if f == nil || f.client == nil || f.resolver == nil || f.dialer == nil {
-		return nil, errors.New("knowledge document fetcher is unavailable")
+		return memory.KnowledgeDocument{}, errors.New("knowledge document fetcher is unavailable")
 	}
-	if len(batch.Sources) == 0 || len(batch.Sources) > memory.MaxKnowledgeIngestSources {
-		return nil, fmt.Errorf("%w: source count is invalid", errKnowledgeFetchRejected)
+	document, err := f.fetch(ctx, source)
+	if err != nil {
+		return memory.KnowledgeDocument{}, err
 	}
-	documents := make([]memory.KnowledgeDocument, 0, len(batch.Sources))
-	totalChunks := 0
-	for _, source := range batch.Sources {
-		document, err := f.fetch(ctx, source)
-		if err != nil {
-			return nil, err
-		}
-		totalChunks += len(document.Chunks)
-		if totalChunks > knowledgeMaxChunksPerBatch {
-			return nil, fmt.Errorf("%w: batch chunk limit exceeded", errKnowledgeFetchRejected)
-		}
-		documents = append(documents, document)
+	if len(document.Chunks) > knowledgeMaxChunksPerBatch {
+		return memory.KnowledgeDocument{}, fmt.Errorf("%w: document chunk limit exceeded", errKnowledgeFetchRejected)
 	}
-	return documents, nil
+	return document, nil
 }
 
 func (f *httpKnowledgeDocumentFetcher) fetch(ctx context.Context, source memory.KnowledgeIngestSource) (memory.KnowledgeDocument, error) {
