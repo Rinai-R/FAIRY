@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -79,7 +78,7 @@ func updatePromptWindow(
 		return fmt.Errorf("updating prompt window: %w", err)
 	}
 	if changed.RowsAffected() != 1 {
-		return errors.New("prompt window revision changed")
+		return ErrPromptWindowRevisionChanged
 	}
 	return nil
 }

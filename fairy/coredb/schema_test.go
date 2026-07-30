@@ -8,6 +8,27 @@ import (
 	gormschema "gorm.io/gorm/schema"
 )
 
+func TestPromptWindowSchemaDeclaresVersionedProjectionDefaults(t *testing.T) {
+	parsed, err := gormschema.Parse(&promptWindowSchema{}, &sync.Map{}, gormschema.NamingStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := parsed.LookUpField("ProjectionRevision")
+	if revision == nil || revision.DBName != "projection_revision" || revision.DefaultValue != "1" {
+		t.Fatalf("projection revision field = %#v", revision)
+	}
+	state := parsed.LookUpField("ProjectionStateJSON")
+	if state == nil || state.DBName != "projection_state" || !state.HasDefaultValue {
+		t.Fatalf("projection state field = %#v", state)
+	}
+	if !slices.ContainsFunc(postgresConstraints, func(constraint schemaConstraint) bool {
+		return constraint.Table == "prompt_windows" &&
+			constraint.Name == "prompt_windows_projection_check"
+	}) {
+		t.Fatal("prompt_windows projection constraint is missing")
+	}
+}
+
 func TestSchemaModelsDeclareOneInvariantPerTable(t *testing.T) {
 	for _, model := range schemaModels() {
 		parsed, err := gormschema.Parse(model, &sync.Map{}, gormschema.NamingStrategy{})

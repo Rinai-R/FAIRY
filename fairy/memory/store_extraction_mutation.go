@@ -132,6 +132,21 @@ func (s *Store) commitMemoryMutationsPostgres(ctx context.Context, batchID, char
 			return nil, fmt.Errorf("unsupported memory mutation operation %q", mutation.Operation)
 		}
 	}
+	for index, result := range results {
+		memoryID := result.MemoryID
+		if memoryID == "" {
+			memoryID = result.ExistingMemoryID
+		}
+		if memoryID == "" {
+			return nil, errors.New("committed memory mutation has no coverage memory")
+		}
+		if err := InsertMemoryContextCoverage(
+			queryCtx, tx, conversationID, mutations[index].SourceTurnID,
+			memoryID, result.Status, now,
+		); err != nil {
+			return nil, err
+		}
+	}
 	if err := SucceedExtractionBatch(queryCtx, tx, batchID, s.workerID, now); err != nil {
 		return nil, err
 	}

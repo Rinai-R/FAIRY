@@ -69,6 +69,12 @@ type RuntimeStateStore interface {
 	LoadContextWindow(conversationID string, lane string) (memory.ContextWindowRecord, bool, error)
 }
 
+type ContextRetentionStore interface {
+	CommitTieredCompaction(conversationID string, expectedWindowRevision uint64, expectedProjectionRevision uint64, summary string, cutoff uint64, projection memory.PromptProjectionState, contextWindow memory.ContextWindowRecord, clearLane string) (memory.CompactionResult, error)
+	CommitPromptProjection(conversationID string, expectedWindowRevision uint64, expectedProjectionRevision uint64, projection memory.PromptProjectionState, contextWindow memory.ContextWindowRecord, clearLane string) (memory.CompactionResult, error)
+	LoadCommittedMemoryCoverage(conversationID string) ([]memory.MemoryContextCoverage, error)
+}
+
 // extractionStore owns bounded extraction jobs coordinated after a turn.
 type extractionStore interface {
 	PendingExtractionTurnCount(conversationID string) (uint64, error)
@@ -96,11 +102,12 @@ type SocialLearningStore interface {
 }
 
 type turnMemoryPorts struct {
-	promptContext   PromptContextStore
-	turns           TurnStore
-	memoryRetrieval MemoryRetrievalStore
-	portrait        PortraitStore
-	runtimeState    RuntimeStateStore
+	promptContext    PromptContextStore
+	turns            TurnStore
+	memoryRetrieval  MemoryRetrievalStore
+	portrait         PortraitStore
+	runtimeState     RuntimeStateStore
+	contextRetention ContextRetentionStore
 }
 
 type ambientMemoryPorts struct {
@@ -129,11 +136,12 @@ func memoryPortsFromStore(store *memory.Store) memoryPorts {
 	}
 	return memoryPorts{
 		turn: turnMemoryPorts{
-			promptContext:   store,
-			turns:           store,
-			memoryRetrieval: store,
-			portrait:        store,
-			runtimeState:    store,
+			promptContext:    store,
+			turns:            store,
+			memoryRetrieval:  store,
+			portrait:         store,
+			runtimeState:     store,
+			contextRetention: store,
 		},
 		ambient: ambientMemoryPorts{
 			bindings:        store,
@@ -153,6 +161,7 @@ func (p memoryPorts) ready() bool {
 		p.turn.memoryRetrieval != nil &&
 		p.turn.portrait != nil &&
 		p.turn.runtimeState != nil &&
+		p.turn.contextRetention != nil &&
 		p.ambient.bindings != nil &&
 		p.ambient.activity != nil &&
 		p.ambient.metadata != nil &&

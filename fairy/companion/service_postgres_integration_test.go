@@ -52,6 +52,8 @@ var (
 	errInterruptPersistence = errors.New("interrupt persistence unavailable")
 )
 
+const structuredCompactSummary = `{"currentGoal":"继续当前对话","userConstraints":"遵守用户明确约束","relationship":"保持当前关系边界","keyFacts":[],"completedWork":"已整理较早对话","openQuestions":"等待用户继续","nextSteps":"结合最近原始对话回复","sourceRefs":[]}`
+
 type companionIntegrationModel struct {
 	chains []ReplyChain
 }
@@ -143,13 +145,13 @@ func (m *capturingIntegrationModel) ExecuteRequestContext(_ context.Context, req
 	m.request = request
 	m.mu.Unlock()
 	if request.Shape.Lane == model.PromptLaneCompact {
-		return []model.StreamEvent{{Type: "text_delta", Data: "群聊摘要"}, {Type: "usage", Usage: &model.Usage{PromptTokens: 2, CompletionTokens: 1}}}, nil
+		return []model.StreamEvent{{Type: "text_delta", Data: structuredCompactSummary}, {Type: "usage", Usage: &model.Usage{PromptTokens: 2, CompletionTokens: 1}}}, nil
 	}
 	return companionIntegrationModel{chains: []ReplyChain{{VisualState: "idle", Text: "群聊回复。"}}}.ExecuteRequestContext(context.Background(), request)
 }
 
 func (m *capturingIntegrationModel) ExecutePrompt(model.PromptLane, string, uint32, []model.PromptItem, string) ([]model.StreamEvent, error) {
-	return []model.StreamEvent{{Type: "text_delta", Data: "群聊摘要"}, {Type: "usage", Usage: &model.Usage{PromptTokens: 2, CompletionTokens: 1}}}, nil
+	return []model.StreamEvent{{Type: "text_delta", Data: structuredCompactSummary}, {Type: "usage", Usage: &model.Usage{PromptTokens: 2, CompletionTokens: 1}}}, nil
 }
 
 type companionIntegrationCharacterLookup struct {
@@ -218,7 +220,7 @@ func (m *preparationCountingModel) ExecuteRequestContext(ctx context.Context, re
 	m.mu.Unlock()
 	if request.Shape.Lane == model.PromptLaneCompact {
 		return []model.StreamEvent{
-			{Type: "text_delta", Data: "压缩后的对话摘要"},
+			{Type: "text_delta", Data: structuredCompactSummary},
 			{Type: "usage", Usage: &model.Usage{PromptTokens: 8, CompletionTokens: 4}},
 		}, nil
 	}
@@ -1119,7 +1121,10 @@ func TestPostgresGroupTurnExcludesPrivateMemoryJobsAndKeepsCompaction(t *testing
 	if err != nil {
 		t.Fatalf("LoadConversation after group compaction: %v", err)
 	}
-	if reloaded.PromptWindow.Summary == nil || *reloaded.PromptWindow.Summary != "群聊摘要" || reloaded.PromptWindow.CutoffMessageSequence == 0 {
+	if reloaded.PromptWindow.Summary == nil ||
+		*reloaded.PromptWindow.Summary != structuredCompactSummary ||
+		reloaded.PromptWindow.ProjectionRevision != 2 ||
+		reloaded.PromptWindow.Projection.RecentTailStartSequence != 1 {
 		t.Fatalf("group prompt window after compaction = %#v", reloaded.PromptWindow)
 	}
 }

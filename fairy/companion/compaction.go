@@ -1,7 +1,11 @@
 package companion
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"unicode/utf8"
 
@@ -13,6 +17,17 @@ import (
 
 	"fairy/session"
 )
+
+type compactSummary struct {
+	CurrentGoal     string   `json:"currentGoal"`
+	UserConstraints string   `json:"userConstraints"`
+	Relationship    string   `json:"relationship"`
+	KeyFacts        []string `json:"keyFacts"`
+	CompletedWork   string   `json:"completedWork"`
+	OpenQuestions   string   `json:"openQuestions"`
+	NextSteps       string   `json:"nextSteps"`
+	SourceRefs      []string `json:"sourceRefs"`
+}
 
 func estimatePromptPrefillTokens(instructions string, input []model.PromptItem) uint64 {
 	chars := uint64(utf8.RuneCountInString(instructions))
@@ -30,9 +45,32 @@ func estimatePromptPrefillTokens(instructions string, input []model.PromptItem) 
 func normalizeCompactionSummary(summary string) (string, error) {
 	value := strings.TrimSpace(summary)
 	if err := validateCompactionSummary(value); err != nil {
-		return "", errors.New("compaction summary must be 1-12000 characters")
+		return "", err
 	}
-	return value, nil
+	var decoded compactSummary
+	decoder := json.NewDecoder(bytes.NewBufferString(value))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return "", fmt.Errorf("decoding compaction summary: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return "", errors.New("compaction summary contains trailing data")
+	}
+	if strings.TrimSpace(decoded.CurrentGoal) == "" ||
+		strings.TrimSpace(decoded.UserConstraints) == "" ||
+		strings.TrimSpace(decoded.Relationship) == "" ||
+		decoded.KeyFacts == nil ||
+		strings.TrimSpace(decoded.CompletedWork) == "" ||
+		strings.TrimSpace(decoded.OpenQuestions) == "" ||
+		strings.TrimSpace(decoded.NextSteps) == "" ||
+		decoded.SourceRefs == nil {
+		return "", errors.New("compaction summary is missing required sections")
+	}
+	encoded, err := json.Marshal(decoded)
+	if err != nil {
+		return "", fmt.Errorf("encoding compaction summary: %w", err)
+	}
+	return string(encoded), nil
 }
 
 // buildCompactInput mirrors respond's stable prefix, then window summary/dialogue,
@@ -99,7 +137,8 @@ func (s *CompanionService) scheduleAutoCompaction(conversationID string, events 
 		return
 	}
 	if err := s.retention.run(func() {
-		if _, err := s.CompactConversation(conversationID); err != nil {
+		cacheObservation := lastCacheObservation(events)
+		if err := s.coordinatePressureCompaction(conversationID, promptTokens, cacheObservation, false); err != nil {
 			if recordErr := s.recordContextWindowFailure(conversationID); recordErr != nil {
 				s.setBackgroundError(recordErr)
 				return
@@ -198,7 +237,9 @@ func (s *CompanionService) prepareBeforeTurn(
 	if !policy.shouldCompactWindow(compactionTriggerPreTurnPredictive, estimatedTokens, true, window) {
 		return result, nil
 	}
-	if _, err := s.CompactConversation(request.ConversationID); err != nil {
+	if err := s.coordinatePressureCompaction(
+		request.ConversationID, estimatedTokens, model.CacheMissing(), true,
+	); err != nil {
 		if errors.Is(err, ErrTurnInProgress) {
 			return result, nil
 		}
@@ -211,6 +252,20 @@ func (s *CompanionService) prepareBeforeTurn(
 	}
 	s.clearBackgroundError()
 	return result, nil
+}
+
+func lastCacheObservation(events []model.StreamEvent) model.CachedTokenObservation {
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if event.Type != "usage" || event.Usage == nil {
+			continue
+		}
+		if event.Usage.CachedInputTokens == nil {
+			return model.CacheMissing()
+		}
+		return model.CacheObserved(*event.Usage.CachedInputTokens)
+	}
+	return model.CacheMissing()
 }
 
 func lastPromptTokens(events []model.StreamEvent) (uint64, bool) {

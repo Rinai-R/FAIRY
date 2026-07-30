@@ -10,7 +10,9 @@ import (
 
 const (
 	defaultModelContextWindowTokens uint64 = 1_048_576
-	autoThresholdBasisPoints        uint64 = 8_000
+	targetWatermarkBasisPoints      uint64 = 6_500
+	softWatermarkBasisPoints        uint64 = 7_500
+	hardWatermarkBasisPoints        uint64 = 9_000
 	basisPointsDenominator          uint64 = 10_000
 	respondOutputReserveTokens      uint64 = 640
 	failureBreakerThreshold         uint64 = 3
@@ -20,6 +22,9 @@ const (
 
 type compactionPolicy struct {
 	AutoInputTokenThreshold *uint64
+	TargetInputTokens       uint64
+	SoftInputTokens         uint64
+	HardInputTokens         uint64
 }
 
 type compactionTrigger int
@@ -34,12 +39,25 @@ func compactionPolicyFromContextWindow(contextWindowTokens uint64) compactionPol
 	if contextWindowTokens == 0 {
 		contextWindowTokens = defaultModelContextWindowTokens
 	}
-	raw := contextWindowTokens * autoThresholdBasisPoints / basisPointsDenominator
-	threshold := uint64(0)
-	if raw > respondOutputReserveTokens {
-		threshold = raw - respondOutputReserveTokens
+	target := watermarkTokens(contextWindowTokens, targetWatermarkBasisPoints)
+	soft := watermarkTokens(contextWindowTokens, softWatermarkBasisPoints)
+	hard := watermarkTokens(contextWindowTokens, hardWatermarkBasisPoints)
+	return compactionPolicy{
+		AutoInputTokenThreshold: &soft,
+		TargetInputTokens:       target, SoftInputTokens: soft, HardInputTokens: hard,
 	}
-	return compactionPolicy{AutoInputTokenThreshold: &threshold}
+}
+
+func watermarkTokens(contextWindowTokens, basisPoints uint64) uint64 {
+	raw := contextWindowTokens * basisPoints / basisPointsDenominator
+	if raw <= respondOutputReserveTokens {
+		return 0
+	}
+	return raw - respondOutputReserveTokens
+}
+
+func (p compactionPolicy) hardPressure(tokens uint64) bool {
+	return p.HardInputTokens > 0 && tokens >= p.HardInputTokens
 }
 
 func (p compactionPolicy) shouldCompact(trigger compactionTrigger, promptTokens uint64, usageKnown bool) bool {

@@ -2,7 +2,7 @@ package coredb
 
 import "github.com/pgvector/pgvector-go"
 
-const currentSchemaRevision = "2026-07-30-direct-cognitive-records-1"
+const currentSchemaRevision = "2026-07-30-context-retention-1"
 
 type conversationSchema struct {
 	ID          string `gorm:"type:text;primaryKey;index:conversations_character_updated,priority:3"`
@@ -77,6 +77,8 @@ type promptWindowSchema struct {
 	Revision              int64   `gorm:"not null;check:prompt_windows_invariants_check,(revision > 0) AND (cutoff_message_sequence >= 0) AND (updated_at_ms >= 0)"`
 	Summary               *string `gorm:"type:text"`
 	CutoffMessageSequence int64   `gorm:"not null;default:0"`
+	ProjectionRevision    int64   `gorm:"not null;default:1"`
+	ProjectionStateJSON   []byte  `gorm:"column:projection_state;type:jsonb;not null;default:'{\"version\":1,\"omissions\":[]}'::jsonb"`
 	UpdatedAtMS           int64   `gorm:"not null"`
 }
 
@@ -170,6 +172,16 @@ type personalMemorySchema struct {
 }
 
 func (personalMemorySchema) TableName() string { return "personal_memories" }
+
+type memoryContextCoverageSchema struct {
+	ConversationID string `gorm:"type:text;primaryKey;check:memory_context_coverages_invariants_check,(conversation_id <> '') AND (turn_id <> '') AND (memory_id <> '') AND (result_status IN ('applied', 'no_change')) AND (created_at_ms >= 0)"`
+	TurnID         string `gorm:"type:text;primaryKey"`
+	MemoryID       string `gorm:"type:text;primaryKey"`
+	ResultStatus   string `gorm:"type:text;not null"`
+	CreatedAtMS    int64  `gorm:"not null"`
+}
+
+func (memoryContextCoverageSchema) TableName() string { return "memory_context_coverages" }
 
 type knowledgeEntrySchema struct {
 	ID                    string           `gorm:"type:text;primaryKey;index:knowledge_entries_status_updated,priority:3"`
@@ -281,6 +293,7 @@ func schemaModels() []any {
 		&laneContinuationSchema{},
 		&contextWindowSchema{},
 		&personalMemorySchema{},
+		&memoryContextCoverageSchema{},
 		&knowledgeEntrySchema{},
 		&secretValueSchema{},
 		&endpointConversationSchema{},

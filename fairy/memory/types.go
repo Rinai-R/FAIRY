@@ -49,11 +49,28 @@ type ExpressionPart struct {
 }
 
 type PromptWindowRecord struct {
-	ConversationID        string  `json:"conversationId"`
-	Revision              uint64  `json:"revision"`
-	Summary               *string `json:"summary"`
-	CutoffMessageSequence uint64  `json:"cutoffMessageSequence"`
-	UpdatedAtUnixMS       int64   `json:"updatedAtUnixMs"`
+	ConversationID        string                `json:"conversationId"`
+	Revision              uint64                `json:"revision"`
+	Summary               *string               `json:"summary"`
+	CutoffMessageSequence uint64                `json:"cutoffMessageSequence"`
+	ProjectionRevision    uint64                `json:"projectionRevision"`
+	Projection            PromptProjectionState `json:"projection"`
+	UpdatedAtUnixMS       int64                 `json:"updatedAtUnixMs"`
+}
+
+type PromptProjectionOmission struct {
+	SegmentID            string `json:"segmentId,omitempty"`
+	StartMessageSequence uint64 `json:"startMessageSequence,omitempty"`
+	EndMessageSequence   uint64 `json:"endMessageSequence,omitempty"`
+	Reason               string `json:"reason"`
+	MemoryID             string `json:"memoryId,omitempty"`
+	CompactRevision      uint64 `json:"compactRevision,omitempty"`
+}
+
+type PromptProjectionState struct {
+	Version                 uint32                     `json:"version"`
+	Omissions               []PromptProjectionOmission `json:"omissions"`
+	RecentTailStartSequence uint64                     `json:"recentTailStartSequence,omitempty"`
 }
 
 type ConversationBootstrap struct {
@@ -153,6 +170,18 @@ type MemoryMutationResult struct {
 
 type MemoryMutationOutput struct {
 	Mutations []MemoryMutation `json:"mutations"`
+}
+
+type MemoryContextCoverage struct {
+	ConversationID       string `json:"conversationId"`
+	TurnID               string `json:"turnId"`
+	MemoryID             string `json:"memoryId"`
+	ResultStatus         string `json:"resultStatus"`
+	TurnSequence         uint64 `json:"turnSequence,omitempty"`
+	StartMessageSequence uint64 `json:"startMessageSequence,omitempty"`
+	EndMessageSequence   uint64 `json:"endMessageSequence,omitempty"`
+	CoveredTokens        uint64 `json:"coveredTokens,omitempty"`
+	CreatedAtUnixMS      int64  `json:"createdAtUnixMs"`
 }
 
 type ContextWindowRecord struct {

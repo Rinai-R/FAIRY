@@ -21,6 +21,7 @@ var memoryStoreInterfaceNames = []string{
 	"PortraitStore",
 	"SocialRetrievalStore",
 	"RuntimeStateStore",
+	"ContextRetentionStore",
 	"SocialContextStore",
 	"SocialLearningStore",
 }

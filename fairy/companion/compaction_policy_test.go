@@ -7,9 +7,12 @@ func TestPolicyFromContextWindowReservesOutput(t *testing.T) {
 	if policy.AutoInputTokenThreshold == nil {
 		t.Fatal("expected threshold")
 	}
-	want := uint64(10_000*8_000/10_000 - respondOutputReserveTokens)
+	want := uint64(10_000*softWatermarkBasisPoints/10_000 - respondOutputReserveTokens)
 	if *policy.AutoInputTokenThreshold != want {
 		t.Fatalf("threshold = %d, want %d", *policy.AutoInputTokenThreshold, want)
+	}
+	if !(policy.TargetInputTokens < policy.SoftInputTokens && policy.SoftInputTokens < policy.HardInputTokens) {
+		t.Fatalf("watermarks = target:%d soft:%d hard:%d", policy.TargetInputTokens, policy.SoftInputTokens, policy.HardInputTokens)
 	}
 }
 

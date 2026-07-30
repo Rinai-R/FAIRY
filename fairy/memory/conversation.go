@@ -259,6 +259,7 @@ ORDER BY sequence ASC`, conversationID, int64(prompt.CutoffMessageSequence))
 	if err != nil {
 		return ConversationPromptContext{}, err
 	}
+	messages = applyPromptProjection(messages, prompt.Projection)
 	return ConversationPromptContext{Conversation: conversation, Messages: messages, PromptWindow: prompt}, nil
 }
 
@@ -270,12 +271,19 @@ func loadConversationMetadata(ctx context.Context, db ConversationDB, conversati
 	var prompt PromptWindowRecord
 	var summary pgtype.Text
 	var promptRevision int64
+	var projectionRevision int64
+	var projectionJSON []byte
 	var cutoffSequence int64
-	if err := db.QueryRow(ctx, "SELECT conversation_id, revision, summary, cutoff_message_sequence, updated_at_ms FROM prompt_windows WHERE conversation_id = $1", conversationID).Scan(&prompt.ConversationID, &promptRevision, &summary, &cutoffSequence, &prompt.UpdatedAtUnixMS); err != nil {
+	if err := db.QueryRow(ctx, "SELECT conversation_id, revision, summary, cutoff_message_sequence, projection_revision, projection_state, updated_at_ms FROM prompt_windows WHERE conversation_id = $1", conversationID).Scan(&prompt.ConversationID, &promptRevision, &summary, &cutoffSequence, &projectionRevision, &projectionJSON, &prompt.UpdatedAtUnixMS); err != nil {
 		return ConversationRecord{}, PromptWindowRecord{}, fmt.Errorf("loading prompt window: %w", err)
 	}
 	prompt.Revision = uint64(promptRevision)
 	prompt.CutoffMessageSequence = uint64(cutoffSequence)
+	prompt.ProjectionRevision = uint64(projectionRevision)
+	prompt.Projection, err = DecodePromptProjection(projectionJSON)
+	if err != nil {
+		return ConversationRecord{}, PromptWindowRecord{}, err
+	}
 	if summary.Valid {
 		prompt.Summary = &summary.String
 	}

@@ -30,20 +30,21 @@ type retentionIdleTimer struct {
 }
 
 type retentionEngine struct {
-	service        *CompanionService
-	closed         atomic.Bool
-	jobs           atomic.Int64
-	admission      sync.Mutex
-	slots          chan struct{}
-	wg             sync.WaitGroup
-	idleMu         sync.Mutex
-	idle           map[string]retentionIdleTimer
-	idleCapacity   int
-	idleOwner      uint64
-	closeOnce      sync.Once
-	knowledgeQueue chan memory.KnowledgeIngestTask
-	workerCtx      context.Context
-	workerCancel   context.CancelFunc
+	service           *CompanionService
+	closed            atomic.Bool
+	jobs              atomic.Int64
+	admission         sync.Mutex
+	slots             chan struct{}
+	wg                sync.WaitGroup
+	idleMu            sync.Mutex
+	idle              map[string]retentionIdleTimer
+	idleCapacity      int
+	idleOwner         uint64
+	closeOnce         sync.Once
+	coverageCommitted sync.Map
+	knowledgeQueue    chan memory.KnowledgeIngestTask
+	workerCtx         context.Context
+	workerCancel      context.CancelFunc
 }
 
 func newRetentionEngine(service *CompanionService) *retentionEngine {
@@ -138,6 +139,13 @@ func (e *retentionEngine) run(job func()) error {
 	return nil
 }
 
+func (e *retentionEngine) runContext(job func(context.Context)) error {
+	if e == nil || job == nil || e.workerCtx == nil {
+		return errRetentionClosed
+	}
+	return e.run(func() { job(e.workerCtx) })
+}
+
 func (e *retentionEngine) activeJobs() int64 {
 	if e == nil {
 		return 0
@@ -160,7 +168,7 @@ func (e *retentionEngine) scheduleExtraction(conversationID string) {
 		return
 	}
 	if pending >= extractionThreshold {
-		if err := e.run(func() { e.claimAndRunExtraction(conversationID) }); err != nil {
+		if err := e.runContext(func(ctx context.Context) { e.claimAndRunExtraction(ctx, conversationID) }); err != nil {
 			e.service.setBackgroundError(err)
 		}
 		return
@@ -179,7 +187,7 @@ func (e *retentionEngine) scheduleExtraction(conversationID string) {
 	if len(e.idle) >= e.idleCapacity {
 		e.idleMu.Unlock()
 		cancel()
-		if err := e.run(func() { e.claimAndRunExtraction(conversationID) }); err != nil {
+		if err := e.runContext(func(ctx context.Context) { e.claimAndRunExtraction(ctx, conversationID) }); err != nil {
 			e.service.setBackgroundError(err)
 		}
 		return
@@ -205,15 +213,18 @@ func (e *retentionEngine) scheduleExtraction(conversationID string) {
 			}
 			delete(e.idle, conversationID)
 			e.idleMu.Unlock()
-			if err := e.run(func() { e.claimAndRunExtraction(conversationID) }); err != nil {
+			if err := e.runContext(func(ctx context.Context) { e.claimAndRunExtraction(ctx, conversationID) }); err != nil {
 				e.service.setBackgroundError(err)
 			}
 		}
 	}()
 }
 
-func (e *retentionEngine) claimAndRunExtraction(conversationID string) {
+func (e *retentionEngine) claimAndRunExtraction(ctx context.Context, conversationID string) {
 	if e == nil || e.closed.Load() || e.service == nil {
+		return
+	}
+	if ctx == nil || ctx.Err() != nil {
 		return
 	}
 	store := e.service.memory.retention.extraction
@@ -228,7 +239,7 @@ func (e *retentionEngine) claimAndRunExtraction(conversationID string) {
 	if batch == nil {
 		return
 	}
-	if err := e.executeExtractionBatch(store, batch); err != nil {
+	if err := e.executeExtractionBatch(ctx, store, batch); err != nil {
 		if failErr := store.FailExtractionBatch(batch.BatchID, "EXTRACTION_BATCH_FAILED", err.Error(), false); failErr != nil {
 			e.service.setBackgroundError(failErr)
 			return
@@ -239,7 +250,13 @@ func (e *retentionEngine) claimAndRunExtraction(conversationID string) {
 	e.service.clearBackgroundError()
 }
 
-func (e *retentionEngine) executeExtractionBatch(store extractionStore, batch *memory.ExtractionBatchInput) error {
+func (e *retentionEngine) executeExtractionBatch(ctx context.Context, store extractionStore, batch *memory.ExtractionBatchInput) error {
+	if ctx == nil {
+		return errors.New("extraction context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if batch == nil {
 		return errors.New("extraction batch is required")
 	}
@@ -269,7 +286,7 @@ func (e *retentionEngine) executeExtractionBatch(store extractionStore, batch *m
 	if modelPort == nil {
 		return ErrTurnRuntimeUnavailable
 	}
-	events, err := modelPort.ExecuteRequestContext(context.Background(), model.CompiledPromptRequest{
+	events, err := modelPort.ExecuteRequestContext(ctx, model.CompiledPromptRequest{
 		Shape: model.ModelRequestShape{
 			Lane: model.PromptLaneExtract, Model: connection.Model, Instructions: persona.ExtractInstructions,
 			MaxOutputTokens: persona.ExtractMaxOutputTokens, PromptCacheKey: cacheKey,
@@ -277,6 +294,9 @@ func (e *retentionEngine) executeExtractionBatch(store extractionStore, batch *m
 		Input: input, CacheInput: &cacheInput,
 	})
 	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	output, err := parseMemoryMutationOutput(model.CollectTextFromEvents(events))
@@ -287,8 +307,43 @@ func (e *retentionEngine) executeExtractionBatch(store extractionStore, batch *m
 	for _, item := range batch.ExistingMemories {
 		allowed = append(allowed, item.ID)
 	}
-	_, err = store.CommitMemoryMutations(batch.BatchID, batch.CharacterID, allowed, output.Mutations)
-	return err
+	return e.commitExtractionMutations(ctx, batch.ConversationID, func() ([]memory.MemoryMutationResult, error) {
+		return store.CommitMemoryMutations(batch.BatchID, batch.CharacterID, allowed, output.Mutations)
+	})
+}
+
+func (e *retentionEngine) commitExtractionMutations(
+	ctx context.Context,
+	conversationID string,
+	commit func() ([]memory.MemoryMutationResult, error),
+) error {
+	if e == nil || ctx == nil || commit == nil {
+		return errRetentionClosed
+	}
+	e.admission.Lock()
+	defer e.admission.Unlock()
+	if e.closed.Load() {
+		return errRetentionClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	results, err := commit()
+	if err != nil {
+		return err
+	}
+	if len(results) > 0 {
+		e.coverageCommitted.Store(conversationID, struct{}{})
+	}
+	return nil
+}
+
+func (e *retentionEngine) takeCommittedCoverage(conversationID string) bool {
+	if e == nil {
+		return false
+	}
+	_, loaded := e.coverageCommitted.LoadAndDelete(conversationID)
+	return loaded
 }
 
 func (e *retentionEngine) executeKnowledgeIngestTaskContext(ctx context.Context, store knowledgeIngestStore, task memory.KnowledgeIngestTask) error {

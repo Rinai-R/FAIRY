@@ -30,6 +30,34 @@ func TestRuntimePromptLedgerRecordsOnlyCacheIdentityDiagnostics(t *testing.T) {
 	}
 }
 
+func TestRuntimeCompactionLedgerMetadataContainsNoContextContent(t *testing.T) {
+	metadata := runtimeCompactionLedgerMetadata(
+		"l1", "react_turn", "soft", 2, 1, 100, 40,
+		model.CacheObserved(30), model.CacheMissing(), 900, 800, 3,
+	)
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	for _, forbidden := range []string{
+		"segmentContent", "toolResult", "memoryContent",
+		"data:image", "cacheKey",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("compaction metadata contains %q: %s", forbidden, text)
+		}
+	}
+	for _, required := range []string{
+		`"layer":"l1"`, `"candidateCount":2`, `"releasedTokens":100`,
+		`"estimatedInvalidatedCacheTokens":40`, `"projectionRevision":3`,
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("compaction metadata missing %q: %s", required, text)
+		}
+	}
+}
+
 func TestRuntimeBeatDeliveryLedgerMetadataContainsOnlyDiagnostics(t *testing.T) {
 	metadata := runtimeBeatDeliveryLedgerMetadata("published", reply.BeatKindFinal, 1, 2, 920, 370, 2)
 	raw, err := json.Marshal(metadata)

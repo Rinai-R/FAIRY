@@ -171,24 +171,31 @@ func (e *TurnEngine) submitCompiledTurn(
 		agent.stickerToolEnabled = false
 	}
 	agent.toolBudget = modelDrivenToolBudget(resolved)
-	recordDesktopResult := func(callID, arguments string, evidence DesktopToolEvidence, toolErr error) {
+	recordDesktopResult := func(callID, arguments string, evidence DesktopToolEvidence, toolErr error) error {
+		var items []model.PromptItem
 		if toolErr != nil {
 			code := "capture_failed"
 			var typed *DesktopToolError
 			if errors.As(toolErr, &typed) && strings.TrimSpace(typed.Code) != "" {
 				code = typed.Code
 			}
-			agent.toolPromptItems = append(agent.toolPromptItems, desktopToolFailurePromptItems(callID, arguments, code)...)
+			items = desktopToolFailurePromptItems(callID, arguments, code)
 			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, turnStatePlanning, code, map[string]any{
 				"tool": toolDesktopObserve, "phase": "awaiting_tool", "status": "failed", "modelDrivenIndex": agent.modelDrivenTools + 1,
 			})
-			return
+		} else {
+			items = desktopToolPromptItems(callID, arguments, evidence)
+			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, turnStatePlanning, "", map[string]any{
+				"tool": toolDesktopObserve, "phase": "awaiting_tool", "status": "completed", "executionId": evidence.ExecutionID,
+				"mediaType": evidence.MediaType, "width": evidence.Width, "height": evidence.Height, "modelDrivenIndex": agent.modelDrivenTools + 1,
+			})
 		}
-		agent.toolPromptItems = append(agent.toolPromptItems, desktopToolPromptItems(callID, arguments, evidence)...)
-		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, turnStatePlanning, "", map[string]any{
-			"tool": toolDesktopObserve, "phase": "awaiting_tool", "status": "completed", "executionId": evidence.ExecutionID,
-			"mediaType": evidence.MediaType, "width": evidence.Width, "height": evidence.Height, "modelDrivenIndex": agent.modelDrivenTools + 1,
-		})
+		segments, err := toolContextSegments(items, time.Now())
+		if err != nil {
+			return err
+		}
+		agent.toolSegments = append(agent.toolSegments, segments...)
+		return nil
 	}
 	runAgent := func() (TurnOutcome, error) {
 		for {
@@ -234,8 +241,37 @@ func (e *TurnEngine) submitCompiledTurn(
 			if retrievalOmitReason != "" && retrieval.Empty() {
 				setContextSlotOmitReason(slots, "retrieved_context", retrievalOmitReason)
 			}
-			input := persona.PromptItemsFromContextSlots(slots)
-			input = append(input, agent.toolPromptItems...)
+			if agent.lastInputTokens > 0 && len(agent.toolSegments) > 0 {
+				policy := compactionPolicyFromContextWindow(agent.connectionConfig.ContextWindowTokens)
+				if policy.AutoInputTokenThreshold != nil &&
+					agent.lastInputTokens >= *policy.AutoInputTokenThreshold {
+					hardPressure := policy.hardPressure(agent.lastInputTokens)
+					l1Plan := planL1ToolResultCompaction(l1PlanningInput{
+						Segments: agent.toolSegments, NowUnixMS: time.Now().UnixMilli(),
+						CurrentTokens: agent.lastInputTokens, TargetTokens: policy.TargetInputTokens,
+						CacheObservation:    agent.lastCacheObservation,
+						ExpectedFutureCalls: uint64(max(1, agent.toolBudget-agent.modelDrivenTools+1)),
+						HardPressure:        hardPressure,
+					})
+					agent.toolSegments = applyL1CompactionPlan(agent.toolSegments, l1Plan)
+					s.appendRuntimeLedger(
+						request.ConversationID, persisted.ID,
+						runtimeLedgerEventCompaction, turnStatePlanning, "",
+						runtimeCompactionLedgerMetadata(
+							"l1", "react_turn", watermarkName(hardPressure),
+							l1Plan.CandidateCount, len(l1Plan.OmittedSegmentIDs),
+							l1Plan.ReleasedTokens, l1Plan.InvalidatedCacheTokens,
+							agent.lastCacheObservation, agent.lastCacheWriteObservation,
+							agent.lastInputTokens, l1Plan.AfterTokens,
+							bootstrap.PromptWindow.ProjectionRevision,
+						),
+					)
+				}
+			}
+			input, err := (persona.ContextProjector{}).ProjectSlotsWithTail(slots, agent.toolSegments)
+			if err != nil {
+				return fail("PROMPT_BUILD_FAILED", err)
+			}
 			cacheInput := model.NewCacheKeyInput(model.PromptLaneRespond, agent.connectionConfig.Model, request.ConversationID, instructions)
 			cacheInput.CharacterRevision = characterRecord.Revision
 			cacheInput.ProfileRevision = profileRevisionValue(userProfile)
@@ -363,6 +399,13 @@ func (e *TurnEngine) submitCompiledTurn(
 			}
 			usage := model.LaneUsageFromEvents(model.PromptLaneRespond, agent.events, bootstrap.PromptWindow.Revision)
 			agent.finalUsage = usage
+			if len(usage) > 0 {
+				if usage[0].Usage.InputTokens != nil {
+					agent.lastInputTokens = *usage[0].Usage.InputTokens
+				}
+				agent.lastCacheObservation = usage[0].Usage.CachedInputTokens
+				agent.lastCacheWriteObservation = usage[0].Usage.CacheWriteTokens
+			}
 			s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventModel, turnStatePlanning, "", runtimeModelLedgerMetadata(agent.events, usage))
 
 			toolCalls := model.FunctionCallsFromEvents(agent.events)
@@ -483,7 +526,9 @@ func (e *TurnEngine) submitCompiledTurn(
 							}
 						})
 						if toolErr != nil {
-							recordDesktopResult(call.CallID, call.Arguments, DesktopToolEvidence{}, toolErr)
+							if err := recordDesktopResult(call.CallID, call.Arguments, DesktopToolEvidence{}, toolErr); err != nil {
+								return fail("PROMPT_BUILD_FAILED", err)
+							}
 							break
 						}
 						agent.pendingDesktop = &pendingDesktopTool{
@@ -492,7 +537,9 @@ func (e *TurnEngine) submitCompiledTurn(
 						if toolErr = s.desktopTool.DispatchExecution(turnCtx, executionHandle); toolErr != nil {
 							_, _ = s.desktopTool.Result(turnCtx, executionHandle.ID)
 							agent.pendingDesktop = nil
-							recordDesktopResult(call.CallID, call.Arguments, DesktopToolEvidence{}, toolErr)
+							if err := recordDesktopResult(call.CallID, call.Arguments, DesktopToolEvidence{}, toolErr); err != nil {
+								return fail("PROMPT_BUILD_FAILED", err)
+							}
 							break
 						}
 						return TurnOutcome{}, errAgentAwaitingDesktop
@@ -678,7 +725,11 @@ func (e *TurnEngine) submitCompiledTurn(
 							return fail("MODEL_RESPONSE_INVALID", errors.New("sticker_search is unavailable for this session"))
 						}
 						candidates, toolErr := searchStickerCandidates(turnCtx, s.stickers, agent.stickerCandidates, query)
-						agent.toolPromptItems = append(agent.toolPromptItems, stickerToolPromptItems(call.CallID, call.Arguments, candidates, toolErr)...)
+						segments, segmentErr := toolContextSegments(stickerToolPromptItems(call.CallID, call.Arguments, candidates, toolErr), time.Now())
+						if segmentErr != nil {
+							return fail("PROMPT_BUILD_FAILED", segmentErr)
+						}
+						agent.toolSegments = append(agent.toolSegments, segments...)
 						status := "ok"
 						if toolErr != nil {
 							status = "failed"
@@ -786,7 +837,9 @@ func (e *TurnEngine) submitCompiledTurn(
 			return fail("TURN_INTERRUPTED", ErrTurnInterrupted)
 		}
 		evidence, toolErr := s.desktopTool.Result(turnCtx, pending.execution.ID)
-		recordDesktopResult(pending.callID, pending.arguments, evidence, toolErr)
+		if err := recordDesktopResult(pending.callID, pending.arguments, evidence, toolErr); err != nil {
+			return fail("PROMPT_BUILD_FAILED", err)
+		}
 		agent.pendingDesktop = nil
 		agent.modelDrivenTools++
 	}

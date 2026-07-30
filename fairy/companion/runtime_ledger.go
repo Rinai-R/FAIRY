@@ -23,7 +23,38 @@ const (
 	runtimeLedgerEventSpeech        = "speech"
 	runtimeLedgerEventBeatDelivery  = "beat_delivery"
 	runtimeLedgerEventTerminal      = "terminal"
+	runtimeLedgerEventCompaction    = "context_compaction"
 )
+
+func runtimeCompactionLedgerMetadata(
+	layer string,
+	trigger string,
+	watermark string,
+	candidateCount int,
+	omittedCount int,
+	releasedTokens uint64,
+	invalidatedCacheTokens uint64,
+	cacheRead model.CachedTokenObservation,
+	cacheWrite model.CachedTokenObservation,
+	beforeTokens uint64,
+	afterTokens uint64,
+	projectionRevision uint64,
+) map[string]any {
+	return map[string]any{
+		"layer":                           layer,
+		"trigger":                         trigger,
+		"watermark":                       watermark,
+		"candidateCount":                  candidateCount,
+		"omittedCount":                    omittedCount,
+		"releasedTokens":                  releasedTokens,
+		"estimatedInvalidatedCacheTokens": invalidatedCacheTokens,
+		"providerCachedInputTokens":       cacheRead,
+		"providerCacheWriteTokens":        cacheWrite,
+		"beforeTokens":                    beforeTokens,
+		"afterTokens":                     afterTokens,
+		"projectionRevision":              projectionRevision,
+	}
+}
 
 func (s *CompanionService) appendRuntimeLedger(conversationID string, turnID string, eventType string, state turnState, code string, metadata map[string]any) {
 	if s == nil || s.memory.turn.runtimeState == nil {

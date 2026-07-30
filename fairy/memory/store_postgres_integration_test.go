@@ -1304,7 +1304,7 @@ func TestPostgresCommitMemoryMutationsPreservesPerMutationSourceTurn(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, turnIDs, batchID := seedPostgresRunningExtractionBatchWithTurns(t, ctx, pool, store, "character-mutation-evidence", 2)
+	conversationID, turnIDs, batchID := seedPostgresRunningExtractionBatchWithTurns(t, ctx, pool, store, "character-mutation-evidence", 2)
 	results, err := store.CommitMemoryMutationsContext(ctx, batchID, "character-mutation-evidence", nil, []MemoryMutation{
 		{Operation: "create", SourceTurnID: turnIDs[0], Kind: "preference", Scope: MemoryScope{Type: "global"}, Content: "第一条证据喜欢爵士乐", ConfidenceBasisPoints: 9000},
 		{Operation: "create", SourceTurnID: turnIDs[1], Kind: "experience", Scope: MemoryScope{Type: "global"}, Content: "第二条证据准备搬家", ConfidenceBasisPoints: 8500},
@@ -1323,6 +1323,29 @@ func TestPostgresCommitMemoryMutationsPreservesPerMutationSourceTurn(t *testing.
 		if sourceTurnID != turnIDs[index] {
 			t.Fatalf("memory %d source turn = %q, want %q", index, sourceTurnID, turnIDs[index])
 		}
+		var coverageStatus string
+		if err := pool.Raw().QueryRow(ctx, `
+SELECT result_status
+FROM memory_context_coverages
+WHERE conversation_id = $1 AND turn_id = $2 AND memory_id = $3`,
+			bootstrapConversationIDForTurn(t, ctx, pool, turnIDs[index]),
+			turnIDs[index], result.MemoryID,
+		).Scan(&coverageStatus); err != nil {
+			t.Fatal(err)
+		}
+		if coverageStatus != "applied" {
+			t.Fatalf("coverage status = %q", coverageStatus)
+		}
+	}
+	coverage, err := store.LoadCommittedMemoryCoverageContext(ctx, conversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(coverage) != 2 ||
+		coverage[0].StartMessageSequence == 0 ||
+		coverage[0].EndMessageSequence < coverage[0].StartMessageSequence ||
+		coverage[0].CoveredTokens == 0 {
+		t.Fatalf("committed coverage = %#v", coverage)
 	}
 }
 
@@ -1368,7 +1391,57 @@ func TestPostgresCommitMemoryMutationsPreservesNoChangeAndSupersedeSemantics(t *
 	if oldStatus != "superseded" || newStatus != "active" || supersedesID != initialID || newSourceTurnID != turnID {
 		t.Fatalf("old=%q new=%q supersedes=%q source=%q", oldStatus, newStatus, supersedesID, newSourceTurnID)
 	}
+	var coverageCount int
+	if err := pool.Raw().QueryRow(ctx, `
+SELECT COUNT(*)
+FROM memory_context_coverages
+WHERE turn_id = $1 AND result_status IN ('applied', 'no_change')`, turnID).Scan(&coverageCount); err != nil {
+		t.Fatal(err)
+	}
+	if coverageCount != 2 {
+		t.Fatalf("coverage count = %d, want 2", coverageCount)
+	}
 	assertPostgresEmbedding(t, ctx, pool, "personal_memories", results[1].MemoryID, "喜欢清晨散步", false)
+}
+
+func TestPostgresFailedExtractionMutationCreatesNoContextCoverage(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStoreFromPoolWithEmbedder(pool, &fixedSemanticEmbedder{
+		ready: true, dims: SemanticEmbeddingDimensions, err: errors.New("embedding failed"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, turnID, batchID := seedPostgresRunningExtractionBatch(t, ctx, pool, store, "character-coverage-failure")
+	_, err = store.CommitMemoryMutationsContext(ctx, batchID, "character-coverage-failure", nil, []MemoryMutation{{
+		Operation: "create", SourceTurnID: turnID, Kind: "preference",
+		Scope: MemoryScope{Type: "global"}, Content: "喜欢雨天散步",
+		ConfidenceBasisPoints: 9000,
+	}})
+	if err == nil || !strings.Contains(err.Error(), "embedding failed") {
+		t.Fatalf("CommitMemoryMutationsContext() error = %v", err)
+	}
+	var count int
+	if err := pool.Raw().QueryRow(ctx, "SELECT COUNT(*) FROM memory_context_coverages WHERE turn_id = $1", turnID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("coverage count = %d", count)
+	}
+}
+
+func bootstrapConversationIDForTurn(t *testing.T, ctx context.Context, pool *coredb.Pool, turnID string) string {
+	t.Helper()
+	var conversationID string
+	if err := pool.Raw().QueryRow(ctx, "SELECT conversation_id FROM conversation_turns WHERE id = $1", turnID).Scan(&conversationID); err != nil {
+		t.Fatal(err)
+	}
+	return conversationID
 }
 
 func seedPostgresRunningExtractionBatch(t *testing.T, ctx context.Context, _ *coredb.Pool, store *Store, characterID string) (string, string, string) {
@@ -1666,6 +1739,307 @@ func assertPostgresEmbedding(t *testing.T, ctx context.Context, pool *coredb.Poo
 	}
 	if modelID == nil || *modelID != SemanticEmbeddingModelID || contentHash == nil || *contentHash != semanticContentHash(content) || !vectorPresent {
 		t.Fatalf("embedding = (%v, %v, %v), want model=%q hash=%q", modelID, contentHash, vectorPresent, SemanticEmbeddingModelID, semanticContentHash(content))
+	}
+}
+
+func TestPostgresPromptProjectionCASPreservesCompleteTranscript(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store, err := NewStoreFromPool(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := store.OpenOrCreateCharacterConversationContext(ctx, "character-projection")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := range 2 {
+		turn, beginErr := store.BeginTurnContext(ctx, bootstrap.Conversation.ID, fmt.Sprintf("user-%d", index))
+		if beginErr != nil {
+			t.Fatal(beginErr)
+		}
+		if _, completeErr := store.CompleteTurnContext(ctx, bootstrap.Conversation.ID, turn.ID, fmt.Sprintf("assistant-%d", index)); completeErr != nil {
+			t.Fatal(completeErr)
+		}
+	}
+	state := PromptProjectionState{
+		Version: PromptProjectionVersion,
+		Omissions: []PromptProjectionOmission{{
+			StartMessageSequence: 1, EndMessageSequence: 2,
+			Reason: "memory_committed", MemoryID: "memory-1",
+		}},
+		RecentTailStartSequence: 3,
+	}
+	encoded, err := EncodePromptProjection(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := pool.Raw().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := updatePromptProjection(ctx, tx, bootstrap.Conversation.ID, 1, 1, 2, 2, encoded, time.Now().UnixMilli()); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := pool.Raw().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := updatePromptProjection(ctx, stale, bootstrap.Conversation.ID, 1, 1, 2, 2, encoded, time.Now().UnixMilli()); !errors.Is(err, ErrPromptWindowRevisionChanged) {
+		_ = stale.Rollback(ctx)
+		t.Fatalf("stale update error = %v", err)
+	}
+	_ = stale.Rollback(ctx)
+
+	complete, err := store.LoadConversationContext(ctx, bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := store.LoadConversationPromptContext(ctx, bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(complete.Messages) != 4 || len(active.Messages) != 2 {
+		t.Fatalf("complete/active messages = %d/%d", len(complete.Messages), len(active.Messages))
+	}
+	if active.PromptWindow.Revision != 2 || active.PromptWindow.ProjectionRevision != 2 {
+		t.Fatalf("prompt window = %#v", active.PromptWindow)
+	}
+}
+
+func TestPostgresConcurrentPromptProjectionCommitsAreAtomic(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store, err := NewStoreFromPool(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := store.OpenOrCreateCharacterConversationContext(ctx, "character-projection-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := store.BeginTurnContext(ctx, bootstrap.Conversation.ID, "用户消息")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteTurnContext(ctx, bootstrap.Conversation.ID, turn.ID, "助手消息"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveLaneContinuationContext(ctx, LaneContinuationRecord{
+		ConversationID: bootstrap.Conversation.ID, Lane: PromptLaneRespond,
+		PreviousResponseID: "response-projection", RequestShapeHash: strings.Repeat("a", 64),
+		InputPrefixHash: strings.Repeat("b", 64), ResponseItemHash: strings.Repeat("c", 64),
+		WindowRevision: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	states := []PromptProjectionState{
+		{
+			Version: PromptProjectionVersion,
+			Omissions: []PromptProjectionOmission{{
+				StartMessageSequence: 1, EndMessageSequence: 2,
+				Reason: "memory_committed", MemoryID: "memory-a",
+			}},
+			RecentTailStartSequence: 3,
+		},
+		{
+			Version: PromptProjectionVersion,
+			Omissions: []PromptProjectionOmission{{
+				StartMessageSequence: 1, EndMessageSequence: 2,
+				Reason: "full_compact", CompactRevision: 2,
+			}},
+			RecentTailStartSequence: 3,
+		},
+	}
+	errs := make(chan error, len(states))
+	for index, state := range states {
+		go func(index int, state PromptProjectionState) {
+			windowID := fmt.Sprintf("window-projection-%d", index)
+			contextWindow := ContextWindowRecord{
+				ConversationID: bootstrap.Conversation.ID, Lane: PromptLaneRespond,
+				WindowNumber: 1, FirstWindowID: windowID, WindowID: windowID,
+				LastTrigger: "projection_committed", PromptWindowRevision: 2,
+			}
+			var commitErr error
+			if index == 0 {
+				_, commitErr = store.CommitPromptProjectionContext(
+					ctx, bootstrap.Conversation.ID, 1, 1, state,
+					contextWindow, PromptLaneRespond,
+				)
+			} else {
+				_, commitErr = store.CommitTieredCompactionContext(
+					ctx, bootstrap.Conversation.ID, 1, 1,
+					"structured-summary", 2, state,
+					contextWindow, PromptLaneRespond,
+				)
+			}
+			errs <- commitErr
+		}(index, state)
+	}
+	var successes, conflicts int
+	for range states {
+		switch err := <-errs; {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrPromptWindowRevisionChanged):
+			conflicts++
+		default:
+			t.Fatalf("CommitPromptProjectionContext() error = %v", err)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("successes/conflicts = %d/%d", successes, conflicts)
+	}
+	if _, ok, err := store.LoadLaneContinuationContext(ctx, bootstrap.Conversation.ID, PromptLaneRespond); err != nil || ok {
+		t.Fatalf("continuation after projection = (%v, %v)", ok, err)
+	}
+	window, ok, err := store.LoadContextWindowContext(ctx, bootstrap.Conversation.ID, PromptLaneRespond)
+	if err != nil || !ok || window.PromptWindowRevision != 2 {
+		t.Fatalf("context window = %#v, (%v, %v)", window, ok, err)
+	}
+	prompt, err := store.LoadConversationPromptContext(ctx, bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prompt.PromptWindow.Revision != 2 || prompt.PromptWindow.ProjectionRevision != 2 {
+		t.Fatalf("prompt window = %#v", prompt.PromptWindow)
+	}
+}
+
+func TestPostgresTieredCompactionAtomicallyKeepsRecentTail(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStoreFromPool(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := store.OpenOrCreateCharacterConversationContext(ctx, "character-tiered-compact")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := range 2 {
+		turn, beginErr := store.BeginTurnContext(ctx, bootstrap.Conversation.ID, fmt.Sprintf("user-%d", index))
+		if beginErr != nil {
+			t.Fatal(beginErr)
+		}
+		if _, completeErr := store.CompleteTurnContext(ctx, bootstrap.Conversation.ID, turn.ID, fmt.Sprintf("assistant-%d", index)); completeErr != nil {
+			t.Fatal(completeErr)
+		}
+	}
+	if _, err := store.SaveLaneContinuationContext(ctx, LaneContinuationRecord{
+		ConversationID: bootstrap.Conversation.ID, Lane: PromptLaneRespond,
+		PreviousResponseID: "response-tiered", RequestShapeHash: strings.Repeat("a", 64),
+		InputPrefixHash: strings.Repeat("b", 64), ResponseItemHash: strings.Repeat("c", 64),
+		WindowRevision: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	projection := PromptProjectionState{
+		Version: PromptProjectionVersion,
+		Omissions: []PromptProjectionOmission{{
+			StartMessageSequence: 1, EndMessageSequence: 2,
+			Reason: "full_compact", CompactRevision: 2,
+		}},
+		RecentTailStartSequence: 3,
+	}
+	windowID := "window-tiered"
+	result, err := store.CommitTieredCompactionContext(
+		ctx, bootstrap.Conversation.ID, 1, 1, "structured-summary", 2,
+		projection,
+		ContextWindowRecord{
+			ConversationID: bootstrap.Conversation.ID, Lane: PromptLaneRespond,
+			WindowNumber: 1, FirstWindowID: windowID, WindowID: windowID,
+			LastTrigger: "compaction_committed", PromptWindowRevision: 2,
+		},
+		PromptLaneRespond,
+	)
+	if err != nil || result.WindowRevision != 2 {
+		t.Fatalf("CommitTieredCompactionContext() = %#v, %v", result, err)
+	}
+	active, err := store.LoadConversationPromptContext(ctx, bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	complete, err := store.LoadConversationContext(ctx, bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active.Messages) != 2 || active.Messages[0].Sequence != 3 || len(complete.Messages) != 4 {
+		t.Fatalf("active/complete = %#v / %#v", active.Messages, complete.Messages)
+	}
+	if active.PromptWindow.CutoffMessageSequence != 2 ||
+		active.PromptWindow.ProjectionRevision != 2 ||
+		active.PromptWindow.Summary == nil ||
+		*active.PromptWindow.Summary != "structured-summary" {
+		t.Fatalf("prompt window = %#v", active.PromptWindow)
+	}
+	if _, ok, err := store.LoadLaneContinuationContext(ctx, bootstrap.Conversation.ID, PromptLaneRespond); err != nil || ok {
+		t.Fatalf("continuation = (%v, %v)", ok, err)
+	}
+	if _, err := store.SaveLaneContinuationContext(ctx, LaneContinuationRecord{
+		ConversationID: bootstrap.Conversation.ID, Lane: PromptLaneRespond,
+		PreviousResponseID: "response-preserved-after-stale", RequestShapeHash: strings.Repeat("d", 64),
+		InputPrefixHash: strings.Repeat("e", 64), ResponseItemHash: strings.Repeat("f", 64),
+		WindowRevision: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	staleProjection := PromptProjectionState{
+		Version: PromptProjectionVersion,
+		Omissions: []PromptProjectionOmission{{
+			StartMessageSequence: 1, EndMessageSequence: 4,
+			Reason: "full_compact", CompactRevision: 2,
+		}},
+		RecentTailStartSequence: 5,
+	}
+	_, err = store.CommitTieredCompactionContext(
+		ctx, bootstrap.Conversation.ID, 1, 1, "stale-summary", 4,
+		staleProjection,
+		ContextWindowRecord{
+			ConversationID: bootstrap.Conversation.ID, Lane: PromptLaneRespond,
+			WindowNumber: 2, FirstWindowID: "window-stale", WindowID: "window-stale",
+			LastTrigger: "compaction_committed", PromptWindowRevision: 2,
+		},
+		PromptLaneRespond,
+	)
+	if !errors.Is(err, ErrPromptWindowRevisionChanged) {
+		t.Fatalf("stale CommitTieredCompactionContext() error = %v", err)
+	}
+	afterStale, err := store.LoadConversationPromptContext(ctx, bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterStale.PromptWindow.Revision != 2 ||
+		afterStale.PromptWindow.ProjectionRevision != 2 ||
+		afterStale.PromptWindow.CutoffMessageSequence != 2 ||
+		afterStale.PromptWindow.Summary == nil ||
+		*afterStale.PromptWindow.Summary != "structured-summary" ||
+		len(afterStale.Messages) != 2 {
+		t.Fatalf("prompt window after stale compact = %#v, messages = %#v", afterStale.PromptWindow, afterStale.Messages)
+	}
+	continuation, ok, err := store.LoadLaneContinuationContext(ctx, bootstrap.Conversation.ID, PromptLaneRespond)
+	if err != nil || !ok || continuation.PreviousResponseID != "response-preserved-after-stale" {
+		t.Fatalf("continuation after stale compact = %#v, (%v, %v)", continuation, ok, err)
+	}
+	afterWindow, ok, err := store.LoadContextWindowContext(ctx, bootstrap.Conversation.ID, PromptLaneRespond)
+	if err != nil || !ok || afterWindow.WindowID != windowID || afterWindow.PromptWindowRevision != 2 {
+		t.Fatalf("context window after stale compact = %#v, (%v, %v)", afterWindow, ok, err)
 	}
 }
 

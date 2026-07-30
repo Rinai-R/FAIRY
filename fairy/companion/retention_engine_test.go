@@ -1,6 +1,7 @@
 package companion
 
 import (
+	"context"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -75,5 +76,48 @@ func TestRetentionEngineCloseRejectsNewWork(t *testing.T) {
 	engine.close()
 	if err := engine.run(func() {}); !errors.Is(err, errRetentionClosed) {
 		t.Fatalf("run after close error = %v", err)
+	}
+}
+
+func TestRetentionEngineCloseCancelsExtractionBeforeCommitBarrier(t *testing.T) {
+	engine := newRetentionEngineWithCapacity(nil, 1, 1)
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	var commitCalls atomic.Int64
+	var commitErr error
+	if err := engine.runContext(func(ctx context.Context) {
+		close(started)
+		<-ctx.Done()
+		commitErr = engine.commitExtractionMutations(ctx, "conversation-1", func() ([]memory.MemoryMutationResult, error) {
+			commitCalls.Add(1)
+			return []memory.MemoryMutationResult{{Status: "applied", MemoryID: "memory-1"}}, nil
+		})
+		close(finished)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	engine.close()
+	<-finished
+	if !errors.Is(commitErr, errRetentionClosed) || commitCalls.Load() != 0 {
+		t.Fatalf("commit after close = calls:%d error:%v", commitCalls.Load(), commitErr)
+	}
+	if engine.takeCommittedCoverage("conversation-1") {
+		t.Fatal("shutdown extraction published committed coverage")
+	}
+}
+
+func TestRetentionCoverageSignalIsProcessLocalAndSingleConsumption(t *testing.T) {
+	engine := newRetentionEngineWithCapacity(nil, 1, 1)
+	defer engine.close()
+	engine.coverageCommitted.Store("conversation-1", struct{}{})
+	if !engine.takeCommittedCoverage("conversation-1") {
+		t.Fatal("committed coverage signal was not available")
+	}
+	if engine.takeCommittedCoverage("conversation-1") {
+		t.Fatal("committed coverage signal was consumed more than once")
+	}
+	if engine.takeCommittedCoverage("conversation-2") {
+		t.Fatal("unknown conversation reported committed coverage")
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -14,6 +16,40 @@ type ExtractionTurnRow struct {
 	Sequence  int64
 	User      string
 	Assistant string
+}
+
+func BuildExtractionRetrievalProjection(turns []ExtractionTurn) []string {
+	fragments := make([]string, 0, len(turns)*2)
+	remaining := MaxFTSQueryChars
+	for _, turn := range turns {
+		for _, field := range []string{turn.UserMessage, turn.AssistantMessage} {
+			for _, token := range strings.FieldsFunc(field, unicode.IsSpace) {
+				token = strings.TrimSpace(token)
+				runes := []rune(token)
+				if len(runes) > extractionProjectionFragmentRunes {
+					runes = runes[:extractionProjectionFragmentRunes]
+				}
+				if len(runes) > remaining {
+					runes = runes[:remaining]
+				}
+				fragment := string(runes)
+				if fragment == "" {
+					continue
+				}
+				usable, err := BuildFTSQuery(fragment)
+				if err != nil || usable == "" {
+					continue
+				}
+				fragments = append(fragments, fragment)
+				remaining -= len(runes)
+				break
+			}
+			if remaining == 0 {
+				return fragments
+			}
+		}
+	}
+	return fragments
 }
 
 func LockConversationCharacter(ctx context.Context, tx pgx.Tx, conversationID string) (string, error) {
@@ -168,6 +204,32 @@ WHERE id = $1`, memoryID, encoded, now)
 	}
 	if changed.RowsAffected() != 1 {
 		return errors.New("personal memory does not exist")
+	}
+	return nil
+}
+
+func InsertMemoryContextCoverage(
+	ctx context.Context,
+	tx pgx.Tx,
+	conversationID, turnID, memoryID, resultStatus string,
+	now int64,
+) error {
+	if resultStatus != "applied" && resultStatus != "no_change" {
+		return errors.New("memory context coverage result status is invalid")
+	}
+	changed, err := tx.Exec(ctx, `
+INSERT INTO memory_context_coverages(
+  conversation_id, turn_id, memory_id, result_status, created_at_ms
+)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (conversation_id, turn_id, memory_id)
+DO UPDATE SET result_status = excluded.result_status`,
+		conversationID, turnID, memoryID, resultStatus, now)
+	if err != nil {
+		return fmt.Errorf("inserting memory context coverage: %w", err)
+	}
+	if changed.RowsAffected() != 1 {
+		return errors.New("memory context coverage was not committed")
 	}
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"fairy/character"
 	"fairy/config"
@@ -484,6 +485,10 @@ func (s *CompanionService) handleSpeechResult(life *turnLifecycle, conversationI
 }
 
 func (s *CompanionService) CompactConversation(conversationID string) (memory.CompactionResult, error) {
+	return s.compactConversation(conversationID, "manual")
+}
+
+func (s *CompanionService) compactConversation(conversationID string, trigger string) (memory.CompactionResult, error) {
 	if !s.TurnRuntimeReady() {
 		return memory.CompactionResult{}, ErrTurnRuntimeUnavailable
 	}
@@ -549,6 +554,21 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
+	tail := selectRecentCompleteTurnTail(windowed, 2_048)
+	cutoff := bootstrap.PromptWindow.CutoffMessageSequence
+	if len(tail) > 0 && tail[0].Sequence > 0 {
+		cutoff = tail[0].Sequence - 1
+	}
+	projection := memory.EmptyPromptProjection()
+	projection.RecentTailStartSequence = cutoff + 1
+	if cutoff > 0 {
+		projection.Omissions = append(projection.Omissions, memory.PromptProjectionOmission{
+			StartMessageSequence: 1,
+			EndMessageSequence:   cutoff,
+			Reason:               "full_compact",
+			CompactRevision:      bootstrap.PromptWindow.Revision + 1,
+		})
+	}
 	existingWindow, foundWindow, err := s.memory.turn.runtimeState.LoadContextWindow(conversationID, string(model.PromptLaneRespond))
 	if err != nil {
 		return memory.CompactionResult{}, err
@@ -559,18 +579,72 @@ func (s *CompanionService) CompactConversation(conversationID string) (memory.Co
 		existingWindow,
 		foundWindow,
 	)
-	result, err := s.memory.turn.runtimeState.CommitCompaction(
+	result, err := s.memory.turn.contextRetention.CommitTieredCompaction(
 		conversationID,
 		bootstrap.PromptWindow.Revision,
+		bootstrap.PromptWindow.ProjectionRevision,
 		summary,
+		cutoff,
+		projection,
 		contextWindow,
 		string(model.PromptLaneRespond),
 	)
 	if err != nil {
 		return memory.CompactionResult{}, err
 	}
-	result.RetainedDialogueItems = len(windowed)
+	result.RetainedDialogueItems = len(tail)
+	s.appendRuntimeLedger(
+		conversationID, windowed[len(windowed)-1].TurnID,
+		runtimeLedgerEventCompaction, turnStateCompleted, "",
+		runtimeCompactionLedgerMetadata(
+			"l3", trigger, "hard", len(windowed), len(windowed)-len(tail),
+			estimateMessagesTokens(windowed)-estimateMessagesTokens(tail), 0,
+			model.CacheMissing(), model.CacheMissing(),
+			estimateMessagesTokens(windowed), estimateMessagesTokens(tail),
+			bootstrap.PromptWindow.ProjectionRevision+1,
+		),
+	)
 	return result, nil
+}
+
+func estimateMessagesTokens(messages []memory.MessageRecord) uint64 {
+	var tokens uint64
+	for _, message := range messages {
+		tokens += estimatePromptTokens(uint64(utf8.RuneCountInString(memory.PromptMessageText(message))))
+	}
+	return tokens
+}
+
+func selectRecentCompleteTurnTail(messages []memory.MessageRecord, tokenBudget uint64) []memory.MessageRecord {
+	if len(messages) == 0 || tokenBudget == 0 {
+		return nil
+	}
+	start := len(messages)
+	var used uint64
+	for end := len(messages); end > 0; {
+		turnID := messages[end-1].TurnID
+		begin := end - 1
+		var turnTokens uint64
+		hasUser, hasAssistant := false, false
+		for begin >= 0 && messages[begin].TurnID == turnID {
+			message := messages[begin]
+			turnTokens += estimatePromptTokens(uint64(utf8.RuneCountInString(memory.PromptMessageText(message))))
+			hasUser = hasUser || message.Role == "user"
+			hasAssistant = hasAssistant || message.Role == "assistant"
+			begin--
+		}
+		begin++
+		if !hasUser || !hasAssistant || used+turnTokens > tokenBudget {
+			break
+		}
+		start = begin
+		used += turnTokens
+		end = begin
+	}
+	if start == len(messages) {
+		return nil
+	}
+	return append([]memory.MessageRecord(nil), messages[start:]...)
 }
 
 func (s *CompanionService) activeCharacter(characterID string) (character.Record, error) {
