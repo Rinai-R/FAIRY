@@ -2,7 +2,7 @@ package coredb
 
 import "github.com/pgvector/pgvector-go"
 
-const currentSchemaRevision = "2026-07-29-direct-memory-knowledge-feedback-1"
+const currentSchemaRevision = "2026-07-30-direct-cognitive-records-1"
 
 type conversationSchema struct {
 	ID          string `gorm:"type:text;primaryKey;index:conversations_character_updated,priority:3"`
@@ -14,17 +14,24 @@ type conversationSchema struct {
 func (conversationSchema) TableName() string { return "conversations" }
 
 type conversationTurnSchema struct {
-	ID              string  `gorm:"type:text;primaryKey"`
-	ConversationID  string  `gorm:"type:text;not null;uniqueIndex:conversation_turns_conversation_sequence_key,priority:1;index:conversation_turns_conversation_status,priority:1"`
-	Sequence        int64   `gorm:"not null;check:conversation_turns_invariants_check,(sequence > 0) AND (status IN ('interpreting', 'planning', 'responding', 'completed', 'interrupted', 'failed')) AND (extraction_state IN ('ineligible', 'pending', 'claimed', 'processed')) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms) AND ((status = 'failed') = (error_code IS NOT NULL AND error_message IS NOT NULL));uniqueIndex:conversation_turns_conversation_sequence_key,priority:2;index:conversation_turns_conversation_status,priority:3"`
-	Status          string  `gorm:"type:text;not null;index:conversation_turns_conversation_status,priority:2"`
-	Origin          string  `gorm:"type:text;not null;default:user"`
-	ErrorCode       *string `gorm:"type:text"`
-	ErrorMessage    *string `gorm:"type:text"`
-	ErrorRetryable  *bool
-	ExtractionState string `gorm:"type:text;not null;default:ineligible"`
-	CreatedAtMS     int64  `gorm:"not null"`
-	UpdatedAtMS     int64  `gorm:"not null"`
+	ID                         string  `gorm:"type:text;primaryKey"`
+	ConversationID             string  `gorm:"type:text;not null;uniqueIndex:conversation_turns_conversation_sequence_key,priority:1;index:conversation_turns_conversation_status,priority:1"`
+	Sequence                   int64   `gorm:"not null;check:conversation_turns_invariants_check,(sequence > 0) AND (status IN ('interpreting', 'planning', 'responding', 'completed', 'interrupted', 'failed')) AND (extraction_state IN ('ineligible', 'pending', 'claimed', 'processed', 'failed')) AND (extraction_attempt_count >= 0) AND (extraction_next_attempt_at_ms >= 0) AND (extraction_lease_expires_at_ms IS NULL OR extraction_lease_expires_at_ms >= 0) AND ((extraction_state = 'claimed') = (extraction_claim_id IS NOT NULL AND extraction_lease_owner IS NOT NULL AND extraction_lease_expires_at_ms IS NOT NULL)) AND (extraction_state = 'claimed' OR (extraction_claim_id IS NULL AND extraction_lease_owner IS NULL AND extraction_lease_expires_at_ms IS NULL)) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms) AND ((status = 'failed') = (error_code IS NOT NULL AND error_message IS NOT NULL));uniqueIndex:conversation_turns_conversation_sequence_key,priority:2;index:conversation_turns_conversation_status,priority:3"`
+	Status                     string  `gorm:"type:text;not null;index:conversation_turns_conversation_status,priority:2"`
+	Origin                     string  `gorm:"type:text;not null;default:user"`
+	ErrorCode                  *string `gorm:"type:text"`
+	ErrorMessage               *string `gorm:"type:text"`
+	ErrorRetryable             *bool
+	ExtractionState            string  `gorm:"type:text;not null;default:ineligible"`
+	ExtractionClaimID          *string `gorm:"type:text;index:conversation_turns_extraction_claim"`
+	ExtractionLeaseOwner       *string `gorm:"type:text"`
+	ExtractionLeaseExpiresAtMS *int64
+	ExtractionAttemptCount     int     `gorm:"type:integer;not null;default:0"`
+	ExtractionNextAttemptAtMS  int64   `gorm:"not null;default:0"`
+	ExtractionErrorCode        *string `gorm:"type:text"`
+	ExtractionErrorMessage     *string `gorm:"type:text"`
+	CreatedAtMS                int64   `gorm:"not null"`
+	UpdatedAtMS                int64   `gorm:"not null"`
 }
 
 func (conversationTurnSchema) TableName() string { return "conversation_turns" }
@@ -166,14 +173,21 @@ func (personalMemorySchema) TableName() string { return "personal_memories" }
 
 type knowledgeEntrySchema struct {
 	ID                    string           `gorm:"type:text;primaryKey;index:knowledge_entries_status_updated,priority:3"`
-	Topic                 string           `gorm:"type:text;not null;check:knowledge_entries_invariants_check,(topic <> '') AND (statement <> '') AND (status IN ('candidate', 'verified', 'superseded', 'rejected', 'tombstone')) AND (confidence_basis_points BETWEEN 0 AND 10000) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms)"`
+	Topic                 string           `gorm:"type:text;not null;check:knowledge_entries_invariants_check,(topic <> '') AND (statement <> '') AND (status IN ('candidate', 'verified', 'superseded', 'rejected', 'tombstone')) AND (confidence_basis_points BETWEEN 0 AND 10000) AND (source_url = '' OR source_url ~ '^https?://[^[:space:]]+$') AND (source_content_hash = '' OR source_content_hash ~ '^[0-9a-f]{64}$') AND (source_fetched_at_ms >= 0) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms)"`
 	Statement             string           `gorm:"type:text;not null"`
 	Status                string           `gorm:"type:text;not null;index:knowledge_entries_status_updated,priority:1"`
 	VerificationBasis     string           `gorm:"type:text;not null"`
 	ConfidenceBasisPoints int              `gorm:"type:integer;not null"`
 	SourceConversationID  string           `gorm:"type:text;not null"`
 	SourceTurnID          string           `gorm:"type:text;not null"`
-	DocumentID            *string          `gorm:"type:text;index:knowledge_entries_document"`
+	SourceURL             string           `gorm:"type:text;not null;default:'';index:knowledge_entries_source_url"`
+	SourceTitle           string           `gorm:"type:text;not null;default:''"`
+	SourceContentHash     string           `gorm:"type:text;not null;default:''"`
+	SourceContentType     string           `gorm:"type:text;not null;default:''"`
+	SourceFetchedAtMS     int64            `gorm:"not null;default:0"`
+	SourceETag            string           `gorm:"column:source_etag;type:text;not null;default:''"`
+	SourceLastModified    string           `gorm:"type:text;not null;default:''"`
+	ReconcilerRevision    string           `gorm:"type:text;not null;default:''"`
 	EvidenceText          string           `gorm:"type:text;not null;default:''"`
 	SupersedesID          *string          `gorm:"type:text"`
 	EmbeddingModelID      *string          `gorm:"type:text"`
@@ -184,23 +198,6 @@ type knowledgeEntrySchema struct {
 }
 
 func (knowledgeEntrySchema) TableName() string { return "knowledge_entries" }
-
-type knowledgeDocumentSchema struct {
-	ID                 string `gorm:"type:text;primaryKey"`
-	CanonicalURL       string `gorm:"type:text;not null;uniqueIndex:knowledge_documents_canonical_key;check:knowledge_documents_invariants_check,(canonical_url ~ '^https?://[^[:space:]]+$') AND (content_hash = '' OR content_hash ~ '^[0-9a-f]{64}$') AND (reconciler_revision = '' OR reconciler_revision ~ '^[0-9a-f]{64}$') AND (fetched_at_ms >= 0) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms)"`
-	Title              string `gorm:"type:text;not null;default:''"`
-	Content            string `gorm:"type:text;not null;default:''"`
-	ContentHash        string `gorm:"type:text;not null;default:''"`
-	ContentType        string `gorm:"type:text;not null;default:''"`
-	FetchedAtMS        int64  `gorm:"not null;default:0"`
-	ETag               string `gorm:"column:etag;type:text;not null;default:''"`
-	LastModified       string `gorm:"type:text;not null;default:''"`
-	ReconcilerRevision string `gorm:"type:text;not null;default:''"`
-	CreatedAtMS        int64  `gorm:"not null"`
-	UpdatedAtMS        int64  `gorm:"not null"`
-}
-
-func (knowledgeDocumentSchema) TableName() string { return "knowledge_documents" }
 
 type secretValueSchema struct {
 	Namespace   string `gorm:"type:text;primaryKey"`
@@ -264,27 +261,6 @@ type socialMemoryEntrySchema struct {
 
 func (socialMemoryEntrySchema) TableName() string { return "social_memory_entries" }
 
-type feedbackEventSchema struct {
-	ID               string  `gorm:"type:text;primaryKey;index:feedback_events_claim,priority:5"`
-	Type             string  `gorm:"type:text;not null;index:feedback_events_claim,priority:1"`
-	ConversationID   string  `gorm:"type:text;not null;index:feedback_events_scope,priority:1"`
-	TurnID           string  `gorm:"type:text;not null;index:feedback_events_scope,priority:2"`
-	CharacterID      string  `gorm:"type:text;not null;index:feedback_events_scope,priority:3"`
-	PayloadJSON      []byte  `gorm:"type:jsonb;not null;check:feedback_events_invariants_check,(type IN ('personal_memory', 'web_knowledge', 'social_learning', 'social_reply_feedback')) AND (jsonb_typeof(payload_json) = 'object') AND (status IN ('waiting_turn', 'pending', 'running', 'succeeded', 'failed', 'dropped')) AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms >= 0) AND (attempt_count >= 0) AND (next_attempt_at_ms >= 0) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms) AND ((lease_owner IS NULL) = (lease_expires_at_ms IS NULL)) AND ((status = 'running') = (lease_owner IS NOT NULL)) AND ((status = 'running') = (claim_group_id IS NOT NULL))"`
-	Status           string  `gorm:"type:text;not null;index:feedback_events_claim,priority:2"`
-	LeaseOwner       *string `gorm:"type:text"`
-	LeaseExpiresAtMS *int64
-	ClaimGroupID     *string `gorm:"type:text;index:feedback_events_group"`
-	AttemptCount     int     `gorm:"type:integer;not null;default:0"`
-	NextAttemptAtMS  int64   `gorm:"not null;default:0;index:feedback_events_claim,priority:3"`
-	ErrorCategory    *string `gorm:"type:text"`
-	ErrorMessage     *string `gorm:"type:text"`
-	CreatedAtMS      int64   `gorm:"not null"`
-	UpdatedAtMS      int64   `gorm:"not null;index:feedback_events_claim,priority:4"`
-}
-
-func (feedbackEventSchema) TableName() string { return "feedback_events" }
-
 type schemaState struct {
 	ID       int16  `gorm:"primaryKey;check:fairy_schema_state_invariants_check,id = 1"`
 	Revision string `gorm:"type:text;not null"`
@@ -306,12 +282,10 @@ func schemaModels() []any {
 		&contextWindowSchema{},
 		&personalMemorySchema{},
 		&knowledgeEntrySchema{},
-		&knowledgeDocumentSchema{},
 		&secretValueSchema{},
 		&endpointConversationSchema{},
 		&ownerIdentitySchema{},
 		&socialMemoryEntrySchema{},
-		&feedbackEventSchema{},
 		&schemaState{},
 	}
 }

@@ -650,9 +650,7 @@ func (e *TurnEngine) submitCompiledTurn(
 								if batchErr != nil {
 									return fail("MODEL_RESPONSE_INVALID", batchErr)
 								}
-								if err := s.persistKnowledgeIngestTasks(batch); err != nil {
-									return fail("KNOWLEDGE_INGEST_PERSIST_FAILED", err)
-								}
+								gathered.knowledgeTasks = append(gathered.knowledgeTasks, memoryKnowledgeIngestTasks(batch)...)
 								extra := retrievalFromWebSearchBatch(batch)
 								retrieval = mergeRetrievalContext(retrieval, extra)
 								s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, turnStatePlanning, "", map[string]any{

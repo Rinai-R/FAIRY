@@ -465,10 +465,6 @@ func (m *participationMemory) ListSocialPersonNotes(context.Context, string, str
 	return nil, nil
 }
 
-func (m *participationMemory) RecentSocialFeedbackSummary(context.Context, string, string) (memory.RecentSocialFeedbackSummary, error) {
-	return memory.RecentSocialFeedbackSummary{}, nil
-}
-
 func participationMemoryPorts(store *participationMemory) memoryPorts {
 	return memoryPorts{
 		ambient: ambientMemoryPorts{

@@ -20,9 +20,6 @@ func (s *Server) registerIntelligenceRoutes() {
 	v1.DELETE("/memories/personal/:id", s.handleTombstonePersonalMemory)
 	v1.GET("/knowledge", s.handleKnowledge)
 	v1.DELETE("/knowledge/:id", s.handleTombstoneKnowledge)
-	v1.GET("/knowledge/jobs", s.handleKnowledgeJobs)
-	v1.POST("/knowledge/jobs/:id/retry", s.handleRetryKnowledgeJob)
-	v1.POST("/knowledge/jobs/:id/drop", s.handleDropKnowledgeJob)
 }
 
 func (s *Server) handleKnowledge(ctx context.Context, c *app.RequestContext) {
@@ -36,34 +33,6 @@ func (s *Server) handleKnowledge(ctx context.Context, c *app.RequestContext) {
 
 func (s *Server) handleTombstoneKnowledge(ctx context.Context, c *app.RequestContext) {
 	if err := s.rt.Memory.TombstoneKnowledge(c.Param("id")); err != nil {
-		writeErr(c, http.StatusBadRequest, err)
-		return
-	}
-	c.JSON(http.StatusOK, map[string]any{"ok": true})
-}
-
-func (s *Server) handleKnowledgeJobs(ctx context.Context, c *app.RequestContext) {
-	records, err := s.rt.Memory.KnowledgeIngestJobs(string(c.Query("status")))
-	if err != nil {
-		writeErr(c, http.StatusBadRequest, err)
-		return
-	}
-	c.JSON(http.StatusOK, map[string]any{"jobs": records})
-}
-
-func (s *Server) handleRetryKnowledgeJob(ctx context.Context, c *app.RequestContext) {
-	if err := s.rt.Memory.RetryKnowledgeIngestJob(c.Param("id")); err != nil {
-		writeErr(c, http.StatusBadRequest, err)
-		return
-	}
-	if s.rt.Companion != nil {
-		s.rt.Companion.WakeKnowledgeIngest()
-	}
-	c.JSON(http.StatusOK, map[string]any{"ok": true})
-}
-
-func (s *Server) handleDropKnowledgeJob(ctx context.Context, c *app.RequestContext) {
-	if err := s.rt.Memory.DropKnowledgeIngestJob(c.Param("id")); err != nil {
 		writeErr(c, http.StatusBadRequest, err)
 		return
 	}

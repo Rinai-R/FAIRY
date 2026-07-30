@@ -139,7 +139,7 @@ func TestProductionPersonalMemoryContentLimitReturnsBadRequest(t *testing.T) {
 	}
 }
 
-func TestProductionKnowledgeManagementRoutesRequireAuthAndReturnCatalogs(t *testing.T) {
+func TestProductionKnowledgeManagementRouteRequiresAuthAndRemovedJobsRouteStaysAbsent(t *testing.T) {
 	databaseURL, cleanup := isolatedAPISchema(t)
 	defer cleanup()
 	masterKey := base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789"))
@@ -152,7 +152,7 @@ func TestProductionKnowledgeManagementRoutesRequireAuthAndReturnCatalogs(t *test
 	t.Cleanup(func() { _ = rt.Close() })
 	baseURL, token := startProductionAPIServer(t, rt)
 
-	unauthorized, err := http.Get(baseURL + "/v1/knowledge/jobs")
+	unauthorized, err := http.Get(baseURL + "/v1/knowledge")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,13 +160,16 @@ func TestProductionKnowledgeManagementRoutesRequireAuthAndReturnCatalogs(t *test
 	if unauthorized.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("unauthorized status=%d", unauthorized.StatusCode)
 	}
-	for _, path := range []string{"/v1/knowledge", "/v1/knowledge/jobs"} {
-		response := doRequest(t, http.MethodGet, baseURL+path, token)
-		body, err := io.ReadAll(response.Body)
-		response.Body.Close()
-		if err != nil || response.StatusCode != http.StatusOK {
-			t.Fatalf("%s status=%d body=%s err=%v", path, response.StatusCode, body, err)
-		}
+	response := doRequest(t, http.MethodGet, baseURL+"/v1/knowledge", token)
+	body, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("/v1/knowledge status=%d body=%s err=%v", response.StatusCode, body, err)
+	}
+	removed := doRequest(t, http.MethodGet, baseURL+"/v1/knowledge/jobs", token)
+	removed.Body.Close()
+	if removed.StatusCode != http.StatusNotFound {
+		t.Fatalf("removed /v1/knowledge/jobs status=%d, want 404", removed.StatusCode)
 	}
 }
 

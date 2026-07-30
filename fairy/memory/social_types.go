@@ -85,17 +85,6 @@ type SocialReplyFeedback struct {
 	CreatedAtUnixMS      int64
 }
 
-type RecentSocialFeedbackSummary struct {
-	SampleCount          int
-	PositiveCount        int
-	NegativeCount        int
-	UnknownCount         int
-	ObservedMessageCount int
-	LatestOutcome        string
-}
-
-func (s RecentSocialFeedbackSummary) Empty() bool { return s.SampleCount == 0 }
-
 func ValidSocialMemoryKind(kind string) bool {
 	return kind == SocialMemoryEpisode || kind == SocialMemoryExpression || kind == SocialMemoryBehavior
 }

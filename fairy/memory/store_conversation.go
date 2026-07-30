@@ -221,10 +221,10 @@ func (s *Store) beginInitiationTurnPostgres(ctx context.Context, conversationID 
 }
 
 func (s *Store) completeTurnPostgres(ctx context.Context, conversationID string, turnID string, assistantMessage string) (MessageRecord, error) {
-	return s.completeExpressionTurnPostgres(ctx, conversationID, turnID, assistantMessage, nil)
+	return s.completeExpressionTurnPostgres(ctx, conversationID, turnID, assistantMessage, nil, true)
 }
 
-func (s *Store) completeExpressionTurnPostgres(ctx context.Context, conversationID string, turnID string, assistantMessage string, parts []ExpressionPart) (MessageRecord, error) {
+func (s *Store) completeExpressionTurnPostgres(ctx context.Context, conversationID string, turnID string, assistantMessage string, parts []ExpressionPart, extractionEligible bool) (MessageRecord, error) {
 	if err := ValidateID("conversation_id", conversationID); err != nil {
 		return MessageRecord{}, err
 	}
@@ -255,7 +255,7 @@ func (s *Store) completeExpressionTurnPostgres(ctx context.Context, conversation
 		return MessageRecord{}, err
 	}
 	messageID := newID()
-	if err := CompleteTurn(queryCtx, tx, turnID, conversationID, messageID, assistantMessage, partsJSON, messageSequence, now); err != nil {
+	if err := CompleteTurn(queryCtx, tx, turnID, conversationID, messageID, assistantMessage, partsJSON, messageSequence, now, extractionEligible); err != nil {
 		return MessageRecord{}, err
 	}
 	if err := TouchConversation(queryCtx, tx, conversationID, now); err != nil {

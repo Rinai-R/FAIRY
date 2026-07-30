@@ -133,30 +133,6 @@ func (s *MemoryService) TombstoneKnowledge(id string) error {
 	return store.TombstoneKnowledge(id)
 }
 
-func (s *MemoryService) KnowledgeIngestJobs(status string) ([]KnowledgeIngestJobRecord, error) {
-	store, err := s.openStore()
-	if err != nil {
-		return nil, err
-	}
-	return store.KnowledgeIngestJobs(status)
-}
-
-func (s *MemoryService) RetryKnowledgeIngestJob(id string) error {
-	store, err := s.openStore()
-	if err != nil {
-		return err
-	}
-	return store.RetryKnowledgeIngestJob(id)
-}
-
-func (s *MemoryService) DropKnowledgeIngestJob(id string) error {
-	store, err := s.openStore()
-	if err != nil {
-		return err
-	}
-	return store.DropKnowledgeIngestJob(id)
-}
-
 func (s *MemoryService) ExtractionBatchCatalog(characterID string) (ExtractionBatchCatalog, error) {
 	store, err := s.openStore()
 	if err != nil {

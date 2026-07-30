@@ -370,8 +370,9 @@ func CompleteTurn(
 	turnID, conversationID, messageID, assistantMessage string,
 	expressionPartsJSON []byte,
 	messageSequence, now int64,
+	extractionEligible bool,
 ) error {
-	changed, err := tx.Exec(ctx, "UPDATE conversation_turns SET status = 'completed', extraction_state = CASE WHEN origin = 'desktop_initiation' THEN 'ineligible' ELSE 'pending' END, updated_at_ms = $3 WHERE id = $1 AND conversation_id = $2 AND status IN ('interpreting', 'planning', 'responding')", turnID, conversationID, now)
+	changed, err := tx.Exec(ctx, "UPDATE conversation_turns SET status = 'completed', extraction_state = CASE WHEN origin = 'desktop_initiation' OR NOT $4 THEN 'ineligible' ELSE 'pending' END, updated_at_ms = $3 WHERE id = $1 AND conversation_id = $2 AND status IN ('interpreting', 'planning', 'responding')", turnID, conversationID, now, extractionEligible)
 	if err != nil {
 		return fmt.Errorf("updating turn completion: %w", err)
 	}

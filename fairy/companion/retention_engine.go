@@ -14,10 +14,9 @@ import (
 )
 
 const (
-	knowledgeIngestClaimLimit = 1
-	knowledgeIngestPoll       = 2 * time.Second
 	retentionJobCapacity      = 8
 	retentionIdleCapacity     = 256
+	knowledgeLearningCapacity = 32
 )
 
 var (
@@ -25,34 +24,26 @@ var (
 	errRetentionOverloaded = errors.New("retention background capacity exhausted")
 )
 
-type transientKnowledgeIngestError struct {
-	category string
-	err      error
-}
-
-func (e transientKnowledgeIngestError) Error() string { return e.err.Error() }
-func (e transientKnowledgeIngestError) Unwrap() error { return e.err }
-
 type retentionIdleTimer struct {
 	owner  uint64
 	cancel context.CancelFunc
 }
 
 type retentionEngine struct {
-	service       *CompanionService
-	closed        atomic.Bool
-	jobs          atomic.Int64
-	admission     sync.Mutex
-	slots         chan struct{}
-	wg            sync.WaitGroup
-	idleMu        sync.Mutex
-	idle          map[string]retentionIdleTimer
-	idleCapacity  int
-	idleOwner     uint64
-	closeOnce     sync.Once
-	knowledgeWake chan struct{}
-	workerCtx     context.Context
-	workerCancel  context.CancelFunc
+	service        *CompanionService
+	closed         atomic.Bool
+	jobs           atomic.Int64
+	admission      sync.Mutex
+	slots          chan struct{}
+	wg             sync.WaitGroup
+	idleMu         sync.Mutex
+	idle           map[string]retentionIdleTimer
+	idleCapacity   int
+	idleOwner      uint64
+	closeOnce      sync.Once
+	knowledgeQueue chan memory.KnowledgeIngestTask
+	workerCtx      context.Context
+	workerCancel   context.CancelFunc
 }
 
 func newRetentionEngine(service *CompanionService) *retentionEngine {
@@ -68,13 +59,13 @@ func newRetentionEngineWithCapacity(service *CompanionService, jobCapacity, idle
 	}
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	return &retentionEngine{
-		service:       service,
-		slots:         make(chan struct{}, jobCapacity),
-		idle:          make(map[string]retentionIdleTimer),
-		idleCapacity:  idleCapacity,
-		knowledgeWake: make(chan struct{}, 1),
-		workerCtx:     workerCtx,
-		workerCancel:  workerCancel,
+		service:        service,
+		slots:          make(chan struct{}, jobCapacity),
+		idle:           make(map[string]retentionIdleTimer),
+		idleCapacity:   idleCapacity,
+		knowledgeQueue: make(chan memory.KnowledgeIngestTask, knowledgeLearningCapacity),
+		workerCtx:      workerCtx,
+		workerCancel:   workerCancel,
 	}
 }
 
@@ -85,84 +76,33 @@ func (e *retentionEngine) start() {
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
-		ticker := time.NewTicker(knowledgeIngestPoll)
-		defer ticker.Stop()
-		e.drainKnowledgeIngest()
 		for {
 			select {
 			case <-e.workerCtx.Done():
 				return
-			case <-e.knowledgeWake:
-				e.drainKnowledgeIngest()
-			case <-ticker.C:
-				e.drainKnowledgeIngest()
+			case task := <-e.knowledgeQueue:
+				if err := e.executeKnowledgeIngestTaskContext(e.workerCtx, e.service.memory.retention.knowledge, task); err != nil {
+					if e.workerCtx.Err() != nil && errors.Is(err, e.workerCtx.Err()) {
+						return
+					}
+					e.service.setBackgroundError(err)
+					continue
+				}
+				e.service.clearBackgroundError()
 			}
 		}
 	}()
 }
 
-func (e *retentionEngine) wakeKnowledgeIngest() {
+func (e *retentionEngine) admitKnowledgeTasks(tasks []memory.KnowledgeIngestTask) {
 	if e == nil || e.closed.Load() {
 		return
 	}
-	select {
-	case e.knowledgeWake <- struct{}{}:
-	default:
-	}
-}
-
-func (e *retentionEngine) drainKnowledgeIngest() {
-	if e == nil || e.closed.Load() || e.service == nil {
-		return
-	}
-	store := e.service.memory.retention.knowledge
-	leaseStore := e.service.memory.retention.knowledgeLease
-	if store == nil || leaseStore == nil {
-		return
-	}
-	if ready, ok := store.(interface{ KnowledgeIngestReady() bool }); ok && !ready.KnowledgeIngestReady() {
-		return
-	}
-	for {
-		claims, err := store.ClaimKnowledgeIngestTasksContext(e.workerCtx, knowledgeIngestClaimLimit)
-		if err != nil {
-			if workerErr := e.workerCtx.Err(); workerErr != nil && errors.Is(err, workerErr) {
-				return
-			}
-			e.service.setBackgroundError(err)
-			return
-		}
-		if len(claims) == 0 {
-			return
-		}
-		for _, claim := range claims {
-			if e.closed.Load() {
-				return
-			}
-			if err := e.runKnowledgeIngestClaim(store, leaseStore, claim); err != nil {
-				if workerErr := e.workerCtx.Err(); workerErr != nil && errors.Is(err, workerErr) {
-					if releaseErr := leaseStore.ReleaseClaimedKnowledgeIngestJob(claim.JobID); releaseErr != nil {
-						e.service.setBackgroundError(errors.Join(err, releaseErr))
-					}
-					return
-				}
-				var transient transientKnowledgeIngestError
-				if errors.As(err, &transient) {
-					if retryErr := store.RetryClaimedKnowledgeIngestJob(claim.JobID, transient.category, err.Error()); retryErr != nil {
-						e.service.setBackgroundError(errors.Join(err, retryErr))
-					} else {
-						e.service.setBackgroundError(err)
-					}
-					continue
-				}
-				if failErr := store.FailClaimedKnowledgeIngestJob(claim.JobID, err.Error()); failErr != nil {
-					e.service.setBackgroundError(errors.Join(err, failErr))
-					continue
-				}
-				e.service.setBackgroundError(err)
-				continue
-			}
-			e.service.clearBackgroundError()
+	for _, task := range tasks {
+		select {
+		case e.knowledgeQueue <- task:
+		default:
+			e.service.setBackgroundError(errRetentionOverloaded)
 		}
 	}
 }
@@ -337,7 +277,7 @@ func (e *retentionEngine) executeExtractionBatch(store extractionStore, batch *m
 		Input: input, CacheInput: &cacheInput,
 	})
 	if err != nil {
-		return transientKnowledgeIngestError{category: "model_provider", err: err}
+		return err
 	}
 	output, err := parseMemoryMutationOutput(model.CollectTextFromEvents(events))
 	if err != nil {
@@ -351,56 +291,7 @@ func (e *retentionEngine) executeExtractionBatch(store extractionStore, batch *m
 	return err
 }
 
-func (e *retentionEngine) runKnowledgeIngestClaim(store knowledgeIngestStore, leaseStore knowledgeIngestLeaseStore, claim memory.KnowledgeIngestClaim) error {
-	leaseDuration := leaseStore.KnowledgeIngestLeaseDuration()
-	if leaseDuration <= 0 {
-		return errors.New("knowledge ingest lease duration is invalid")
-	}
-	renewInterval := leaseDuration / 3
-	if renewInterval <= 0 {
-		renewInterval = leaseDuration
-	}
-	claimCtx, cancel := context.WithCancel(e.workerCtx)
-	renewalDone := make(chan error, 1)
-	go func() {
-		timer := time.NewTimer(renewInterval)
-		defer timer.Stop()
-		for {
-			select {
-			case <-claimCtx.Done():
-				renewalDone <- nil
-				return
-			case <-timer.C:
-				if err := leaseStore.RenewKnowledgeIngestLeaseContext(claimCtx, claim.JobID); err != nil {
-					if claimCtx.Err() != nil {
-						renewalDone <- nil
-						return
-					}
-					cancel()
-					renewalDone <- transientKnowledgeIngestError{category: "lease_renewal", err: err}
-					return
-				}
-				timer.Reset(renewInterval)
-			}
-		}
-	}()
-	executionErr := e.executeKnowledgeIngestClaimContext(claimCtx, store, claim)
-	cancel()
-	renewalErr := <-renewalDone
-	if executionErr == nil {
-		return nil
-	}
-	if renewalErr != nil {
-		return renewalErr
-	}
-	return executionErr
-}
-
-func (e *retentionEngine) executeKnowledgeIngestClaim(store knowledgeIngestStore, claim memory.KnowledgeIngestClaim) error {
-	return e.executeKnowledgeIngestClaimContext(e.workerCtx, store, claim)
-}
-
-func (e *retentionEngine) executeKnowledgeIngestClaimContext(ctx context.Context, store knowledgeIngestStore, claim memory.KnowledgeIngestClaim) error {
+func (e *retentionEngine) executeKnowledgeIngestTaskContext(ctx context.Context, store knowledgeIngestStore, task memory.KnowledgeIngestTask) error {
 	if e == nil || e.service == nil {
 		return errRetentionClosed
 	}
@@ -410,24 +301,14 @@ func (e *retentionEngine) executeKnowledgeIngestClaimContext(ctx context.Context
 	if e.service.knowledgeDocuments == nil {
 		return errors.New("knowledge document fetcher is unavailable")
 	}
-	document, err := e.service.knowledgeDocuments.FetchSource(ctx, claim.Task.Source)
+	document, err := e.service.knowledgeDocuments.FetchSource(ctx, task.Source)
 	if err != nil {
-		if errors.Is(err, errKnowledgeFetchTransient) {
-			return transientKnowledgeIngestError{category: "document_fetch", err: err}
-		}
 		return err
 	}
 	document.ReconcilerRevision = knowledgeReconcilerRevision(
 		persona.KnowledgeReconcileInstructions,
 		knowledgeAgentContractRevision,
 	)
-	needsExtraction, err := store.KnowledgeDocumentNeedsExtractionContext(ctx, claim.JobID, claim.Task.ID, document)
-	if err != nil {
-		return transientKnowledgeIngestError{category: "document_state", err: err}
-	}
-	if !needsExtraction {
-		return nil
-	}
 	configSource := e.service.configSource()
 	if configSource == nil {
 		return ErrTurnRuntimeUnavailable
@@ -443,18 +324,18 @@ func (e *retentionEngine) executeKnowledgeIngestClaimContext(ctx context.Context
 	); err != nil {
 		return err
 	}
-	input, err := buildKnowledgeAgentInput(claim.Task, document)
+	input, err := buildKnowledgeAgentInput(task, document)
 	if err != nil {
 		return err
 	}
 	cacheKey := ""
 	if connection.Capabilities.PromptCacheKey {
-		cacheKey = model.LaneCacheKey(claim.Task.ConversationID, model.PromptLaneKnowledgeReconcile)
+		cacheKey = model.LaneCacheKey(task.ConversationID, model.PromptLaneKnowledgeReconcile)
 	}
 	cacheInput := model.NewCacheKeyInput(
 		model.PromptLaneKnowledgeReconcile,
 		connection.Model,
-		claim.Task.ConversationID,
+		task.ConversationID,
 		persona.KnowledgeReconcileInstructions,
 	)
 	modelPort := e.service.modelPort()
@@ -484,16 +365,16 @@ func (e *retentionEngine) executeKnowledgeIngestClaimContext(ctx context.Context
 			CacheInput: &cacheInput,
 		})
 		if err != nil {
-			return transientKnowledgeIngestError{category: "model_provider", err: err}
+			return err
 		}
 		usage := model.LaneUsageFromEvents(model.PromptLaneKnowledgeReconcile, events, 0)
 		e.service.appendRuntimeLedger(
-			claim.Task.ConversationID,
-			claim.Task.TurnID,
+			task.ConversationID,
+			task.TurnID,
 			runtimeLedgerEventModel,
 			turnStateCompleted,
 			"",
-			runtimeKnowledgeIngestLedgerMetadata(events, usage, claim.Task.ID),
+			runtimeKnowledgeIngestLedgerMetadata(events, usage, task.ID),
 		)
 		calls := model.FunctionCallsFromEvents(events)
 		text := model.CollectTextFromEvents(events)
@@ -519,7 +400,7 @@ func (e *retentionEngine) executeKnowledgeIngestClaimContext(ctx context.Context
 				}
 				candidates, err := store.SearchKnowledgeForIngestContext(ctx, query, memory.MaxKnowledgeSearchCandidates)
 				if err != nil {
-					return transientKnowledgeIngestError{category: "knowledge_search", err: err}
+					return err
 				}
 				toolItems, err := buildKnowledgeSearchToolItems(call, candidates, aliases)
 				if err != nil {
@@ -539,13 +420,12 @@ func (e *retentionEngine) executeKnowledgeIngestClaimContext(ctx context.Context
 		}
 		if _, err := store.CommitKnowledgeDocumentActionsContext(
 			ctx,
-			claim.JobID,
-			claim.Task.ID,
+			task,
 			document,
 			aliases.suppliedIDs(),
 			actions,
 		); err != nil {
-			return transientKnowledgeIngestError{category: "document_commit", err: err}
+			return err
 		}
 		return nil
 	}

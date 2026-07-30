@@ -61,6 +61,8 @@ func TestMigrateAndVerifySchemaIntegration(t *testing.T) {
 	assertRegclass(t, ctx, pool, "fairy_schema_migrations", false)
 	assertRegclass(t, ctx, pool, "sqlite_import_runs", false)
 	for _, table := range []string{
+		"feedback_events",
+		"knowledge_documents",
 		"personal_memory_evidence",
 		"social_reply_feedback",
 		"social_person_notes",
@@ -76,16 +78,15 @@ func TestMigrateAndVerifySchemaIntegration(t *testing.T) {
 	}
 	for _, column := range [][2]string{
 		{"knowledge_entries", "confidence_basis_points"},
-		{"feedback_events", "attempt_count"},
+		{"conversation_turns", "extraction_attempt_count"},
 		{"secret_values", "key_version"},
 	} {
 		assertColumnType(t, ctx, pool, column[0], column[1], "integer")
 	}
 	assertColumnType(t, ctx, pool, "personal_memories", "evidence_ids_json", "jsonb")
-	assertColumnType(t, ctx, pool, "knowledge_documents", "content", "text")
-	assertColumnType(t, ctx, pool, "knowledge_documents", "reconciler_revision", "text")
+	assertColumnType(t, ctx, pool, "knowledge_entries", "source_url", "text")
+	assertColumnType(t, ctx, pool, "knowledge_entries", "source_content_hash", "text")
 	assertColumnType(t, ctx, pool, "knowledge_entries", "evidence_text", "text")
-	assertColumnType(t, ctx, pool, "feedback_events", "payload_json", "jsonb")
 
 	var hasTrgm bool
 	if err := pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')").Scan(&hasTrgm); err != nil {
@@ -137,6 +138,41 @@ func TestMigrateProjectsAndDropsLegacyMemoryKnowledgeSchemaIntegration(t *testin
 		t.Fatalf("open GORM: %v", err)
 	}
 	defer closeDB()
+	if _, err := pool.Exec(ctx, `
+CREATE TABLE knowledge_documents (
+  id text PRIMARY KEY,
+  canonical_url text NOT NULL UNIQUE,
+  title text NOT NULL DEFAULT '',
+  content text NOT NULL DEFAULT '',
+  content_hash text NOT NULL DEFAULT '',
+  content_type text NOT NULL DEFAULT '',
+  fetched_at_ms bigint NOT NULL DEFAULT 0,
+  etag text NOT NULL DEFAULT '',
+  last_modified text NOT NULL DEFAULT '',
+  reconciler_revision text NOT NULL DEFAULT '',
+  created_at_ms bigint NOT NULL,
+  updated_at_ms bigint NOT NULL
+);
+CREATE TABLE feedback_events (
+  id text PRIMARY KEY,
+  type text NOT NULL,
+  conversation_id text NOT NULL,
+  turn_id text NOT NULL,
+  character_id text NOT NULL,
+  payload_json jsonb NOT NULL,
+  status text NOT NULL,
+  lease_owner text,
+  lease_expires_at_ms bigint,
+  claim_group_id text,
+  attempt_count integer NOT NULL DEFAULT 0,
+  next_attempt_at_ms bigint NOT NULL DEFAULT 0,
+  error_category text,
+  error_message text,
+  created_at_ms bigint NOT NULL,
+  updated_at_ms bigint NOT NULL
+)`); err != nil {
+		t.Fatalf("create previous intermediate tables: %v", err)
+	}
 	if err := db.WithContext(ctx).AutoMigrate(
 		&personalMemoryEvidenceSchema{},
 		&knowledgeSourceSchema{},
@@ -156,6 +192,7 @@ ALTER TABLE knowledge_documents
   ADD COLUMN current_version_id text,
   ADD COLUMN current_content_hash text;
 ALTER TABLE knowledge_entries
+  ADD COLUMN document_id text,
   ADD COLUMN subject text,
   ADD COLUMN predicate text,
   ADD COLUMN value text,
@@ -229,6 +266,7 @@ INSERT INTO knowledge_ingest_jobs(
 		t.Fatalf("Migrate(legacy schema) error = %v", err)
 	}
 	for _, table := range []string{
+		"feedback_events", "knowledge_documents",
 		"personal_memory_evidence", "social_reply_feedback", "social_person_notes",
 		"knowledge_sources", "knowledge_document_versions", "knowledge_chunks",
 		"knowledge_evidence", "extraction_batches", "extraction_batch_turns",
@@ -250,40 +288,150 @@ INSERT INTO knowledge_ingest_jobs(
 	if note != "偏好短回复" {
 		t.Fatalf("social note = %q", note)
 	}
-	var content, contentHash, revision string
+	var sourceURL, sourceHash, revision, evidence string
 	if err := pool.QueryRow(ctx, `
-SELECT content, content_hash, reconciler_revision
-FROM knowledge_documents WHERE id = 'legacy-document'
-`).Scan(&content, &contentHash, &revision); err != nil {
-		t.Fatalf("read projected document: %v", err)
-	}
-	if content != "完整旧正文" || contentHash != strings.Repeat("a", 64) || revision != strings.Repeat("b", 64) {
-		t.Fatalf("projected document = (%q, %q, %q)", content, contentHash, revision)
-	}
-	var documentID, evidence string
-	if err := pool.QueryRow(ctx, `
-SELECT document_id, evidence_text FROM knowledge_entries WHERE id = 'legacy-knowledge'
-`).Scan(&documentID, &evidence); err != nil {
+SELECT source_url, source_content_hash, reconciler_revision, evidence_text
+FROM knowledge_entries WHERE id = 'legacy-knowledge'
+`).Scan(&sourceURL, &sourceHash, &revision, &evidence); err != nil {
 		t.Fatalf("read projected knowledge: %v", err)
 	}
-	if documentID != "legacy-document" || evidence != "完整旧正文" {
-		t.Fatalf("projected knowledge = (%q, %q)", documentID, evidence)
+	if sourceURL != "https://legacy.example/document" ||
+		sourceHash != strings.Repeat("a", 64) ||
+		revision != strings.Repeat("b", 64) ||
+		evidence != "完整旧正文" {
+		t.Fatalf("projected knowledge = (%q, %q, %q, %q)", sourceURL, sourceHash, revision, evidence)
 	}
-	var personalEvents, webEvents int
+	var extractionState string
+	var extractionAttempts int
 	if err := pool.QueryRow(ctx, `
-SELECT
-  count(*) FILTER (WHERE type = 'personal_memory'),
-  count(*) FILTER (WHERE type = 'web_knowledge')
-FROM feedback_events
-`).Scan(&personalEvents, &webEvents); err != nil {
-		t.Fatalf("count projected feedback events: %v", err)
+SELECT extraction_state, extraction_attempt_count
+FROM conversation_turns
+WHERE id = 'legacy-turn'
+`).Scan(&extractionState, &extractionAttempts); err != nil {
+		t.Fatalf("read projected extraction state: %v", err)
 	}
-	if personalEvents != 1 || webEvents != 1 {
-		t.Fatalf("feedback events = personal:%d web:%d", personalEvents, webEvents)
+	if extractionState != "pending" || extractionAttempts != 0 {
+		t.Fatalf("projected extraction = state:%q attempts:%d", extractionState, extractionAttempts)
 	}
 	if err := Migrate(ctx, pool); err != nil {
 		t.Fatalf("repeat Migrate() error = %v", err)
 	}
+}
+
+func TestMigrateCleansIndependentlyRemainingCognitiveIntermediatesIntegration(t *testing.T) {
+	t.Run("knowledge document without feedback table", func(t *testing.T) {
+		ctx := t.Context()
+		pool := openIsolatedPool(t, ctx)
+		defer pool.Close()
+		if err := Migrate(ctx, pool); err != nil {
+			t.Fatalf("Migrate() error = %v", err)
+		}
+		if _, err := pool.Exec(ctx, `
+CREATE TABLE knowledge_documents (
+  id text PRIMARY KEY,
+  canonical_url text NOT NULL UNIQUE,
+  title text NOT NULL DEFAULT '',
+  content text NOT NULL DEFAULT '',
+  content_hash text NOT NULL DEFAULT '',
+  content_type text NOT NULL DEFAULT '',
+  fetched_at_ms bigint NOT NULL DEFAULT 0,
+  etag text NOT NULL DEFAULT '',
+  last_modified text NOT NULL DEFAULT '',
+  reconciler_revision text NOT NULL DEFAULT '',
+  created_at_ms bigint NOT NULL,
+  updated_at_ms bigint NOT NULL
+);
+ALTER TABLE knowledge_entries ADD COLUMN document_id text;
+INSERT INTO conversations(id, character_id, created_at_ms, updated_at_ms)
+VALUES ('partial-document-conversation', 'character', 1, 1);
+INSERT INTO conversation_turns(id, conversation_id, sequence, status, origin, extraction_state, created_at_ms, updated_at_ms)
+VALUES ('partial-document-turn', 'partial-document-conversation', 1, 'completed', 'user', 'processed', 1, 1);
+INSERT INTO knowledge_documents(
+  id, canonical_url, title, content, content_hash, content_type,
+  fetched_at_ms, etag, last_modified, reconciler_revision, created_at_ms, updated_at_ms
+) VALUES (
+  'partial-document', 'https://partial.example/document', 'Partial', '正文',
+  repeat('a', 64), 'text/plain', 2, '"etag"', 'today', repeat('b', 64), 1, 2
+);
+INSERT INTO knowledge_entries(
+  id, topic, statement, status, verification_basis, confidence_basis_points,
+  source_conversation_id, source_turn_id, document_id, evidence_text, created_at_ms, updated_at_ms
+) VALUES (
+  'partial-document-knowledge', '主题', '知识', 'verified', 'web', 9000,
+  'partial-document-conversation', 'partial-document-turn', 'partial-document', '正文', 2, 2
+)`); err != nil {
+			t.Fatalf("prepare independently remaining document table: %v", err)
+		}
+		if err := Migrate(ctx, pool); err != nil {
+			t.Fatalf("Migrate(partial document) error = %v", err)
+		}
+		assertRegclass(t, ctx, pool, "knowledge_documents", false)
+		assertColumnAbsent(t, ctx, pool, "knowledge_entries", "document_id")
+		var sourceURL string
+		if err := pool.QueryRow(ctx, "SELECT source_url FROM knowledge_entries WHERE id = 'partial-document-knowledge'").Scan(&sourceURL); err != nil {
+			t.Fatalf("read projected source URL: %v", err)
+		}
+		if sourceURL != "https://partial.example/document" {
+			t.Fatalf("projected source URL = %q", sourceURL)
+		}
+	})
+
+	t.Run("feedback table without knowledge document", func(t *testing.T) {
+		ctx := t.Context()
+		pool := openIsolatedPool(t, ctx)
+		defer pool.Close()
+		if err := Migrate(ctx, pool); err != nil {
+			t.Fatalf("Migrate() error = %v", err)
+		}
+		if _, err := pool.Exec(ctx, `
+CREATE TABLE feedback_events (
+  id text PRIMARY KEY,
+  type text NOT NULL,
+  conversation_id text NOT NULL,
+  turn_id text NOT NULL,
+  character_id text NOT NULL,
+  payload_json jsonb NOT NULL,
+  status text NOT NULL,
+  lease_owner text,
+  lease_expires_at_ms bigint,
+  claim_group_id text,
+  attempt_count integer NOT NULL DEFAULT 0,
+  next_attempt_at_ms bigint NOT NULL DEFAULT 0,
+  error_category text,
+  error_message text,
+  created_at_ms bigint NOT NULL,
+  updated_at_ms bigint NOT NULL
+);
+INSERT INTO conversations(id, character_id, created_at_ms, updated_at_ms)
+VALUES ('partial-feedback-conversation', 'character', 1, 1);
+INSERT INTO conversation_turns(id, conversation_id, sequence, status, origin, extraction_state, created_at_ms, updated_at_ms)
+VALUES ('partial-feedback-turn', 'partial-feedback-conversation', 1, 'completed', 'user', 'processed', 1, 1);
+INSERT INTO feedback_events(
+  id, type, conversation_id, turn_id, character_id, payload_json, status,
+  attempt_count, next_attempt_at_ms, created_at_ms, updated_at_ms
+) VALUES (
+  'partial-feedback', 'personal_memory', 'partial-feedback-conversation',
+  'partial-feedback-turn', 'character', '{}'::jsonb, 'pending', 1, 7, 1, 2
+)`); err != nil {
+			t.Fatalf("prepare independently remaining feedback table: %v", err)
+		}
+		if err := Migrate(ctx, pool); err != nil {
+			t.Fatalf("Migrate(partial feedback) error = %v", err)
+		}
+		assertRegclass(t, ctx, pool, "feedback_events", false)
+		var state string
+		var attempts int
+		var nextAttempt int64
+		if err := pool.QueryRow(ctx, `
+SELECT extraction_state, extraction_attempt_count, extraction_next_attempt_at_ms
+FROM conversation_turns
+WHERE id = 'partial-feedback-turn'`).Scan(&state, &attempts, &nextAttempt); err != nil {
+			t.Fatalf("read recovered extraction state: %v", err)
+		}
+		if state != "pending" || attempts != 1 || nextAttempt != 7 {
+			t.Fatalf("recovered extraction = state:%q attempts:%d next:%d", state, attempts, nextAttempt)
+		}
+	})
 }
 
 func TestMigrateSerializesConcurrentCallersIntegration(t *testing.T) {
@@ -642,6 +790,22 @@ WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2`,
 	}
 	if got != want {
 		t.Fatalf("%s.%s type = %s, want %s", table, column, got, want)
+	}
+}
+
+func assertColumnAbsent(t *testing.T, ctx context.Context, pool *pgxpool.Pool, table string, column string) {
+	t.Helper()
+	var exists bool
+	if err := pool.QueryRow(ctx, `
+SELECT EXISTS (
+  SELECT 1
+  FROM information_schema.columns
+  WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2
+)`, table, column).Scan(&exists); err != nil {
+		t.Fatalf("checking column %s.%s: %v", table, column, err)
+	}
+	if exists {
+		t.Fatalf("column %s.%s still exists", table, column)
 	}
 }
 

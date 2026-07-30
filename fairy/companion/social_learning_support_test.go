@@ -46,9 +46,6 @@ type socialLearningMemory struct {
 	retrieveConversationID string
 	retrieveQuery          string
 	feedbackErr            error
-	feedbackSummary        memory.RecentSocialFeedbackSummary
-	feedbackSummaryErr     error
-	feedbackSummaryCalls   int
 	metadataLoads          int
 }
 
@@ -84,13 +81,6 @@ func (m *socialLearningMemory) RecordSocialReplyFeedback(_ context.Context, inpu
 		return memory.SocialReplyFeedback{}, m.feedbackErr
 	}
 	return memory.SocialReplyFeedback{ID: "feedback-1", Outcome: input.Outcome}, nil
-}
-
-func (m *socialLearningMemory) RecentSocialFeedbackSummary(_ context.Context, _, _ string) (memory.RecentSocialFeedbackSummary, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.feedbackSummaryCalls++
-	return m.feedbackSummary, m.feedbackSummaryErr
 }
 
 func (m *socialLearningMemory) UpsertSocialPersonNote(_ context.Context, input memory.SocialPersonNoteInput) (memory.SocialPersonNote, error) {
@@ -177,9 +167,7 @@ func TestRetrieveSocialRespondContextUsesPublicConversationScope(t *testing.T) {
 	memoryPort := &socialLearningMemory{retrieved: memory.SocialMemoryContext{Entries: []memory.SocialMemoryEntry{
 		{ID: "entry-1", Kind: memory.SocialMemoryEpisode, Situation: "实习", Content: "群内讨论实习进度", RecallCue: "实习"},
 		{ID: "entry-2", Kind: memory.SocialMemoryExpression, Situation: "安慰", Content: "先短句接住", RecallCue: "安慰"},
-	}}, feedbackSummary: memory.RecentSocialFeedbackSummary{
-		SampleCount: 4, PositiveCount: 3, NegativeCount: 1, ObservedMessageCount: 7, LatestOutcome: memory.SocialFeedbackNegative,
-	}}
+	}}}
 	service := newSocialLearningTestService(memoryPort, &socialLearningModel{})
 	intent := &ReplyIntent{MemoryQuery: "之前的实习讨论", ExpressionQuery: "安慰焦虑的群友"}
 	context, err := service.retrieveSocialRespondContext(t.Context(), "character-1", "conversation-1", publicAmbientResolved(), intent, nil)
@@ -195,17 +183,12 @@ func TestRetrieveSocialRespondContextUsesPublicConversationScope(t *testing.T) {
 	if memoryPort.retrieveQuery != "之前的实习讨论" {
 		t.Fatalf("query = %q", memoryPort.retrieveQuery)
 	}
-	for _, expected := range []string{"sample=4", "positive=3", "negative=1", "latest=negative", "observedMessages=7"} {
-		if !strings.Contains(context.RecentFeedback, expected) {
-			t.Fatalf("recent feedback %q does not contain %q", context.RecentFeedback, expected)
-		}
+	if context.RecentFeedback != "" {
+		t.Fatalf("reply-level feedback should not be injected: %q", context.RecentFeedback)
 	}
 	privateContext, err := service.retrieveSocialRespondContext(t.Context(), "character-1", "conversation-1", desktopResolved(), intent, nil)
 	if err != nil || privateContext != nil {
 		t.Fatalf("private context = %#v, error = %v", privateContext, err)
-	}
-	if memoryPort.feedbackSummaryCalls != 1 {
-		t.Fatalf("feedback summary calls = %d, want public call only", memoryPort.feedbackSummaryCalls)
 	}
 }
 

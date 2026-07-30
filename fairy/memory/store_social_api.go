@@ -71,19 +71,6 @@ func (s *Store) RecordSocialReplyFeedback(ctx context.Context, input SocialReply
 	return s.recordSocialReplyFeedbackPostgres(ctx, input)
 }
 
-func (s *Store) RecentSocialFeedbackSummary(ctx context.Context, characterID, conversationID string) (RecentSocialFeedbackSummary, error) {
-	if s == nil || s.pool == nil {
-		return RecentSocialFeedbackSummary{}, ErrDatabasePoolEmpty
-	}
-	if err := ValidateID("character_id", characterID); err != nil {
-		return RecentSocialFeedbackSummary{}, err
-	}
-	if err := ValidateID("conversation_id", conversationID); err != nil {
-		return RecentSocialFeedbackSummary{}, err
-	}
-	return s.recentSocialFeedbackSummaryPostgres(ctx, characterID, conversationID)
-}
-
 func buildSocialRetrievalProjection(query string) []string {
 	runes := []rune(query)
 	candidates := make([]string, 0, len(runes))

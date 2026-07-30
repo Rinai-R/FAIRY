@@ -63,18 +63,14 @@ var postgresConstraints = []schemaConstraint{
 	{"knowledge_entries", "knowledge_entries_source_conversation_fk", "FOREIGN KEY (source_conversation_id) REFERENCES conversations(id) ON DELETE RESTRICT"},
 	{"knowledge_entries", "knowledge_entries_source_turn_fk", "FOREIGN KEY (source_turn_id) REFERENCES conversation_turns(id) ON DELETE RESTRICT"},
 	{"knowledge_entries", "knowledge_entries_supersedes_fk", "FOREIGN KEY (supersedes_id) REFERENCES knowledge_entries(id) ON DELETE RESTRICT"},
-	{"knowledge_entries", "knowledge_entries_document_fk", "FOREIGN KEY (document_id) REFERENCES knowledge_documents(id) ON DELETE SET NULL"},
-	{"knowledge_entries", "knowledge_entries_direct_evidence_check", "CHECK ((document_id IS NULL AND evidence_text = '') OR (document_id IS NOT NULL AND evidence_text <> ''))"},
 	{"endpoint_conversations", "endpoint_conversations_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
 	{"social_memory_entries", "social_memory_entries_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
-	{"feedback_events", "feedback_events_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
-	{"feedback_events", "feedback_events_turn_fk", "FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE CASCADE"},
 	{"personal_memories", "personal_memories_embedding_check", "CHECK ((embedding_model_id IS NULL AND embedding_content_hash IS NULL AND embedding IS NULL) OR (embedding_model_id <> '' AND embedding_content_hash ~ '^[0-9a-f]{64}$' AND embedding IS NOT NULL))"},
 	{"knowledge_entries", "knowledge_entries_embedding_check", "CHECK ((embedding_model_id IS NULL AND embedding_content_hash IS NULL AND embedding IS NULL) OR (embedding_model_id <> '' AND embedding_content_hash ~ '^[0-9a-f]{64}$' AND embedding IS NOT NULL))"},
 }
 
 var postgresIndexes = []schemaIndex{
-	{"conversation_turns_extraction", "CREATE INDEX IF NOT EXISTS conversation_turns_extraction ON conversation_turns(conversation_id, extraction_state, sequence ASC) WHERE status = 'completed'"},
+	{"conversation_turns_extraction", "CREATE INDEX IF NOT EXISTS conversation_turns_extraction ON conversation_turns(conversation_id, extraction_state, extraction_next_attempt_at_ms, sequence ASC) WHERE status = 'completed'"},
 	{"stickers_description_trgm", "CREATE INDEX IF NOT EXISTS stickers_description_trgm ON stickers USING gin (description public.gin_trgm_ops)"},
 	{"tool_executions_pending_deadline", "CREATE INDEX IF NOT EXISTS tool_executions_pending_deadline ON tool_executions(deadline_at_ms ASC, created_at_ms ASC, id ASC) WHERE status = 'pending'"},
 	{"personal_memories_content_trgm", "CREATE INDEX IF NOT EXISTS personal_memories_content_trgm ON personal_memories USING gin (content public.gin_trgm_ops)"},
@@ -85,7 +81,6 @@ var postgresIndexes = []schemaIndex{
 	{"social_memory_entries_situation_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_situation_trgm ON social_memory_entries USING gin (situation public.gin_trgm_ops)"},
 	{"social_memory_entries_content_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_content_trgm ON social_memory_entries USING gin (content public.gin_trgm_ops)"},
 	{"social_memory_entries_recall_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_recall_trgm ON social_memory_entries USING gin (recall_cue public.gin_trgm_ops)"},
-	{"feedback_events_social_reply_turn_key", "CREATE UNIQUE INDEX IF NOT EXISTS feedback_events_social_reply_turn_key ON feedback_events(turn_id) WHERE type = 'social_reply_feedback'"},
 }
 
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
@@ -108,6 +103,9 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 			return fmt.Errorf("auto-migrating PostgreSQL schema: %w", err)
 		}
 		if err := migrateDirectMemoryKnowledgeSchema(tx); err != nil {
+			return err
+		}
+		if err := migrateDirectCognitiveRecordSchema(tx); err != nil {
 			return err
 		}
 		for _, constraint := range postgresConstraints {
@@ -372,6 +370,113 @@ ALTER TABLE social_memory_entries ADD CONSTRAINT social_memory_entries_invariant
 )`,
 		},
 	}
+	for _, statement := range statements {
+		if err := tx.Exec(statement.sql).Error; err != nil {
+			return fmt.Errorf("%s: %w", statement.name, err)
+		}
+	}
+	return nil
+}
+
+func migrateDirectCognitiveRecordSchema(tx *gorm.DB) error {
+	var legacy struct {
+		FeedbackTable  bool
+		DocumentTable  bool
+		DocumentColumn bool
+	}
+	if err := tx.Raw(`
+SELECT
+  to_regclass(current_schema() || '.feedback_events') IS NOT NULL AS feedback_table,
+  to_regclass(current_schema() || '.knowledge_documents') IS NOT NULL AS document_table,
+  EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'knowledge_entries'
+      AND column_name = 'document_id'
+  ) AS document_column`).Scan(&legacy).Error; err != nil {
+		return fmt.Errorf("checking persistent cognitive intermediates: %w", err)
+	}
+	if !legacy.FeedbackTable && !legacy.DocumentTable && !legacy.DocumentColumn {
+		return nil
+	}
+	type migrationStatement struct {
+		name string
+		sql  string
+	}
+	statements := make([]migrationStatement, 0, 4)
+	if legacy.DocumentTable && legacy.DocumentColumn {
+		statements = append(statements, migrationStatement{
+			name: "projecting direct knowledge sources",
+			sql: `
+UPDATE knowledge_entries AS entry
+SET source_url = document.canonical_url,
+    source_title = document.title,
+    source_content_hash = document.content_hash,
+    source_content_type = document.content_type,
+    source_fetched_at_ms = document.fetched_at_ms,
+    source_etag = document.etag,
+    source_last_modified = document.last_modified,
+    reconciler_revision = document.reconciler_revision
+FROM knowledge_documents AS document
+WHERE entry.document_id = document.id`,
+		})
+	}
+	if legacy.FeedbackTable {
+		statements = append(statements, migrationStatement{
+			name: "recovering personal extraction turns",
+			sql: `
+UPDATE conversation_turns AS turn
+SET extraction_state = 'pending',
+    extraction_claim_id = NULL,
+    extraction_lease_owner = NULL,
+    extraction_lease_expires_at_ms = NULL,
+    extraction_attempt_count = CASE
+      WHEN event.status = 'running' THEN GREATEST(0, event.attempt_count - 1)
+      ELSE event.attempt_count
+    END,
+    extraction_next_attempt_at_ms = CASE WHEN event.status = 'pending' THEN event.next_attempt_at_ms ELSE 0 END,
+    extraction_error_code = event.error_category,
+    extraction_error_message = event.error_message
+FROM feedback_events AS event
+WHERE event.type = 'personal_memory'
+  AND event.turn_id = turn.id
+  AND turn.status = 'completed'
+  AND event.status IN ('waiting_turn', 'pending', 'running')`,
+		})
+	}
+	statements = append(statements,
+		migrationStatement{
+			name: "dropping persistent feedback and document storage",
+			sql: `
+ALTER TABLE knowledge_entries DROP CONSTRAINT IF EXISTS knowledge_entries_document_fk;
+ALTER TABLE knowledge_entries DROP CONSTRAINT IF EXISTS knowledge_entries_direct_evidence_check;
+ALTER TABLE knowledge_entries DROP COLUMN IF EXISTS document_id;
+DROP TABLE IF EXISTS feedback_events;
+DROP TABLE IF EXISTS knowledge_documents`,
+		},
+		migrationStatement{
+			name: "replacing turn extraction invariants",
+			sql: `
+ALTER TABLE conversation_turns DROP CONSTRAINT IF EXISTS conversation_turns_invariants_check;
+ALTER TABLE conversation_turns ADD CONSTRAINT conversation_turns_invariants_check CHECK (
+  sequence > 0
+  AND status IN ('interpreting', 'planning', 'responding', 'completed', 'interrupted', 'failed')
+  AND extraction_state IN ('ineligible', 'pending', 'claimed', 'processed', 'failed')
+  AND extraction_attempt_count >= 0
+  AND extraction_next_attempt_at_ms >= 0
+  AND (extraction_lease_expires_at_ms IS NULL OR extraction_lease_expires_at_ms >= 0)
+  AND ((extraction_state = 'claimed') =
+       (extraction_claim_id IS NOT NULL AND extraction_lease_owner IS NOT NULL AND extraction_lease_expires_at_ms IS NOT NULL))
+  AND (extraction_state = 'claimed' OR
+       (extraction_claim_id IS NULL AND extraction_lease_owner IS NULL AND extraction_lease_expires_at_ms IS NULL))
+  AND created_at_ms >= 0
+  AND updated_at_ms >= created_at_ms
+  AND ((status = 'failed') = (error_code IS NOT NULL AND error_message IS NOT NULL))
+);
+DROP INDEX IF EXISTS conversation_turns_extraction`,
+		},
+	)
 	for _, statement := range statements {
 		if err := tx.Exec(statement.sql).Error; err != nil {
 			return fmt.Errorf("%s: %w", statement.name, err)

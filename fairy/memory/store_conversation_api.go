@@ -94,7 +94,11 @@ func (s *Store) CompleteExpressionTurn(conversationID string, turnID string, ass
 }
 
 func (s *Store) CompleteExpressionTurnContext(ctx context.Context, conversationID string, turnID string, assistantMessage string, parts []ExpressionPart) (MessageRecord, error) {
-	return s.completeExpressionTurnPostgres(ctx, conversationID, turnID, assistantMessage, parts)
+	return s.completeExpressionTurnPostgres(ctx, conversationID, turnID, assistantMessage, parts, true)
+}
+
+func (s *Store) CompleteExpressionTurnForPolicy(conversationID string, turnID string, assistantMessage string, parts []ExpressionPart, extractionEligible bool) (MessageRecord, error) {
+	return s.completeExpressionTurnPostgres(context.Background(), conversationID, turnID, assistantMessage, parts, extractionEligible)
 }
 
 func (s *Store) InterruptTurn(conversationID string, turnID string, publishedPrefix string) (*MessageRecord, error) {

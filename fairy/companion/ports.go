@@ -2,7 +2,6 @@ package companion
 
 import (
 	"context"
-	"time"
 
 	"fairy/character"
 	"fairy/config"
@@ -34,8 +33,7 @@ type PromptContextStore interface {
 type TurnStore interface {
 	BeginTurn(conversationID string, userMessage string) (memory.PersistedTurn, error)
 	BeginInitiationTurn(conversationID string, evidenceIDs []string) (memory.PersistedTurn, error)
-	EnqueuePersonalMemoryFeedback(conversationID string, turnID string, characterID string) error
-	CompleteExpressionTurn(conversationID string, turnID string, assistantMessage string, parts []memory.ExpressionPart) (memory.MessageRecord, error)
+	CompleteExpressionTurnForPolicy(conversationID string, turnID string, assistantMessage string, parts []memory.ExpressionPart, extractionEligible bool) (memory.MessageRecord, error)
 	InterruptExpressionTurn(conversationID string, turnID string, publishedPrefix string, parts []memory.ExpressionPart) (*memory.MessageRecord, error)
 	FailTurn(conversationID string, turnID string, code string, message string, retryable bool) error
 }
@@ -79,27 +77,14 @@ type extractionStore interface {
 	CommitMemoryMutations(batchID string, characterID string, allowedMemoryIDs []string, mutations []memory.MemoryMutation) ([]memory.MemoryMutationResult, error)
 }
 
-// knowledgeIngestStore owns the independent verified-knowledge ingest queue.
+// knowledgeIngestStore owns verified-knowledge retrieval and direct writes.
 type knowledgeIngestStore interface {
-	EnqueueKnowledgeIngestTasks(tasks []memory.KnowledgeIngestTask) error
-	ClaimKnowledgeIngestTasksContext(context.Context, int) ([]memory.KnowledgeIngestClaim, error)
-	KnowledgeDocumentNeedsExtractionContext(context.Context, string, string, memory.KnowledgeDocument) (bool, error)
 	SearchKnowledgeForIngestContext(context.Context, string, int) ([]memory.RetrievedKnowledge, error)
-	CommitKnowledgeDocumentActionsContext(context.Context, string, string, memory.KnowledgeDocument, []string, []memory.KnowledgeDocumentAction) (int, error)
-	FailClaimedKnowledgeIngestJob(jobID, message string) error
-	RetryClaimedKnowledgeIngestJob(jobID, category, message string) error
-	DropClaimedKnowledgeIngestJob(jobID, message string) error
-}
-
-type knowledgeIngestLeaseStore interface {
-	KnowledgeIngestLeaseDuration() time.Duration
-	RenewKnowledgeIngestLeaseContext(context.Context, string) error
-	ReleaseClaimedKnowledgeIngestJob(jobID string) error
+	CommitKnowledgeDocumentActionsContext(context.Context, memory.KnowledgeIngestTask, memory.KnowledgeDocument, []string, []memory.KnowledgeDocumentAction) (int, error)
 }
 
 // SocialContextStore reads public feedback and person-note context.
 type SocialContextStore interface {
-	RecentSocialFeedbackSummary(context.Context, string, string) (memory.RecentSocialFeedbackSummary, error)
 	ListSocialPersonNotes(context.Context, string, string, []string) ([]memory.SocialPersonNote, error)
 }
 
@@ -128,9 +113,8 @@ type ambientMemoryPorts struct {
 }
 
 type retentionMemoryPorts struct {
-	extraction     extractionStore
-	knowledge      knowledgeIngestStore
-	knowledgeLease knowledgeIngestLeaseStore
+	extraction extractionStore
+	knowledge  knowledgeIngestStore
 }
 
 type memoryPorts struct {
@@ -159,7 +143,7 @@ func memoryPortsFromStore(store *memory.Store) memoryPorts {
 			socialContext:   store,
 			socialLearning:  store,
 		},
-		retention: retentionMemoryPorts{extraction: store, knowledge: store, knowledgeLease: store},
+		retention: retentionMemoryPorts{extraction: store, knowledge: store},
 	}
 }
 
@@ -176,8 +160,7 @@ func (p memoryPorts) ready() bool {
 		p.ambient.socialContext != nil &&
 		p.ambient.socialLearning != nil &&
 		p.retention.extraction != nil &&
-		p.retention.knowledge != nil &&
-		p.retention.knowledgeLease != nil
+		p.retention.knowledge != nil
 }
 
 type OwnerIdentityPort interface {
@@ -230,7 +213,6 @@ var (
 	_ RuntimeStateStore         = (*memory.Store)(nil)
 	_ extractionStore           = (*memory.Store)(nil)
 	_ knowledgeIngestStore      = (*memory.Store)(nil)
-	_ knowledgeIngestLeaseStore = (*memory.Store)(nil)
 	_ SocialContextStore        = (*memory.Store)(nil)
 	_ SocialLearningStore       = (*memory.Store)(nil)
 	_ ModelPort                 = (*model.ModelService)(nil)

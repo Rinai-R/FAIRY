@@ -28,20 +28,6 @@ type KnowledgeCatalog struct {
 	Verified   []KnowledgeRecord `json:"verified"`
 }
 
-type KnowledgeIngestJobRecord struct {
-	ID              string `json:"id"`
-	ConversationID  string `json:"conversationId"`
-	TurnID          string `json:"turnId"`
-	TaskID          string `json:"taskId"`
-	Status          string `json:"status"`
-	AttemptCount    int    `json:"attemptCount"`
-	NextAttemptAtMS int64  `json:"nextAttemptAtMs"`
-	ErrorCategory   string `json:"errorCategory,omitempty"`
-	ErrorMessage    string `json:"errorMessage,omitempty"`
-	CreatedAtMS     int64  `json:"createdAtMs"`
-	UpdatedAtMS     int64  `json:"updatedAtMs"`
-}
-
 type WireError struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
@@ -179,11 +165,6 @@ type KnowledgeIngestTask struct {
 	ConversationID string                `json:"conversationId"`
 	TurnID         string                `json:"turnId"`
 	Source         KnowledgeIngestSource `json:"source"`
-}
-
-type KnowledgeIngestClaim struct {
-	JobID string              `json:"jobId"`
-	Task  KnowledgeIngestTask `json:"task"`
 }
 
 type KnowledgeDocument struct {

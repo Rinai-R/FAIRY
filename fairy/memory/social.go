@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -169,7 +168,7 @@ func RecordSocialReplyFeedback(
 	ctx context.Context,
 	tx pgx.Tx,
 	input SocialReplyFeedbackInput,
-	id string,
+	_ string,
 	now int64,
 	negativeSuppressThreshold int,
 ) (SocialReplyFeedback, error) {
@@ -189,32 +188,6 @@ func RecordSocialReplyFeedback(
 			return SocialReplyFeedback{}, errors.New("social feedback entries do not belong to the conversation")
 		}
 	}
-	entryIDs := input.EntryIDs
-	if entryIDs == nil {
-		entryIDs = []string{}
-	}
-	entryIDsJSON, err := json.Marshal(entryIDs)
-	if err != nil {
-		return SocialReplyFeedback{}, fmt.Errorf("serializing social feedback entry IDs: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-INSERT INTO feedback_events(
-    id, type, character_id, conversation_id, turn_id, payload_json,
-    status, created_at_ms, updated_at_ms
-) VALUES (
-    $1, 'social_reply_feedback', $2, $3, $4,
-    jsonb_build_object(
-      'outcome', $5::text,
-      'entryIds', $6::jsonb,
-      'observedMessageCount', $7::integer
-    ),
-    'succeeded', $8, $8
-)`,
-		id, input.CharacterID, input.ConversationID, input.TurnID, input.Outcome,
-		entryIDsJSON, input.ObservedMessageCount, now,
-	); err != nil {
-		return SocialReplyFeedback{}, fmt.Errorf("inserting social feedback: %w", err)
-	}
 	if len(input.EntryIDs) > 0 {
 		positive, negative, unknown := 0, 0, 0
 		switch input.Outcome {
@@ -233,14 +206,15 @@ SET use_count = use_count + 1,
     unknown_count = unknown_count + $6,
     last_feedback_turn_id = $8,
     updated_at_ms = $7
-WHERE character_id = $1 AND conversation_id = $2 AND id = ANY($3)`,
+WHERE character_id = $1 AND conversation_id = $2 AND id = ANY($3)
+  AND last_feedback_turn_id IS DISTINCT FROM $8`,
 			input.CharacterID, input.ConversationID, input.EntryIDs, positive, negative, unknown, now, input.TurnID,
 		)
 		if err != nil {
 			return SocialReplyFeedback{}, fmt.Errorf("updating social memory feedback counters: %w", err)
 		}
-		if changed.RowsAffected() != int64(len(input.EntryIDs)) {
-			return SocialReplyFeedback{}, errors.New("social feedback did not update every referenced entry")
+		if changed.RowsAffected() > int64(len(input.EntryIDs)) {
+			return SocialReplyFeedback{}, errors.New("social feedback updated too many referenced entries")
 		}
 		if _, err := tx.Exec(ctx, `
 UPDATE social_memory_entries
@@ -255,54 +229,8 @@ WHERE character_id = $1 AND conversation_id = $2 AND id = ANY($3)
 		}
 	}
 	return SocialReplyFeedback{
-		ID: id, CharacterID: input.CharacterID, ConversationID: input.ConversationID,
-		TurnID: input.TurnID, EntryIDs: append([]string{}, entryIDs...), Outcome: input.Outcome,
+		ID: input.TurnID, CharacterID: input.CharacterID, ConversationID: input.ConversationID,
+		TurnID: input.TurnID, EntryIDs: append([]string{}, input.EntryIDs...), Outcome: input.Outcome,
 		ObservedMessageCount: input.ObservedMessageCount, CreatedAtUnixMS: now,
 	}, nil
-}
-
-func QueryRecentSocialFeedbackSummary(ctx context.Context, db Querier, characterID, conversationID string, limit int) (RecentSocialFeedbackSummary, error) {
-	rows, err := db.Query(ctx, `
-SELECT payload_json->>'outcome',
-       (payload_json->>'observedMessageCount')::integer
-FROM feedback_events
-WHERE type = 'social_reply_feedback'
-  AND status = 'succeeded'
-  AND character_id = $1 AND conversation_id = $2
-ORDER BY created_at_ms DESC, id ASC
-LIMIT $3`, characterID, conversationID, limit)
-	if err != nil {
-		return RecentSocialFeedbackSummary{}, fmt.Errorf("querying recent social feedback: %w", err)
-	}
-	defer rows.Close()
-	var summary RecentSocialFeedbackSummary
-	for rows.Next() {
-		var outcome string
-		var observed int
-		if err := rows.Scan(&outcome, &observed); err != nil {
-			return RecentSocialFeedbackSummary{}, fmt.Errorf("scanning recent social feedback: %w", err)
-		}
-		if summary.SampleCount == 0 {
-			summary.LatestOutcome = outcome
-		}
-		switch outcome {
-		case SocialFeedbackPositive:
-			summary.PositiveCount++
-		case SocialFeedbackNegative:
-			summary.NegativeCount++
-		case SocialFeedbackUnknown:
-			summary.UnknownCount++
-		default:
-			return RecentSocialFeedbackSummary{}, errors.New("stored social feedback outcome is invalid")
-		}
-		if observed < 0 {
-			return RecentSocialFeedbackSummary{}, errors.New("stored social feedback observation count is invalid")
-		}
-		summary.SampleCount++
-		summary.ObservedMessageCount += observed
-	}
-	if err := rows.Err(); err != nil {
-		return RecentSocialFeedbackSummary{}, fmt.Errorf("iterating recent social feedback: %w", err)
-	}
-	return summary, nil
 }

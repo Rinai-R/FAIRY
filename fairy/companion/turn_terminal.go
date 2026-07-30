@@ -30,20 +30,12 @@ func (x *turnExecution) persist(gathered *turnContext, resolved session.Resolved
 	fullRequest := gathered.fullRequest
 	finalUsage := slices.Clone(gathered.finalUsage)
 	bootstrap := gathered.bootstrap
-	if resolved.AllowsPersonalMemory() {
-		if err := x.service.memory.turn.turns.EnqueuePersonalMemoryFeedback(
-			x.request.ConversationID,
-			x.persisted.ID,
-			bootstrap.Conversation.CharacterID,
-		); err != nil {
-			return x.service.terminalPersistenceFailure(x.life, x.request.ConversationID, x.persisted.ID, nil, err)
-		}
-	}
-	if _, err := x.service.memory.turn.turns.CompleteExpressionTurn(
+	if _, err := x.service.memory.turn.turns.CompleteExpressionTurnForPolicy(
 		x.request.ConversationID,
 		x.persisted.ID,
 		reply.DisplayText,
 		memoryExpressionParts(reply.Chains),
+		resolved.AllowsPersonalMemory(),
 	); err != nil {
 		return x.service.terminalPersistenceFailure(x.life, x.request.ConversationID, x.persisted.ID, nil, err)
 	}
@@ -85,8 +77,8 @@ func (x *turnExecution) persist(gathered *turnContext, resolved session.Resolved
 		})
 	}
 	x.service.scheduleAutoCompaction(x.request.ConversationID, events)
-	if x.service.retention != nil {
-		x.service.retention.wakeKnowledgeIngest()
+	if x.service.retention != nil && len(gathered.knowledgeTasks) > 0 {
+		x.service.retention.admitKnowledgeTasks(gathered.knowledgeTasks)
 	}
 	return TurnOutcome{
 		ConversationID:  x.request.ConversationID,

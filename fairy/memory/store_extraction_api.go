@@ -2,22 +2,6 @@ package memory
 
 import "context"
 
-func (s *Store) EnqueuePersonalMemoryFeedback(conversationID, turnID, characterID string) error {
-	return s.EnqueuePersonalMemoryFeedbackContext(context.Background(), conversationID, turnID, characterID)
-}
-
-func (s *Store) EnqueuePersonalMemoryFeedbackContext(ctx context.Context, conversationID, turnID, characterID string) error {
-	return s.EnqueueFeedbackEventsContext(ctx, []FeedbackEventInput{{
-		ID:             "personal-memory-" + turnID,
-		Type:           FeedbackPersonalMemory,
-		ConversationID: conversationID,
-		TurnID:         turnID,
-		CharacterID:    characterID,
-		Payload:        []byte(`{}`),
-		Status:         "waiting_turn",
-	}})
-}
-
 func (s *Store) ClaimExtractionBatch(conversationID string, limit int) (*ExtractionBatchInput, error) {
 	return s.ClaimExtractionBatchContext(context.Background(), conversationID, limit)
 }

@@ -57,7 +57,7 @@ func (s *Store) recordSocialReplyFeedbackPostgres(ctx context.Context, input Soc
 	if err := VerifySocialConversationScope(queryCtx, tx, input.CharacterID, input.ConversationID); err != nil {
 		return SocialReplyFeedback{}, err
 	}
-	feedback, err := RecordSocialReplyFeedback(queryCtx, tx, input, newID(), nowUnixMS(), SocialNegativeSuppressThreshold)
+	feedback, err := RecordSocialReplyFeedback(queryCtx, tx, input, "", nowUnixMS(), SocialNegativeSuppressThreshold)
 	if err != nil {
 		return SocialReplyFeedback{}, err
 	}
@@ -65,13 +65,4 @@ func (s *Store) recordSocialReplyFeedbackPostgres(ctx context.Context, input Soc
 		return SocialReplyFeedback{}, fmt.Errorf("committing social feedback transaction: %w", err)
 	}
 	return feedback, nil
-}
-
-func (s *Store) recentSocialFeedbackSummaryPostgres(ctx context.Context, characterID, conversationID string) (RecentSocialFeedbackSummary, error) {
-	queryCtx, cancel := s.pool.QueryContext(ctx)
-	defer cancel()
-	if err := VerifySocialConversationScope(queryCtx, s.pool.Raw(), characterID, conversationID); err != nil {
-		return RecentSocialFeedbackSummary{}, err
-	}
-	return QueryRecentSocialFeedbackSummary(queryCtx, s.pool.Raw(), characterID, conversationID, recentSocialFeedbackLimit)
 }

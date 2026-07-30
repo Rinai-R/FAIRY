@@ -408,11 +408,7 @@ func (m terminalFailureTurnStore) BeginInitiationTurn(conversationID string, evi
 	return m.base.BeginInitiationTurn(conversationID, evidenceIDs)
 }
 
-func (m terminalFailureTurnStore) EnqueuePersonalMemoryFeedback(conversationID, turnID, characterID string) error {
-	return m.base.EnqueuePersonalMemoryFeedback(conversationID, turnID, characterID)
-}
-
-func (m terminalFailureTurnStore) CompleteExpressionTurn(string, string, string, []memory.ExpressionPart) (memory.MessageRecord, error) {
+func (m terminalFailureTurnStore) CompleteExpressionTurnForPolicy(string, string, string, []memory.ExpressionPart, bool) (memory.MessageRecord, error) {
 	return memory.MessageRecord{}, m.completeErr
 }
 
@@ -1257,7 +1253,7 @@ func TestPostgresPublicTurnNaturalSocialQueryStaysInCurrentConversation(t *testi
 	}
 }
 
-func TestPostgresGroupWebSearchKeepsPromptEphemeralAndPersistsDurableBatch(t *testing.T) {
+func TestPostgresGroupWebSearchKeepsPromptAndLearningTaskEphemeral(t *testing.T) {
 	store, pool, cleanup := openCompanionIntegrationStore(t)
 	defer cleanup()
 	const characterID = "character-group-web"
@@ -1289,20 +1285,15 @@ func TestPostgresGroupWebSearchKeepsPromptEphemeralAndPersistsDurableBatch(t *te
 		t.Fatal("web result was not available to the current group turn")
 	}
 	after := groupPrivacyJobCounts(t, pool)
-	if after.extraction != before.extraction || after.ingest != before.ingest+1 {
-		t.Fatalf("durable group web job counts: before=%v after=%v", before, after)
+	if after.extraction != before.extraction {
+		t.Fatalf("group web search changed personal extraction count: before=%v after=%v", before, after)
 	}
-	var rawQuery string
-	if err := pool.QueryRow(t.Context(), `
-SELECT COALESCE(payload_json->>'query', '')
-FROM feedback_events
-WHERE type = 'web_knowledge'
-ORDER BY created_at_ms DESC
-LIMIT 1`).Scan(&rawQuery); err != nil {
+	var feedbackTableAbsent bool
+	if err := pool.QueryRow(t.Context(), "SELECT to_regclass('feedback_events') IS NULL").Scan(&feedbackTableAbsent); err != nil {
 		t.Fatal(err)
 	}
-	if rawQuery != "" {
-		t.Fatalf("durable batch persisted raw query %q", rawQuery)
+	if !feedbackTableAbsent {
+		t.Fatal("web learning created persistent feedback storage")
 	}
 }
 
@@ -1317,19 +1308,16 @@ func compiledPromptContains(request model.CompiledPromptRequest, text string) bo
 
 type privacyJobCounts struct {
 	extraction int
-	ingest     int
 }
 
 func groupPrivacyJobCounts(t *testing.T, pool *pgxpool.Pool) privacyJobCounts {
 	t.Helper()
 	var counts privacyJobCounts
-	for query, destination := range map[string]*int{
-		"SELECT count(*) FROM feedback_events WHERE type = 'personal_memory'": &counts.extraction,
-		"SELECT count(*) FROM feedback_events WHERE type = 'web_knowledge'":   &counts.ingest,
-	} {
-		if err := pool.QueryRow(context.Background(), query).Scan(destination); err != nil {
-			t.Fatalf("counting privacy jobs: %v", err)
-		}
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*)
+FROM conversation_turns
+WHERE status = 'completed' AND extraction_state IN ('pending', 'claimed', 'failed')`).Scan(&counts.extraction); err != nil {
+		t.Fatalf("counting private extraction turns: %v", err)
 	}
 	return counts
 }

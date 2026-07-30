@@ -4,29 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
-
-	"fairy/memory"
 )
-
-func TestFormatRecentSocialFeedbackRejectsInvalidAggregate(t *testing.T) {
-	valid := memory.RecentSocialFeedbackSummary{
-		SampleCount: 2, PositiveCount: 1, NegativeCount: 1,
-		LatestOutcome: memory.SocialFeedbackNegative, ObservedMessageCount: 3,
-	}
-	if cue, err := formatRecentSocialFeedback(valid); err != nil || !strings.Contains(cue, "latest=negative") {
-		t.Fatalf("formatRecentSocialFeedback(valid) = %q, %v", cue, err)
-	}
-	invalidCounts := valid
-	invalidCounts.SampleCount++
-	if _, err := formatRecentSocialFeedback(invalidCounts); err == nil {
-		t.Fatal("inconsistent feedback counts accepted")
-	}
-	invalidOutcome := valid
-	invalidOutcome.LatestOutcome = "successful"
-	if _, err := formatRecentSocialFeedback(invalidOutcome); err == nil {
-		t.Fatal("invalid latest feedback outcome accepted")
-	}
-}
 
 func TestCompileReplyForInteractionEnforcesOnlyPublicIdentityBoundary(t *testing.T) {
 	draft := testRespondEnvelope(testReplyChain{VisualState: "happy", Text: "哼哼，我可是高性能机器人！"})

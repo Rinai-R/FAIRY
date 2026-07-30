@@ -18,20 +18,3 @@ func memoryKnowledgeIngestTasks(batch webSearchBatch) []memory.KnowledgeIngestTa
 	}
 	return tasks
 }
-
-func (s *CompanionService) persistKnowledgeIngestTasks(batch webSearchBatch) error {
-	if s == nil || len(batch.Sources) == 0 {
-		return nil
-	}
-	store := s.memory.retention.knowledge
-	if store == nil {
-		return ErrTurnRuntimeUnavailable
-	}
-	if err := store.EnqueueKnowledgeIngestTasks(memoryKnowledgeIngestTasks(batch)); err != nil {
-		return err
-	}
-	if s.retention != nil {
-		s.retention.wakeKnowledgeIngest()
-	}
-	return nil
-}

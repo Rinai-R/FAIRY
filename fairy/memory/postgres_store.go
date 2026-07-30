@@ -91,15 +91,15 @@ func (s *Store) postgresSummary(ctx context.Context) (Summary, error) {
 	if err != nil {
 		return Summary{}, fmt.Errorf("counting needs-review memories: %w", err)
 	}
-	pendingExtractionTurns, err := countPostgresScalar(queryCtx, s.pool, "SELECT COUNT(*) FROM feedback_events WHERE type = 'personal_memory' AND status IN ('waiting_turn', 'pending')")
+	pendingExtractionTurns, err := countPostgresScalar(queryCtx, s.pool, "SELECT COUNT(*) FROM conversation_turns WHERE status = 'completed' AND extraction_state = 'pending'")
 	if err != nil {
 		return Summary{}, fmt.Errorf("counting pending extraction turns: %w", err)
 	}
-	runningBatches, err := countPostgresScalar(queryCtx, s.pool, "SELECT COUNT(DISTINCT claim_group_id) FROM feedback_events WHERE type = 'personal_memory' AND status = 'running'")
+	runningBatches, err := countPostgresScalar(queryCtx, s.pool, "SELECT COUNT(DISTINCT extraction_claim_id) FROM conversation_turns WHERE status = 'completed' AND extraction_state = 'claimed'")
 	if err != nil {
 		return Summary{}, fmt.Errorf("counting running batches: %w", err)
 	}
-	failedBatches, err := countPostgresScalar(queryCtx, s.pool, "SELECT COUNT(*) FROM feedback_events WHERE type = 'personal_memory' AND status = 'failed'")
+	failedBatches, err := countPostgresScalar(queryCtx, s.pool, "SELECT COUNT(*) FROM conversation_turns WHERE status = 'completed' AND extraction_state = 'failed'")
 	if err != nil {
 		return Summary{}, fmt.Errorf("counting failed batches: %w", err)
 	}

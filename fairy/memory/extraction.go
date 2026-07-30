@@ -53,20 +53,20 @@ func BuildExtractionBatchInput(
 }
 
 func SucceedExtractionBatch(ctx context.Context, tx pgx.Tx, batchID, workerID string, now int64) error {
-	return succeedFeedbackExtractionGroup(ctx, tx, batchID, workerID, now)
+	return succeedExtractionClaim(ctx, tx, batchID, workerID, now)
 }
 
 func LockRunningExtractionBatch(ctx context.Context, tx pgx.Tx, batchID, workerID string) (conversationID, characterID string, err error) {
 	err = tx.QueryRow(ctx, `
-SELECT conversation_id, character_id
-FROM feedback_events
-WHERE claim_group_id = $1
-  AND type = 'personal_memory'
-  AND status = 'running'
-  AND lease_owner = $2
-ORDER BY created_at_ms, id
+SELECT turn.conversation_id, conversation.character_id
+FROM conversation_turns AS turn
+JOIN conversations AS conversation ON conversation.id = turn.conversation_id
+WHERE turn.extraction_claim_id = $1
+  AND turn.extraction_state = 'claimed'
+  AND turn.extraction_lease_owner = $2
+ORDER BY turn.sequence
 LIMIT 1
-FOR UPDATE`, batchID, workerID).Scan(&conversationID, &characterID)
+FOR UPDATE OF turn`, batchID, workerID).Scan(&conversationID, &characterID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", errors.New("extraction batch does not exist or is not running")
 	}
@@ -78,9 +78,9 @@ FOR UPDATE`, batchID, workerID).Scan(&conversationID, &characterID)
 
 func LoadExtractionBatchTurnIDs(ctx context.Context, tx pgx.Tx, batchID string) (map[string]struct{}, error) {
 	rows, err := tx.Query(ctx, `
-SELECT turn_id
-FROM feedback_events
-WHERE claim_group_id = $1 AND type = 'personal_memory' AND status = 'running'`, batchID)
+SELECT id
+FROM conversation_turns
+WHERE extraction_claim_id = $1 AND extraction_state = 'claimed'`, batchID)
 	if err != nil {
 		return nil, fmt.Errorf("loading extraction batch turns: %w", err)
 	}
@@ -186,23 +186,23 @@ func RequireActiveMemoryScope(ctx context.Context, tx pgx.Tx, memoryID, kind str
 func ListExtractionBatches(ctx context.Context, db Querier, characterID, status string) ([]ExtractionBatchRecord, error) {
 	rows, err := db.Query(ctx, `
 SELECT
-  COALESCE(claim_group_id, id),
-  conversation_id,
-  character_id,
-  status,
+  COALESCE(turn.extraction_claim_id, turn.id),
+  turn.conversation_id,
+  conversation.character_id,
+  CASE WHEN turn.extraction_state = 'claimed' THEN 'running' ELSE turn.extraction_state END,
   min(turn.sequence),
   max(turn.sequence),
-  min(COALESCE(error_category, '')),
-  min(COALESCE(error_message, '')),
-  min(created_at_ms),
-  max(feedback_events.updated_at_ms)
-FROM feedback_events
-JOIN conversation_turns AS turn ON turn.id = feedback_events.turn_id
-WHERE feedback_events.type = 'personal_memory'
-  AND feedback_events.character_id = $1
-  AND feedback_events.status = $2
-GROUP BY COALESCE(claim_group_id, feedback_events.id), conversation_id, character_id, status
-ORDER BY max(feedback_events.updated_at_ms) DESC, COALESCE(claim_group_id, feedback_events.id)
+  min(COALESCE(turn.extraction_error_code, '')),
+  min(COALESCE(turn.extraction_error_message, '')),
+  min(turn.created_at_ms),
+  max(turn.updated_at_ms)
+FROM conversation_turns AS turn
+JOIN conversations AS conversation ON conversation.id = turn.conversation_id
+WHERE conversation.character_id = $1
+  AND (CASE WHEN turn.extraction_state = 'claimed' THEN 'running' ELSE turn.extraction_state END) = $2
+GROUP BY COALESCE(turn.extraction_claim_id, turn.id), turn.conversation_id, conversation.character_id,
+         CASE WHEN turn.extraction_state = 'claimed' THEN 'running' ELSE turn.extraction_state END
+ORDER BY max(turn.updated_at_ms) DESC, COALESCE(turn.extraction_claim_id, turn.id)
 LIMIT 20`, characterID, status)
 	if err != nil {
 		return nil, fmt.Errorf("querying extraction batches: %w", err)
@@ -233,29 +233,22 @@ func RetryFailedExtractionBatch(ctx context.Context, tx pgx.Tx, id string, now i
 	var conversationID string
 	if err := tx.QueryRow(ctx, `
 SELECT conversation_id
-FROM feedback_events
-WHERE id = $1 AND type = 'personal_memory' AND status = 'failed'
+FROM conversation_turns
+WHERE id = $1 AND extraction_state = 'failed'
 FOR UPDATE`, id).Scan(&conversationID); errors.Is(err, pgx.ErrNoRows) {
 		return "", errors.New("extraction batch is not retryable")
 	} else if err != nil {
 		return "", fmt.Errorf("reading failed extraction batch: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
-UPDATE conversation_turns
-SET extraction_state = 'pending', updated_at_ms = $2
-WHERE id = (SELECT turn_id FROM feedback_events WHERE id = $1)
-  AND extraction_state = 'claimed'`, id, now); err != nil {
-		return "", fmt.Errorf("releasing extraction batch turns: %w", err)
-	}
 	changed, err := tx.Exec(ctx, `
-UPDATE feedback_events
-SET status = 'pending',
-    attempt_count = 0,
-    next_attempt_at_ms = 0,
-    error_category = NULL,
-    error_message = NULL,
+UPDATE conversation_turns
+SET extraction_state = 'pending',
+    extraction_attempt_count = 0,
+    extraction_next_attempt_at_ms = 0,
+    extraction_error_code = NULL,
+    extraction_error_message = NULL,
     updated_at_ms = $2
-WHERE id = $1 AND status = 'failed'`, id, now)
+WHERE id = $1 AND extraction_state = 'failed'`, id, now)
 	if err != nil {
 		return "", fmt.Errorf("cancelling failed extraction batch: %w", err)
 	}

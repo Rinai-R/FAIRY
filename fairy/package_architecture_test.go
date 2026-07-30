@@ -126,6 +126,8 @@ func TestMemoryPackageDoesNotImportCompanion(t *testing.T) {
 
 func TestProductionMemorySQLDoesNotUseRemovedAuxiliaryTables(t *testing.T) {
 	removedTables := []string{
+		"feedback_events",
+		"knowledge_documents",
 		"personal_memory_evidence",
 		"social_reply_feedback",
 		"social_person_notes",
@@ -356,6 +358,19 @@ func TestProductionKnowledgeIngestHasOnlyWholeDocumentActionRuntime(t *testing.T
 		"settleKnowledgeDocumentsWithoutExtraction": {},
 	}
 	forbiddenTaskRuntimeIdentifiers := map[string]struct{}{
+		"KnowledgeIngestClaim":                  {},
+		"KnowledgeIngestJob":                    {},
+		"KnowledgeIngestJobRecord":              {},
+		"EnqueueKnowledgeIngestTasks":           {},
+		"EnqueueKnowledgeIngestTasksContext":    {},
+		"ClaimKnowledgeIngestTasks":             {},
+		"ClaimKnowledgeIngestTasksContext":      {},
+		"RenewKnowledgeIngestLease":             {},
+		"RenewKnowledgeIngestLeaseContext":      {},
+		"ReleaseClaimedKnowledgeIngestJob":      {},
+		"RetryClaimedKnowledgeIngestJob":        {},
+		"FailClaimedKnowledgeIngestJob":         {},
+		"DropClaimedKnowledgeIngestJob":         {},
 		"EnqueueKnowledgeIngestBatch":           {},
 		"EnqueueKnowledgeIngestBatches":         {},
 		"EnqueueKnowledgeIngestBatchesContext":  {},

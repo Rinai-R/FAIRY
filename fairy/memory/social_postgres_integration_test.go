@@ -123,18 +123,17 @@ func TestPostgresSocialMemoryScopesRetrievalAndFeedback(t *testing.T) {
 	if useCount != 1 || negativeCount != 1 {
 		t.Fatalf("feedback counters = use:%d negative:%d", useCount, negativeCount)
 	}
-	summary, err := store.RecentSocialFeedbackSummary(ctx, "character-1", first.Conversation.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if summary.SampleCount != 1 || summary.NegativeCount != 1 || summary.LatestOutcome != SocialFeedbackNegative || summary.ObservedMessageCount != 2 {
-		t.Fatalf("recent feedback summary = %#v", summary)
-	}
 	if _, err := store.RecordSocialReplyFeedback(ctx, SocialReplyFeedbackInput{
 		CharacterID: "character-1", ConversationID: first.Conversation.ID, TurnID: turn.ID,
-		EntryIDs: []string{entries[0].ID}, Outcome: SocialFeedbackPositive, ObservedMessageCount: 1,
-	}); err == nil {
-		t.Fatal("duplicate feedback for one turn succeeded")
+		EntryIDs: []string{entries[1].ID}, Outcome: SocialFeedbackNegative, ObservedMessageCount: 2,
+	}); err != nil {
+		t.Fatalf("idempotent feedback: %v", err)
+	}
+	if err := pool.Raw().QueryRow(ctx, "SELECT use_count, negative_count FROM social_memory_entries WHERE id = $1", entries[1].ID).Scan(&useCount, &negativeCount); err != nil {
+		t.Fatal(err)
+	}
+	if useCount != 1 || negativeCount != 1 {
+		t.Fatalf("duplicate feedback changed counters = use:%d negative:%d", useCount, negativeCount)
 	}
 }
 

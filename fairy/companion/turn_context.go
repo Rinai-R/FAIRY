@@ -31,6 +31,7 @@ type turnContext struct {
 	fullRequest         model.CompiledPromptRequest
 	finalUsage          []LaneModelUsage
 	profileRevision     *uint64
+	knowledgeTasks      []memory.KnowledgeIngestTask
 }
 
 type turnPhaseError struct {

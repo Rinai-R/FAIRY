@@ -61,7 +61,7 @@ VALUES
 	if err != nil {
 		t.Fatalf("service SummaryContext: %v", err)
 	}
-	if summary.Conversations != 1 || summary.ActiveGlobalMemories != 1 || summary.NeedsReviewMemories != 1 || summary.PendingExtractionTurns != 0 || summary.CandidateKnowledge != 1 || summary.VerifiedKnowledge != 1 {
+	if summary.Conversations != 1 || summary.ActiveGlobalMemories != 1 || summary.NeedsReviewMemories != 1 || summary.PendingExtractionTurns != 1 || summary.CandidateKnowledge != 1 || summary.VerifiedKnowledge != 1 {
 		t.Fatalf("summary = %#v", summary)
 	}
 	if serviceSummary != summary {
@@ -1384,9 +1384,6 @@ func seedPostgresRunningExtractionBatch(t *testing.T, ctx context.Context, _ *co
 	if _, err := store.CompleteTurnContext(ctx, bootstrap.Conversation.ID, turn.ID, "batch reply"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.EnqueuePersonalMemoryFeedbackContext(ctx, bootstrap.Conversation.ID, turn.ID, characterID); err != nil {
-		t.Fatal(err)
-	}
 	batch, err := store.ClaimExtractionBatchContext(ctx, bootstrap.Conversation.ID, 1)
 	if err != nil || batch == nil {
 		t.Fatalf("claiming seeded extraction batch = %#v, %v", batch, err)
@@ -1413,9 +1410,6 @@ func seedPostgresRunningExtractionBatchWithTurns(t *testing.T, ctx context.Conte
 			t.Fatal(err)
 		}
 		if _, err := store.CompleteTurnContext(ctx, bootstrap.Conversation.ID, turn.ID, fmt.Sprintf("batch reply %d", index)); err != nil {
-			t.Fatal(err)
-		}
-		if err := store.EnqueuePersonalMemoryFeedbackContext(ctx, bootstrap.Conversation.ID, turn.ID, characterID); err != nil {
 			t.Fatal(err)
 		}
 		turnIDs = append(turnIDs, turn.ID)

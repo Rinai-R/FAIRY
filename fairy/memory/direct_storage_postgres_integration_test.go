@@ -32,47 +32,42 @@ func TestPostgresDirectKnowledgeDocumentAddUpdateDeleteIntegration(t *testing.T)
 		t.Fatal(err)
 	}
 
-	claim := enqueueAndClaimDirectKnowledge(t, ctx, store, bootstrap.Conversation.ID, turn.ID, "direct-task-add", 100)
+	task := directKnowledgeTask(bootstrap.Conversation.ID, turn.ID, "direct-task-add", 100)
 	firstContent := "FAIRY 使用 PostgreSQL 保存完整知识文档，并由知识条目直接引用文档。"
 	first := KnowledgeDocument{
-		SourceID: "direct-source", CanonicalURL: claim.Task.Source.URL,
+		SourceID: "direct-source", CanonicalURL: task.Source.URL,
 		Title: "FAIRY 架构", Content: firstContent,
 		ContentHash: semanticContentHash(firstContent), EvidenceID: "direct-evidence-add",
 		ContentType: "text/plain", FetchedAtUnixMS: 100,
 	}
-	needs, err := store.KnowledgeDocumentNeedsExtractionContext(ctx, claim.JobID, claim.Task.ID, first)
-	if err != nil || !needs {
-		t.Fatalf("first document needs extraction = %v, %v", needs, err)
-	}
-	changed, err := store.CommitKnowledgeDocumentActionsContext(ctx, claim.JobID, claim.Task.ID, first, nil, []KnowledgeDocumentAction{{
+	changed, err := store.CommitKnowledgeDocumentActionsContext(ctx, task, first, nil, []KnowledgeDocumentAction{{
 		Operation: KnowledgeMutationAdd, Content: "FAIRY 的知识文档完整保存在 PostgreSQL 中。",
 		ConfidenceBasisPoints: 9000, Evidence: "PostgreSQL 保存完整知识文档",
 	}})
 	if err != nil || changed != 1 {
 		t.Fatalf("add direct knowledge = %d, %v", changed, err)
 	}
-	var knowledgeID, documentID, evidence, eventStatus string
+	var knowledgeID, sourceURL, evidence string
 	if err := pool.Raw().QueryRow(ctx, `
-SELECT entry.id, entry.document_id, entry.evidence_text, event.status
-FROM knowledge_entries AS entry
-JOIN feedback_events AS event ON event.id = $1
-WHERE entry.status = 'verified'`, claim.JobID).Scan(
-		&knowledgeID, &documentID, &evidence, &eventStatus,
+SELECT id, source_url, evidence_text
+FROM knowledge_entries
+WHERE status = 'verified'`).Scan(
+		&knowledgeID, &sourceURL, &evidence,
 	); err != nil {
 		t.Fatal(err)
 	}
-	if documentID == "" || evidence != "PostgreSQL 保存完整知识文档" || eventStatus != "succeeded" {
-		t.Fatalf("direct add state = document %q evidence %q event %q", documentID, evidence, eventStatus)
+	if sourceURL != task.Source.URL || evidence != "PostgreSQL 保存完整知识文档" {
+		t.Fatalf("direct add state = source %q evidence %q", sourceURL, evidence)
 	}
 
-	updateClaim := enqueueAndClaimDirectKnowledge(t, ctx, store, bootstrap.Conversation.ID, turn.ID, "direct-task-update", 200)
+	updateTask := directKnowledgeTask(bootstrap.Conversation.ID, turn.ID, "direct-task-update", 200)
 	secondContent := "FAIRY 现在只用 PostgreSQL 保存完整知识文档，知识条目直接引用当前文档。"
 	second := first
 	second.Content = secondContent
 	second.ContentHash = semanticContentHash(secondContent)
 	second.EvidenceID = "direct-evidence-update"
 	second.FetchedAtUnixMS = 200
-	changed, err = store.CommitKnowledgeDocumentActionsContext(ctx, updateClaim.JobID, updateClaim.Task.ID, second, []string{knowledgeID}, []KnowledgeDocumentAction{{
+	changed, err = store.CommitKnowledgeDocumentActionsContext(ctx, updateTask, second, []string{knowledgeID}, []KnowledgeDocumentAction{{
 		Operation: KnowledgeMutationUpdate, MemoryID: knowledgeID,
 		Content:               "FAIRY 只使用 PostgreSQL 保存知识文档和向量。",
 		ConfidenceBasisPoints: 9300, Evidence: "只用 PostgreSQL 保存完整知识文档",
@@ -80,27 +75,27 @@ WHERE entry.status = 'verified'`, claim.JobID).Scan(
 	if err != nil || changed != 1 {
 		t.Fatalf("update direct knowledge = %d, %v", changed, err)
 	}
-	var replacementID, replacementDocumentID, oldStatus string
+	var replacementID, replacementSourceURL, oldStatus string
 	if err := pool.Raw().QueryRow(ctx, `
-SELECT replacement.id, replacement.document_id, original.status
+SELECT replacement.id, replacement.source_url, original.status
 FROM knowledge_entries AS replacement
 JOIN knowledge_entries AS original ON original.id = replacement.supersedes_id
 WHERE replacement.status = 'verified' AND original.id = $1`,
-		knowledgeID).Scan(&replacementID, &replacementDocumentID, &oldStatus); err != nil {
+		knowledgeID).Scan(&replacementID, &replacementSourceURL, &oldStatus); err != nil {
 		t.Fatal(err)
 	}
-	if replacementDocumentID != documentID || oldStatus != "superseded" {
-		t.Fatalf("direct update state = document %q old %q", replacementDocumentID, oldStatus)
+	if replacementSourceURL != task.Source.URL || oldStatus != "superseded" {
+		t.Fatalf("direct update state = source %q old %q", replacementSourceURL, oldStatus)
 	}
 
-	deleteClaim := enqueueAndClaimDirectKnowledge(t, ctx, store, bootstrap.Conversation.ID, turn.ID, "direct-task-delete", 300)
+	deleteTask := directKnowledgeTask(bootstrap.Conversation.ID, turn.ID, "direct-task-delete", 300)
 	thirdContent := "FAIRY 当前文档明确说明旧知识已经废弃，不应继续召回。"
 	third := second
 	third.Content = thirdContent
 	third.ContentHash = semanticContentHash(thirdContent)
 	third.EvidenceID = "direct-evidence-delete"
 	third.FetchedAtUnixMS = 300
-	changed, err = store.CommitKnowledgeDocumentActionsContext(ctx, deleteClaim.JobID, deleteClaim.Task.ID, third, []string{replacementID}, []KnowledgeDocumentAction{{
+	changed, err = store.CommitKnowledgeDocumentActionsContext(ctx, deleteTask, third, []string{replacementID}, []KnowledgeDocumentAction{{
 		Operation: KnowledgeMutationDelete, MemoryID: replacementID,
 		Evidence: "旧知识已经废弃，不应继续召回",
 	}})
@@ -116,7 +111,7 @@ WHERE replacement.status = 'verified' AND original.id = $1`,
 	}
 	for _, table := range []string{
 		"knowledge_sources", "knowledge_document_versions", "knowledge_chunks",
-		"knowledge_evidence", "knowledge_ingest_jobs",
+		"knowledge_evidence", "knowledge_ingest_jobs", "knowledge_documents", "feedback_events",
 	} {
 		var absent bool
 		if err := pool.Raw().QueryRow(ctx, "SELECT to_regclass($1) IS NULL", table).Scan(&absent); err != nil {
@@ -161,21 +156,21 @@ func TestPostgresDirectKnowledgeNoneDoesNotAppendDocumentSourceIntegration(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	var originalDocumentID, originalEvidence string
+	var originalSourceURL, originalEvidence string
 	if err := pool.Raw().QueryRow(ctx, `
-SELECT document_id, evidence_text FROM knowledge_entries WHERE id = $1`,
-		original.ID).Scan(&originalDocumentID, &originalEvidence); err != nil {
+SELECT source_url, evidence_text FROM knowledge_entries WHERE id = $1`,
+		original.ID).Scan(&originalSourceURL, &originalEvidence); err != nil {
 		t.Fatal(err)
 	}
-	claim := enqueueAndClaimDirectKnowledge(t, ctx, store, bootstrap.Conversation.ID, turn.ID, "direct-task-none", 200)
+	task := directKnowledgeTask(bootstrap.Conversation.ID, turn.ID, "direct-task-none", 200)
 	content := "新文档也提到了原始文档已经保存这一条稳定事实，但不应追加来源。"
 	document := KnowledgeDocument{
-		SourceID: "direct-source", CanonicalURL: claim.Task.Source.URL,
+		SourceID: "direct-source", CanonicalURL: task.Source.URL,
 		Title: "新文档", Content: content, ContentHash: semanticContentHash(content),
 		EvidenceID: "direct-evidence-none", ContentType: "text/plain", FetchedAtUnixMS: 200,
 	}
 	changed, err := store.CommitKnowledgeDocumentActionsContext(
-		ctx, claim.JobID, claim.Task.ID, document, []string{original.ID},
+		ctx, task, document, []string{original.ID},
 		[]KnowledgeDocumentAction{{
 			Operation: KnowledgeMutationNone, MemoryID: original.ID,
 			Evidence: "原始文档已经保存这一条稳定事实",
@@ -184,26 +179,22 @@ SELECT document_id, evidence_text FROM knowledge_entries WHERE id = $1`,
 	if err != nil || changed != 0 {
 		t.Fatalf("NONE direct knowledge = %d, %v", changed, err)
 	}
-	var documentID, evidence, status string
+	var sourceURL, evidence, status string
 	if err := pool.Raw().QueryRow(ctx, `
-SELECT document_id, evidence_text, status FROM knowledge_entries WHERE id = $1`,
-		original.ID).Scan(&documentID, &evidence, &status); err != nil {
+SELECT source_url, evidence_text, status FROM knowledge_entries WHERE id = $1`,
+		original.ID).Scan(&sourceURL, &evidence, &status); err != nil {
 		t.Fatal(err)
 	}
-	if documentID != originalDocumentID || evidence != originalEvidence || status != "verified" {
-		t.Fatalf("NONE changed entry = document %q evidence %q status %q", documentID, evidence, status)
+	if sourceURL != originalSourceURL || evidence != originalEvidence || status != "verified" {
+		t.Fatalf("NONE changed entry = source %q evidence %q status %q", sourceURL, evidence, status)
 	}
 }
 
-func enqueueAndClaimDirectKnowledge(
-	t *testing.T,
-	ctx context.Context,
-	store *Store,
+func directKnowledgeTask(
 	conversationID, turnID, taskID string,
 	fetchedAt int64,
-) KnowledgeIngestClaim {
-	t.Helper()
-	task := KnowledgeIngestTask{
+) KnowledgeIngestTask {
+	return KnowledgeIngestTask{
 		ID: taskID, ConversationID: conversationID, TurnID: turnID,
 		Source: KnowledgeIngestSource{
 			ID: "direct-source", Title: "FAIRY 架构",
@@ -211,12 +202,4 @@ func enqueueAndClaimDirectKnowledge(
 			Rank: 1, FetchedAtUnixMS: fetchedAt,
 		},
 	}
-	if err := store.EnqueueKnowledgeIngestTasksContext(ctx, []KnowledgeIngestTask{task}); err != nil {
-		t.Fatal(err)
-	}
-	claims, err := store.ClaimKnowledgeIngestTasksContext(ctx, 1)
-	if err != nil || len(claims) != 1 {
-		t.Fatalf("claim direct knowledge task = %#v, %v", claims, err)
-	}
-	return claims[0]
 }

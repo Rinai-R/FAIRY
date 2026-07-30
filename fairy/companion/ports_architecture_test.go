@@ -25,7 +25,7 @@ var memoryStoreInterfaceNames = []string{
 	"SocialLearningStore",
 }
 
-var retentionPortInterfaceNames = []string{"extractionStore", "knowledgeIngestStore", "knowledgeIngestLeaseStore"}
+var retentionPortInterfaceNames = []string{"extractionStore", "knowledgeIngestStore"}
 
 func TestMemoryPortsAreConsumerScoped(t *testing.T) {
 	file, err := parser.ParseFile(token.NewFileSet(), "ports.go", nil, 0)

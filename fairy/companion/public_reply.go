@@ -38,35 +38,7 @@ func (s *CompanionService) retrieveSocialRespondContext(ctx context.Context, cha
 	if err != nil {
 		return nil, err
 	}
-	feedback, err := s.memory.ambient.socialContext.RecentSocialFeedbackSummary(ctx, characterID, conversationID)
-	if err != nil {
-		return nil, err
-	}
-	feedbackCue, err := formatRecentSocialFeedback(feedback)
-	if err != nil {
-		return nil, err
-	}
-	return &SocialRespondContext{Intent: intent, Memory: socialMemory, PersonNotes: notes, RecentFeedback: feedbackCue}, nil
-}
-
-func formatRecentSocialFeedback(summary memory.RecentSocialFeedbackSummary) (string, error) {
-	if summary.Empty() {
-		return "", nil
-	}
-	if summary.SampleCount != summary.PositiveCount+summary.NegativeCount+summary.UnknownCount {
-		return "", errors.New("recent social feedback counts are inconsistent")
-	}
-	if summary.LatestOutcome != memory.SocialFeedbackPositive && summary.LatestOutcome != memory.SocialFeedbackNegative && summary.LatestOutcome != memory.SocialFeedbackUnknown {
-		return "", errors.New("recent social feedback latest outcome is invalid")
-	}
-	if summary.ObservedMessageCount < 0 {
-		return "", errors.New("recent social feedback observation count is invalid")
-	}
-	return fmt.Sprintf(
-		"sample=%d;positive=%d;negative=%d;unknown=%d;latest=%s;observedMessages=%d",
-		summary.SampleCount, summary.PositiveCount, summary.NegativeCount, summary.UnknownCount,
-		summary.LatestOutcome, summary.ObservedMessageCount,
-	), nil
+	return &SocialRespondContext{Intent: intent, Memory: socialMemory, PersonNotes: notes}, nil
 }
 
 func filterSocialMemoryKinds(entries []memory.SocialMemoryEntry, kinds ...string) []memory.SocialMemoryEntry {
