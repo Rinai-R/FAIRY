@@ -210,6 +210,7 @@ html, body, #root {
 /* ---------- Main ---------- */
 
 .main {
+  min-width: 0;
   padding: 2.4rem 2.6rem 3rem;
   width: 100%;
   max-width: 1140px;
@@ -512,29 +513,185 @@ html, body, #root {
   box-shadow: var(--fairy-shadow);
 }
 
-/* ---------- Usage table ---------- */
+/* ---------- Usage dashboard ---------- */
+
+.usage-page { min-width: 0; }
+
+.usage-toolbar,
+.usage-recent-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.usage-toolbar { margin-bottom: 0.8rem; }
+
+.usage-toolbar h2,
+.usage-recent-heading h2 {
+  margin: 0;
+  font-size: 0.94rem;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.usage-toolbar p,
+.usage-recent-heading p {
+  margin: 0.22rem 0 0;
+  color: var(--fairy-text-faint);
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
+.usage-mode {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(92px, 1fr));
+  width: 220px;
+  padding: 3px;
+  border: 1px solid var(--fairy-border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--fairy-surface-soft);
+}
+
+.usage-mode button {
+  appearance: none;
+  min-height: 32px;
+  padding: 0.35rem 0.6rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fairy-text-muted);
+  font: inherit;
+  font-size: 0.76rem;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.usage-mode button.active {
+  background: var(--fairy-surface);
+  color: var(--fairy-accent-strong);
+  box-shadow: 0 1px 3px hsl(200 24% 20% / 8%);
+  font-weight: 600;
+}
+
+.usage-mode button:focus-visible {
+  outline: 2px solid hsl(var(--primary) / 40%);
+  outline-offset: 1px;
+}
+
+.usage-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 1.5rem;
+  overflow: hidden;
+  border: 1px solid var(--fairy-border-soft);
+  border-radius: var(--fairy-radius);
+  background: var(--fairy-surface);
+  box-shadow: var(--fairy-shadow-soft);
+}
+
+.usage-metric {
+  min-width: 0;
+  padding: 1rem;
+  border-right: 1px solid var(--fairy-border-soft);
+}
+
+.usage-metric:last-child { border-right: 0; }
+
+.usage-metric span,
+.usage-metric small {
+  display: block;
+  overflow: hidden;
+  color: var(--fairy-text-faint);
+  font-size: 0.72rem;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-metric strong {
+  display: block;
+  margin: 0.32rem 0;
+  overflow-wrap: anywhere;
+  font-size: 1.22rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+.usage-recent { min-width: 0; }
+.usage-recent-heading { margin-bottom: 0.65rem; }
+
+.usage-truncated {
+  max-width: 18rem;
+  color: var(--fairy-complement);
+  font-size: 0.74rem;
+  line-height: 1.45;
+  text-align: right;
+}
+
+.usage-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  border-top: 1px solid var(--fairy-border-soft);
+  border-bottom: 1px solid var(--fairy-border-soft);
+  overscroll-behavior-inline: contain;
+}
 
 .usage-table {
   width: 100%;
+  min-width: 900px;
   border-collapse: collapse;
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   font-variant-numeric: tabular-nums;
 }
 .usage-table th, .usage-table td {
   text-align: left;
-  padding: 0.6rem 0.45rem;
+  padding: 0.68rem 0.6rem;
   border-bottom: 1px solid var(--fairy-border-soft);
+  white-space: nowrap;
 }
 .usage-table tbody tr:last-child td { border-bottom: 0; }
 .usage-table th {
   color: var(--fairy-text-faint);
-  font-weight: 500;
-  font-size: 0.74rem;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-weight: 600;
+  font-size: 0.7rem;
+  letter-spacing: 0;
 }
 .usage-table tbody tr { transition: background 140ms var(--fairy-ease); }
 .usage-table tbody tr:hover { background: hsl(38 22% 98%); }
+.usage-table code { color: var(--fairy-text-muted); font-size: 0.74rem; }
+
+.usage-status { color: var(--fairy-text-muted); }
+.usage-status.completed { color: var(--fairy-success); }
+.usage-status.failed,
+.usage-status.interrupted { color: var(--fairy-danger); }
+
+.usage-empty {
+  padding: 2rem 1rem;
+  border-top: 1px solid var(--fairy-border-soft);
+  color: var(--fairy-text-faint);
+  font-size: 0.84rem;
+  text-align: center;
+}
+
+.usage-summary + .usage-recent,
+.usage-empty + .usage-recent { margin-top: 1.5rem; }
+
+.usage-error {
+  display: grid;
+  gap: 0.22rem;
+  margin-bottom: 1rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid hsl(6 52% 86%);
+  border-radius: var(--radius-sm);
+  background: hsl(6 72% 98%);
+  color: var(--fairy-danger);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.usage-error strong { font-size: 0.84rem; }
 
 /* ---------- Observability ---------- */
 
@@ -717,6 +874,9 @@ html, body, #root {
   .nav-item.active::before { display: none; }
   .grid-2, .grid-stats, .memory-compose { grid-template-columns: 1fr; }
   .main { padding: 1.5rem 1.1rem 2rem; }
+  .usage-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .usage-metric:nth-child(2) { border-right: 0; }
+  .usage-metric:nth-child(-n+2) { border-bottom: 1px solid var(--fairy-border-soft); }
   .observability-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .observability-metric:nth-child(even) { border-right: 0; }
   .observability-metric:nth-child(-n+6) { border-bottom: 1px solid var(--fairy-border-soft); }
@@ -730,6 +890,14 @@ html, body, #root {
   .nav-item { gap: 0.35rem; padding-inline: 0.4rem; }
   .page-header { flex-direction: column; }
   .page-header > .rt-Flex { width: 100%; flex-wrap: wrap; justify-content: flex-start; }
+  .usage-toolbar,
+  .usage-recent-heading { align-items: flex-start; flex-direction: column; }
+  .usage-mode { width: 100%; }
+  .usage-summary { grid-template-columns: 1fr; }
+  .usage-metric,
+  .usage-metric:nth-child(2) { border-right: 0; border-bottom: 1px solid var(--fairy-border-soft); }
+  .usage-metric:last-child { border-bottom: 0; }
+  .usage-truncated { max-width: none; text-align: left; }
   .observability-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 	.observability-metric:nth-child(even) { border-right: 0; }
 	.observability-metric:nth-child(-n+6) { border-bottom: 1px solid var(--fairy-border-soft); }

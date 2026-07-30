@@ -1,7 +1,21 @@
 import { Button, Select, Switch, Text, TextArea, TextField } from "@radix-ui/themes";
+import { ReloadIcon } from "@radix-ui/react-icons";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { Field, PageHeader } from "../components/ui";
+import {
+  USAGE_LANE_FILTER_ALL,
+  USAGE_LANE_FILTER_RESPOND,
+  aggregateUsage,
+  formatHitRate,
+  formatTokenCount,
+  formatUsageTime,
+  parseUsageReport,
+  turnMatchesLane,
+  usageHitRate,
+  type UsageLaneFilter,
+  type UsageReport,
+} from "../usageReport";
 
 export function OverviewPage({ onToast }: { onToast: (m: string, e?: boolean) => void }) {
   const [status, setStatus] = useState<any>(null);
@@ -336,89 +350,158 @@ export function IntelligencePage({ onToast }: { onToast: (m: string, e?: boolean
 }
 
 export function UsagePage({ onToast }: { onToast: (m: string, e?: boolean) => void }) {
-  const [report, setReport] = useState<any>(null);
+  const [report, setReport] = useState<UsageReport | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [revision, setRevision] = useState(0);
+  const [laneFilter, setLaneFilter] = useState<UsageLaneFilter>(USAGE_LANE_FILTER_ALL);
 
   useEffect(() => {
-    api("/usage")
-      .then(setReport)
-      .catch((e) => onToast(e.message, true));
-  }, []);
+    let active = true;
+    setReport(null);
+    setError("");
+    setLoading(true);
+    api<unknown>("/usage")
+      .then((value) => {
+        if (active) setReport(parseUsageReport(value));
+      })
+      .catch((cause: unknown) => {
+        if (!active) return;
+        const message = cause instanceof Error ? cause.message : String(cause);
+        setError(message);
+        onToast(message, true);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [revision]);
 
-  const overall = report?.overall || [];
-  const turns = report?.turns || [];
+  const total = report ? aggregateUsage(report.overall, laneFilter) : null;
+  const visibleTurns = report?.turns.filter((turn) => turnMatchesLane(turn, laneFilter)) ?? [];
+  const hasUsage = Boolean(report && report.overall.length > 0);
 
   return (
-    <section>
+    <section className="usage-page">
       <PageHeader
         title="用量"
-        description="按 lane 汇总的 token 用量；来自本机会话账本。"
-        status={report ? `${report.turnCount ?? 0} 次发送` : "读取中"}
+        description="查看模型输入、缓存利用和每次发送的 Token 构成。"
+        status={loading ? "读取中" : error ? "数据不可用" : report ? `${formatTokenCount(report.turnCount)} 次发送` : undefined}
         ready={Boolean(report)}
+        action={
+          <Button variant="soft" disabled={loading} onClick={() => setRevision((value) => value + 1)}>
+            <ReloadIcon /> 刷新
+          </Button>
+        }
       />
-      <div className="card" style={{ marginBottom: 16 }}>
-        <Text weight="medium" mb="2">
-          总体
-        </Text>
-        <table className="usage-table">
-          <thead>
-            <tr>
-              <th>Lane</th>
-              <th>Input</th>
-              <th>Output</th>
-              <th>Cached</th>
-              <th>Calls</th>
-            </tr>
-          </thead>
-          <tbody>
-            {overall.length === 0 ? (
-              <tr>
-                <td colSpan={5}>暂无用量</td>
-              </tr>
+
+      {error ? (
+        <div className="usage-error" role="alert">
+          <strong>用量数据不可用</strong>
+          <span>{error}</span>
+        </div>
+      ) : null}
+
+      {report ? (
+        <>
+          <div className="usage-toolbar">
+            <div>
+              <h2>累计用量</h2>
+              <p>累计覆盖全部历史；缓存命中率只计算 provider 已报告观测的输入。</p>
+            </div>
+            <div className="usage-mode" role="group" aria-label="Lane 筛选">
+              <button
+                type="button"
+                className={laneFilter === USAGE_LANE_FILTER_ALL ? "active" : ""}
+                aria-pressed={laneFilter === USAGE_LANE_FILTER_ALL}
+                onClick={() => setLaneFilter(USAGE_LANE_FILTER_ALL)}
+              >
+                全部
+              </button>
+              <button
+                type="button"
+                className={laneFilter === USAGE_LANE_FILTER_RESPOND ? "active" : ""}
+                aria-pressed={laneFilter === USAGE_LANE_FILTER_RESPOND}
+                onClick={() => setLaneFilter(USAGE_LANE_FILTER_RESPOND)}
+              >
+                仅 respond
+              </button>
+            </div>
+          </div>
+
+          {hasUsage && total ? (
+            <div className="usage-summary" aria-label="累计 Token 指标">
+              <UsageMetric label="缓存命中" value={formatTokenCount(total.cachedInputTokens)} detail={`${formatTokenCount(total.callCount)} 次模型调用`} testId="usage-cached" />
+              <UsageMetric label="未命中输入" value={formatTokenCount(total.uncachedInputTokens)} detail={`${formatTokenCount(total.inputTokens)} 输入 Token`} testId="usage-uncached" />
+              <UsageMetric label="输出" value={formatTokenCount(total.outputTokens)} detail={`${formatTokenCount(total.cacheWriteTokens)} cache write`} testId="usage-output" />
+              <UsageMetric label="缓存命中率" value={formatHitRate(usageHitRate(total))} detail={`${formatTokenCount(total.cachedObservedInputTokens)} 已观测输入`} testId="usage-hit-rate" />
+            </div>
+          ) : (
+            <div className="usage-empty">还没有可统计的模型用量。</div>
+          )}
+
+          <div className="usage-recent">
+            <div className="usage-recent-heading">
+              <div>
+                <h2>最近发送</h2>
+                <p>{visibleTurns.length} 条可见 · 全部历史 {formatTokenCount(report.turnCount)} 次</p>
+              </div>
+              {report.truncated ? <span className="usage-truncated">仅展示最近记录，累计仍覆盖全部历史</span> : null}
+            </div>
+            {visibleTurns.length === 0 ? (
+              <div className="usage-empty">当前筛选下没有发送记录。</div>
             ) : (
-              overall.map((row: any) => (
-                <tr key={row.lane}>
-                  <td>{row.lane}</td>
-                  <td>{row.inputTokens}</td>
-                  <td>{row.outputTokens}</td>
-                  <td>{row.cachedInputTokens}</td>
-                  <td>{row.callCount}</td>
-                </tr>
-              ))
+              <div className="usage-table-wrap">
+                <table className="usage-table">
+                  <thead>
+                    <tr>
+                      <th>时间</th>
+                      <th>Turn</th>
+                      <th>角色</th>
+                      <th>状态</th>
+                      <th>输入</th>
+                      <th>缓存命中</th>
+                      <th>未命中</th>
+                      <th>输出</th>
+                      <th>命中率</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleTurns.map((turn) => {
+                      const usage = aggregateUsage(turn.lanes, laneFilter);
+                      return (
+                        <tr key={turn.turnId} data-testid={`usage-turn-${turn.turnId}`}>
+                          <td><time dateTime={new Date(turn.createdAtUnixMs).toISOString()}>{formatUsageTime(turn.createdAtUnixMs)}</time></td>
+                          <td><code>{turn.turnId.slice(0, 8)}</code></td>
+                          <td><code>{turn.characterId ? turn.characterId.slice(0, 8) : "—"}</code></td>
+                          <td><span className={`usage-status ${turn.status}`}>{turn.status}</span></td>
+                          <td>{formatTokenCount(usage.inputTokens)}</td>
+                          <td>{formatTokenCount(usage.cachedInputTokens)}</td>
+                          <td>{formatTokenCount(usage.uncachedInputTokens)}</td>
+                          <td>{formatTokenCount(usage.outputTokens)}</td>
+                          <td>{formatHitRate(usageHitRate(usage))}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             )}
-          </tbody>
-        </table>
-      </div>
-      <div className="card">
-        <Text weight="medium" mb="2">
-          最近回合
-        </Text>
-        <table className="usage-table">
-          <thead>
-            <tr>
-              <th>Turn</th>
-              <th>Status</th>
-              <th>Character</th>
-              <th>Lanes</th>
-            </tr>
-          </thead>
-          <tbody>
-            {turns.length === 0 ? (
-              <tr>
-                <td colSpan={4}>暂无回合</td>
-              </tr>
-            ) : (
-              turns.slice(0, 40).map((t: any) => (
-                <tr key={t.turnId}>
-                  <td>{t.turnId?.slice(0, 8)}</td>
-                  <td>{t.status}</td>
-                  <td>{t.characterId?.slice(0, 8)}</td>
-                  <td>{(t.lanes || []).map((l: any) => l.lane).join(", ")}</td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+          </div>
+        </>
+      ) : null}
     </section>
+  );
+}
+
+function UsageMetric({ label, value, detail, testId }: { label: string; value: string; detail: string; testId: string }) {
+  return (
+    <div className="usage-metric">
+      <span>{label}</span>
+      <strong data-testid={testId}>{value}</strong>
+      <small>{detail}</small>
+    </div>
   );
 }
