@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	SocialFeedbackMaxOutputTokens    uint32 = 96
+	SocialFeedbackMaxOutputTokens    uint32 = 768
 	FeedbackQueueCapacity                   = 8
 	socialFeedbackMaxPendingPerGroup        = 4
 	socialFeedbackPendingCapacity           = 256
@@ -24,13 +24,16 @@ const (
 	socialFeedbackObservationWindow         = 2 * time.Minute
 )
 
-const SocialFeedbackInstructions = "Judge the observable social outcome of one public-group reply from only the supplied reply and later external observations. Output exactly one strict JSON object: {\"outcome\":\"positive|negative|unknown\"}. positive means the conversation visibly continues constructively, especially when another participant engages with the reply or the topic progresses. negative means the reply is explicitly corrected, rejected, makes the exchange worse, or triggers a visible repair loop. unknown means evidence is absent, ambiguous, unrelated, or only silence. Do not infer private feelings or hidden reactions. Output no reasoning, Markdown, unknown fields, null fields, or trailing data."
+const (
+	SocialFeedbackEvaluatorRevision = "social-feedback-v2"
+	SocialFeedbackInstructions      = "Evaluate each supplied social-memory candidate for one completed public-group reply. Output exactly one strict JSON object: {\"evaluations\":[{\"entryId\":\"s0\",\"adoption\":\"adopted|not_adopted|uncertain\",\"outcome\":\"positive|partial|negative|unknown\",\"credit\":\"entry|execution|context|unknown\",\"evidenceMessageIds\":[\"message-id\"]}]}. Cover every supplied alias exactly once and use no other alias. adoption says whether the reply used that candidate. A known outcome requires later external message evidence from the supplied window. credit says whether the outcome came from the candidate, reply execution, or context. not_adopted and uncertain must use unknown outcome, unknown credit, and no evidence. Silence or insufficient evidence is unknown. Do not output real entry IDs, scores, reasons, Markdown, unknown fields, null fields, or trailing data."
+)
 
 type FeedbackRegistration struct {
 	CharacterID    string
 	ConversationID string
 	TurnID         string
-	EntryIDs       []string
+	Candidates     []memory.SocialFeedbackCandidate
 	ReplyText      string
 }
 
@@ -75,12 +78,29 @@ type FeedbackEngine struct {
 
 type feedbackPromptPayload struct {
 	ContextType  string                          `json:"contextType"`
+	Candidates   []feedbackCandidatePayload      `json:"candidates"`
 	Reply        string                          `json:"reply"`
 	Observations []socialLearnObservationPayload `json:"observations"`
 }
 
+type feedbackCandidatePayload struct {
+	EntryID   string `json:"entryId"`
+	Kind      string `json:"kind"`
+	Situation string `json:"situation"`
+	Content   string `json:"content"`
+	RecallCue string `json:"recallCue"`
+}
+
 type feedbackResult struct {
-	Outcome string `json:"outcome"`
+	Evaluations []feedbackEvaluationResult `json:"evaluations"`
+}
+
+type feedbackEvaluationResult struct {
+	EntryID            string   `json:"entryId"`
+	Adoption           string   `json:"adoption"`
+	Outcome            string   `json:"outcome"`
+	Credit             string   `json:"credit"`
+	EvidenceMessageIDs []string `json:"evidenceMessageIds"`
 }
 
 func NewFeedbackEngine(host FeedbackHost, capacity int) *FeedbackEngine {
@@ -110,13 +130,23 @@ func newFeedbackEngine(host FeedbackHost, queueCapacity, pendingCapacity int, wi
 }
 
 func (e *FeedbackEngine) Register(registration FeedbackRegistration) bool {
-	if e == nil || strings.TrimSpace(registration.ConversationID) == "" || strings.TrimSpace(registration.TurnID) == "" {
+	if e == nil || strings.TrimSpace(registration.CharacterID) == "" || strings.TrimSpace(registration.ConversationID) == "" || strings.TrimSpace(registration.TurnID) == "" {
 		return false
 	}
-	if strings.TrimSpace(registration.ReplyText) == "" {
+	if strings.TrimSpace(registration.ReplyText) == "" || len(registration.Candidates) == 0 || len(registration.Candidates) > memory.MaxSocialFeedbackIDs {
 		return false
 	}
-	registration.EntryIDs = append([]string(nil), registration.EntryIDs...)
+	seenCandidates := make(map[string]struct{}, len(registration.Candidates))
+	registration.Candidates = append([]memory.SocialFeedbackCandidate(nil), registration.Candidates...)
+	for _, candidate := range registration.Candidates {
+		if strings.TrimSpace(candidate.ID) == "" || strings.TrimSpace(candidate.Content) == "" {
+			return false
+		}
+		if _, exists := seenCandidates[candidate.ID]; exists {
+			return false
+		}
+		seenCandidates[candidate.ID] = struct{}{}
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closed {
@@ -246,7 +276,7 @@ func (e *FeedbackEngine) process(ctx context.Context, snapshot feedbackSnapshot)
 	if e.host == nil {
 		return errors.New("social feedback runtime is not configured")
 	}
-	outcome := memory.SocialFeedbackUnknown
+	evaluations := unknownSocialFeedbackEvaluations(snapshot.registration.Candidates)
 	if len(snapshot.observations) > 0 {
 		input, err := buildSocialFeedbackInput(snapshot)
 		if err != nil {
@@ -273,20 +303,27 @@ func (e *FeedbackEngine) process(ctx context.Context, snapshot feedbackSnapshot)
 		if err != nil {
 			return fmt.Errorf("executing social feedback request: %w", err)
 		}
-		outcome, err = compileSocialFeedback(model.CollectTextFromEvents(events))
+		evaluations, err = compileSocialFeedback(model.CollectTextFromEvents(events), snapshot.registration.Candidates, snapshot.observations)
 		if err != nil {
 			return err
 		}
 	}
-	_, err := e.host.RecordSocialReplyFeedback(ctx, memory.SocialReplyFeedbackInput{
+	_, err := e.host.RecordSocialFeedbackBatch(ctx, memory.SocialFeedbackBatchInput{
 		CharacterID: snapshot.registration.CharacterID, ConversationID: snapshot.registration.ConversationID,
-		TurnID: snapshot.registration.TurnID, EntryIDs: snapshot.registration.EntryIDs,
-		Outcome: outcome, ObservedMessageCount: len(snapshot.observations),
+		TurnID: snapshot.registration.TurnID, Evaluations: evaluations,
+		ObservedMessageCount: len(snapshot.observations), EvaluatorRevision: SocialFeedbackEvaluatorRevision,
 	})
 	return err
 }
 
 func buildSocialFeedbackInput(snapshot feedbackSnapshot) ([]model.PromptItem, error) {
+	candidates := make([]feedbackCandidatePayload, 0, len(snapshot.registration.Candidates))
+	for index, candidate := range snapshot.registration.Candidates {
+		candidates = append(candidates, feedbackCandidatePayload{
+			EntryID: fmt.Sprintf("s%d", index), Kind: candidate.Kind, Situation: candidate.Situation,
+			Content: candidate.Content, RecallCue: candidate.RecallCue,
+		})
+	}
 	observations := make([]socialLearnObservationPayload, 0, len(snapshot.observations))
 	for _, observation := range snapshot.observations {
 		observations = append(observations, socialLearnObservationPayload{
@@ -295,29 +332,81 @@ func buildSocialFeedbackInput(snapshot feedbackSnapshot) ([]model.PromptItem, er
 			TimestampUnixMS: observation.TimestampUnixMS,
 		})
 	}
-	payload, err := json.Marshal(feedbackPromptPayload{ContextType: "public_reply_outcome_evidence", Reply: snapshot.registration.ReplyText, Observations: observations})
+	payload, err := json.Marshal(feedbackPromptPayload{
+		ContextType: "public_reply_outcome_evidence", Candidates: candidates,
+		Reply: snapshot.registration.ReplyText, Observations: observations,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("serializing social feedback input: %w", err)
 	}
 	return []model.PromptItem{{Type: model.PromptItemContextData, Content: string(payload)}}, nil
 }
 
-func compileSocialFeedback(draft string) (string, error) {
+func compileSocialFeedback(
+	draft string,
+	candidates []memory.SocialFeedbackCandidate,
+	observations []AmbientObservation,
+) ([]memory.SocialFeedbackEvaluation, error) {
 	decoder := json.NewDecoder(strings.NewReader(strings.TrimSpace(draft)))
 	decoder.DisallowUnknownFields()
 	var result feedbackResult
 	if err := decoder.Decode(&result); err != nil {
-		return "", fmt.Errorf("decoding social feedback result: %w", err)
+		return nil, fmt.Errorf("decoding social feedback result: %w", err)
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return "", errors.New("social feedback result contains trailing data")
+		return nil, errors.New("social feedback result contains trailing data")
 	}
-	switch result.Outcome {
-	case memory.SocialFeedbackPositive, memory.SocialFeedbackNegative, memory.SocialFeedbackUnknown:
-		return result.Outcome, nil
-	default:
-		return "", errors.New("social feedback outcome is invalid")
+	if len(result.Evaluations) != len(candidates) {
+		return nil, errors.New("social feedback result does not cover every candidate")
 	}
+	aliasToID := make(map[string]string, len(candidates))
+	for index, candidate := range candidates {
+		aliasToID[fmt.Sprintf("s%d", index)] = candidate.ID
+	}
+	allowedEvidence := make(map[string]struct{}, len(observations))
+	for _, observation := range observations {
+		allowedEvidence[observation.MessageID] = struct{}{}
+	}
+	seenAliases := make(map[string]struct{}, len(candidates))
+	evaluations := make([]memory.SocialFeedbackEvaluation, 0, len(candidates))
+	for _, raw := range result.Evaluations {
+		entryID, exists := aliasToID[raw.EntryID]
+		if !exists {
+			return nil, errors.New("social feedback result contains an unknown candidate alias")
+		}
+		if _, exists := seenAliases[raw.EntryID]; exists {
+			return nil, errors.New("social feedback result contains a duplicate candidate alias")
+		}
+		seenAliases[raw.EntryID] = struct{}{}
+		for _, evidenceID := range raw.EvidenceMessageIDs {
+			if _, exists := allowedEvidence[evidenceID]; !exists {
+				return nil, errors.New("social feedback result cites evidence outside the current window")
+			}
+		}
+		evaluations = append(evaluations, memory.SocialFeedbackEvaluation{
+			EntryID: entryID, Adoption: raw.Adoption, Outcome: raw.Outcome, Credit: raw.Credit,
+			EvidenceMessageIDs: append([]string{}, raw.EvidenceMessageIDs...),
+		})
+	}
+	if err := memory.ValidateSocialFeedbackBatch(memory.SocialFeedbackBatchInput{
+		CharacterID: "validation-character", ConversationID: "validation-conversation", TurnID: "validation-turn",
+		Evaluations: evaluations, ObservedMessageCount: len(observations), EvaluatorRevision: SocialFeedbackEvaluatorRevision,
+	}); err != nil {
+		return nil, fmt.Errorf("validating social feedback result: %w", err)
+	}
+	return evaluations, nil
+}
+
+func unknownSocialFeedbackEvaluations(candidates []memory.SocialFeedbackCandidate) []memory.SocialFeedbackEvaluation {
+	evaluations := make([]memory.SocialFeedbackEvaluation, 0, len(candidates))
+	for _, candidate := range candidates {
+		evaluations = append(evaluations, memory.SocialFeedbackEvaluation{
+			EntryID: candidate.ID, Adoption: memory.SocialFeedbackUncertain,
+			Outcome: memory.SocialFeedbackUnknown, Credit: memory.SocialFeedbackCreditUnknown,
+			EvidenceMessageIDs: []string{},
+		})
+	}
+	return evaluations
 }
 
 func (e *FeedbackEngine) Close() {
@@ -348,12 +437,4 @@ func (e *FeedbackEngine) Stats() FeedbackStats {
 		Registered: e.registered.Load(), Dropped: e.dropped.Load(),
 		Succeeded: e.succeeded.Load(), Failed: e.failed.Load(),
 	}
-}
-
-func MemoryEntryIDs(context memory.SocialMemoryContext) []string {
-	ids := make([]string, 0, len(context.Entries))
-	for _, entry := range context.Entries {
-		ids = append(ids, entry.ID)
-	}
-	return ids
 }

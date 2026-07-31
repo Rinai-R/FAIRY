@@ -29,6 +29,32 @@ func TestMergeRetrievalContextDeduplicatesAndPreservesPriority(t *testing.T) {
 	}
 }
 
+func TestBoundSocialToolRetrievalKeepsFeedbackCoverageWithinLimit(t *testing.T) {
+	base := memory.SocialMemoryContext{Entries: []memory.SocialMemoryEntry{
+		{ID: "base-1"}, {ID: "base-2"},
+	}}
+	extra := memory.RetrievalContext{
+		SocialMemories: memory.SocialMemoryContext{Entries: []memory.SocialMemoryEntry{
+			{ID: "base-2"}, {ID: "tool-1"}, {ID: "tool-2"},
+		}},
+		Knowledge: []memory.RetrievedKnowledge{
+			{ID: "base-2"}, {ID: "tool-1"}, {ID: "tool-2"},
+		},
+	}
+
+	got := boundSocialToolRetrieval(base, extra, 3)
+	if len(got.SocialMemories.Entries) != 2 || got.SocialMemories.Entries[0].ID != "base-2" || got.SocialMemories.Entries[1].ID != "tool-1" {
+		t.Fatalf("bounded social entries = %#v", got.SocialMemories.Entries)
+	}
+	if len(got.Knowledge) != 2 || got.Knowledge[0].ID != "base-2" || got.Knowledge[1].ID != "tool-1" {
+		t.Fatalf("bounded social knowledge = %#v", got.Knowledge)
+	}
+	merged := mergeSocialMemory(base, got.SocialMemories)
+	if len(merged.Entries) != 3 {
+		t.Fatalf("merged feedback entries = %#v", merged.Entries)
+	}
+}
+
 func TestWebAndErrorProjectionPreserveExistingShape(t *testing.T) {
 	batch, err := newWebSearchBatch("conversation", "turn", "call", []WebSearchHit{{Title: "Title", URL: "https://example.com", Snippet: "Snippet"}}, 1)
 	if err != nil {

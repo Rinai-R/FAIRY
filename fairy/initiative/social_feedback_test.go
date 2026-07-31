@@ -1,6 +1,7 @@
 package initiative
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,26 +18,43 @@ func feedbackTestSnapshot(observationCount int) feedbackSnapshot {
 		observations = append(observations, AmbientObservation{MessageID: "later-message", SenderID: "member-1", SenderName: "群友", Text: "接着聊这个话题", TimestampUnixMS: int64(index + 1)})
 	}
 	return feedbackSnapshot{
-		registration: FeedbackRegistration{CharacterID: "character-1", ConversationID: "conversation-1", TurnID: "turn-1", EntryIDs: []string{"entry-1"}, ReplyText: "先别急，看看眼前卡在哪一步。"},
+		registration: FeedbackRegistration{
+			CharacterID: "character-1", ConversationID: "conversation-1", TurnID: "turn-1",
+			Candidates: []memory.SocialFeedbackCandidate{{
+				ID: "entry-1", Kind: memory.SocialMemoryBehavior, Situation: "群友焦虑时",
+				Content: "先接住情绪", RecallCue: "焦虑安慰",
+			}},
+			ReplyText: "先别急，看看眼前卡在哪一步。",
+		},
 		observations: observations,
 	}
 }
 
-func feedbackInputs(host *learningTestHost) []memory.SocialReplyFeedbackInput {
+func feedbackInputs(host *learningTestHost) []memory.SocialFeedbackBatchInput {
 	host.mu.Lock()
 	defer host.mu.Unlock()
-	return append([]memory.SocialReplyFeedbackInput(nil), host.feedback...)
+	return append([]memory.SocialFeedbackBatchInput(nil), host.feedback...)
 }
 
 func TestFeedbackCompilerIsStrict(t *testing.T) {
-	for _, draft := range []string{`{"outcome":"good"}`, `{"outcome":"positive","reason":"continued"}`, `{"outcome":null}`, `{"outcome":"negative"} trailing`} {
-		if _, err := compileSocialFeedback(draft); err == nil {
-			t.Fatalf("accepted invalid feedback: %q", draft)
-		}
+	candidates := []memory.SocialFeedbackCandidate{{ID: "entry-1"}, {ID: "entry-2"}}
+	observations := []AmbientObservation{{MessageID: "later-1"}}
+	valid := `{"evaluations":[{"entryId":"s0","adoption":"adopted","outcome":"positive","credit":"entry","evidenceMessageIds":["later-1"]},{"entryId":"s1","adoption":"not_adopted","outcome":"unknown","credit":"unknown","evidenceMessageIds":[]}]}`
+	got, err := compileSocialFeedback(valid, candidates, observations)
+	if err != nil || len(got) != 2 || got[0].EntryID != "entry-1" || got[1].EntryID != "entry-2" {
+		t.Fatalf("compile valid feedback = %#v, %v", got, err)
 	}
-	for _, outcome := range []string{memory.SocialFeedbackPositive, memory.SocialFeedbackNegative, memory.SocialFeedbackUnknown} {
-		if got, err := compileSocialFeedback(`{"outcome":"` + outcome + `"}`); err != nil || got != outcome {
-			t.Fatalf("compile %q = %q, %v", outcome, got, err)
+	for _, draft := range []string{
+		`{"evaluations":[{"entryId":"s0","adoption":"adopted","outcome":"positive","credit":"entry","evidenceMessageIds":["later-1"]}]}`,
+		`{"evaluations":[{"entryId":"s0","adoption":"adopted","outcome":"positive","credit":"entry","evidenceMessageIds":["later-1"]},{"entryId":"s0","adoption":"not_adopted","outcome":"unknown","credit":"unknown","evidenceMessageIds":[]}]}`,
+		`{"evaluations":[{"entryId":"entry-1","adoption":"adopted","outcome":"positive","credit":"entry","evidenceMessageIds":["later-1"]},{"entryId":"s1","adoption":"not_adopted","outcome":"unknown","credit":"unknown","evidenceMessageIds":[]}]}`,
+		`{"evaluations":[{"entryId":"s0","adoption":"adopted","outcome":"positive","credit":"entry","evidenceMessageIds":["forged"]},{"entryId":"s1","adoption":"not_adopted","outcome":"unknown","credit":"unknown","evidenceMessageIds":[]}]}`,
+		`{"evaluations":[{"entryId":"s0","adoption":"not_adopted","outcome":"negative","credit":"entry","evidenceMessageIds":["later-1"]},{"entryId":"s1","adoption":"not_adopted","outcome":"unknown","credit":"unknown","evidenceMessageIds":[]}]}`,
+		`{"evaluations":[{"entryId":"s0","adoption":"adopted","outcome":"positive","credit":"entry","evidenceMessageIds":["later-1"],"score":1},{"entryId":"s1","adoption":"not_adopted","outcome":"unknown","credit":"unknown","evidenceMessageIds":[]}]}`,
+		valid + ` trailing`,
+	} {
+		if _, err := compileSocialFeedback(draft, candidates, observations); err == nil {
+			t.Fatalf("accepted invalid feedback: %q", draft)
 		}
 	}
 }
@@ -48,7 +66,7 @@ func TestFeedbackZeroObservationAndModelPathsPreserveContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	feedback := feedbackInputs(host)
-	if len(feedback) != 1 || feedback[0].Outcome != memory.SocialFeedbackUnknown || feedback[0].ObservedMessageCount != 0 {
+	if len(feedback) != 1 || len(feedback[0].Evaluations) != 1 || feedback[0].Evaluations[0].Adoption != memory.SocialFeedbackUncertain || feedback[0].Evaluations[0].Outcome != memory.SocialFeedbackUnknown || feedback[0].ObservedMessageCount != 0 {
 		t.Fatalf("zero observation feedback = %#v", feedback)
 	}
 	host.mu.Lock()
@@ -59,7 +77,7 @@ func TestFeedbackZeroObservationAndModelPathsPreserveContract(t *testing.T) {
 	}
 
 	host = newLearningTestHost()
-	host.draft = `{"outcome":"positive"}`
+	host.draft = `{"evaluations":[{"entryId":"s0","adoption":"adopted","outcome":"positive","credit":"entry","evidenceMessageIds":["later-message"]}]}`
 	engine = &FeedbackEngine{host: host}
 	if err := engine.process(t.Context(), feedbackTestSnapshot(2)); err != nil {
 		t.Fatal(err)
@@ -70,15 +88,32 @@ func TestFeedbackZeroObservationAndModelPathsPreserveContract(t *testing.T) {
 	if request.Shape.Lane != model.PromptLaneSocialFeedback || request.Shape.PromptCacheKey != model.LaneCacheKey("conversation-1", model.PromptLaneSocialFeedback) || request.CacheInput == nil || request.CacheInput.StablePromptHash == "" {
 		t.Fatalf("feedback request = %#v", request)
 	}
+	if len(request.Input) != 1 || !strings.Contains(request.Input[0].Content, `"entryId":"s0"`) || strings.Contains(request.Input[0].Content, "entry-1") {
+		t.Fatalf("feedback request exposed the wrong candidate identity: %#v", request.Input)
+	}
 	feedback = feedbackInputs(host)
-	if len(feedback) != 1 || feedback[0].Outcome != memory.SocialFeedbackPositive || feedback[0].ObservedMessageCount != 2 {
+	if len(feedback) != 1 || len(feedback[0].Evaluations) != 1 || feedback[0].Evaluations[0].Outcome != memory.SocialFeedbackPositive || feedback[0].ObservedMessageCount != 2 || feedback[0].EvaluatorRevision != SocialFeedbackEvaluatorRevision {
 		t.Fatalf("model feedback = %#v", feedback)
+	}
+}
+
+func TestFeedbackStoreFailureIsReturnedAfterStrictEvaluation(t *testing.T) {
+	host := newLearningTestHost()
+	host.draft = `{"evaluations":[{"entryId":"s0","adoption":"adopted","outcome":"partial","credit":"entry","evidenceMessageIds":["later-message"]}]}`
+	host.feedbackErr = errors.New("store unavailable")
+	engine := &FeedbackEngine{host: host}
+	if err := engine.process(t.Context(), feedbackTestSnapshot(1)); !errors.Is(err, host.feedbackErr) {
+		t.Fatalf("process error = %v, want store error", err)
+	}
+	feedback := feedbackInputs(host)
+	if len(feedback) != 1 || feedback[0].Evaluations[0].Outcome != memory.SocialFeedbackPartial {
+		t.Fatalf("strict feedback did not reach store: %#v", feedback)
 	}
 }
 
 func TestFeedbackInvalidModelResultDoesNotPersist(t *testing.T) {
 	host := newLearningTestHost()
-	host.draft = `{"outcome":"positive","reason":"guess"}`
+	host.draft = `{"evaluations":[{"entryId":"s0","adoption":"adopted","outcome":"positive","credit":"entry","evidenceMessageIds":["later-message"],"reason":"guess"}]}`
 	engine := &FeedbackEngine{host: host}
 	if err := engine.process(t.Context(), feedbackTestSnapshot(1)); err == nil {
 		t.Fatal("invalid feedback result was accepted")
@@ -90,7 +125,7 @@ func TestFeedbackInvalidModelResultDoesNotPersist(t *testing.T) {
 
 func TestFeedbackWindowBoundCloseAndEmptyEntryIDs(t *testing.T) {
 	host := newLearningTestHost()
-	host.draft = `{"outcome":"negative"}`
+	host.draft = `{"evaluations":[{"entryId":"s0","adoption":"adopted","outcome":"negative","credit":"entry","evidenceMessageIds":["later-x"]}]}`
 	engine := NewFeedbackEngine(host, 1)
 	defer engine.Close()
 	registration := feedbackTestSnapshot(0).registration
@@ -104,7 +139,7 @@ func TestFeedbackWindowBoundCloseAndEmptyEntryIDs(t *testing.T) {
 	for time.Now().Before(deadline) {
 		feedback := feedbackInputs(host)
 		if len(feedback) == 1 {
-			if feedback[0].Outcome != memory.SocialFeedbackNegative || feedback[0].ObservedMessageCount != socialFeedbackObservationLimit {
+			if len(feedback[0].Evaluations) != 1 || feedback[0].Evaluations[0].Outcome != memory.SocialFeedbackNegative || feedback[0].ObservedMessageCount != socialFeedbackObservationLimit {
 				t.Fatalf("feedback = %#v", feedback)
 			}
 			break
@@ -171,7 +206,7 @@ func TestFeedbackEngineRejectsDuplicateTurnWithoutReplacingOwner(t *testing.T) {
 	}
 	duplicate := original
 	duplicate.ReplyText = "replacement"
-	duplicate.EntryIDs = []string{"replacement-entry"}
+	duplicate.Candidates = []memory.SocialFeedbackCandidate{{ID: "replacement-entry", Content: "replacement"}}
 	if engine.Register(duplicate) {
 		t.Fatal("duplicate Register = true")
 	}
@@ -182,7 +217,7 @@ func TestFeedbackEngineRejectsDuplicateTurnWithoutReplacingOwner(t *testing.T) {
 	if pendingCount != 1 {
 		t.Fatalf("pending count = %d, want 1", pendingCount)
 	}
-	if pending == nil || pending.registration.ReplyText != original.ReplyText || len(pending.registration.EntryIDs) != 1 || pending.registration.EntryIDs[0] != original.EntryIDs[0] {
+	if pending == nil || pending.registration.ReplyText != original.ReplyText || len(pending.registration.Candidates) != 1 || pending.registration.Candidates[0].ID != original.Candidates[0].ID {
 		t.Fatalf("duplicate replaced owner: %#v", pending)
 	}
 	if stats := engine.Stats(); stats.Dropped != 1 {

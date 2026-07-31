@@ -37,32 +37,32 @@ func (s *Store) retrieveSocialMemoryContextPostgres(ctx context.Context, charact
 	if err := VerifySocialConversationScope(queryCtx, s.pool.Raw(), characterID, conversationID); err != nil {
 		return SocialMemoryContext{}, err
 	}
-	return QuerySocialMemoryContext(queryCtx, s.pool.Raw(), characterID, conversationID, queryFragments)
+	return QuerySocialMemoryContext(queryCtx, s.pool.Raw(), characterID, conversationID, queryFragments, nowUnixMS())
 }
 
 func (s *Store) retrieveCharacterSocialMemoryContextPostgres(ctx context.Context, characterID string, queryFragments []string) (SocialMemoryContext, error) {
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
-	return QueryCharacterSocialMemoryContext(queryCtx, s.pool.Raw(), characterID, queryFragments)
+	return QueryCharacterSocialMemoryContext(queryCtx, s.pool.Raw(), characterID, queryFragments, nowUnixMS())
 }
 
-func (s *Store) recordSocialReplyFeedbackPostgres(ctx context.Context, input SocialReplyFeedbackInput) (SocialReplyFeedback, error) {
+func (s *Store) recordSocialFeedbackBatchPostgres(ctx context.Context, input SocialFeedbackBatchInput) (SocialFeedbackBatchResult, error) {
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
 	tx, err := s.pool.Raw().Begin(queryCtx)
 	if err != nil {
-		return SocialReplyFeedback{}, fmt.Errorf("beginning social feedback transaction: %w", err)
+		return SocialFeedbackBatchResult{}, fmt.Errorf("beginning social feedback batch transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
 	if err := VerifySocialConversationScope(queryCtx, tx, input.CharacterID, input.ConversationID); err != nil {
-		return SocialReplyFeedback{}, err
+		return SocialFeedbackBatchResult{}, err
 	}
-	feedback, err := RecordSocialReplyFeedback(queryCtx, tx, input, "", nowUnixMS(), SocialNegativeSuppressThreshold)
+	result, err := RecordSocialFeedbackBatch(queryCtx, tx, input, nowUnixMS())
 	if err != nil {
-		return SocialReplyFeedback{}, err
+		return SocialFeedbackBatchResult{}, err
 	}
 	if err := tx.Commit(queryCtx); err != nil {
-		return SocialReplyFeedback{}, fmt.Errorf("committing social feedback transaction: %w", err)
+		return SocialFeedbackBatchResult{}, fmt.Errorf("committing social feedback batch transaction: %w", err)
 	}
-	return feedback, nil
+	return result, nil
 }

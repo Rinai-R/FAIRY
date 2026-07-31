@@ -18,20 +18,21 @@ import (
 // workflow blackboard: every field belongs to the fixed turn lifecycle and is
 // consumed by a named Companion phase.
 type turnContext struct {
-	bootstrap           memory.ConversationPromptContext
-	character           character.Record
-	profile             *config.ProfileSnapshot
-	socialContext       *SocialRespondContext
-	retrieval           memory.RetrievalContext
-	retrievalOmitReason string
-	gatherPhase         string
-	connectionConfig    config.ModelConnection
-	reply               CompiledReply
-	events              []model.StreamEvent
-	fullRequest         model.CompiledPromptRequest
-	finalUsage          []LaneModelUsage
-	profileRevision     *uint64
-	knowledgeTasks      []memory.KnowledgeIngestTask
+	bootstrap             memory.ConversationPromptContext
+	character             character.Record
+	profile               *config.ProfileSnapshot
+	socialContext         *SocialRespondContext
+	socialFeedbackContext memory.SocialMemoryContext
+	retrieval             memory.RetrievalContext
+	retrievalOmitReason   string
+	gatherPhase           string
+	connectionConfig      config.ModelConnection
+	reply                 CompiledReply
+	events                []model.StreamEvent
+	fullRequest           model.CompiledPromptRequest
+	finalUsage            []LaneModelUsage
+	profileRevision       *uint64
+	knowledgeTasks        []memory.KnowledgeIngestTask
 }
 
 type turnPhaseError struct {
@@ -95,6 +96,7 @@ func (e *TurnEngine) prepareTurnContext(
 	}
 	state.socialContext = social
 	if social != nil {
+		state.socialFeedbackContext = mergeSocialMemory(state.socialFeedbackContext, social.Memory)
 		social.RecentTargetReply = strings.TrimSpace(request.RecentTargetReply)
 		logger.Info(
 			"cognition loop",

@@ -23,6 +23,9 @@ func TestSelectSocialExpressionsForToolKeepsOnlyExpressions(t *testing.T) {
 	if len(got.Knowledge) != 2 {
 		t.Fatalf("knowledge = %#v", got.Knowledge)
 	}
+	if len(got.SocialMemories.Entries) != 2 || got.SocialMemories.Entries[0].ID != "e2" || got.SocialMemories.Entries[1].ID != "e3" {
+		t.Fatalf("feedback entries = %#v", got.SocialMemories.Entries)
+	}
 	if got.SemanticStatus != "unavailable" {
 		t.Fatalf("SemanticStatus = %q", got.SemanticStatus)
 	}
@@ -46,6 +49,9 @@ func TestSelectSocialContextForToolKeepsEpisodeAndBehavior(t *testing.T) {
 	}
 	if len(got.Knowledge) != 2 {
 		t.Fatalf("knowledge = %#v", got.Knowledge)
+	}
+	if len(got.SocialMemories.Entries) != 2 || got.SocialMemories.Entries[0].ID != "e1" || got.SocialMemories.Entries[1].ID != "e3" {
+		t.Fatalf("feedback entries = %#v", got.SocialMemories.Entries)
 	}
 	if got.SemanticStatus != "unavailable" {
 		t.Fatalf("SemanticStatus = %q", got.SemanticStatus)

@@ -25,6 +25,6 @@ type FeedbackHost interface {
 	ActiveCharacter(characterID string) (character.Record, error)
 	ModelConnection() (config.ModelConnection, error)
 	ExecuteRequest(context.Context, model.CompiledPromptRequest) ([]model.StreamEvent, error)
-	RecordSocialReplyFeedback(context.Context, memory.SocialReplyFeedbackInput) (memory.SocialReplyFeedback, error)
+	RecordSocialFeedbackBatch(context.Context, memory.SocialFeedbackBatchInput) (memory.SocialFeedbackBatchResult, error)
 	WarnFeedback(conversationID, turnID string, err error)
 }

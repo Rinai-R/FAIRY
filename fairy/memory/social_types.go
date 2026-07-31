@@ -14,15 +14,29 @@ const (
 	SocialMemoryBehavior   = "behavior"
 
 	SocialFeedbackPositive = "positive"
+	SocialFeedbackPartial  = "partial"
 	SocialFeedbackNegative = "negative"
 	SocialFeedbackUnknown  = "unknown"
+
+	SocialFeedbackAdopted    = "adopted"
+	SocialFeedbackNotAdopted = "not_adopted"
+	SocialFeedbackUncertain  = "uncertain"
+
+	SocialFeedbackCreditEntry     = "entry"
+	SocialFeedbackCreditExecution = "execution"
+	SocialFeedbackCreditContext   = "context"
+	SocialFeedbackCreditUnknown   = "unknown"
 
 	MaxSocialSituationRunes         = 240
 	MaxSocialContentRunes           = 800
 	MaxSocialRecallRunes            = 400
 	MaxSocialBatchEntries           = 12
 	MaxSocialFeedbackIDs            = 12
+	MaxSocialFeedbackEvidenceIDs    = 6
+	MaxSocialFeedbackObservedCount  = 6
 	SocialNegativeSuppressThreshold = 3
+	SocialFeedbackQuarantineScore   = -4000
+	SocialFeedbackQuarantineMS      = int64(7 * 24 * 60 * 60 * 1000)
 )
 
 type SocialMemoryEntryInput struct {
@@ -41,22 +55,29 @@ type SocialMemoryBatchInput struct {
 }
 
 type SocialMemoryEntry struct {
-	ID                string
-	CharacterID       string
-	ConversationID    string
-	Kind              string
-	Situation         string
-	Content           string
-	RecallCue         string
-	Status            string
-	SourceStartUnixMS int64
-	SourceEndUnixMS   int64
-	UseCount          int64
-	PositiveCount     int64
-	NegativeCount     int64
-	UnknownCount      int64
-	CreatedAtUnixMS   int64
-	UpdatedAtUnixMS   int64
+	ID                             string
+	CharacterID                    string
+	ConversationID                 string
+	Kind                           string
+	Situation                      string
+	Content                        string
+	RecallCue                      string
+	Status                         string
+	SourceStartUnixMS              int64
+	SourceEndUnixMS                int64
+	UseCount                       int64
+	PositiveCount                  int64
+	NegativeCount                  int64
+	UnknownCount                   int64
+	FeedbackEvaluationCount        int64
+	FeedbackAdoptedCount           int64
+	FeedbackPositiveCount          int64
+	FeedbackPartialCount           int64
+	FeedbackNegativeCount          int64
+	FeedbackScoreBasisPoints       int
+	FeedbackQuarantinedUntilUnixMS *int64
+	CreatedAtUnixMS                int64
+	UpdatedAtUnixMS                int64
 }
 
 type SocialMemoryContext struct {
@@ -65,24 +86,49 @@ type SocialMemoryContext struct {
 
 func (c SocialMemoryContext) Empty() bool { return len(c.Entries) == 0 }
 
-type SocialReplyFeedbackInput struct {
+type SocialFeedbackCandidate struct {
+	ID        string
+	Kind      string
+	Situation string
+	Content   string
+	RecallCue string
+}
+
+type SocialFeedbackEvaluation struct {
+	EntryID            string
+	Adoption           string
+	Outcome            string
+	Credit             string
+	EvidenceMessageIDs []string
+}
+
+type SocialFeedbackBatchInput struct {
 	CharacterID          string
 	ConversationID       string
 	TurnID               string
-	EntryIDs             []string
-	Outcome              string
+	Evaluations          []SocialFeedbackEvaluation
 	ObservedMessageCount int
+	EvaluatorRevision    string
 }
 
-type SocialReplyFeedback struct {
+type SocialFeedbackEvent struct {
 	ID                   string
 	CharacterID          string
 	ConversationID       string
 	TurnID               string
-	EntryIDs             []string
+	EntryID              string
+	Adoption             string
 	Outcome              string
+	Credit               string
+	EvidenceMessageIDs   []string
 	ObservedMessageCount int
+	EvaluatorRevision    string
 	CreatedAtUnixMS      int64
+}
+
+type SocialFeedbackBatchResult struct {
+	Events   []SocialFeedbackEvent
+	NoChange bool
 }
 
 func ValidSocialMemoryKind(kind string) bool {
@@ -134,7 +180,7 @@ func ValidateSocialMemoryBatch(input SocialMemoryBatchInput) error {
 	return nil
 }
 
-func ValidateSocialReplyFeedback(input SocialReplyFeedbackInput) error {
+func ValidateSocialFeedbackBatch(input SocialFeedbackBatchInput) error {
 	if err := ValidateID("character_id", input.CharacterID); err != nil {
 		return err
 	}
@@ -144,24 +190,89 @@ func ValidateSocialReplyFeedback(input SocialReplyFeedbackInput) error {
 	if err := ValidateID("turn_id", input.TurnID); err != nil {
 		return err
 	}
-	if input.Outcome != SocialFeedbackPositive && input.Outcome != SocialFeedbackNegative && input.Outcome != SocialFeedbackUnknown {
-		return errors.New("social feedback outcome is invalid")
+	if err := ValidateID("evaluator_revision", input.EvaluatorRevision); err != nil {
+		return err
 	}
-	if len(input.EntryIDs) > MaxSocialFeedbackIDs {
-		return fmt.Errorf("social feedback must reference at most %d entries", MaxSocialFeedbackIDs)
+	if len(input.Evaluations) == 0 || len(input.Evaluations) > MaxSocialFeedbackIDs {
+		return fmt.Errorf("social feedback batch must contain between 1 and %d evaluations", MaxSocialFeedbackIDs)
 	}
-	seen := make(map[string]struct{}, len(input.EntryIDs))
-	for _, id := range input.EntryIDs {
-		if err := ValidateID("social_memory_entry_id", id); err != nil {
-			return err
+	if input.ObservedMessageCount < 0 || input.ObservedMessageCount > MaxSocialFeedbackObservedCount {
+		return fmt.Errorf("social feedback observed message count must be between 0 and %d", MaxSocialFeedbackObservedCount)
+	}
+	seenEntries := make(map[string]struct{}, len(input.Evaluations))
+	for index, evaluation := range input.Evaluations {
+		if err := ValidateID("social_memory_entry_id", evaluation.EntryID); err != nil {
+			return fmt.Errorf("social feedback evaluation %d: %w", index, err)
 		}
-		if _, exists := seen[id]; exists {
+		if _, exists := seenEntries[evaluation.EntryID]; exists {
 			return errors.New("social feedback contains duplicate entry IDs")
 		}
-		seen[id] = struct{}{}
-	}
-	if input.ObservedMessageCount < 0 {
-		return errors.New("social feedback observed message count must be non-negative")
+		seenEntries[evaluation.EntryID] = struct{}{}
+		if err := validateSocialFeedbackEvaluation(evaluation, input.ObservedMessageCount); err != nil {
+			return fmt.Errorf("social feedback evaluation %d: %w", index, err)
+		}
 	}
 	return nil
+}
+
+func validateSocialFeedbackEvaluation(evaluation SocialFeedbackEvaluation, observedMessageCount int) error {
+	if evaluation.Adoption != SocialFeedbackAdopted && evaluation.Adoption != SocialFeedbackNotAdopted && evaluation.Adoption != SocialFeedbackUncertain {
+		return errors.New("adoption is invalid")
+	}
+	if evaluation.Outcome != SocialFeedbackPositive && evaluation.Outcome != SocialFeedbackPartial && evaluation.Outcome != SocialFeedbackNegative && evaluation.Outcome != SocialFeedbackUnknown {
+		return errors.New("outcome is invalid")
+	}
+	if evaluation.Credit != SocialFeedbackCreditEntry && evaluation.Credit != SocialFeedbackCreditExecution && evaluation.Credit != SocialFeedbackCreditContext && evaluation.Credit != SocialFeedbackCreditUnknown {
+		return errors.New("credit is invalid")
+	}
+	if evaluation.Adoption != SocialFeedbackAdopted && (evaluation.Outcome != SocialFeedbackUnknown || evaluation.Credit != SocialFeedbackCreditUnknown) {
+		return errors.New("not-adopted or uncertain feedback must have unknown outcome and credit")
+	}
+	if evaluation.Outcome == SocialFeedbackUnknown && evaluation.Credit != SocialFeedbackCreditUnknown {
+		return errors.New("unknown outcome must have unknown credit")
+	}
+	if len(evaluation.EvidenceMessageIDs) > MaxSocialFeedbackEvidenceIDs || len(evaluation.EvidenceMessageIDs) > observedMessageCount {
+		return errors.New("evidence message count exceeds the observed feedback window")
+	}
+	if (evaluation.Outcome == SocialFeedbackUnknown) != (len(evaluation.EvidenceMessageIDs) == 0) {
+		return errors.New("known outcomes require evidence and unknown outcomes forbid evidence")
+	}
+	seenEvidence := make(map[string]struct{}, len(evaluation.EvidenceMessageIDs))
+	for _, id := range evaluation.EvidenceMessageIDs {
+		if err := ValidateID("social_feedback_evidence_message_id", id); err != nil {
+			return err
+		}
+		if _, exists := seenEvidence[id]; exists {
+			return errors.New("social feedback contains duplicate evidence message IDs")
+		}
+		seenEvidence[id] = struct{}{}
+	}
+	return nil
+}
+
+func SocialFeedbackEffectUnits(evaluation SocialFeedbackEvaluation) (helpful, harmful int64) {
+	if evaluation.Adoption != SocialFeedbackAdopted || evaluation.Credit != SocialFeedbackCreditEntry {
+		return 0, 0
+	}
+	switch evaluation.Outcome {
+	case SocialFeedbackPositive:
+		return 2, 0
+	case SocialFeedbackPartial:
+		return 1, 0
+	case SocialFeedbackNegative:
+		return 0, 2
+	default:
+		return 0, 0
+	}
+}
+
+func SocialFeedbackScoreBasisPoints(positiveCount, partialCount, negativeCount int64) int {
+	helpful := 2*positiveCount + partialCount
+	harmful := 2 * negativeCount
+	numerator := (helpful - harmful) * 10000
+	denominator := helpful + harmful + 4
+	if numerator >= 0 {
+		return int((numerator + denominator/2) / denominator)
+	}
+	return int((numerator - denominator/2) / denominator)
 }

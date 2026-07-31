@@ -80,6 +80,8 @@ func TestMigrateAndVerifySchemaIntegration(t *testing.T) {
 		{"knowledge_entries", "confidence_basis_points"},
 		{"conversation_turns", "extraction_attempt_count"},
 		{"secret_values", "key_version"},
+		{"social_memory_entries", "feedback_score_basis_points"},
+		{"social_memory_feedback_events", "observed_message_count"},
 	} {
 		assertColumnType(t, ctx, pool, column[0], column[1], "integer")
 	}
@@ -87,6 +89,18 @@ func TestMigrateAndVerifySchemaIntegration(t *testing.T) {
 	assertColumnType(t, ctx, pool, "knowledge_entries", "source_url", "text")
 	assertColumnType(t, ctx, pool, "knowledge_entries", "source_content_hash", "text")
 	assertColumnType(t, ctx, pool, "knowledge_entries", "evidence_text", "text")
+	assertColumnType(t, ctx, pool, "social_memory_feedback_events", "evidence_message_ids", "jsonb")
+	var forbiddenFeedbackColumns int
+	if err := pool.QueryRow(ctx, `
+SELECT COUNT(*) FROM information_schema.columns
+WHERE table_schema = current_schema()
+  AND table_name = 'social_memory_feedback_events'
+  AND column_name IN ('reply', 'reply_text', 'observation', 'observation_text', 'prompt', 'reason', 'body', 'content')`).Scan(&forbiddenFeedbackColumns); err != nil {
+		t.Fatalf("checking social feedback privacy columns: %v", err)
+	}
+	if forbiddenFeedbackColumns != 0 {
+		t.Fatalf("social feedback event has %d forbidden body columns", forbiddenFeedbackColumns)
+	}
 
 	var hasTrgm bool
 	if err := pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')").Scan(&hasTrgm); err != nil {
@@ -101,6 +115,67 @@ func TestMigrateAndVerifySchemaIntegration(t *testing.T) {
 	}
 	if !hasVector {
 		t.Fatal("vector extension is not installed")
+	}
+}
+
+func TestMigrateBackfillsSuppressedSocialMemoryWithoutInventingEventsIntegration(t *testing.T) {
+	ctx := t.Context()
+	pool := openIsolatedPool(t, ctx)
+	defer pool.Close()
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	const updatedAt = int64(123456)
+	if _, err := pool.Exec(ctx, `INSERT INTO conversations(id, character_id, created_at_ms, updated_at_ms)
+VALUES ('social-migration-conversation', 'character-1', 1, 1)`); err != nil {
+		t.Fatalf("prepare previous social feedback conversation: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO social_memory_entries(
+  id, character_id, conversation_id, kind, situation, content, recall_cue,
+  content_hash, status, source_start_ms, source_end_ms, use_count,
+  positive_count, negative_count, unknown_count, created_at_ms, updated_at_ms
+) VALUES (
+  'social-migration-entry', 'character-1', 'social-migration-conversation', 'behavior',
+  '测试情境', '测试内容', '测试线索', repeat('a', 64), 'active', 1, 2, 3, 0, 3, 0, 1, $1
+)
+`, updatedAt); err != nil {
+		t.Fatalf("prepare previous social feedback row: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+ALTER TABLE social_memory_entries DROP CONSTRAINT social_memory_entries_invariants_check;
+UPDATE social_memory_entries SET status = 'suppressed' WHERE id = 'social-migration-entry';
+DROP TABLE social_memory_feedback_events;
+ALTER TABLE social_memory_entries
+  DROP COLUMN feedback_evaluation_count,
+  DROP COLUMN feedback_adopted_count,
+  DROP COLUMN feedback_positive_count,
+  DROP COLUMN feedback_partial_count,
+  DROP COLUMN feedback_negative_count,
+  DROP COLUMN feedback_score_basis_points,
+  DROP COLUMN feedback_quarantined_until_ms;
+UPDATE fairy_schema_state SET revision = '2026-07-30-context-retention-1' WHERE id = 1`); err != nil {
+		t.Fatalf("prepare previous social feedback schema: %v", err)
+	}
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("Migrate(previous social feedback schema) error = %v", err)
+	}
+	var status string
+	var quarantine int64
+	var score int
+	if err := pool.QueryRow(ctx, `
+SELECT status, feedback_quarantined_until_ms, feedback_score_basis_points
+FROM social_memory_entries WHERE id = 'social-migration-entry'`).Scan(&status, &quarantine, &score); err != nil {
+		t.Fatalf("read migrated social entry: %v", err)
+	}
+	if status != "suppressed" || quarantine != updatedAt+604800000 || score != 0 {
+		t.Fatalf("migrated social entry = status:%s quarantine:%d score:%d", status, quarantine, score)
+	}
+	var eventCount int
+	if err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM social_memory_feedback_events").Scan(&eventCount); err != nil {
+		t.Fatalf("count migrated feedback events: %v", err)
+	}
+	if eventCount != 0 {
+		t.Fatalf("migration invented %d social feedback events", eventCount)
 	}
 }
 

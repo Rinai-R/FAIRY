@@ -109,31 +109,148 @@ func TestPostgresSocialMemoryScopesRetrievalAndFeedback(t *testing.T) {
 	if _, err := store.CompleteTurnContext(ctx, first.Conversation.ID, turn.ID, "先别急，能写清楚项目已经比想象中强了"); err != nil {
 		t.Fatal(err)
 	}
-	feedback, err := store.RecordSocialReplyFeedback(ctx, SocialReplyFeedbackInput{
+	feedbackInput := SocialFeedbackBatchInput{
 		CharacterID: "character-1", ConversationID: first.Conversation.ID, TurnID: turn.ID,
-		EntryIDs: []string{entries[1].ID}, Outcome: SocialFeedbackNegative, ObservedMessageCount: 2,
-	})
-	if err != nil || feedback.Outcome != SocialFeedbackNegative {
-		t.Fatalf("RecordSocialReplyFeedback() = %#v, %v", feedback, err)
+		ObservedMessageCount: 2, EvaluatorRevision: "social-feedback-v2",
+		Evaluations: []SocialFeedbackEvaluation{{
+			EntryID: entries[1].ID, Adoption: SocialFeedbackAdopted, Outcome: SocialFeedbackNegative,
+			Credit: SocialFeedbackCreditEntry, EvidenceMessageIDs: []string{"later-message"},
+		}},
 	}
-	var useCount, negativeCount int64
-	if err := pool.Raw().QueryRow(ctx, "SELECT use_count, negative_count FROM social_memory_entries WHERE id = $1", entries[1].ID).Scan(&useCount, &negativeCount); err != nil {
+	feedback, err := store.RecordSocialFeedbackBatch(ctx, feedbackInput)
+	if err != nil || feedback.NoChange || len(feedback.Events) != 1 {
+		t.Fatalf("RecordSocialFeedbackBatch() = %#v, %v", feedback, err)
+	}
+	var evaluationCount, negativeCount int64
+	if err := pool.Raw().QueryRow(ctx, "SELECT feedback_evaluation_count, feedback_negative_count FROM social_memory_entries WHERE id = $1", entries[1].ID).Scan(&evaluationCount, &negativeCount); err != nil {
 		t.Fatal(err)
 	}
-	if useCount != 1 || negativeCount != 1 {
-		t.Fatalf("feedback counters = use:%d negative:%d", useCount, negativeCount)
+	if evaluationCount != 1 || negativeCount != 1 {
+		t.Fatalf("feedback counters = evaluations:%d negative:%d", evaluationCount, negativeCount)
 	}
-	if _, err := store.RecordSocialReplyFeedback(ctx, SocialReplyFeedbackInput{
-		CharacterID: "character-1", ConversationID: first.Conversation.ID, TurnID: turn.ID,
-		EntryIDs: []string{entries[1].ID}, Outcome: SocialFeedbackNegative, ObservedMessageCount: 2,
-	}); err != nil {
+	if repeated, err := store.RecordSocialFeedbackBatch(ctx, feedbackInput); err != nil || !repeated.NoChange {
 		t.Fatalf("idempotent feedback: %v", err)
 	}
-	if err := pool.Raw().QueryRow(ctx, "SELECT use_count, negative_count FROM social_memory_entries WHERE id = $1", entries[1].ID).Scan(&useCount, &negativeCount); err != nil {
+	if err := pool.Raw().QueryRow(ctx, "SELECT feedback_evaluation_count, feedback_negative_count FROM social_memory_entries WHERE id = $1", entries[1].ID).Scan(&evaluationCount, &negativeCount); err != nil {
 		t.Fatal(err)
 	}
-	if useCount != 1 || negativeCount != 1 {
-		t.Fatalf("duplicate feedback changed counters = use:%d negative:%d", useCount, negativeCount)
+	if evaluationCount != 1 || negativeCount != 1 {
+		t.Fatalf("duplicate feedback changed counters = evaluations:%d negative:%d", evaluationCount, negativeCount)
+	}
+}
+
+func TestPostgresSocialFeedbackBatchIsAttributedIdempotentAndAtomic(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStoreFromPool(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := store.OpenOrCreateCharacterConversationContext(ctx, "character-feedback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.StoreSocialMemoryEntries(ctx, SocialMemoryBatchInput{
+		CharacterID: "character-feedback", ConversationID: conversation.Conversation.ID,
+		Entries: []SocialMemoryEntryInput{
+			{Kind: SocialMemoryBehavior, Situation: "群友焦虑时", Content: "先接住情绪", RecallCue: "焦虑安慰", SourceStartUnixMS: 1, SourceEndUnixMS: 2},
+			{Kind: SocialMemoryEpisode, Situation: "讨论面试时", Content: "大家在意具体例子", RecallCue: "面试例子", SourceStartUnixMS: 1, SourceEndUnixMS: 2},
+		},
+	})
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("StoreSocialMemoryEntries() = %#v, %v", entries, err)
+	}
+	completeTurn := func(prompt, reply string) string {
+		t.Helper()
+		turn, turnErr := store.BeginTurnContext(ctx, conversation.Conversation.ID, prompt)
+		if turnErr != nil {
+			t.Fatal(turnErr)
+		}
+		if _, turnErr = store.CompleteTurnContext(ctx, conversation.Conversation.ID, turn.ID, reply); turnErr != nil {
+			t.Fatal(turnErr)
+		}
+		return turn.ID
+	}
+	turnID := completeTurn("我有点焦虑", "先别急，我们看一件具体的事")
+	initial := SocialFeedbackBatchInput{
+		CharacterID: "character-feedback", ConversationID: conversation.Conversation.ID, TurnID: turnID,
+		ObservedMessageCount: 1, EvaluatorRevision: "social-feedback-v1",
+		Evaluations: []SocialFeedbackEvaluation{{
+			EntryID: entries[0].ID, Adoption: SocialFeedbackAdopted, Outcome: SocialFeedbackPositive,
+			Credit: SocialFeedbackCreditEntry, EvidenceMessageIDs: []string{"message-positive"},
+		}},
+	}
+	result, err := store.RecordSocialFeedbackBatch(ctx, initial)
+	if err != nil || result.NoChange || len(result.Events) != 1 {
+		t.Fatalf("initial RecordSocialFeedbackBatch() = %#v, %v", result, err)
+	}
+	repeated, err := store.RecordSocialFeedbackBatch(ctx, initial)
+	if err != nil || !repeated.NoChange || len(repeated.Events) != 1 || repeated.Events[0].ID != result.Events[0].ID {
+		t.Fatalf("idempotent RecordSocialFeedbackBatch() = %#v, %v", repeated, err)
+	}
+	conflicting := initial
+	conflicting.Evaluations = []SocialFeedbackEvaluation{
+		{EntryID: entries[1].ID, Adoption: SocialFeedbackAdopted, Outcome: SocialFeedbackPositive, Credit: SocialFeedbackCreditEntry, EvidenceMessageIDs: []string{"message-positive"}},
+		{EntryID: entries[0].ID, Adoption: SocialFeedbackAdopted, Outcome: SocialFeedbackNegative, Credit: SocialFeedbackCreditEntry, EvidenceMessageIDs: []string{"message-positive"}},
+	}
+	if _, err := store.RecordSocialFeedbackBatch(ctx, conflicting); err == nil {
+		t.Fatal("conflicting social feedback batch succeeded")
+	}
+	var rolledBackEventCount int
+	if err := pool.Raw().QueryRow(ctx, "SELECT COUNT(*) FROM social_memory_feedback_events WHERE turn_id = $1 AND entry_id = $2", turnID, entries[1].ID).Scan(&rolledBackEventCount); err != nil {
+		t.Fatal(err)
+	}
+	if rolledBackEventCount != 0 {
+		t.Fatalf("conflicting batch left %d partial events", rolledBackEventCount)
+	}
+
+	secondTurnID := completeTurn("再聊聊", "继续")
+	neutral, err := store.RecordSocialFeedbackBatch(ctx, SocialFeedbackBatchInput{
+		CharacterID: "character-feedback", ConversationID: conversation.Conversation.ID, TurnID: secondTurnID,
+		ObservedMessageCount: 2, EvaluatorRevision: "social-feedback-v1",
+		Evaluations: []SocialFeedbackEvaluation{
+			{EntryID: entries[0].ID, Adoption: SocialFeedbackAdopted, Outcome: SocialFeedbackNegative, Credit: SocialFeedbackCreditExecution, EvidenceMessageIDs: []string{"message-correction"}},
+			{EntryID: entries[1].ID, Adoption: SocialFeedbackNotAdopted, Outcome: SocialFeedbackUnknown, Credit: SocialFeedbackCreditUnknown},
+		},
+	})
+	if err != nil || neutral.NoChange || len(neutral.Events) != 2 {
+		t.Fatalf("neutral RecordSocialFeedbackBatch() = %#v, %v", neutral, err)
+	}
+	type aggregate struct {
+		evaluations, adopted, positive, partial, negative int64
+		score                                             int
+	}
+	readAggregate := func(entryID string) aggregate {
+		t.Helper()
+		var got aggregate
+		if err := pool.Raw().QueryRow(ctx, `
+SELECT feedback_evaluation_count, feedback_adopted_count, feedback_positive_count,
+       feedback_partial_count, feedback_negative_count, feedback_score_basis_points
+FROM social_memory_entries WHERE id = $1`, entryID).Scan(
+			&got.evaluations, &got.adopted, &got.positive, &got.partial, &got.negative, &got.score,
+		); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	firstAggregate := readAggregate(entries[0].ID)
+	if firstAggregate != (aggregate{evaluations: 2, adopted: 2, positive: 1, score: 3333}) {
+		t.Fatalf("first aggregate = %#v", firstAggregate)
+	}
+	secondAggregate := readAggregate(entries[1].ID)
+	if secondAggregate != (aggregate{evaluations: 1}) {
+		t.Fatalf("second aggregate = %#v", secondAggregate)
+	}
+	var eventCount int
+	if err := pool.Raw().QueryRow(ctx, "SELECT COUNT(*) FROM social_memory_feedback_events").Scan(&eventCount); err != nil {
+		t.Fatal(err)
+	}
+	if eventCount != 3 {
+		t.Fatalf("feedback event count = %d, want 3", eventCount)
 	}
 }
 
@@ -204,20 +321,25 @@ func TestPostgresSocialMemorySuppressesAfterNegativeThreshold(t *testing.T) {
 		if _, err := store.CompleteTurnContext(ctx, conversation.Conversation.ID, turn.ID, "先回一句"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.RecordSocialReplyFeedback(ctx, SocialReplyFeedbackInput{
+		if _, err := store.RecordSocialFeedbackBatch(ctx, SocialFeedbackBatchInput{
 			CharacterID: "character-1", ConversationID: conversation.Conversation.ID, TurnID: turn.ID,
-			EntryIDs: []string{entries[0].ID}, Outcome: SocialFeedbackNegative, ObservedMessageCount: 1,
+			ObservedMessageCount: 1, EvaluatorRevision: "social-feedback-v2",
+			Evaluations: []SocialFeedbackEvaluation{{
+				EntryID: entries[0].ID, Adoption: SocialFeedbackAdopted, Outcome: SocialFeedbackNegative,
+				Credit: SocialFeedbackCreditEntry, EvidenceMessageIDs: []string{"later-negative"},
+			}},
 		}); err != nil {
 			t.Fatalf("negative feedback %d: %v", index+1, err)
 		}
 	}
 	var status string
 	var negativeCount, positiveCount int64
-	if err := pool.Raw().QueryRow(ctx, "SELECT status, negative_count, positive_count FROM social_memory_entries WHERE id = $1", entries[0].ID).Scan(&status, &negativeCount, &positiveCount); err != nil {
+	var quarantinedUntil int64
+	if err := pool.Raw().QueryRow(ctx, "SELECT status, feedback_negative_count, feedback_positive_count, feedback_quarantined_until_ms FROM social_memory_entries WHERE id = $1", entries[0].ID).Scan(&status, &negativeCount, &positiveCount, &quarantinedUntil); err != nil {
 		t.Fatal(err)
 	}
-	if status != "suppressed" || negativeCount != int64(SocialNegativeSuppressThreshold) || positiveCount != 0 {
-		t.Fatalf("entry status/counters = %s neg=%d pos=%d", status, negativeCount, positiveCount)
+	if status != "suppressed" || negativeCount != int64(SocialNegativeSuppressThreshold) || positiveCount != 0 || quarantinedUntil <= 0 {
+		t.Fatalf("entry status/counters = %s neg=%d pos=%d quarantine=%d", status, negativeCount, positiveCount, quarantinedUntil)
 	}
 	retrieved, err := store.RetrieveSocialMemoryContext(ctx, "character-1", conversation.Conversation.ID, "被点名")
 	if err != nil {
@@ -228,9 +350,68 @@ func TestPostgresSocialMemorySuppressesAfterNegativeThreshold(t *testing.T) {
 			t.Fatalf("suppressed entry still retrieved: %#v", retrieved)
 		}
 	}
+	if _, err := pool.Raw().Exec(ctx, "UPDATE social_memory_entries SET feedback_quarantined_until_ms = 0 WHERE id = $1", entries[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	trial, err := store.RetrieveSocialMemoryContext(ctx, "character-1", conversation.Conversation.ID, "被点名")
+	if err != nil || len(trial.Entries) != 1 || trial.Entries[0].ID != entries[0].ID || trial.Entries[0].Status != "suppressed" {
+		t.Fatalf("expired quarantine trial = %#v, %v", trial, err)
+	}
+	extendTurn, err := store.BeginTurnContext(ctx, conversation.Conversation.ID, "再次被点名")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteTurnContext(ctx, conversation.Conversation.ID, extendTurn.ID, "再试一次"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordSocialFeedbackBatch(ctx, SocialFeedbackBatchInput{
+		CharacterID: "character-1", ConversationID: conversation.Conversation.ID, TurnID: extendTurn.ID,
+		ObservedMessageCount: 1, EvaluatorRevision: "social-feedback-v2",
+		Evaluations: []SocialFeedbackEvaluation{{
+			EntryID: entries[0].ID, Adoption: SocialFeedbackAdopted, Outcome: SocialFeedbackNegative,
+			Credit: SocialFeedbackCreditEntry, EvidenceMessageIDs: []string{"later-negative"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var extendedUntil int64
+	if err := pool.Raw().QueryRow(ctx, "SELECT feedback_quarantined_until_ms FROM social_memory_entries WHERE id = $1", entries[0].ID).Scan(&extendedUntil); err != nil {
+		t.Fatal(err)
+	}
+	if extendedUntil <= 0 {
+		t.Fatalf("negative trial did not extend quarantine: %d", extendedUntil)
+	}
+	if _, err := pool.Raw().Exec(ctx, "UPDATE social_memory_entries SET feedback_quarantined_until_ms = 0 WHERE id = $1", entries[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	recoverTurn, err := store.BeginTurnContext(ctx, conversation.Conversation.ID, "正向试用")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteTurnContext(ctx, conversation.Conversation.ID, recoverTurn.ID, "这次更合适"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordSocialFeedbackBatch(ctx, SocialFeedbackBatchInput{
+		CharacterID: "character-1", ConversationID: conversation.Conversation.ID, TurnID: recoverTurn.ID,
+		ObservedMessageCount: 1, EvaluatorRevision: "social-feedback-v2",
+		Evaluations: []SocialFeedbackEvaluation{{
+			EntryID: entries[0].ID, Adoption: SocialFeedbackAdopted, Outcome: SocialFeedbackPartial,
+			Credit: SocialFeedbackCreditEntry, EvidenceMessageIDs: []string{"later-positive"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var recoveredStatus string
+	var recoveredUntil *int64
+	if err := pool.Raw().QueryRow(ctx, "SELECT status, feedback_quarantined_until_ms FROM social_memory_entries WHERE id = $1", entries[0].ID).Scan(&recoveredStatus, &recoveredUntil); err != nil {
+		t.Fatal(err)
+	}
+	if recoveredStatus != "active" || recoveredUntil != nil {
+		t.Fatalf("recovered entry = status:%s quarantine:%v", recoveredStatus, recoveredUntil)
+	}
 }
 
-func TestPostgresSocialReplyFeedbackAllowsEmptyEntries(t *testing.T) {
+func TestPostgresSocialFeedbackOrderingKeepsRelevancePrimaryAndScoreAsTieBreaker(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
 	defer pool.Close()
@@ -241,22 +422,66 @@ func TestPostgresSocialReplyFeedbackAllowsEmptyEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conversation, err := store.OpenOrCreateCharacterConversationContext(ctx, "character-1")
+	recordFeedback := func(conversationID string, evaluations []SocialFeedbackEvaluation) {
+		t.Helper()
+		turn, turnErr := store.BeginTurnContext(ctx, conversationID, "排序测试")
+		if turnErr != nil {
+			t.Fatal(turnErr)
+		}
+		if _, turnErr = store.CompleteTurnContext(ctx, conversationID, turn.ID, "排序回复"); turnErr != nil {
+			t.Fatal(turnErr)
+		}
+		if _, turnErr = store.RecordSocialFeedbackBatch(ctx, SocialFeedbackBatchInput{
+			CharacterID: "character-order", ConversationID: conversationID, TurnID: turn.ID,
+			ObservedMessageCount: 1, EvaluatorRevision: "social-feedback-v2", Evaluations: evaluations,
+		}); turnErr != nil {
+			t.Fatal(turnErr)
+		}
+	}
+
+	relevanceConversation, err := store.OpenOrCreateCharacterConversationContext(ctx, "character-order")
 	if err != nil {
 		t.Fatal(err)
 	}
-	turn, err := store.BeginTurnContext(ctx, conversation.Conversation.ID, "随便聊聊")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.CompleteTurnContext(ctx, conversation.Conversation.ID, turn.ID, "先听听大家怎么说"); err != nil {
-		t.Fatal(err)
-	}
-	feedback, err := store.RecordSocialReplyFeedback(ctx, SocialReplyFeedbackInput{
-		CharacterID: "character-1", ConversationID: conversation.Conversation.ID, TurnID: turn.ID,
-		Outcome: SocialFeedbackUnknown, ObservedMessageCount: 0,
+	relevanceEntries, err := store.StoreSocialMemoryEntries(ctx, SocialMemoryBatchInput{
+		CharacterID: "character-order", ConversationID: relevanceConversation.Conversation.ID,
+		Entries: []SocialMemoryEntryInput{
+			{Kind: SocialMemoryBehavior, Situation: "项目经历需要经得住追问", Content: "项目经历需要经得住追问", RecallCue: "项目经历需要经得住追问", SourceStartUnixMS: 1, SourceEndUnixMS: 2},
+			{Kind: SocialMemoryEpisode, Situation: "讨论项目经历中的具体例子", Content: "群友会交换面试例子", RecallCue: "项目经历例子", SourceStartUnixMS: 1, SourceEndUnixMS: 2},
+		},
 	})
-	if err != nil || feedback.EntryIDs == nil || len(feedback.EntryIDs) != 0 || feedback.Outcome != SocialFeedbackUnknown {
-		t.Fatalf("empty-entry feedback = %#v, %v", feedback, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordFeedback(relevanceConversation.Conversation.ID, []SocialFeedbackEvaluation{
+		{EntryID: relevanceEntries[0].ID, Adoption: SocialFeedbackAdopted, Outcome: SocialFeedbackNegative, Credit: SocialFeedbackCreditEntry, EvidenceMessageIDs: []string{"ranking-message"}},
+		{EntryID: relevanceEntries[1].ID, Adoption: SocialFeedbackAdopted, Outcome: SocialFeedbackPositive, Credit: SocialFeedbackCreditEntry, EvidenceMessageIDs: []string{"ranking-message"}},
+	})
+	relevanceResult, err := store.RetrieveSocialMemoryContext(ctx, "character-order", relevanceConversation.Conversation.ID, "项目经历需要经得住追问")
+	if err != nil || len(relevanceResult.Entries) < 2 || relevanceResult.Entries[0].ID != relevanceEntries[0].ID {
+		t.Fatalf("relevance-primary result = %#v, %v", relevanceResult, err)
+	}
+
+	tieConversation, err := store.OpenOrCreateCharacterConversationContext(ctx, "character-order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tieEntries, err := store.StoreSocialMemoryEntries(ctx, SocialMemoryBatchInput{
+		CharacterID: "character-order", ConversationID: tieConversation.Conversation.ID,
+		Entries: []SocialMemoryEntryInput{
+			{Kind: SocialMemoryBehavior, Situation: "群聊接话", Content: "先短句回应", RecallCue: "群聊接话", SourceStartUnixMS: 1, SourceEndUnixMS: 2},
+			{Kind: SocialMemoryEpisode, Situation: "群聊接话", Content: "先短句回应", RecallCue: "群聊接话", SourceStartUnixMS: 1, SourceEndUnixMS: 2},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordFeedback(tieConversation.Conversation.ID, []SocialFeedbackEvaluation{
+		{EntryID: tieEntries[0].ID, Adoption: SocialFeedbackAdopted, Outcome: SocialFeedbackUnknown, Credit: SocialFeedbackCreditUnknown},
+		{EntryID: tieEntries[1].ID, Adoption: SocialFeedbackAdopted, Outcome: SocialFeedbackPositive, Credit: SocialFeedbackCreditEntry, EvidenceMessageIDs: []string{"ranking-message"}},
+	})
+	tieResult, err := store.RetrieveSocialMemoryContext(ctx, "character-order", tieConversation.Conversation.ID, "群聊接话")
+	if err != nil || len(tieResult.Entries) != 2 || tieResult.Entries[0].ID != tieEntries[1].ID {
+		t.Fatalf("score tie-break result = %#v, %v", tieResult, err)
 	}
 }

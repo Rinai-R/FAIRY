@@ -69,6 +69,9 @@ var postgresConstraints = []schemaConstraint{
 	{"knowledge_entries", "knowledge_entries_supersedes_fk", "FOREIGN KEY (supersedes_id) REFERENCES knowledge_entries(id) ON DELETE RESTRICT"},
 	{"endpoint_conversations", "endpoint_conversations_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
 	{"social_memory_entries", "social_memory_entries_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
+	{"social_memory_feedback_events", "social_memory_feedback_events_conversation_fk", "FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE"},
+	{"social_memory_feedback_events", "social_memory_feedback_events_turn_fk", "FOREIGN KEY (turn_id) REFERENCES conversation_turns(id) ON DELETE CASCADE"},
+	{"social_memory_feedback_events", "social_memory_feedback_events_entry_fk", "FOREIGN KEY (entry_id) REFERENCES social_memory_entries(id) ON DELETE CASCADE"},
 	{"personal_memories", "personal_memories_embedding_check", "CHECK ((embedding_model_id IS NULL AND embedding_content_hash IS NULL AND embedding IS NULL) OR (embedding_model_id <> '' AND embedding_content_hash ~ '^[0-9a-f]{64}$' AND embedding IS NOT NULL))"},
 	{"knowledge_entries", "knowledge_entries_embedding_check", "CHECK ((embedding_model_id IS NULL AND embedding_content_hash IS NULL AND embedding IS NULL) OR (embedding_model_id <> '' AND embedding_content_hash ~ '^[0-9a-f]{64}$' AND embedding IS NOT NULL))"},
 }
@@ -105,6 +108,9 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		}
 		if err := tx.AutoMigrate(schemaModels()...); err != nil {
 			return fmt.Errorf("auto-migrating PostgreSQL schema: %w", err)
+		}
+		if err := migrateSocialFeedbackSchema(tx); err != nil {
+			return err
 		}
 		if err := migrateDirectMemoryKnowledgeSchema(tx); err != nil {
 			return err
@@ -144,6 +150,47 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		}
 		return nil
 	})
+}
+
+func migrateSocialFeedbackSchema(tx *gorm.DB) error {
+	if err := tx.Exec(`
+UPDATE social_memory_entries
+SET feedback_quarantined_until_ms = updated_at_ms + 604800000
+WHERE status = 'suppressed' AND feedback_quarantined_until_ms IS NULL`).Error; err != nil {
+		return fmt.Errorf("backfilling social feedback quarantine: %w", err)
+	}
+	if err := tx.Exec(`ALTER TABLE social_memory_entries DROP CONSTRAINT IF EXISTS social_memory_entries_invariants_check`).Error; err != nil {
+		return fmt.Errorf("dropping previous social memory invariant: %w", err)
+	}
+	if err := tx.Exec(`
+ALTER TABLE social_memory_entries ADD CONSTRAINT social_memory_entries_invariants_check CHECK (
+  kind IN ('episode', 'expression', 'behavior', 'person_note')
+  AND situation <> ''
+  AND content <> ''
+  AND recall_cue <> ''
+  AND content_hash ~ '^[0-9a-f]{64}$'
+  AND status IN ('active', 'suppressed')
+  AND source_start_ms > 0
+  AND source_end_ms >= source_start_ms
+  AND use_count >= 0
+  AND positive_count >= 0
+  AND negative_count >= 0
+  AND unknown_count >= 0
+  AND feedback_evaluation_count >= 0
+  AND feedback_adopted_count >= 0
+  AND feedback_positive_count >= 0
+  AND feedback_partial_count >= 0
+  AND feedback_negative_count >= 0
+  AND feedback_score_basis_points BETWEEN -10000 AND 10000
+  AND ((status = 'suppressed') = (feedback_quarantined_until_ms IS NOT NULL))
+  AND (feedback_quarantined_until_ms IS NULL OR feedback_quarantined_until_ms >= 0)
+  AND ((kind = 'person_note') = (sender_id IS NOT NULL))
+  AND created_at_ms >= 0
+  AND updated_at_ms >= created_at_ms
+)`).Error; err != nil {
+		return fmt.Errorf("creating social feedback memory invariant: %w", err)
+	}
+	return nil
 }
 
 func migrateDirectMemoryKnowledgeSchema(tx *gorm.DB) error {

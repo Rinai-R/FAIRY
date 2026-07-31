@@ -81,6 +81,7 @@ func (s *CompanionService) selectSocialMemoryKindsForTool(
 	}
 	now := time.Now().UnixMilli()
 	knowledge := make([]memory.RetrievedKnowledge, 0, limit)
+	selected := make([]memory.SocialMemoryEntry, 0, limit)
 	for _, entry := range retrieved.Entries {
 		if _, ok := allowed[entry.Kind]; !ok {
 			continue
@@ -98,10 +99,14 @@ func (s *CompanionService) selectSocialMemoryKindsForTool(
 			ConfidenceBasisPoints: 6000,
 			UpdatedAtUnixMS:       now,
 		})
+		selected = append(selected, entry)
 		if len(knowledge) >= limit {
 			break
 		}
 	}
 	// Social memory is trigram-only today; do not claim vector semantic fusion.
-	return memory.RetrievalContext{Knowledge: knowledge, SemanticStatus: "unavailable"}, nil
+	return memory.RetrievalContext{
+		Knowledge: knowledge, SocialMemories: memory.SocialMemoryContext{Entries: selected},
+		SemanticStatus: "unavailable",
+	}, nil
 }

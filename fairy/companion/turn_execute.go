@@ -617,6 +617,8 @@ func (e *TurnEngine) submitCompiledTurn(
 							lg.Warn("cognition loop", zap.String("phase", "tool_failed"), zap.String("tool", call.Name), zap.Error(toolErr))
 							retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
 						} else {
+							extra = boundSocialToolRetrieval(gathered.socialFeedbackContext, extra, memory.MaxSocialFeedbackIDs)
+							gathered.socialFeedbackContext = mergeSocialMemory(gathered.socialFeedbackContext, extra.SocialMemories)
 							retrieval = mergeRetrievalContext(retrieval, extra)
 						}
 						retrievalOmitReason = ""
@@ -640,6 +642,8 @@ func (e *TurnEngine) submitCompiledTurn(
 							lg.Warn("cognition loop", zap.String("phase", "tool_failed"), zap.String("tool", call.Name), zap.Error(toolErr))
 							retrieval = mergeRetrievalContext(retrieval, retrievalFromToolError(call.Name, toolErr))
 						} else {
+							extra = boundSocialToolRetrieval(gathered.socialFeedbackContext, extra, memory.MaxSocialFeedbackIDs)
+							gathered.socialFeedbackContext = mergeSocialMemory(gathered.socialFeedbackContext, extra.SocialMemories)
 							retrieval = mergeRetrievalContext(retrieval, extra)
 						}
 						retrievalOmitReason = ""

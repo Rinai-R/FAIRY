@@ -67,14 +67,13 @@ func (x *turnExecution) persist(gathered *turnContext, resolved session.Resolved
 		x.service.scheduleBackgroundExtraction(x.request.ConversationID)
 	}
 	if resolved.AllowsAmbientParticipation() && !resolved.AllowsPersonalMemory() && x.service.ambientReplies != nil && strings.TrimSpace(reply.DisplayText) != "" {
-		entryIDs := []string(nil)
-		if gathered.socialContext != nil {
-			entryIDs = socialMemoryEntryIDs(gathered.socialContext.Memory)
+		candidates := socialMemoryFeedbackCandidates(gathered.socialFeedbackContext)
+		if len(candidates) > 0 {
+			x.service.ambientReplies.ObserveAmbientReply(AmbientReply{
+				CharacterID: bootstrap.Conversation.CharacterID, ConversationID: x.request.ConversationID,
+				TurnID: x.persisted.ID, Candidates: candidates, ReplyText: reply.DisplayText,
+			})
 		}
-		x.service.ambientReplies.ObserveAmbientReply(AmbientReply{
-			CharacterID: bootstrap.Conversation.CharacterID, ConversationID: x.request.ConversationID,
-			TurnID: x.persisted.ID, EntryIDs: entryIDs, ReplyText: reply.DisplayText,
-		})
 	}
 	x.service.scheduleAutoCompaction(x.request.ConversationID, events)
 	if x.service.retention != nil && len(gathered.knowledgeTasks) > 0 {

@@ -2,7 +2,7 @@ package coredb
 
 import "github.com/pgvector/pgvector-go"
 
-const currentSchemaRevision = "2026-07-30-context-retention-1"
+const currentSchemaRevision = "2026-07-31-public-social-feedback-1"
 
 type conversationSchema struct {
 	ID          string `gorm:"type:text;primaryKey;index:conversations_character_updated,priority:3"`
@@ -249,29 +249,55 @@ type ownerIdentitySchema struct {
 func (ownerIdentitySchema) TableName() string { return "owner_identities" }
 
 type socialMemoryEntrySchema struct {
-	ID                 string  `gorm:"type:text;primaryKey;index:social_memory_entries_scope_kind,priority:6"`
-	CharacterID        string  `gorm:"type:text;not null;index:social_memory_entries_scope_kind,priority:1;uniqueIndex:social_memory_entries_person_note_key,priority:1"`
-	ConversationID     string  `gorm:"type:text;not null;uniqueIndex:social_memory_entries_scope_hash_key,priority:1;index:social_memory_entries_scope_kind,priority:2;uniqueIndex:social_memory_entries_person_note_key,priority:2"`
-	Kind               string  `gorm:"type:text;not null;uniqueIndex:social_memory_entries_scope_hash_key,priority:2;index:social_memory_entries_scope_kind,priority:3"`
-	Situation          string  `gorm:"type:text;not null;check:social_memory_entries_invariants_check,(kind IN ('episode', 'expression', 'behavior', 'person_note')) AND (situation <> '') AND (content <> '') AND (recall_cue <> '') AND (content_hash ~ '^[0-9a-f]{64}$') AND (status IN ('active', 'suppressed')) AND (source_start_ms > 0 AND source_end_ms >= source_start_ms) AND (use_count >= 0 AND positive_count >= 0 AND negative_count >= 0 AND unknown_count >= 0) AND ((kind = 'person_note') = (sender_id IS NOT NULL)) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms)"`
-	Content            string  `gorm:"type:text;not null"`
-	RecallCue          string  `gorm:"type:text;not null"`
-	ContentHash        string  `gorm:"type:text;not null;uniqueIndex:social_memory_entries_scope_hash_key,priority:3"`
-	SenderID           *string `gorm:"type:text;uniqueIndex:social_memory_entries_person_note_key,priority:3"`
-	SenderName         string  `gorm:"type:text;not null;default:''"`
-	LastFeedbackTurnID *string `gorm:"type:text"`
-	Status             string  `gorm:"type:text;not null;index:social_memory_entries_scope_kind,priority:4"`
-	SourceStartMS      int64   `gorm:"not null"`
-	SourceEndMS        int64   `gorm:"not null"`
-	UseCount           int64   `gorm:"not null;default:0"`
-	PositiveCount      int64   `gorm:"not null;default:0"`
-	NegativeCount      int64   `gorm:"not null;default:0"`
-	UnknownCount       int64   `gorm:"not null;default:0"`
-	CreatedAtMS        int64   `gorm:"not null"`
-	UpdatedAtMS        int64   `gorm:"not null;index:social_memory_entries_scope_kind,sort:desc,priority:5"`
+	ID                         string  `gorm:"type:text;primaryKey;index:social_memory_entries_scope_kind,priority:6"`
+	CharacterID                string  `gorm:"type:text;not null;index:social_memory_entries_scope_kind,priority:1;uniqueIndex:social_memory_entries_person_note_key,priority:1"`
+	ConversationID             string  `gorm:"type:text;not null;uniqueIndex:social_memory_entries_scope_hash_key,priority:1;index:social_memory_entries_scope_kind,priority:2;uniqueIndex:social_memory_entries_person_note_key,priority:2"`
+	Kind                       string  `gorm:"type:text;not null;uniqueIndex:social_memory_entries_scope_hash_key,priority:2;index:social_memory_entries_scope_kind,priority:3"`
+	Situation                  string  `gorm:"type:text;not null;check:social_memory_entries_invariants_check,(kind IN ('episode', 'expression', 'behavior', 'person_note')) AND (situation <> '') AND (content <> '') AND (recall_cue <> '') AND (content_hash ~ '^[0-9a-f]{64}$') AND (status IN ('active', 'suppressed')) AND (source_start_ms > 0 AND source_end_ms >= source_start_ms) AND (use_count >= 0 AND positive_count >= 0 AND negative_count >= 0 AND unknown_count >= 0) AND (feedback_evaluation_count >= 0 AND feedback_adopted_count >= 0) AND (feedback_positive_count >= 0 AND feedback_partial_count >= 0 AND feedback_negative_count >= 0) AND (feedback_score_basis_points BETWEEN -10000 AND 10000) AND (feedback_quarantined_until_ms IS NULL OR feedback_quarantined_until_ms >= 0) AND ((kind = 'person_note') = (sender_id IS NOT NULL)) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms)"`
+	Content                    string  `gorm:"type:text;not null"`
+	RecallCue                  string  `gorm:"type:text;not null"`
+	ContentHash                string  `gorm:"type:text;not null;uniqueIndex:social_memory_entries_scope_hash_key,priority:3"`
+	SenderID                   *string `gorm:"type:text;uniqueIndex:social_memory_entries_person_note_key,priority:3"`
+	SenderName                 string  `gorm:"type:text;not null;default:''"`
+	LastFeedbackTurnID         *string `gorm:"type:text"`
+	Status                     string  `gorm:"type:text;not null;index:social_memory_entries_scope_kind,priority:4"`
+	SourceStartMS              int64   `gorm:"not null"`
+	SourceEndMS                int64   `gorm:"not null"`
+	UseCount                   int64   `gorm:"not null;default:0"`
+	PositiveCount              int64   `gorm:"not null;default:0"`
+	NegativeCount              int64   `gorm:"not null;default:0"`
+	UnknownCount               int64   `gorm:"not null;default:0"`
+	FeedbackEvaluationCount    int64   `gorm:"not null;default:0"`
+	FeedbackAdoptedCount       int64   `gorm:"not null;default:0"`
+	FeedbackPositiveCount      int64   `gorm:"not null;default:0"`
+	FeedbackPartialCount       int64   `gorm:"not null;default:0"`
+	FeedbackNegativeCount      int64   `gorm:"not null;default:0"`
+	FeedbackScoreBasisPoints   int     `gorm:"type:integer;not null;default:0"`
+	FeedbackQuarantinedUntilMS *int64
+	CreatedAtMS                int64 `gorm:"not null"`
+	UpdatedAtMS                int64 `gorm:"not null;index:social_memory_entries_scope_kind,sort:desc,priority:5"`
 }
 
 func (socialMemoryEntrySchema) TableName() string { return "social_memory_entries" }
+
+type socialMemoryFeedbackEventSchema struct {
+	ID                     string `gorm:"type:text;primaryKey"`
+	CharacterID            string `gorm:"type:text;not null"`
+	ConversationID         string `gorm:"type:text;not null;index:social_memory_feedback_events_conversation_created,priority:1"`
+	TurnID                 string `gorm:"type:text;not null;uniqueIndex:social_memory_feedback_events_turn_entry_key,priority:1"`
+	EntryID                string `gorm:"type:text;not null;uniqueIndex:social_memory_feedback_events_turn_entry_key,priority:2;index:social_memory_feedback_events_entry_created,priority:1"`
+	Adoption               string `gorm:"type:text;not null;check:social_memory_feedback_events_invariants_check,(id <> '') AND (character_id <> '') AND (conversation_id <> '') AND (turn_id <> '') AND (entry_id <> '') AND (adoption IN ('adopted', 'not_adopted', 'uncertain')) AND (outcome IN ('positive', 'partial', 'negative', 'unknown')) AND (credit IN ('entry', 'execution', 'context', 'unknown')) AND ((adoption = 'adopted') OR (outcome = 'unknown' AND credit = 'unknown')) AND ((outcome <> 'unknown') OR credit = 'unknown') AND ((outcome = 'unknown') = (jsonb_array_length(evidence_message_ids) = 0)) AND (jsonb_typeof(evidence_message_ids) = 'array' AND jsonb_array_length(evidence_message_ids) <= 6) AND (observed_message_count BETWEEN 0 AND 6) AND (evaluator_revision <> '') AND (created_at_ms >= 0)"`
+	Outcome                string `gorm:"type:text;not null"`
+	Credit                 string `gorm:"type:text;not null"`
+	EvidenceMessageIDsJSON []byte `gorm:"column:evidence_message_ids;type:jsonb;not null;default:'[]'::jsonb"`
+	ObservedMessageCount   int    `gorm:"type:integer;not null"`
+	EvaluatorRevision      string `gorm:"type:text;not null"`
+	CreatedAtMS            int64  `gorm:"not null;index:social_memory_feedback_events_conversation_created,sort:desc,priority:2;index:social_memory_feedback_events_entry_created,sort:desc,priority:2"`
+}
+
+func (socialMemoryFeedbackEventSchema) TableName() string {
+	return "social_memory_feedback_events"
+}
 
 type schemaState struct {
 	ID       int16  `gorm:"primaryKey;check:fairy_schema_state_invariants_check,id = 1"`
@@ -299,6 +325,7 @@ func schemaModels() []any {
 		&endpointConversationSchema{},
 		&ownerIdentitySchema{},
 		&socialMemoryEntrySchema{},
+		&socialMemoryFeedbackEventSchema{},
 		&schemaState{},
 	}
 }

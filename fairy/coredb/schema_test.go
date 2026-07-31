@@ -75,6 +75,9 @@ func TestSchemaModelsDeclareMovedIndexes(t *testing.T) {
 		"social_memory_entries_person_note_key",
 		"social_memory_entries_scope_hash_key",
 		"social_memory_entries_scope_kind",
+		"social_memory_feedback_events_conversation_created",
+		"social_memory_feedback_events_entry_created",
+		"social_memory_feedback_events_turn_entry_key",
 		"stickers_status_updated",
 		"tool_executions_turn_call_key",
 		"tool_executions_turn_status",
@@ -85,6 +88,27 @@ func TestSchemaModelsDeclareMovedIndexes(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("model indexes = %v, want %v", got, want)
+	}
+}
+
+func TestSocialFeedbackEventSchemaContainsOnlyAuditColumns(t *testing.T) {
+	parsed, err := gormschema.Parse(&socialMemoryFeedbackEventSchema{}, &sync.Map{}, gormschema.NamingStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(parsed.Fields))
+	for _, field := range parsed.Fields {
+		got = append(got, field.DBName)
+	}
+	slices.Sort(got)
+	want := []string{
+		"adoption", "character_id", "conversation_id", "created_at_ms", "credit",
+		"entry_id", "evaluator_revision", "evidence_message_ids", "id",
+		"observed_message_count", "outcome", "turn_id",
+	}
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("social feedback event columns = %v, want %v", got, want)
 	}
 }
 

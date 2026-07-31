@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -36,6 +38,9 @@ func ScanSocialMemoryEntry(row scanner) (SocialMemoryEntry, error) {
 		&entry.Situation, &entry.Content, &entry.RecallCue, &entry.Status,
 		&entry.SourceStartUnixMS, &entry.SourceEndUnixMS, &entry.UseCount,
 		&entry.PositiveCount, &entry.NegativeCount, &entry.UnknownCount,
+		&entry.FeedbackEvaluationCount, &entry.FeedbackAdoptedCount,
+		&entry.FeedbackPositiveCount, &entry.FeedbackPartialCount, &entry.FeedbackNegativeCount,
+		&entry.FeedbackScoreBasisPoints, &entry.FeedbackQuarantinedUntilUnixMS,
 		&entry.CreatedAtUnixMS, &entry.UpdatedAtUnixMS,
 	); err != nil {
 		return SocialMemoryEntry{}, fmt.Errorf("scanning social memory entry: %w", err)
@@ -73,6 +78,9 @@ SET updated_at_ms = EXCLUDED.updated_at_ms,
     source_end_ms = GREATEST(social_memory_entries.source_end_ms, EXCLUDED.source_end_ms)
 RETURNING id, character_id, conversation_id, kind, situation, content, recall_cue, status,
           source_start_ms, source_end_ms, use_count, positive_count, negative_count, unknown_count,
+          feedback_evaluation_count, feedback_adopted_count, feedback_positive_count,
+          feedback_partial_count, feedback_negative_count, feedback_score_basis_points,
+          feedback_quarantined_until_ms,
           created_at_ms, updated_at_ms`,
 		id, characterID, conversationID, candidate.Kind, candidate.Situation,
 		candidate.Content, candidate.RecallCue, hash, candidate.SourceStartUnixMS, candidate.SourceEndUnixMS, now,
@@ -80,10 +88,13 @@ RETURNING id, character_id, conversation_id, kind, situation, content, recall_cu
 	return ScanSocialMemoryEntry(row)
 }
 
-func QuerySocialMemoryContext(ctx context.Context, db Querier, characterID, conversationID string, queryFragments []string) (SocialMemoryContext, error) {
+func QuerySocialMemoryContext(ctx context.Context, db Querier, characterID, conversationID string, queryFragments []string, now int64) (SocialMemoryContext, error) {
 	rows, err := db.Query(ctx, `
 SELECT entry.id, entry.character_id, entry.conversation_id, entry.kind, entry.situation, entry.content, entry.recall_cue, entry.status,
        entry.source_start_ms, entry.source_end_ms, entry.use_count, entry.positive_count, entry.negative_count, entry.unknown_count,
+       entry.feedback_evaluation_count, entry.feedback_adopted_count, entry.feedback_positive_count,
+       entry.feedback_partial_count, entry.feedback_negative_count, entry.feedback_score_basis_points,
+       entry.feedback_quarantined_until_ms,
        entry.created_at_ms, entry.updated_at_ms
 FROM social_memory_entries AS entry
 CROSS JOIN LATERAL (
@@ -96,12 +107,15 @@ CROSS JOIN LATERAL (
      OR entry.situation OPERATOR(public.%) fragment.value OR entry.content OPERATOR(public.%) fragment.value OR entry.recall_cue OPERATOR(public.%) fragment.value
      OR fragment.value OPERATOR(public.<%) entry.situation OR fragment.value OPERATOR(public.<%) entry.content OR fragment.value OPERATOR(public.<%) entry.recall_cue
 ) AS ranked
-WHERE entry.character_id = $1 AND entry.conversation_id = $2 AND entry.status = 'active' AND ranked.relevance IS NOT NULL
+WHERE entry.character_id = $1 AND entry.conversation_id = $2
+  AND (entry.status = 'active' OR (entry.status = 'suppressed' AND entry.feedback_quarantined_until_ms <= $4))
+  AND ranked.relevance IS NOT NULL
 ORDER BY ranked.relevance DESC,
-         (positive_count - negative_count) DESC,
+         CASE WHEN entry.status = 'active' THEN 0 ELSE 1 END ASC,
+         entry.feedback_score_basis_points DESC,
          updated_at_ms DESC,
          id ASC
-LIMIT 12`, characterID, conversationID, queryFragments)
+LIMIT 12`, characterID, conversationID, queryFragments, now)
 	if err != nil {
 		return SocialMemoryContext{}, fmt.Errorf("querying social memory: %w", err)
 	}
@@ -109,10 +123,13 @@ LIMIT 12`, characterID, conversationID, queryFragments)
 	return collectSocialMemoryContext(rows, 9, 1800)
 }
 
-func QueryCharacterSocialMemoryContext(ctx context.Context, db Querier, characterID string, queryFragments []string) (SocialMemoryContext, error) {
+func QueryCharacterSocialMemoryContext(ctx context.Context, db Querier, characterID string, queryFragments []string, now int64) (SocialMemoryContext, error) {
 	rows, err := db.Query(ctx, `
 SELECT entry.id, entry.character_id, entry.conversation_id, entry.kind, entry.situation, entry.content, entry.recall_cue, entry.status,
        entry.source_start_ms, entry.source_end_ms, entry.use_count, entry.positive_count, entry.negative_count, entry.unknown_count,
+       entry.feedback_evaluation_count, entry.feedback_adopted_count, entry.feedback_positive_count,
+       entry.feedback_partial_count, entry.feedback_negative_count, entry.feedback_score_basis_points,
+       entry.feedback_quarantined_until_ms,
        entry.created_at_ms, entry.updated_at_ms
 FROM social_memory_entries AS entry
 CROSS JOIN LATERAL (
@@ -125,12 +142,15 @@ CROSS JOIN LATERAL (
      OR entry.situation OPERATOR(public.%) fragment.value OR entry.content OPERATOR(public.%) fragment.value OR entry.recall_cue OPERATOR(public.%) fragment.value
      OR fragment.value OPERATOR(public.<%) entry.situation OR fragment.value OPERATOR(public.<%) entry.content OR fragment.value OPERATOR(public.<%) entry.recall_cue
 ) AS ranked
-WHERE entry.character_id = $1 AND entry.status = 'active' AND ranked.relevance IS NOT NULL
+WHERE entry.character_id = $1
+  AND (entry.status = 'active' OR (entry.status = 'suppressed' AND entry.feedback_quarantined_until_ms <= $3))
+  AND ranked.relevance IS NOT NULL
 ORDER BY ranked.relevance DESC,
-         (positive_count - negative_count) DESC,
+         CASE WHEN entry.status = 'active' THEN 0 ELSE 1 END ASC,
+         entry.feedback_score_basis_points DESC,
          updated_at_ms DESC,
          id ASC
-LIMIT 24`, characterID, queryFragments)
+LIMIT 24`, characterID, queryFragments, now)
 	if err != nil {
 		return SocialMemoryContext{}, fmt.Errorf("querying character social memory: %w", err)
 	}
@@ -164,73 +184,214 @@ func collectSocialMemoryContext(rows pgx.Rows, capacity, runeBudget int) (Social
 	return SocialMemoryContext{Entries: entries}, nil
 }
 
-func RecordSocialReplyFeedback(
+type socialFeedbackEntryState struct {
+	status           string
+	positiveCount    int64
+	partialCount     int64
+	negativeCount    int64
+	quarantinedUntil *int64
+}
+
+func RecordSocialFeedbackBatch(
 	ctx context.Context,
 	tx pgx.Tx,
-	input SocialReplyFeedbackInput,
-	_ string,
+	input SocialFeedbackBatchInput,
 	now int64,
-	negativeSuppressThreshold int,
-) (SocialReplyFeedback, error) {
+) (SocialFeedbackBatchResult, error) {
 	var turnCount int
-	if err := tx.QueryRow(ctx, "SELECT COUNT(*) FROM conversation_turns WHERE id = $1 AND conversation_id = $2", input.TurnID, input.ConversationID).Scan(&turnCount); err != nil {
-		return SocialReplyFeedback{}, fmt.Errorf("checking social feedback turn: %w", err)
+	if err := tx.QueryRow(ctx, `
+SELECT COUNT(*) FROM conversation_turns
+WHERE id = $1 AND conversation_id = $2 AND status = 'completed'`, input.TurnID, input.ConversationID).Scan(&turnCount); err != nil {
+		return SocialFeedbackBatchResult{}, fmt.Errorf("checking social feedback turn: %w", err)
 	}
 	if turnCount != 1 {
-		return SocialReplyFeedback{}, errors.New("social feedback turn does not belong to the conversation")
+		return SocialFeedbackBatchResult{}, errors.New("social feedback turn does not belong to the completed conversation")
 	}
-	if len(input.EntryIDs) > 0 {
-		var entryCount int
-		if err := tx.QueryRow(ctx, "SELECT COUNT(*) FROM social_memory_entries WHERE character_id = $1 AND conversation_id = $2 AND id = ANY($3)", input.CharacterID, input.ConversationID, input.EntryIDs).Scan(&entryCount); err != nil {
-			return SocialReplyFeedback{}, fmt.Errorf("checking social feedback entries: %w", err)
-		}
-		if entryCount != len(input.EntryIDs) {
-			return SocialReplyFeedback{}, errors.New("social feedback entries do not belong to the conversation")
-		}
+	entryIDs := make([]string, 0, len(input.Evaluations))
+	for _, evaluation := range input.Evaluations {
+		entryIDs = append(entryIDs, evaluation.EntryID)
 	}
-	if len(input.EntryIDs) > 0 {
-		positive, negative, unknown := 0, 0, 0
-		switch input.Outcome {
+	rows, err := tx.Query(ctx, `
+SELECT id, status, feedback_positive_count, feedback_partial_count,
+       feedback_negative_count, feedback_quarantined_until_ms
+FROM social_memory_entries
+WHERE character_id = $1 AND conversation_id = $2 AND id = ANY($3)
+FOR UPDATE`, input.CharacterID, input.ConversationID, entryIDs)
+	if err != nil {
+		return SocialFeedbackBatchResult{}, fmt.Errorf("locking social feedback entries: %w", err)
+	}
+	states := make(map[string]socialFeedbackEntryState, len(entryIDs))
+	for rows.Next() {
+		var id string
+		var state socialFeedbackEntryState
+		if err := rows.Scan(&id, &state.status, &state.positiveCount, &state.partialCount, &state.negativeCount, &state.quarantinedUntil); err != nil {
+			rows.Close()
+			return SocialFeedbackBatchResult{}, fmt.Errorf("scanning social feedback entry state: %w", err)
+		}
+		states[id] = state
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return SocialFeedbackBatchResult{}, fmt.Errorf("iterating social feedback entry states: %w", err)
+	}
+	rows.Close()
+	if len(states) != len(entryIDs) {
+		return SocialFeedbackBatchResult{}, errors.New("social feedback entries do not belong to the conversation")
+	}
+
+	result := SocialFeedbackBatchResult{Events: make([]SocialFeedbackEvent, 0, len(input.Evaluations)), NoChange: true}
+	for _, evaluation := range input.Evaluations {
+		evaluation.EvidenceMessageIDs = append([]string{}, evaluation.EvidenceMessageIDs...)
+		slices.Sort(evaluation.EvidenceMessageIDs)
+		event, exists, err := loadSocialFeedbackEvent(ctx, tx, input.TurnID, evaluation.EntryID)
+		if err != nil {
+			return SocialFeedbackBatchResult{}, err
+		}
+		if exists {
+			if !sameSocialFeedbackEvent(event, input, evaluation) {
+				return SocialFeedbackBatchResult{}, errors.New("social feedback event conflicts with an existing turn and entry")
+			}
+			result.Events = append(result.Events, event)
+			continue
+		}
+		event, err = insertSocialFeedbackEvent(ctx, tx, input, evaluation, now)
+		if err != nil {
+			return SocialFeedbackBatchResult{}, err
+		}
+		state := states[evaluation.EntryID]
+		if err := applySocialFeedbackAggregate(ctx, tx, evaluation, state, now); err != nil {
+			return SocialFeedbackBatchResult{}, err
+		}
+		result.NoChange = false
+		result.Events = append(result.Events, event)
+	}
+	return result, nil
+}
+
+func loadSocialFeedbackEvent(ctx context.Context, tx pgx.Tx, turnID, entryID string) (SocialFeedbackEvent, bool, error) {
+	event, err := scanSocialFeedbackEvent(tx.QueryRow(ctx, `
+SELECT id, character_id, conversation_id, turn_id, entry_id, adoption, outcome, credit,
+       evidence_message_ids, observed_message_count, evaluator_revision, created_at_ms
+FROM social_memory_feedback_events WHERE turn_id = $1 AND entry_id = $2`, turnID, entryID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SocialFeedbackEvent{}, false, nil
+	}
+	if err != nil {
+		return SocialFeedbackEvent{}, false, fmt.Errorf("loading social feedback event: %w", err)
+	}
+	return event, true, nil
+}
+
+func insertSocialFeedbackEvent(
+	ctx context.Context,
+	tx pgx.Tx,
+	input SocialFeedbackBatchInput,
+	evaluation SocialFeedbackEvaluation,
+	now int64,
+) (SocialFeedbackEvent, error) {
+	evidenceJSON, err := json.Marshal(evaluation.EvidenceMessageIDs)
+	if err != nil {
+		return SocialFeedbackEvent{}, fmt.Errorf("encoding social feedback evidence IDs: %w", err)
+	}
+	event, err := scanSocialFeedbackEvent(tx.QueryRow(ctx, `
+INSERT INTO social_memory_feedback_events(
+  id, character_id, conversation_id, turn_id, entry_id, adoption, outcome, credit,
+  evidence_message_ids, observed_message_count, evaluator_revision, created_at_ms
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+RETURNING id, character_id, conversation_id, turn_id, entry_id, adoption, outcome, credit,
+          evidence_message_ids, observed_message_count, evaluator_revision, created_at_ms`,
+		newID(), input.CharacterID, input.ConversationID, input.TurnID, evaluation.EntryID,
+		evaluation.Adoption, evaluation.Outcome, evaluation.Credit, evidenceJSON,
+		input.ObservedMessageCount, input.EvaluatorRevision, now,
+	))
+	if err != nil {
+		return SocialFeedbackEvent{}, fmt.Errorf("inserting social feedback event: %w", err)
+	}
+	return event, nil
+}
+
+func scanSocialFeedbackEvent(row scanner) (SocialFeedbackEvent, error) {
+	var event SocialFeedbackEvent
+	var evidenceJSON []byte
+	if err := row.Scan(
+		&event.ID, &event.CharacterID, &event.ConversationID, &event.TurnID, &event.EntryID,
+		&event.Adoption, &event.Outcome, &event.Credit, &evidenceJSON,
+		&event.ObservedMessageCount, &event.EvaluatorRevision, &event.CreatedAtUnixMS,
+	); err != nil {
+		return SocialFeedbackEvent{}, err
+	}
+	if err := json.Unmarshal(evidenceJSON, &event.EvidenceMessageIDs); err != nil {
+		return SocialFeedbackEvent{}, fmt.Errorf("decoding stored social feedback evidence IDs: %w", err)
+	}
+	return event, nil
+}
+
+func sameSocialFeedbackEvent(event SocialFeedbackEvent, input SocialFeedbackBatchInput, evaluation SocialFeedbackEvaluation) bool {
+	return event.CharacterID == input.CharacterID &&
+		event.ConversationID == input.ConversationID &&
+		event.TurnID == input.TurnID &&
+		event.EntryID == evaluation.EntryID &&
+		event.Adoption == evaluation.Adoption &&
+		event.Outcome == evaluation.Outcome &&
+		event.Credit == evaluation.Credit &&
+		slices.Equal(event.EvidenceMessageIDs, evaluation.EvidenceMessageIDs) &&
+		event.ObservedMessageCount == input.ObservedMessageCount &&
+		event.EvaluatorRevision == input.EvaluatorRevision
+}
+
+func applySocialFeedbackAggregate(
+	ctx context.Context,
+	tx pgx.Tx,
+	evaluation SocialFeedbackEvaluation,
+	state socialFeedbackEntryState,
+	now int64,
+) error {
+	adopted, positive, partial, negative := int64(0), int64(0), int64(0), int64(0)
+	if evaluation.Adoption == SocialFeedbackAdopted {
+		adopted = 1
+	}
+	if evaluation.Adoption == SocialFeedbackAdopted && evaluation.Credit == SocialFeedbackCreditEntry {
+		switch evaluation.Outcome {
 		case SocialFeedbackPositive:
 			positive = 1
+		case SocialFeedbackPartial:
+			partial = 1
 		case SocialFeedbackNegative:
 			negative = 1
-		case SocialFeedbackUnknown:
-			unknown = 1
-		}
-		changed, err := tx.Exec(ctx, `
-UPDATE social_memory_entries
-SET use_count = use_count + 1,
-    positive_count = positive_count + $4,
-    negative_count = negative_count + $5,
-    unknown_count = unknown_count + $6,
-    last_feedback_turn_id = $8,
-    updated_at_ms = $7
-WHERE character_id = $1 AND conversation_id = $2 AND id = ANY($3)
-  AND last_feedback_turn_id IS DISTINCT FROM $8`,
-			input.CharacterID, input.ConversationID, input.EntryIDs, positive, negative, unknown, now, input.TurnID,
-		)
-		if err != nil {
-			return SocialReplyFeedback{}, fmt.Errorf("updating social memory feedback counters: %w", err)
-		}
-		if changed.RowsAffected() > int64(len(input.EntryIDs)) {
-			return SocialReplyFeedback{}, errors.New("social feedback updated too many referenced entries")
-		}
-		if _, err := tx.Exec(ctx, `
-UPDATE social_memory_entries
-SET status = 'suppressed', updated_at_ms = $4
-WHERE character_id = $1 AND conversation_id = $2 AND id = ANY($3)
-  AND status = 'active'
-  AND negative_count >= $5
-  AND negative_count >= positive_count + 2`,
-			input.CharacterID, input.ConversationID, input.EntryIDs, now, negativeSuppressThreshold,
-		); err != nil {
-			return SocialReplyFeedback{}, fmt.Errorf("suppressing social memory entries: %w", err)
 		}
 	}
-	return SocialReplyFeedback{
-		ID: input.TurnID, CharacterID: input.CharacterID, ConversationID: input.ConversationID,
-		TurnID: input.TurnID, EntryIDs: append([]string{}, input.EntryIDs...), Outcome: input.Outcome,
-		ObservedMessageCount: input.ObservedMessageCount, CreatedAtUnixMS: now,
-	}, nil
+	nextPositive := state.positiveCount + positive
+	nextPartial := state.partialCount + partial
+	nextNegative := state.negativeCount + negative
+	score := SocialFeedbackScoreBasisPoints(nextPositive, nextPartial, nextNegative)
+	status := state.status
+	quarantinedUntil := state.quarantinedUntil
+	if positive+partial > 0 && status == "suppressed" {
+		status = "active"
+		quarantinedUntil = nil
+	} else if negative > 0 && nextNegative >= SocialNegativeSuppressThreshold && score <= SocialFeedbackQuarantineScore {
+		until := now + SocialFeedbackQuarantineMS
+		status = "suppressed"
+		quarantinedUntil = &until
+	}
+	changed, err := tx.Exec(ctx, `
+UPDATE social_memory_entries
+SET feedback_evaluation_count = feedback_evaluation_count + 1,
+    feedback_adopted_count = feedback_adopted_count + $2,
+    feedback_positive_count = $3,
+    feedback_partial_count = $4,
+    feedback_negative_count = $5,
+    feedback_score_basis_points = $6,
+    status = $7,
+    feedback_quarantined_until_ms = $8,
+    updated_at_ms = $9
+WHERE id = $1`, evaluation.EntryID, adopted, nextPositive, nextPartial, nextNegative,
+		score, status, quarantinedUntil, now)
+	if err != nil {
+		return fmt.Errorf("updating social feedback aggregate: %w", err)
+	}
+	if changed.RowsAffected() != 1 {
+		return errors.New("social feedback aggregate did not update exactly one entry")
+	}
+	return nil
 }

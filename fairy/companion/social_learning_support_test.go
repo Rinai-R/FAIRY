@@ -74,13 +74,49 @@ func (m *socialLearningMemory) RetrieveSocialMemoryContext(_ context.Context, ch
 	return m.retrieved, m.retrieveErr
 }
 
-func (m *socialLearningMemory) RecordSocialReplyFeedback(_ context.Context, input memory.SocialReplyFeedbackInput) (memory.SocialReplyFeedback, error) {
+func (m *socialLearningMemory) RecordSocialFeedbackBatch(_ context.Context, input memory.SocialFeedbackBatchInput) (memory.SocialFeedbackBatchResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.feedbackErr != nil {
-		return memory.SocialReplyFeedback{}, m.feedbackErr
+		return memory.SocialFeedbackBatchResult{}, m.feedbackErr
 	}
-	return memory.SocialReplyFeedback{ID: "feedback-1", Outcome: input.Outcome}, nil
+	return memory.SocialFeedbackBatchResult{}, nil
+}
+
+func TestSocialMemoryFeedbackCandidatesPreserveInjectedAbstractContent(t *testing.T) {
+	context := memory.SocialMemoryContext{Entries: []memory.SocialMemoryEntry{{
+		ID: "entry-1", Kind: memory.SocialMemoryBehavior, Situation: "群友焦虑时",
+		Content: "先接住情绪", RecallCue: "焦虑安慰",
+	}}}
+	candidates := socialMemoryFeedbackCandidates(context)
+	if len(candidates) != 1 || candidates[0] != (memory.SocialFeedbackCandidate{
+		ID: "entry-1", Kind: memory.SocialMemoryBehavior, Situation: "群友焦虑时",
+		Content: "先接住情绪", RecallCue: "焦虑安慰",
+	}) {
+		t.Fatalf("feedback candidates = %#v", candidates)
+	}
+}
+
+func TestSocialFeedbackContextIncludesBaselineAndToolCandidatesOnce(t *testing.T) {
+	baseline := memory.SocialMemoryContext{Entries: []memory.SocialMemoryEntry{
+		{ID: "baseline", Kind: memory.SocialMemoryEpisode, Situation: "项目进度", Content: "先回应当前进展", RecallCue: "进度"},
+		{ID: "shared", Kind: memory.SocialMemoryBehavior, Situation: "群友焦虑", Content: "先接住情绪", RecallCue: "焦虑"},
+	}}
+	toolResult := memory.SocialMemoryContext{Entries: []memory.SocialMemoryEntry{
+		{ID: "shared", Kind: memory.SocialMemoryBehavior, Situation: "群友焦虑", Content: "先接住情绪", RecallCue: "焦虑"},
+		{ID: "tool-only", Kind: memory.SocialMemoryExpression, Situation: "轻松回应", Content: "使用简短自然的口吻", RecallCue: "轻松"},
+	}}
+
+	feedbackContext := mergeSocialMemory(baseline, toolResult)
+	candidates := socialMemoryFeedbackCandidates(feedbackContext)
+	if len(candidates) != 3 {
+		t.Fatalf("feedback candidate count = %d, want 3: %#v", len(candidates), candidates)
+	}
+	for index, wantID := range []string{"baseline", "shared", "tool-only"} {
+		if candidates[index].ID != wantID {
+			t.Fatalf("feedback candidate %d ID = %q, want %q", index, candidates[index].ID, wantID)
+		}
+	}
 }
 
 func (m *socialLearningMemory) UpsertSocialPersonNote(_ context.Context, input memory.SocialPersonNoteInput) (memory.SocialPersonNote, error) {

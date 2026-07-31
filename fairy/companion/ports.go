@@ -97,7 +97,7 @@ type SocialContextStore interface {
 // SocialLearningStore owns public learning, feedback, and person-note writes.
 type SocialLearningStore interface {
 	StoreSocialMemoryEntries(context.Context, memory.SocialMemoryBatchInput) ([]memory.SocialMemoryEntry, error)
-	RecordSocialReplyFeedback(context.Context, memory.SocialReplyFeedbackInput) (memory.SocialReplyFeedback, error)
+	RecordSocialFeedbackBatch(context.Context, memory.SocialFeedbackBatchInput) (memory.SocialFeedbackBatchResult, error)
 	UpsertSocialPersonNote(context.Context, memory.SocialPersonNoteInput) (memory.SocialPersonNote, error)
 }
 

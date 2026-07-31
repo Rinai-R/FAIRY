@@ -61,14 +61,14 @@ func (s *Store) RetrieveCharacterSocialMemoryContext(ctx context.Context, charac
 	return s.retrieveCharacterSocialMemoryContextPostgres(ctx, characterID, fragments)
 }
 
-func (s *Store) RecordSocialReplyFeedback(ctx context.Context, input SocialReplyFeedbackInput) (SocialReplyFeedback, error) {
+func (s *Store) RecordSocialFeedbackBatch(ctx context.Context, input SocialFeedbackBatchInput) (SocialFeedbackBatchResult, error) {
 	if s == nil || s.pool == nil {
-		return SocialReplyFeedback{}, ErrDatabasePoolEmpty
+		return SocialFeedbackBatchResult{}, ErrDatabasePoolEmpty
 	}
-	if err := ValidateSocialReplyFeedback(input); err != nil {
-		return SocialReplyFeedback{}, err
+	if err := ValidateSocialFeedbackBatch(input); err != nil {
+		return SocialFeedbackBatchResult{}, err
 	}
-	return s.recordSocialReplyFeedbackPostgres(ctx, input)
+	return s.recordSocialFeedbackBatchPostgres(ctx, input)
 }
 
 func buildSocialRetrievalProjection(query string) []string {

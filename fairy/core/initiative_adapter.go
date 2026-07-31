@@ -109,11 +109,11 @@ func (a initiativeAdapter) UpsertSocialPersonNote(ctx context.Context, input mem
 	return a.memory.UpsertSocialPersonNote(ctx, input)
 }
 
-func (a initiativeAdapter) RecordSocialReplyFeedback(ctx context.Context, input memory.SocialReplyFeedbackInput) (memory.SocialReplyFeedback, error) {
+func (a initiativeAdapter) RecordSocialFeedbackBatch(ctx context.Context, input memory.SocialFeedbackBatchInput) (memory.SocialFeedbackBatchResult, error) {
 	if a.memory == nil {
-		return memory.SocialReplyFeedback{}, companion.ErrTurnRuntimeUnavailable
+		return memory.SocialFeedbackBatchResult{}, companion.ErrTurnRuntimeUnavailable
 	}
-	return a.memory.RecordSocialReplyFeedback(ctx, input)
+	return a.memory.RecordSocialFeedbackBatch(ctx, input)
 }
 
 func (a initiativeAdapter) WarnLearning(conversationID string, err error) {
@@ -219,6 +219,6 @@ func (a ambientReplyAdapter) ObserveAmbientReply(reply companion.AmbientReply) {
 	}
 	a.service.ObserveAmbientReply(initiative.FeedbackRegistration{
 		CharacterID: reply.CharacterID, ConversationID: reply.ConversationID,
-		TurnID: reply.TurnID, EntryIDs: append([]string(nil), reply.EntryIDs...), ReplyText: reply.ReplyText,
+		TurnID: reply.TurnID, Candidates: append([]memory.SocialFeedbackCandidate(nil), reply.Candidates...), ReplyText: reply.ReplyText,
 	})
 }

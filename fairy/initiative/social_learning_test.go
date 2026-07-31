@@ -42,7 +42,8 @@ type learningTestHost struct {
 
 	stored        []memory.SocialMemoryBatchInput
 	upserted      []memory.SocialPersonNoteInput
-	feedback      []memory.SocialReplyFeedbackInput
+	feedback      []memory.SocialFeedbackBatchInput
+	feedbackErr   error
 	warnings      []error
 	metadataLoads int
 }
@@ -231,11 +232,11 @@ func TestLearningQueueIsNonBlockingAndCloseCancelsModel(t *testing.T) {
 
 var _ LearningHost = (*learningTestHost)(nil)
 
-func (h *learningTestHost) RecordSocialReplyFeedback(_ context.Context, input memory.SocialReplyFeedbackInput) (memory.SocialReplyFeedback, error) {
+func (h *learningTestHost) RecordSocialFeedbackBatch(_ context.Context, input memory.SocialFeedbackBatchInput) (memory.SocialFeedbackBatchResult, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.feedback = append(h.feedback, input)
-	return memory.SocialReplyFeedback{ID: "feedback-1", Outcome: input.Outcome}, nil
+	return memory.SocialFeedbackBatchResult{}, h.feedbackErr
 }
 
 func (h *learningTestHost) WarnFeedback(string, string, error) {}

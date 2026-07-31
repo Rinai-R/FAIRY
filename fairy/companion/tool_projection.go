@@ -36,6 +36,39 @@ func mergeSocialMemory(base, extra memory.SocialMemoryContext) memory.SocialMemo
 	return memory.SocialMemoryContext{Entries: entries}
 }
 
+func boundSocialToolRetrieval(base memory.SocialMemoryContext, extra memory.RetrievalContext, limit int) memory.RetrievalContext {
+	if limit <= 0 || len(extra.SocialMemories.Entries) == 0 {
+		extra.Knowledge = nil
+		extra.SocialMemories = memory.SocialMemoryContext{}
+		return extra
+	}
+	seen := make(map[string]struct{}, len(base.Entries)+len(extra.SocialMemories.Entries))
+	for _, entry := range base.Entries {
+		seen[entry.ID] = struct{}{}
+	}
+	allowed := make(map[string]struct{}, len(extra.SocialMemories.Entries))
+	entries := make([]memory.SocialMemoryEntry, 0, len(extra.SocialMemories.Entries))
+	for _, entry := range extra.SocialMemories.Entries {
+		if _, exists := seen[entry.ID]; !exists {
+			if len(seen) >= limit {
+				continue
+			}
+			seen[entry.ID] = struct{}{}
+		}
+		allowed[entry.ID] = struct{}{}
+		entries = append(entries, entry)
+	}
+	knowledge := make([]memory.RetrievedKnowledge, 0, len(entries))
+	for _, item := range extra.Knowledge {
+		if _, exists := allowed[item.ID]; exists {
+			knowledge = append(knowledge, item)
+		}
+	}
+	extra.Knowledge = knowledge
+	extra.SocialMemories = memory.SocialMemoryContext{Entries: entries}
+	return extra
+}
+
 func mergeSemanticStatus(base, extra string) string {
 	switch {
 	case extra == "used" || base == "used":

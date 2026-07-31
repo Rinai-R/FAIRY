@@ -174,6 +174,34 @@ func TestProductionMemorySQLDoesNotUseRemovedAuxiliaryTables(t *testing.T) {
 	}
 }
 
+func TestSocialFeedbackLedgerHasNarrowProductionOwner(t *testing.T) {
+	allowed := map[string]bool{
+		"coredb/migrate.go": true,
+		"coredb/schema.go":  true,
+		"memory/social.go":  true,
+	}
+	err := filepath.WalkDir(".", func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		normalized := strings.TrimPrefix(filepath.ToSlash(path), "./")
+		if strings.Contains(string(content), "social_memory_feedback_events") && !allowed[normalized] {
+			t.Errorf("social feedback ledger is referenced outside its narrow owner: %s", normalized)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestOrchestrationPackagesDoNotImportEachOther(t *testing.T) {
 	for _, pkg := range listPackages(t, "./companion", "./initiative") {
 		for _, imported := range pkg.Imports {

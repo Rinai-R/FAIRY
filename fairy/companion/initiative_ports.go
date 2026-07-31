@@ -24,7 +24,7 @@ type AmbientReply struct {
 	CharacterID    string
 	ConversationID string
 	TurnID         string
-	EntryIDs       []string
+	Candidates     []memory.SocialFeedbackCandidate
 	ReplyText      string
 }
 
@@ -62,10 +62,13 @@ func (s *CompanionService) ScheduleDesktopInitiation(request DesktopInitiationRe
 	return nil
 }
 
-func socialMemoryEntryIDs(context memory.SocialMemoryContext) []string {
-	ids := make([]string, 0, len(context.Entries))
+func socialMemoryFeedbackCandidates(context memory.SocialMemoryContext) []memory.SocialFeedbackCandidate {
+	candidates := make([]memory.SocialFeedbackCandidate, 0, len(context.Entries))
 	for _, entry := range context.Entries {
-		ids = append(ids, entry.ID)
+		candidates = append(candidates, memory.SocialFeedbackCandidate{
+			ID: entry.ID, Kind: entry.Kind, Situation: entry.Situation,
+			Content: entry.Content, RecallCue: entry.RecallCue,
+		})
 	}
-	return ids
+	return candidates
 }
