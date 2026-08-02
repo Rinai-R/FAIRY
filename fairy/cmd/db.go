@@ -162,7 +162,7 @@ func (o localDatabaseOperations) VectorRebuild(ctx context.Context, pageSize int
 	if err != nil {
 		return nil, err
 	}
-	embedder, err := model.NewModelService(root, secretStore).SemanticAPIEmbedder(settings)
+	embedder, err := model.NewModelService(root, secretStore).SemanticEmbedder(settings)
 	if err != nil {
 		return nil, fmt.Errorf("construct semantic embedder: %w", err)
 	}

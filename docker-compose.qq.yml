@@ -1,0 +1,54 @@
+services:
+  llonebot:
+    image: initialencounter/llonebot:latest
+    restart: unless-stopped
+    environment:
+      AUTH_TOKEN: ${LLONEBOT_AUTH_TOKEN:?LLONEBOT_AUTH_TOKEN is required}
+      QUICK_LOGIN_QQ: ${LLONEBOT_QUICK_LOGIN_QQ:-}
+    ports:
+      - "127.0.0.1:3080:3080"
+    expose:
+      - "3000"
+    volumes:
+      - llonebot-qq-login:/root/.config/QQ
+      - llonebot-data:/root/llonebot
+
+  llonebot-config:
+    image: node:22-alpine
+    restart: unless-stopped
+    command: ["node", "/opt/fairy/configure.mjs"]
+    environment:
+      FAIRY_ONEBOT_TOKEN: ${FAIRY_ONEBOT_TOKEN:?FAIRY_ONEBOT_TOKEN is required}
+      LLONEBOT_DATA_DIR: /root/llonebot/data
+    volumes:
+      - llonebot-data:/root/llonebot
+      - ./deploy/llonebot/configure.mjs:/opt/fairy/configure.mjs:ro
+    depends_on:
+      llonebot:
+        condition: service_started
+
+  qq-onebot:
+    build:
+      context: .
+      dockerfile: surfaces/qq-onebot/Dockerfile
+    restart: unless-stopped
+    expose:
+      - "3002"
+    environment:
+      FAIRY_CORE_ENDPOINT: http://fairy:8787
+      FAIRY_CORE_TOKEN: ${FAIRY_API_TOKEN:?FAIRY_API_TOKEN is required}
+      FAIRY_ONEBOT_WEBHOOK_ENDPOINT: http://0.0.0.0:3002
+      FAIRY_ONEBOT_API_ENDPOINT: http://llonebot:3000
+      FAIRY_ONEBOT_TOKEN: ${FAIRY_ONEBOT_TOKEN:?FAIRY_ONEBOT_TOKEN is required}
+      FAIRY_ONEBOT_CONTAINER_NETWORK: "true"
+    depends_on:
+      fairy:
+        condition: service_healthy
+      llonebot:
+        condition: service_started
+      llonebot-config:
+        condition: service_started
+
+volumes:
+  llonebot-qq-login:
+  llonebot-data:

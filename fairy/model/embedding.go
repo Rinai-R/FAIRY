@@ -13,22 +13,31 @@ func ExecuteRequest(ctx context.Context, draft RequestDraft, bearerKey string, o
 	return SDKTransport{}.Execute(ctx, draft, bearerKey, onEvent)
 }
 
-func (s *ModelService) SemanticAPIEmbedder(settings config.SemanticEmbeddingSettings) (*APIEmbedder, error) {
-	if settings.Provider != config.SemanticEmbeddingProviderOpenAICompatible {
+func (s *ModelService) SemanticEmbedder(settings config.SemanticEmbeddingSettings) (*APIEmbedder, error) {
+	if !settings.Enabled || settings.LegacyReason != "" {
+		return nil, errors.New("semantic embedding provider is not enabled")
+	}
+	if settings.Provider != config.SemanticEmbeddingProviderSiliconFlow && settings.Provider != config.SemanticEmbeddingProviderOpenAICompatible {
 		return nil, errors.New("semantic embedding API provider is not selected")
 	}
-	connection, err := config.ReadModelConnection(s.root)
-	if err != nil {
-		return nil, fmt.Errorf("reading model connection: %w", err)
+	if settings.ConnectionID == "" {
+		return nil, errors.New("semantic embedding credential is not configured")
 	}
-	bearerKey, err := s.bearerCredential(connection)
+	store, err := resolveSecretStore(s.root, s.secrets)
 	if err != nil {
 		return nil, err
 	}
+	credential, ok, err := store.Load(settings.ConnectionID)
+	if err != nil {
+		return nil, fmt.Errorf("loading semantic embedding credential: %w", err)
+	}
+	if !ok {
+		return nil, errors.New("semantic embedding credential is not configured")
+	}
 	return NewAPIEmbedder(APIEmbeddingOptions{
-		Endpoint:   connection.Endpoint,
-		AuthMode:   connection.AuthMode,
-		BearerKey:  bearerKey,
+		Endpoint:   settings.Endpoint,
+		AuthMode:   "bearer_key",
+		BearerKey:  credential.Expose(),
 		Model:      settings.Model,
 		Dimensions: settings.Dimensions,
 	})

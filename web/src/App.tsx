@@ -7,6 +7,7 @@ import {
   ImageIcon,
   LightningBoltIcon,
   LockClosedIcon,
+	Link2Icon,
   MixerHorizontalIcon,
   PersonIcon,
   SpeakerLoudIcon,
@@ -23,6 +24,7 @@ import {
 import { IntelligencePage, OverviewPage, UsagePage } from "./pages/MorePages";
 import { ObservabilityPage } from "./pages/ObservabilityPage";
 import { StickerPage } from "./pages/StickerPage";
+import { IntegrationPage } from "./pages/IntegrationPage";
 import "@radix-ui/themes/styles.css";
 import "./styles/pure.css";
 
@@ -33,6 +35,7 @@ const NAV = [
   { id: "model", label: "模型", icon: MixerHorizontalIcon },
   { id: "speech", label: "语音", icon: SpeakerLoudIcon },
   { id: "stickers", label: "表情包", icon: ImageIcon },
+	{ id: "integrations", label: "接入", icon: Link2Icon },
   { id: "intelligence", label: "智能", icon: LightningBoltIcon },
   { id: "usage", label: "用量", icon: BarChartIcon },
   { id: "logs", label: "日志", icon: ActivityLogIcon },
@@ -105,6 +108,7 @@ export default function App() {
           {section === "model" ? <ModelPage onToast={onToast} /> : null}
           {section === "speech" ? <SpeechPage onToast={onToast} /> : null}
           {section === "stickers" ? <StickerPage onToast={onToast} /> : null}
+		  {section === "integrations" ? <IntegrationPage onToast={onToast} /> : null}
           {section === "intelligence" ? <IntelligencePage onToast={onToast} /> : null}
           {section === "usage" ? <UsagePage onToast={onToast} /> : null}
           {section === "logs" ? <ObservabilityPage token={token} /> : null}

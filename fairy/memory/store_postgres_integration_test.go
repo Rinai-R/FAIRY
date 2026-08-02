@@ -1516,6 +1516,10 @@ func (embedder *blockingKnowledgeDocumentEmbedder) Status() SemanticStatus {
 	return SemanticStatusReady
 }
 
+func (embedder *blockingKnowledgeDocumentEmbedder) ModelID() string {
+	return testSemanticEmbeddingModelID
+}
+
 func (embedder *blockingKnowledgeDocumentEmbedder) Dims() int {
 	return SemanticEmbeddingDimensions
 }
@@ -1725,11 +1729,16 @@ func assertPostgresEmbedding(t *testing.T, ctx context.Context, pool *coredb.Poo
 	if table != "personal_memories" && table != "knowledge_entries" {
 		t.Fatalf("unsupported embedding table %q", table)
 	}
-	query := "SELECT embedding_model_id, embedding_content_hash, embedding IS NOT NULL FROM " + table + " WHERE id = $1"
+	query := "SELECT embedding_model_id, embedding_content_hash, embedding IS NOT NULL, embedding_model_id_v2, embedding_content_hash_v2, embedding_v2 IS NOT NULL FROM " + table + " WHERE id = $1"
+	var legacyModelID, legacyContentHash *string
+	var legacyVectorPresent bool
 	var modelID, contentHash *string
 	var vectorPresent bool
-	if err := pool.Raw().QueryRow(ctx, query, itemID).Scan(&modelID, &contentHash, &vectorPresent); err != nil {
+	if err := pool.Raw().QueryRow(ctx, query, itemID).Scan(&legacyModelID, &legacyContentHash, &legacyVectorPresent, &modelID, &contentHash, &vectorPresent); err != nil {
 		t.Fatalf("query embedding: %v", err)
+	}
+	if legacyModelID != nil || legacyContentHash != nil || legacyVectorPresent {
+		t.Fatalf("new runtime modified legacy embedding = (%v, %v, %v)", legacyModelID, legacyContentHash, legacyVectorPresent)
 	}
 	if !wantEnabled {
 		if modelID != nil || contentHash != nil || vectorPresent {
@@ -1737,8 +1746,8 @@ func assertPostgresEmbedding(t *testing.T, ctx context.Context, pool *coredb.Poo
 		}
 		return
 	}
-	if modelID == nil || *modelID != SemanticEmbeddingModelID || contentHash == nil || *contentHash != semanticContentHash(content) || !vectorPresent {
-		t.Fatalf("embedding = (%v, %v, %v), want model=%q hash=%q", modelID, contentHash, vectorPresent, SemanticEmbeddingModelID, semanticContentHash(content))
+	if modelID == nil || *modelID != testSemanticEmbeddingModelID || contentHash == nil || *contentHash != semanticContentHash(content) || !vectorPresent {
+		t.Fatalf("embedding = (%v, %v, %v), want model=%q hash=%q", modelID, contentHash, vectorPresent, testSemanticEmbeddingModelID, semanticContentHash(content))
 	}
 }
 

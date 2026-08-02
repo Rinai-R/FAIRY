@@ -113,6 +113,11 @@ func newCoreWSTestServer(silentObserved, waitObserved chan struct{}, openCalls, 
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		if r.URL.Path == "/v1/config/qq-onebot" {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"schemaVersion":1,"groupAllowlist":["20001"]}`)
+			return
+		}
 		if r.URL.Path != "/v1/session/ws" {
 			http.NotFound(w, r)
 			return
@@ -311,7 +316,7 @@ func TestZeroBotWebhookServeHelper(t *testing.T) {
 		CoreEndpoint: os.Getenv("FAIRY_TEST_CORE_URL"), CoreToken: "core-token",
 		OneBotWebhookEndpoint: os.Getenv("FAIRY_TEST_WEBHOOK_URL"),
 		OneBotAPIEndpoint:     os.Getenv("FAIRY_TEST_ONEBOT_API_URL"),
-		OneBotToken:           "onebot-token", GroupAllowlist: []string{"20001"},
+		OneBotToken:           "onebot-token",
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

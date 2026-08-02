@@ -104,7 +104,7 @@ func InsertPersonalMemory(
 INSERT INTO personal_memories(
   id, kind, scope_kind, character_id, review_status, content, status,
   confidence_basis_points, source_conversation_id, source_turn_id,
-  supersedes_id, embedding_model_id, embedding_content_hash, embedding,
+  supersedes_id, embedding_model_id_v2, embedding_content_hash_v2, embedding_v2,
   created_at_ms, updated_at_ms
 ) VALUES (
   $1, $2, $3, $4, $5, $6, 'active',

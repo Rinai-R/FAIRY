@@ -109,9 +109,6 @@ export function IntelligencePage({ onToast }: { onToast: (m: string, e?: boolean
   const [memories, setMemories] = useState<{ global: MemoryRecord[]; character: MemoryRecord[]; needsReview: MemoryRecord[] } | null>(null);
   const [webEnabled, setWebEnabled] = useState(false);
   const [webBase, setWebBase] = useState("");
-  const [provider, setProvider] = useState("none");
-  const [semEnabled, setSemEnabled] = useState(false);
-  const [semModel, setSemModel] = useState("");
   const [kind, setKind] = useState("preference");
   const [content, setContent] = useState("");
   const [memoryTab, setMemoryTab] = useState<"global" | "character" | "needsReview">("global");
@@ -121,9 +118,6 @@ export function IntelligencePage({ onToast }: { onToast: (m: string, e?: boolean
     setIntel(i);
     setWebEnabled(Boolean(i.webSearch?.enabled));
     setWebBase(i.webSearch?.baseUrl || "");
-    setProvider(i.semanticEmbedding?.provider || "none");
-    setSemEnabled(Boolean(i.semanticEmbedding?.enabled));
-    setSemModel(i.semanticEmbedding?.model || "");
     const m = await api<any>("/memories/personal");
     setMemories(m);
   }
@@ -197,46 +191,6 @@ export function IntelligencePage({ onToast }: { onToast: (m: string, e?: boolean
               }
             >
               保存检索
-            </Button>
-          </div>
-        </div>
-
-        <div className="card">
-          <Text weight="medium">语义嵌入</Text>
-          <Field label="Provider">
-            <Select.Root value={provider} onValueChange={setProvider}>
-              <Select.Trigger />
-              <Select.Content position="popper" side="bottom" align="start" sideOffset={6}>
-                <Select.Item value="none">none（FTS-only）</Select.Item>
-                <Select.Item value="openai_compatible_api">openai_compatible_api</Select.Item>
-              </Select.Content>
-            </Select.Root>
-          </Field>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-            <Switch checked={semEnabled} onCheckedChange={setSemEnabled} />
-            <Text size="2">启用语义检索</Text>
-          </label>
-          <Field label="Embedding model">
-            <TextField.Root value={semModel} onChange={(e) => setSemModel(e.target.value)} />
-          </Field>
-          <div className="form-actions">
-            <Button
-              onClick={() =>
-                void api("/config/semantic-embedding", {
-                  method: "PUT",
-                  body: JSON.stringify({
-                    schema_version: 1,
-                    provider,
-                    enabled: semEnabled,
-                    model: semModel,
-                    dimensions: 512,
-                  }),
-                })
-                  .then(() => onToast("语义嵌入已保存"))
-                  .catch((e) => onToast(e.message, true))
-              }
-            >
-              保存语义
             </Button>
           </div>
         </div>

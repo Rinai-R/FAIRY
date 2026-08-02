@@ -34,13 +34,17 @@ func (s *Store) RebuildVectors(ctx context.Context, pageSize int) (VectorRebuild
 	if dims := s.semanticEmbedder.Dims(); dims != SemanticEmbeddingDimensions {
 		return VectorRebuildResult{}, fmt.Errorf("embedding dimensions = %d, want %d", dims, SemanticEmbeddingDimensions)
 	}
+	modelID, err := semanticEmbedderModelID(s.semanticEmbedder)
+	if err != nil {
+		return VectorRebuildResult{}, err
+	}
 	if pageSize < 1 || pageSize > maxVectorMaintenancePageSize {
 		return VectorRebuildResult{}, fmt.Errorf("vector rebuild page size must be between 1 and %d", maxVectorMaintenancePageSize)
 	}
 	result := VectorRebuildResult{}
 	lastKind, lastID := "", ""
 	for {
-		items, err := s.authoritativeVectorPage(ctx, lastKind, lastID, pageSize)
+		items, err := s.authoritativeVectorPage(ctx, modelID, lastKind, lastID, pageSize)
 		if err != nil {
 			return result, err
 		}
@@ -73,7 +77,7 @@ func (s *Store) RebuildVectors(ctx context.Context, pageSize int) (VectorRebuild
 					result.FailedItems++
 					return result, err
 				}
-				updated, err := s.updateRebuiltVector(ctx, item, vectors[index])
+				updated, err := s.updateRebuiltVector(ctx, modelID, item, vectors[index])
 				if err != nil {
 					result.FailedItems++
 					return result, err
@@ -89,28 +93,28 @@ func (s *Store) RebuildVectors(ctx context.Context, pageSize int) (VectorRebuild
 	}
 }
 
-func (s *Store) authoritativeVectorPage(ctx context.Context, lastKind, lastID string, limit int) ([]authoritativeVectorItem, error) {
+func (s *Store) authoritativeVectorPage(ctx context.Context, currentModelID, lastKind, lastID string, limit int) ([]authoritativeVectorItem, error) {
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
 	rows, err := s.pool.Raw().Query(queryCtx, `
 SELECT item_kind, item_id, content,
-       embedding_model_id, embedding_content_hash, embedding IS NOT NULL
+       embedding_model_id_v2, embedding_content_hash_v2, embedding_v2 IS NOT NULL
 FROM (
   SELECT 'personal_memory'::text AS item_kind,
          p.id AS item_id,
          p.content AS content,
-         p.embedding_model_id,
-         p.embedding_content_hash,
-         p.embedding
+         p.embedding_model_id_v2,
+         p.embedding_content_hash_v2,
+         p.embedding_v2
   FROM personal_memories p
   WHERE p.status = 'active' AND p.review_status = 'ready'
   UNION ALL
   SELECT 'knowledge'::text AS item_kind,
          k.id AS item_id,
          k.topic || chr(10) || k.statement AS content,
-         k.embedding_model_id,
-         k.embedding_content_hash,
-         k.embedding
+         k.embedding_model_id_v2,
+         k.embedding_content_hash_v2,
+         k.embedding_v2
   FROM knowledge_entries k
   WHERE k.status = 'verified'
 ) items
@@ -124,13 +128,13 @@ LIMIT $3`, lastKind, lastID, limit)
 	items := make([]authoritativeVectorItem, 0, limit)
 	for rows.Next() {
 		var item authoritativeVectorItem
-		var modelID, contentHash pgtype.Text
+		var persistedModelID, contentHash pgtype.Text
 		var vectorPresent bool
-		if err := rows.Scan(&item.ItemKind, &item.ItemID, &item.Content, &modelID, &contentHash, &vectorPresent); err != nil {
+		if err := rows.Scan(&item.ItemKind, &item.ItemID, &item.Content, &persistedModelID, &contentHash, &vectorPresent); err != nil {
 			return nil, fmt.Errorf("scanning authoritative vector item: %w", err)
 		}
-		item.Current = modelID.Valid &&
-			modelID.String == SemanticEmbeddingModelID &&
+		item.Current = persistedModelID.Valid &&
+			persistedModelID.String == currentModelID &&
 			contentHash.Valid &&
 			contentHash.String == semanticContentHash(item.Content) &&
 			vectorPresent
@@ -142,8 +146,8 @@ LIMIT $3`, lastKind, lastID, limit)
 	return items, nil
 }
 
-func (s *Store) updateRebuiltVector(ctx context.Context, item authoritativeVectorItem, vector []float32) (bool, error) {
-	value, err := embeddingForContent(&precomputedSemanticEmbedder{vector: vector}, item.Content)
+func (s *Store) updateRebuiltVector(ctx context.Context, modelID string, item authoritativeVectorItem, vector []float32) (bool, error) {
+	value, err := embeddingForContent(&precomputedSemanticEmbedder{modelID: modelID, vector: vector}, item.Content)
 	if err != nil {
 		return false, err
 	}
@@ -154,9 +158,9 @@ func (s *Store) updateRebuiltVector(ctx context.Context, item authoritativeVecto
 	case "personal_memory":
 		query = `
 UPDATE personal_memories
-SET embedding_model_id = $3,
-    embedding_content_hash = $4,
-    embedding = $5::public.vector,
+SET embedding_model_id_v2 = $3,
+    embedding_content_hash_v2 = $4,
+    embedding_v2 = $5::public.vector,
     updated_at_ms = updated_at_ms
 WHERE id = $1
   AND content = $2
@@ -165,9 +169,9 @@ WHERE id = $1
 	case "knowledge":
 		query = `
 UPDATE knowledge_entries
-SET embedding_model_id = $3,
-    embedding_content_hash = $4,
-    embedding = $5::public.vector,
+SET embedding_model_id_v2 = $3,
+    embedding_content_hash_v2 = $4,
+    embedding_v2 = $5::public.vector,
     updated_at_ms = updated_at_ms
 WHERE id = $1
   AND topic || chr(10) || statement = $2
@@ -183,12 +187,14 @@ WHERE id = $1
 }
 
 type precomputedSemanticEmbedder struct {
-	vector []float32
+	modelID string
+	vector  []float32
 }
 
-func (*precomputedSemanticEmbedder) Ready() bool            { return true }
-func (*precomputedSemanticEmbedder) Status() SemanticStatus { return SemanticStatusReady }
-func (*precomputedSemanticEmbedder) Dims() int              { return SemanticEmbeddingDimensions }
+func (*precomputedSemanticEmbedder) Ready() bool              { return true }
+func (*precomputedSemanticEmbedder) Status() SemanticStatus   { return SemanticStatusReady }
+func (embedder *precomputedSemanticEmbedder) ModelID() string { return embedder.modelID }
+func (*precomputedSemanticEmbedder) Dims() int                { return SemanticEmbeddingDimensions }
 func (embedder *precomputedSemanticEmbedder) Embed([]string) ([][]float32, error) {
 	return [][]float32{embedder.vector}, nil
 }

@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pgvector/pgvector-go"
 	gormschema "gorm.io/gorm/schema"
 )
 
@@ -115,6 +116,97 @@ WHERE table_schema = current_schema()
 	}
 	if !hasVector {
 		t.Fatal("vector extension is not installed")
+	}
+	for _, table := range []string{"personal_memories", "knowledge_entries"} {
+		assertVectorColumnType(t, ctx, pool, table, "embedding", "public.vector(512)")
+		assertVectorColumnType(t, ctx, pool, table, "embedding_v2", "public.vector(1024)")
+	}
+}
+
+func TestMigrateAddsBGEV2WithoutChangingV1VectorsIntegration(t *testing.T) {
+	ctx := t.Context()
+	pool := openIsolatedPool(t, ctx)
+	defer pool.Close()
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	memoryV1 := pgvector.NewVector(make([]float32, 512))
+	memoryV1.Slice()[0] = 0.25
+	knowledgeV1 := pgvector.NewVector(make([]float32, 512))
+	knowledgeV1.Slice()[1] = 0.75
+	if _, err := pool.Exec(ctx, `INSERT INTO conversations(id, character_id, created_at_ms, updated_at_ms)
+VALUES ('embedding-v2-conversation', 'character', 1, 1)`); err != nil {
+		t.Fatalf("seed v1 conversation: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO conversation_turns(id, conversation_id, sequence, status, origin, extraction_state, created_at_ms, updated_at_ms)
+VALUES ('embedding-v2-turn', 'embedding-v2-conversation', 1, 'completed', 'user', 'processed', 1, 1)`); err != nil {
+		t.Fatalf("seed v1 turn: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO personal_memories(
+  id, kind, scope_kind, review_status, content, status, confidence_basis_points,
+  source_conversation_id, source_turn_id, evidence_ids_json,
+  embedding_model_id, embedding_content_hash, embedding, created_at_ms, updated_at_ms
+) VALUES (
+  'embedding-v2-memory', 'preference', 'global', 'ready', 'v1 memory', 'active', 9000,
+  'embedding-v2-conversation', 'embedding-v2-turn', '[]'::jsonb,
+  'legacy-model', repeat('a', 64), $1::public.vector, 1, 1
+)`, memoryV1.String()); err != nil {
+		t.Fatalf("seed v1 personal vector: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO knowledge_entries(
+  id, topic, statement, status, verification_basis, confidence_basis_points,
+  source_conversation_id, source_turn_id,
+  embedding_model_id, embedding_content_hash, embedding, created_at_ms, updated_at_ms
+) VALUES (
+  'embedding-v2-knowledge', 'topic', 'v1 knowledge', 'verified', 'direct', 9000,
+  'embedding-v2-conversation', 'embedding-v2-turn',
+  'legacy-model', repeat('b', 64), $1::public.vector, 1, 1
+)`, knowledgeV1.String()); err != nil {
+		t.Fatalf("seed v1 knowledge vector: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+ALTER TABLE personal_memories DROP CONSTRAINT personal_memories_embedding_v2_check;
+ALTER TABLE knowledge_entries DROP CONSTRAINT knowledge_entries_embedding_v2_check;
+ALTER TABLE personal_memories
+  DROP COLUMN embedding_model_id_v2,
+  DROP COLUMN embedding_content_hash_v2,
+  DROP COLUMN embedding_v2;
+ALTER TABLE knowledge_entries
+  DROP COLUMN embedding_model_id_v2,
+  DROP COLUMN embedding_content_hash_v2,
+  DROP COLUMN embedding_v2;
+UPDATE fairy_schema_state SET revision = '2026-07-31-public-social-feedback-1' WHERE id = 1`); err != nil {
+		t.Fatalf("prepare v1-only schema: %v", err)
+	}
+
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("Migrate(v1-only) error = %v", err)
+	}
+	for _, test := range []struct {
+		table string
+		id    string
+		v1    string
+	}{
+		{table: "personal_memories", id: "embedding-v2-memory", v1: memoryV1.String()},
+		{table: "knowledge_entries", id: "embedding-v2-knowledge", v1: knowledgeV1.String()},
+	} {
+		var gotV1 string
+		var v2Empty bool
+		query := fmt.Sprintf("SELECT embedding::text, embedding_model_id_v2 IS NULL AND embedding_content_hash_v2 IS NULL AND embedding_v2 IS NULL FROM %s WHERE id = $1", pgx.Identifier{test.table}.Sanitize())
+		if err := pool.QueryRow(ctx, query, test.id).Scan(&gotV1, &v2Empty); err != nil {
+			t.Fatalf("read upgraded %s: %v", test.table, err)
+		}
+		if gotV1 != test.v1 || !v2Empty {
+			t.Fatalf("upgraded %s v1 preserved = %v, v2 empty = %v", test.table, gotV1 == test.v1, v2Empty)
+		}
+	}
+	if _, err := pool.Exec(ctx, `UPDATE personal_memories SET embedding_model_id_v2 = 'BAAI/bge-m3' WHERE id = 'embedding-v2-memory'`); err == nil {
+		t.Fatal("partial v2 metadata must be rejected")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE personal_memories SET embedding_v2 = '[1,2,3]'::public.vector WHERE id = 'embedding-v2-memory'`); err == nil {
+		t.Fatal("wrong v2 vector dimensions must be rejected")
 	}
 }
 
@@ -865,6 +957,25 @@ WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2`,
 	}
 	if got != want {
 		t.Fatalf("%s.%s type = %s, want %s", table, column, got, want)
+	}
+}
+
+func assertVectorColumnType(t *testing.T, ctx context.Context, pool *pgxpool.Pool, table string, column string, want string) {
+	t.Helper()
+	var got string
+	if err := pool.QueryRow(ctx, `
+SELECT format_type(attribute.atttypid, attribute.atttypmod)
+FROM pg_attribute AS attribute
+JOIN pg_class AS relation ON relation.oid = attribute.attrelid
+JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+WHERE namespace.nspname = current_schema()
+  AND relation.relname = $1
+  AND attribute.attname = $2
+  AND NOT attribute.attisdropped`, table, column).Scan(&got); err != nil {
+		t.Fatalf("read vector type for %s.%s: %v", table, column, err)
+	}
+	if got != want {
+		t.Fatalf("%s.%s type = %q, want %q", table, column, got, want)
 	}
 }
 

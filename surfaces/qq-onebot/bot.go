@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"fairy/coreclient"
 	"fairy/session"
@@ -19,10 +20,10 @@ import (
 )
 
 type bot struct {
-	ctx       context.Context
-	allowlist map[int64]struct{}
-	socket    sessionSocket
-	stickers  stickerContentReader
+	ctx        context.Context
+	authorizer groupAuthorizer
+	socket     sessionSocket
+	stickers   stickerContentReader
 
 	mu            sync.Mutex
 	ensureMu      sync.Mutex
@@ -41,25 +42,21 @@ type stickerContentReader interface {
 	ReadStickerContent(context.Context, string) (coreclient.StickerContent, error)
 }
 
+type groupAuthorizer interface {
+	GroupAllowed(context.Context, int64) (bool, error)
+}
+
 type expressionSender struct {
 	text  func(string) error
 	image func([]byte) error
 }
 
-func newBot(ctx context.Context, cfg Config, socket sessionSocket, stickers stickerContentReader) (*bot, error) {
-	if ctx == nil || socket == nil || stickers == nil {
-		return nil, errors.New("bot context, session socket, and sticker reader are required")
-	}
-	allowlist := make(map[int64]struct{}, len(cfg.GroupAllowlist))
-	for _, raw := range cfg.GroupAllowlist {
-		id, err := positiveID(raw, "OneBot group allowlist entry")
-		if err != nil {
-			return nil, err
-		}
-		allowlist[id] = struct{}{}
+func newBot(ctx context.Context, socket sessionSocket, stickers stickerContentReader, authorizer groupAuthorizer) (*bot, error) {
+	if ctx == nil || socket == nil || stickers == nil || authorizer == nil {
+		return nil, errors.New("bot context, session socket, sticker reader, and group authorizer are required")
 	}
 	return &bot{
-		ctx: ctx, allowlist: allowlist, socket: socket, stickers: stickers,
+		ctx: ctx, authorizer: authorizer, socket: socket, stickers: stickers,
 		conversations: make(map[int64]string),
 		senders:       make(map[string]expressionSender),
 	}, nil
@@ -74,7 +71,14 @@ func (b *bot) handle(ctx *zero.Ctx) {
 		return
 	}
 	groupID := ctx.Event.GroupID
-	if _, ok := b.allowlist[groupID]; !ok {
+	authorizeCtx, cancel := context.WithTimeout(b.ctx, 2*time.Second)
+	allowed, err := b.authorizer.GroupAllowed(authorizeCtx, groupID)
+	cancel()
+	if err != nil {
+		log.Printf("group message %d authorization failed: %v", groupID, err)
+		return
+	}
+	if !allowed {
 		return
 	}
 	observation, err := ambientObservationFromEvent(ctx)
@@ -299,7 +303,7 @@ func runBot(ctx context.Context, cfg Config) error {
 		return err
 	}
 	defer socket.Close()
-	b, err := newBot(ctx, cfg, socket, core)
+	b, err := newBot(ctx, socket, core, coreGroupAuthorizer{config: core})
 	if err != nil {
 		return err
 	}

@@ -27,7 +27,7 @@ func (value EmbeddingValue) Validate() error {
 	if !value.Enabled() {
 		return nil
 	}
-	if value.ModelID != SemanticEmbeddingModelID {
+	if value.ModelID == "" || strings.TrimSpace(value.ModelID) != value.ModelID || ContainsDisallowedControl(value.ModelID) {
 		return errors.New("embedding model id is invalid")
 	}
 	if !validContentHash(value.ContentHash) {
@@ -60,6 +60,10 @@ func embeddingsForContents(embedder SemanticEmbedder, contents []string) ([]Embe
 	if dims := embedder.Dims(); dims != SemanticEmbeddingDimensions {
 		return nil, fmt.Errorf("embedding dimensions = %d, want %d", dims, SemanticEmbeddingDimensions)
 	}
+	modelID, err := semanticEmbedderModelID(embedder)
+	if err != nil {
+		return nil, err
+	}
 	vectors, err := embedder.Embed(contents)
 	if err != nil {
 		return nil, fmt.Errorf("embedding content: %w", err)
@@ -74,7 +78,7 @@ func embeddingsForContents(embedder SemanticEmbedder, contents []string) ([]Embe
 		}
 		vector := pgvector.NewVector(vectorSlice)
 		values[index] = EmbeddingValue{
-			ModelID:     SemanticEmbeddingModelID,
+			ModelID:     modelID,
 			ContentHash: semanticContentHash(contents[index]),
 			Vector:      &vector,
 		}
@@ -83,6 +87,17 @@ func embeddingsForContents(embedder SemanticEmbedder, contents []string) ([]Embe
 		}
 	}
 	return values, nil
+}
+
+func semanticEmbedderModelID(embedder SemanticEmbedder) (string, error) {
+	if embedder == nil {
+		return "", ErrSemanticUnavailable
+	}
+	modelID := embedder.ModelID()
+	if modelID == "" || strings.TrimSpace(modelID) != modelID || ContainsDisallowedControl(modelID) {
+		return "", errors.New("embedding model id is invalid")
+	}
+	return modelID, nil
 }
 
 func (s *Store) embeddingForContent(content string) (EmbeddingValue, error) {

@@ -7,12 +7,22 @@ import (
 	"testing"
 )
 
+const testSemanticEmbeddingModelID = "BAAI/bge-m3"
+
 type fixedSemanticEmbedder struct {
 	ready   bool
+	modelID string
 	dims    int
 	vectors [][]float32
 	err     error
 	inputs  [][]string
+}
+
+func (embedder *fixedSemanticEmbedder) ModelID() string {
+	if embedder.modelID != "" {
+		return embedder.modelID
+	}
+	return testSemanticEmbeddingModelID
 }
 
 func (embedder *fixedSemanticEmbedder) Ready() bool {
@@ -60,7 +70,7 @@ func TestEmbeddingForContentBuildsPostgresValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddingForContent() error = %v", err)
 	}
-	if !value.Enabled() || value.ModelID != SemanticEmbeddingModelID {
+	if !value.Enabled() || value.ModelID != testSemanticEmbeddingModelID {
 		t.Fatalf("embeddingForContent() = %+v", value)
 	}
 	if value.ContentHash != semanticContentHash("topic\nstatement") {
@@ -158,7 +168,7 @@ func TestEmbeddingForContentRejectsInvalidProviderResults(t *testing.T) {
 }
 
 func TestEmbeddingValueRejectsPartialMetadata(t *testing.T) {
-	value := EmbeddingValue{ModelID: SemanticEmbeddingModelID}
+	value := EmbeddingValue{ModelID: testSemanticEmbeddingModelID}
 	if err := value.Validate(); err == nil {
 		t.Fatal("EmbeddingValue.Validate() error = nil")
 	}

@@ -14,8 +14,7 @@ import (
 )
 
 const (
-	SemanticEmbeddingModelID    = "bge-small-zh-v1.5"
-	SemanticEmbeddingDimensions = 512
+	SemanticEmbeddingDimensions = 1024
 )
 
 var (

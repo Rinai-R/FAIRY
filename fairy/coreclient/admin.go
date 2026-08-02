@@ -9,7 +9,7 @@ import (
 )
 
 var configSections = map[string]struct{}{
-	"model": {}, "speech": {}, "web-search": {}, "semantic-embedding": {},
+	"model": {}, "speech": {}, "web-search": {}, "semantic-embedding": {}, "qq-onebot": {},
 }
 
 type OwnerIdentity struct {

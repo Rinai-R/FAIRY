@@ -15,13 +15,20 @@ import (
 )
 
 type mappedSemanticEmbedder struct {
+	modelID string
 	vectors map[string][]float32
 	err     error
 }
 
 func (*mappedSemanticEmbedder) Ready() bool            { return true }
 func (*mappedSemanticEmbedder) Status() SemanticStatus { return SemanticStatusReady }
-func (*mappedSemanticEmbedder) Dims() int              { return SemanticEmbeddingDimensions }
+func (embedder *mappedSemanticEmbedder) ModelID() string {
+	if embedder.modelID != "" {
+		return embedder.modelID
+	}
+	return testSemanticEmbeddingModelID
+}
+func (*mappedSemanticEmbedder) Dims() int { return SemanticEmbeddingDimensions }
 func (embedder *mappedSemanticEmbedder) Embed(texts []string) ([][]float32, error) {
 	if embedder.err != nil {
 		return nil, embedder.err
@@ -164,6 +171,94 @@ func TestPostgresPgvectorProviderFailureWritesNothing(t *testing.T) {
 	}
 }
 
+func TestPostgresPgvectorMutationWritesNativeV2Only(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatal(err)
+	}
+	embedder := &mappedSemanticEmbedder{vectors: map[string][]float32{
+		"原始记忆":       testVector(1, 0),
+		"修订记忆":       testVector(0.8, 0.2),
+		"测试主题\n测试事实": testVector(0, 1),
+	}}
+	store, err := NewStoreFromPoolWithEmbedder(pool, embedder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversationID, turnID := seedCompletedTurn(t, ctx, store, "character-v2-mutation")
+	personal, err := store.CreatePersonalMemoryContext(ctx, "preference", MemoryScope{Type: "global"}, "原始记忆", 9000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPostgresEmbedding(t, ctx, pool, "personal_memories", personal.ID, personal.Content, true)
+	revised, err := store.RevisePersonalMemoryContext(ctx, personal.ID, "修订记忆", 9100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPostgresEmbedding(t, ctx, pool, "personal_memories", revised.ID, revised.Content, true)
+	knowledge, err := store.InsertVerifiedKnowledgeContext(ctx, "测试主题", "测试事实", conversationID, turnID, 9200, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPostgresEmbedding(t, ctx, pool, "knowledge_entries", knowledge.ID, knowledge.Topic+"\n"+knowledge.Statement, true)
+}
+
+func TestPostgresPgvectorModelSwitchKeepsTextButIsolatesOldVectors(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatal(err)
+	}
+	currentEmbedder := &mappedSemanticEmbedder{vectors: map[string][]float32{
+		"模型切换文本 错模型": testVector(1, 0),
+		"模型切换文本":     testVector(1, 0),
+	}}
+	currentStore, err := NewStoreFromPoolWithEmbedder(pool, currentEmbedder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedCompletedTurn(t, ctx, currentStore, "character-model-switch")
+	wrongModel, err := currentStore.CreatePersonalMemoryContext(ctx, "preference", MemoryScope{Type: "global"}, "模型切换文本 错模型", 9000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Raw().Exec(ctx, `UPDATE personal_memories SET embedding_model_id_v2 = 'previous-v2-model' WHERE id = $1`, wrongModel.ID); err != nil {
+		t.Fatal(err)
+	}
+	textStore, err := NewStoreFromPool(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := textStore.CreatePersonalMemoryContext(ctx, "profile", MemoryScope{Type: "global"}, "模型切换文本 旧向量", 8900)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyVector := pgvector.NewVector(make([]float32, 512))
+	legacyVector.Slice()[0] = 1
+	if _, err := pool.Raw().Exec(ctx, `
+UPDATE personal_memories
+SET embedding_model_id = 'legacy-512-model',
+    embedding_content_hash = $2,
+    embedding = $3::public.vector
+WHERE id = $1`, legacy.ID, semanticContentHash(legacy.Content), legacyVector.String()); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := currentStore.RetrieveContext(ctx, "character-model-switch", "模型切换文本")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsRetrievedPersonalID(result.PersonalMemories, wrongModel.ID) || !containsRetrievedPersonalID(result.PersonalMemories, legacy.ID) {
+		t.Fatalf("text candidates omitted after model switch: %#v", result.PersonalMemories)
+	}
+	if result.SemanticStatus != string(SemanticStatusReady) {
+		t.Fatalf("semantic status = %q, want ready with no current vector hit", result.SemanticStatus)
+	}
+}
+
 func TestPostgresPgvectorRebuildRepairsMissingVectors(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
@@ -213,6 +308,33 @@ func TestPostgresPgvectorRebuildRepairsMissingVectors(t *testing.T) {
 	if second.ScannedItems != 2 || second.UpdatedItems != 0 || second.SkippedItems != 2 || second.FailedItems != 0 {
 		t.Fatalf("second rebuild = %#v", second)
 	}
+	legacyV1 := pgvector.NewVector(make([]float32, 512))
+	legacyV1.Slice()[0] = 0.5
+	if _, err := pool.Raw().Exec(ctx, `
+UPDATE personal_memories
+SET embedding_model_id = 'legacy-512-model',
+    embedding_content_hash = $2,
+    embedding = $3::public.vector,
+    embedding_model_id_v2 = 'previous-v2-model'
+WHERE id = $1`, personal.ID, semanticContentHash(personal.Content), legacyV1.String()); err != nil {
+		t.Fatal(err)
+	}
+	third, err := vectorStore.RebuildVectors(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.ScannedItems != 2 || third.UpdatedItems != 1 || third.SkippedItems != 1 || third.FailedItems != 0 {
+		t.Fatalf("third rebuild = %#v", third)
+	}
+	var legacyAfter, currentModel, currentHash string
+	if err := pool.Raw().QueryRow(ctx, `
+SELECT embedding::text, embedding_model_id_v2, embedding_content_hash_v2
+FROM personal_memories WHERE id = $1`, personal.ID).Scan(&legacyAfter, &currentModel, &currentHash); err != nil {
+		t.Fatal(err)
+	}
+	if legacyAfter != legacyV1.String() || currentModel != testSemanticEmbeddingModelID || currentHash != semanticContentHash(personal.Content) {
+		t.Fatalf("rebuild changed v1 or failed current v2 repair: v1=%v model=%q hash=%q", legacyAfter == legacyV1.String(), currentModel, currentHash)
+	}
 }
 
 func seedCompletedTurn(t *testing.T, ctx context.Context, store *Store, characterID string) (string, string) {
@@ -242,14 +364,14 @@ func assertPostgresVectorConstraints(t *testing.T, ctx context.Context, pool *co
 	t.Helper()
 	if _, err := pool.Raw().Exec(ctx, `
 UPDATE personal_memories
-SET embedding = NULL
+SET embedding_v2 = NULL
 WHERE id = $1
 `, personalMemoryID); err == nil {
 		t.Fatal("partial embedding metadata must be rejected")
 	}
 	if _, err := pool.Raw().Exec(ctx, `
 UPDATE personal_memories
-SET embedding = '[1,2,3]'::public.vector
+SET embedding_v2 = '[1,2,3]'::public.vector
 WHERE id = $1
 `, personalMemoryID); err == nil {
 		t.Fatal("wrong embedding dimensions must be rejected")
@@ -275,8 +397,8 @@ SELECT id
 FROM personal_memories
 WHERE status = 'active'
   AND review_status = 'ready'
-  AND embedding IS NOT NULL
-ORDER BY embedding OPERATOR(public.<=>) $1::public.vector
+  AND embedding_v2 IS NOT NULL
+ORDER BY embedding_v2 OPERATOR(public.<=>) $1::public.vector
 LIMIT 8
 `, pgvector.NewVector(queryVector).String())
 	if err != nil {
@@ -295,7 +417,7 @@ LIMIT 8
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(plan.String(), "personal_memories_embedding_hnsw") {
+	if !strings.Contains(plan.String(), "personal_memories_embedding_v2_hnsw") {
 		t.Fatalf("HNSW index was not usable:\n%s", plan.String())
 	}
 }

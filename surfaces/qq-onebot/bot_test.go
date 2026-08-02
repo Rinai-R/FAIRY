@@ -197,9 +197,12 @@ type fakeSessionSocket struct {
 	openResponse coreclient.OpenSessionResponse
 	stream       chan coreclient.TurnEvent
 	reports      chan coreclient.ExpressionDeliveryResult
+	openCalls    int
+	observeCalls int
 }
 
 func (socket *fakeSessionSocket) OpenSession(_ context.Context, request coreclient.OpenSessionRequest) (coreclient.OpenSessionResponse, error) {
+	socket.openCalls++
 	socket.openRequest = request
 	return socket.openResponse, nil
 }
@@ -209,6 +212,7 @@ func (socket *fakeSessionSocket) Watch(context.Context, string) (<-chan coreclie
 }
 
 func (socket *fakeSessionSocket) ObserveAmbient(context.Context, string, coreclient.AmbientObservation) error {
+	socket.observeCalls++
 	return nil
 }
 
@@ -230,22 +234,49 @@ func TestConfigValidationAndExactTokens(t *testing.T) {
 	valid := Config{
 		CoreEndpoint: "http://127.0.0.1:8787", CoreToken: " core-token ",
 		OneBotWebhookEndpoint: "http://127.0.0.1:3002", OneBotAPIEndpoint: "http://127.0.0.1:3001",
-		OneBotToken: " onebot-token ", GroupAllowlist: []string{"20001"},
+		OneBotToken: " onebot-token ",
 	}
 	if err := valid.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	invalid := []Config{
 		{},
-		{CoreEndpoint: "http://core.example.com", CoreToken: "x", OneBotWebhookEndpoint: "http://127.0.0.1:2", OneBotAPIEndpoint: "http://127.0.0.1:1", OneBotToken: "x", GroupAllowlist: []string{"2"}},
-		{CoreEndpoint: "http://127.0.0.1:1", CoreToken: "x", OneBotWebhookEndpoint: "ws://127.0.0.1:2", OneBotAPIEndpoint: "http://127.0.0.1:1", OneBotToken: "x", GroupAllowlist: []string{"2"}},
-		{CoreEndpoint: "http://127.0.0.1:1", CoreToken: "x", OneBotWebhookEndpoint: "http://example.com:2", OneBotAPIEndpoint: "http://127.0.0.1:1", OneBotToken: "x", GroupAllowlist: []string{"2"}},
-		{CoreEndpoint: "http://127.0.0.1:1", CoreToken: "x", OneBotWebhookEndpoint: "http://127.0.0.1:2", OneBotAPIEndpoint: "http://127.0.0.1:1", OneBotToken: "x"},
+		{CoreEndpoint: "http://core.example.com", CoreToken: "x", OneBotWebhookEndpoint: "http://127.0.0.1:2", OneBotAPIEndpoint: "http://127.0.0.1:1", OneBotToken: "x"},
+		{CoreEndpoint: "http://127.0.0.1:1", CoreToken: "x", OneBotWebhookEndpoint: "ws://127.0.0.1:2", OneBotAPIEndpoint: "http://127.0.0.1:1", OneBotToken: "x"},
+		{CoreEndpoint: "http://127.0.0.1:1", CoreToken: "x", OneBotWebhookEndpoint: "http://example.com:2", OneBotAPIEndpoint: "http://127.0.0.1:1", OneBotToken: "x"},
 	}
 	for i, cfg := range invalid {
 		if err := cfg.Validate(); err == nil {
 			t.Fatalf("invalid config %d accepted", i)
 		}
+	}
+}
+
+func TestConfigValidationAllowsExplicitContainerNetwork(t *testing.T) {
+	valid := Config{
+		CoreEndpoint: "http://fairy:8787", CoreToken: "core-token",
+		OneBotWebhookEndpoint: "http://0.0.0.0:3002", OneBotAPIEndpoint: "http://llonebot:3000",
+		OneBotToken: "onebot-token", ContainerNetwork: true,
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	invalid := []Config{
+		{CoreEndpoint: "http://203.0.113.2:8787", CoreToken: "x", OneBotWebhookEndpoint: "http://0.0.0.0:3002", OneBotAPIEndpoint: "http://llonebot:3000", OneBotToken: "x", ContainerNetwork: true},
+		{CoreEndpoint: "http://fairy.example.com:8787", CoreToken: "x", OneBotWebhookEndpoint: "http://0.0.0.0:3002", OneBotAPIEndpoint: "http://llonebot:3000", OneBotToken: "x", ContainerNetwork: true},
+		{CoreEndpoint: "http://fairy:8787", CoreToken: "x", OneBotWebhookEndpoint: "http://0.0.0.0:3002/callback", OneBotAPIEndpoint: "http://llonebot:3000", OneBotToken: "x", ContainerNetwork: true},
+		{CoreEndpoint: "http://fairy:8787", CoreToken: "x", OneBotWebhookEndpoint: "http://0.0.0.0:3002", OneBotAPIEndpoint: "http://user@llonebot:3000", OneBotToken: "x", ContainerNetwork: true},
+		{CoreEndpoint: "http://fairy:8787", CoreToken: "x", OneBotWebhookEndpoint: "http://0.0.0.0:3002", OneBotAPIEndpoint: "http://203.0.113.3:3000", OneBotToken: "x", ContainerNetwork: true},
+	}
+	for i, cfg := range invalid {
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("invalid container config %d accepted", i)
+		}
+	}
+
+	valid.ContainerNetwork = false
+	if err := valid.Validate(); err == nil {
+		t.Fatal("container endpoints accepted without explicit opt-in")
 	}
 }
 
@@ -255,7 +286,7 @@ func TestConfigFromEnvPreservesExactTokens(t *testing.T) {
 	t.Setenv("FAIRY_ONEBOT_WEBHOOK_ENDPOINT", "http://127.0.0.1:3002")
 	t.Setenv("FAIRY_ONEBOT_API_ENDPOINT", "http://127.0.0.1:3001")
 	t.Setenv("FAIRY_ONEBOT_TOKEN", " onebot-token ")
-	t.Setenv("FAIRY_ONEBOT_GROUP_ALLOWLIST", "20001,20002")
+	t.Setenv("FAIRY_ONEBOT_CONTAINER_NETWORK", "true")
 	cfg, err := configFromEnv()
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +294,14 @@ func TestConfigFromEnvPreservesExactTokens(t *testing.T) {
 	if cfg.CoreToken != " core-token " || cfg.OneBotToken != " onebot-token " {
 		t.Fatalf("tokens were changed: Core=%q OneBot=%q", cfg.CoreToken, cfg.OneBotToken)
 	}
-	if len(cfg.GroupAllowlist) != 2 {
-		t.Fatalf("allowlist = %#v", cfg.GroupAllowlist)
+	if !cfg.ContainerNetwork {
+		t.Fatal("container network opt-in was not loaded")
+	}
+}
+
+func TestConfigFromEnvRejectsInvalidContainerNetwork(t *testing.T) {
+	t.Setenv("FAIRY_ONEBOT_CONTAINER_NETWORK", "yes")
+	if _, err := configFromEnv(); err == nil {
+		t.Fatal("invalid container network boolean accepted")
 	}
 }

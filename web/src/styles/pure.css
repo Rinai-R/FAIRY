@@ -505,6 +505,90 @@ html, body, #root {
 }
 .memory-row:last-child { border-bottom: 0; }
 
+/* ---------- Surface integrations ---------- */
+
+.integration-page { min-width: 0; }
+
+.integration-tool {
+  overflow: hidden;
+  border: 1px solid var(--fairy-border-soft);
+  border-radius: var(--fairy-radius);
+  background: var(--fairy-surface);
+  box-shadow: var(--fairy-shadow-soft);
+}
+
+.integration-tool-heading {
+  display: flex;
+  min-height: 64px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--fairy-border-soft);
+  background: var(--fairy-surface-soft);
+}
+
+.integration-tool-heading p { margin: 0.2rem 0 0; }
+
+.integration-compose {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: end;
+  padding: 1rem;
+  border-bottom: 1px solid var(--fairy-border-soft);
+}
+
+.integration-compose .field { min-width: 0; margin: 0; }
+.integration-compose .rt-Button { margin-bottom: 1px; }
+
+.integration-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.7rem 1rem;
+  border-bottom: 1px solid hsl(6 52% 86%);
+  background: hsl(6 72% 97%);
+  color: var(--fairy-danger);
+  font-size: 0.82rem;
+}
+
+.integration-group-list {
+  min-height: 112px;
+  max-height: 360px;
+  overflow: auto;
+  padding: 0 1rem;
+}
+
+.integration-group-row {
+  display: flex;
+  min-width: 0;
+  min-height: 52px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-bottom: 1px solid var(--fairy-border-soft);
+}
+
+.integration-group-row:last-child { border-bottom: 0; }
+.integration-group-row code { overflow-wrap: anywhere; font-size: 0.86rem; font-variant-numeric: tabular-nums; }
+
+.integration-empty {
+  display: grid;
+  min-height: 112px;
+  place-items: center;
+  color: var(--fairy-text-faint);
+  font-size: 0.84rem;
+}
+
+.integration-tool > .form-actions {
+  margin: 0;
+  padding: 0.9rem 1rem;
+  border-top: 1px solid var(--fairy-border-soft);
+  background: var(--fairy-surface-soft);
+}
+
 /* Keep Select menus opaque so page content never shows through as fake items */
 .rt-SelectContent {
   z-index: 80 !important;
@@ -890,6 +974,8 @@ html, body, #root {
   .nav-item { gap: 0.35rem; padding-inline: 0.4rem; }
   .page-header { flex-direction: column; }
   .page-header > .rt-Flex { width: 100%; flex-wrap: wrap; justify-content: flex-start; }
+	.integration-compose { grid-template-columns: 1fr; }
+	.integration-compose .rt-Button { width: 100%; }
   .usage-toolbar,
   .usage-recent-heading { align-items: flex-start; flex-direction: column; }
   .usage-mode { width: 100%; }

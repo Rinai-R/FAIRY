@@ -117,6 +117,7 @@ func clamp01(v float64) float64 {
 type SemanticEmbedder interface {
 	Ready() bool
 	Status() SemanticStatus
+	ModelID() string
 	Embed(texts []string) ([][]float32, error)
 	Dims() int
 }
@@ -126,6 +127,7 @@ type UnavailableSemanticEmbedder struct{}
 
 func (UnavailableSemanticEmbedder) Ready() bool            { return false }
 func (UnavailableSemanticEmbedder) Status() SemanticStatus { return SemanticStatusUnavailable }
+func (UnavailableSemanticEmbedder) ModelID() string        { return "" }
 func (UnavailableSemanticEmbedder) Dims() int              { return 0 }
 func (UnavailableSemanticEmbedder) Embed([]string) ([][]float32, error) {
 	return nil, ErrSemanticUnavailable

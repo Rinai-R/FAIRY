@@ -74,6 +74,8 @@ var postgresConstraints = []schemaConstraint{
 	{"social_memory_feedback_events", "social_memory_feedback_events_entry_fk", "FOREIGN KEY (entry_id) REFERENCES social_memory_entries(id) ON DELETE CASCADE"},
 	{"personal_memories", "personal_memories_embedding_check", "CHECK ((embedding_model_id IS NULL AND embedding_content_hash IS NULL AND embedding IS NULL) OR (embedding_model_id <> '' AND embedding_content_hash ~ '^[0-9a-f]{64}$' AND embedding IS NOT NULL))"},
 	{"knowledge_entries", "knowledge_entries_embedding_check", "CHECK ((embedding_model_id IS NULL AND embedding_content_hash IS NULL AND embedding IS NULL) OR (embedding_model_id <> '' AND embedding_content_hash ~ '^[0-9a-f]{64}$' AND embedding IS NOT NULL))"},
+	{"personal_memories", "personal_memories_embedding_v2_check", "CHECK ((embedding_model_id_v2 IS NULL AND embedding_content_hash_v2 IS NULL AND embedding_v2 IS NULL) OR (embedding_model_id_v2 <> '' AND embedding_content_hash_v2 ~ '^[0-9a-f]{64}$' AND embedding_v2 IS NOT NULL))"},
+	{"knowledge_entries", "knowledge_entries_embedding_v2_check", "CHECK ((embedding_model_id_v2 IS NULL AND embedding_content_hash_v2 IS NULL AND embedding_v2 IS NULL) OR (embedding_model_id_v2 <> '' AND embedding_content_hash_v2 ~ '^[0-9a-f]{64}$' AND embedding_v2 IS NOT NULL))"},
 }
 
 var postgresIndexes = []schemaIndex{
@@ -85,6 +87,8 @@ var postgresIndexes = []schemaIndex{
 	{"knowledge_entries_statement_trgm", "CREATE INDEX IF NOT EXISTS knowledge_entries_statement_trgm ON knowledge_entries USING gin (statement public.gin_trgm_ops)"},
 	{"personal_memories_embedding_hnsw", "CREATE INDEX IF NOT EXISTS personal_memories_embedding_hnsw ON personal_memories USING hnsw (embedding public.vector_cosine_ops) WHERE embedding IS NOT NULL AND status = 'active' AND review_status = 'ready'"},
 	{"knowledge_entries_embedding_hnsw", "CREATE INDEX IF NOT EXISTS knowledge_entries_embedding_hnsw ON knowledge_entries USING hnsw (embedding public.vector_cosine_ops) WHERE embedding IS NOT NULL AND status = 'verified'"},
+	{"personal_memories_embedding_v2_hnsw", "CREATE INDEX IF NOT EXISTS personal_memories_embedding_v2_hnsw ON personal_memories USING hnsw (embedding_v2 public.vector_cosine_ops) WHERE embedding_v2 IS NOT NULL AND status = 'active' AND review_status = 'ready'"},
+	{"knowledge_entries_embedding_v2_hnsw", "CREATE INDEX IF NOT EXISTS knowledge_entries_embedding_v2_hnsw ON knowledge_entries USING hnsw (embedding_v2 public.vector_cosine_ops) WHERE embedding_v2 IS NOT NULL AND status = 'verified'"},
 	{"social_memory_entries_situation_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_situation_trgm ON social_memory_entries USING gin (situation public.gin_trgm_ops)"},
 	{"social_memory_entries_content_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_content_trgm ON social_memory_entries USING gin (content public.gin_trgm_ops)"},
 	{"social_memory_entries_recall_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_recall_trgm ON social_memory_entries USING gin (recall_cue public.gin_trgm_ops)"},

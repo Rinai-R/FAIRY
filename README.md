@@ -17,8 +17,29 @@ go -C fairy run . serve
 ```bash
 export FAIRY_POSTGRES_PASSWORD='<strong-random-password>'
 export FAIRY_SECRET_MASTER_KEY='<base64-exactly-32-bytes>'
+export FAIRY_API_TOKEN='<strong-random-token>'
 docker compose up --build
 ```
+
+## QQ 群聊 Docker 接入
+
+仓库提供可选的 `docker-compose.qq.yml`，组合官方 LLOneBot 镜像、自动配置 sidecar 和独立 QQ Surface。首次使用先从示例创建本地 env，并填写全部必需空值：
+
+```bash
+cp .env.example .env
+docker compose -f docker-compose.yml -f docker-compose.qq.yml up -d --build
+```
+
+其中 `LLONEBOT_AUTH_TOKEN` 是 PMHQ/LuckyLillia 授权，`FAIRY_ONEBOT_TOKEN` 是 FAIRY 与 LLOneBot HTTP API/事件回调共同使用的 OneBot access token，两者不能复用。`FAIRY_API_TOKEN` 是 QQ Surface 访问 Core 的 token。
+
+启动后打开 [FAIRY 控制台](http://127.0.0.1:8787/console/) 的“接入”页，填写允许 FAIRY 参与的 QQ 群号并保存；空列表会拒绝全部群。随后打开 [LLOneBot WebUI](http://127.0.0.1:3080) 完成 QQ 扫码登录。登录前，LLOneBot 配置 sidecar 会等待 `/root/llonebot/data/config_<uin>.json`，不会伪造 QQ 已连接；登录后它会自动启用容器内 OneBot HTTP API 和指向 QQ Surface 的 HTTP POST，无需在 WebUI 手工填写 endpoint。控制台保存的群范围对 QQ Surface 下一条群事件生效，无需重启。
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.qq.yml logs -f llonebot llonebot-config qq-onebot
+docker compose -f docker-compose.yml -f docker-compose.qq.yml down
+```
+
+QQ 登录态和 LLOneBot 数据保存在 `llonebot-qq-login`、`llonebot-data` volume。普通 `down` 不删除它们；不要使用 `down -v`，除非明确要清除登录态。宿主机只通过回环地址访问 Core `8787` 和 LLOneBot WebUI `3080`，OneBot `3000` 与事件 listener `3002` 不发布到宿主机。
 
 ## CLI
 
@@ -80,7 +101,7 @@ go -C fairy run . db status
 
 ## 日志与指标
 
-控制台第 8 个「日志」栏目和 CLI 使用同一组受鉴权 API：
+控制台「日志」栏目和 CLI 使用同一组受鉴权 API：
 
 - `GET /v1/logs`：查询当前进程最近 2000 条有界、脱敏结构化日志
 - `GET /v1/logs/stream`：ready + backlog + live SSE
@@ -97,6 +118,8 @@ go test -C fairy ./... -count=1
 go test -C surfaces/qq-onebot ./... -race -count=1
 go vet -C surfaces/qq-onebot ./...
 go build -C surfaces/qq-onebot .
+node --test deploy/llonebot/configure.test.mjs
+docker compose -f docker-compose.yml -f docker-compose.qq.yml config --quiet
 docker compose -f docker-compose.integration.yml up -d --wait
 FAIRY_TEST_DATABASE_URL='postgres://fairy:fairy_test_password@127.0.0.1:15432/fairy_test?sslmode=disable' \
 go test -C fairy ./... -tags integration -count=1

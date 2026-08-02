@@ -2,7 +2,7 @@ package coredb
 
 import "github.com/pgvector/pgvector-go"
 
-const currentSchemaRevision = "2026-07-31-public-social-feedback-1"
+const currentSchemaRevision = "2026-07-31-bge-m3-embedding-v2-1"
 
 type conversationSchema struct {
 	ID          string `gorm:"type:text;primaryKey;index:conversations_character_updated,priority:3"`
@@ -152,23 +152,26 @@ type contextWindowSchema struct {
 func (contextWindowSchema) TableName() string { return "context_windows" }
 
 type personalMemorySchema struct {
-	ID                    string           `gorm:"type:text;primaryKey;index:personal_memories_scope_status,priority:5"`
-	Kind                  string           `gorm:"type:text;not null"`
-	ScopeKind             string           `gorm:"type:text;not null;check:personal_memories_invariants_check,(scope_kind IN ('global', 'character', 'relationship', 'unassigned_legacy')) AND (content <> '') AND (status IN ('active', 'superseded', 'tombstone')) AND (confidence_basis_points BETWEEN 0 AND 10000) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms) AND ((scope_kind = 'character') = (character_id IS NOT NULL) OR scope_kind <> 'character');index:personal_memories_scope_status,priority:1"`
-	CharacterID           *string          `gorm:"type:text;index:personal_memories_scope_status,priority:2"`
-	ReviewStatus          string           `gorm:"type:text;not null"`
-	Content               string           `gorm:"type:text;not null"`
-	Status                string           `gorm:"type:text;not null;index:personal_memories_scope_status,priority:3"`
-	ConfidenceBasisPoints int              `gorm:"type:integer;not null"`
-	SourceConversationID  string           `gorm:"type:text;not null"`
-	SourceTurnID          string           `gorm:"type:text;not null"`
-	EvidenceIDsJSON       []byte           `gorm:"type:jsonb;not null;default:'[]'::jsonb"`
-	SupersedesID          *string          `gorm:"type:text"`
-	EmbeddingModelID      *string          `gorm:"type:text"`
-	EmbeddingContentHash  *string          `gorm:"type:text"`
-	Embedding             *pgvector.Vector `gorm:"type:public.vector(512)"`
-	CreatedAtMS           int64            `gorm:"not null"`
-	UpdatedAtMS           int64            `gorm:"not null;index:personal_memories_scope_status,sort:desc,priority:4"`
+	ID                     string           `gorm:"type:text;primaryKey;index:personal_memories_scope_status,priority:5"`
+	Kind                   string           `gorm:"type:text;not null"`
+	ScopeKind              string           `gorm:"type:text;not null;check:personal_memories_invariants_check,(scope_kind IN ('global', 'character', 'relationship', 'unassigned_legacy')) AND (content <> '') AND (status IN ('active', 'superseded', 'tombstone')) AND (confidence_basis_points BETWEEN 0 AND 10000) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms) AND ((scope_kind = 'character') = (character_id IS NOT NULL) OR scope_kind <> 'character');index:personal_memories_scope_status,priority:1"`
+	CharacterID            *string          `gorm:"type:text;index:personal_memories_scope_status,priority:2"`
+	ReviewStatus           string           `gorm:"type:text;not null"`
+	Content                string           `gorm:"type:text;not null"`
+	Status                 string           `gorm:"type:text;not null;index:personal_memories_scope_status,priority:3"`
+	ConfidenceBasisPoints  int              `gorm:"type:integer;not null"`
+	SourceConversationID   string           `gorm:"type:text;not null"`
+	SourceTurnID           string           `gorm:"type:text;not null"`
+	EvidenceIDsJSON        []byte           `gorm:"type:jsonb;not null;default:'[]'::jsonb"`
+	SupersedesID           *string          `gorm:"type:text"`
+	EmbeddingModelID       *string          `gorm:"type:text"`
+	EmbeddingContentHash   *string          `gorm:"type:text"`
+	Embedding              *pgvector.Vector `gorm:"type:public.vector(512)"`
+	EmbeddingModelIDV2     *string          `gorm:"column:embedding_model_id_v2;type:text"`
+	EmbeddingContentHashV2 *string          `gorm:"column:embedding_content_hash_v2;type:text"`
+	EmbeddingV2            *pgvector.Vector `gorm:"column:embedding_v2;type:public.vector(1024)"`
+	CreatedAtMS            int64            `gorm:"not null"`
+	UpdatedAtMS            int64            `gorm:"not null;index:personal_memories_scope_status,sort:desc,priority:4"`
 }
 
 func (personalMemorySchema) TableName() string { return "personal_memories" }
@@ -184,29 +187,32 @@ type memoryContextCoverageSchema struct {
 func (memoryContextCoverageSchema) TableName() string { return "memory_context_coverages" }
 
 type knowledgeEntrySchema struct {
-	ID                    string           `gorm:"type:text;primaryKey;index:knowledge_entries_status_updated,priority:3"`
-	Topic                 string           `gorm:"type:text;not null;check:knowledge_entries_invariants_check,(topic <> '') AND (statement <> '') AND (status IN ('candidate', 'verified', 'superseded', 'rejected', 'tombstone')) AND (confidence_basis_points BETWEEN 0 AND 10000) AND (source_url = '' OR source_url ~ '^https?://[^[:space:]]+$') AND (source_content_hash = '' OR source_content_hash ~ '^[0-9a-f]{64}$') AND (source_fetched_at_ms >= 0) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms)"`
-	Statement             string           `gorm:"type:text;not null"`
-	Status                string           `gorm:"type:text;not null;index:knowledge_entries_status_updated,priority:1"`
-	VerificationBasis     string           `gorm:"type:text;not null"`
-	ConfidenceBasisPoints int              `gorm:"type:integer;not null"`
-	SourceConversationID  string           `gorm:"type:text;not null"`
-	SourceTurnID          string           `gorm:"type:text;not null"`
-	SourceURL             string           `gorm:"type:text;not null;default:'';index:knowledge_entries_source_url"`
-	SourceTitle           string           `gorm:"type:text;not null;default:''"`
-	SourceContentHash     string           `gorm:"type:text;not null;default:''"`
-	SourceContentType     string           `gorm:"type:text;not null;default:''"`
-	SourceFetchedAtMS     int64            `gorm:"not null;default:0"`
-	SourceETag            string           `gorm:"column:source_etag;type:text;not null;default:''"`
-	SourceLastModified    string           `gorm:"type:text;not null;default:''"`
-	ReconcilerRevision    string           `gorm:"type:text;not null;default:''"`
-	EvidenceText          string           `gorm:"type:text;not null;default:''"`
-	SupersedesID          *string          `gorm:"type:text"`
-	EmbeddingModelID      *string          `gorm:"type:text"`
-	EmbeddingContentHash  *string          `gorm:"type:text"`
-	Embedding             *pgvector.Vector `gorm:"type:public.vector(512)"`
-	CreatedAtMS           int64            `gorm:"not null"`
-	UpdatedAtMS           int64            `gorm:"not null;index:knowledge_entries_status_updated,sort:desc,priority:2"`
+	ID                     string           `gorm:"type:text;primaryKey;index:knowledge_entries_status_updated,priority:3"`
+	Topic                  string           `gorm:"type:text;not null;check:knowledge_entries_invariants_check,(topic <> '') AND (statement <> '') AND (status IN ('candidate', 'verified', 'superseded', 'rejected', 'tombstone')) AND (confidence_basis_points BETWEEN 0 AND 10000) AND (source_url = '' OR source_url ~ '^https?://[^[:space:]]+$') AND (source_content_hash = '' OR source_content_hash ~ '^[0-9a-f]{64}$') AND (source_fetched_at_ms >= 0) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms)"`
+	Statement              string           `gorm:"type:text;not null"`
+	Status                 string           `gorm:"type:text;not null;index:knowledge_entries_status_updated,priority:1"`
+	VerificationBasis      string           `gorm:"type:text;not null"`
+	ConfidenceBasisPoints  int              `gorm:"type:integer;not null"`
+	SourceConversationID   string           `gorm:"type:text;not null"`
+	SourceTurnID           string           `gorm:"type:text;not null"`
+	SourceURL              string           `gorm:"type:text;not null;default:'';index:knowledge_entries_source_url"`
+	SourceTitle            string           `gorm:"type:text;not null;default:''"`
+	SourceContentHash      string           `gorm:"type:text;not null;default:''"`
+	SourceContentType      string           `gorm:"type:text;not null;default:''"`
+	SourceFetchedAtMS      int64            `gorm:"not null;default:0"`
+	SourceETag             string           `gorm:"column:source_etag;type:text;not null;default:''"`
+	SourceLastModified     string           `gorm:"type:text;not null;default:''"`
+	ReconcilerRevision     string           `gorm:"type:text;not null;default:''"`
+	EvidenceText           string           `gorm:"type:text;not null;default:''"`
+	SupersedesID           *string          `gorm:"type:text"`
+	EmbeddingModelID       *string          `gorm:"type:text"`
+	EmbeddingContentHash   *string          `gorm:"type:text"`
+	Embedding              *pgvector.Vector `gorm:"type:public.vector(512)"`
+	EmbeddingModelIDV2     *string          `gorm:"column:embedding_model_id_v2;type:text"`
+	EmbeddingContentHashV2 *string          `gorm:"column:embedding_content_hash_v2;type:text"`
+	EmbeddingV2            *pgvector.Vector `gorm:"column:embedding_v2;type:public.vector(1024)"`
+	CreatedAtMS            int64            `gorm:"not null"`
+	UpdatedAtMS            int64            `gorm:"not null;index:knowledge_entries_status_updated,sort:desc,priority:2"`
 }
 
 func (knowledgeEntrySchema) TableName() string { return "knowledge_entries" }

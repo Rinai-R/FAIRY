@@ -29,6 +29,44 @@ func TestPromptWindowSchemaDeclaresVersionedProjectionDefaults(t *testing.T) {
 	}
 }
 
+func TestEmbeddingSchemaKeepsV1AndAddsNativeBGEV2(t *testing.T) {
+	for _, model := range []any{&personalMemorySchema{}, &knowledgeEntrySchema{}} {
+		parsed, err := gormschema.Parse(model, &sync.Map{}, gormschema.NamingStrategy{})
+		if err != nil {
+			t.Fatalf("parse %T: %v", model, err)
+		}
+		v1 := parsed.LookUpField("Embedding")
+		if v1 == nil || v1.DBName != "embedding" || v1.TagSettings["TYPE"] != "public.vector(512)" {
+			t.Fatalf("%s v1 embedding field = %#v", parsed.Table, v1)
+		}
+		v2 := parsed.LookUpField("EmbeddingV2")
+		if v2 == nil || v2.DBName != "embedding_v2" || v2.TagSettings["TYPE"] != "public.vector(1024)" {
+			t.Fatalf("%s v2 embedding field = %#v", parsed.Table, v2)
+		}
+		for fieldName, columnName := range map[string]string{
+			"EmbeddingModelIDV2":     "embedding_model_id_v2",
+			"EmbeddingContentHashV2": "embedding_content_hash_v2",
+		} {
+			field := parsed.LookUpField(fieldName)
+			if field == nil || field.DBName != columnName {
+				t.Fatalf("%s %s field = %#v", parsed.Table, fieldName, field)
+			}
+		}
+		constraintName := parsed.Table + "_embedding_v2_check"
+		if !slices.ContainsFunc(postgresConstraints, func(constraint schemaConstraint) bool {
+			return constraint.Table == parsed.Table && constraint.Name == constraintName
+		}) {
+			t.Fatalf("%s constraint is missing", constraintName)
+		}
+		indexName := parsed.Table + "_embedding_v2_hnsw"
+		if !slices.ContainsFunc(postgresIndexes, func(index schemaIndex) bool {
+			return index.Name == indexName
+		}) {
+			t.Fatalf("%s index is missing", indexName)
+		}
+	}
+}
+
 func TestSchemaModelsDeclareOneInvariantPerTable(t *testing.T) {
 	for _, model := range schemaModels() {
 		parsed, err := gormschema.Parse(model, &sync.Map{}, gormschema.NamingStrategy{})

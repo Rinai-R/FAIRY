@@ -42,13 +42,17 @@ func (s *Store) retrievePostgresHybrid(ctx context.Context, characterID, query s
 		textContext.SemanticStatus = string(semanticStatus)
 		return textContext, nil
 	}
-	queryCtx, cancel := s.pool.QueryContext(ctx)
-	defer cancel()
-	personal, err := retrievePersonalVectorPostgres(queryCtx, s.pool.Raw(), characterID, *queryVector)
+	modelID, err := semanticEmbedderModelID(s.semanticEmbedder)
 	if err != nil {
 		return RetrievalContext{}, err
 	}
-	knowledge, err := retrieveKnowledgeVectorPostgres(queryCtx, s.pool.Raw(), *queryVector)
+	queryCtx, cancel := s.pool.QueryContext(ctx)
+	defer cancel()
+	personal, err := retrievePersonalVectorPostgres(queryCtx, s.pool.Raw(), characterID, modelID, *queryVector)
+	if err != nil {
+		return RetrievalContext{}, err
+	}
+	knowledge, err := retrieveKnowledgeVectorPostgres(queryCtx, s.pool.Raw(), modelID, *queryVector)
 	if err != nil {
 		return RetrievalContext{}, err
 	}
@@ -85,9 +89,13 @@ func (s *Store) retrievePublicKnowledgePostgres(ctx context.Context, query strin
 		textContext.SemanticStatus = string(semanticStatus)
 		return textContext, nil
 	}
+	modelID, err := semanticEmbedderModelID(s.semanticEmbedder)
+	if err != nil {
+		return RetrievalContext{}, err
+	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
-	knowledge, err := retrieveKnowledgeVectorPostgres(queryCtx, s.pool.Raw(), *queryVector)
+	knowledge, err := retrieveKnowledgeVectorPostgres(queryCtx, s.pool.Raw(), modelID, *queryVector)
 	if err != nil {
 		return RetrievalContext{}, err
 	}
@@ -124,9 +132,13 @@ func (s *Store) retrievePublicKnowledgeForIngestPostgres(ctx context.Context, qu
 		textContext.SemanticStatus = string(semanticStatus)
 		return textContext, nil
 	}
+	modelID, err := semanticEmbedderModelID(s.semanticEmbedder)
+	if err != nil {
+		return RetrievalContext{}, err
+	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
-	knowledge, err := retrieveKnowledgeVectorPostgres(queryCtx, s.pool.Raw(), *queryVector)
+	knowledge, err := retrieveKnowledgeVectorPostgres(queryCtx, s.pool.Raw(), modelID, *queryVector)
 	if err != nil {
 		return RetrievalContext{}, err
 	}
@@ -201,22 +213,23 @@ func (s *Store) retrievePostgresTextContext(ctx context.Context, characterID, no
 	return RetrievalContext{PersonalMemories: memories, Knowledge: knowledge, SemanticStatus: string(SemanticStatusUnavailable)}, nil
 }
 
-func retrievePersonalVectorPostgres(ctx context.Context, db Querier, characterID string, queryVector pgvector.Vector) (map[string]vectorPersonalTruth, error) {
+func retrievePersonalVectorPostgres(ctx context.Context, db Querier, characterID, modelID string, queryVector pgvector.Vector) (map[string]vectorPersonalTruth, error) {
 	rows, err := db.Query(ctx, `
 SELECT id, kind, scope_kind, character_id, content,
        confidence_basis_points, updated_at_ms,
-       GREATEST(0.0, LEAST(1.0, 1.0 - (embedding OPERATOR(public.<=>) $1::public.vector))) AS similarity
+       GREATEST(0.0, LEAST(1.0, 1.0 - (embedding_v2 OPERATOR(public.<=>) $1::public.vector))) AS similarity
 FROM personal_memories
 WHERE status = 'active'
   AND review_status = 'ready'
-  AND embedding_model_id = $2
-  AND embedding IS NOT NULL
+  AND embedding_model_id_v2 = $2
+  AND embedding_content_hash_v2 = encode(sha256(convert_to(content, 'UTF8')), 'hex')
+  AND embedding_v2 IS NOT NULL
   AND (
     scope_kind = 'global'
     OR (scope_kind = 'character' AND character_id = $3)
   )
-ORDER BY embedding OPERATOR(public.<=>) $1::public.vector, id ASC
-LIMIT $4`, queryVector.String(), SemanticEmbeddingModelID, characterID, maxResultsPerKind*2)
+ORDER BY embedding_v2 OPERATOR(public.<=>) $1::public.vector, id ASC
+LIMIT $4`, queryVector.String(), modelID, characterID, maxResultsPerKind*2)
 	if err != nil {
 		return nil, fmt.Errorf("querying personal memory vectors: %w", err)
 	}
@@ -251,17 +264,18 @@ LIMIT $4`, queryVector.String(), SemanticEmbeddingModelID, characterID, maxResul
 	return result, nil
 }
 
-func retrieveKnowledgeVectorPostgres(ctx context.Context, db ConversationDB, queryVector pgvector.Vector) (map[string]vectorKnowledgeTruth, error) {
+func retrieveKnowledgeVectorPostgres(ctx context.Context, db ConversationDB, modelID string, queryVector pgvector.Vector) (map[string]vectorKnowledgeTruth, error) {
 	rows, err := db.Query(ctx, `
 SELECT id, topic, statement, verification_basis,
        confidence_basis_points, updated_at_ms,
-       GREATEST(0.0, LEAST(1.0, 1.0 - (embedding OPERATOR(public.<=>) $1::public.vector))) AS similarity
+       GREATEST(0.0, LEAST(1.0, 1.0 - (embedding_v2 OPERATOR(public.<=>) $1::public.vector))) AS similarity
 FROM knowledge_entries
 WHERE status = 'verified'
-  AND embedding_model_id = $2
-  AND embedding IS NOT NULL
-ORDER BY embedding OPERATOR(public.<=>) $1::public.vector, id ASC
-LIMIT $3`, queryVector.String(), SemanticEmbeddingModelID, maxResultsPerKind*2)
+  AND embedding_model_id_v2 = $2
+  AND embedding_content_hash_v2 = encode(sha256(convert_to(topic || chr(10) || statement, 'UTF8')), 'hex')
+  AND embedding_v2 IS NOT NULL
+ORDER BY embedding_v2 OPERATOR(public.<=>) $1::public.vector, id ASC
+LIMIT $3`, queryVector.String(), modelID, maxResultsPerKind*2)
 	if err != nil {
 		return nil, fmt.Errorf("querying knowledge vectors: %w", err)
 	}

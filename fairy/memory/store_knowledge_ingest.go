@@ -45,7 +45,11 @@ func (s *Store) insertVerifiedKnowledgePostgres(ctx context.Context, topic, stat
 			return existing, nil
 		}
 		content := existing.Topic + "\n" + existing.Statement
-		current, err := knowledgeEmbeddingCurrent(queryCtx, s.pool.Raw(), existingID, semanticContentHash(content))
+		modelID := s.semanticEmbedder.ModelID()
+		if modelID == "" || strings.TrimSpace(modelID) != modelID || ContainsDisallowedControl(modelID) {
+			return KnowledgeRecord{}, errors.New("embedding model id is invalid")
+		}
+		current, err := knowledgeEmbeddingCurrent(queryCtx, s.pool.Raw(), existingID, modelID, semanticContentHash(content))
 		if err != nil {
 			return KnowledgeRecord{}, err
 		}
@@ -63,24 +67,24 @@ func (s *Store) insertVerifiedKnowledgePostgres(ctx context.Context, topic, stat
 		defer tx.Rollback(queryCtx)
 		changed, err := tx.Exec(queryCtx, `
 UPDATE knowledge_entries
-SET embedding_model_id = $2,
-    embedding_content_hash = $3,
-    embedding = $4::public.vector,
+SET embedding_model_id_v2 = $2,
+    embedding_content_hash_v2 = $3,
+    embedding_v2 = $4::public.vector,
     updated_at_ms = $5
 WHERE id = $1
   AND status = 'verified'
   AND topic = $6
   AND statement = $7
   AND (
-    embedding_model_id IS DISTINCT FROM $2
-    OR embedding_content_hash IS DISTINCT FROM $3
-    OR embedding IS NULL
+    embedding_model_id_v2 IS DISTINCT FROM $2
+    OR embedding_content_hash_v2 IS DISTINCT FROM $3
+    OR embedding_v2 IS NULL
   )`, existingID, embedding.ModelID, embedding.ContentHash, embedding.Vector.String(), nowUnixMS(), existing.Topic, existing.Statement)
 		if err != nil {
 			return KnowledgeRecord{}, fmt.Errorf("backfilling knowledge embedding: %w", err)
 		}
 		if changed.RowsAffected() != 1 {
-			current, checkErr := knowledgeEmbeddingCurrent(queryCtx, tx, existingID, embedding.ContentHash)
+			current, checkErr := knowledgeEmbeddingCurrent(queryCtx, tx, existingID, embedding.ModelID, embedding.ContentHash)
 			if checkErr != nil {
 				return KnowledgeRecord{}, checkErr
 			}
@@ -128,18 +132,18 @@ WHERE id = $1
 	return knowledgeByIDPostgres(ctx, s.pool.Raw(), id)
 }
 
-func knowledgeEmbeddingCurrent(ctx context.Context, db ConversationDB, id, contentHash string) (bool, error) {
+func knowledgeEmbeddingCurrent(ctx context.Context, db ConversationDB, id, modelID, contentHash string) (bool, error) {
 	var current bool
 	if err := db.QueryRow(ctx, `
 SELECT COALESCE(
-  embedding_model_id = $2
-  AND embedding_content_hash = $3
-  AND embedding IS NOT NULL,
+  embedding_model_id_v2 = $2
+  AND embedding_content_hash_v2 = $3
+  AND embedding_v2 IS NOT NULL,
   false
 )
 FROM knowledge_entries
 WHERE id = $1
-`, id, SemanticEmbeddingModelID, contentHash).Scan(&current); err != nil {
+`, id, modelID, contentHash).Scan(&current); err != nil {
 		return false, fmt.Errorf("checking knowledge embedding: %w", err)
 	}
 	return current, nil

@@ -244,6 +244,9 @@ func secretNamespace(name string) string {
 	if strings.HasPrefix(name, "speech.") {
 		return "speech"
 	}
+	if strings.HasPrefix(name, "semantic_embedding.") {
+		return "semantic_embedding"
+	}
 	return "model"
 }
 

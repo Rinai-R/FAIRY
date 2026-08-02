@@ -24,11 +24,11 @@ func semanticEmbedder(modelService *model.ModelService, configReader *config.Rea
 	case config.SemanticEmbeddingProviderNone, "":
 		logger.Info("semantic embedding disabled; FTS-only retrieval")
 		return nil
-	case config.SemanticEmbeddingProviderOpenAICompatible:
+	case config.SemanticEmbeddingProviderSiliconFlow, config.SemanticEmbeddingProviderOpenAICompatible:
 		if modelService == nil {
 			return nil
 		}
-		embedder, err := modelService.SemanticAPIEmbedder(settings)
+		embedder, err := modelService.SemanticEmbedder(settings)
 		if err != nil {
 			logger.Warn("semantic API embedder unavailable", zap.Error(err))
 			return nil

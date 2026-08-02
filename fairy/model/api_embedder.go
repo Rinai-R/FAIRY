@@ -1,23 +1,21 @@
 package model
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"math"
 	"net/http"
 	"net/url"
-	"path"
 	"strings"
 	"time"
 
 	"fairy/config"
 	"fairy/memory"
-)
 
-const embeddingEncodingFormatFloat = "float"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+)
 
 // APIEmbeddingOptions configures an OpenAI-compatible /embeddings backend.
 type APIEmbeddingOptions struct {
@@ -29,22 +27,21 @@ type APIEmbeddingOptions struct {
 	HTTPClient *http.Client
 }
 
-// APIEmbedder implements memory.SemanticEmbedder through an OpenAI-compatible
-// embeddings endpoint. It is optional and only constructed when settings are
-// explicitly enabled by the app composition root.
+// APIEmbedder implements memory.SemanticEmbedder through the official OpenAI Go
+// SDK against an explicitly configured compatible provider.
 type APIEmbedder struct {
-	url        string
+	baseURL    string
 	authMode   string
 	bearerKey  string
 	model      string
 	dimensions int
-	client     *http.Client
+	client     openai.Client
 }
 
 var _ memory.SemanticEmbedder = (*APIEmbedder)(nil)
 
 func NewAPIEmbedder(options APIEmbeddingOptions) (*APIEmbedder, error) {
-	endpointURL, err := embeddingsURL(options.Endpoint)
+	baseURL, err := embeddingBaseURL(options.Endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -63,25 +60,31 @@ func NewAPIEmbedder(options APIEmbeddingOptions) (*APIEmbedder, error) {
 	if authMode != "bearer_key" && authMode != "no_auth" {
 		return nil, fmt.Errorf("model auth mode %q is not supported", authMode)
 	}
-	if authMode == "bearer_key" && strings.TrimSpace(options.BearerKey) == "" {
+	bearerKey := strings.TrimSpace(options.BearerKey)
+	if authMode == "bearer_key" && bearerKey == "" {
 		return nil, errors.New("model bearer credential is required")
 	}
-	client := options.HTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+	httpClient := options.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 30 * time.Second}
+	}
+	clientOptions := []option.RequestOption{
+		option.WithBaseURL(baseURL),
+		option.WithAPIKey(bearerKey),
+		option.WithHTTPClient(httpClient),
 	}
 	return &APIEmbedder{
-		url:        endpointURL,
+		baseURL:    baseURL,
 		authMode:   authMode,
-		bearerKey:  strings.TrimSpace(options.BearerKey),
+		bearerKey:  bearerKey,
 		model:      model,
 		dimensions: dimensions,
-		client:     client,
+		client:     openai.NewClient(clientOptions...),
 	}, nil
 }
 
 func (e *APIEmbedder) Ready() bool {
-	return e != nil && e.url != "" && e.model != "" && e.dimensions == config.SemanticEmbeddingDimensions
+	return e != nil && e.baseURL != "" && e.model != "" && e.dimensions == config.SemanticEmbeddingDimensions && (e.authMode == "no_auth" || e.bearerKey != "")
 }
 
 func (e *APIEmbedder) Status() memory.SemanticStatus {
@@ -98,6 +101,13 @@ func (e *APIEmbedder) Dims() int {
 	return e.dimensions
 }
 
+func (e *APIEmbedder) ModelID() string {
+	if e == nil {
+		return ""
+	}
+	return e.model
+}
+
 func (e *APIEmbedder) Embed(texts []string) ([][]float32, error) {
 	return e.EmbedContext(context.Background(), texts)
 }
@@ -112,80 +122,51 @@ func (e *APIEmbedder) EmbedContext(ctx context.Context, texts []string) ([][]flo
 	if len(texts) == 0 {
 		return [][]float32{}, nil
 	}
-	body, err := json.Marshal(embeddingRequest{
+	params := openai.EmbeddingNewParams{
+		Input:          openai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: texts},
 		Model:          e.model,
-		Input:          texts,
-		Dimensions:     e.dimensions,
-		EncodingFormat: embeddingEncodingFormatFloat,
-	})
+		EncodingFormat: openai.EmbeddingNewParamsEncodingFormatFloat,
+	}
+	response, err := e.client.Embeddings.New(ctx, params)
 	if err != nil {
-		return nil, err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, sanitizeEmbeddingError(err, e.bearerKey, texts)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.url, bytes.NewReader(body))
+	vectors, err := orderedSDKEmbeddingVectors(response.Data, len(texts), e.dimensions)
 	if err != nil {
-		return nil, sanitizeEmbeddingError(err, e.bearerKey)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if e.authMode == "bearer_key" {
-		req.Header.Set("Authorization", "Bearer "+e.bearerKey)
-	}
-	resp, err := e.client.Do(req)
-	if err != nil {
-		return nil, sanitizeEmbeddingError(fmt.Errorf("calling embedding API: %w", err), e.bearerKey)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, sanitizeEmbeddingError(fmt.Errorf("reading embedding API response: %w", err), e.bearerKey)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, sanitizeEmbeddingError(fmt.Errorf("embedding API status %d: %s", resp.StatusCode, embeddingAPIErrorMessage(raw)), e.bearerKey)
-	}
-	var decoded embeddingResponse
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return nil, sanitizeEmbeddingError(fmt.Errorf("parsing embedding API response: %w", err), e.bearerKey)
-	}
-	vectors, err := decoded.orderedVectors(len(texts), e.dimensions)
-	if err != nil {
-		return nil, sanitizeEmbeddingError(err, e.bearerKey)
+		return nil, sanitizeEmbeddingError(err, e.bearerKey, texts)
 	}
 	return vectors, nil
 }
 
-type embeddingRequest struct {
-	Model          string   `json:"model"`
-	Input          []string `json:"input"`
-	Dimensions     int      `json:"dimensions"`
-	EncodingFormat string   `json:"encoding_format"`
-}
-
-type embeddingResponse struct {
-	Data []embeddingResponseData `json:"data"`
-}
-
-type embeddingResponseData struct {
-	Index     int       `json:"index"`
-	Embedding []float32 `json:"embedding"`
-}
-
-func (r embeddingResponse) orderedVectors(wantCount int, wantDims int) ([][]float32, error) {
-	if len(r.Data) != wantCount {
-		return nil, fmt.Errorf("embedding API returned %d vectors, want %d", len(r.Data), wantCount)
+func orderedSDKEmbeddingVectors(data []openai.Embedding, wantCount int, wantDims int) ([][]float32, error) {
+	if len(data) != wantCount {
+		return nil, fmt.Errorf("embedding API returned %d vectors, want %d", len(data), wantCount)
 	}
 	vectors := make([][]float32, wantCount)
 	seen := make([]bool, wantCount)
-	for _, item := range r.Data {
-		if item.Index < 0 || item.Index >= wantCount {
+	for _, item := range data {
+		if item.Index < 0 || item.Index >= int64(wantCount) {
 			return nil, fmt.Errorf("embedding API returned index %d outside input range", item.Index)
 		}
-		if seen[item.Index] {
+		index := int(item.Index)
+		if seen[index] {
 			return nil, fmt.Errorf("embedding API returned duplicate index %d", item.Index)
 		}
 		if len(item.Embedding) != wantDims {
 			return nil, fmt.Errorf("embedding dimensions = %d, want %d", len(item.Embedding), wantDims)
 		}
-		seen[item.Index] = true
-		vectors[item.Index] = item.Embedding
+		vector := make([]float32, wantDims)
+		for i, value := range item.Embedding {
+			if math.IsNaN(value) || math.IsInf(value, 0) || math.Abs(value) > math.MaxFloat32 {
+				return nil, fmt.Errorf("embedding API returned non-finite value at vector %d dimension %d", index, i)
+			}
+			vector[i] = float32(value)
+		}
+		seen[index] = true
+		vectors[index] = vector
 	}
 	for i, ok := range seen {
 		if !ok {
@@ -195,7 +176,7 @@ func (r embeddingResponse) orderedVectors(wantCount int, wantDims int) ([][]floa
 	return vectors, nil
 }
 
-func embeddingsURL(endpoint string) (string, error) {
+func embeddingBaseURL(endpoint string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(endpoint))
 	if err != nil {
 		return "", fmt.Errorf("parsing model endpoint: %w", err)
@@ -214,27 +195,11 @@ func embeddingsURL(endpoint string) (string, error) {
 	if last == "responses" || last == "embeddings" || (len(segments) >= 2 && segments[len(segments)-2] == "chat" && last == "completions") {
 		return "", errors.New("model endpoint must be a base URL, not a protocol resource URL")
 	}
-	parsed.Path = "/" + path.Join(strings.Trim(parsed.Path, "/"), "embeddings")
+	parsed.Path = strings.TrimSuffix(parsed.Path, "/") + "/"
 	return parsed.String(), nil
 }
 
-func embeddingAPIErrorMessage(raw []byte) string {
-	var decoded struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(raw, &decoded); err == nil && strings.TrimSpace(decoded.Error.Message) != "" {
-		return strings.TrimSpace(decoded.Error.Message)
-	}
-	message := strings.TrimSpace(string(raw))
-	if message == "" {
-		return "empty response"
-	}
-	return message
-}
-
-func sanitizeEmbeddingError(err error, bearerKey string) error {
+func sanitizeEmbeddingError(err error, bearerKey string, texts []string) error {
 	if err == nil {
 		return nil
 	}
@@ -242,6 +207,11 @@ func sanitizeEmbeddingError(err error, bearerKey string) error {
 	if bearerKey != "" {
 		message = strings.ReplaceAll(message, "Bearer "+bearerKey, "Bearer [REDACTED]")
 		message = strings.ReplaceAll(message, "Authorization: Bearer [REDACTED]", "auth header [REDACTED]")
+	}
+	for _, text := range texts {
+		if text != "" {
+			message = strings.ReplaceAll(message, text, "[REDACTED INPUT]")
+		}
 	}
 	message = strings.ReplaceAll(message, "Authorization", "auth header")
 	return errors.New(message)

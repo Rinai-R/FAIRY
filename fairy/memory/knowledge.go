@@ -99,9 +99,9 @@ func ConfirmKnowledgeCandidate(ctx context.Context, tx pgx.Tx, id string, now in
 UPDATE knowledge_entries
 SET status = 'verified',
     verification_basis = 'user_confirmed',
-    embedding_model_id = $3,
-    embedding_content_hash = $4,
-    embedding = $5::public.vector,
+    embedding_model_id_v2 = $3,
+    embedding_content_hash_v2 = $4,
+    embedding_v2 = $5::public.vector,
     updated_at_ms = $2
 WHERE id = $1
   AND status = 'candidate'
@@ -165,7 +165,7 @@ func InsertVerifiedKnowledgeEntry(
 INSERT INTO knowledge_entries(
   id, topic, statement, status, verification_basis, confidence_basis_points,
   source_conversation_id, source_turn_id,
-  embedding_model_id, embedding_content_hash, embedding,
+  embedding_model_id_v2, embedding_content_hash_v2, embedding_v2,
   created_at_ms, updated_at_ms
 ) VALUES (
   $1, $2, $3, 'verified', 'retrieval_ingest', $4, $5, $6,

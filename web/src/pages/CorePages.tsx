@@ -324,18 +324,36 @@ export function ModelPage({ onToast }: { onToast: (m: string, e?: boolean) => vo
   const [visionInput, setVisionInput] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [configured, setConfigured] = useState(false);
+  const [semanticProvider, setSemanticProvider] = useState("none");
+  const [semanticEnabled, setSemanticEnabled] = useState(false);
+  const [semanticEndpoint, setSemanticEndpoint] = useState("");
+  const [semanticModel, setSemanticModel] = useState("");
+  const [semanticDimensions, setSemanticDimensions] = useState(0);
+  const [semanticApiKey, setSemanticApiKey] = useState("");
+  const [semanticCredentialConfigured, setSemanticCredentialConfigured] = useState(false);
+  const [semanticReason, setSemanticReason] = useState("");
 
   async function reload() {
-    const s = await api<any>("/config/model");
-    setConfigured(Boolean(s.configured));
-    if (s.configured) {
-      setProtocol(s.protocol || "responses");
-      setEndpoint(s.endpoint || "");
-      setModel(s.model || "");
-      setCtx(String(s.contextWindowTokens || 1048576));
-      setAuthMode(s.authMode || "bearer_key");
-      setVisionInput(Boolean(s.capabilities?.visionInput));
+    const [chat, semantic] = await Promise.all([
+      api<any>("/config/model"),
+      api<any>("/config/semantic-embedding"),
+    ]);
+    setConfigured(Boolean(chat.configured));
+    if (chat.configured) {
+      setProtocol(chat.protocol || "responses");
+      setEndpoint(chat.endpoint || "");
+      setModel(chat.model || "");
+      setCtx(String(chat.contextWindowTokens || 1048576));
+      setAuthMode(chat.authMode || "bearer_key");
+      setVisionInput(Boolean(chat.capabilities?.visionInput));
     }
+    setSemanticProvider(semantic.provider || "none");
+    setSemanticEnabled(Boolean(semantic.enabled));
+    setSemanticEndpoint(semantic.endpoint || "");
+    setSemanticModel(semantic.model || "");
+    setSemanticDimensions(Number(semantic.dimensions || 0));
+    setSemanticCredentialConfigured(Boolean(semantic.credentialConfigured));
+    setSemanticReason(semantic.reason || "");
   }
 
   useEffect(() => {
@@ -350,7 +368,12 @@ export function ModelPage({ onToast }: { onToast: (m: string, e?: boolean) => vo
         status={configured ? "已就绪" : "需要配置"}
         ready={configured}
       />
+      <div className="stack">
       <div className="card">
+        <Text weight="medium">对话模型</Text>
+        <Text as="p" size="1" color="gray" mb="3">
+          负责对话、规划、记忆提取与知识整理。
+        </Text>
         <Field label="OpenAI 兼容协议">
           <Select.Root value={protocol} onValueChange={setProtocol}>
             <Select.Trigger />
@@ -426,6 +449,106 @@ export function ModelPage({ onToast }: { onToast: (m: string, e?: boolean) => vo
             保存连接
           </Button>
         </div>
+      </div>
+      <div className="card">
+        <Text weight="medium">语义嵌入模型</Text>
+        <Text as="p" size="1" color="gray" mb="3">
+          启用后，允许生成 embedding 的记忆与知识正文会发送到外部模型提供商。
+        </Text>
+        <Field label="Provider">
+          <Select.Root
+            value={semanticProvider}
+            onValueChange={(value) => {
+              setSemanticProvider(value);
+              if (value === "siliconflow") {
+                setSemanticEndpoint("https://api.siliconflow.cn/v1");
+                setSemanticModel("BAAI/bge-m3");
+                setSemanticDimensions(1024);
+                setSemanticEnabled(true);
+              }
+            }}
+          >
+            <Select.Trigger />
+            <Select.Content position="popper" side="bottom" align="start" sideOffset={6}>
+              <Select.Item value="none">none（FTS-only）</Select.Item>
+              <Select.Item value="siliconflow">SiliconFlow（BGE-M3）</Select.Item>
+              <Select.Item value="openai_compatible_api">openai_compatible_api</Select.Item>
+            </Select.Content>
+          </Select.Root>
+        </Field>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+          <Switch checked={semanticEnabled} onCheckedChange={setSemanticEnabled} aria-label="启用语义检索" />
+          <Text size="2">启用语义检索</Text>
+        </label>
+        <div className="grid-2">
+          <Field label="Base URL">
+            <TextField.Root value={semanticEndpoint} onChange={(e) => setSemanticEndpoint(e.target.value)} placeholder="https://api.siliconflow.cn/v1" />
+          </Field>
+          <Field label="Embedding model">
+            <TextField.Root value={semanticModel} onChange={(e) => setSemanticModel(e.target.value)} disabled={semanticProvider === "siliconflow"} />
+          </Field>
+        </div>
+        <div className="grid-2">
+          <Field label="Dimensions">
+            <TextField.Root type="number" value={String(semanticDimensions)} readOnly />
+          </Field>
+          <Field label="API key（仅写入，不会回显）">
+            <TextField.Root
+              type="password"
+              value={semanticApiKey}
+              onChange={(e) => setSemanticApiKey(e.target.value)}
+              autoComplete="new-password"
+              placeholder={semanticCredentialConfigured ? "已配置，留空表示保持不变" : "输入 provider API key"}
+            />
+          </Field>
+        </div>
+        {semanticReason ? <Text size="1" color="orange">{semanticReason}</Text> : null}
+        <div className="form-actions">
+          {semanticCredentialConfigured ? (
+            <Button
+              variant="soft"
+              color="red"
+              onClick={() =>
+                void api<any>("/config/semantic-embedding/credential", { method: "DELETE" })
+                  .then((saved) => {
+                    setSemanticCredentialConfigured(false);
+                    setSemanticReason(saved.reason || "semantic_embedding_credential_required");
+                    onToast("语义嵌入凭据已删除");
+                  })
+                  .catch((e) => onToast(e.message, true))
+              }
+            >
+              删除凭据
+            </Button>
+          ) : null}
+          <Button
+            onClick={() =>
+              void (async () => {
+                const body: Record<string, unknown> = {
+                  schema_version: 2,
+                  provider: semanticProvider,
+                  enabled: semanticEnabled,
+                  endpoint: semanticEndpoint,
+                  model: semanticModel,
+                  dimensions: semanticDimensions,
+                };
+                if (semanticApiKey.trim() !== "") body.apiKey = semanticApiKey;
+                const saved = await api<any>("/config/semantic-embedding", {
+                  method: "PUT",
+                  body: JSON.stringify(body),
+                });
+                setSemanticApiKey("");
+                setSemanticCredentialConfigured(Boolean(saved.credentialConfigured));
+                setSemanticReason(saved.reason || "");
+                onToast("语义嵌入已保存");
+                await reload();
+              })().catch((e) => onToast(e.message, true))
+            }
+          >
+            保存语义嵌入
+          </Button>
+        </div>
+      </div>
       </div>
     </section>
   );

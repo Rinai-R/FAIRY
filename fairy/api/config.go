@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -27,6 +28,42 @@ func (s *Server) registerConfigRoutes() {
 
 	v1.GET("/config/semantic-embedding", s.handleGetSemantic)
 	v1.PUT("/config/semantic-embedding", s.handlePutSemantic)
+	v1.DELETE("/config/semantic-embedding/credential", s.handleDeleteSemanticCredential)
+
+	v1.GET("/config/qq-onebot", s.handleGetQQOneBot)
+	v1.PUT("/config/qq-onebot", s.handlePutQQOneBot)
+}
+
+func (s *Server) handleGetQQOneBot(ctx context.Context, c *app.RequestContext) {
+	settings, err := s.rt.Config.QQOneBotSettings()
+	if err != nil {
+		writeErr(c, http.StatusInternalServerError, err)
+		return
+	}
+	c.JSON(http.StatusOK, settings)
+}
+
+func (s *Server) handlePutQQOneBot(ctx context.Context, c *app.RequestContext) {
+	var body struct {
+		GroupAllowlist []string `json:"groupAllowlist"`
+	}
+	if err := c.Bind(&body); err != nil {
+		writeErr(c, http.StatusBadRequest, err)
+		return
+	}
+	settings, err := s.rt.Config.SaveQQOneBotSettings(config.QQOneBotSettings{
+		SchemaVersion:  1,
+		GroupAllowlist: body.GroupAllowlist,
+	})
+	if err != nil {
+		if errors.Is(err, config.ErrInvalidQQOneBotSettings) {
+			writeErr(c, http.StatusBadRequest, err)
+		} else {
+			writeErr(c, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	c.JSON(http.StatusOK, settings)
 }
 
 func (s *Server) handleGetModel(ctx context.Context, c *app.RequestContext) {
@@ -140,17 +177,29 @@ func (s *Server) handleGetSemantic(ctx context.Context, c *app.RequestContext) {
 }
 
 func (s *Server) handlePutSemantic(ctx context.Context, c *app.RequestContext) {
-	var body config.SemanticEmbeddingSettings
+	var body struct {
+		config.SemanticEmbeddingSettings
+		APIKey *string `json:"apiKey"`
+	}
 	if err := c.Bind(&body); err != nil {
 		writeErr(c, http.StatusBadRequest, err)
 		return
 	}
 	if body.SchemaVersion == 0 {
-		body.SchemaVersion = 1
+		body.SchemaVersion = 2
 	}
-	status, err := s.rt.Config.SaveSemanticEmbeddingSettings(body)
+	status, err := s.rt.Config.SaveSemanticEmbeddingSettings(body.SemanticEmbeddingSettings, body.APIKey)
 	if err != nil {
 		writeErr(c, http.StatusBadRequest, err)
+		return
+	}
+	c.JSON(http.StatusOK, status)
+}
+
+func (s *Server) handleDeleteSemanticCredential(ctx context.Context, c *app.RequestContext) {
+	status, err := s.rt.Config.DeleteSemanticEmbeddingCredential()
+	if err != nil {
+		writeErr(c, http.StatusInternalServerError, err)
 		return
 	}
 	c.JSON(http.StatusOK, status)

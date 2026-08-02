@@ -191,7 +191,7 @@ INSERT INTO knowledge_entries(
   source_url, source_title, source_content_hash, source_content_type,
   source_fetched_at_ms, source_etag, source_last_modified, reconciler_revision,
   evidence_text, supersedes_id,
-  embedding_model_id, embedding_content_hash, embedding,
+  embedding_model_id_v2, embedding_content_hash_v2, embedding_v2,
   created_at_ms, updated_at_ms
 ) VALUES (
   $1, $2, $3, 'verified', 'retrieval_ingest', $4,

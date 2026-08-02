@@ -6,7 +6,7 @@
 
 ## 配置
 
-所有配置都来自精确环境变量；token 不接受 flag、默认值或自动 trim：
+启动凭据与 endpoint 来自精确环境变量；token 不接受 flag、默认值或自动 trim：
 
 ```sh
 export FAIRY_CORE_ENDPOINT=http://127.0.0.1:8787
@@ -14,23 +14,34 @@ export FAIRY_CORE_TOKEN='从 Core 配置取得的 token'
 export FAIRY_ONEBOT_WEBHOOK_ENDPOINT=http://127.0.0.1:3002
 export FAIRY_ONEBOT_API_ENDPOINT=http://127.0.0.1:3001
 export FAIRY_ONEBOT_TOKEN='LLOneBot access token'
-export FAIRY_ONEBOT_GROUP_ALLOWLIST='群号1,群号2'
 ```
 
-远程 Core 必须使用 `https://`；webhook 和 OneBot API 都必须是无 path/query/userinfo 的本机回环 `http://` 地址。allowlist 和 token 必须非空。OneBot token 同时用于 webhook `X-Signature` HMAC-SHA1 校验和 action Bearer 鉴权。
+远程 Core 必须使用 `https://`；webhook 和 OneBot API 都必须是无 path/query/userinfo 的本机回环 `http://` 地址。Core 和 OneBot token 必须非空。OneBot token 同时用于 webhook `X-Signature` HMAC-SHA1 校验和 action Bearer 鉴权。群 allowlist 只从 Core 管理配置读取，不使用环境变量；空列表或读取失败时拒绝全部群事件。
+
+仓库根目录的 `docker-compose.qq.yml` 会额外设置 `FAIRY_ONEBOT_CONTAINER_NETWORK=true`，允许受控的 Compose service hostname 和 `0.0.0.0` listener。该 opt-in 仅用于容器网络；普通宿主机运行不得设置，默认仍拒绝远程明文 HTTP、公网 IP、任意域名和带 path/query/userinfo 的 endpoint。
+
+## 推荐 Docker 部署
+
+在仓库根目录填写 `.env.example` 中的必需值，然后启动基础服务与 QQ overlay：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.qq.yml up -d --build
+```
+
+先打开 `http://127.0.0.1:8787/console/` 的“接入”页保存允许参与的 QQ 群，再打开 `http://127.0.0.1:3080` 完成 QQ 登录。配置 sidecar 会等待 LLOneBot 生成 `data/config_<uin>.json`，再自动启用容器内 `http://llonebot:3000` action API 和指向 `http://qq-onebot:3002` 的 HTTP POST。不要把 `LLONEBOT_AUTH_TOKEN`（PMHQ 授权）当成 `FAIRY_ONEBOT_TOKEN`（OneBot access token）。详细变量、volume 和日志命令见仓库根 `README.md`。
 
 ## LLOneBot 操作顺序
 
-1. 在 LLOneBot 中完成 QQ 扫码和登录，启用 OneBot 11 HTTP API，并把 HTTP 事件上报地址设为 `FAIRY_ONEBOT_WEBHOOK_ENDPOINT`；access token 与 `FAIRY_ONEBOT_TOKEN` 一致。
-2. 确认 FAIRY Core 已启动、`FAIRY_CORE_ENDPOINT` 可访问，并使用 Core token。
-3. 在本目录构建并运行：
+1. 确认 FAIRY Core 已启动、`FAIRY_CORE_ENDPOINT` 可访问，并在控制台“接入”页保存允许参与的群号。
+2. 在 LLOneBot 中完成 QQ 扫码和登录，启用 OneBot 11 HTTP API，并把 HTTP 事件上报地址设为 `FAIRY_ONEBOT_WEBHOOK_ENDPOINT`；access token 与 `FAIRY_ONEBOT_TOKEN` 一致。
+3. 非 Compose 部署在本目录构建并运行：
 
    ```bash
    go build .
    ./fairy-qq-onebot serve
    ```
 
-4. Surface 通过 ZeroBot `OnlyGroup` 观察 allowlist 群内所有非空文本。每群滚动保留最新 20 条，新消息立即驱动 participation；同群最多一个 participation/turn 在途，运行中到达的新消息会使旧 decision 失效并用最新 snapshot 重判。
+4. Surface 通过 ZeroBot `OnlyGroup` 接收群事件，并在每条事件进入 Core Session 前读取 Core 当前 allowlist。保存后的下一条事件使用新列表，无需重启；空列表或 Core 配置不可用时 fail closed。授权群的每群窗口滚动保留最新 20 条，新消息立即驱动 participation；同群最多一个 participation/turn 在途，运行中到达的新消息会使旧 decision 失效并用最新 snapshot 重判。
 5. Core 对 snapshot 返回严格的 `reply`、`wait` 或 `silent`。`reply` 指定窗口内目标消息，Surface 提交带发送者标签和唯一 `[reply-target]` 标记的有序上下文；`wait` 使用 Core 选择的 1–300 秒，期间新消息会提前唤醒；`silent` 不创建 timer、turn 或 OneBot action。@/回复只是强信号，不保证回复，普通消息也可以因自然相关而回复。
 
 Core 或 action 失败会记录错误，不输出默认道歉或 mock 文本。回复频度、近期存在感和消息价值由 Core 根据真实 transcript 语义权衡；QQ Surface 不实现关键词、随机概率或评分公式。群聊 Prompt 不读取私人 profile，`public_memory_search` 只查询 PostgreSQL verified knowledge；私人 Surface 仍使用完整 `memory_search`。

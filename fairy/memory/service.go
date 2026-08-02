@@ -41,8 +41,8 @@ func (s *MemoryService) SemanticEmbeddingStatus() (SemanticEmbeddingReadiness, e
 	defer cancel()
 	vectorRows, err := countPostgresScalar(queryCtx, s.store.pool, `
 SELECT
-  (SELECT count(*) FROM personal_memories WHERE embedding IS NOT NULL)
-  + (SELECT count(*) FROM knowledge_entries WHERE embedding IS NOT NULL)`)
+  (SELECT count(*) FROM personal_memories WHERE embedding_v2 IS NOT NULL)
+  + (SELECT count(*) FROM knowledge_entries WHERE embedding_v2 IS NOT NULL)`)
 	if err != nil {
 		return SemanticEmbeddingReadiness{}, err
 	}
