@@ -28,13 +28,14 @@ func (s *Store) RebuildVectors(ctx context.Context, pageSize int) (VectorRebuild
 	if s == nil || s.pool == nil {
 		return VectorRebuildResult{}, errors.New("vector rebuild requires PostgreSQL store")
 	}
-	if s.semanticEmbedder == nil || !s.semanticEmbedder.Ready() {
+	embedder := s.semanticEmbedderSnapshot()
+	if embedder == nil || !embedder.Ready() {
 		return VectorRebuildResult{}, errors.New("vector rebuild requires ready embedder")
 	}
-	if dims := s.semanticEmbedder.Dims(); dims != SemanticEmbeddingDimensions {
+	if dims := embedder.Dims(); dims != SemanticEmbeddingDimensions {
 		return VectorRebuildResult{}, fmt.Errorf("embedding dimensions = %d, want %d", dims, SemanticEmbeddingDimensions)
 	}
-	modelID, err := semanticEmbedderModelID(s.semanticEmbedder)
+	modelID, err := semanticEmbedderModelID(embedder)
 	if err != nil {
 		return VectorRebuildResult{}, err
 	}
@@ -63,7 +64,7 @@ func (s *Store) RebuildVectors(ctx context.Context, pageSize int) (VectorRebuild
 			contents = append(contents, item.Content)
 		}
 		if len(pending) > 0 {
-			vectors, err := s.semanticEmbedder.Embed(contents)
+			vectors, err := embedder.Embed(contents)
 			if err != nil {
 				result.FailedItems += len(pending)
 				return result, fmt.Errorf("embedding vector rebuild page: %w", err)

@@ -90,6 +90,42 @@ describe("ModelPage vision capability", () => {
     expect(screen.queryByDisplayValue("1024")).toBeNull();
   });
 
+  it("never submits provider none as enabled", async () => {
+    vi.stubGlobal("ResizeObserver", class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    vi.stubGlobal("localStorage", {
+      getItem: () => "",
+      setItem: () => undefined,
+      removeItem: () => undefined,
+      clear: () => undefined,
+      key: () => null,
+      length: 0,
+    });
+    let savedBody: Record<string, unknown> | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const semantic = {
+        provider: "none", enabled: true, endpoint: "", model: "", dimensions: 0,
+        credentialConfigured: false, reason: "semantic_embedding_disabled",
+      };
+      if (String(input).endsWith("/config/semantic-embedding") && init?.method === "PUT") {
+        savedBody = JSON.parse(String(init.body));
+        return new Response(JSON.stringify({ ...semantic, enabled: false }), { status: 200 });
+      }
+      const body = String(input).endsWith("/config/semantic-embedding") ? semantic : { configured: false };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+
+    render(<Theme><ModelPage onToast={() => undefined} /></Theme>);
+    const toggle = await screen.findByRole("switch", { name: "启用语义检索" });
+    expect(toggle.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "保存语义嵌入" }));
+    await waitFor(() => expect(savedBody).toBeDefined());
+    expect(savedBody).toMatchObject({ provider: "none", enabled: false });
+  });
+
   it("applies and deletes semantic credentials from the model page", async () => {
     vi.stubGlobal("ResizeObserver", class {
       observe() {}
@@ -105,20 +141,23 @@ describe("ModelPage vision capability", () => {
       length: 0,
     });
     const requests: Array<{ input: string; init?: RequestInit }> = [];
+    let semantic = {
+      provider: "siliconflow", enabled: true, endpoint: "https://api.siliconflow.cn/v1",
+      model: "BAAI/bge-m3", dimensions: 1024, credentialConfigured: true, reason: "",
+    };
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       requests.push({ input: path, init });
       if (path.endsWith("/config/semantic-embedding/credential")) {
-        return new Response(JSON.stringify({ credentialConfigured: false, reason: "semantic_embedding_credential_required" }), { status: 200 });
+        semantic = { ...semantic, enabled: false, credentialConfigured: false, reason: "semantic_embedding_credential_required" };
+        return new Response(JSON.stringify(semantic), { status: 200 });
       }
       if (path.endsWith("/config/semantic-embedding") && init?.method === "PUT") {
-        return new Response(JSON.stringify({ credentialConfigured: true, reason: "" }), { status: 200 });
+        semantic = { ...semantic, enabled: false, credentialConfigured: true, reason: "semantic_embedding_disabled" };
+        return new Response(JSON.stringify(semantic), { status: 200 });
       }
       if (path.endsWith("/config/semantic-embedding")) {
-        return new Response(JSON.stringify({
-          provider: "siliconflow", enabled: true, endpoint: "https://api.siliconflow.cn/v1",
-          model: "BAAI/bge-m3", dimensions: 1024, credentialConfigured: true, reason: "",
-        }), { status: 200 });
+        return new Response(JSON.stringify(semantic), { status: 200 });
       }
       return new Response(JSON.stringify({ configured: false }), { status: 200 });
     }));
@@ -130,9 +169,16 @@ describe("ModelPage vision capability", () => {
     await waitFor(() => expect(requests.some(({ input, init }) => input.endsWith("/config/semantic-embedding") && init?.method === "PUT")).toBe(true));
     const save = requests.find(({ input, init }) => input.endsWith("/config/semantic-embedding") && init?.method === "PUT");
     expect(JSON.parse(String(save?.init?.body))).toMatchObject({ provider: "siliconflow", model: "BAAI/bge-m3", dimensions: 1024, apiKey: "semantic-test-key" });
+    await waitFor(() => expect(screen.getByRole("switch", { name: "启用语义检索" }).getAttribute("data-state")).toBe("unchecked"));
+    expect(screen.getByDisplayValue("https://api.siliconflow.cn/v1")).toBeTruthy();
+    expect(screen.getByText("semantic_embedding_disabled")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "删除凭据" })).toBeTruthy();
 
     fireEvent.click(await screen.findByRole("button", { name: "删除凭据" }));
     await waitFor(() => expect(requests.some(({ input, init }) => input.endsWith("/config/semantic-embedding/credential") && init?.method === "DELETE")).toBe(true));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "删除凭据" })).toBeNull());
+    expect(screen.getByDisplayValue("https://api.siliconflow.cn/v1")).toBeTruthy();
+    expect(screen.getByText("semantic_embedding_credential_required")).toBeTruthy();
   });
 
   it("keeps semantic mutation controls out of the intelligence page", async () => {

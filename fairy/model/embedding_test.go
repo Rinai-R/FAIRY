@@ -44,8 +44,8 @@ func TestSemanticEmbedderUsesIndependentSettingsAndCredential(t *testing.T) {
 	if embedder.bearerKey != semanticKey || embedder.bearerKey == chatKey {
 		t.Fatal("semantic embedder did not use its independent credential")
 	}
-	if embedder.ModelID() != "BAAI/bge-m3" || embedder.Dims() != config.SemanticEmbeddingDimensions {
-		t.Fatalf("model contract = (%q, %d)", embedder.ModelID(), embedder.Dims())
+	if embedder.model != "BAAI/bge-m3" || !strings.HasPrefix(embedder.ModelID(), "embedding-space-v1:") || embedder.Dims() != config.SemanticEmbeddingDimensions {
+		t.Fatalf("model contract = (%q, %q, %d)", embedder.model, embedder.ModelID(), embedder.Dims())
 	}
 }
 

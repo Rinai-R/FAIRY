@@ -19,6 +19,12 @@ type vectorKnowledgeTruth struct {
 	score  float64
 }
 
+type semanticQueryEmbedding struct {
+	Vector  *pgvector.Vector
+	ModelID string
+	Status  SemanticStatus
+}
+
 func (s *Store) retrievePostgresHybrid(ctx context.Context, characterID, query string) (RetrievalContext, error) {
 	if s == nil || s.pool == nil {
 		return RetrievalContext{}, ErrDatabasePoolEmpty
@@ -34,25 +40,21 @@ func (s *Store) retrievePostgresHybrid(ctx context.Context, characterID, query s
 	if err != nil {
 		return RetrievalContext{}, err
 	}
-	queryVector, semanticStatus, err := s.queryEmbedding(query)
+	queryEmbedding, err := s.queryEmbedding(query)
 	if err != nil {
 		return RetrievalContext{}, err
 	}
-	if queryVector == nil {
-		textContext.SemanticStatus = string(semanticStatus)
+	if queryEmbedding.Vector == nil {
+		textContext.SemanticStatus = string(queryEmbedding.Status)
 		return textContext, nil
-	}
-	modelID, err := semanticEmbedderModelID(s.semanticEmbedder)
-	if err != nil {
-		return RetrievalContext{}, err
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
-	personal, err := retrievePersonalVectorPostgres(queryCtx, s.pool.Raw(), characterID, modelID, *queryVector)
+	personal, err := retrievePersonalVectorPostgres(queryCtx, s.pool.Raw(), characterID, queryEmbedding.ModelID, *queryEmbedding.Vector)
 	if err != nil {
 		return RetrievalContext{}, err
 	}
-	knowledge, err := retrieveKnowledgeVectorPostgres(queryCtx, s.pool.Raw(), modelID, *queryVector)
+	knowledge, err := retrieveKnowledgeVectorPostgres(queryCtx, s.pool.Raw(), queryEmbedding.ModelID, *queryEmbedding.Vector)
 	if err != nil {
 		return RetrievalContext{}, err
 	}
@@ -81,21 +83,17 @@ func (s *Store) retrievePublicKnowledgePostgres(ctx context.Context, query strin
 			return RetrievalContext{}, err
 		}
 	}
-	queryVector, semanticStatus, err := s.queryEmbedding(query)
+	queryEmbedding, err := s.queryEmbedding(query)
 	if err != nil {
 		return RetrievalContext{}, err
 	}
-	if queryVector == nil {
-		textContext.SemanticStatus = string(semanticStatus)
+	if queryEmbedding.Vector == nil {
+		textContext.SemanticStatus = string(queryEmbedding.Status)
 		return textContext, nil
-	}
-	modelID, err := semanticEmbedderModelID(s.semanticEmbedder)
-	if err != nil {
-		return RetrievalContext{}, err
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
-	knowledge, err := retrieveKnowledgeVectorPostgres(queryCtx, s.pool.Raw(), modelID, *queryVector)
+	knowledge, err := retrieveKnowledgeVectorPostgres(queryCtx, s.pool.Raw(), queryEmbedding.ModelID, *queryEmbedding.Vector)
 	if err != nil {
 		return RetrievalContext{}, err
 	}
@@ -124,75 +122,61 @@ func (s *Store) retrievePublicKnowledgeForIngestPostgres(ctx context.Context, qu
 			return RetrievalContext{}, err
 		}
 	}
-	queryVector, semanticStatus, err := s.queryIngestEmbedding(query)
+	queryEmbedding, err := s.queryIngestEmbedding(query)
 	if err != nil {
 		return RetrievalContext{}, err
 	}
-	if queryVector == nil {
-		textContext.SemanticStatus = string(semanticStatus)
+	if queryEmbedding.Vector == nil {
+		textContext.SemanticStatus = string(queryEmbedding.Status)
 		return textContext, nil
-	}
-	modelID, err := semanticEmbedderModelID(s.semanticEmbedder)
-	if err != nil {
-		return RetrievalContext{}, err
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
-	knowledge, err := retrieveKnowledgeVectorPostgres(queryCtx, s.pool.Raw(), modelID, *queryVector)
+	knowledge, err := retrieveKnowledgeVectorPostgres(queryCtx, s.pool.Raw(), queryEmbedding.ModelID, *queryEmbedding.Vector)
 	if err != nil {
 		return RetrievalContext{}, err
 	}
 	return fusePostgresRetrieval(textContext, nil, knowledge), nil
 }
 
-func (s *Store) queryIngestEmbedding(query string) (*pgvector.Vector, SemanticStatus, error) {
-	if s.semanticEmbedder == nil || !s.semanticEmbedder.Ready() {
-		return nil, SemanticStatusUnavailable, nil
-	}
-	if dims := s.semanticEmbedder.Dims(); dims != SemanticEmbeddingDimensions {
-		return nil, SemanticStatusUnavailable, fmt.Errorf("embedding dimensions = %d, want %d", dims, SemanticEmbeddingDimensions)
-	}
-	semanticText := semanticQueryText(query)
-	if semanticText == "" {
-		return nil, SemanticStatusReady, nil
-	}
-	vectors, err := s.semanticEmbedder.Embed([]string{semanticText})
-	if err != nil {
-		return nil, SemanticStatusUnavailable, fmt.Errorf("embedding knowledge ingest recall: %w", err)
-	}
-	if len(vectors) != 1 {
-		return nil, SemanticStatusUnavailable, fmt.Errorf("embedding result count = %d, want 1", len(vectors))
-	}
-	if err := ValidateVector(vectors[0]); err != nil {
-		return nil, SemanticStatusUnavailable, err
-	}
-	vector := pgvector.NewVector(vectors[0])
-	return &vector, SemanticStatusReady, nil
+func (s *Store) queryIngestEmbedding(query string) (semanticQueryEmbedding, error) {
+	return queryEmbeddingWithSnapshot(s.semanticEmbedderSnapshot(), query, true)
 }
 
-func (s *Store) queryEmbedding(query string) (*pgvector.Vector, SemanticStatus, error) {
-	if s.semanticEmbedder == nil || !s.semanticEmbedder.Ready() {
-		return nil, SemanticStatusUnavailable, nil
+func (s *Store) queryEmbedding(query string) (semanticQueryEmbedding, error) {
+	return queryEmbeddingWithSnapshot(s.semanticEmbedderSnapshot(), query, false)
+}
+
+func queryEmbeddingWithSnapshot(embedder SemanticEmbedder, query string, failOnProviderError bool) (semanticQueryEmbedding, error) {
+	if embedder == nil || !embedder.Ready() {
+		return semanticQueryEmbedding{Status: SemanticStatusUnavailable}, nil
 	}
-	if dims := s.semanticEmbedder.Dims(); dims != SemanticEmbeddingDimensions {
-		return nil, SemanticStatusUnavailable, fmt.Errorf("embedding dimensions = %d, want %d", dims, SemanticEmbeddingDimensions)
+	if dims := embedder.Dims(); dims != SemanticEmbeddingDimensions {
+		return semanticQueryEmbedding{Status: SemanticStatusUnavailable}, fmt.Errorf("embedding dimensions = %d, want %d", dims, SemanticEmbeddingDimensions)
 	}
 	semanticText := semanticQueryText(query)
 	if semanticText == "" {
-		return nil, SemanticStatusReady, nil
+		return semanticQueryEmbedding{Status: SemanticStatusReady}, nil
 	}
-	vectors, err := s.semanticEmbedder.Embed([]string{semanticText})
+	modelID, err := semanticEmbedderModelID(embedder)
 	if err != nil {
-		return nil, SemanticStatusUnavailable, nil
+		return semanticQueryEmbedding{Status: SemanticStatusUnavailable}, err
+	}
+	vectors, err := embedder.Embed([]string{semanticText})
+	if err != nil {
+		if failOnProviderError {
+			return semanticQueryEmbedding{Status: SemanticStatusUnavailable}, fmt.Errorf("embedding knowledge ingest recall: %w", err)
+		}
+		return semanticQueryEmbedding{Status: SemanticStatusUnavailable}, nil
 	}
 	if len(vectors) != 1 {
-		return nil, SemanticStatusUnavailable, fmt.Errorf("embedding result count = %d, want 1", len(vectors))
+		return semanticQueryEmbedding{Status: SemanticStatusUnavailable}, fmt.Errorf("embedding result count = %d, want 1", len(vectors))
 	}
 	if err := ValidateVector(vectors[0]); err != nil {
-		return nil, SemanticStatusUnavailable, err
+		return semanticQueryEmbedding{Status: SemanticStatusUnavailable}, err
 	}
 	vector := pgvector.NewVector(vectors[0])
-	return &vector, SemanticStatusReady, nil
+	return semanticQueryEmbedding{Vector: &vector, ModelID: modelID, Status: SemanticStatusReady}, nil
 }
 
 func (s *Store) retrievePostgresTextContext(ctx context.Context, characterID, normalized string) (RetrievalContext, error) {

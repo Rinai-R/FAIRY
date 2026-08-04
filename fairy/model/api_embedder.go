@@ -2,6 +2,9 @@ package model
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -19,6 +22,7 @@ import (
 
 // APIEmbeddingOptions configures an OpenAI-compatible /embeddings backend.
 type APIEmbeddingOptions struct {
+	Provider   string
 	Endpoint   string
 	AuthMode   string
 	BearerKey  string
@@ -30,10 +34,12 @@ type APIEmbeddingOptions struct {
 // APIEmbedder implements memory.SemanticEmbedder through the official OpenAI Go
 // SDK against an explicitly configured compatible provider.
 type APIEmbedder struct {
+	provider   string
 	baseURL    string
 	authMode   string
 	bearerKey  string
 	model      string
+	spaceID    string
 	dimensions int
 	client     openai.Client
 }
@@ -41,6 +47,10 @@ type APIEmbedder struct {
 var _ memory.SemanticEmbedder = (*APIEmbedder)(nil)
 
 func NewAPIEmbedder(options APIEmbeddingOptions) (*APIEmbedder, error) {
+	provider := strings.TrimSpace(options.Provider)
+	if provider != config.SemanticEmbeddingProviderSiliconFlow && provider != config.SemanticEmbeddingProviderOpenAICompatible {
+		return nil, fmt.Errorf("semantic embedding provider %q is not supported", provider)
+	}
 	baseURL, err := embeddingBaseURL(options.Endpoint)
 	if err != nil {
 		return nil, err
@@ -73,11 +83,17 @@ func NewAPIEmbedder(options APIEmbeddingOptions) (*APIEmbedder, error) {
 		option.WithAPIKey(bearerKey),
 		option.WithHTTPClient(httpClient),
 	}
+	spaceID, err := embeddingSpaceID(provider, baseURL, model, dimensions)
+	if err != nil {
+		return nil, err
+	}
 	return &APIEmbedder{
+		provider:   provider,
 		baseURL:    baseURL,
 		authMode:   authMode,
 		bearerKey:  bearerKey,
 		model:      model,
+		spaceID:    spaceID,
 		dimensions: dimensions,
 		client:     openai.NewClient(clientOptions...),
 	}, nil
@@ -105,7 +121,7 @@ func (e *APIEmbedder) ModelID() string {
 	if e == nil {
 		return ""
 	}
-	return e.model
+	return e.spaceID
 }
 
 func (e *APIEmbedder) Embed(texts []string) ([][]float32, error) {
@@ -126,6 +142,9 @@ func (e *APIEmbedder) EmbedContext(ctx context.Context, texts []string) ([][]flo
 		Input:          openai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: texts},
 		Model:          e.model,
 		EncodingFormat: openai.EmbeddingNewParamsEncodingFormatFloat,
+	}
+	if e.provider == config.SemanticEmbeddingProviderOpenAICompatible {
+		params.Dimensions = openai.Int(int64(e.dimensions))
 	}
 	response, err := e.client.Embeddings.New(ctx, params)
 	if err != nil {
@@ -181,8 +200,8 @@ func embeddingBaseURL(endpoint string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parsing model endpoint: %w", err)
 	}
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return "", errors.New("model endpoint must include scheme and host")
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
+		return "", errors.New("model endpoint must be an HTTP(S) URL without userinfo")
 	}
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", errors.New("model endpoint must not include query or fragment")
@@ -197,6 +216,22 @@ func embeddingBaseURL(endpoint string) (string, error) {
 	}
 	parsed.Path = strings.TrimSuffix(parsed.Path, "/") + "/"
 	return parsed.String(), nil
+}
+
+func embeddingSpaceID(provider, baseURL, model string, dimensions int) (string, error) {
+	contract := struct {
+		Version    int    `json:"version"`
+		Provider   string `json:"provider"`
+		BaseURL    string `json:"base_url"`
+		Model      string `json:"model"`
+		Dimensions int    `json:"dimensions"`
+	}{Version: 1, Provider: provider, BaseURL: baseURL, Model: model, Dimensions: dimensions}
+	raw, err := json.Marshal(contract)
+	if err != nil {
+		return "", fmt.Errorf("encoding semantic embedding space: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	return "embedding-space-v1:" + hex.EncodeToString(sum[:]), nil
 }
 
 func sanitizeEmbeddingError(err error, bearerKey string, texts []string) error {

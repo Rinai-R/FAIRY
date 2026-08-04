@@ -1,6 +1,6 @@
 services:
   llonebot:
-    image: initialencounter/llonebot:latest
+    image: initialencounter/llonebot@sha256:da9e3a2b3e23daa2d9f5b48c5963a328dcc8471e8143c2a22f8e759dc26cb590
     restart: unless-stopped
     environment:
       AUTH_TOKEN: ${LLONEBOT_AUTH_TOKEN:?LLONEBOT_AUTH_TOKEN is required}

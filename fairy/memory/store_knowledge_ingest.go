@@ -32,6 +32,7 @@ func (s *Store) insertVerifiedKnowledgePostgres(ctx context.Context, topic, stat
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
+	embedder := s.semanticEmbedderSnapshot()
 	existingID, found, err := FindVerifiedKnowledgeIDByStatement(queryCtx, s.pool.Raw(), statement)
 	if err != nil {
 		return KnowledgeRecord{}, err
@@ -41,13 +42,13 @@ func (s *Store) insertVerifiedKnowledgePostgres(ctx context.Context, topic, stat
 		if err != nil {
 			return KnowledgeRecord{}, err
 		}
-		if s.semanticEmbedder == nil {
+		if embedder == nil {
 			return existing, nil
 		}
 		content := existing.Topic + "\n" + existing.Statement
-		modelID := s.semanticEmbedder.ModelID()
-		if modelID == "" || strings.TrimSpace(modelID) != modelID || ContainsDisallowedControl(modelID) {
-			return KnowledgeRecord{}, errors.New("embedding model id is invalid")
+		modelID, err := semanticEmbedderModelID(embedder)
+		if err != nil {
+			return KnowledgeRecord{}, err
 		}
 		current, err := knowledgeEmbeddingCurrent(queryCtx, s.pool.Raw(), existingID, modelID, semanticContentHash(content))
 		if err != nil {
@@ -56,7 +57,7 @@ func (s *Store) insertVerifiedKnowledgePostgres(ctx context.Context, topic, stat
 		if current {
 			return existing, nil
 		}
-		embedding, err := s.embeddingForContent(content)
+		embedding, err := embeddingForContent(embedder, content)
 		if err != nil {
 			return KnowledgeRecord{}, err
 		}
@@ -97,7 +98,7 @@ WHERE id = $1
 		}
 		return knowledgeByIDPostgres(ctx, s.pool.Raw(), existingID)
 	}
-	embedding, err := s.embeddingForContent(topic + "\n" + statement)
+	embedding, err := embeddingForContent(embedder, topic+"\n"+statement)
 	if err != nil {
 		return KnowledgeRecord{}, err
 	}

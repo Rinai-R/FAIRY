@@ -78,6 +78,72 @@ func TestAPIEmbedderPostsSiliconFlowSDKRequestAndOrdersVectors(t *testing.T) {
 	}
 }
 
+func TestAPIEmbedderRequestsDimensionsForGenericProvider(t *testing.T) {
+	var captured capturedEmbeddingRequest
+	client := embeddingTestClient(t, func(request *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		return embeddingJSONResponse(t, http.StatusOK, []embeddingResponseItem{
+			{Index: 0, Embedding: testEmbeddingVector(1), Object: "embedding"},
+		}), nil
+	})
+	embedder, err := NewAPIEmbedder(APIEmbeddingOptions{
+		Provider:   config.SemanticEmbeddingProviderOpenAICompatible,
+		Endpoint:   "https://generic-embedding.test/v1",
+		AuthMode:   "no_auth",
+		Model:      testSiliconFlowEmbeddingModel,
+		Dimensions: config.SemanticEmbeddingDimensions,
+		HTTPClient: client,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := embedder.Embed([]string{"hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if captured.Dimensions == nil || *captured.Dimensions != config.SemanticEmbeddingDimensions {
+		t.Fatalf("dimensions = %v, want %d", captured.Dimensions, config.SemanticEmbeddingDimensions)
+	}
+}
+
+func TestAPIEmbedderSpaceIDSeparatesProviderAndEndpoint(t *testing.T) {
+	base := APIEmbeddingOptions{
+		Provider:   config.SemanticEmbeddingProviderSiliconFlow,
+		Endpoint:   "https://api.siliconflow.test/v1",
+		AuthMode:   "no_auth",
+		Model:      testSiliconFlowEmbeddingModel,
+		Dimensions: config.SemanticEmbeddingDimensions,
+		HTTPClient: embeddingTestClient(t, func(*http.Request) (*http.Response, error) { return nil, errors.New("unused") }),
+	}
+	first, err := NewAPIEmbedder(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := NewAPIEmbedder(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerChanged := base
+	providerChanged.Provider = config.SemanticEmbeddingProviderOpenAICompatible
+	second, err := NewAPIEmbedder(providerChanged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpointChanged := base
+	endpointChanged.Endpoint = "https://other.siliconflow.test/v1"
+	third, err := NewAPIEmbedder(endpointChanged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ModelID() != again.ModelID() || first.ModelID() == second.ModelID() || first.ModelID() == third.ModelID() {
+		t.Fatalf("space IDs = %q %q %q %q", first.ModelID(), again.ModelID(), second.ModelID(), third.ModelID())
+	}
+	if strings.Contains(first.ModelID(), base.Endpoint) || strings.Contains(first.ModelID(), base.Model) {
+		t.Fatalf("space ID exposes contract fields: %q", first.ModelID())
+	}
+}
+
 func TestAPIEmbedderNoAuthDoesNotSendAuthorization(t *testing.T) {
 	client := embeddingTestClient(t, func(request *http.Request) (*http.Response, error) {
 		if got := request.Header.Get("Authorization"); got != "" {
@@ -244,6 +310,7 @@ func TestAPIEmbedderReturnsContextCancellation(t *testing.T) {
 
 func TestAPIEmbedderRejectsResourceEndpoint(t *testing.T) {
 	_, err := NewAPIEmbedder(APIEmbeddingOptions{
+		Provider:   config.SemanticEmbeddingProviderOpenAICompatible,
 		Endpoint:   "https://example.test/v1/chat/completions",
 		AuthMode:   "no_auth",
 		Model:      testSiliconFlowEmbeddingModel,
@@ -257,6 +324,7 @@ func TestAPIEmbedderRejectsResourceEndpoint(t *testing.T) {
 func newEmbeddingTestEmbedder(t *testing.T, authMode string, bearerKey string, client *http.Client) *APIEmbedder {
 	t.Helper()
 	embedder, err := NewAPIEmbedder(APIEmbeddingOptions{
+		Provider:   config.SemanticEmbeddingProviderSiliconFlow,
 		Endpoint:   "https://api.siliconflow.test/v1",
 		AuthMode:   authMode,
 		BearerKey:  bearerKey,

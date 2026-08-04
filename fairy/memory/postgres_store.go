@@ -27,7 +27,7 @@ const defaultJobLeaseDuration = 30 * time.Second
 
 type Store struct {
 	pool             *coredb.Pool
-	semanticEmbedder SemanticEmbedder
+	semanticEmbedder *DynamicSemanticEmbedder
 	workerID         string
 	jobLeaseDuration time.Duration
 }
@@ -57,7 +57,21 @@ func newStoreFromPool(pool *coredb.Pool, embedder SemanticEmbedder, workerID str
 	if leaseDuration <= 0 {
 		return nil, ErrJobLeaseInvalid
 	}
-	return &Store{pool: pool, semanticEmbedder: embedder, workerID: workerID, jobLeaseDuration: leaseDuration}, nil
+	return &Store{pool: pool, semanticEmbedder: NewDynamicSemanticEmbedder(embedder), workerID: workerID, jobLeaseDuration: leaseDuration}, nil
+}
+
+func (s *Store) ReplaceSemanticEmbedder(embedder SemanticEmbedder) {
+	if s == nil || s.semanticEmbedder == nil {
+		return
+	}
+	s.semanticEmbedder.Replace(embedder)
+}
+
+func (s *Store) semanticEmbedderSnapshot() SemanticEmbedder {
+	if s == nil || s.semanticEmbedder == nil {
+		return nil
+	}
+	return s.semanticEmbedder.Snapshot()
 }
 
 func (s *Store) Summary() (Summary, error) {

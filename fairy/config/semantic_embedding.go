@@ -102,7 +102,8 @@ func WriteSemanticEmbeddingSettings(root string, settings SemanticEmbeddingSetti
 	if normalized.LegacyReason != "" {
 		return errors.New(normalized.LegacyReason)
 	}
-	if err := os.MkdirAll(semanticEmbeddingDir(root), 0o755); err != nil {
+	dir := semanticEmbeddingDir(root)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("creating semantic embedding settings dir: %w", err)
 	}
 	doc := semanticEmbeddingDocument{SchemaVersion: semanticEmbeddingSchemaVersion, Data: normalized}
@@ -110,7 +111,32 @@ func WriteSemanticEmbeddingSettings(root string, settings SemanticEmbeddingSetti
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(semanticEmbeddingDir(root), semanticEmbeddingSettingsFile), raw, 0o600)
+	raw = append(raw, '\n')
+	temporary, err := os.CreateTemp(dir, ".settings-*.tmp")
+	if err != nil {
+		return fmt.Errorf("creating temporary semantic embedding settings: %w", err)
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return fmt.Errorf("securing temporary semantic embedding settings: %w", err)
+	}
+	if _, err := temporary.Write(raw); err != nil {
+		temporary.Close()
+		return fmt.Errorf("writing temporary semantic embedding settings: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return fmt.Errorf("syncing temporary semantic embedding settings: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("closing temporary semantic embedding settings: %w", err)
+	}
+	if err := os.Rename(temporaryName, filepath.Join(dir, semanticEmbeddingSettingsFile)); err != nil {
+		return fmt.Errorf("replacing semantic embedding settings: %w", err)
+	}
+	return nil
 }
 
 func SemanticEmbeddingStatusFromSettings(settings SemanticEmbeddingSettings) SemanticEmbeddingStatus {
@@ -127,6 +153,9 @@ func SemanticEmbeddingStatusFromSettings(settings SemanticEmbeddingSettings) Sem
 		Reason:     settings.LegacyReason,
 	}
 	status.Configured = settings.Enabled && settings.LegacyReason == "" && settings.Provider != SemanticEmbeddingProviderNone && settings.Endpoint != "" && settings.Model != ""
+	if settings.Provider != SemanticEmbeddingProviderNone && !settings.Enabled && settings.LegacyReason == "" {
+		status.Reason = "semantic_embedding_disabled"
+	}
 	return status
 }
 
@@ -209,8 +238,9 @@ func normalizeSemanticEmbeddingSettings(settings SemanticEmbeddingSettings) (Sem
 			return SemanticEmbeddingSettings{}, fmt.Errorf("semantic embedding dimensions = %d, want %d", settings.Dimensions, SemanticEmbeddingDimensions)
 		}
 	}
-	settings.Enabled = settings.LegacyReason == ""
-	if legacy && settings.LegacyReason == "" {
+	if settings.LegacyReason != "" {
+		settings.Enabled = false
+	} else if legacy {
 		settings.LegacyReason = "legacy_512_reconfiguration_required"
 		settings.Enabled = false
 	}
@@ -220,8 +250,16 @@ func normalizeSemanticEmbeddingSettings(settings SemanticEmbeddingSettings) (Sem
 
 func validateSemanticEmbeddingEndpoint(endpoint string) error {
 	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return errors.New("semantic embedding endpoint must be an absolute URL without query or fragment")
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("semantic embedding endpoint must be an HTTP(S) base URL without userinfo, query or fragment")
+	}
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	last := ""
+	if len(segments) > 0 {
+		last = segments[len(segments)-1]
+	}
+	if last == "responses" || last == "embeddings" || (len(segments) >= 2 && segments[len(segments)-2] == "chat" && last == "completions") {
+		return errors.New("semantic embedding endpoint must be a base URL, not a protocol resource URL")
 	}
 	return nil
 }

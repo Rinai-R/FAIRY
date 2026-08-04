@@ -111,7 +111,7 @@ func (s *Store) commitKnowledgeDocumentActionsPostgres(
 		}
 		prepared[index] = preparedKnowledgeDocumentAction{action: action, topic: topic}
 	}
-	embeddings, err := embeddingsForContents(s.semanticEmbedder, embeddingContents)
+	embeddings, err := embeddingsForContents(s.semanticEmbedderSnapshot(), embeddingContents)
 	if err != nil {
 		return 0, err
 	}

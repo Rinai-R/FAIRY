@@ -48,7 +48,7 @@ SELECT
 	}
 	status := SemanticStatusUnavailable
 	reason := "api_embedder_required"
-	if s.store.semanticEmbedder != nil && s.store.semanticEmbedder.Ready() {
+	if s.store.semanticEmbedder.Ready() {
 		status = SemanticStatusReady
 		reason = ""
 	}

@@ -1,14 +1,34 @@
 package config
 
-import "errors"
+import (
+	"errors"
+	"sync"
+)
+
+type SemanticEmbeddingRuntime interface {
+	PrepareSemanticEmbedding(SemanticEmbeddingSettings) (commit func(), err error)
+	DisableSemanticEmbedding()
+}
 
 type ConfigService struct {
-	root    string
-	secrets *SecretStore
+	root                  string
+	secrets               *SecretStore
+	semanticMu            sync.RWMutex
+	semanticRuntime       SemanticEmbeddingRuntime
+	writeSemanticSettings func(string, SemanticEmbeddingSettings) error
+}
+
+func (s *ConfigService) AttachSemanticEmbeddingRuntime(runtime SemanticEmbeddingRuntime) {
+	if s == nil {
+		return
+	}
+	s.semanticMu.Lock()
+	s.semanticRuntime = runtime
+	s.semanticMu.Unlock()
 }
 
 func NewConfigService(root string, secrets *SecretStore) *ConfigService {
-	return &ConfigService{root: root, secrets: secrets}
+	return &ConfigService{root: root, secrets: secrets, writeSemanticSettings: WriteSemanticEmbeddingSettings}
 }
 
 func (s *ConfigService) ModelStatus() (ModelConnectionStatus, error) {
@@ -43,17 +63,25 @@ func (s *ConfigService) SaveQQOneBotSettings(settings QQOneBotSettings) (QQOneBo
 }
 
 func (s *ConfigService) SemanticEmbeddingStatus() (SemanticEmbeddingStatus, error) {
+	s.semanticMu.RLock()
+	defer s.semanticMu.RUnlock()
+	return s.semanticEmbeddingStatus()
+}
+
+func (s *ConfigService) semanticEmbeddingStatus() (SemanticEmbeddingStatus, error) {
 	settings, err := ReadSemanticEmbeddingSettings(s.root)
 	if err != nil {
 		return SemanticEmbeddingStatus{}, err
 	}
 	status := SemanticEmbeddingStatusFromSettings(settings)
-	if !settings.Enabled || settings.LegacyReason != "" {
+	if settings.Provider == SemanticEmbeddingProviderNone || settings.LegacyReason != "" {
 		return status, nil
 	}
 	if settings.ConnectionID == "" {
 		status.Configured = false
-		status.Reason = "semantic_embedding_credential_required"
+		if settings.Enabled {
+			status.Reason = "semantic_embedding_credential_required"
+		}
 		return status, nil
 	}
 	if s.secrets == nil {
@@ -67,13 +95,15 @@ func (s *ConfigService) SemanticEmbeddingStatus() (SemanticEmbeddingStatus, erro
 	}
 	status.CredentialConfigured = ok
 	status.Configured = status.Configured && ok
-	if !ok {
+	if settings.Enabled && !ok {
 		status.Reason = "semantic_embedding_credential_required"
 	}
 	return status, nil
 }
 
 func (s *ConfigService) SaveSemanticEmbeddingSettings(input SemanticEmbeddingSettings, apiKey *string) (SemanticEmbeddingStatus, error) {
+	s.semanticMu.Lock()
+	defer s.semanticMu.Unlock()
 	existing, err := ReadSemanticEmbeddingSettings(s.root)
 	if err != nil {
 		return SemanticEmbeddingStatus{}, err
@@ -112,6 +142,12 @@ func (s *ConfigService) SaveSemanticEmbeddingSettings(input SemanticEmbeddingSet
 			_ = s.secrets.Delete(existing.ConnectionID)
 		}
 	}
+	rollbackSecret := func() {
+		if normalized.ConnectionID != "" && normalized.ConnectionID != existing.ConnectionID && s.secrets != nil {
+			_ = s.secrets.Delete(normalized.ConnectionID)
+		}
+		restoreExistingSecret()
+	}
 
 	if normalized.Provider == SemanticEmbeddingProviderNone {
 		if existing.ConnectionID != "" && s.secrets != nil {
@@ -127,7 +163,7 @@ func (s *ConfigService) SaveSemanticEmbeddingSettings(input SemanticEmbeddingSet
 		if err := s.secrets.Save(normalized.ConnectionID, value); err != nil {
 			return SemanticEmbeddingStatus{}, err
 		}
-	} else {
+	} else if normalized.Enabled {
 		_, ok, err := s.secrets.Load(normalized.ConnectionID)
 		if err != nil {
 			return SemanticEmbeddingStatus{}, err
@@ -136,24 +172,39 @@ func (s *ConfigService) SaveSemanticEmbeddingSettings(input SemanticEmbeddingSet
 			return SemanticEmbeddingStatus{}, errors.New("semantic embedding provider requires API key")
 		}
 	}
-
-	if err := WriteSemanticEmbeddingSettings(s.root, normalized); err != nil {
-		if normalized.ConnectionID != "" && normalized.ConnectionID != existing.ConnectionID && s.secrets != nil {
-			_ = s.secrets.Delete(normalized.ConnectionID)
+	commitRuntime := func() {}
+	if s.semanticRuntime != nil {
+		commitRuntime, err = s.semanticRuntime.PrepareSemanticEmbedding(normalized)
+		if err != nil {
+			rollbackSecret()
+			return SemanticEmbeddingStatus{}, err
 		}
-		restoreExistingSecret()
+		if commitRuntime == nil {
+			rollbackSecret()
+			return SemanticEmbeddingStatus{}, errors.New("semantic embedding runtime returned no commit")
+		}
+	}
+
+	if err := s.writeSemanticSettings(s.root, normalized); err != nil {
+		rollbackSecret()
 		return SemanticEmbeddingStatus{}, err
 	}
-	return s.SemanticEmbeddingStatus()
+	commitRuntime()
+	return s.semanticEmbeddingStatus()
 }
 
 func (s *ConfigService) DeleteSemanticEmbeddingCredential() (SemanticEmbeddingStatus, error) {
+	s.semanticMu.Lock()
+	defer s.semanticMu.Unlock()
 	settings, err := ReadSemanticEmbeddingSettings(s.root)
 	if err != nil {
 		return SemanticEmbeddingStatus{}, err
 	}
 	if settings.ConnectionID == "" {
-		return s.SemanticEmbeddingStatus()
+		if s.semanticRuntime != nil {
+			s.semanticRuntime.DisableSemanticEmbedding()
+		}
+		return s.semanticEmbeddingStatus()
 	}
 	if s.secrets == nil {
 		return SemanticEmbeddingStatus{}, errors.New("semantic embedding secret store is required")
@@ -161,5 +212,8 @@ func (s *ConfigService) DeleteSemanticEmbeddingCredential() (SemanticEmbeddingSt
 	if err := s.secrets.Delete(settings.ConnectionID); err != nil {
 		return SemanticEmbeddingStatus{}, err
 	}
-	return s.SemanticEmbeddingStatus()
+	if s.semanticRuntime != nil {
+		s.semanticRuntime.DisableSemanticEmbedding()
+	}
+	return s.semanticEmbeddingStatus()
 }

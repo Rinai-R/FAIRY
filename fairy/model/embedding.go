@@ -35,6 +35,7 @@ func (s *ModelService) SemanticEmbedder(settings config.SemanticEmbeddingSetting
 		return nil, errors.New("semantic embedding credential is not configured")
 	}
 	return NewAPIEmbedder(APIEmbeddingOptions{
+		Provider:   settings.Provider,
 		Endpoint:   settings.Endpoint,
 		AuthMode:   "bearer_key",
 		BearerKey:  credential.Expose(),

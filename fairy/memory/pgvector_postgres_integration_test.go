@@ -259,6 +259,65 @@ WHERE id = $1`, legacy.ID, semanticContentHash(legacy.Content), legacyVector.Str
 	}
 }
 
+func TestPostgresPgvectorSameModelEndpointSwitchUsesDistinctSpace(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatal(err)
+	}
+	const endpointASpace = "embedding-space-v1:same-model-endpoint-a"
+	const endpointBSpace = "embedding-space-v1:same-model-endpoint-b"
+	store, err := NewStoreFromPoolWithEmbedder(pool, &mappedSemanticEmbedder{
+		modelID: endpointASpace,
+		vectors: map[string][]float32{"同名模型端点切换": testVector(1, 0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedCompletedTurn(t, ctx, store, "character-endpoint-switch")
+	memory, err := store.CreatePersonalMemoryContext(ctx, "preference", MemoryScope{Type: "global"}, "同名模型端点切换", 9000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.ReplaceSemanticEmbedder(&mappedSemanticEmbedder{
+		modelID: endpointBSpace,
+		vectors: map[string][]float32{"同名模型端点切换": testVector(1, 0)},
+	})
+
+	result, err := store.RetrieveContext(ctx, "character-endpoint-switch", "同名模型端点切换")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsRetrievedPersonalID(result.PersonalMemories, memory.ID) {
+		t.Fatalf("text recall omitted endpoint-A record: %#v", result.PersonalMemories)
+	}
+	if result.SemanticStatus != string(SemanticStatusReady) {
+		t.Fatalf("semantic status = %q, want ready without cross-space vector hit", result.SemanticStatus)
+	}
+	var persistedSpace string
+	if err := pool.Raw().QueryRow(ctx, "SELECT embedding_model_id_v2 FROM personal_memories WHERE id = $1", memory.ID).Scan(&persistedSpace); err != nil {
+		t.Fatal(err)
+	}
+	if persistedSpace != endpointASpace {
+		t.Fatalf("persisted space = %q, want %q", persistedSpace, endpointASpace)
+	}
+
+	rebuilt, err := store.RebuildVectors(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebuilt.UpdatedItems != 1 {
+		t.Fatalf("rebuild = %#v", rebuilt)
+	}
+	if err := pool.Raw().QueryRow(ctx, "SELECT embedding_model_id_v2 FROM personal_memories WHERE id = $1", memory.ID).Scan(&persistedSpace); err != nil {
+		t.Fatal(err)
+	}
+	if persistedSpace != endpointBSpace {
+		t.Fatalf("rebuilt space = %q, want %q", persistedSpace, endpointBSpace)
+	}
+}
+
 func TestPostgresPgvectorRebuildRepairsMissingVectors(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)

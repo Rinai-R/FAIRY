@@ -20,6 +20,10 @@ func semanticEmbedder(modelService *model.ModelService, configReader *config.Rea
 		logger.Warn("semantic embedding settings unavailable", zap.Error(err))
 		return nil
 	}
+	if !settings.Enabled || settings.LegacyReason != "" {
+		logger.Info("semantic embedding disabled; FTS-only retrieval")
+		return nil
+	}
 	switch settings.Provider {
 	case config.SemanticEmbeddingProviderNone, "":
 		logger.Info("semantic embedding disabled; FTS-only retrieval")
@@ -38,5 +42,37 @@ func semanticEmbedder(modelService *model.ModelService, configReader *config.Rea
 	default:
 		logger.Warn("semantic embedding provider unsupported", zap.String("provider", settings.Provider))
 		return nil
+	}
+}
+
+type semanticEmbeddingRuntime struct {
+	model *model.ModelService
+	store semanticEmbedderPublisher
+}
+
+type semanticEmbedderPublisher interface {
+	ReplaceSemanticEmbedder(memory.SemanticEmbedder)
+}
+
+func (runtime semanticEmbeddingRuntime) PrepareSemanticEmbedding(settings config.SemanticEmbeddingSettings) (func(), error) {
+	if runtime.store == nil {
+		return nil, memory.ErrDatabasePoolEmpty
+	}
+	if !settings.Enabled || settings.LegacyReason != "" || settings.Provider == config.SemanticEmbeddingProviderNone {
+		return func() { runtime.store.ReplaceSemanticEmbedder(nil) }, nil
+	}
+	if runtime.model == nil {
+		return nil, memory.ErrSemanticUnavailable
+	}
+	embedder, err := runtime.model.SemanticEmbedder(settings)
+	if err != nil {
+		return nil, err
+	}
+	return func() { runtime.store.ReplaceSemanticEmbedder(embedder) }, nil
+}
+
+func (runtime semanticEmbeddingRuntime) DisableSemanticEmbedding() {
+	if runtime.store != nil {
+		runtime.store.ReplaceSemanticEmbedder(nil)
 	}
 }

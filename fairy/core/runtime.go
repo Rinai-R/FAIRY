@@ -160,20 +160,18 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 	memoryStore := opened.MemoryStore
 	if memoryStore == nil {
 		embedder := semanticEmbedder(modelService, configReader, logger.Named("semantic"))
-		if embedder == nil {
-			memoryStore, err = memory.NewStoreFromPool(opened.Database)
-		} else {
-			memoryStore, err = memory.NewStoreFromPoolWithEmbedder(opened.Database, embedder)
-		}
+		memoryStore, err = memory.NewStoreFromPool(opened.Database)
 		if err != nil {
 			return nil, err
 		}
+		memoryStore.ReplaceSemanticEmbedder(embedder)
 		opened.MemoryStore = memoryStore
 	}
 	services, err := wireCoreServices(configRoot, opened.Database, memoryStore, opened.SecretStore, modelService, configReader)
 	if err != nil {
 		return nil, err
 	}
+	services.Config.AttachSemanticEmbeddingRuntime(semanticEmbeddingRuntime{model: modelService, store: memoryStore})
 	stickerStore, err := sticker.NewStore(opened.Database)
 	if err != nil {
 		return nil, err

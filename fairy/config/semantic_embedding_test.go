@@ -8,6 +8,25 @@ import (
 	"testing"
 )
 
+type semanticRuntimeRecorder struct {
+	prepared   []SemanticEmbeddingSettings
+	committed  int
+	disabled   int
+	prepareErr error
+}
+
+func (runtime *semanticRuntimeRecorder) PrepareSemanticEmbedding(settings SemanticEmbeddingSettings) (func(), error) {
+	runtime.prepared = append(runtime.prepared, settings)
+	if runtime.prepareErr != nil {
+		return nil, runtime.prepareErr
+	}
+	return func() { runtime.committed++ }, nil
+}
+
+func (runtime *semanticRuntimeRecorder) DisableSemanticEmbedding() {
+	runtime.disabled++
+}
+
 func TestReadSemanticEmbeddingSettingsMissingDefaultsNone(t *testing.T) {
 	root := t.TempDir()
 	settings, err := ReadSemanticEmbeddingSettings(root)
@@ -54,6 +73,7 @@ func TestWriteReadSiliconFlowSettingsUsesPresetDefaults(t *testing.T) {
 	err := WriteSemanticEmbeddingSettings(root, SemanticEmbeddingSettings{
 		SchemaVersion: semanticEmbeddingSchemaVersion,
 		Provider:      SemanticEmbeddingProviderSiliconFlow,
+		Enabled:       true,
 		Dimensions:    SemanticEmbeddingDimensions,
 		ConnectionID:  "semantic_embedding.connection-1",
 	})
@@ -70,6 +90,52 @@ func TestWriteReadSiliconFlowSettingsUsesPresetDefaults(t *testing.T) {
 	status := SemanticEmbeddingStatusFromSettings(settings)
 	if !status.Enabled || !status.Configured || status.Provider != SemanticEmbeddingProviderSiliconFlow || status.Model != semanticEmbeddingSiliconFlowModel {
 		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestSemanticEmbeddingSettingsPreserveDisabledProvider(t *testing.T) {
+	root := t.TempDir()
+	settings := SiliconFlowSemanticEmbeddingDefaults()
+	settings.Enabled = false
+	settings.ConnectionID = "semantic_embedding.disabled"
+	if err := WriteSemanticEmbeddingSettings(root, settings); err != nil {
+		t.Fatalf("WriteSemanticEmbeddingSettings() error = %v", err)
+	}
+	got, err := ReadSemanticEmbeddingSettings(root)
+	if err != nil {
+		t.Fatalf("ReadSemanticEmbeddingSettings() error = %v", err)
+	}
+	if got.Enabled || got.Provider != SemanticEmbeddingProviderSiliconFlow || got.Endpoint != semanticEmbeddingSiliconFlowURL || got.Model != semanticEmbeddingSiliconFlowModel || got.ConnectionID != settings.ConnectionID {
+		t.Fatalf("disabled settings = %#v", got)
+	}
+	status := SemanticEmbeddingStatusFromSettings(got)
+	if status.Enabled || status.Configured || status.Reason != "semantic_embedding_disabled" {
+		t.Fatalf("disabled status = %#v", status)
+	}
+}
+
+func TestSemanticEmbeddingSettingsRejectUnsafeEndpoints(t *testing.T) {
+	for _, endpoint := range []string{
+		"ftp://embedding.example.test/v1",
+		"https://user:secret@embedding.example.test/v1",
+		"https://embedding.example.test/v1?token=secret",
+		"https://embedding.example.test/v1#fragment",
+		"https://embedding.example.test/v1/embeddings",
+		"https://embedding.example.test/v1/chat/completions",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			err := WriteSemanticEmbeddingSettings(t.TempDir(), SemanticEmbeddingSettings{
+				SchemaVersion: semanticEmbeddingSchemaVersion,
+				Provider:      SemanticEmbeddingProviderOpenAICompatible,
+				Enabled:       true,
+				Endpoint:      endpoint,
+				Model:         "embedding-model",
+				Dimensions:    SemanticEmbeddingDimensions,
+			})
+			if err == nil {
+				t.Fatalf("WriteSemanticEmbeddingSettings(%q) error = nil", endpoint)
+			}
+		})
 	}
 }
 
@@ -147,6 +213,124 @@ func TestConfigServiceSavesAndDeletesIndependentSemanticCredential(t *testing.T)
 	}
 	if status.Configured || status.CredentialConfigured || status.Reason != "semantic_embedding_credential_required" {
 		t.Fatalf("deleted status = %#v", status)
+	}
+}
+
+func TestConfigServiceDisabledSemanticProviderRetainsCredential(t *testing.T) {
+	root := t.TempDir()
+	secrets := NewTestSecretStore()
+	service := NewConfigService(root, secrets)
+	apiKey := "sf-disabled-secret"
+	settings := SiliconFlowSemanticEmbeddingDefaults()
+	if _, err := service.SaveSemanticEmbeddingSettings(settings, &apiKey); err != nil {
+		t.Fatalf("SaveSemanticEmbeddingSettings(enabled) error = %v", err)
+	}
+	settings.Enabled = false
+	status, err := service.SaveSemanticEmbeddingSettings(settings, nil)
+	if err != nil {
+		t.Fatalf("SaveSemanticEmbeddingSettings(disabled) error = %v", err)
+	}
+	if status.Enabled || status.Configured || !status.CredentialConfigured || status.Reason != "semantic_embedding_disabled" {
+		t.Fatalf("disabled status = %#v", status)
+	}
+	persisted, err := ReadSemanticEmbeddingSettings(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, ok, err := secrets.Load(persisted.ConnectionID)
+	if err != nil || !ok || secret.Expose() != apiKey {
+		t.Fatalf("retained secret = (%v, %v, %v)", secret, ok, err)
+	}
+}
+
+func TestConfigServicePublishesSemanticRuntimeAfterPersistence(t *testing.T) {
+	root := t.TempDir()
+	secrets := NewTestSecretStore()
+	service := NewConfigService(root, secrets)
+	runtime := &semanticRuntimeRecorder{}
+	service.AttachSemanticEmbeddingRuntime(runtime)
+	apiKey := "sf-runtime-secret"
+	status, err := service.SaveSemanticEmbeddingSettings(SiliconFlowSemanticEmbeddingDefaults(), &apiKey)
+	if err != nil {
+		t.Fatalf("SaveSemanticEmbeddingSettings() error = %v", err)
+	}
+	if !status.Configured || len(runtime.prepared) != 1 || runtime.committed != 1 || !runtime.prepared[0].Enabled {
+		t.Fatalf("runtime apply = status:%#v prepared:%#v committed:%d", status, runtime.prepared, runtime.committed)
+	}
+	if _, err := service.DeleteSemanticEmbeddingCredential(); err != nil {
+		t.Fatalf("DeleteSemanticEmbeddingCredential() error = %v", err)
+	}
+	if runtime.disabled != 1 {
+		t.Fatalf("runtime disabled = %d, want 1", runtime.disabled)
+	}
+}
+
+func TestConfigServicePrepareFailureRestoresSemanticSecretAndSettings(t *testing.T) {
+	root := t.TempDir()
+	secrets := NewTestSecretStore()
+	service := NewConfigService(root, secrets)
+	oldKey := "old-runtime-secret"
+	if _, err := service.SaveSemanticEmbeddingSettings(SiliconFlowSemanticEmbeddingDefaults(), &oldKey); err != nil {
+		t.Fatal(err)
+	}
+	before, err := ReadSemanticEmbeddingSettings(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &semanticRuntimeRecorder{prepareErr: errors.New("candidate rejected")}
+	service.AttachSemanticEmbeddingRuntime(runtime)
+	newKey := "new-runtime-secret"
+	settings := SiliconFlowSemanticEmbeddingDefaults()
+	settings.Endpoint = "https://other.embedding.example.test/v1"
+	if _, err := service.SaveSemanticEmbeddingSettings(settings, &newKey); err == nil || !strings.Contains(err.Error(), "candidate rejected") {
+		t.Fatalf("SaveSemanticEmbeddingSettings() error = %v", err)
+	}
+	after, err := ReadSemanticEmbeddingSettings(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, ok, err := secrets.Load(before.ConnectionID)
+	if err != nil || !ok {
+		t.Fatalf("Load(old secret) = %v, %v", ok, err)
+	}
+	if after != before || secret.Expose() != oldKey || runtime.committed != 0 {
+		t.Fatalf("rollback = before:%#v after:%#v secret:%v committed:%d", before, after, secret, runtime.committed)
+	}
+}
+
+func TestConfigServiceSettingsFailureDoesNotPublishAndRestoresSecret(t *testing.T) {
+	root := t.TempDir()
+	secrets := NewTestSecretStore()
+	service := NewConfigService(root, secrets)
+	oldKey := "old-settings-secret"
+	if _, err := service.SaveSemanticEmbeddingSettings(SiliconFlowSemanticEmbeddingDefaults(), &oldKey); err != nil {
+		t.Fatal(err)
+	}
+	before, err := ReadSemanticEmbeddingSettings(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &semanticRuntimeRecorder{}
+	service.AttachSemanticEmbeddingRuntime(runtime)
+	service.writeSemanticSettings = func(string, SemanticEmbeddingSettings) error {
+		return errors.New("settings storage unavailable")
+	}
+	newKey := "new-settings-secret"
+	settings := SiliconFlowSemanticEmbeddingDefaults()
+	settings.Endpoint = "https://new.embedding.example.test/v1"
+	if _, err := service.SaveSemanticEmbeddingSettings(settings, &newKey); err == nil || !strings.Contains(err.Error(), "settings storage unavailable") {
+		t.Fatalf("SaveSemanticEmbeddingSettings() error = %v", err)
+	}
+	after, err := ReadSemanticEmbeddingSettings(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, ok, err := secrets.Load(before.ConnectionID)
+	if err != nil || !ok {
+		t.Fatalf("Load(old secret) = %v, %v", ok, err)
+	}
+	if after != before || secret.Expose() != oldKey || len(runtime.prepared) != 1 || runtime.committed != 0 {
+		t.Fatalf("settings rollback = before:%#v after:%#v secret:%v prepared:%d committed:%d", before, after, secret, len(runtime.prepared), runtime.committed)
 	}
 }
 

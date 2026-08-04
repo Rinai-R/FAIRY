@@ -51,6 +51,7 @@ func embeddingsForContents(embedder SemanticEmbedder, contents []string) ([]Embe
 	if len(contents) == 0 {
 		return nil, nil
 	}
+	embedder = semanticEmbedderSnapshot(embedder)
 	if embedder == nil {
 		return make([]EmbeddingValue, len(contents)), nil
 	}
