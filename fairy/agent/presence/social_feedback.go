@@ -16,12 +16,11 @@ import (
 )
 
 const (
-	SocialFeedbackMaxOutputTokens    uint32 = 768
-	FeedbackQueueCapacity                   = 8
-	socialFeedbackMaxPendingPerGroup        = 4
-	socialFeedbackPendingCapacity           = 256
-	socialFeedbackObservationLimit          = 6
-	socialFeedbackObservationWindow         = 2 * time.Minute
+	SocialFeedbackMaxOutputTokens   uint32 = 768
+	FeedbackQueueCapacity                  = 8
+	socialFeedbackPendingCapacity          = 256
+	socialFeedbackObservationLimit         = 6
+	socialFeedbackObservationWindow        = 2 * time.Minute
 )
 
 const (
@@ -50,6 +49,7 @@ type feedbackSnapshot struct {
 
 type FeedbackStats struct {
 	Registered                int64 `json:"registered"`
+	Superseded                int64 `json:"superseded"`
 	Dropped                   int64 `json:"dropped"`
 	Succeeded                 int64 `json:"succeeded"`
 	Failed                    int64 `json:"failed"`
@@ -77,6 +77,7 @@ type FeedbackEngine struct {
 	window                    time.Duration
 	timerCallbackHook         func()
 	registered                atomic.Int64
+	superseded                atomic.Int64
 	dropped                   atomic.Int64
 	succeeded                 atomic.Int64
 	failed                    atomic.Int64
@@ -160,29 +161,32 @@ func (e *FeedbackEngine) Register(registration FeedbackRegistration) bool {
 		seenCandidates[candidate.ID] = struct{}{}
 	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if e.closed {
+		e.mu.Unlock()
 		return false
 	}
 	group := e.pending[registration.ConversationID]
 	if group != nil {
 		if _, exists := group[registration.TurnID]; exists {
 			e.dropped.Add(1)
+			e.mu.Unlock()
 			return false
 		}
 	}
-	if e.pendingCount >= e.pendingCapacity {
+	if e.pendingCount-len(group) >= e.pendingCapacity {
 		e.dropped.Add(1)
+		e.mu.Unlock()
 		return false
 	}
-	if len(group) >= socialFeedbackMaxPendingPerGroup {
-		e.dropped.Add(1)
-		return false
+	superseded := make([]feedbackSnapshot, 0, len(group))
+	for turnID, previous := range group {
+		e.stopPendingTimer(previous)
+		delete(group, turnID)
+		e.pendingCount--
+		superseded = append(superseded, snapshotSocialFeedback(previous))
 	}
-	if group == nil {
-		group = make(map[string]*pendingFeedback)
-		e.pending[registration.ConversationID] = group
-	}
+	group = make(map[string]*pendingFeedback, 1)
+	e.pending[registration.ConversationID] = group
 	pending := &pendingFeedback{registration: registration}
 	e.wg.Add(1)
 	pending.timer = time.AfterFunc(e.window, func() {
@@ -195,6 +199,11 @@ func (e *FeedbackEngine) Register(registration FeedbackRegistration) bool {
 	group[registration.TurnID] = pending
 	e.pendingCount++
 	e.registered.Add(1)
+	e.superseded.Add(int64(len(superseded)))
+	e.mu.Unlock()
+	for _, snapshot := range superseded {
+		e.enqueue(snapshot)
+	}
 	return true
 }
 
@@ -485,7 +494,7 @@ func (e *FeedbackEngine) Stats() FeedbackStats {
 		return FeedbackStats{}
 	}
 	return FeedbackStats{
-		Registered: e.registered.Load(), Dropped: e.dropped.Load(),
+		Registered: e.registered.Load(), Superseded: e.superseded.Load(), Dropped: e.dropped.Load(),
 		Succeeded: e.succeeded.Load(), Failed: e.failed.Load(),
 		ModelCalls: e.modelCalls.Load(), InputTokens: e.inputTokens.Load(),
 		CachedObservedInputTokens: e.cachedObservedInputTokens.Load(),

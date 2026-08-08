@@ -26,6 +26,7 @@ describe("metrics trend projection", () => {
       learningEnqueued: 7,
       learningSucceeded: 5,
       feedbackRegistered: 9,
+      feedbackSuperseded: 2,
       feedbackSucceeded: 6,
       feedbackModelCalls: 5,
       feedbackInputTokens: 1_200,
@@ -105,6 +106,7 @@ function trendPoint(timestampUnixMs: number, httpTotal: number): MetricsTrendPoi
     learningFailed: 0,
     learningDropped: 0,
     feedbackRegistered: 0,
+    feedbackSuperseded: 0,
     feedbackSucceeded: 0,
     feedbackFailed: 0,
     feedbackDropped: 0,
@@ -147,7 +149,7 @@ function snapshot(): MetricsSnapshot {
       experience: {
         learning: { enqueued: 7, dropped: 1, succeeded: 5, failed: 1 },
         feedback: {
-          registered: 9, dropped: 1, succeeded: 6, failed: 2,
+          registered: 9, superseded: 2, dropped: 1, succeeded: 6, failed: 2,
           modelCalls: 5, inputTokens: 1_200, cachedObservedInputTokens: 1_000,
           cachedInputTokens: 700, cacheWriteTokens: 100, outputTokens: 80,
         },

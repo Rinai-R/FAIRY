@@ -151,6 +151,7 @@ export type ExperienceStats = {
   learning: { enqueued: number; dropped: number; succeeded: number; failed: number };
   feedback: {
     registered: number;
+    superseded: number;
     dropped: number;
     succeeded: number;
     failed: number;
@@ -306,6 +307,7 @@ function parseMetricHistoryPoint(value: unknown): MetricsTrendPoint {
     learningFailed: optionalNonNegativeInteger(point, "learningFailed"),
     learningDropped: optionalNonNegativeInteger(point, "learningDropped"),
     feedbackRegistered: optionalNonNegativeInteger(point, "feedbackRegistered"),
+    feedbackSuperseded: optionalNonNegativeInteger(point, "feedbackSuperseded"),
     feedbackSucceeded: optionalNonNegativeInteger(point, "feedbackSucceeded"),
     feedbackFailed: optionalNonNegativeInteger(point, "feedbackFailed"),
     feedbackDropped: optionalNonNegativeInteger(point, "feedbackDropped"),
@@ -340,6 +342,7 @@ function parseExperienceStats(value: unknown): ExperienceStats {
     },
     feedback: {
       registered: requiredNonNegativeInteger(feedback, "registered"),
+      superseded: requiredNonNegativeInteger(feedback, "superseded"),
       dropped: requiredNonNegativeInteger(feedback, "dropped"),
       succeeded: requiredNonNegativeInteger(feedback, "succeeded"),
       failed: requiredNonNegativeInteger(feedback, "failed"),

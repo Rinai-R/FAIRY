@@ -73,7 +73,7 @@ describe("observability parsers", () => {
     input.runtime.experience = {
       learning: { enqueued: 4, dropped: 1, succeeded: 2, failed: 1 },
       feedback: {
-        registered: 3, dropped: 1, succeeded: 1, failed: 1,
+        registered: 3, superseded: 1, dropped: 1, succeeded: 1, failed: 1,
         modelCalls: 2, inputTokens: 900, cachedObservedInputTokens: 800,
         cachedInputTokens: 600, cacheWriteTokens: 50, outputTokens: 70,
       },
@@ -85,7 +85,7 @@ describe("observability parsers", () => {
     expect(parsed.runtime.experience).toEqual({
       learning: { enqueued: 4, dropped: 1, succeeded: 2, failed: 1 },
       feedback: {
-        registered: 3, dropped: 1, succeeded: 1, failed: 1,
+        registered: 3, superseded: 1, dropped: 1, succeeded: 1, failed: 1,
         modelCalls: 2, inputTokens: 900, cachedObservedInputTokens: 800,
         cachedInputTokens: 600, cacheWriteTokens: 50, outputTokens: 70,
       },
@@ -93,6 +93,12 @@ describe("observability parsers", () => {
     });
     expect(JSON.stringify(parsed.runtime.experience)).not.toContain("secret-provider-key");
     expect(JSON.stringify(parsed.runtime.experience)).not.toContain("private observation");
+  });
+
+  it("rejects an invalid current feedback superseded counter", () => {
+    const input = validMetrics();
+    (input.runtime.experience.feedback as Record<string, unknown>).superseded = -1;
+    expect(() => parseMetrics(input)).toThrow(/superseded/);
   });
 
   it("parses strict low-sensitivity compaction counters", () => {
@@ -137,6 +143,7 @@ describe("observability parsers", () => {
       learningFailed: 0,
       learningDropped: 0,
       feedbackRegistered: 0,
+      feedbackSuperseded: 0,
       feedbackSucceeded: 0,
       feedbackFailed: 0,
       feedbackDropped: 0,
@@ -231,7 +238,7 @@ export function validMetrics() {
       experience: {
         learning: { enqueued: 0, dropped: 0, succeeded: 0, failed: 0 },
         feedback: {
-          registered: 0, dropped: 0, succeeded: 0, failed: 0,
+          registered: 0, superseded: 0, dropped: 0, succeeded: 0, failed: 0,
           modelCalls: 0, inputTokens: 0, cachedObservedInputTokens: 0,
           cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0,
         },

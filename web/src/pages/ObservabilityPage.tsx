@@ -243,6 +243,7 @@ const TREND_CHARTS: Array<{
     id: "experience-feedback", className: "half", title: "回复效果反馈", description: "反馈窗口的累计归因与处理状态",
     series: [
       { key: "feedbackRegistered", label: "注册", color: "#2878d0" },
+      { key: "feedbackSuperseded", label: "提前结算", color: "#6e8fb4" },
       { key: "feedbackSucceeded", label: "成功", color: "#3c8b72" },
       { key: "feedbackFailed", label: "失败", color: "#b84855" },
       { key: "feedbackDropped", label: "丢弃", color: "#b37622" },

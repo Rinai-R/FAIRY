@@ -135,7 +135,7 @@ func TestExperienceStatsJSONIsLowSensitivity(t *testing.T) {
 	payload, err := json.Marshal(ExperienceStats{
 		Learning: LearningStats{Enqueued: 2, Dropped: 1, Succeeded: 1},
 		Feedback: FeedbackStats{
-			Registered: 2, Failed: 1, ModelCalls: 1, InputTokens: 500,
+			Registered: 2, Superseded: 1, Failed: 1, ModelCalls: 1, InputTokens: 500,
 			CachedObservedInputTokens: 500, CachedInputTokens: 300, CacheWriteTokens: 20, OutputTokens: 40,
 		},
 		CacheIdentityVersion: model.PromptCacheKeyVersion,
@@ -146,6 +146,7 @@ func TestExperienceStatsJSONIsLowSensitivity(t *testing.T) {
 	encoded := string(payload)
 	for _, required := range []string{
 		`"learning"`, `"feedback"`, `"cacheIdentityVersion"`, `"modelCalls":1`,
+		`"superseded":1`,
 		`"cachedObservedInputTokens":500`, `"cachedInputTokens":300`, `"cacheWriteTokens":20`,
 	} {
 		if !strings.Contains(encoded, required) {

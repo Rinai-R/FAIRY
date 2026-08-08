@@ -2,6 +2,7 @@ package presence
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -289,19 +290,90 @@ func TestFeedbackWindowBoundCloseAndEmptyEntryIDs(t *testing.T) {
 	if len(feedbackInputs(host)) != 1 {
 		t.Fatal("feedback window did not finalize")
 	}
-	for index := 0; index < socialFeedbackMaxPendingPerGroup; index++ {
-		item := registration
-		item.TurnID = "pending-" + strings.Repeat("x", index+1)
-		if !engine.Register(item) {
-			t.Fatalf("Register(%d) = false", index)
-		}
-	}
-	if engine.Register(FeedbackRegistration{CharacterID: "character-1", ConversationID: "conversation-1", TurnID: "overflow", ReplyText: "reply"}) {
-		t.Fatal("pending overflow accepted")
+	pending := registration
+	pending.TurnID = "pending"
+	if !engine.Register(pending) {
+		t.Fatal("pending Register = false")
 	}
 	engine.Close()
 	if engine.Register(FeedbackRegistration{CharacterID: "character-1", ConversationID: "conversation-1", TurnID: "after-close", ReplyText: "reply"}) {
 		t.Fatal("post-close registration accepted")
+	}
+}
+
+func TestFeedbackEngineIsolatesOverlappingReplyGenerations(t *testing.T) {
+	host := newLearningTestHost()
+	host.draft = `{"evaluations":[{"entryId":"s0","adoption":"adopted","outcome":"positive","credit":"entry","evidenceMessageIds":["old-evidence"]}]}`
+	engine := newFeedbackEngine(host, 4, 4, time.Hour)
+	defer engine.Close()
+
+	oldRegistration := feedbackTestSnapshot(0).registration
+	oldRegistration.TurnID = "turn-old"
+	if !engine.Register(oldRegistration) {
+		t.Fatal("old Register = false")
+	}
+	engine.Observe(oldRegistration.ConversationID, AmbientObservation{
+		MessageID: "old-evidence", SenderID: "member", SenderName: "群友",
+		Text: "这条接话挺自然", TimestampUnixMS: 1,
+	})
+
+	newRegistration := oldRegistration
+	newRegistration.TurnID = "turn-new"
+	newRegistration.ReplyText = "new reply"
+	if !engine.Register(newRegistration) {
+		t.Fatal("new Register = false")
+	}
+	engine.Observe(newRegistration.ConversationID, AmbientObservation{
+		MessageID: "new-evidence", SenderID: "member", SenderName: "群友",
+		Text: "继续聊新的话题", TimestampUnixMS: 2,
+	})
+
+	deadline := time.Now().Add(time.Second)
+	for len(feedbackInputs(host)) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	feedback := feedbackInputs(host)
+	if len(feedback) != 1 || feedback[0].TurnID != oldRegistration.TurnID || feedback[0].ObservedMessageCount != 1 || !slices.Equal(feedback[0].Evaluations[0].EvidenceMessageIDs, []string{"old-evidence"}) {
+		t.Fatalf("settled old feedback = %#v", feedback)
+	}
+
+	engine.mu.Lock()
+	newPending := engine.pending[newRegistration.ConversationID][newRegistration.TurnID]
+	oldPending := engine.pending[oldRegistration.ConversationID][oldRegistration.TurnID]
+	engine.mu.Unlock()
+	if oldPending != nil || newPending == nil || len(newPending.observations) != 1 || newPending.observations[0].MessageID != "new-evidence" {
+		t.Fatalf("generation ownership old=%#v new=%#v", oldPending, newPending)
+	}
+	stats := engine.Stats()
+	if stats.Registered != 2 || stats.Superseded != 1 || stats.Dropped != 0 {
+		t.Fatalf("stats = %#v", stats)
+	}
+}
+
+func TestFeedbackEngineCapacityFailureDoesNotSupersedeExistingWindow(t *testing.T) {
+	engine := newFeedbackEngine(newLearningTestHost(), 1, 1, time.Hour)
+	defer engine.Close()
+	original := feedbackTestSnapshot(0).registration
+	original.ConversationID = "conversation-full"
+	original.TurnID = "turn-full"
+	if !engine.Register(original) {
+		t.Fatal("initial Register = false")
+	}
+	overflow := original
+	overflow.ConversationID = "conversation-overflow"
+	overflow.TurnID = "turn-overflow"
+	if engine.Register(overflow) {
+		t.Fatal("overflow Register = true")
+	}
+	engine.mu.Lock()
+	stillPending := engine.pending[original.ConversationID][original.TurnID]
+	engine.mu.Unlock()
+	if stillPending == nil {
+		t.Fatal("capacity failure removed the existing owner")
+	}
+	stats := engine.Stats()
+	if stats.Superseded != 0 || stats.Dropped != 1 {
+		t.Fatalf("stats = %#v", stats)
 	}
 }
 

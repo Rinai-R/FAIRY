@@ -140,6 +140,7 @@ type LearningQueueStats struct {
 
 type FeedbackQueueStats struct {
 	Registered                int64 `json:"registered"`
+	Superseded                int64 `json:"superseded"`
 	Dropped                   int64 `json:"dropped"`
 	Succeeded                 int64 `json:"succeeded"`
 	Failed                    int64 `json:"failed"`

@@ -25,6 +25,7 @@ type MetricHistoryPoint struct {
 	LearningFailed                    uint64  `json:"learningFailed"`
 	LearningDropped                   uint64  `json:"learningDropped"`
 	FeedbackRegistered                uint64  `json:"feedbackRegistered"`
+	FeedbackSuperseded                uint64  `json:"feedbackSuperseded"`
 	FeedbackSucceeded                 uint64  `json:"feedbackSucceeded"`
 	FeedbackFailed                    uint64  `json:"feedbackFailed"`
 	FeedbackDropped                   uint64  `json:"feedbackDropped"`

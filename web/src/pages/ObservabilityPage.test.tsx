@@ -209,8 +209,10 @@ describe("ObservabilityPage lifecycle", () => {
     const metrics = validMetrics();
     metrics.history = [metricHistoryPoint(10_000, 10, 1, 1_000), metricHistoryPoint(20_000, 20, 2, 15_000)];
     metrics.history[0].feedbackRegistered = 3;
+    metrics.history[0].feedbackSuperseded = 1;
     metrics.history[0].feedbackSucceeded = 1;
     metrics.history[1].feedbackRegistered = 8;
+    metrics.history[1].feedbackSuperseded = 2;
     metrics.history[1].feedbackSucceeded = 6;
     metrics.history[0].feedbackModelCalls = 1;
     metrics.history[0].feedbackInputTokens = 500;
@@ -285,10 +287,12 @@ describe("ObservabilityPage lifecycle", () => {
     fireEvent.focus(feedbackChart);
     const feedbackReadout = feedbackChart.closest(".metric-trend-chart")?.querySelector<HTMLElement>(".metric-trend-readout");
     expect(feedbackReadout?.textContent).toContain("注册8");
+    expect(feedbackReadout?.textContent).toContain("提前结算2");
     expect(feedbackReadout?.textContent).toContain("成功6");
     expect(feedbackReadout?.textContent).toContain("评估调用4");
     fireEvent.keyDown(feedbackChart, { key: "ArrowLeft" });
     expect(feedbackReadout?.textContent).toContain("注册3");
+    expect(feedbackReadout?.textContent).toContain("提前结算1");
     expect(feedbackReadout?.textContent).toContain("成功1");
     expect(feedbackReadout?.textContent).toContain("评估调用1");
 
@@ -560,14 +564,14 @@ describe("ObservabilityPage lifecycle", () => {
     fireEvent.click(screen.getByRole("button", { name: "搜索 Trace 关联标识" }));
     expect(await screen.findByText(/messageId 查询失败/)).toBeTruthy();
     expect(window.location.hash).toBe("#/tracing");
-    expect(screen.queryByText("模型调用")).toBeNull();
+    await waitFor(() => expect(screen.queryByText("模型调用")).toBeNull());
 
     fireEvent.change(input, { target: { value: "external-many" } });
     fireEvent.click(screen.getByRole("button", { name: "搜索 Trace 关联标识" }));
     expect(await screen.findByText("选择一条 Trace")).toBeTruthy();
     expect(document.querySelectorAll(".trace-summary")).toHaveLength(2);
     expect(window.location.hash).toBe("#/tracing");
-    expect(screen.queryByText("模型调用")).toBeNull();
+    await waitFor(() => expect(screen.queryByText("模型调用")).toBeNull());
 
     fireEvent.change(input, { target: { value: "not-found" } });
     fireEvent.click(screen.getByRole("button", { name: "搜索 Trace 关联标识" }));
@@ -594,7 +598,7 @@ function validMetrics() {
       experience: {
         learning: { enqueued: 0, dropped: 0, succeeded: 0, failed: 0 },
         feedback: {
-          registered: 0, dropped: 0, succeeded: 0, failed: 0,
+          registered: 0, superseded: 0, dropped: 0, succeeded: 0, failed: 0,
           modelCalls: 0, inputTokens: 0, cachedObservedInputTokens: 0,
           cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0,
         },
@@ -686,6 +690,7 @@ function metricHistoryPoint(timestampUnixMs: number, httpTotal: number, httpInFl
     learningFailed: 0,
     learningDropped: 0,
     feedbackRegistered: 0,
+    feedbackSuperseded: 0,
     feedbackSucceeded: 0,
     feedbackFailed: 0,
     feedbackDropped: 0,

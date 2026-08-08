@@ -21,7 +21,7 @@ func TestExperienceQueueStatsKeepZeroValueSchema(t *testing.T) {
 	}
 	encoded := string(payload)
 	for _, field := range []string{
-		`"enqueued":0`, `"registered":0`, `"dropped":0`, `"succeeded":0`, `"failed":0`,
+		`"enqueued":0`, `"registered":0`, `"superseded":0`, `"dropped":0`, `"succeeded":0`, `"failed":0`,
 		`"modelCalls":0`, `"inputTokens":0`, `"cachedObservedInputTokens":0`,
 		`"cachedInputTokens":0`, `"cacheWriteTokens":0`, `"outputTokens":0`,
 	} {
@@ -48,7 +48,7 @@ func TestMetricHistoryPointProjectsExperienceCounters(t *testing.T) {
 	response.Runtime.Experience = ExperienceStats{
 		Learning: LearningQueueStats{Enqueued: 7, Succeeded: 5, Failed: 1, Dropped: 1},
 		Feedback: FeedbackQueueStats{
-			Registered: 9, Succeeded: 6, Failed: 2, Dropped: 1,
+			Registered: 9, Superseded: 2, Succeeded: 6, Failed: 2, Dropped: 1,
 			ModelCalls: 5, InputTokens: 1200, CachedObservedInputTokens: 1000,
 			CachedInputTokens: 700, CacheWriteTokens: 100, OutputTokens: 80,
 		},
@@ -58,7 +58,7 @@ func TestMetricHistoryPointProjectsExperienceCounters(t *testing.T) {
 	if point.LearningEnqueued != 7 || point.LearningSucceeded != 5 || point.LearningFailed != 1 || point.LearningDropped != 1 {
 		t.Fatalf("learning history = %#v", point)
 	}
-	if point.FeedbackRegistered != 9 || point.FeedbackSucceeded != 6 || point.FeedbackFailed != 2 || point.FeedbackDropped != 1 {
+	if point.FeedbackRegistered != 9 || point.FeedbackSuperseded != 2 || point.FeedbackSucceeded != 6 || point.FeedbackFailed != 2 || point.FeedbackDropped != 1 {
 		t.Fatalf("feedback history = %#v", point)
 	}
 	if point.FeedbackModelCalls != 5 || point.FeedbackInputTokens != 1200 || point.FeedbackCachedObservedInputTokens != 1000 || point.FeedbackCachedInputTokens != 700 || point.FeedbackCacheWriteTokens != 100 || point.FeedbackOutputTokens != 80 {
@@ -79,6 +79,13 @@ func TestValidateExperienceStatsRejectsNegativeCounters(t *testing.T) {
 func TestValidateExperienceStatsRejectsNegativeFeedbackUsage(t *testing.T) {
 	stats := ExperienceStats{Feedback: FeedbackQueueStats{CachedObservedInputTokens: -1}}
 	if err := validateExperienceStats(stats); err == nil || !strings.Contains(err.Error(), "feedback.cachedObservedInputTokens") {
+		t.Fatalf("validation error = %v", err)
+	}
+}
+
+func TestValidateExperienceStatsRejectsNegativeFeedbackSuperseded(t *testing.T) {
+	stats := ExperienceStats{Feedback: FeedbackQueueStats{Superseded: -1}}
+	if err := validateExperienceStats(stats); err == nil || !strings.Contains(err.Error(), "feedback.superseded") {
 		t.Fatalf("validation error = %v", err)
 	}
 }

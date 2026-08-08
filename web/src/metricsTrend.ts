@@ -24,6 +24,7 @@ export type MetricsTrendPoint = {
   learningFailed: number;
   learningDropped: number;
   feedbackRegistered: number;
+  feedbackSuperseded: number;
   feedbackSucceeded: number;
   feedbackFailed: number;
   feedbackDropped: number;
@@ -97,6 +98,7 @@ export function projectMetricsTrend(snapshot: MetricsSnapshot): MetricsTrendPoin
     learningFailed: snapshot.runtime.experience.learning.failed,
     learningDropped: snapshot.runtime.experience.learning.dropped,
     feedbackRegistered: snapshot.runtime.experience.feedback.registered,
+    feedbackSuperseded: snapshot.runtime.experience.feedback.superseded,
     feedbackSucceeded: snapshot.runtime.experience.feedback.succeeded,
     feedbackFailed: snapshot.runtime.experience.feedback.failed,
     feedbackDropped: snapshot.runtime.experience.feedback.dropped,
