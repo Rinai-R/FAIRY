@@ -74,6 +74,9 @@ func TestInteractionValidationRejectsMissingAndContradictoryFacts(t *testing.T) 
 		{name: "single IM missing principal", endpoint: EndpointIM, context: Context{Audience: AudienceSingle, Initiation: InitiationDirect, Presentation: PresentationChat}},
 		{name: "multi with principal", endpoint: EndpointIM, context: Context{Audience: AudienceMulti, Initiation: InitiationAmbient, Presentation: PresentationChat, Principal: principal("onebot", "40001")}},
 		{name: "desktop with principal", endpoint: EndpointDesktop, context: Context{Audience: AudienceSingle, Initiation: InitiationDirect, Presentation: PresentationEmbodied, Principal: principal("macos", "install")}},
+		{name: "evaluation embodied", endpoint: EndpointDesktop, context: Context{Audience: AudienceSingle, Initiation: InitiationDirect, Presentation: PresentationEmbodied, Evaluation: true}},
+		{name: "evaluation ambient", endpoint: EndpointDesktop, context: Context{Audience: AudienceSingle, Initiation: InitiationAmbient, Presentation: PresentationChat, Evaluation: true}},
+		{name: "evaluation IM", endpoint: EndpointIM, context: Context{Audience: AudienceSingle, Initiation: InitiationDirect, Presentation: PresentationChat, Principal: principal("onebot", "40001"), Evaluation: true}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -81,6 +84,26 @@ func TestInteractionValidationRejectsMissingAndContradictoryFacts(t *testing.T) 
 				t.Fatal("invalid interaction accepted")
 			}
 		})
+	}
+}
+
+func TestEvaluationBindingPreservesDurableFactAndPersonalRetrieval(t *testing.T) {
+	interaction := Context{
+		Audience: AudienceSingle, Initiation: InitiationDirect, Presentation: PresentationChat, Evaluation: true,
+	}
+	binding, err := NewBinding(EndpointDesktop, interaction, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !binding.Facts.Evaluation {
+		t.Fatal("evaluation fact was not preserved")
+	}
+	resolved, err := ResolveBinding(binding, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resolved.IsEvaluation() || !resolved.AllowsPersonalMemory() {
+		t.Fatalf("resolved = %#v", resolved)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"fairy/companion"
+	"fairy/initiative"
 	"fairy/memory"
 	"fairy/observability"
 
@@ -27,6 +28,7 @@ type runtimeMetrics struct {
 	ActiveBackgroundJobs uint64                             `json:"activeBackgroundJobs"`
 	EventSubscribers     uint64                             `json:"eventSubscribers"`
 	AgentLoop            companion.AgentLoopMetricsSnapshot `json:"agentLoop"`
+	Experience           initiative.ExperienceStats         `json:"experience"`
 }
 
 type metricsResponse struct {
@@ -46,6 +48,21 @@ func (s *Server) registerObservabilityRoutes() {
 	v1.GET("/logs", s.handleLogs)
 	v1.GET("/logs/stream", s.handleLogStream)
 	v1.GET("/metrics", s.handleMetrics)
+	v1.GET("/traces/:traceId", s.handleTraceDetail)
+}
+
+func (s *Server) handleTraceDetail(ctx context.Context, c *app.RequestContext) {
+	traceID := strings.TrimSpace(c.Param("traceId"))
+	if traceID == "" || len(traceID) > 128 || strings.ContainsAny(traceID, "\r\n") {
+		writeErr(c, http.StatusBadRequest, errors.New("traceId is invalid"))
+		return
+	}
+	detail, ok := s.rt.Messages.Trace(traceID)
+	if !ok {
+		writeErr(c, http.StatusNotFound, errors.New("trace not found"))
+		return
+	}
+	c.JSON(http.StatusOK, detail)
 }
 
 func (s *Server) metricsMiddleware(ctx context.Context, c *app.RequestContext) {
@@ -136,6 +153,9 @@ func (s *Server) handleMetrics(ctx context.Context, c *app.RequestContext) {
 		},
 		Usage:    usage,
 		Database: database,
+	}
+	if s.rt.Initiative != nil {
+		response.Runtime.Experience = s.rt.Initiative.ExperienceStats()
 	}
 	if s.rt.TurnEventSubscriberCount != nil {
 		response.Runtime.EventSubscribers = s.rt.TurnEventSubscriberCount()

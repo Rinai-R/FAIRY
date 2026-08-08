@@ -153,8 +153,6 @@ func TestPostgresStickerDeliveryAcknowledgementControlsTerminalStateIntegration(
 					ID: "sticker-1", Description: "安静点头", Tags: []string{"点头"}, MIMEType: "image/png",
 				}},
 			})
-			synth := &recordingSynth{}
-			AttachSpeechRuntime(service, synth)
 			AttachEventEmitter(service, func(event session.Event) {
 				var payload beatReadyPayload
 				if json.Unmarshal(event.Payload, &payload) != nil || payload.Type != "beat.ready" ||
@@ -172,19 +170,12 @@ func TestPostgresStickerDeliveryAcknowledgementControlsTerminalStateIntegration(
 			outcome, submitErr := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 				ConversationID:        bootstrap.Conversation.ID,
 				Input:                 "嗯",
-				SpeechEnabled:         true,
 				MaxOutputTokens:       160,
 				AvailableVisualStates: []VisualState{{ID: "idle", Description: "idle"}},
 				OutputCapabilities:    session.OutputCapabilities{Sticker: true},
 			})
 			if (submitErr != nil) != test.wantError {
 				t.Fatalf("outcome = %#v, error = %v", outcome, submitErr)
-			}
-			synth.mu.Lock()
-			speechCalls := len(synth.texts)
-			synth.mu.Unlock()
-			if speechCalls != 0 {
-				t.Fatalf("sticker entered TTS: %d calls", speechCalls)
 			}
 			reloaded, err := store.LoadConversation(bootstrap.Conversation.ID)
 			if err != nil {

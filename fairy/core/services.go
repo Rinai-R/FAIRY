@@ -7,7 +7,6 @@ import (
 	"fairy/coredb"
 	"fairy/memory"
 	"fairy/model"
-	"fairy/speech"
 )
 
 type coreServices struct {
@@ -17,7 +16,6 @@ type coreServices struct {
 	Identity     *memory.IdentityStore
 	Character    *character.CharacterService
 	Config       *config.ConfigService
-	Speech       *speech.SpeechService
 	Profile      *config.ProfileService
 	ConfigReader *config.Reader
 	Memory       *memory.MemoryService
@@ -40,7 +38,6 @@ func wireCoreServices(configRoot string, database *coredb.Pool, memoryStore *mem
 	companion.AttachOwnerIdentityStore(companionService, identityStore)
 	characterService := character.NewCharacterService(configRoot)
 	configService := config.NewConfigService(configRoot, secretStore)
-	speechService := speech.NewSpeechService(configRoot, secretStore)
 	profileService := config.NewProfileService(configRoot)
 	if configReader == nil {
 		configReader = config.NewReader(configRoot)
@@ -53,7 +50,6 @@ func wireCoreServices(configRoot string, database *coredb.Pool, memoryStore *mem
 		Identity:     identityStore,
 		Character:    characterService,
 		Config:       configService,
-		Speech:       speechService,
 		Profile:      profileService,
 		ConfigReader: configReader,
 		Memory:       memory.NewMemoryServiceWithStore(configRoot, memoryStore),

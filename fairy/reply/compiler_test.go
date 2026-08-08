@@ -43,9 +43,6 @@ func TestCompileReplyStripsLeadingActionBrackets(t *testing.T) {
 	if reply.DisplayText != "你先休息一下吧，我在这里。" {
 		t.Fatalf("DisplayText = %q", reply.DisplayText)
 	}
-	if reply.SpeechText != "" {
-		t.Fatalf("SpeechText = %q, want empty before translate fill", reply.SpeechText)
-	}
 }
 
 func TestCompileReplyKeepsInlineBracketsAndRemovesStandaloneActions(t *testing.T) {
@@ -75,7 +72,7 @@ func TestCompileReplyCompilesJSONChains(t *testing.T) {
 	if reply.Chains[0].Kind != ChainUtterance || reply.Chains[1].Kind != ChainUtterance {
 		t.Fatalf("legacy text chains were not normalized to utterance: %#v", reply.Chains)
 	}
-	if reply.DisplayText != "嗯，我懂。\n先这样改。" || reply.SpeechText != "" || reply.VisualState != "happy" {
+	if reply.DisplayText != "嗯，我懂。\n先这样改。" || reply.VisualState != "happy" {
 		t.Fatalf("reply = %#v", reply)
 	}
 }
@@ -100,7 +97,7 @@ func TestCompileReplyCompilesClosedExpressionUnion(t *testing.T) {
 	stickerChain := reply.Chains[1]
 	if stickerChain.Kind != ChainSticker || stickerChain.Sticker == nil ||
 		stickerChain.Sticker.ID != "sticker-1" || stickerChain.Sticker.Description != "震惊和无语" ||
-		stickerChain.Sticker.MIMEType != "image/webp" || stickerChain.Text != "" || stickerChain.SpeechText != "" {
+		stickerChain.Sticker.MIMEType != "image/webp" || stickerChain.Text != "" {
 		t.Fatalf("sticker chain = %#v", stickerChain)
 	}
 }
@@ -175,7 +172,7 @@ func TestCompileReplyAllowsPureStickerWithoutTextPlaceholder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reply.DisplayText != "" || reply.SpeechText != "" || len(reply.Chains) != 1 || reply.Chains[0].Text != "" {
+	if reply.DisplayText != "" || len(reply.Chains) != 1 || reply.Chains[0].Text != "" {
 		t.Fatalf("pure sticker reply = %#v", reply)
 	}
 }
@@ -197,7 +194,7 @@ func TestCompileReplyRejectsInvalidOutput(t *testing.T) {
 		{name: "empty chains", draft: testRespondEnvelope(), states: visualStates("idle")},
 		{name: "too many model chains", draft: testRespondEnvelope(sixChains...), states: visualStates("idle")},
 		{name: "missing idle", draft: testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "我在。"}), states: []VisualState{{ID: "happy", Description: "happy 状态说明"}}},
-		{name: "speechText unknown field", draft: `{"chains":[{"visualState":"idle","text":"我在。","speechText":"いるよ。"}]}`, states: visualStates("idle")},
+		{name: "removed audio field", draft: `{"chains":[{"visualState":"idle","text":"我在。","audioText":"いるよ。"}]}`, states: visualStates("idle")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -255,66 +252,6 @@ func TestCompileReplyRejectsUnknownTrailingAndLegacyOutput(t *testing.T) {
 				t.Fatalf("CompileReply() error = %q, want substring %q", err.Error(), tt.wantErrSub)
 			}
 		})
-	}
-}
-
-func TestFillSameLanguageSpeechCopiesDisplay(t *testing.T) {
-	reply, err := CompileReply(testRespondEnvelope(testReplyChain{VisualState: "idle", Text: "我在。"}), visualStates("idle"))
-	if err != nil {
-		t.Fatalf("CompileReply() error = %v", err)
-	}
-	filled, err := FillSameLanguageSpeech(reply)
-	if err != nil {
-		t.Fatalf("fillSameLanguageSpeech() error = %v", err)
-	}
-	if filled.SpeechText != "我在。" {
-		t.Fatalf("SpeechText = %q", filled.SpeechText)
-	}
-}
-
-func TestApplyTranslatedSpeechSetsAllChains(t *testing.T) {
-	reply, err := CompileReply(testRespondEnvelope(
-		testReplyChain{VisualState: "thinking", Text: "嗯，我懂。"},
-		testReplyChain{VisualState: "happy", Text: "先这样改。"},
-	), visualStates("idle", "thinking", "happy"))
-	if err != nil {
-		t.Fatalf("CompileReply() error = %v", err)
-	}
-	filled, err := ApplyTranslatedSpeech(reply, "うん、わかった。まずこう直そう。")
-	if err != nil {
-		t.Fatalf("applyTranslatedSpeech() error = %v", err)
-	}
-	if filled.SpeechText != "うん、わかった。まずこう直そう。" {
-		t.Fatalf("SpeechText = %q", filled.SpeechText)
-	}
-	for _, chain := range filled.Chains {
-		if chain.SpeechText != "うん、わかった。まずこう直そう。" {
-			t.Fatalf("chain speech = %#v", chain)
-		}
-	}
-}
-
-func TestSanitizeSpeechTextKeepsMultiClauseUnderLimit(t *testing.T) {
-	raw := "うん、わかったよ。まずこう直そう。"
-	got := SanitizeSpeechText(raw)
-	if got != raw {
-		t.Fatalf("sanitizeSpeechText truncated: %q", got)
-	}
-	if err := ValidateSpeech(got); err != nil {
-		t.Fatalf("validateSpeech() error = %v", err)
-	}
-	// Length is a SOFT limit now: overlong speech is still a valid single TTS
-	// unit (stable timbre). validateSpeech must NOT reject it; only the soft-limit
-	// helper flags it so callers can warn.
-	long := strings.Repeat("あ", MaxSpeechChars+1)
-	if err := ValidateSpeech(long); err != nil {
-		t.Fatalf("validateSpeech() error = %v for overlong speech, want nil (soft limit)", err)
-	}
-	if !SpeechExceedsSoftLimit(long) {
-		t.Fatal("speechExceedsSoftLimit() = false for overlong speech, want true")
-	}
-	if SpeechExceedsSoftLimit(strings.Repeat("あ", MaxSpeechChars)) {
-		t.Fatal("speechExceedsSoftLimit() = true at threshold, want false")
 	}
 }
 

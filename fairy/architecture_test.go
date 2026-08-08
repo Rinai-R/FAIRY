@@ -63,7 +63,6 @@ func TestDomainPackagesDoNotImportCompositionOrTransport(t *testing.T) {
 		"./persona",
 		"./reply",
 		"./session",
-		"./speech",
 	}
 	forbidden := map[string]struct{}{
 		"fairy/api": {}, "fairy/cmd": {}, "fairy/core": {}, "fairy/coreclient": {},
@@ -312,7 +311,7 @@ func TestCompanionLogsDoNotEmitConversationTextFields(t *testing.T) {
 				t.Errorf("unquote zap field in %s: %v", filename, err)
 				return true
 			}
-			if field == "displayText" || field == "speechText" {
+			if field == "displayText" {
 				t.Errorf("%s emits forbidden conversation text field %q through zap", filename, field)
 			}
 			return true

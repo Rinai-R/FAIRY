@@ -3,8 +3,7 @@ package session
 import "encoding/json"
 
 type SubmitRequest struct {
-	Input         string `json:"input"`
-	SpeechEnabled bool   `json:"speechEnabled"`
+	Input string `json:"input"`
 }
 
 type Outcome struct {

@@ -20,7 +20,6 @@ const (
 	runtimeLedgerEventModel         = "model"
 	runtimeLedgerEventContextWindow = "context_window"
 	runtimeLedgerEventCompile       = "compile"
-	runtimeLedgerEventSpeech        = "speech"
 	runtimeLedgerEventBeatDelivery  = "beat_delivery"
 	runtimeLedgerEventTerminal      = "terminal"
 	runtimeLedgerEventCompaction    = "context_compaction"
@@ -223,7 +222,6 @@ func runtimeTerminalLedgerMetadata(status string, reply CompiledReply, usage []L
 		"visualState":     reply.VisualState,
 		"chainCount":      len(reply.Chains),
 		"displayTextHash": runtimeHash(reply.DisplayText),
-		"speechTextHash":  runtimeHash(reply.SpeechText),
 		"usage":           usage,
 	}
 }

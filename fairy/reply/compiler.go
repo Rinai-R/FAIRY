@@ -14,24 +14,12 @@ import (
 const (
 	MaxReplyChains      = 12
 	MaxModelReplyChains = 5
-	// maxSpeechChars is a SOFT warning threshold, not a hard cap. A chain's speech
-	// is always synthesized as one request (stable timbre per semantic unit); when
-	// it exceeds this many runes the runtime only logs a warning. 20 runes is the
-	// soft target, 40 is the tolerance before warning.
-	MaxSpeechChars = 40
 )
-
-// speechExceedsSoftLimit reports whether a speech line is longer than the soft
-// warning threshold. It never rejects — callers only log a warning.
-func SpeechExceedsSoftLimit(value string) bool {
-	return len([]rune(value)) > MaxSpeechChars
-}
 
 type VisualState = persona.VisualState
 
 type CompiledReply struct {
 	DisplayText string       `json:"displayText"`
-	SpeechText  string       `json:"speechText"`
 	VisualState string       `json:"visualState"`
 	Chains      []ReplyChain `json:"chains"`
 }
@@ -116,19 +104,14 @@ func CompiledReplyFromChains(chains []ReplyChain) (CompiledReply, error) {
 		return CompiledReply{}, err
 	}
 	parts := make([]string, 0, len(chains))
-	speechParts := make([]string, 0, len(chains))
 	for _, chain := range chains {
 		if chain.Kind == ChainSticker {
 			continue
 		}
 		parts = append(parts, chain.Text)
-		if chain.SpeechText != "" {
-			speechParts = append(speechParts, chain.SpeechText)
-		}
 	}
 	return CompiledReply{
 		DisplayText: strings.Join(parts, "\n"),
-		SpeechText:  strings.Join(speechParts, " "),
 		VisualState: chains[len(chains)-1].VisualState,
 		Chains:      chains,
 	}, nil
@@ -168,19 +151,6 @@ func compileJSONReplyChain(chain jsonReplyChain, availableVisualStates []VisualS
 	default:
 		return ReplyChain{}, fmt.Errorf("model reply chain kind %q is invalid", kind)
 	}
-}
-
-func SanitizeSpeechText(value string) string {
-	cleaned := SanitizeDisplayText(value)
-	if cleaned == "" {
-		return ""
-	}
-	// Keep the full speakable line. Do not truncate to the first sentence —
-	// companion replies are often multi-clause and TTS should match speechText.
-	collapsed := strings.Join(strings.FieldsFunc(cleaned, func(r rune) bool {
-		return r == '\n' || r == '\r'
-	}), " ")
-	return strings.TrimSpace(collapsed)
 }
 
 func SanitizeDisplayText(value string) string {
@@ -243,28 +213,6 @@ func matchingCloseBracket(open rune) (rune, bool) {
 	default:
 		return 0, false
 	}
-}
-
-func ValidateSpeech(value string) error {
-	if value == "" {
-		return errors.New("model reply chain speechText is required")
-	}
-	// Length is NOT validated here: an over-length line is still a single valid
-	// TTS unit. Callers warn on speechExceedsSoftLimit but never reject.
-	if strings.ContainsAny(value, "\r\n") {
-		return errors.New("speech text must not contain line breaks")
-	}
-	lower := strings.ToLower(value)
-	if strings.Contains(lower, "https://") || strings.Contains(lower, "http://") || strings.Contains(lower, "www.") {
-		return errors.New("speech text must not contain URL")
-	}
-	if strings.Contains(value, "`") || strings.HasPrefix(value, "#") || strings.HasPrefix(value, "- ") || strings.HasPrefix(value, "*") || strings.HasPrefix(value, "> ") {
-		return errors.New("speech text must not contain Markdown or list markers")
-	}
-	if strings.HasPrefix(value, "{") || strings.HasPrefix(value, "[") {
-		return errors.New("speech text must not contain JSON artifacts")
-	}
-	return nil
 }
 
 func ValidateAvailableVisualStates(states []VisualState) error {
@@ -333,42 +281,4 @@ func containsDisallowedControl(value string) bool {
 		}
 	}
 	return false
-}
-
-func FillSameLanguageSpeech(reply CompiledReply) (CompiledReply, error) {
-	chains := make([]ReplyChain, len(reply.Chains))
-	copy(chains, reply.Chains)
-	for index := range chains {
-		if chains[index].Kind == ChainSticker {
-			continue
-		}
-		candidate := SanitizeSpeechText(chains[index].Text)
-		if candidate == "" || ValidateSpeech(candidate) != nil {
-			chains[index].SpeechText = ""
-			continue
-		}
-		chains[index].SpeechText = candidate
-	}
-	return CompiledReplyFromChains(chains)
-}
-
-func ApplyTranslatedSpeech(reply CompiledReply, rawSpeech string) (CompiledReply, error) {
-	speech := SanitizeSpeechText(rawSpeech)
-	if speech == "" || ValidateSpeech(speech) != nil {
-		return reply, errors.New("translated speech text is unusable")
-	}
-	chains := make([]ReplyChain, len(reply.Chains))
-	copy(chains, reply.Chains)
-	for index := range chains {
-		if chains[index].Kind == ChainSticker {
-			continue
-		}
-		chains[index].SpeechText = speech
-	}
-	compiled, err := CompiledReplyFromChains(chains)
-	if err != nil {
-		return reply, err
-	}
-	compiled.SpeechText = speech
-	return compiled, nil
 }

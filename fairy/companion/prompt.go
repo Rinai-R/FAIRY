@@ -16,12 +16,10 @@ const (
 	CompactInstructions               = persona.CompactInstructions
 	ExtractInstructions               = persona.ExtractInstructions
 	KnowledgeReconcileInstructions    = persona.KnowledgeReconcileInstructions
-	TranslateInstructions             = persona.TranslateInstructions
 	RespondMaxOutputTokens            = persona.RespondMaxOutputTokens
 	CompactMaxOutputTokens            = persona.CompactMaxOutputTokens
 	ExtractMaxOutputTokens            = persona.ExtractMaxOutputTokens
 	KnowledgeReconcileMaxOutputTokens = persona.KnowledgeReconcileMaxOutputTokens
-	TranslateMaxOutputTokens          = persona.TranslateMaxOutputTokens
 )
 
 type ContextSlot = persona.ContextSlot
@@ -103,8 +101,6 @@ func InstructionsForLane(lane model.PromptLane) (string, uint32, error) {
 		return ExtractInstructions, ExtractMaxOutputTokens, nil
 	case model.PromptLaneKnowledgeReconcile:
 		return KnowledgeReconcileInstructions, KnowledgeReconcileMaxOutputTokens, nil
-	case model.PromptLaneTranslate:
-		return TranslateInstructions, TranslateMaxOutputTokens, nil
 	default:
 		return "", 0, fmt.Errorf("prompt lane %q is not supported", lane)
 	}

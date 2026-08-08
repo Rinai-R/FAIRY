@@ -9,13 +9,10 @@ import (
 )
 
 type (
-	VisualState            = reply.VisualState
-	ReplyChain             = reply.ReplyChain
-	CompiledReply          = reply.CompiledReply
-	SpeechSynthesisRequest = reply.SpeechSynthesisRequest
-	SpeechSynthesisResult  = reply.SpeechSynthesisResult
-	SpeechSynthesizer      = reply.SpeechSynthesizer
-	BeatReadyCompletion    = reply.BeatReadyCompletion
+	VisualState         = reply.VisualState
+	ReplyChain          = reply.ReplyChain
+	CompiledReply       = reply.CompiledReply
+	BeatReadyCompletion = reply.BeatReadyCompletion
 )
 
 func validateAvailableVisualStates(states []VisualState) error {
@@ -26,24 +23,13 @@ func compiledReplyFromChains(chains []ReplyChain) (CompiledReply, error) {
 	return reply.CompiledReplyFromChains(chains)
 }
 
-func fillSameLanguageSpeech(compiled CompiledReply) (CompiledReply, error) {
-	return reply.FillSameLanguageSpeech(compiled)
-}
-
 func sanitizeDisplayText(value string) string { return reply.SanitizeDisplayText(value) }
-func sanitizeSpeechText(value string) string  { return reply.SanitizeSpeechText(value) }
-func validateSpeech(value string) error       { return reply.ValidateSpeech(value) }
-
-func speechExceedsSoftLimit(value string) bool {
-	return reply.SpeechExceedsSoftLimit(value)
-}
 
 var ErrTurnRuntimeUnavailable = errors.New("companion turn runtime is unavailable")
 
 type SubmitTurnRequest struct {
 	ConversationID      string                     `json:"conversationId"`
 	Input               string                     `json:"input"`
-	SpeechEnabled       bool                       `json:"speechEnabled"`
 	TraceID             string                     `json:"-"`
 	MessageSource       string                     `json:"-"`
 	ReplyIntent         *ReplyIntent               `json:"-"`
@@ -55,7 +41,6 @@ type SubmitTurnRequest struct {
 type SubmitCompiledTurnRequest struct {
 	ConversationID        string                     `json:"conversationId"`
 	Input                 string                     `json:"input"`
-	SpeechEnabled         bool                       `json:"speechEnabled"`
 	MaxOutputTokens       uint32                     `json:"maxOutputTokens"`
 	AvailableVisualStates []VisualState              `json:"availableVisualStates"`
 	TraceID               string                     `json:"-"`
@@ -96,20 +81,16 @@ type DesktopInitiationContext struct {
 type DesktopInitiationRequest struct {
 	ConversationID         string   `json:"conversationId"`
 	ObservationEvidenceIDs []string `json:"-"`
-	SpeechEnabled          bool     `json:"speechEnabled"`
 }
 
 type DesktopVisionInitiationRequest struct {
 	ConversationID string `json:"conversationId"`
-	SpeechEnabled  bool   `json:"speechEnabled"`
 }
 
 type TurnOutcome struct {
 	ConversationID   string       `json:"conversationId"`
 	TurnID           string       `json:"turnId"`
 	ResponseText     string       `json:"responseText"`
-	SpeechText       string       `json:"speechText"`
-	SpeechRequested  bool         `json:"speechRequested"`
 	VisualState      string       `json:"visualState"`
 	Chains           []ReplyChain `json:"chains"`
 	RespondMigrated  bool         `json:"respondMigrated"`

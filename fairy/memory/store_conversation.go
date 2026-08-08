@@ -66,7 +66,7 @@ func (s *Store) openOrCreateEndpointConversationPostgres(ctx context.Context, ch
 		if err := InsertEndpointConversation(
 			queryCtx, tx, characterID, binding.Endpoint, digest, conversationID,
 			string(binding.Facts.Audience), string(binding.Facts.Initiation), string(binding.Facts.Presentation),
-			binding.Facts.PrincipalNamespace, binding.Facts.PrincipalDigest, now,
+			binding.Facts.PrincipalNamespace, binding.Facts.PrincipalDigest, binding.Facts.Evaluation, now,
 		); err != nil {
 			return ConversationBootstrap{}, err
 		}

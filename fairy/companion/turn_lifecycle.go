@@ -65,7 +65,6 @@ type replyChainPayload struct {
 	Index       uint8                  `json:"index"`
 	Delta       string                 `json:"delta"`
 	Text        string                 `json:"text"`
-	SpeechText  string                 `json:"speechText"`
 	VisualState string                 `json:"visualState"`
 	Part        session.ExpressionPart `json:"part"`
 }
@@ -88,8 +87,7 @@ type replyPreviewPayload struct {
 	Chains []reply.ReplyChain `json:"chains"`
 }
 
-// beatReadyPayload is the paired text(+optional audio) delivery unit. Frontend
-// reveals a beat only after this event (齐套才揭示).
+// beatReadyPayload is the ordered display delivery unit.
 type beatReadyPayload struct {
 	Type                 string                  `json:"type"`
 	BeatID               string                  `json:"beatId"`
@@ -97,23 +95,17 @@ type beatReadyPayload struct {
 	Index                uint8                   `json:"index"`
 	ChainIndex           int                     `json:"chainIndex"`
 	DisplayText          string                  `json:"displayText"`
-	SpeechText           string                  `json:"speechText"`
 	VisualState          string                  `json:"visualState"`
 	TargetIntervalMS     int64                   `json:"targetIntervalMs"`
 	PaceWaitMS           int64                   `json:"paceWaitMs"`
 	PublishedPrefixCount int                     `json:"publishedPrefixCount"`
 	Reason               string                  `json:"reason,omitempty"`
-	SpeakerID            string                  `json:"speakerId,omitempty"`
-	MimeType             string                  `json:"mimeType,omitempty"`
-	Format               string                  `json:"format,omitempty"`
-	DataURL              string                  `json:"dataUrl,omitempty"`
 	Part                 *session.ExpressionPart `json:"part,omitempty"`
 }
 
 type completedPayload struct {
 	Type                string                 `json:"type"`
 	Text                string                 `json:"text"`
-	SpeechText          string                 `json:"speechText"`
 	Sources             []any                  `json:"sources"`
 	CharacterRevision   uint64                 `json:"characterRevision"`
 	UserProfileRevision *uint64                `json:"userProfileRevision"`
@@ -127,51 +119,14 @@ type failedPayload struct {
 	Error wireError `json:"error"`
 }
 
-type speechRequestedPayload struct {
-	Type                string  `json:"type"`
-	Text                string  `json:"text"`
-	CharacterRevision   uint64  `json:"characterRevision"`
-	UserProfileRevision *uint64 `json:"userProfileRevision"`
-}
-
-type speechSynthesizedPayload struct {
-	Type string `json:"type"`
-	// Index is the monotonic playback order across the whole turn (utterance audio
-	// first, then reply chains), used by the frontend to order playback.
-	Index uint8 `json:"index"`
-	// ChainIndex is the reply-chain index this audio belongs to, or -1 for
-	// mid-ReAct utterance audio (which must not drive reply-chain bubble reveal).
-	ChainIndex int    `json:"chainIndex"`
-	Text       string `json:"text"`
-	SpeakerID  string `json:"speakerId"`
-	MimeType   string `json:"mimeType"`
-	Format     string `json:"format"`
-	DataURL    string `json:"dataUrl"`
-}
-
-type speechFailedPayload struct {
-	Type  string    `json:"type"`
-	Error wireError `json:"error"`
-}
-
 type turnCompletion struct {
 	Text                string
-	SpeechText          string
 	Sources             []any
 	CharacterRevision   uint64
 	UserProfileRevision *uint64
 	Usage               []model.LaneModelUsage
 	VisualState         string
 	Chains              []reply.ReplyChain
-}
-
-type speechSynthesisCompletion struct {
-	// Index is the monotonic playback order across the turn.
-	Index uint8
-	// ChainIndex is the reply-chain index, or -1 for mid-ReAct utterance audio.
-	ChainIndex int
-	Text       string
-	Result     reply.SpeechSynthesisResult
 }
 
 type eventEmitter func(session.Event)
@@ -235,7 +190,6 @@ func (l *turnLifecycle) ReplyChain(index uint8, delta string, chain reply.ReplyC
 		Index:       index,
 		Delta:       delta,
 		Text:        chain.Text,
-		SpeechText:  chain.SpeechText,
 		VisualState: chain.VisualState,
 		Part:        sessionExpressionPart(chain),
 	})
@@ -319,7 +273,6 @@ func (l *turnLifecycle) Complete(completion turnCompletion) (session.Event, erro
 	return l.event(completedPayload{
 		Type:                "completed",
 		Text:                completion.Text,
-		SpeechText:          completion.SpeechText,
 		Sources:             sources,
 		CharacterRevision:   completion.CharacterRevision,
 		UserProfileRevision: completion.UserProfileRevision,
@@ -329,36 +282,8 @@ func (l *turnLifecycle) Complete(completion turnCompletion) (session.Event, erro
 	})
 }
 
-func (l *turnLifecycle) SpeechRequested(completion turnCompletion) (session.Event, error) {
-	if l.state != turnStateCompleted && l.state != turnStatePlanning && l.state != turnStateResponding {
-		return session.Event{}, errors.New("只有 Planning/Responding/Completed 状态可以请求语音")
-	}
-	return l.event(speechRequestedPayload{
-		Type:                "speech.requested",
-		Text:                completion.SpeechText,
-		CharacterRevision:   completion.CharacterRevision,
-		UserProfileRevision: completion.UserProfileRevision,
-	})
-}
-
-func (l *turnLifecycle) SpeechSynthesized(completion speechSynthesisCompletion) (session.Event, error) {
-	if l.state != turnStateCompleted && l.state != turnStatePlanning && l.state != turnStateResponding {
-		return session.Event{}, errors.New("只有 Planning/Responding/Completed 状态可以完成语音合成")
-	}
-	return l.event(speechSynthesizedPayload{
-		Type:       "speech.synthesized",
-		Index:      completion.Index,
-		ChainIndex: completion.ChainIndex,
-		Text:       completion.Text,
-		SpeakerID:  completion.Result.SpeakerID,
-		MimeType:   completion.Result.MimeType,
-		Format:     completion.Result.Format,
-		DataURL:    completion.Result.DataURL,
-	})
-}
-
-// BeatReady emits a paired display(+optional audio) beat. Allowed in planning
-// (utterance beats) and responding (final beats).
+// BeatReady emits an ordered display beat. It is allowed in gathering/planning
+// for progressive utterances and in responding for final chains.
 func (l *turnLifecycle) BeatReady(completion reply.BeatReadyCompletion) (session.Event, error) {
 	if l.state != turnStatePlanning && l.state != turnStateGathering && l.state != turnStateResponding {
 		return session.Event{}, errors.New("只有 Gathering/Planning/Responding 状态可以发送 beat.ready")
@@ -385,7 +310,6 @@ func (l *turnLifecycle) BeatReady(completion reply.BeatReadyCompletion) (session
 		Index:                completion.Index,
 		ChainIndex:           completion.ChainIndex,
 		DisplayText:          completion.DisplayText,
-		SpeechText:           completion.SpeechText,
 		VisualState:          visual,
 		TargetIntervalMS:     completion.TargetIntervalMS,
 		PaceWaitMS:           completion.PaceWaitMS,
@@ -396,20 +320,7 @@ func (l *turnLifecycle) BeatReady(completion reply.BeatReadyCompletion) (session
 		part := sessionExpressionPart(*completion.Chain)
 		payload.Part = &part
 	}
-	if completion.Audio != nil {
-		payload.SpeakerID = completion.Audio.SpeakerID
-		payload.MimeType = completion.Audio.MimeType
-		payload.Format = completion.Audio.Format
-		payload.DataURL = completion.Audio.DataURL
-	}
 	return l.event(payload)
-}
-
-func (l *turnLifecycle) SpeechFailed(code string, message string, retryable bool) (session.Event, error) {
-	if l.state != turnStateCompleted && l.state != turnStatePlanning && l.state != turnStateResponding {
-		return session.Event{}, errors.New("只有 Planning/Responding/Completed 状态可以发送语音失败事件")
-	}
-	return l.event(speechFailedPayload{Type: "speech.failed", Error: wireError{Code: code, Message: message, Retryable: retryable}})
 }
 
 func (l *turnLifecycle) Interrupt() (session.Event, error) {

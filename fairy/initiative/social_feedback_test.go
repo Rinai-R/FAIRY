@@ -10,6 +10,7 @@ import (
 
 	"fairy/memory"
 	"fairy/model"
+	"fairy/session"
 )
 
 func feedbackTestSnapshot(observationCount int) feedbackSnapshot {
@@ -88,12 +89,77 @@ func TestFeedbackZeroObservationAndModelPathsPreserveContract(t *testing.T) {
 	if request.Shape.Lane != model.PromptLaneSocialFeedback || request.Shape.PromptCacheKey != model.LaneCacheKey("conversation-1", model.PromptLaneSocialFeedback) || request.CacheInput == nil || request.CacheInput.StablePromptHash == "" {
 		t.Fatalf("feedback request = %#v", request)
 	}
-	if len(request.Input) != 1 || !strings.Contains(request.Input[0].Content, `"entryId":"s0"`) || strings.Contains(request.Input[0].Content, "entry-1") {
+	if len(request.Input) != 3 || !strings.Contains(request.Input[0].Content, `"contextType":"character"`) || !strings.Contains(request.Input[1].Content, `"contextType":"interaction"`) || !strings.Contains(request.Input[2].Content, `"entryId":"s0"`) || strings.Contains(request.Input[2].Content, "entry-1") {
 		t.Fatalf("feedback request exposed the wrong candidate identity: %#v", request.Input)
 	}
 	feedback = feedbackInputs(host)
 	if len(feedback) != 1 || len(feedback[0].Evaluations) != 1 || feedback[0].Evaluations[0].Outcome != memory.SocialFeedbackPositive || feedback[0].ObservedMessageCount != 2 || feedback[0].EvaluatorRevision != SocialFeedbackEvaluatorRevision {
 		t.Fatalf("model feedback = %#v", feedback)
+	}
+}
+
+func TestFeedbackCacheIdentityIgnoresDynamicEvidenceAndTracksCharacterRevision(t *testing.T) {
+	host := newLearningTestHost()
+	host.draft = `{"evaluations":[{"entryId":"s0","adoption":"adopted","outcome":"positive","credit":"entry","evidenceMessageIds":["later-message"]}]}`
+	engine := &FeedbackEngine{host: host}
+	firstSnapshot := feedbackTestSnapshot(1)
+	if err := engine.process(t.Context(), firstSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	host.mu.Lock()
+	first := host.request
+	host.mu.Unlock()
+	firstKey, err := model.BuildPromptCacheKey(*first.CacheInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	secondSnapshot := feedbackTestSnapshot(1)
+	secondSnapshot.registration.ReplyText = "完全不同的动态回复"
+	secondSnapshot.registration.Candidates[0].Content = "完全不同的动态候选"
+	secondSnapshot.observations[0].Text = "完全不同的后续反馈"
+	if err := engine.process(t.Context(), secondSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	host.mu.Lock()
+	second := host.request
+	host.mu.Unlock()
+	secondKey, err := model.BuildPromptCacheKey(*second.CacheInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstKey != secondKey || first.CacheInput.StablePromptHash != second.CacheInput.StablePromptHash {
+		t.Fatalf("dynamic evidence changed cache identity: %q/%q", firstKey, secondKey)
+	}
+
+	host.characterRevision = 2
+	if err := engine.process(t.Context(), secondSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	host.mu.Lock()
+	third := host.request
+	host.mu.Unlock()
+	thirdKey, err := model.BuildPromptCacheKey(*third.CacheInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if thirdKey == secondKey || third.CacheInput.CharacterRevision != 2 {
+		t.Fatalf("character revision did not invalidate cache identity: %q", thirdKey)
+	}
+}
+
+func TestFeedbackRevalidatesPublicInteractionBeforeModelCall(t *testing.T) {
+	host := newLearningTestHost()
+	host.resolved.Memory = session.MemoryPersonal
+	engine := &FeedbackEngine{host: host}
+	if err := engine.process(t.Context(), feedbackTestSnapshot(1)); err == nil || !strings.Contains(err.Error(), "public ambient") {
+		t.Fatalf("process error = %v", err)
+	}
+	host.mu.Lock()
+	request := host.request
+	host.mu.Unlock()
+	if request.Shape.Lane != "" || len(feedbackInputs(host)) != 0 {
+		t.Fatalf("invalid scope reached model/store: request=%#v feedback=%#v", request, feedbackInputs(host))
 	}
 }
 

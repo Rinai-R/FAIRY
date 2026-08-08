@@ -88,6 +88,7 @@ type EndpointConversationRow struct {
 	Presentation       string
 	PrincipalNamespace string
 	PrincipalDigest    string
+	Evaluation         bool
 }
 
 func (row EndpointConversationRow) Binding(endpoint session.EndpointKind) session.Binding {
@@ -99,6 +100,7 @@ func (row EndpointConversationRow) Binding(endpoint session.EndpointKind) sessio
 			Presentation:       session.PresentationKind(row.Presentation),
 			PrincipalNamespace: row.PrincipalNamespace,
 			PrincipalDigest:    row.PrincipalDigest,
+			Evaluation:         row.Evaluation,
 		},
 	}
 }
@@ -107,11 +109,11 @@ func SelectEndpointConversation(ctx context.Context, tx pgx.Tx, characterID stri
 	var row EndpointConversationRow
 	var namespace, principalDigest pgtype.Text
 	err := tx.QueryRow(ctx, `
-SELECT conversation_id, audience, initiation, presentation, principal_namespace, principal_digest
+SELECT conversation_id, audience, initiation, presentation, principal_namespace, principal_digest, evaluation
 FROM endpoint_conversations
 WHERE character_id = $1 AND endpoint = $2 AND endpoint_key_digest = $3`,
 		characterID, endpoint, digest,
-	).Scan(&row.ConversationID, &row.Audience, &row.Initiation, &row.Presentation, &namespace, &principalDigest)
+	).Scan(&row.ConversationID, &row.Audience, &row.Initiation, &row.Presentation, &namespace, &principalDigest, &row.Evaluation)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return EndpointConversationRow{}, false, nil
 	}
@@ -130,17 +132,18 @@ func InsertEndpointConversation(
 	endpoint session.EndpointKind,
 	digest, conversationID string,
 	audience, initiation, presentation, principalNamespace, principalDigest string,
+	evaluation bool,
 	now int64,
 ) error {
 	if _, err := tx.Exec(ctx, `
 INSERT INTO endpoint_conversations(
     character_id, endpoint, endpoint_key_digest, conversation_id,
-    audience, initiation, presentation, principal_namespace, principal_digest,
+    audience, initiation, presentation, principal_namespace, principal_digest, evaluation,
     created_at_ms, updated_at_ms
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)`,
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)`,
 		characterID, endpoint, digest, conversationID,
 		audience, initiation, presentation,
-		nullableText(principalNamespace), nullableText(principalDigest), now,
+		nullableText(principalNamespace), nullableText(principalDigest), evaluation, now,
 	); err != nil {
 		return fmt.Errorf("binding endpoint conversation: %w", err)
 	}
@@ -159,11 +162,12 @@ WHERE character_id = $1 AND endpoint = $2 AND endpoint_key_digest = $3`, charact
 
 func LookupEndpointBinding(ctx context.Context, db RowQuerier, conversationID string) (session.Binding, bool, error) {
 	var endpoint, audience, initiation, presentation string
+	var evaluation bool
 	var namespace, digest pgtype.Text
 	err := db.QueryRow(ctx, `
-SELECT endpoint, audience, initiation, presentation, principal_namespace, principal_digest
+SELECT endpoint, audience, initiation, presentation, principal_namespace, principal_digest, evaluation
 FROM endpoint_conversations
-WHERE conversation_id = $1`, conversationID).Scan(&endpoint, &audience, &initiation, &presentation, &namespace, &digest)
+WHERE conversation_id = $1`, conversationID).Scan(&endpoint, &audience, &initiation, &presentation, &namespace, &digest, &evaluation)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return session.Binding{}, false, nil
 	}
@@ -178,6 +182,7 @@ WHERE conversation_id = $1`, conversationID).Scan(&endpoint, &audience, &initiat
 			Presentation:       session.PresentationKind(presentation),
 			PrincipalNamespace: namespace.String,
 			PrincipalDigest:    digest.String,
+			Evaluation:         evaluation,
 		},
 	}
 	if err := binding.Validate(); err != nil {

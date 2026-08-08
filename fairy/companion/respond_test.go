@@ -69,7 +69,7 @@ func TestValidateDesktopInitiationRequestRequiresEvidenceWithoutInput(t *testing
 	}
 }
 
-func TestValidateReplyChainsAcceptsMissingSpeechText(t *testing.T) {
+func TestValidateReplyChainsAcceptsUtterance(t *testing.T) {
 	if err := reply.ValidateReplyChains([]ReplyChain{{Text: "我在。", VisualState: "idle"}}); err != nil {
 		t.Fatalf("ValidateReplyChains() error = %v", err)
 	}

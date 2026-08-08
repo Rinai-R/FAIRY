@@ -43,6 +43,7 @@ type sessionClientFrame struct {
 	RequestID          string                            `json:"requestId,omitempty"`
 	Endpoint           session.EndpointKind              `json:"endpoint,omitempty"`
 	EndpointKey        string                            `json:"endpointKey,omitempty"`
+	CharacterID        string                            `json:"characterId,omitempty"`
 	Interaction        session.Context                   `json:"interaction,omitempty"`
 	OutputCapabilities session.OutputCapabilities        `json:"outputCapabilities"`
 	ConversationID     string                            `json:"conversationId,omitempty"`
@@ -51,7 +52,6 @@ type sessionClientFrame struct {
 	Message            *AmbientObservation               `json:"message,omitempty"`
 	DesktopObservation *DesktopObservation               `json:"desktopObservation,omitempty"`
 	Input              string                            `json:"input,omitempty"`
-	SpeechEnabled      bool                              `json:"speechEnabled,omitempty"`
 	TurnID             string                            `json:"turnId,omitempty"`
 	CaptureResult      *session.DesktopCaptureResult     `json:"captureResult,omitempty"`
 	DeliveryResult     *session.ExpressionDeliveryResult `json:"deliveryResult,omitempty"`
@@ -525,7 +525,7 @@ func (s *SessionSocket) request(ctx context.Context, frame sessionClientFrame, e
 
 func (s *SessionSocket) OpenSession(ctx context.Context, request OpenSessionRequest) (OpenSessionResponse, error) {
 	reply, err := s.request(ctx, sessionClientFrame{
-		Type: "session.open", Endpoint: request.Endpoint, EndpointKey: request.EndpointKey, Interaction: request.Interaction,
+		Type: "session.open", Endpoint: request.Endpoint, EndpointKey: request.EndpointKey, CharacterID: request.CharacterID, Interaction: request.Interaction,
 		OutputCapabilities: request.OutputCapabilities,
 	}, "session.opened")
 	if err != nil {
@@ -729,7 +729,7 @@ func (s *SessionSocket) SubmitTurn(ctx context.Context, conversationID string, r
 	// Turn execution follows caller context; do not impose the short request timeout.
 	reply, err := s.request(ctx, sessionClientFrame{
 		Type: "turn.submit", ConversationID: conversationID,
-		Input: request.Input, SpeechEnabled: request.SpeechEnabled,
+		Input: request.Input,
 	}, "result")
 	if err != nil {
 		return SubmitTurnResponse{}, err

@@ -105,7 +105,6 @@ func decodeStrictCLIObject(payload []byte, out any) error {
 func newTurnCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 	command := &cobra.Command{Use: "turn", Short: "Send or cancel debug turns", GroupID: "debug"}
 	var conversationID, input string
-	var speech bool
 	send := &cobra.Command{
 		Use: "send", Short: "Submit a turn and stream turn events", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
@@ -116,14 +115,11 @@ func newTurnCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return sendTurn(command, client, config, conversationID, coreclient.SubmitTurnRequest{
-				Input: input, SpeechEnabled: speech,
-			})
+			return sendTurn(command, client, config, conversationID, coreclient.SubmitTurnRequest{Input: input})
 		},
 	}
 	send.Flags().StringVar(&conversationID, "conversation", "", "conversation ID")
 	send.Flags().StringVar(&input, "input", "", "user input")
-	send.Flags().BoolVar(&speech, "speech", false, "request speech synthesis")
 	_ = send.MarkFlagRequired("conversation")
 	_ = send.MarkFlagRequired("input")
 

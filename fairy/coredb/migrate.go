@@ -113,6 +113,9 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		if err := tx.AutoMigrate(schemaModels()...); err != nil {
 			return fmt.Errorf("auto-migrating PostgreSQL schema: %w", err)
 		}
+		if err := migrateEndpointEvaluationSchema(tx); err != nil {
+			return err
+		}
 		if err := migrateSocialFeedbackSchema(tx); err != nil {
 			return err
 		}
@@ -154,6 +157,33 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		}
 		return nil
 	})
+}
+
+func migrateEndpointEvaluationSchema(tx *gorm.DB) error {
+	if err := tx.Exec(`UPDATE endpoint_conversations SET evaluation = false WHERE evaluation IS NULL`).Error; err != nil {
+		return fmt.Errorf("backfilling endpoint evaluation: %w", err)
+	}
+	if err := tx.Exec(`ALTER TABLE endpoint_conversations DROP CONSTRAINT IF EXISTS endpoint_conversations_invariants_check`).Error; err != nil {
+		return fmt.Errorf("dropping previous endpoint conversation invariant: %w", err)
+	}
+	if err := tx.Exec(`
+ALTER TABLE endpoint_conversations ADD CONSTRAINT endpoint_conversations_invariants_check CHECK (
+  endpoint IN ('desktop', 'im')
+  AND endpoint_key_digest ~ '^[0-9a-f]{64}$'
+  AND audience IN ('single', 'multi')
+  AND initiation IN ('direct', 'ambient')
+  AND presentation IN ('embodied', 'chat')
+  AND ((principal_namespace IS NULL) = (principal_digest IS NULL))
+  AND ((endpoint = 'im' AND audience = 'single') = (principal_namespace IS NOT NULL AND principal_digest IS NOT NULL))
+  AND (principal_namespace IS NULL OR principal_namespace ~ '^[a-z0-9._-]{1,64}$')
+  AND (principal_digest IS NULL OR principal_digest ~ '^[0-9a-f]{64}$')
+  AND (NOT evaluation OR (endpoint = 'desktop' AND audience = 'single' AND initiation = 'direct' AND presentation = 'chat'))
+  AND created_at_ms >= 0
+  AND updated_at_ms >= created_at_ms
+)`).Error; err != nil {
+		return fmt.Errorf("creating endpoint conversation invariant: %w", err)
+	}
+	return nil
 }
 
 func migrateSocialFeedbackSchema(tx *gorm.DB) error {

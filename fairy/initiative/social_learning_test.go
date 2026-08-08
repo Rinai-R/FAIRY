@@ -3,6 +3,7 @@ package initiative
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -32,13 +33,14 @@ func publicAmbientResolved() session.Resolved {
 type learningTestHost struct {
 	mu sync.Mutex
 
-	resolved session.Resolved
-	draft    string
-	events   []model.StreamEvent
-	modelErr error
-	block    bool
-	started  chan struct{}
-	request  model.CompiledPromptRequest
+	resolved          session.Resolved
+	characterRevision uint64
+	draft             string
+	events            []model.StreamEvent
+	modelErr          error
+	block             bool
+	started           chan struct{}
+	request           model.CompiledPromptRequest
 
 	stored        []memory.SocialMemoryBatchInput
 	upserted      []memory.SocialPersonNoteInput
@@ -49,7 +51,7 @@ type learningTestHost struct {
 }
 
 func newLearningTestHost() *learningTestHost {
-	return &learningTestHost{resolved: publicAmbientResolved()}
+	return &learningTestHost{resolved: publicAmbientResolved(), characterRevision: 1}
 }
 
 func (h *learningTestHost) ResolveInteraction(string) (session.Resolved, error) {
@@ -63,8 +65,12 @@ func (h *learningTestHost) LoadConversationRecord(conversationID string) (memory
 	return memory.ConversationRecord{ID: conversationID, CharacterID: "character-1"}, nil
 }
 
-func (*learningTestHost) ActiveCharacter(string) (character.Record, error) {
-	return character.Record{CharacterID: "character-1", Revision: 1, Name: "Fairy", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"}, nil
+func (h *learningTestHost) ActiveCharacter(string) (character.Record, error) {
+	revision := h.characterRevision
+	if revision == 0 {
+		revision = 1
+	}
+	return character.Record{CharacterID: "character-1", Revision: revision, Name: "Fairy", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"}, nil
 }
 
 func (*learningTestHost) ModelConnection() (config.ModelConnection, error) {
@@ -137,9 +143,19 @@ func TestLearningCompilerPreservesStrictEvidenceContract(t *testing.T) {
 }
 
 func TestLearningInputOnlyContainsExternalObservations(t *testing.T) {
-	items, err := buildSocialLearningInput(character.Record{CharacterID: "character-1", Revision: 1, Name: "Fairy", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"}, publicAmbientResolved(), learningObservations())
+	prefix, err := buildSocialStablePrefix(character.Record{CharacterID: "character-1", Revision: 1, Name: "Fairy", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"}, publicAmbientResolved())
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := buildSocialLearningInput(prefix, learningObservations())
 	if err != nil || len(items) != 4 {
 		t.Fatalf("input = %#v, %v", items, err)
+	}
+	if items[0].Type != model.PromptItemContextData || !strings.Contains(items[0].Content, `"contextType":"character"`) {
+		t.Fatalf("stable character prefix = %#v", items[0])
+	}
+	if items[1].Type != model.PromptItemContextData || !strings.Contains(items[1].Content, `"contextType":"interaction"`) {
+		t.Fatalf("stable interaction prefix = %#v", items[1])
 	}
 	for _, item := range items[2:] {
 		var payload map[string]any

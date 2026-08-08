@@ -13,7 +13,6 @@ import (
 	"fairy/memory"
 	"fairy/observability"
 	"fairy/session"
-	"fairy/speech"
 	"fairy/sticker"
 
 	"go.uber.org/zap"
@@ -66,7 +65,6 @@ type Dependencies struct {
 	Initiative  *initiative.Service
 	Character   *character.CharacterService
 	Config      *config.ConfigService
-	Speech      *speech.SpeechService
 	Profile     *config.ProfileService
 	Stickers    *sticker.Store
 	Captures    *desktopcapture.CaptureHub

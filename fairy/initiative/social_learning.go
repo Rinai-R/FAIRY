@@ -12,10 +12,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"fairy/character"
 	"fairy/memory"
 	"fairy/model"
-	"fairy/persona"
 	"fairy/session"
 )
 
@@ -25,10 +23,10 @@ type LearningSnapshot struct {
 }
 
 type LearningStats struct {
-	Enqueued  int64
-	Dropped   int64
-	Succeeded int64
-	Failed    int64
+	Enqueued  int64 `json:"enqueued"`
+	Dropped   int64 `json:"dropped"`
+	Succeeded int64 `json:"succeeded"`
+	Failed    int64 `json:"failed"`
 }
 
 type LearningEngine struct {
@@ -173,7 +171,11 @@ func (e *LearningEngine) process(ctx context.Context, snapshot LearningSnapshot)
 	if err != nil {
 		return err
 	}
-	input, err := buildSocialLearningInput(record, resolved, snapshot.Messages)
+	stablePrefix, err := buildSocialStablePrefix(record, resolved)
+	if err != nil {
+		return err
+	}
+	input, err := buildSocialLearningInput(stablePrefix, snapshot.Messages)
 	if err != nil {
 		return err
 	}
@@ -185,7 +187,13 @@ func (e *LearningEngine) process(ctx context.Context, snapshot LearningSnapshot)
 	if connection.Capabilities.PromptCacheKey {
 		cacheKey = model.LaneCacheKey(snapshot.ConversationID, model.PromptLaneSocialLearn)
 	}
-	cacheInput := model.NewCacheKeyInput(model.PromptLaneSocialLearn, connection.Model, snapshot.ConversationID, SocialLearnInstructions)
+	cacheInput, err := model.NewCacheKeyInputWithStablePrefix(
+		model.PromptLaneSocialLearn, connection.Model, snapshot.ConversationID,
+		SocialLearnInstructions, stablePrefix,
+	)
+	if err != nil {
+		return fmt.Errorf("building social learning cache identity: %w", err)
+	}
 	cacheInput.CharacterRevision = record.Revision
 	events, err := e.host.ExecuteRequest(ctx, model.CompiledPromptRequest{
 		Shape: model.ModelRequestShape{
@@ -244,17 +252,9 @@ func emptySocialLearningResultError(events []model.StreamEvent) error {
 	return fmt.Errorf("social learning result is empty: finishReason=%q completionTokens=%s", finishReason, completionTokens)
 }
 
-func buildSocialLearningInput(record character.Record, resolved session.Resolved, messages []AmbientObservation) ([]model.PromptItem, error) {
-	characterItem, err := persona.EncodeCharacterContext(record)
-	if err != nil {
-		return nil, err
-	}
-	interactionItem, err := persona.EncodeInteractionContext(resolved)
-	if err != nil {
-		return nil, err
-	}
-	items := make([]model.PromptItem, 0, len(messages)+2)
-	items = append(items, characterItem, interactionItem)
+func buildSocialLearningInput(stablePrefix []model.PromptItem, messages []AmbientObservation) ([]model.PromptItem, error) {
+	items := make([]model.PromptItem, 0, len(messages)+len(stablePrefix))
+	items = append(items, stablePrefix...)
 	for _, message := range messages {
 		payload, err := json.Marshal(socialLearnObservationPayload{
 			ContextType: "external_group_observation", MessageID: message.MessageID,

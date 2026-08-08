@@ -61,6 +61,16 @@ func TestCharacterServiceCreateUpdateAppearanceAndActivate(t *testing.T) {
 	if activated.Revision != 2 {
 		t.Fatalf("activated = %#v", activated)
 	}
+	if err := service.DeleteCharacter(activated.CharacterID); err != nil {
+		t.Fatalf("DeleteCharacter() error = %v", err)
+	}
+	catalog, err := service.ListCharacters()
+	if err != nil {
+		t.Fatalf("ListCharacters() after delete error = %v", err)
+	}
+	if len(catalog.Characters) != 0 || catalog.Active != nil {
+		t.Fatalf("catalog after DeleteCharacter() = %#v", catalog)
+	}
 }
 
 func TestCharacterServiceImportAndExportPackage(t *testing.T) {

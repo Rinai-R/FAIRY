@@ -16,8 +16,6 @@ type Status struct {
 	ActiveBackgroundJobs int64            `json:"activeBackgroundJobs"`
 	Model                json.RawMessage  `json:"model,omitempty"`
 	ModelError           string           `json:"modelError,omitempty"`
-	Speech               json.RawMessage  `json:"speech,omitempty"`
-	SpeechError          string           `json:"speechError,omitempty"`
 	Database             DependencyStatus `json:"database"`
 	SecretKey            DependencyStatus `json:"secretKey"`
 }

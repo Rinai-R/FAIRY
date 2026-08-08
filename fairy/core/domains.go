@@ -18,7 +18,7 @@ type Domain struct {
 var coreDomains = []Domain{
 	{Name: "companion", Owns: "conversation turn lifecycle, orchestration and background personal-memory jobs", DependsOn: []string{"persona", "participation", "reply", "sociallearning", "memory", "model"}},
 	{Name: "persona", Owns: "prompt instructions, context slots and stable-prefix compilation", DependsOn: []string{"memory", "model", "reply"}},
-	{Name: "reply", Owns: "compiled replies, pacing, delivery and speech pipeline"},
+	{Name: "reply", Owns: "compiled replies, pacing and ordered delivery"},
 	{Name: "participation", Owns: "ambient participation decisions, inbox state and participation events", DependsOn: []string{"persona", "memory", "model"}},
 	{Name: "sociallearning", Owns: "public observation learning and reply feedback attribution", DependsOn: []string{"persona", "participation", "memory", "model"}},
 	{Name: "observation", Owns: "desktop observation decisions and trigger routing"},

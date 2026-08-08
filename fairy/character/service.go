@@ -65,6 +65,10 @@ func (s *CharacterService) UpdateCharacter(characterID string, brief Brief) (Rec
 	return record, nil
 }
 
+func (s *CharacterService) DeleteCharacter(characterID string) error {
+	return s.store.Delete(characterID)
+}
+
 func (s *CharacterService) SetCharacterAppearance(characterID string, visualPackID string) (Record, error) {
 	record, err := s.store.SetAppearance(characterID, visualPackID)
 	if err != nil {

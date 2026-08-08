@@ -8,7 +8,6 @@ const (
 	PromptLaneParticipate        PromptLane = "participate"
 	PromptLaneCompact            PromptLane = "compact"
 	PromptLaneExtract            PromptLane = "extract"
-	PromptLaneTranslate          PromptLane = "translate"
 	PromptLaneSocialLearn        PromptLane = "social_learn"
 	PromptLaneSocialFeedback     PromptLane = "social_feedback"
 	PromptLaneKnowledgeReconcile PromptLane = "knowledge_reconcile"

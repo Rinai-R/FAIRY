@@ -2,7 +2,7 @@ package coredb
 
 import "github.com/pgvector/pgvector-go"
 
-const currentSchemaRevision = "2026-07-31-bge-m3-embedding-v2-1"
+const currentSchemaRevision = "2026-08-06-conversation-debug-evaluation-1"
 
 type conversationSchema struct {
 	ID          string `gorm:"type:text;primaryKey;index:conversations_character_updated,priority:3"`
@@ -236,8 +236,9 @@ type endpointConversationSchema struct {
 	EndpointKeyDigest  string  `gorm:"type:text;primaryKey"`
 	ConversationID     string  `gorm:"type:text;not null;unique;index:endpoint_conversations_conversation"`
 	Audience           string  `gorm:"type:text;not null"`
-	Initiation         string  `gorm:"type:text;not null;check:endpoint_conversations_invariants_check,(endpoint IN ('desktop', 'im')) AND (endpoint_key_digest ~ '^[0-9a-f]{64}$') AND (audience IN ('single', 'multi')) AND (initiation IN ('direct', 'ambient')) AND (presentation IN ('embodied', 'chat')) AND ((principal_namespace IS NULL) = (principal_digest IS NULL)) AND ((endpoint = 'im' AND audience = 'single') = (principal_namespace IS NOT NULL AND principal_digest IS NOT NULL)) AND (principal_namespace IS NULL OR principal_namespace ~ '^[a-z0-9._-]{1,64}$') AND (principal_digest IS NULL OR principal_digest ~ '^[0-9a-f]{64}$') AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms)"`
+	Initiation         string  `gorm:"type:text;not null;check:endpoint_conversations_invariants_check,(endpoint IN ('desktop', 'im')) AND (endpoint_key_digest ~ '^[0-9a-f]{64}$') AND (audience IN ('single', 'multi')) AND (initiation IN ('direct', 'ambient')) AND (presentation IN ('embodied', 'chat')) AND ((principal_namespace IS NULL) = (principal_digest IS NULL)) AND ((endpoint = 'im' AND audience = 'single') = (principal_namespace IS NOT NULL AND principal_digest IS NOT NULL)) AND (principal_namespace IS NULL OR principal_namespace ~ '^[a-z0-9._-]{1,64}$') AND (principal_digest IS NULL OR principal_digest ~ '^[0-9a-f]{64}$') AND (NOT evaluation OR (endpoint = 'desktop' AND audience = 'single' AND initiation = 'direct' AND presentation = 'chat')) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms)"`
 	Presentation       string  `gorm:"type:text;not null"`
+	Evaluation         bool    `gorm:"not null;default:false"`
 	PrincipalNamespace *string `gorm:"type:text"`
 	PrincipalDigest    *string `gorm:"type:text"`
 	CreatedAtMS        int64   `gorm:"not null"`

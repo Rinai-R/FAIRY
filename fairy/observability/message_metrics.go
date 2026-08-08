@@ -3,6 +3,7 @@ package observability
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,6 +12,10 @@ import (
 const (
 	defaultMessageEventCapacity = 1024
 	defaultRecentTraceCapacity  = 50
+	maxTraceSpans               = 128
+	maxSpanAttributes           = 16
+	maxSpanAttributeKeyRunes    = 64
+	maxSpanAttributeValueRunes  = 128
 )
 
 type MessageLatencyMetrics struct {
@@ -42,6 +47,32 @@ type MessageTrace struct {
 	TotalDurationMS     uint64 `json:"totalDurationMs,omitempty"`
 }
 
+type TraceSpan struct {
+	SpanID          string            `json:"spanId"`
+	ParentSpanID    string            `json:"parentSpanId,omitempty"`
+	Operation       string            `json:"operation"`
+	Category        string            `json:"category"`
+	Status          string            `json:"status"`
+	StartedAtUnixMS int64             `json:"startedAtUnixMs"`
+	EndedAtUnixMS   int64             `json:"endedAtUnixMs,omitempty"`
+	DurationMS      uint64            `json:"durationMs"`
+	Attributes      map[string]string `json:"attributes"`
+}
+
+type MessageTraceDetail struct {
+	TraceID          string      `json:"traceId"`
+	ConversationID   string      `json:"conversationId"`
+	TurnID           string      `json:"turnId,omitempty"`
+	Source           string      `json:"source"`
+	Status           string      `json:"status"`
+	StartedAtUnixMS  int64       `json:"startedAtUnixMs"`
+	EndedAtUnixMS    int64       `json:"endedAtUnixMs,omitempty"`
+	DurationMS       uint64      `json:"durationMs"`
+	DroppedSpanCount uint64      `json:"droppedSpanCount"`
+	Truncated        bool        `json:"truncated"`
+	Spans            []TraceSpan `json:"spans"`
+}
+
 type MessageMetricsSnapshot struct {
 	Received        uint64                 `json:"received"`
 	Sent            uint64                 `json:"sent"`
@@ -65,6 +96,8 @@ const (
 	messageTurnStarted
 	messageTurnStage
 	messageEnd
+	messageSpanStart
+	messageSpanFinish
 )
 
 type messageEvent struct {
@@ -79,6 +112,11 @@ type messageEvent struct {
 	action        string
 	stage         string
 	status        string
+	spanID        string
+	parentSpanID  string
+	operation     string
+	category      string
+	attributes    map[string]string
 }
 
 type messageTraceState struct {
@@ -89,6 +127,12 @@ type messageTraceState struct {
 	beatAt     time.Time
 	terminal   bool
 	sent       bool
+	rootSpanID string
+	turnSpanID string
+	stageSpan  string
+	spans      map[string]*TraceSpan
+	spanOrder  []string
+	dropped    uint64
 }
 
 // MessageMetrics asynchronously aggregates message throughput and trace timing.
@@ -103,9 +147,11 @@ type MessageMetrics struct {
 	dropped        atomic.Uint64
 	retentionDrops atomic.Uint64
 	sequence       atomic.Uint64
+	spanSequence   atomic.Uint64
 	recentCapacity int
 	activeCapacity int
 	snapshot       atomic.Value
+	details        atomic.Value
 }
 
 func NewMessageMetrics() *MessageMetrics {
@@ -128,6 +174,7 @@ func newMessageMetrics(queueCapacity, recentCapacity int, start bool) *MessageMe
 		activeCapacity: queueCapacity,
 	}
 	m.snapshot.Store(MessageMetricsSnapshot{Recent: []MessageTrace{}})
+	m.details.Store(map[string]MessageTraceDetail{})
 	if start {
 		go m.run()
 	}
@@ -163,6 +210,41 @@ func (m *MessageMetrics) TurnStage(conversationID, turnID, stage string) {
 		return
 	}
 	m.submit(messageEvent{kind: messageTurnStage, at: time.Now(), conversation: conversationID, turnID: turnID, stage: stage})
+}
+
+func (m *MessageMetrics) StartSpan(traceID, parentSpanID, operation, category string, attributes map[string]string) string {
+	if m == nil || traceID == "" || operation == "" {
+		return ""
+	}
+	spanID := fmt.Sprintf("span-%d", m.spanSequence.Add(1))
+	m.submit(messageEvent{
+		kind: messageSpanStart, at: time.Now(), traceID: traceID, spanID: spanID,
+		parentSpanID: parentSpanID, operation: operation, category: category,
+		attributes: cloneStringMap(attributes),
+	})
+	return spanID
+}
+
+func (m *MessageMetrics) FinishSpan(spanID, status string, attributes map[string]string) {
+	if m == nil || spanID == "" {
+		return
+	}
+	m.submit(messageEvent{
+		kind: messageSpanFinish, at: time.Now(), spanID: spanID, status: status,
+		attributes: cloneStringMap(attributes),
+	})
+}
+
+func (m *MessageMetrics) Trace(traceID string) (MessageTraceDetail, bool) {
+	if m == nil || traceID == "" {
+		return MessageTraceDetail{}, false
+	}
+	details := m.details.Load().(map[string]MessageTraceDetail)
+	detail, ok := details[traceID]
+	if !ok {
+		return MessageTraceDetail{}, false
+	}
+	return cloneTraceDetail(detail), true
 }
 
 func (m *MessageMetrics) End(traceID, status string) {
@@ -216,6 +298,7 @@ func (m *MessageMetrics) run() {
 	defer close(m.done)
 	state := messageMetricsState{
 		traces: make(map[string]*messageTraceState), turns: make(map[string]string),
+		spanTraces:     make(map[string]string),
 		recentCapacity: m.recentCapacity, activeCapacity: m.activeCapacity,
 		retentionDrops: &m.retentionDrops,
 	}
@@ -223,14 +306,14 @@ func (m *MessageMetrics) run() {
 		select {
 		case event := <-m.events:
 			state.apply(event)
-			m.snapshot.Store(state.snapshot(m.totalDropped()))
+			m.publishSnapshots(&state)
 		case <-m.stop:
 			for {
 				select {
 				case event := <-m.events:
 					state.apply(event)
 				default:
-					m.snapshot.Store(state.snapshot(m.totalDropped()))
+					m.publishSnapshots(&state)
 					return
 				}
 			}
@@ -238,10 +321,17 @@ func (m *MessageMetrics) run() {
 	}
 }
 
+func (m *MessageMetrics) publishSnapshots(state *messageMetricsState) {
+	snapshot := state.snapshot(m.totalDropped())
+	m.snapshot.Store(snapshot)
+	m.details.Store(state.traceDetails(snapshot.Recent))
+}
+
 type messageMetricsState struct {
 	snapshotBase   MessageMetricsSnapshot
 	traces         map[string]*messageTraceState
 	turns          map[string]string
+	spanTraces     map[string]string
 	recentIDs      []string
 	recentCapacity int
 	activeCapacity int
@@ -260,6 +350,10 @@ func (s *messageMetricsState) apply(event messageEvent) {
 		s.turnStage(event)
 	case messageEnd:
 		s.end(event.traceID, event.status, event.at)
+	case messageSpanStart:
+		s.startSpan(event)
+	case messageSpanFinish:
+		s.finishSpan(event)
 	}
 }
 
@@ -278,8 +372,20 @@ func (s *messageMetricsState) begin(event messageEvent) {
 			Status: "received", ReceivedAtUnixMS: event.at.UnixMilli(),
 		},
 		receivedAt: event.at,
+		spans:      make(map[string]*TraceSpan),
 	}
+	trace.rootSpanID = event.traceID + "-root"
+	trace.addSpan(TraceSpan{
+		SpanID: trace.rootSpanID, Operation: "消息处理", Category: "message", Status: "running",
+		StartedAtUnixMS: event.at.UnixMilli(), Attributes: map[string]string{"source": normalizeSource(event.source)},
+	})
+	participationID := event.traceID + "-participation"
+	trace.addSpan(TraceSpan{
+		SpanID: participationID, ParentSpanID: trace.rootSpanID, Operation: "参与判断", Category: "participation", Status: "running",
+		StartedAtUnixMS: event.at.UnixMilli(), Attributes: map[string]string{},
+	})
 	s.traces[event.traceID] = trace
+	s.indexTraceSpans(event.traceID, trace)
 	s.snapshotBase.Received++
 	s.snapshotBase.Active++
 	if event.source == "ambient" {
@@ -308,7 +414,7 @@ func (s *messageMetricsState) evictOldestActive() bool {
 	if trace.trace.TurnID != "" {
 		delete(s.turns, trace.trace.TurnID)
 	}
-	delete(s.traces, oldestID)
+	s.removeTrace(oldestID)
 	if s.snapshotBase.Active > 0 {
 		s.snapshotBase.Active--
 	}
@@ -328,6 +434,7 @@ func (s *messageMetricsState) participation(event messageEvent) {
 			trace.decisionAt = event.at
 			trace.trace.DecisionAtUnixMS = event.at.UnixMilli()
 			observeMessageLatency(&s.snapshotBase.Latencies.ReceiveToDecision, event.at.Sub(trace.receivedAt))
+			trace.closeSpan(traceID+"-participation", "completed", event.at, map[string]string{"action": event.action})
 		}
 		switch event.action {
 		case "wait":
@@ -356,6 +463,13 @@ func (s *messageMetricsState) turnStarted(event messageEvent) {
 	trace.trace.TurnStartedAtUnixMS = event.at.UnixMilli()
 	trace.trace.Status = "running"
 	s.turns[event.turnID] = event.traceID
+	trace.closeSpan(event.traceID+"-participation", "completed", event.at, map[string]string{"action": "turn_started"})
+	trace.turnSpanID = event.traceID + "-turn"
+	trace.addSpan(TraceSpan{
+		SpanID: trace.turnSpanID, ParentSpanID: trace.rootSpanID, Operation: "Turn 执行", Category: "turn", Status: "running",
+		StartedAtUnixMS: event.at.UnixMilli(), Attributes: map[string]string{},
+	})
+	s.spanTraces[trace.turnSpanID] = event.traceID
 	observeMessageLatency(&s.snapshotBase.Latencies.ReceiveToTurn, event.at.Sub(trace.receivedAt))
 }
 
@@ -363,6 +477,11 @@ func (s *messageMetricsState) turnStage(event messageEvent) {
 	traceID := s.turns[event.turnID]
 	trace := s.traces[traceID]
 	if trace == nil || trace.terminal {
+		return
+	}
+	if strings.HasPrefix(event.stage, "lifecycle:") {
+		stage := strings.TrimPrefix(event.stage, "lifecycle:")
+		trace.transitionStage(traceID, stage, event.at, s.spanTraces)
 		return
 	}
 	switch event.stage {
@@ -390,7 +509,9 @@ func (s *messageMetricsState) end(traceID, status string, at time.Time) {
 	trace.terminal = true
 	trace.trace.Status = status
 	trace.trace.CompletedAtUnixMS = at.UnixMilli()
-	trace.trace.TotalDurationMS = durationMS(at.Sub(trace.receivedAt))
+	trace.trace.TotalDurationMS = unixMillisecondsBetween(trace.trace.ReceivedAtUnixMS, trace.trace.CompletedAtUnixMS)
+	spanStatus := normalizeTerminalSpanStatus(status)
+	trace.closeAllOpenSpans(spanStatus, at)
 	if s.snapshotBase.Active > 0 {
 		s.snapshotBase.Active--
 	}
@@ -415,7 +536,7 @@ func (s *messageMetricsState) end(traceID, status string, at time.Time) {
 	for len(s.recentIDs) > s.recentCapacity {
 		oldest := s.recentIDs[0]
 		s.recentIDs = s.recentIDs[1:]
-		delete(s.traces, oldest)
+		s.removeTrace(oldest)
 	}
 }
 
@@ -452,4 +573,11 @@ func durationMS(duration time.Duration) uint64 {
 		return 0
 	}
 	return uint64(duration / time.Millisecond)
+}
+
+func unixMillisecondsBetween(start, end int64) uint64 {
+	if end <= start {
+		return 0
+	}
+	return uint64(end - start)
 }

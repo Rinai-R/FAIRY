@@ -14,6 +14,7 @@ type pendingDesktopTool struct {
 	callID    string
 	arguments string
 	completed <-chan struct{}
+	spanID    string
 }
 
 // agentLoopState contains only the concrete mutable state of Companion's

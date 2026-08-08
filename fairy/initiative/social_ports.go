@@ -22,6 +22,7 @@ type LearningHost interface {
 }
 
 type FeedbackHost interface {
+	ResolveInteraction(conversationID string) (session.Resolved, error)
 	ActiveCharacter(characterID string) (character.Record, error)
 	ModelConnection() (config.ModelConnection, error)
 	ExecuteRequest(context.Context, model.CompiledPromptRequest) ([]model.StreamEvent, error)

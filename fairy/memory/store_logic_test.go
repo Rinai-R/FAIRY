@@ -30,6 +30,16 @@ func TestRuntimeStateValidationRejectsInvalidLaneHashAndMetadata(t *testing.T) {
 	}
 }
 
+func TestRuntimeMetadataAllowsBoundedToolInspectionBeyondLegacyLimit(t *testing.T) {
+	payload := `{"detail":{"version":"v1","mergedContext":{"knowledge":[{"statement":"` + strings.Repeat("知", 20_000) + `"}]}}}`
+	if len(payload) <= 32*1024 {
+		t.Fatalf("fixture is not larger than the legacy metadata limit: %d", len(payload))
+	}
+	if _, err := normalizeRuntimeMetadataJSON(payload); err != nil {
+		t.Fatalf("normalizeRuntimeMetadataJSON(tool detail) error = %v", err)
+	}
+}
+
 func TestAggregateUsageRowsPreservesTotalsCacheAndTruncation(t *testing.T) {
 	completed := "completed"
 	failed := "failed"

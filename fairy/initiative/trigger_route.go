@@ -48,7 +48,6 @@ type TriggerEnvelope struct {
 	Payload        TriggerPayload
 	EvidenceIDs    []string
 	CreatedAt      time.Time
-	SpeechEnabled  bool
 }
 
 func (e TriggerEnvelope) Validate(now time.Time) error {

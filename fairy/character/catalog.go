@@ -59,6 +59,11 @@ const DefaultSpeakingLanguage = "ja"
 const DefaultTextLanguage = "zh"
 const revisionCandidateBatchSize = 64
 
+var (
+	ErrInvalidCharacterID = errors.New("character_id is invalid")
+	ErrCharacterNotFound  = errors.New("character not found")
+)
+
 func NewStore(root string) *Store {
 	return &Store{root: root}
 }
@@ -151,6 +156,84 @@ func (s *Store) Update(characterID string, brief Brief) (Record, error) {
 	}
 	record, _, _, err := s.latestValid(characterID)
 	return record, err
+}
+
+func (s *Store) Delete(characterID string) error {
+	if s == nil || s.root == "" {
+		return errors.New("config root is required")
+	}
+	if !validID(characterID) {
+		return ErrInvalidCharacterID
+	}
+	if _, found, _, err := s.latestValid(characterID); err != nil {
+		return err
+	} else if !found {
+		return ErrCharacterNotFound
+	}
+
+	selection, hasSelection, err := s.readActiveSelection()
+	if err != nil {
+		return err
+	}
+	appearancePath := filepath.Join(s.root, "character-appearances", characterID+".json")
+	hasAppearance := false
+	if _, err := os.Stat(appearancePath); err == nil {
+		hasAppearance = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("reading character appearance before deletion: %w", err)
+	}
+
+	staging, err := os.MkdirTemp(s.root, ".delete-character-")
+	if err != nil {
+		return fmt.Errorf("creating character deletion staging directory: %w", err)
+	}
+	type stagedMove struct {
+		original string
+		staged   string
+	}
+	moves := make([]stagedMove, 0, 3)
+	stage := func(original, name string) error {
+		staged := filepath.Join(staging, name)
+		if err := os.Rename(original, staged); err != nil {
+			return err
+		}
+		moves = append(moves, stagedMove{original: original, staged: staged})
+		return nil
+	}
+	rollback := func(cause error) error {
+		var rollbackErrors []error
+		for index := len(moves) - 1; index >= 0; index-- {
+			move := moves[index]
+			if err := os.Rename(move.staged, move.original); err != nil {
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("restoring %s: %w", move.original, err))
+			}
+		}
+		if len(rollbackErrors) == 0 {
+			if err := os.RemoveAll(staging); err != nil {
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("cleaning deletion staging directory: %w", err))
+			}
+		}
+		return errors.Join(append([]error{cause}, rollbackErrors...)...)
+	}
+
+	characterPath := filepath.Join(s.root, "characters", characterID)
+	if err := stage(characterPath, "character"); err != nil {
+		return rollback(fmt.Errorf("staging character revisions for deletion: %w", err))
+	}
+	if hasAppearance {
+		if err := stage(appearancePath, "appearance.json"); err != nil {
+			return rollback(fmt.Errorf("staging character appearance for deletion: %w", err))
+		}
+	}
+	if hasSelection && selection.CharacterID == characterID {
+		if err := stage(filepath.Join(s.root, "active-character.json"), "active-character.json"); err != nil {
+			return rollback(fmt.Errorf("staging active character selection for deletion: %w", err))
+		}
+	}
+	if err := os.RemoveAll(staging); err != nil {
+		return fmt.Errorf("cleaning deleted character staging directory: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) SetAppearance(characterID string, visualPackID string) (Record, error) {
@@ -313,31 +396,41 @@ func revisionCandidateNewer(left, right revisionCandidate) bool {
 }
 
 func (s *Store) active(characters []Record) (*Record, error) {
-	var document struct {
-		SchemaVersion uint32 `json:"schema_version"`
-		Data          struct {
-			CharacterID string `json:"character_id"`
-			Revision    uint64 `json:"revision"`
-		} `json:"data"`
-	}
-	path := filepath.Join(s.root, "active-character.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("reading active character: %w", err)
-	}
-	if err := json.Unmarshal(data, &document); err != nil {
-		return nil, fmt.Errorf("parsing active character: %w", err)
+	selection, found, err := s.readActiveSelection()
+	if err != nil || !found {
+		return nil, err
 	}
 	for _, record := range characters {
-		if record.CharacterID == document.Data.CharacterID && record.Revision == document.Data.Revision {
+		if record.CharacterID == selection.CharacterID && record.Revision == selection.Revision {
 			active := record
 			return &active, nil
 		}
 	}
 	return nil, nil
+}
+
+type activeSelection struct {
+	CharacterID string `json:"character_id"`
+	Revision    uint64 `json:"revision"`
+}
+
+func (s *Store) readActiveSelection() (activeSelection, bool, error) {
+	var document struct {
+		SchemaVersion uint32          `json:"schema_version"`
+		Data          activeSelection `json:"data"`
+	}
+	path := filepath.Join(s.root, "active-character.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return activeSelection{}, false, nil
+		}
+		return activeSelection{}, false, fmt.Errorf("reading active character: %w", err)
+	}
+	if err := json.Unmarshal(data, &document); err != nil {
+		return activeSelection{}, false, fmt.Errorf("parsing active character: %w", err)
+	}
+	return document.Data, true, nil
 }
 
 func (s *Store) appearance(characterID string) (Appearance, *Diagnostic) {

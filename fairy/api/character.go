@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -19,11 +20,26 @@ func (s *Server) registerCharacterRoutes() {
 	v1.GET("/characters", s.handleListCharacters)
 	v1.POST("/characters", s.handleCreateCharacter)
 	v1.PUT("/characters/:characterId", s.handleUpdateCharacter)
+	v1.DELETE("/characters/:characterId", s.handleDeleteCharacter)
 	v1.POST("/characters/:characterId/activate", s.handleActivateCharacter)
 	v1.POST("/characters/:characterId/appearance", s.handleSetAppearance)
 	v1.POST("/characters/import", s.handleImportCharacter)
 	v1.GET("/characters/:characterId/export", s.handleExportCharacter)
 	v1.GET("/visual-packs", s.handleListVisualPacks)
+}
+
+func (s *Server) handleDeleteCharacter(ctx context.Context, c *app.RequestContext) {
+	err := s.rt.Character.DeleteCharacter(c.Param("characterId"))
+	switch {
+	case err == nil:
+		c.Status(http.StatusNoContent)
+	case errors.Is(err, character.ErrInvalidCharacterID):
+		writeErr(c, http.StatusBadRequest, err)
+	case errors.Is(err, character.ErrCharacterNotFound):
+		writeErr(c, http.StatusNotFound, err)
+	default:
+		writeErr(c, http.StatusInternalServerError, err)
+	}
 }
 
 func (s *Server) handleListCharacters(ctx context.Context, c *app.RequestContext) {

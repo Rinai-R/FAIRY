@@ -2,7 +2,7 @@ package companion
 
 import "strings"
 
-// Progressive tool-wait speech lines are intentionally not canned here.
+// Progressive tool-wait display lines are intentionally not canned here.
 // The mid-ReAct line is whatever user-facing content the main model returned
 // alongside its tool calls; sanitizeUtteranceText cleans it into one spoken
 // line and refuses structured/leaked artifacts (never invents a filler).
@@ -15,7 +15,7 @@ func sanitizeUtteranceText(draft string) string {
 	if strings.HasPrefix(text, "{") || strings.HasPrefix(text, "[") {
 		return ""
 	}
-	if strings.Contains(text, `"gather"`) || strings.Contains(text, `"chains"`) || strings.Contains(text, `"speechText"`) {
+	if strings.Contains(text, `"gather"`) || strings.Contains(text, `"chains"`) {
 		return ""
 	}
 	// Utterance payloads are single-line; collapse any internal breaks.

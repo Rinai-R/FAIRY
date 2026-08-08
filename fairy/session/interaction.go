@@ -48,6 +48,7 @@ type Context struct {
 	Initiation   InitiationKind   `json:"initiation"`
 	Presentation PresentationKind `json:"presentation"`
 	Principal    *PrincipalRef    `json:"principal,omitempty"`
+	Evaluation   bool             `json:"evaluation,omitempty"`
 }
 
 // Facts is the durable, raw-subject-free interaction context.
@@ -57,6 +58,7 @@ type Facts struct {
 	Presentation       PresentationKind `json:"presentation"`
 	PrincipalNamespace string           `json:"principalNamespace,omitempty"`
 	PrincipalDigest    string           `json:"principalDigest,omitempty"`
+	Evaluation         bool             `json:"evaluation,omitempty"`
 }
 
 type Binding struct {
@@ -110,6 +112,9 @@ func (context Context) Validate(endpoint EndpointKind) error {
 			return errors.New("multi interaction must not include principal")
 		}
 	}
+	if context.Evaluation && (endpoint != EndpointDesktop || context.Audience != AudienceSingle || context.Initiation != InitiationDirect || context.Presentation != PresentationChat) {
+		return errors.New("evaluation interaction requires desktop single direct chat")
+	}
 	return nil
 }
 
@@ -153,7 +158,7 @@ func NewBinding(endpoint EndpointKind, context Context, principalDigest string) 
 		return Binding{}, err
 	}
 	facts := Facts{
-		Audience: context.Audience, Initiation: context.Initiation, Presentation: context.Presentation,
+		Audience: context.Audience, Initiation: context.Initiation, Presentation: context.Presentation, Evaluation: context.Evaluation,
 	}
 	if context.Principal != nil {
 		if err := ValidateDigest(principalDigest); err != nil {
@@ -169,7 +174,7 @@ func NewBinding(endpoint EndpointKind, context Context, principalDigest string) 
 
 func (binding Binding) Validate() error {
 	context := Context{
-		Audience: binding.Facts.Audience, Initiation: binding.Facts.Initiation, Presentation: binding.Facts.Presentation,
+		Audience: binding.Facts.Audience, Initiation: binding.Facts.Initiation, Presentation: binding.Facts.Presentation, Evaluation: binding.Facts.Evaluation,
 	}
 	if binding.Facts.PrincipalNamespace != "" || binding.Facts.PrincipalDigest != "" {
 		if binding.Facts.PrincipalNamespace == "" || binding.Facts.PrincipalDigest == "" {

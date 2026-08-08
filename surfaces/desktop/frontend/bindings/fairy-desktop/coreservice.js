@@ -143,11 +143,10 @@ export function SaveConnection(endpoint, token, endpointKey) {
 
 /**
  * @param {string} input
- * @param {boolean} speechEnabled
  * @returns {$CancellablePromise<void>}
  */
-export function Send(input, speechEnabled) {
-    return $Call.ByID(3644580932, input, speechEnabled);
+export function Send(input) {
+    return $Call.ByID(3644580932, input);
 }
 
 /**

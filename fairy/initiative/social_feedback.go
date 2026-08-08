@@ -49,10 +49,10 @@ type feedbackSnapshot struct {
 }
 
 type FeedbackStats struct {
-	Registered int64
-	Dropped    int64
-	Succeeded  int64
-	Failed     int64
+	Registered int64 `json:"registered"`
+	Dropped    int64 `json:"dropped"`
+	Succeeded  int64 `json:"succeeded"`
+	Failed     int64 `json:"failed"`
 }
 
 type FeedbackEngine struct {
@@ -278,15 +278,26 @@ func (e *FeedbackEngine) process(ctx context.Context, snapshot feedbackSnapshot)
 	}
 	evaluations := unknownSocialFeedbackEvaluations(snapshot.registration.Candidates)
 	if len(snapshot.observations) > 0 {
-		input, err := buildSocialFeedbackInput(snapshot)
+		resolved, err := e.host.ResolveInteraction(snapshot.registration.ConversationID)
 		if err != nil {
-			return err
-		}
-		connection, err := e.host.ModelConnection()
-		if err != nil {
-			return err
+			return fmt.Errorf("resolving social feedback interaction: %w", err)
 		}
 		record, err := e.host.ActiveCharacter(snapshot.registration.CharacterID)
+		if err != nil {
+			return err
+		}
+		stablePrefix, err := buildSocialStablePrefix(record, resolved)
+		if err != nil {
+			return err
+		}
+		dynamicInput, err := buildSocialFeedbackInput(snapshot)
+		if err != nil {
+			return err
+		}
+		input := make([]model.PromptItem, 0, len(stablePrefix)+len(dynamicInput))
+		input = append(input, stablePrefix...)
+		input = append(input, dynamicInput...)
+		connection, err := e.host.ModelConnection()
 		if err != nil {
 			return err
 		}
@@ -294,7 +305,13 @@ func (e *FeedbackEngine) process(ctx context.Context, snapshot feedbackSnapshot)
 		if connection.Capabilities.PromptCacheKey {
 			cacheKey = model.LaneCacheKey(snapshot.registration.ConversationID, model.PromptLaneSocialFeedback)
 		}
-		cacheInput := model.NewCacheKeyInput(model.PromptLaneSocialFeedback, connection.Model, snapshot.registration.ConversationID, SocialFeedbackInstructions)
+		cacheInput, err := model.NewCacheKeyInputWithStablePrefix(
+			model.PromptLaneSocialFeedback, connection.Model, snapshot.registration.ConversationID,
+			SocialFeedbackInstructions, stablePrefix,
+		)
+		if err != nil {
+			return fmt.Errorf("building social feedback cache identity: %w", err)
+		}
 		cacheInput.CharacterRevision = record.Revision
 		events, err := e.host.ExecuteRequest(ctx, model.CompiledPromptRequest{
 			Shape: model.ModelRequestShape{Lane: model.PromptLaneSocialFeedback, Model: connection.Model, Instructions: SocialFeedbackInstructions, MaxOutputTokens: SocialFeedbackMaxOutputTokens, PromptCacheKey: cacheKey},

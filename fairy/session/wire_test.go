@@ -47,6 +47,21 @@ func TestOpenRequestMissingOutputCapabilitiesDefaultsToUnsupported(t *testing.T)
 	}
 }
 
+func TestOpenRequestCharacterAndEvaluationJSONContract(t *testing.T) {
+	request := OpenRequest{
+		Endpoint: EndpointDesktop, EndpointKey: "web-evaluation-1", CharacterID: "character-2",
+		Interaction: Context{Audience: AudienceSingle, Initiation: InitiationDirect, Presentation: PresentationChat, Evaluation: true},
+	}
+	raw, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `{"endpoint":"desktop","endpointKey":"web-evaluation-1","characterId":"character-2","interaction":{"audience":"single","initiation":"direct","presentation":"chat","evaluation":true},"outputCapabilities":{"sticker":false}}`
+	if string(raw) != want {
+		t.Fatalf("OpenRequest JSON = %s, want %s", raw, want)
+	}
+}
+
 func TestExpressionDeliveryResultValidation(t *testing.T) {
 	valid := ExpressionDeliveryResult{
 		ConversationID: "conversation-1", TurnID: "turn-1", BeatID: "final-0",

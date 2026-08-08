@@ -77,3 +77,7 @@ func (resolved Resolved) AllowsPersonalMemory() bool {
 func (resolved Resolved) AllowsAmbientParticipation() bool {
 	return resolved.Facts.Initiation == InitiationAmbient
 }
+
+func (resolved Resolved) IsEvaluation() bool {
+	return resolved.Facts.Evaluation
+}

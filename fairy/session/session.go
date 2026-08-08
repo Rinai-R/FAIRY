@@ -15,6 +15,7 @@ const (
 type OpenRequest struct {
 	Endpoint           EndpointKind       `json:"endpoint"`
 	EndpointKey        string             `json:"endpointKey"`
+	CharacterID        string             `json:"characterId,omitempty"`
 	Interaction        Context            `json:"interaction"`
 	OutputCapabilities OutputCapabilities `json:"outputCapabilities"`
 }

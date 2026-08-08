@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	replyapp "fairy/reply"
 	"fairy/session"
@@ -15,15 +13,25 @@ import (
 	"go.uber.org/zap"
 )
 
-func (x *turnExecution) deliverReply(ctx context.Context, gathered *turnContext, turnStarted time.Time, logger *zap.Logger) (TurnOutcome, error) {
+func (x *turnExecution) deliverReply(ctx context.Context, gathered *turnContext, turnStarted time.Time, logger *zap.Logger) (outcome TurnOutcome, err error) {
 	s := x.service
 	request := x.request
-	reply := gathered.reply
-	connectionConfig := gathered.connectionConfig
-	characterRecord := gathered.character
+	compiled := gathered.reply
 	if err := x.transition(turnStateResponding); err != nil {
 		return x.fail("INVALID_STATE_TRANSITION", err)
 	}
+	deliverySpan := s.startMessageSpan(request.TraceID, "回复交付", "delivery", map[string]string{
+		"chainCount": fmt.Sprint(len(compiled.Chains)),
+	})
+	defer func() {
+		status := "completed"
+		attributes := map[string]string{"chainCount": fmt.Sprint(len(compiled.Chains))}
+		if err != nil {
+			status = "failed"
+			attributes["errorCode"] = "SURFACE_DELIVERY_FAILED"
+		}
+		s.finishMessageSpan(deliverySpan, status, attributes)
+	}()
 	s.markTurnDelivering(request.ConversationID, x.persisted.ID)
 	var profileRevision *uint64
 	if gathered.profile != nil {
@@ -33,7 +41,7 @@ func (x *turnExecution) deliverReply(ctx context.Context, gathered *turnContext,
 	var firstBeatOnce sync.Once
 	x.finalDelivery = replyapp.NewDelivery(
 		ctx,
-		len(reply.Chains),
+		len(compiled.Chains),
 		func(completion BeatReadyCompletion) error {
 			publish := func() error {
 				_, err := s.publishLife(x.life, func() (session.Event, error) {
@@ -75,25 +83,7 @@ func (x *turnExecution) deliverReply(ctx context.Context, gathered *turnContext,
 			)
 		},
 	)
-	filledChains := make([]ReplyChain, 0, len(reply.Chains))
-	for index, chain := range reply.Chains {
-		partial := CompiledReply{
-			DisplayText: chain.Text,
-			VisualState: chain.VisualState,
-			Chains:      []ReplyChain{chain},
-		}
-		filled, skipReason, fillErr := s.fillSpeechForTTS(ctx, logger, partial, characterRecord, request.SpeechEnabled, request.ConversationID, connectionConfig.Model)
-		if fillErr != nil {
-			logger.Warn("cognition loop", zap.String("phase", "speech_translate_skip"), zap.String("reason", skipReason), zap.Int("chain", index), zap.Error(fillErr))
-			s.appendRuntimeLedger(request.ConversationID, x.persisted.ID, runtimeLedgerEventSpeech, turnStateResponding, "TTS_SKIPPED", map[string]any{"status": "skipped", "reason": skipReason, "index": index})
-			filledChains = append(filledChains, chain)
-		} else if skipReason != "" {
-			logger.Info("cognition loop", zap.String("phase", "speech_translate_skip"), zap.String("reason", skipReason), zap.Int("chain", index))
-			filledChains = append(filledChains, chain)
-		} else {
-			chain = filled.Chains[0]
-			filledChains = append(filledChains, chain)
-		}
+	for index, chain := range compiled.Chains {
 		delta := chain.Text
 		if chain.Kind != replyapp.ChainSticker && index > 0 {
 			delta = "\n" + chain.Text
@@ -103,100 +93,22 @@ func (x *turnExecution) deliverReply(ctx context.Context, gathered *turnContext,
 		}); err != nil {
 			return x.fail("MODEL_RESPONSE_INVALID", err)
 		}
-		if chain.Kind == replyapp.ChainSticker {
-			play := x.speechPlayIndex
-			x.speechPlayIndex++
-			if err := x.finalDelivery.Deliver(chain, BeatReadyCompletion{
-				BeatID:      fmt.Sprintf("final-%d", index),
-				Kind:        replyapp.BeatKindFinal,
-				Index:       uint8(play),
-				ChainIndex:  index,
-				VisualState: chain.VisualState,
-			}); err != nil {
-				code := "SURFACE_DELIVERY_FAILED"
-				if errors.Is(err, ErrTurnInterrupted) {
-					code = "TURN_INTERRUPTED"
-				}
-				return x.fail(code, err)
-			}
-			continue
-		}
-		speechText := strings.TrimSpace(chain.SpeechText)
-		if speechText != "" && speechExceedsSoftLimit(speechText) {
-			logger.Warn("cognition loop",
-				zap.String("phase", "speech_over_soft_limit"),
-				zap.Int("chain", index),
-				zap.Int("runes", utf8.RuneCountInString(speechText)),
-				zap.Int("softLimit", replyapp.MaxSpeechChars),
-			)
-		}
-		if x.speechFlow == nil {
-			if request.SpeechEnabled {
-				s.appendRuntimeLedger(request.ConversationID, x.persisted.ID, runtimeLedgerEventSpeech, turnStateResponding, "TTS_SKIPPED", map[string]any{"status": "skipped", "reason": "speech_synthesizer_unavailable", "index": index})
-			}
-			play := x.speechPlayIndex
-			x.speechPlayIndex++
-			if err := x.finalDelivery.Deliver(chain, BeatReadyCompletion{
-				BeatID:      fmt.Sprintf("final-%d", index),
-				Kind:        replyapp.BeatKindFinal,
-				Index:       uint8(play),
-				ChainIndex:  index,
-				DisplayText: chain.Text,
-				SpeechText:  speechText,
-				VisualState: chain.VisualState,
-			}); err != nil {
-				code := "MODEL_RESPONSE_INVALID"
-				if errors.Is(err, ErrTurnInterrupted) {
-					code = "TURN_INTERRUPTED"
-				}
-				return x.fail(code, err)
-			}
-			continue
-		}
-		if speechText != "" && !x.speechRequested {
-			if _, err := s.publishLife(x.life, func() (session.Event, error) {
-				return x.life.SpeechRequested(turnCompletion{
-					Text:                chain.Text,
-					SpeechText:          speechText,
-					CharacterRevision:   characterRecord.Revision,
-					UserProfileRevision: profileRevision,
-				})
-			}); err != nil {
-				logger.Warn("tts request skipped", zap.String("turn", x.persisted.ID), zap.Error(err))
-			} else {
-				x.speechRequested = true
-			}
-		}
-		play := x.speechPlayIndex
-		x.speechPlayIndex++
-		chainSpeech := speechText
-		beatID := fmt.Sprintf("final-%d", index)
-		s.appendRuntimeLedger(request.ConversationID, x.persisted.ID, runtimeLedgerEventSpeech, turnStateResponding, "", map[string]any{
-			"status":         "queued",
-			"index":          index,
-			"beatId":         beatID,
-			"playIndex":      play,
-			"speechTextHash": runtimeHash(chainSpeech),
-		})
-		chainDisplay := chain.Text
-		chainVisual := chain.VisualState
-		x.speechFlow.Enqueue(replyapp.SpeechJob{
-			BeatID:      beatID,
+		beat := BeatReadyCompletion{
+			BeatID:      fmt.Sprintf("final-%d", index),
 			Kind:        replyapp.BeatKindFinal,
-			PlayIndex:   play,
+			Index:       uint8(x.beatIndex),
 			ChainIndex:  index,
-			DisplayText: chainDisplay,
-			VisualState: chainVisual,
-			Resolve:     func() (string, error) { return chainSpeech, nil },
-		})
-	}
-	rebuilt, rebuildErr := compiledReplyFromChains(filledChains)
-	if rebuildErr != nil {
-		return x.fail("MODEL_RESPONSE_INVALID", rebuildErr)
-	}
-	reply = rebuilt
-	if x.speechFlow != nil {
-		x.speechFlow.Close()
+			DisplayText: chain.Text,
+			VisualState: chain.VisualState,
+		}
+		x.beatIndex++
+		if err := x.finalDelivery.Deliver(chain, beat); err != nil {
+			code := "SURFACE_DELIVERY_FAILED"
+			if errors.Is(err, ErrTurnInterrupted) {
+				code = "TURN_INTERRUPTED"
+			}
+			return x.fail(code, err)
+		}
 	}
 	if err := x.finalDelivery.Err(); err != nil {
 		code := "MODEL_RESPONSE_INVALID"
@@ -208,7 +120,7 @@ func (x *turnExecution) deliverReply(ctx context.Context, gathered *turnContext,
 	if !x.finalDelivery.Complete() {
 		return x.fail("MODEL_RESPONSE_INVALID", errors.New("final reply delivery did not publish every planned chain"))
 	}
-	gathered.reply = reply
 	gathered.profileRevision = profileRevision
+	logger.Debug("reply delivered", zap.Int("chains", len(compiled.Chains)))
 	return TurnOutcome{}, nil
 }

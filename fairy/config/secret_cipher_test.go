@@ -50,7 +50,7 @@ func TestCipherRoundTripUsesAADAndRejectsWrongKey(t *testing.T) {
 	if err != nil || string(plaintext) != "sk-exact-secret" {
 		t.Fatalf("Open() = (%q, %v)", plaintext, err)
 	}
-	if _, err := first.Open("speech", "connection-1", SecretKeyVersion, nonce, ciphertext, aad); !errors.Is(err, ErrSecretDecryptFailed) {
+	if _, err := first.Open("semantic", "connection-1", SecretKeyVersion, nonce, ciphertext, aad); !errors.Is(err, ErrSecretDecryptFailed) {
 		t.Fatalf("Open(wrong AAD) error = %v", err)
 	}
 	wrong, err := newSecretCipher(bytesOf(2, keyBytes), strings.NewReader(strings.Repeat("x", 12)))

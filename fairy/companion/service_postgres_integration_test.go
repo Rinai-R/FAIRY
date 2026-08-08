@@ -340,6 +340,25 @@ type desktopToolIntegrationModel struct {
 	requests []model.CompiledPromptRequest
 }
 
+type emptyMemoryToolIntegrationModel struct {
+	requests []model.CompiledPromptRequest
+}
+
+func (provider *emptyMemoryToolIntegrationModel) ExecuteRequestContext(_ context.Context, request model.CompiledPromptRequest) ([]model.StreamEvent, error) {
+	provider.requests = append(provider.requests, request)
+	if len(provider.requests) <= privateModelToolBudget {
+		callID := fmt.Sprintf("memory-call-%d", len(provider.requests))
+		return []model.StreamEvent{{Type: "function_calls", FunctionCalls: []model.FunctionCall{{
+			CallID: callID, Name: toolMemorySearch, Arguments: `{"query":"你好"}`,
+		}}}}, nil
+	}
+	return companionIntegrationModel{chains: []ReplyChain{{VisualState: "idle", Text: "你好呀。"}}}.ExecuteRequestContext(context.Background(), request)
+}
+
+func (*emptyMemoryToolIntegrationModel) ExecutePrompt(model.PromptLane, string, uint32, []model.PromptItem, string) ([]model.StreamEvent, error) {
+	return nil, errors.New("unexpected ExecutePrompt")
+}
+
 func (provider *desktopToolIntegrationModel) ExecuteRequestContext(_ context.Context, request model.CompiledPromptRequest) ([]model.StreamEvent, error) {
 	provider.requests = append(provider.requests, request)
 	if len(provider.requests) == 1 {
@@ -642,6 +661,53 @@ func TestPostgresDesktopToolResumesSameTurnWithFullMultimodalRequest(t *testing.
 		}
 	}
 	assertPostgresDoesNotContain(t, pool, "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB")
+}
+
+func TestPostgresEmptyMemoryToolResultsProgressToFinalReply(t *testing.T) {
+	store, _, cleanup := openCompanionIntegrationStore(t)
+	defer cleanup()
+	bootstrap, err := store.OpenOrCreateCharacterConversation("character-empty-memory-tool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &emptyMemoryToolIntegrationModel{}
+	service := newCompanionIntegrationService(store, "character-empty-memory-tool", provider)
+	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
+
+	outcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+		ConversationID:        bootstrap.Conversation.ID,
+		Input:                 "你好",
+		MaxOutputTokens:       160,
+		AvailableVisualStates: []VisualState{{ID: "idle", Description: "idle"}},
+	})
+	if err != nil {
+		t.Fatalf("SubmitCompiledTurn: %v", err)
+	}
+	if outcome.ResponseText != "你好呀。" || len(provider.requests) != privateModelToolBudget+1 {
+		t.Fatalf("outcome=%#v model requests=%d", outcome, len(provider.requests))
+	}
+	if len(provider.requests[0].Tools) == 0 || len(provider.requests[1].Tools) == 0 || len(provider.requests[2].Tools) != 0 {
+		t.Fatalf("tool availability by request = %d/%d/%d", len(provider.requests[0].Tools), len(provider.requests[1].Tools), len(provider.requests[2].Tools))
+	}
+	for requestIndex, request := range provider.requests[1:] {
+		wantPairs := requestIndex + 1
+		calls := 0
+		results := 0
+		for _, item := range request.Input {
+			switch item.Type {
+			case model.PromptItemToolCall:
+				calls++
+			case model.PromptItemToolResult:
+				results++
+				if item.Parts == nil || len(*item.Parts) != 1 || !strings.Contains((*item.Parts)[0].Text, `"empty":true`) {
+					t.Fatalf("request %d tool result = %#v", requestIndex+2, item)
+				}
+			}
+		}
+		if calls != wantPairs || results != wantPairs {
+			t.Fatalf("request %d call/result pairs = %d/%d, want %d", requestIndex+2, calls, results, wantPairs)
+		}
+	}
 }
 
 func TestPostgresDesktopVisionInitiationCreatesZeroMessageTurn(t *testing.T) {
@@ -1274,10 +1340,11 @@ func TestPostgresGroupWebSearchKeepsPromptAndLearningTaskEphemeral(t *testing.T)
 		t.Fatalf("BindInteraction: %v", err)
 	}
 	before := groupPrivacyJobCounts(t, pool)
-	if _, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+	outcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 		ConversationID: bootstrap.Conversation.ID, Input: "有什么新闻", MaxOutputTokens: 160,
 		AvailableVisualStates: []VisualState{{ID: "idle", Description: "idle"}},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("SubmitCompiledTurn: %v", err)
 	}
 	provider.mu.Lock()
@@ -1288,6 +1355,37 @@ func TestPostgresGroupWebSearchKeepsPromptAndLearningTaskEphemeral(t *testing.T)
 	}
 	if !compiledPromptContains(requests[1], "公开新闻标题") {
 		t.Fatal("web result was not available to the current group turn")
+	}
+	ledger, err := store.ListTurnRuntimeEvents(outcome.ConversationID, outcome.TurnID)
+	if err != nil {
+		t.Fatalf("ListTurnRuntimeEvents: %v", err)
+	}
+	var inspection runtimeToolDetail
+	foundInspection := false
+	for _, event := range ledger {
+		if event.EventType != runtimeLedgerEventTool {
+			continue
+		}
+		var metadata struct {
+			Detail runtimeToolDetail `json:"detail"`
+		}
+		if err := json.Unmarshal([]byte(event.MetadataJSON), &metadata); err != nil {
+			t.Fatal(err)
+		}
+		if metadata.Detail.Version == "v1" {
+			inspection = metadata.Detail
+			foundInspection = true
+			break
+		}
+	}
+	if !foundInspection || inspection.Arguments.Query != "公开新闻" || inspection.Result == nil || inspection.MergedContext == nil {
+		t.Fatalf("web tool inspection = %#v", inspection)
+	}
+	if len(inspection.Result.Knowledge) != 1 || inspection.Result.Knowledge[0].Statement != "公开新闻标题 — 公开摘要" {
+		t.Fatalf("web tool result = %#v", inspection.Result)
+	}
+	if len(inspection.MergedContext.Knowledge) != 1 || inspection.MergedContext.Knowledge[0].Sources[0].URL != "https://example.com/news" {
+		t.Fatalf("merged model context = %#v", inspection.MergedContext)
 	}
 	after := groupPrivacyJobCounts(t, pool)
 	if after.extraction != before.extraction {

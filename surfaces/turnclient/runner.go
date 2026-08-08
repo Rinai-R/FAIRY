@@ -28,7 +28,6 @@ type Runner struct {
 type Request struct {
 	ConversationID string
 	Input          string
-	SpeechEnabled  bool
 }
 
 type Event struct {
@@ -44,13 +43,11 @@ type BeatReady struct {
 	Index                uint8  `json:"index"`
 	ChainIndex           int    `json:"chainIndex"`
 	DisplayText          string `json:"displayText"`
-	SpeechText           string `json:"speechText"`
 	VisualState          string `json:"visualState"`
 	TargetIntervalMS     int64  `json:"targetIntervalMs"`
 	PaceWaitMS           int64  `json:"paceWaitMs"`
 	PublishedPrefixCount int    `json:"publishedPrefixCount"`
 	Reason               string `json:"reason,omitempty"`
-	DataURL              string `json:"dataUrl,omitempty"`
 }
 
 type Failure struct {
@@ -103,9 +100,7 @@ func (r *Runner) Run(ctx context.Context, request Request, callback Callback) (R
 	}
 	submitCh := make(chan submitResult, 1)
 	go func() {
-		response, submitErr := r.client.SubmitTurn(runCtx, request.ConversationID, coreclient.SubmitTurnRequest{
-			Input: request.Input, SpeechEnabled: request.SpeechEnabled,
-		})
+		response, submitErr := r.client.SubmitTurn(runCtx, request.ConversationID, coreclient.SubmitTurnRequest{Input: request.Input})
 		submitCh <- submitResult{response: response, err: submitErr}
 	}()
 

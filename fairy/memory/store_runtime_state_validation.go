@@ -9,12 +9,14 @@ import (
 )
 
 const (
-	PromptLaneRespond   = "respond"
-	PromptLaneCompact   = "compact"
-	PromptLaneExtract   = "extract"
-	PromptLaneTranslate = "translate"
+	PromptLaneRespond = "respond"
+	PromptLaneCompact = "compact"
+	PromptLaneExtract = "extract"
 
-	maxRuntimeMetadataBytes = 32 * 1024
+	// Tool inspection records the bounded retrieval projection that is actually
+	// sent to the next model call. Five web results can exceed 32 KiB once their
+	// statement and source evidence are represented as JSON.
+	maxRuntimeMetadataBytes = 128 * 1024
 	maxRuntimeTokenRunes    = 128
 	maxDatabaseInteger      = uint64(1<<63 - 1)
 )
@@ -117,7 +119,7 @@ func validatePromptLane(lane string) error {
 		return errors.New("lane is invalid")
 	}
 	switch lane {
-	case PromptLaneRespond, PromptLaneCompact, PromptLaneExtract, PromptLaneTranslate:
+	case PromptLaneRespond, PromptLaneCompact, PromptLaneExtract:
 		return nil
 	default:
 		return fmt.Errorf("unsupported prompt lane: %q", lane)

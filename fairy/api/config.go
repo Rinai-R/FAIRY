@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"fairy/config"
-	"fairy/speech"
 
 	"github.com/cloudwego/hertz/pkg/app"
 )
@@ -18,10 +17,6 @@ func (s *Server) registerConfigRoutes() {
 	v1.GET("/config/model", s.handleGetModel)
 	v1.PUT("/config/model", s.handlePutModel)
 	v1.DELETE("/config/model", s.handleDeleteModel)
-
-	v1.GET("/config/speech", s.handleGetSpeech)
-	v1.PUT("/config/speech", s.handlePutSpeech)
-	v1.DELETE("/config/speech", s.handleDeleteSpeech)
 
 	v1.GET("/config/web-search", s.handleGetWebSearch)
 	v1.PUT("/config/web-search", s.handlePutWebSearch)
@@ -96,38 +91,6 @@ func (s *Server) handlePutModel(ctx context.Context, c *app.RequestContext) {
 
 func (s *Server) handleDeleteModel(ctx context.Context, c *app.RequestContext) {
 	status, err := s.rt.Config.ClearModelConnection()
-	if err != nil {
-		writeErr(c, http.StatusInternalServerError, err)
-		return
-	}
-	c.JSON(http.StatusOK, status)
-}
-
-func (s *Server) handleGetSpeech(ctx context.Context, c *app.RequestContext) {
-	status, err := s.rt.Speech.Status()
-	if err != nil {
-		writeErr(c, http.StatusInternalServerError, err)
-		return
-	}
-	c.JSON(http.StatusOK, status)
-}
-
-func (s *Server) handlePutSpeech(ctx context.Context, c *app.RequestContext) {
-	var body speech.SaveSettingsRequest
-	if err := c.Bind(&body); err != nil {
-		writeErr(c, http.StatusBadRequest, err)
-		return
-	}
-	status, err := s.rt.Speech.SaveSettings(body)
-	if err != nil {
-		writeErr(c, http.StatusBadRequest, err)
-		return
-	}
-	c.JSON(http.StatusOK, status)
-}
-
-func (s *Server) handleDeleteSpeech(ctx context.Context, c *app.RequestContext) {
-	status, err := s.rt.Speech.ClearSettings()
 	if err != nil {
 		writeErr(c, http.StatusInternalServerError, err)
 		return
@@ -210,10 +173,5 @@ func (s *Server) enrichStatusPayload(payload map[string]any) {
 		payload["model"] = model
 	} else {
 		payload["modelError"] = err.Error()
-	}
-	if speechStatus, err := s.rt.Speech.Status(); err == nil {
-		payload["speech"] = speechStatus
-	} else {
-		payload["speechError"] = err.Error()
 	}
 }

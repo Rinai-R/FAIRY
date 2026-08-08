@@ -9,7 +9,7 @@ import (
 )
 
 var configSections = map[string]struct{}{
-	"model": {}, "speech": {}, "web-search": {}, "semantic-embedding": {}, "qq-onebot": {},
+	"model": {}, "web-search": {}, "semantic-embedding": {}, "qq-onebot": {},
 }
 
 type OwnerIdentity struct {
@@ -55,8 +55,8 @@ func (c *Client) ApplyConfig(ctx context.Context, section string, payload []byte
 }
 
 func (c *Client) DeleteConfig(ctx context.Context, section string) (json.RawMessage, error) {
-	if section != "model" && section != "speech" {
-		return nil, errors.New("delete is supported only for model and speech")
+	if section != "model" {
+		return nil, errors.New("delete is supported only for model")
 	}
 	return c.doRawJSON(ctx, "delete "+section+" config", http.MethodDelete, "/v1/config/"+section, nil)
 }

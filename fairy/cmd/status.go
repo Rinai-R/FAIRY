@@ -102,7 +102,6 @@ func runDoctor(ctx context.Context, client APIClient, endpoint string) (doctorRe
 		}
 	}
 	checkConfig("model")
-	checkConfig("speech")
 	checkConfig("web-search")
 	checkConfig("semantic-embedding")
 	catalog, err := client.ListCharacters(ctx)

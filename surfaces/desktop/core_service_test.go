@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -65,63 +64,11 @@ func (w *fakeWindow) Hide() application.Window {
 func (w *fakeWindow) IsVisible() bool { return w.visible }
 func (w *fakeWindow) Focus()          { w.focused = true }
 
-func TestDecodeDesktopTurnEventPreservesValidAudio(t *testing.T) {
-	payload := `{"type":"beat.ready","beatId":"b1","kind":"final","index":2,"chainIndex":1,"displayText":"你好","speechText":"你好","visualState":"idle","speakerId":"speaker-1","mimeType":"audio/mpeg","format":"mp3","dataUrl":"data:audio/mpeg;base64,bXAz"}`
-	event := decodeDesktopTurnEvent(coreclient.TurnEvent{TurnID: "turn-1", Payload: json.RawMessage(payload)})
-	if event.Type != "beat.ready" || event.TurnID != "turn-1" || event.Beat == nil {
-		t.Fatalf("decoded event = %#v", event)
-	}
-	beat := event.Beat
-	if beat.Index != 2 || beat.ChainIndex != 1 || beat.SpeechText != "你好" ||
-		beat.MIMEType != desktopAudioMIME || beat.Format != desktopAudioFormat ||
-		beat.DataURL != "data:audio/mpeg;base64,bXAz" || beat.AudioUnavailable || beat.AudioError != "" {
-		t.Fatalf("decoded audio beat = %#v", beat)
-	}
-}
-
 func TestDecodeDesktopTurnEventKeepsTextOnlyBeat(t *testing.T) {
 	payload := `{"type":"beat.ready","beatId":"b1","kind":"final","displayText":"只显示文字","visualState":"idle"}`
 	event := decodeDesktopTurnEvent(coreclient.TurnEvent{TurnID: "turn-1", Payload: json.RawMessage(payload)})
-	if event.Beat == nil || event.Beat.DisplayText != "只显示文字" ||
-		event.Beat.DataURL != "" || event.Beat.AudioUnavailable || event.Beat.AudioError != "" {
+	if event.Beat == nil || event.Beat.DisplayText != "只显示文字" {
 		t.Fatalf("decoded text-only beat = %#v", event.Beat)
-	}
-}
-
-func TestDecodeDesktopTurnEventRejectsInvalidAudio(t *testing.T) {
-	oversized := "data:audio/mpeg;base64," + strings.Repeat("A", base64.StdEncoding.EncodedLen(maxDesktopAudioBytes+1))
-	tests := []struct {
-		name    string
-		audio   string
-		mime    string
-		format  string
-		speaker string
-	}{
-		{name: "http URL", audio: "https://example.com/audio.mp3", mime: desktopAudioMIME, format: desktopAudioFormat},
-		{name: "file URL", audio: "file:///tmp/audio.mp3", mime: desktopAudioMIME, format: desktopAudioFormat},
-		{name: "wrong MIME", audio: "data:audio/wav;base64,bXAz", mime: "audio/wav", format: desktopAudioFormat},
-		{name: "wrong format", audio: "data:audio/mpeg;base64,bXAz", mime: desktopAudioMIME, format: "wav"},
-		{name: "invalid base64", audio: "data:audio/mpeg;base64,***", mime: desktopAudioMIME, format: desktopAudioFormat},
-		{name: "empty base64", audio: "data:audio/mpeg;base64,", mime: desktopAudioMIME, format: desktopAudioFormat},
-		{name: "oversized", audio: oversized, mime: desktopAudioMIME, format: desktopAudioFormat},
-		{name: "metadata without data", mime: desktopAudioMIME, format: desktopAudioFormat, speaker: "speaker-1"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			payload, err := json.Marshal(map[string]any{
-				"type": "beat.ready", "beatId": "b1", "kind": "final",
-				"displayText": "文字保留", "visualState": "idle",
-				"mimeType": test.mime, "format": test.format, "speakerId": test.speaker, "dataUrl": test.audio,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			event := decodeDesktopTurnEvent(coreclient.TurnEvent{TurnID: "turn-1", Payload: payload})
-			if event.Beat == nil || event.Beat.DisplayText != "文字保留" || event.Beat.DataURL != "" ||
-				!event.Beat.AudioUnavailable || event.Beat.AudioError != "语音数据不可用" {
-				t.Fatalf("decoded invalid audio beat = %#v", event.Beat)
-			}
-		})
 	}
 }
 
@@ -364,10 +311,8 @@ func TestCoreServiceUsesOneSocketAndClearsCompletedTurn(t *testing.T) {
 				case "session.watch":
 					_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID})
 				case "turn.submit":
-					var speechEnabled bool
-					_ = json.Unmarshal(frame["speechEnabled"], &speechEnabled)
-					if !speechEnabled {
-						t.Error("Desktop turn did not request speech output")
+					if _, present := frame["speechEnabled"]; present {
+						t.Error("Desktop turn sent removed speech option")
 						return
 					}
 					writeTurnEventFixture(conn, "t1", 1, "responding", `{"type":"beat.ready","kind":"reply","displayText":"ok","visualState":"idle"}`)
@@ -399,7 +344,7 @@ func TestCoreServiceUsesOneSocketAndClearsCompletedTurn(t *testing.T) {
 		t.Fatalf("Connect() error = %v", err)
 	}
 	defer service.ServiceShutdown()
-	if err := service.Send("hello", true); err != nil {
+	if err := service.Send("hello"); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
 	assertTurnTypes(t, turns, "state_changed", "beat.ready", "completed")
@@ -500,7 +445,7 @@ func TestCoreServiceRejectsSendAndCancelsProactiveTurn(t *testing.T) {
 	defer service.ServiceShutdown()
 
 	assertTurnTypes(t, turns, "state_changed")
-	if err := service.Send("must be rejected", true); err == nil || err.Error() != "a turn is already active" {
+	if err := service.Send("must be rejected"); err == nil || err.Error() != "a turn is already active" {
 		t.Fatalf("Send() error = %v, want active Turn error", err)
 	}
 	if err := service.Cancel(); err != nil {
@@ -608,7 +553,7 @@ func TestCoreServicePreparesControlledStickerAndReportsRenderSuccess(t *testing.
 	defer service.ServiceShutdown()
 
 	sendResult := make(chan error, 1)
-	go func() { sendResult <- service.Send("发个表情", false) }()
+	go func() { sendResult <- service.Send("发个表情") }()
 	assertTurnTypes(t, turns, "state_changed")
 	var beatEvent desktopTurnEvent
 	select {

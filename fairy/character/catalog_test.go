@@ -1,6 +1,7 @@
 package character
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -299,6 +300,77 @@ func TestStoreCreateUpdateAppearanceAndActivate(t *testing.T) {
 	}
 	if catalog.Active == nil || catalog.Active.CharacterID != created.CharacterID || catalog.Active.Revision != updated.Revision {
 		t.Fatalf("catalog active = %#v", catalog.Active)
+	}
+}
+
+func TestStoreDeleteInactiveCharacterPreservesActiveAndSharedVisual(t *testing.T) {
+	root := t.TempDir()
+	activeID := writeCharacterLibrary(t, root, 2)
+	const deletedID = "character-001"
+	store := NewStore(root)
+
+	if err := store.Delete(deletedID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if _, found, err := store.Lookup(deletedID); err != nil || found {
+		t.Fatalf("Lookup(deleted) = found %v, error %v", found, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "character-appearances", deletedID+".json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deleted appearance Stat() error = %v, want not exist", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "visual-packs", "fairy.shared", "manifest.json")); err != nil {
+		t.Fatalf("shared visual Stat() error = %v", err)
+	}
+	catalog, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(catalog.Characters) != 1 || catalog.Active == nil || catalog.Active.CharacterID != activeID {
+		t.Fatalf("catalog after inactive delete = %#v", catalog)
+	}
+}
+
+func TestStoreDeleteActiveCharacterClearsSelection(t *testing.T) {
+	root := t.TempDir()
+	activeID := writeCharacterLibrary(t, root, 2)
+	store := NewStore(root)
+
+	if err := store.Delete(activeID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "active-character.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("active selection Stat() error = %v, want not exist", err)
+	}
+	catalog, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(catalog.Characters) != 1 || catalog.Active != nil || catalog.Characters[0].CharacterID == activeID {
+		t.Fatalf("catalog after active delete = %#v", catalog)
+	}
+	staging, err := filepath.Glob(filepath.Join(root, ".delete-character-*"))
+	if err != nil || len(staging) != 0 {
+		t.Fatalf("deletion staging = %v, error %v", staging, err)
+	}
+}
+
+func TestStoreDeleteRejectsInvalidAndMissingTargetsWithoutMutation(t *testing.T) {
+	root := t.TempDir()
+	activeID := writeCharacterLibrary(t, root, 1)
+	store := NewStore(root)
+
+	if err := store.Delete("../invalid"); !errors.Is(err, ErrInvalidCharacterID) {
+		t.Fatalf("Delete(invalid) error = %v, want ErrInvalidCharacterID", err)
+	}
+	if err := store.Delete("missing-character"); !errors.Is(err, ErrCharacterNotFound) {
+		t.Fatalf("Delete(missing) error = %v, want ErrCharacterNotFound", err)
+	}
+	catalog, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(catalog.Characters) != 1 || catalog.Active == nil || catalog.Active.CharacterID != activeID {
+		t.Fatalf("catalog after rejected deletes = %#v", catalog)
 	}
 }
 

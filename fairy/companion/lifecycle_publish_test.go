@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestPublishLifeSerializesConcurrentSpeechEvents(t *testing.T) {
+func TestPublishLifeSerializesConcurrentPresenceEvents(t *testing.T) {
 	service := NewCompanionService()
 	var mu sync.Mutex
 	var sequences []uint64
@@ -31,11 +31,7 @@ func TestPublishLifeSerializesConcurrentSpeechEvents(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			_, _ = service.publishLife(life, func() (session.Event, error) {
-				return life.SpeechRequested(turnCompletion{
-					Text:              "稍等一下哦。",
-					SpeechText:        "稍等一下哦。",
-					CharacterRevision: 1,
-				})
+				return life.Presence("working")
 			})
 		}()
 	}

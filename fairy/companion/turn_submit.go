@@ -32,7 +32,7 @@ func (e *TurnEngine) SubmitDesktopVisionInitiation(request DesktopVisionInitiati
 	}
 	requestID := uuid.NewString()
 	return e.submitRuntimeTurn(SubmitCompiledTurnRequest{
-		ConversationID: request.ConversationID, SpeechEnabled: request.SpeechEnabled,
+		ConversationID:  request.ConversationID,
 		MaxOutputTokens: RespondMaxOutputTokens, MessageSource: "desktop_vision_initiation",
 		OutputCapabilities: s.OutputCapabilities(request.ConversationID),
 		Initiation: &DesktopInitiationContext{
@@ -72,7 +72,7 @@ func (e *TurnEngine) SubmitDesktopInitiation(request DesktopInitiationRequest, o
 		}
 	}
 	return e.submitRuntimeTurn(SubmitCompiledTurnRequest{
-		ConversationID: request.ConversationID, SpeechEnabled: request.SpeechEnabled,
+		ConversationID:  request.ConversationID,
 		MaxOutputTokens: RespondMaxOutputTokens, MessageSource: "desktop_initiation",
 		OutputCapabilities: s.OutputCapabilities(request.ConversationID),
 		Initiation: &DesktopInitiationContext{
@@ -108,7 +108,6 @@ func (e *TurnEngine) SubmitTurn(request SubmitTurnRequest) (TurnOutcome, error) 
 	return e.submitRuntimeTurn(SubmitCompiledTurnRequest{
 		ConversationID:      request.ConversationID,
 		Input:               request.Input,
-		SpeechEnabled:       request.SpeechEnabled,
 		MaxOutputTokens:     RespondMaxOutputTokens,
 		TraceID:             request.TraceID,
 		MessageSource:       request.MessageSource,

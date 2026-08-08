@@ -22,10 +22,11 @@ type Options struct {
 
 // Server wraps Hertz around Core-injected process services.
 type Server struct {
-	rt     *Dependencies
-	engine *server.Hertz
-	token  string
-	logger *zap.Logger
+	rt             *Dependencies
+	engine         *server.Hertz
+	token          string
+	logger         *zap.Logger
+	sessionTickets *browserSessionTicketRegistry
 }
 
 func NewServer(rt *Dependencies, options Options) (*Server, error) {
@@ -54,7 +55,10 @@ func NewServer(rt *Dependencies, options Options) (*Server, error) {
 		server.WithSenseClientDisconnection(true),
 		server.WithMaxRequestBodySize(sticker.MaxContentBytes+(1<<20)),
 	)
-	s := &Server{rt: rt, engine: engine, token: options.Token, logger: logger}
+	s := &Server{
+		rt: rt, engine: engine, token: options.Token, logger: logger,
+		sessionTickets: newBrowserSessionTicketRegistry(browserSessionTicketCapacity, browserSessionTicketTTL),
+	}
 	engine.Use(s.metricsMiddleware)
 	s.routes()
 	return s, nil
@@ -71,11 +75,13 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) routes() {
+	s.engine.GET("/v1/session/ws", s.handleSessionWebSocket())
 	v1 := s.engine.Group("/v1")
 	v1.Use(s.authMiddleware)
 	v1.GET("/status", s.handleStatus)
-	v1.GET("/session/ws", s.handleSessionWebSocket())
+	v1.POST("/session/browser-ticket", s.handleBrowserSessionTicket)
 	v1.GET("/sessions/:conversationId/messages", s.handleSessionMessages)
+	v1.GET("/sessions/:conversationId/turns/:turnId/runtime", s.handleTurnRuntime)
 	v1.GET("/visual-assets/:packId/*assetPath", s.handleVisualAsset)
 	s.registerConfigRoutes()
 	s.registerCharacterRoutes()

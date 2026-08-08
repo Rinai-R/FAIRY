@@ -119,13 +119,10 @@ func TestServiceCloseStopsInitiativeWorkers(t *testing.T) {
 	if got := attentionStateCount(service.attention); got != 0 {
 		t.Fatalf("attention states after Close = %d, want 0", got)
 	}
-	if service.learning.Enqueue(LearningSnapshot{
-		ConversationID: "conversation-1",
-		Messages:       []AmbientObservation{{MessageID: "m1"}},
-	}) {
+	if service.experience.EnqueueEpisode("conversation-1", []AmbientObservation{{MessageID: "m1"}}) {
 		t.Fatal("learning enqueue accepted after Service.Close")
 	}
-	if service.feedback.Register(FeedbackRegistration{
+	if service.experience.CompleteReply(FeedbackRegistration{
 		ConversationID: "conversation-1", TurnID: "turn-1", ReplyText: "reply",
 	}) {
 		t.Fatal("feedback registration accepted after Service.Close")

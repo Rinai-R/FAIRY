@@ -65,10 +65,15 @@ func TestPublishLifeReportsFinalBeatAndTerminalStages(t *testing.T) {
 	if _, err := service.publishLife(life, func() (session.Event, error) { return life.Complete(turnCompletion{}) }); err != nil {
 		t.Fatal(err)
 	}
-	firstBeat := receiveTelemetryCall(t, telemetry.calls)
-	completed := receiveTelemetryCall(t, telemetry.calls)
-	if firstBeat.stage != "first_beat" || completed.stage != "completed" {
-		t.Fatalf("stages = %#v, %#v", firstBeat, completed)
+	want := []string{
+		"lifecycle:interpreting", "lifecycle:gathering", "lifecycle:planning", "lifecycle:responding",
+		"first_beat", "completed",
+	}
+	for index, stage := range want {
+		call := receiveTelemetryCall(t, telemetry.calls)
+		if call.stage != stage {
+			t.Fatalf("stage[%d] = %#v, want %q", index, call, stage)
+		}
 	}
 }
 

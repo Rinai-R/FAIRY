@@ -15,18 +15,14 @@ test("production entry uses the standalone CoreService surface router", () => {
   assert.doesNotMatch(mainSource + surfaceSource, /GetDesktopState|OpenCompanionChat/);
 });
 
-test("Desktop requests Core speech and wires paired audio into the playback owner", () => {
-  assert.match(surfaceSource, /Send\(input, true\)/);
-  assert.doesNotMatch(surfaceSource, /Send\(input, false\)/);
-  assert.match(surfaceSource, /createSpeechPlayback/);
-  assert.match(surfaceSource, /player\.enqueue\(turn\.turnId \|\| "", turn\.beat\)/);
-  assert.match(surfaceSource, /const newIdentifiedTurn = nextTurnId && currentPlaybackTurn !== nextTurnId/);
+test("Desktop sends text turns and renders ordered display beats", () => {
+  assert.match(surfaceSource, /Send\(input\)/);
+  assert.doesNotMatch(surfaceSource, /createSpeechPlayback|new Audio|dataUrl|audioUnavailable/);
+  assert.match(surfaceSource, /const newIdentifiedTurn = nextTurnId && bubbleRef\.current\.turnId !== nextTurnId/);
   assert.match(surfaceSource, /if \(newIdentifiedTurn \|\| localPendingTurn\)/);
-  assert.match(surfaceSource, /player\.beginTurn\(nextTurnId\)/);
   assert.match(surfaceSource, /if \(newIdentifiedTurn \|\| localPendingTurn\) \{\s+return waitingPhase\s+\? \{ visible: true, waiting: true, settled: false, turnId: nextTurnId, parts: \[\] \}/);
   assert.match(surfaceSource, /turn\?\.state === "interrupted"/);
   assert.match(surfaceSource, /if \(isDesktopTurnAborted\(turn\)\) \{/);
-  assert.match(surfaceSource, /player\.stop\(\)/);
   const abortBranch = surfaceSource.indexOf("if (isDesktopTurnAborted(turn)) {");
   const genericStateBranch = surfaceSource.indexOf('if (turn.type === "state_changed") {', abortBranch);
   assert.ok(abortBranch >= 0 && genericStateBranch > abortBranch);

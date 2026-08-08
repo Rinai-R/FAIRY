@@ -12,15 +12,30 @@ import (
 )
 
 type turnExecution struct {
-	engine          *TurnEngine
-	service         *CompanionService
-	request         SubmitCompiledTurnRequest
-	persisted       memory.PersistedTurn
-	life            *turnLifecycle
-	speechFlow      *replyapp.SpeechPipeline
-	finalDelivery   *replyapp.Delivery
-	speechPlayIndex int
-	speechRequested bool
+	engine        *TurnEngine
+	service       *CompanionService
+	request       SubmitCompiledTurnRequest
+	persisted     memory.PersistedTurn
+	life          *turnLifecycle
+	finalDelivery *replyapp.Delivery
+	beatIndex     int
+}
+
+type turnLearningPolicy struct {
+	extraction bool
+	social     bool
+	knowledge  bool
+}
+
+func resolveTurnLearningPolicy(resolved session.Resolved) turnLearningPolicy {
+	if resolved.IsEvaluation() {
+		return turnLearningPolicy{}
+	}
+	return turnLearningPolicy{
+		extraction: resolved.AllowsPersonalMemory(),
+		social:     resolved.AllowsAmbientParticipation() && !resolved.AllowsPersonalMemory(),
+		knowledge:  true,
+	}
 }
 
 func (x *turnExecution) persist(gathered *turnContext, resolved session.Resolved, turnStarted time.Time) (TurnOutcome, error) {
@@ -30,19 +45,19 @@ func (x *turnExecution) persist(gathered *turnContext, resolved session.Resolved
 	fullRequest := gathered.fullRequest
 	finalUsage := slices.Clone(gathered.finalUsage)
 	bootstrap := gathered.bootstrap
+	learning := resolveTurnLearningPolicy(resolved)
 	if _, err := x.service.memory.turn.turns.CompleteExpressionTurnForPolicy(
 		x.request.ConversationID,
 		x.persisted.ID,
 		reply.DisplayText,
 		memoryExpressionParts(reply.Chains),
-		resolved.AllowsPersonalMemory(),
+		learning.extraction,
 	); err != nil {
 		return x.service.terminalPersistenceFailure(x.life, x.request.ConversationID, x.persisted.ID, nil, err)
 	}
 	if _, err := x.service.publishLife(x.life, func() (session.Event, error) {
 		return x.life.Complete(turnCompletion{
 			Text:                reply.DisplayText,
-			SpeechText:          reply.SpeechText,
 			CharacterRevision:   gathered.character.Revision,
 			UserProfileRevision: profileRevision,
 			Usage:               finalUsage,
@@ -63,10 +78,10 @@ func (x *turnExecution) persist(gathered *turnContext, resolved session.Resolved
 	if err := x.service.updateContinuationState(x.request.ConversationID, gathered.connectionConfig.Capabilities.CacheRetention, bootstrap.PromptWindow.Revision, fullRequest, reply.DisplayText, events); err != nil {
 		x.service.appendRuntimeLedger(x.request.ConversationID, x.persisted.ID, runtimeLedgerEventContinuation, turnStateCompleted, "CONTINUATION_STATE_FAILED", runtimeFailureLedgerMetadata("CONTINUATION_STATE_FAILED", err, false))
 	}
-	if resolved.AllowsPersonalMemory() {
+	if learning.extraction {
 		x.service.scheduleBackgroundExtraction(x.request.ConversationID)
 	}
-	if resolved.AllowsAmbientParticipation() && !resolved.AllowsPersonalMemory() && x.service.ambientReplies != nil && strings.TrimSpace(reply.DisplayText) != "" {
+	if learning.social && x.service.ambientReplies != nil && strings.TrimSpace(reply.DisplayText) != "" {
 		candidates := socialMemoryFeedbackCandidates(gathered.socialFeedbackContext)
 		if len(candidates) > 0 {
 			x.service.ambientReplies.ObserveAmbientReply(AmbientReply{
@@ -76,15 +91,13 @@ func (x *turnExecution) persist(gathered *turnContext, resolved session.Resolved
 		}
 	}
 	x.service.scheduleAutoCompaction(x.request.ConversationID, events)
-	if x.service.retention != nil && len(gathered.knowledgeTasks) > 0 {
+	if learning.knowledge && x.service.retention != nil && len(gathered.knowledgeTasks) > 0 {
 		x.service.retention.admitKnowledgeTasks(gathered.knowledgeTasks)
 	}
 	return TurnOutcome{
 		ConversationID:  x.request.ConversationID,
 		TurnID:          x.persisted.ID,
 		ResponseText:    reply.DisplayText,
-		SpeechText:      reply.SpeechText,
-		SpeechRequested: x.request.SpeechEnabled,
 		VisualState:     reply.VisualState,
 		Chains:          reply.Chains,
 		RespondMigrated: true,
@@ -92,9 +105,6 @@ func (x *turnExecution) persist(gathered *turnContext, resolved session.Resolved
 }
 
 func (x *turnExecution) fail(code string, cause error) (TurnOutcome, error) {
-	if x.speechFlow != nil {
-		x.speechFlow.Close()
-	}
 	s := x.service
 	if errors.Is(cause, ErrTurnInterrupted) {
 		var published []ReplyChain

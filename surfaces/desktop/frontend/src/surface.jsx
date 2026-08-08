@@ -12,7 +12,6 @@ import {
   historyExpressionParts,
   markStickerUnavailable,
 } from "./expressionViewState.mjs";
-import { createSpeechPlayback } from "./speechPlayback.mjs";
 import { projectDesktopTurnActive } from "./turnViewState.mjs";
 
 const FOOT_INPUT_MAX_HEIGHT = 88;
@@ -101,7 +100,7 @@ function CompanionSurface() {
       // "thinking". Clear the draft immediately so the dock does not look like a
       // half-stuck composer with stop + leftover text.
       setActive(true); setError(""); setDraft("");
-      await Send(input, true);
+      await Send(input);
     } catch (cause) { setError(cause?.message || "发送失败"); setActive(false); setVisualState("idle"); }
   }
 
@@ -277,36 +276,19 @@ function SettingsSurface() {
 
 function SpeechSurface() {
   const [bubble, setBubble] = useState({ visible: false, waiting: false, settled: false, turnId: "", parts: [] });
-  const [playback, setPlayback] = useState({ busy: false, error: "" });
-  const [audioError, setAudioError] = useState("");
   const bubbleRef = useRef(bubble);
-  const playbackRef = useRef(null);
-  const fadePendingRef = useRef(false);
   const reportedStickersRef = useRef(new Set());
   bubbleRef.current = bubble;
 
   const hideBubble = () => {
-    fadePendingRef.current = false;
     setBubble({ visible: false, waiting: false, settled: true, turnId: "", parts: [] });
     HideSpeechBubble().catch(() => {});
   };
 
   useEffect(() => {
-    let mounted = true;
-    const player = createSpeechPlayback({
-      createAudio: (source) => new Audio(source),
-      onStateChange: (state) => {
-        if (!mounted) return;
-        setPlayback(state);
-        if (!state.busy && fadePendingRef.current) hideBubble();
-      },
-    });
-    playbackRef.current = player;
     const off = Events.On("desktop:turn", (event) => {
       const turn = event?.data ?? event;
       if (isDesktopTurnAborted(turn)) {
-        fadePendingRef.current = false;
-        player.stop();
         if (bubbleRef.current.parts.some((part) => part.kind === "sticker" && part.unavailable)) {
           setBubble((current) => ({ ...current, visible: true, waiting: false, settled: true }));
         } else {
@@ -320,14 +302,8 @@ function SpeechSurface() {
           || turn.state === "gathering"
           || turn.state === "responding";
         const nextTurnId = typeof turn.turnId === "string" ? turn.turnId.trim() : "";
-        const currentPlaybackTurn = player.snapshot().turnId;
-        const newIdentifiedTurn = nextTurnId && currentPlaybackTurn !== nextTurnId;
+        const newIdentifiedTurn = nextTurnId && bubbleRef.current.turnId !== nextTurnId;
         const localPendingTurn = turn.state === "planning" && !nextTurnId;
-        if (newIdentifiedTurn || localPendingTurn) {
-          fadePendingRef.current = false;
-          player.beginTurn(nextTurnId);
-          setAudioError("");
-        }
         setBubble((current) => {
           if (newIdentifiedTurn || localPendingTurn) {
             return waitingPhase
@@ -344,16 +320,6 @@ function SpeechSurface() {
         return;
       }
       if (turn.type === "beat.ready") {
-        if (turn.beat?.audioUnavailable) {
-          setAudioError(turn.beat.audioError || "语音数据不可用");
-        } else if (turn.beat?.dataUrl) {
-          const currentTurn = player.snapshot().turnId;
-          if (currentTurn && turn.turnId && currentTurn !== turn.turnId) {
-            fadePendingRef.current = false;
-          }
-          setAudioError("");
-          player.enqueue(turn.turnId || "", turn.beat);
-        }
         const next = expressionPartFromTurn(turn);
         if (!next) return;
         setBubble((current) => {
@@ -378,23 +344,14 @@ function SpeechSurface() {
       }
     });
     return () => {
-      mounted = false;
       off?.();
-      player.stop();
-      playbackRef.current = null;
     };
   }, []);
 
   if (!bubble.visible) return <main className="fairy-speech-surface" />;
   const hasSticker = bubble.parts.some((part) => part.kind === "sticker");
   const text = bubble.parts.filter((part) => part.kind === "utterance").map((part) => part.text).join("\n");
-  const clearBubble = () => {
-    if (playbackRef.current?.snapshot().busy) {
-      fadePendingRef.current = true;
-      return;
-    }
-    hideBubble();
-  };
+  const clearBubble = () => hideBubble();
   const reportSticker = async (part, succeeded) => {
     if (!part.turnId || !part.beatId || reportedStickersRef.current.has(part.key)) return;
     reportedStickersRef.current.add(part.key);
@@ -412,7 +369,6 @@ function SpeechSurface() {
       }));
     }
   };
-  const visibleAudioError = audioError || playback.error;
   return <main className="fairy-speech-surface">
     {hasSticker
       ? <CharacterExpressionBubble
@@ -426,7 +382,6 @@ function SpeechSurface() {
         onFaded={clearBubble}
       />
       : <CharacterSpeechBubble targetText={text} waiting={bubble.waiting} onFaded={clearBubble} />}
-    {visibleAudioError ? <p className="fairy-speech-playback-error" role="status">{visibleAudioError}</p> : null}
   </main>;
 }
 

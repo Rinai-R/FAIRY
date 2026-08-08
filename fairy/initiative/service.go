@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"fairy/model"
 	"fairy/session"
 )
 
@@ -39,7 +40,7 @@ type ServiceOptions struct {
 	Observer     Observer
 }
 
-// Service owns Initiative's ambient, desktop, learning, and feedback
+// Service owns Initiative's ambient, desktop, and experience
 // lifecycles. Core is responsible for injecting all cross-domain ports.
 type Service struct {
 	turns        TurnStarter
@@ -47,8 +48,7 @@ type Service struct {
 	observer     Observer
 	inbox        *Inbox
 	decisions    *Engine
-	learning     *LearningEngine
-	feedback     *FeedbackEngine
+	experience   *ExperienceLoop
 	attention    *AttentionEvaluator
 	evidence     *EvidenceRegistry
 }
@@ -59,8 +59,7 @@ func NewService(parent context.Context, options ServiceOptions) *Service {
 		interactions: options.Interactions,
 		observer:     options.Observer,
 		decisions:    NewEngine(options.Decisions),
-		learning:     NewLearningEngine(options.Learning, LearningQueueCapacity),
-		feedback:     NewFeedbackEngine(options.Feedback, FeedbackQueueCapacity),
+		experience:   NewExperienceLoop(options.Learning, options.Feedback),
 		attention:    NewAttentionEvaluator(),
 		evidence:     NewEvidenceRegistry(),
 	}
@@ -75,11 +74,8 @@ func (s *Service) Close() {
 	if s.inbox != nil {
 		s.inbox.Close()
 	}
-	if s.learning != nil {
-		s.learning.Close()
-	}
-	if s.feedback != nil {
-		s.feedback.Close()
+	if s.experience != nil {
+		s.experience.Close()
 	}
 	if s.attention != nil {
 		s.attention.Clear()
@@ -211,10 +207,10 @@ func (s *Service) ObserveDesktop(conversationID string, observation session.Desk
 }
 
 func (s *Service) ObserveAmbientReply(registration FeedbackRegistration) bool {
-	if s == nil || s.feedback == nil {
+	if s == nil || s.experience == nil {
 		return false
 	}
-	return s.feedback.Register(registration)
+	return s.experience.CompleteReply(registration)
 }
 
 func (s *Service) BeginMessageTrace(source, conversationID, traceID string) string {
@@ -225,15 +221,22 @@ func (s *Service) BeginMessageTrace(source, conversationID, traceID string) stri
 }
 
 func (s *Service) ObserveSocialFeedback(conversationID string, observation AmbientObservation) {
-	if s != nil && s.feedback != nil {
-		s.feedback.Observe(conversationID, observation)
+	if s != nil && s.experience != nil {
+		s.experience.Observe(conversationID, observation)
 	}
 }
 
 func (s *Service) EnqueueSocialLearning(conversationID string, messages []AmbientObservation) {
-	if s != nil && s.learning != nil {
-		s.learning.Enqueue(LearningSnapshot{ConversationID: conversationID, Messages: messages})
+	if s != nil && s.experience != nil {
+		s.experience.EnqueueEpisode(conversationID, messages)
 	}
+}
+
+func (s *Service) ExperienceStats() ExperienceStats {
+	if s == nil || s.experience == nil {
+		return ExperienceStats{CacheIdentityVersion: model.PromptCacheKeyVersion}
+	}
+	return s.experience.Stats()
 }
 
 func (s *Service) CancelTurnBeforeDelivery(conversationID string) {

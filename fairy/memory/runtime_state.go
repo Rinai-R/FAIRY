@@ -9,11 +9,13 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+var ErrTurnNotFound = errors.New("turn does not belong to conversation")
+
 func RequireTurn(ctx context.Context, tx pgx.Tx, conversationID, turnID string) error {
 	var exists int
 	err := tx.QueryRow(ctx, "SELECT 1 FROM conversation_turns WHERE conversation_id = $1 AND id = $2 FOR UPDATE", conversationID, turnID).Scan(&exists)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return errors.New("turn does not belong to conversation")
+		return ErrTurnNotFound
 	}
 	if err != nil {
 		return fmt.Errorf("checking turn: %w", err)
@@ -55,7 +57,19 @@ func InsertTurnRuntimeEvent(
 	}, nil
 }
 
-func ListTurnRuntimeEvents(ctx context.Context, db Querier, conversationID, turnID string) ([]TurnRuntimeEventRecord, error) {
+type runtimeStateQuerier interface {
+	Querier
+	RowQuerier
+}
+
+func ListTurnRuntimeEvents(ctx context.Context, db runtimeStateQuerier, conversationID, turnID string) ([]TurnRuntimeEventRecord, error) {
+	var exists bool
+	if err := db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM conversation_turns WHERE conversation_id = $1 AND id = $2)", conversationID, turnID).Scan(&exists); err != nil {
+		return nil, fmt.Errorf("checking runtime event turn: %w", err)
+	}
+	if !exists {
+		return nil, ErrTurnNotFound
+	}
 	rows, err := db.Query(ctx, "SELECT id, conversation_id, turn_id, sequence, event_type, state, code, metadata_json::text, created_at_ms FROM turn_runtime_events WHERE conversation_id = $1 AND turn_id = $2 ORDER BY sequence ASC", conversationID, turnID)
 	if err != nil {
 		return nil, fmt.Errorf("listing runtime events: %w", err)

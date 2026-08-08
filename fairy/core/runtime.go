@@ -23,7 +23,6 @@ import (
 	"fairy/model"
 	"fairy/observability"
 	"fairy/session"
-	"fairy/speech"
 	"fairy/sticker"
 )
 
@@ -63,7 +62,6 @@ type Runtime struct {
 	Character    *character.CharacterService
 	Config       *config.ConfigService
 	ConfigReader *config.Reader
-	Speech       *speech.SpeechService
 	Profile      *config.ProfileService
 	Stickers     *sticker.Store
 	WebSearch    *companion.WebSearchService
@@ -82,7 +80,7 @@ func (rt *Runtime) APIDependencies() *api.Dependencies {
 		Database: rt.Database, MemoryStore: rt.MemoryStore,
 		Identity: rt.Identity, Memory: rt.Memory, Secret: rt.Secret,
 		Companion: rt.Companion, Initiative: rt.Initiative, Character: rt.Character,
-		Config: rt.Config, Speech: rt.Speech, Profile: rt.Profile, Stickers: rt.Stickers, Captures: rt.Captures,
+		Config: rt.Config, Profile: rt.Profile, Stickers: rt.Stickers, Captures: rt.Captures,
 		Logs: rt.Logs, HTTPMetrics: rt.HTTPMetrics, Messages: rt.Messages,
 		BootstrapStatus: func() (any, error) {
 			return rt.Bootstrap.Status()
@@ -199,7 +197,6 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 		Character:     services.Character,
 		Config:        services.Config,
 		ConfigReader:  services.ConfigReader,
-		Speech:        services.Speech,
 		Profile:       services.Profile,
 		Stickers:      stickerStore,
 		WebSearch:     services.WebSearch,
@@ -219,7 +216,6 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 	companion.AttachProfileSource(services.Companion, services.Profile.ProfileStore())
 	companion.AttachConfigSource(services.Companion, services.ConfigReader)
 	companion.AttachDesktopToolCoordinator(services.Companion, rt.Captures)
-	companion.AttachSpeechRuntime(services.Companion, companionSpeechAdapter{service: services.Speech})
 	character.AttachLogger(services.Character, logger.Named("character"))
 	companion.AttachWebSearchLogger(services.WebSearch, logger.Named("openserp"))
 

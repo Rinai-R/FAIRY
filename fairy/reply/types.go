@@ -12,8 +12,11 @@ var ErrInterrupted = errors.New("TURN_INTERRUPTED: companion turn was cancelled"
 type ChainKind string
 
 const (
-	ChainUtterance ChainKind = "utterance"
-	ChainSticker   ChainKind = "sticker"
+	ChainUtterance      ChainKind = "utterance"
+	ChainSticker        ChainKind = "sticker"
+	BeatKindUtterance             = "utterance"
+	BeatKindFinal                 = "final"
+	ChainIndexUtterance           = -1
 )
 
 type StickerReference struct {
@@ -25,25 +28,8 @@ type StickerReference struct {
 type ReplyChain struct {
 	Kind        ChainKind         `json:"kind,omitempty"`
 	Text        string            `json:"text,omitempty"`
-	SpeechText  string            `json:"speechText,omitempty"`
 	VisualState string            `json:"visualState"`
 	Sticker     *StickerReference `json:"sticker,omitempty"`
-}
-
-type SpeechSynthesisRequest struct {
-	Text      string
-	SpeakerID string
-}
-
-type SpeechSynthesisResult struct {
-	SpeakerID string
-	MimeType  string
-	Format    string
-	DataURL   string
-}
-
-type SpeechSynthesizer interface {
-	SynthesizeSpeech(request SpeechSynthesisRequest) (SpeechSynthesisResult, error)
 }
 
 type BeatReadyCompletion struct {
@@ -52,13 +38,11 @@ type BeatReadyCompletion struct {
 	Index                uint8
 	ChainIndex           int
 	DisplayText          string
-	SpeechText           string
 	VisualState          string
 	TargetIntervalMS     int64
 	PaceWaitMS           int64
 	PublishedPrefixCount int
 	Reason               string
-	Audio                *SpeechSynthesisResult
 	Chain                *ReplyChain
 }
 
@@ -91,8 +75,8 @@ func ValidateReplyChains(chains []ReplyChain) error {
 				strings.TrimSpace(chain.Sticker.Description) == "" || strings.TrimSpace(chain.Sticker.MIMEType) == "" {
 				return fmt.Errorf("reply chain %d sticker snapshot is required", i)
 			}
-			if chain.Text != "" || chain.SpeechText != "" {
-				return fmt.Errorf("reply chain %d sticker must not contain text or speech", i)
+			if chain.Text != "" {
+				return fmt.Errorf("reply chain %d sticker must not contain text", i)
 			}
 		default:
 			return fmt.Errorf("reply chain %d kind %q is invalid", i, chain.Kind)

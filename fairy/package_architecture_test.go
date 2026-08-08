@@ -34,7 +34,6 @@ var targetPackages = []string{
 	"fairy/persona",
 	"fairy/reply",
 	"fairy/session",
-	"fairy/speech",
 	"fairy/sticker",
 }
 
@@ -87,6 +86,53 @@ func TestPackageInventoryMatchesConsolidatedLayout(t *testing.T) {
 			if !slices.Contains(got, pkg) {
 				t.Errorf("missing package after consolidation: %s", pkg)
 			}
+		}
+	}
+}
+
+func TestRemovedTTSSurfacesDoNotReturn(t *testing.T) {
+	tokens := []string{
+		"fairy/" + "speech",
+		"config/" + "speech",
+		"speech" + "Enabled",
+		"speech" + "Text",
+		"Speech" + "Service",
+		"PromptLane" + "Translate",
+		"createSpeech" + "Playback",
+		"audio" + "Unavailable",
+	}
+	roots := []string{".", "../web/src", "../surfaces/turnclient", "../surfaces/desktop"}
+	for _, root := range roots {
+		err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if info.IsDir() {
+				if info.Name() == "dist" || info.Name() == "node_modules" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if strings.Contains(info.Name(), ".test.") || strings.HasSuffix(info.Name(), "_test.go") {
+				return nil
+			}
+			extension := filepath.Ext(path)
+			if extension != ".go" && extension != ".js" && extension != ".mjs" && extension != ".jsx" && extension != ".ts" && extension != ".tsx" {
+				return nil
+			}
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			for _, token := range tokens {
+				if strings.Contains(string(content), token) {
+					t.Errorf("removed TTS token %q returned in %s", token, path)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan %s: %v", root, err)
 		}
 	}
 }

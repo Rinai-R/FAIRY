@@ -36,6 +36,26 @@ func TestParticipationBehaviorContextKeepsOnlyBehaviorEntries(t *testing.T) {
 	}
 }
 
+func TestPublicBehaviorTrialHasSameEligibilityForParticipationAndReply(t *testing.T) {
+	trial := memory.SocialMemoryEntry{
+		ID: "trial", Kind: memory.SocialMemoryBehavior, Status: "suppressed",
+		Situation: "被点名时", Content: "先短回再补一句", RecallCue: "被点名",
+	}
+	retrieved := memory.SocialMemoryContext{Entries: []memory.SocialMemoryEntry{trial}}
+	participationItem, err := initiative.BehaviorItem(retrieved)
+	if err != nil || participationItem == nil || !strings.Contains(participationItem.Content, `"kind":"behavior"`) || !strings.Contains(participationItem.Content, "先短回再补一句") {
+		t.Fatalf("participation trial = %#v, %v", participationItem, err)
+	}
+
+	memoryPort := &socialLearningMemory{retrieved: retrieved}
+	service := newSocialLearningTestService(memoryPort, &socialLearningModel{})
+	intent := &ReplyIntent{MemoryQuery: "被点名"}
+	respondContext, err := service.retrieveSocialRespondContext(t.Context(), "character-1", "conversation-1", publicAmbientResolved(), intent, nil)
+	if err != nil || respondContext == nil || len(respondContext.Memory.Entries) != 1 || respondContext.Memory.Entries[0].ID != trial.ID {
+		t.Fatalf("reply trial = %#v, %v", respondContext, err)
+	}
+}
+
 type socialLearningMemory struct {
 	mu                     sync.Mutex
 	storeErr               error

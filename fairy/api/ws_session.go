@@ -32,6 +32,8 @@ const (
 	sessionConnectionWatchCapacity       = 64
 	sessionConnectionAssociationCapacity = 64
 	sessionConnectionTurnCapacity        = 16
+	fairySessionProtocol                 = "fairy.session.v1"
+	fairySessionTicketProtocolPrefix     = "fairy.session.ticket."
 )
 
 var (
@@ -44,6 +46,7 @@ var (
 var sessionUpgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
+	Subprotocols:    []string{fairySessionProtocol},
 	CheckOrigin:     allowedSessionOrigin,
 }
 
@@ -80,6 +83,7 @@ type wsClientFrame struct {
 	RequestID          string                                   `json:"requestId,omitempty"`
 	Endpoint           session.EndpointKind                     `json:"endpoint,omitempty"`
 	EndpointKey        string                                   `json:"endpointKey,omitempty"`
+	CharacterID        string                                   `json:"characterId,omitempty"`
 	Interaction        session.Context                          `json:"interaction,omitempty"`
 	OutputCapabilities session.OutputCapabilities               `json:"outputCapabilities"`
 	ConversationID     string                                   `json:"conversationId,omitempty"`
@@ -88,7 +92,6 @@ type wsClientFrame struct {
 	Message            *initiative.AmbientObservation           `json:"message,omitempty"`
 	DesktopObservation *session.DesktopObservation              `json:"desktopObservation,omitempty"`
 	Input              string                                   `json:"input,omitempty"`
-	SpeechEnabled      bool                                     `json:"speechEnabled,omitempty"`
 	TurnID             string                                   `json:"turnId,omitempty"`
 	CaptureResult      *session.DesktopCaptureResult            `json:"captureResult,omitempty"`
 	DeliveryResult     *session.ExpressionDeliveryResult        `json:"deliveryResult,omitempty"`
@@ -111,7 +114,8 @@ type wsServerFrame struct {
 func (s *Server) handleSessionWebSocket() app.HandlerFunc {
 	return adaptor.HertzHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		header := r.Header.Get("Authorization")
-		if header != "Bearer "+s.token {
+		authorized := header == "Bearer "+s.token
+		if !authorized && !s.consumeBrowserSessionTicket(r) {
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
@@ -127,6 +131,31 @@ func (s *Server) handleSessionWebSocket() app.HandlerFunc {
 		session := newSessionConn(s, conn)
 		session.run(r.Context())
 	}))
+}
+
+func (s *Server) consumeBrowserSessionTicket(r *http.Request) bool {
+	if s == nil || s.sessionTickets == nil || r == nil {
+		return false
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" || !isLocalConsoleOrigin(origin) {
+		return false
+	}
+	protocols := websocket.Subprotocols(r)
+	hasProtocol := false
+	ticket := ""
+	for _, protocol := range protocols {
+		switch {
+		case protocol == fairySessionProtocol:
+			hasProtocol = true
+		case strings.HasPrefix(protocol, fairySessionTicketProtocolPrefix):
+			if ticket != "" {
+				return false
+			}
+			ticket = strings.TrimPrefix(protocol, fairySessionTicketProtocolPrefix)
+		}
+	}
+	return hasProtocol && ticket != "" && s.sessionTickets.consume(origin, ticket)
 }
 
 type sessionConn struct {
@@ -267,7 +296,7 @@ func (c *sessionConn) handleExpressionDelivery(frame wsClientFrame) {
 }
 
 func (c *sessionConn) handleOpen(ctx context.Context, frame wsClientFrame) {
-	result, err := c.server.openSession(ctx, frame.Endpoint, frame.EndpointKey, frame.Interaction)
+	result, err := c.server.openSession(ctx, frame.Endpoint, frame.EndpointKey, frame.CharacterID, frame.Interaction)
 	if err != nil {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 		return
@@ -604,7 +633,6 @@ func (c *sessionConn) handleSubmitTurn(frame wsClientFrame) {
 		outcome, err := c.server.rt.Companion.SubmitTurn(companion.SubmitTurnRequest{
 			ConversationID: frame.ConversationID,
 			Input:          frame.Input,
-			SpeechEnabled:  frame.SpeechEnabled,
 		})
 		if err != nil {
 			_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
@@ -724,7 +752,7 @@ type openSessionResult struct {
 	Endpoint       session.EndpointKind
 }
 
-func (s *Server) openSession(ctx context.Context, endpoint session.EndpointKind, endpointKey string, interactionContext session.Context) (openSessionResult, error) {
+func (s *Server) openSession(ctx context.Context, endpoint session.EndpointKind, endpointKey string, characterID string, interactionContext session.Context) (openSessionResult, error) {
 	if err := interactionContext.Validate(endpoint); err != nil {
 		return openSessionResult{}, err
 	}
@@ -750,10 +778,24 @@ func (s *Server) openSession(ctx context.Context, endpoint session.EndpointKind,
 	if err != nil {
 		return openSessionResult{}, err
 	}
-	if catalog.Active == nil {
+	selected := catalog.Active
+	characterID = strings.TrimSpace(characterID)
+	if characterID != "" {
+		selected = nil
+		for index := range catalog.Characters {
+			if catalog.Characters[index].CharacterID == characterID {
+				selected = &catalog.Characters[index]
+				break
+			}
+		}
+		if selected == nil {
+			return openSessionResult{}, errors.New("character not found")
+		}
+	}
+	if selected == nil {
 		return openSessionResult{}, errors.New("no active character")
 	}
-	bootstrap, err := s.rt.MemoryStore.OpenOrCreateEndpointConversationContext(ctx, catalog.Active.CharacterID, binding, endpointKeyDigest)
+	bootstrap, err := s.rt.MemoryStore.OpenOrCreateEndpointConversationContext(ctx, selected.CharacterID, binding, endpointKeyDigest)
 	if err != nil {
 		return openSessionResult{}, err
 	}

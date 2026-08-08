@@ -51,10 +51,10 @@ func newConfigCmd(v *viper.Viper, deps Dependencies) *cobra.Command {
 	apply.Flags().StringVar(&applyFile, "file", "", "JSON file path, or - for stdin")
 	_ = apply.MarkFlagRequired("file")
 	deleteCommand := &cobra.Command{
-		Use: "delete <section>", Args: cobra.ExactArgs(1), Short: "Delete model or speech settings",
+		Use: "delete <section>", Args: cobra.ExactArgs(1), Short: "Delete model settings",
 		RunE: func(command *cobra.Command, args []string) error {
-			if args[0] != "model" && args[0] != "speech" {
-				return errors.New("delete is supported only for model and speech")
+			if args[0] != "model" {
+				return errors.New("delete is supported only for model")
 			}
 			client, config, err := newClient(v, deps)
 			if err != nil {

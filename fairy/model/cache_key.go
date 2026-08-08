@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -35,6 +36,37 @@ func NewCacheKeyInput(lane PromptLane, modelName, conversationID, instructions s
 	}
 }
 
+// NewCacheKeyInputWithStablePrefix identifies the actual reusable provider
+// prefix: stable instructions followed by stable context_data items. Dynamic
+// transcript, retrieval, feedback evidence and tool items must remain outside
+// stableItems and are rejected when supplied here.
+func NewCacheKeyInputWithStablePrefix(
+	lane PromptLane,
+	modelName, conversationID, instructions string,
+	stableItems []PromptItem,
+) (CacheKeyInput, error) {
+	if strings.TrimSpace(instructions) == "" {
+		return CacheKeyInput{}, errors.New("stable prefix instructions are required")
+	}
+	var material strings.Builder
+	writeCacheKeyPart(&material, instructions)
+	for index, item := range stableItems {
+		if item.Type != PromptItemContextData || item.Parts != nil || item.Content == "" ||
+			item.ToolCallID != "" || item.ToolName != "" || item.ToolArguments != "" {
+			return CacheKeyInput{}, fmt.Errorf("stable prefix item %d must be plain context_data", index)
+		}
+		writeCacheKeyPart(&material, string(item.Type))
+		writeCacheKeyPart(&material, item.Content)
+	}
+	digest := sha256.Sum256([]byte(material.String()))
+	return CacheKeyInput{
+		Lane:             lane,
+		Model:            modelName,
+		ConversationID:   conversationID,
+		StablePromptHash: hex.EncodeToString(digest[:16]),
+	}, nil
+}
+
 // BuildPromptCacheKey returns a deterministic, opaque key suitable for a
 // provider prompt cache. Length-prefixing avoids ambiguous concatenations.
 func BuildPromptCacheKey(input CacheKeyInput) (string, error) {
@@ -54,13 +86,17 @@ func BuildPromptCacheKey(input CacheKeyInput) (string, error) {
 	}
 	var material strings.Builder
 	for _, part := range parts {
-		material.WriteString(strconv.Itoa(len(part)))
-		material.WriteByte(':')
-		material.WriteString(part)
-		material.WriteByte('|')
+		writeCacheKeyPart(&material, part)
 	}
 	sum := sha256.Sum256([]byte(material.String()))
 	return "fairy:" + PromptCacheKeyVersion + ":" + hex.EncodeToString(sum[:16]), nil
+}
+
+func writeCacheKeyPart(material *strings.Builder, part string) {
+	material.WriteString(strconv.Itoa(len(part)))
+	material.WriteByte(':')
+	material.WriteString(part)
+	material.WriteByte('|')
 }
 
 func validateCacheKeyInput(input CacheKeyInput) error {

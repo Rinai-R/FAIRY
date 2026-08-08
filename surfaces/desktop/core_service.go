@@ -23,12 +23,6 @@ import (
 
 var installationKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
-const (
-	desktopAudioMIME     = "audio/mpeg"
-	desktopAudioFormat   = "mp3"
-	maxDesktopAudioBytes = 2 * 1024 * 1024
-)
-
 type CoreSettings struct {
 	Endpoint    string `json:"endpoint"`
 	EndpointKey string `json:"endpointKey"`
@@ -515,7 +509,7 @@ func (s *CoreService) Connect() (CoreSession, error) {
 	return CoreSession{Settings: settings, ConversationID: opened.ConversationID, Character: character, Messages: messages.Messages}, nil
 }
 
-func (s *CoreService) Send(input string, speechEnabled bool) error {
+func (s *CoreService) Send(input string) error {
 	if input == "" || input != strings.TrimSpace(input) {
 		return errors.New("message must be non-empty and contain no surrounding whitespace")
 	}
@@ -535,7 +529,7 @@ func (s *CoreService) Send(input string, speechEnabled bool) error {
 	// before any harness events that the forwarder may deliver concurrently.
 	s.emitTurnEvent(desktopTurnEvent{Type: "state_changed", State: "planning"})
 	s.showSpeechBubble()
-	if _, err := socket.SubmitTurn(context.Background(), conversation, coreclient.SubmitTurnRequest{Input: input, SpeechEnabled: speechEnabled}); err != nil {
+	if _, err := socket.SubmitTurn(context.Background(), conversation, coreclient.SubmitTurnRequest{Input: input}); err != nil {
 		s.clearActive()
 		s.emitTurnEvent(desktopTurnEvent{Type: "failed", Message: "提交对话失败：" + err.Error()})
 		return err
@@ -593,14 +587,7 @@ type desktopBeat struct {
 	Index              uint8                   `json:"index"`
 	ChainIndex         int                     `json:"chainIndex"`
 	DisplayText        string                  `json:"displayText"`
-	SpeechText         string                  `json:"speechText"`
 	VisualState        string                  `json:"visualState"`
-	SpeakerID          string                  `json:"speakerId,omitempty"`
-	MIMEType           string                  `json:"mimeType,omitempty"`
-	Format             string                  `json:"format,omitempty"`
-	DataURL            string                  `json:"dataUrl,omitempty"`
-	AudioUnavailable   bool                    `json:"audioUnavailable,omitempty"`
-	AudioError         string                  `json:"audioError,omitempty"`
 	Part               *session.ExpressionPart `json:"part,omitempty"`
 	StickerURL         string                  `json:"stickerUrl,omitempty"`
 	StickerUnavailable bool                    `json:"stickerUnavailable,omitempty"`
@@ -755,7 +742,6 @@ func decodeDesktopTurnEvent(event coreclient.TurnEvent) desktopTurnEvent {
 	if converted.Type == "beat.ready" {
 		var beat desktopBeat
 		if json.Unmarshal(event.Payload, &beat) == nil {
-			validateDesktopAudio(&beat)
 			converted.Beat = &beat
 		}
 	}
@@ -770,39 +756,6 @@ func decodeDesktopTurnEvent(event coreclient.TurnEvent) desktopTurnEvent {
 		}
 	}
 	return converted
-}
-
-func validateDesktopAudio(beat *desktopBeat) {
-	if beat == nil {
-		return
-	}
-	hasMetadata := beat.MIMEType != "" || beat.Format != "" || beat.SpeakerID != ""
-	if beat.DataURL == "" && !hasMetadata {
-		return
-	}
-	fail := func() {
-		beat.DataURL = ""
-		beat.AudioUnavailable = true
-		beat.AudioError = "语音数据不可用"
-	}
-	if beat.MIMEType != desktopAudioMIME || beat.Format != desktopAudioFormat {
-		fail()
-		return
-	}
-	prefix := "data:" + desktopAudioMIME + ";base64,"
-	if !strings.HasPrefix(beat.DataURL, prefix) {
-		fail()
-		return
-	}
-	encoded := strings.TrimPrefix(beat.DataURL, prefix)
-	if encoded == "" || len(encoded) > base64.StdEncoding.EncodedLen(maxDesktopAudioBytes) {
-		fail()
-		return
-	}
-	decoded, err := base64.StdEncoding.Strict().DecodeString(encoded)
-	if err != nil || len(decoded) == 0 || len(decoded) > maxDesktopAudioBytes {
-		fail()
-	}
 }
 
 func (s *CoreService) emitTurnEvent(event desktopTurnEvent) {

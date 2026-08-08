@@ -14,6 +14,57 @@ func TestNewCacheKeyInputHashesOnlyStableInstructions(t *testing.T) {
 	}
 }
 
+func TestNewCacheKeyInputWithStablePrefixHashesOnlyStableItems(t *testing.T) {
+	prefix := []PromptItem{
+		{Type: PromptItemContextData, Content: `{"contextType":"character","revision":2}`},
+		{Type: PromptItemContextData, Content: `{"contextType":"interaction","memoryPolicy":"public"}`},
+	}
+	first, err := NewCacheKeyInputWithStablePrefix(PromptLaneSocialFeedback, "model-1", "conversation-1", "stable instructions", prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewCacheKeyInputWithStablePrefix(PromptLaneSocialFeedback, "model-1", "conversation-1", "stable instructions", append([]PromptItem(nil), prefix...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.StablePromptHash == "" || first.StablePromptHash != second.StablePromptHash {
+		t.Fatalf("stable hashes = %q, %q", first.StablePromptHash, second.StablePromptHash)
+	}
+
+	// Dynamic evidence is intentionally not an input to the prefix builder.
+	dynamicA := PromptItem{Type: PromptItemContextData, Content: `{"reply":"A"}`}
+	dynamicB := PromptItem{Type: PromptItemContextData, Content: `{"reply":"B"}`}
+	requestA := CompiledPromptRequest{Input: append(append([]PromptItem(nil), prefix...), dynamicA), CacheInput: &first}
+	requestB := CompiledPromptRequest{Input: append(append([]PromptItem(nil), prefix...), dynamicB), CacheInput: &second}
+	if requestA.CacheInput.StablePromptHash != requestB.CacheInput.StablePromptHash {
+		t.Fatal("dynamic feedback tail changed stable prefix identity")
+	}
+
+	changedPrefix := append([]PromptItem(nil), prefix...)
+	changedPrefix[0].Content = `{"contextType":"character","revision":3}`
+	changed, err := NewCacheKeyInputWithStablePrefix(PromptLaneSocialFeedback, "model-1", "conversation-1", "stable instructions", changedPrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.StablePromptHash == first.StablePromptHash {
+		t.Fatal("changed stable context did not change prefix identity")
+	}
+}
+
+func TestNewCacheKeyInputWithStablePrefixRejectsDynamicItems(t *testing.T) {
+	tests := []PromptItem{
+		{Type: PromptItemUserMessage, Content: "hello"},
+		{Type: PromptItemToolResult, ToolCallID: "call-1", Content: "result"},
+		{Type: PromptItemContextData},
+		{Type: PromptItemContextData, Content: "text", Parts: &PromptContentParts{{Type: PromptContentImage, ImageDataURL: "data:image/png;base64,AA=="}}},
+	}
+	for _, item := range tests {
+		if _, err := NewCacheKeyInputWithStablePrefix(PromptLaneSocialLearn, "model-1", "conversation-1", "stable instructions", []PromptItem{item}); err == nil {
+			t.Fatalf("dynamic item unexpectedly accepted: %#v", item)
+		}
+	}
+}
+
 func TestBuildPromptCacheKeyIsDeterministicAndRevisionScoped(t *testing.T) {
 	input := CacheKeyInput{Lane: PromptLaneRespond, Model: "model-1", ConversationID: "conversation-1", CharacterRevision: 2, ProfileRevision: 3, PromptRevision: 4, StablePromptHash: "prompt-a"}
 	first, err := BuildPromptCacheKey(input)

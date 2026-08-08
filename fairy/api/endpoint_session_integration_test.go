@@ -34,6 +34,10 @@ func TestEndpointSessionIsolatesKeysAndPersistsNoRawKeyIntegration(t *testing.T)
 	if _, err := characterService.ActivateCharacter(record.CharacterID, record.Revision); err != nil {
 		t.Fatal(err)
 	}
+	target, err := characterService.CreateCharacter(character.Brief{Name: "Debug Target", Description: "Evaluation-only character", TextLanguage: "zh", SpeakingLanguage: "zh"}, "fairy.endpoint")
+	if err != nil {
+		t.Fatal(err)
+	}
 	databaseURL, cleanup := isolatedAPISchema(t)
 	defer cleanup()
 	setAPIProductionEnv(t, databaseURL, base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789")))
@@ -89,6 +93,27 @@ func TestEndpointSessionIsolatesKeysAndPersistsNoRawKeyIntegration(t *testing.T)
 	if rt.Companion.OutputCapabilities(desktop.ConversationID).Sticker {
 		t.Fatal("missing outputCapabilities defaulted to sticker support")
 	}
+	evaluation, err := sessionSocket.OpenSession(context.Background(), coreclient.OpenSessionRequest{
+		Endpoint: session.EndpointDesktop, EndpointKey: "browser-debug-session", CharacterID: target.CharacterID,
+		Interaction: session.Context{
+			Audience: session.AudienceSingle, Initiation: session.InitiationDirect,
+			Presentation: session.PresentationChat, Evaluation: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evaluation.CharacterID != target.CharacterID {
+		t.Fatalf("evaluation session character = %q, want %q", evaluation.CharacterID, target.CharacterID)
+	}
+	resolved, err := rt.Companion.ResolveInteraction(evaluation.ConversationID)
+	if err != nil || !resolved.IsEvaluation() || !resolved.AllowsPersonalMemory() {
+		t.Fatalf("evaluation interaction = %#v, %v", resolved, err)
+	}
+	catalog, err := client.ListCharacters(context.Background())
+	if err != nil || catalog.Active == nil || catalog.Active.CharacterID != record.CharacterID {
+		t.Fatalf("evaluation session changed active character: %#v, %v", catalog.Active, err)
+	}
 	if err := sessionSocket.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -113,6 +138,17 @@ func TestEndpointSessionIsolatesKeysAndPersistsNoRawKeyIntegration(t *testing.T)
 	}
 	if len(digest) != 64 || strings.Contains(digest, "123") || strings.Contains(digest, "456") {
 		t.Fatalf("endpoint digest leaked source key: %q", digest)
+	}
+	var evaluationPersisted bool
+	var evaluationCharacterID string
+	if err := pool.QueryRow(context.Background(), `
+SELECT evaluation, character_id
+FROM endpoint_conversations
+WHERE conversation_id = $1`, evaluation.ConversationID).Scan(&evaluationPersisted, &evaluationCharacterID); err != nil {
+		t.Fatal(err)
+	}
+	if !evaluationPersisted || evaluationCharacterID != target.CharacterID {
+		t.Fatalf("evaluation endpoint row = evaluation:%t character:%q", evaluationPersisted, evaluationCharacterID)
 	}
 
 	const rawOwnerSubject = "owner-user-987654"
