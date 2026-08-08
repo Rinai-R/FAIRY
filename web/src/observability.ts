@@ -1,4 +1,5 @@
 import { getToken } from "./api";
+import type { MetricsTrendPoint } from "./metricsTrend";
 
 export const MAX_VISIBLE_LOGS = 500;
 export const MAX_PENDING_LOGS = 500;
@@ -23,6 +24,7 @@ export type LogEntry = {
 export type RouteMetrics = {
   method: string;
   route: string;
+  longLived: boolean;
   requestCount: number;
   errorCount: number;
   totalDurationMs: number;
@@ -56,6 +58,7 @@ export type MessageLatency = {
 
 export type MessageTrace = {
   traceId: string;
+  messageId: string;
   source: string;
   conversationId: string;
   turnId: string;
@@ -82,6 +85,7 @@ export type TraceSpan = {
 
 export type TraceDetail = {
   traceId: string;
+  messageId: string;
   conversationId: string;
   turnId: string;
   source: string;
@@ -139,6 +143,7 @@ export type MetricsSnapshot = {
     experience?: ExperienceStats;
   };
   usage: { overall: UsageLane[]; turns: UsageTurn[]; turnCount: number; truncated: boolean };
+  history: MetricsTrendPoint[];
 };
 
 export type ExperienceStats = {
@@ -186,11 +191,13 @@ export function parseMetrics(value: unknown): MetricsSnapshot {
   const messageLatencies = asRecord(messages.latencies, "message latency metrics");
   const runtime = asRecord(root.runtime, "runtime metrics");
   const usage = asRecord(root.usage, "usage metrics");
+  const history = root.history === undefined ? [] : root.history;
   if (!Array.isArray(http.routes)) throw new Error("metrics.http.routes 必须是数组");
   if (!Array.isArray(messages.recent)) throw new Error("metrics.messages.recent 必须是数组");
   if (!Array.isArray(usage.overall) || !Array.isArray(usage.turns)) {
     throw new Error("metrics.usage 缺少数组字段");
   }
+  if (!Array.isArray(history)) throw new Error("metrics.history 必须是数组");
   return {
     generatedAtUnixMs: requiredPositiveInteger(root, "generatedAtUnixMs"),
     messagesAvailable,
@@ -246,6 +253,32 @@ export function parseMetrics(value: unknown): MetricsSnapshot {
       turnCount: requiredNonNegativeInteger(usage, "turnCount"),
       truncated: requiredBoolean(usage, "truncated"),
     },
+    history: history.map(parseMetricHistoryPoint),
+  };
+}
+
+function parseMetricHistoryPoint(value: unknown): MetricsTrendPoint {
+  const point = asRecord(value, "metric history point");
+  return {
+    timestampUnixMs: requiredPositiveInteger(point, "timestampUnixMs"),
+    processStartedAtUnixMs: requiredPositiveInteger(point, "processStartedAtUnixMs"),
+    httpTotal: requiredNonNegativeInteger(point, "httpTotal"),
+    httpInFlight: requiredNonNegativeInteger(point, "httpInFlight"),
+    httpStatus4xx: requiredNonNegativeInteger(point, "httpStatus4xx"),
+    httpStatus5xx: requiredNonNegativeInteger(point, "httpStatus5xx"),
+    messagesReceived: requiredNonNegativeInteger(point, "messagesReceived"),
+    messagesSent: requiredNonNegativeInteger(point, "messagesSent"),
+    messagesActive: requiredNonNegativeInteger(point, "messagesActive"),
+    messagesFailed: requiredNonNegativeInteger(point, "messagesFailed"),
+    inputTokens: requiredNonNegativeInteger(point, "inputTokens"),
+    cachedInputTokens: requiredNonNegativeInteger(point, "cachedInputTokens"),
+    outputTokens: requiredNonNegativeInteger(point, "outputTokens"),
+    modelCalls: requiredNonNegativeInteger(point, "modelCalls"),
+    goroutines: requiredNonNegativeInteger(point, "goroutines"),
+    backgroundJobs: requiredNonNegativeInteger(point, "backgroundJobs"),
+    eventSubscribers: requiredNonNegativeInteger(point, "eventSubscribers"),
+    logSubscribers: requiredNonNegativeInteger(point, "logSubscribers"),
+    heapMiB: requiredNonNegativeNumber(point, "heapMiB"),
   };
 }
 
@@ -308,6 +341,7 @@ function parseMessageTrace(value: unknown): MessageTrace {
   const trace = asRecord(value, "message trace");
   return {
     traceId: requiredString(trace, "traceId"),
+    messageId: optionalString(trace, "messageId"),
     source: requiredString(trace, "source"),
     conversationId: requiredString(trace, "conversationId"),
     turnId: optionalString(trace, "turnId"),
@@ -326,6 +360,7 @@ export function parseTraceDetail(value: unknown): TraceDetail {
   if (!Array.isArray(trace.spans)) throw new Error("trace spans 必须是数组");
   const detail: TraceDetail = {
     traceId: requiredString(trace, "traceId"),
+    messageId: optionalString(trace, "messageId"),
     conversationId: requiredString(trace, "conversationId"),
     turnId: optionalString(trace, "turnId"),
     source: requiredString(trace, "source"),
@@ -344,6 +379,15 @@ export function parseTraceDetail(value: unknown): TraceDetail {
   }
   validateTraceTree(detail.spans);
   return detail;
+}
+
+export function parseTraceSearch(value: unknown): { messageId: string; traces: MessageTrace[] } {
+  const result = asRecord(value, "trace search");
+  if (!Array.isArray(result.traces)) throw new Error("trace search traces 必须是数组");
+  return {
+    messageId: requiredString(result, "messageId"),
+    traces: result.traces.map(parseMessageTrace),
+  };
 }
 
 function parseTraceSpan(value: unknown): TraceSpan {
@@ -490,6 +534,7 @@ function parseRouteMetrics(value: unknown): RouteMetrics {
   return {
     method: requiredString(route, "method"),
     route: requiredString(route, "route"),
+    longLived: route.longLived === undefined ? false : requiredBoolean(route, "longLived"),
     requestCount: requiredNonNegativeInteger(route, "requestCount"),
     errorCount: requiredNonNegativeInteger(route, "errorCount"),
     totalDurationMs: requiredNonNegativeInteger(route, "totalDurationMs"),
@@ -584,6 +629,14 @@ function requiredNonNegativeInteger(record: Record<string, unknown>, key: string
   const value = record[key];
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
     throw new Error(`${key} 必须是非负安全整数`);
+  }
+  return value;
+}
+
+function requiredNonNegativeNumber(record: Record<string, unknown>, key: string): number {
+  const value = record[key];
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`${key} 必须是非负数`);
   }
   return value;
 }

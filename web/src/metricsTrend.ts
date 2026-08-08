@@ -6,6 +6,7 @@ export const MAX_METRIC_TREND_POINTS = 60;
 
 export type MetricsTrendPoint = {
   timestampUnixMs: number;
+  processStartedAtUnixMs: number;
   httpTotal: number;
   httpInFlight: number;
   httpStatus4xx: number;
@@ -25,17 +26,42 @@ export type MetricsTrendPoint = {
   heapMiB: number;
 };
 
-export type MetricTrendKey = Exclude<keyof MetricsTrendPoint, "timestampUnixMs">;
+export type MetricTrendKey = Exclude<keyof MetricsTrendPoint, "timestampUnixMs" | "processStartedAtUnixMs">;
 
 export type ChartGeometry = {
   path: string;
   points: Array<{ x: number; y: number }>;
 };
 
+export function sameCoreProcess(left: number, right: number): boolean {
+  return Math.abs(left - right) <= 2_000;
+}
+
+export function buildSegmentedLinePaths(
+  points: ChartGeometry["points"],
+  processStartedAtUnixMs: number[],
+): string[] {
+  if (points.length === 0 || points.length !== processStartedAtUnixMs.length) return [];
+  const paths: string[] = [];
+  let current: string[] = [];
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index];
+    if (index === 0 || sameCoreProcess(processStartedAtUnixMs[index - 1], processStartedAtUnixMs[index])) {
+      current.push(`${current.length === 0 ? "M" : "L"}${round(point.x)} ${round(point.y)}`);
+      continue;
+    }
+    paths.push(current.join(" "));
+    current = [`M${round(point.x)} ${round(point.y)}`];
+  }
+  if (current.length > 0) paths.push(current.join(" "));
+  return paths;
+}
+
 export function projectMetricsTrend(snapshot: MetricsSnapshot): MetricsTrendPoint {
   const usage = aggregateUsage(snapshot.usage.overall, USAGE_LANE_FILTER_ALL);
   return {
     timestampUnixMs: snapshot.generatedAtUnixMs,
+    processStartedAtUnixMs: Math.max(1, snapshot.generatedAtUnixMs - snapshot.process.uptimeSeconds * 1000),
     httpTotal: snapshot.http.total,
     httpInFlight: snapshot.http.inFlight,
     httpStatus4xx: snapshot.http.status4xx,
@@ -102,6 +128,24 @@ export function buildLineGeometry(
     path: points.map((point, index) => `${index === 0 ? "M" : "L"}${round(point.x)} ${round(point.y)}`).join(" "),
     points,
   };
+}
+
+export function nearestMetricTrendIndex(
+  clientX: number,
+  boundsLeft: number,
+  boundsWidth: number,
+  pointCount: number,
+  viewWidth = 640,
+  padding = { left: 48, right: 12 },
+): number {
+  if (!Number.isFinite(clientX) || !Number.isFinite(boundsLeft) || !Number.isFinite(boundsWidth) || boundsWidth <= 0 || pointCount < 1) {
+    return -1;
+  }
+  if (pointCount === 1) return 0;
+  const plotLeft = boundsLeft + (padding.left / viewWidth) * boundsWidth;
+  const plotWidth = Math.max(1, ((viewWidth - padding.left - padding.right) / viewWidth) * boundsWidth);
+  const ratio = Math.min(1, Math.max(0, (clientX - plotLeft) / plotWidth));
+  return Math.round(ratio * (pointCount - 1));
 }
 
 function round(value: number): number {

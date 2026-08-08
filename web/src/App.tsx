@@ -51,6 +51,16 @@ function isObservabilitySection(section: Section): section is ObservabilityView 
   return section === "metrics" || section === "tracing" || section === "logs";
 }
 
+function sectionFromHash(hash: string): Section {
+  const route = hash.replace(/^#\/?/, "").trim().split("?", 1)[0] || "";
+  const value = decodeURIComponent(route);
+  return NAV.some((item) => item.id === value) ? value as Section : "overview";
+}
+
+function sectionHash(section: Section): string {
+  return `#/${section}`;
+}
+
 const CONNECTION_COPY: Record<Exclude<ConnectionState, "ready">, { title: string; detail: string }> = {
   missing: {
     title: "连接 FAIRY Core",
@@ -198,7 +208,7 @@ function ConnectionControl({ onConnect, onRetry }: { onConnect: (token: string) 
 }
 
 export default function App() {
-  const [section, setSection] = useState<Section>("overview");
+  const [section, setSection] = useState<Section>(() => sectionFromHash(window.location.hash));
   const [initialToken] = useState(() => getToken());
   const [activeToken, setActiveToken] = useState(initialToken);
   const [connection, setConnection] = useState<ConnectionState>(initialToken ? "checking" : "missing");
@@ -246,6 +256,15 @@ export default function App() {
     if (initialToken) void verifyToken(initialToken, false);
   }, [initialToken, verifyToken]);
 
+  useEffect(() => {
+    const syncSection = () => setSection(sectionFromHash(window.location.hash));
+    window.addEventListener("hashchange", syncSection);
+    const parsedSection = sectionFromHash(window.location.hash);
+    const hasKnownRoute = window.location.hash.replace(/^#\/?/, "").split("?", 1)[0] === parsedSection;
+    if (!hasKnownRoute) window.history.replaceState(null, "", sectionHash(parsedSection));
+    return () => window.removeEventListener("hashchange", syncSection);
+  }, []);
+
   function onToast(message: string, error = false) {
     setToast({ message, error });
     if (!error) setTimeout(() => setToast(null), 2800);
@@ -253,6 +272,7 @@ export default function App() {
 
   function selectSection(next: Section) {
     setSection(next);
+    if (window.location.hash !== sectionHash(next)) window.location.hash = sectionHash(next);
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }
 

@@ -29,6 +29,7 @@ function requestRecord(input: RequestInfo | URL, init?: RequestInit): RecordedRe
 }
 
 beforeEach(() => {
+  window.history.replaceState(null, "", "#/overview");
   storage = new Map();
   vi.stubGlobal("localStorage", {
     getItem: (key: string) => storage.get(key) ?? null,
@@ -53,6 +54,24 @@ afterEach(() => {
 });
 
 describe("App Core connection gate", () => {
+	it("restores the selected global task from the URL hash", async () => {
+		window.history.replaceState(null, "", "#/logs");
+		localStorage.setItem(TOKEN_KEY, "saved-token");
+		vi.stubGlobal("fetch", vi.fn(async () => json({ model: {}, webSearch: {}, semanticEmbedding: {} })));
+
+		render(<App />);
+
+		const navigation = await screen.findByRole("navigation", { name: "控制台导航" });
+		expect(within(navigation).getByRole("button", { name: "日志" }).getAttribute("aria-current")).toBe("page");
+		expect(document.getElementById("observability-panel-logs")?.hidden).toBe(false);
+		fireEvent.click(within(navigation).getByRole("button", { name: "角色" }));
+		expect(window.location.hash).toBe("#/character");
+		expect(window.location.href).not.toContain("saved-token");
+
+		window.history.back();
+		window.dispatchEvent(new HashChangeEvent("hashchange"));
+	});
+
   it("shows only the connection entry and makes no request without a saved token", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

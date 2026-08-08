@@ -30,11 +30,17 @@ describe("observability parsers", () => {
   });
 
   it("parses complete metrics and rejects missing fields", () => {
-    const metrics = parseMetrics(validMetrics());
+    const input = validMetrics();
+    input.http.routes = [{
+      method: "GET", route: "/v1/session/ws", longLived: true,
+      requestCount: 1, errorCount: 0, totalDurationMs: 0, maxDurationMs: 0,
+    }];
+    const metrics = parseMetrics(input);
     expect(metrics.messagesAvailable).toBe(true);
     expect(metrics.process.goVersion).toBe("go1.26");
     expect(metrics.messages.received).toBe(3);
     expect(metrics.messages.latencies.receiveToCompleted.maxDurationMs).toBe(65);
+    expect(metrics.http.routes[0]?.longLived).toBe(true);
     expect(() => parseMetrics({ ...validMetrics(), logs: {} })).toThrow();
     expect(() => parseMetrics({ ...validMetrics(), messages: {} })).toThrow();
   });
@@ -140,7 +146,7 @@ export function validMetrics() {
   return {
     generatedAtUnixMs: 1,
     process: { uptimeSeconds: 1, goVersion: "go1.26", goroutines: 2, heapAllocBytes: 3 },
-    http: { inFlight: 0, total: 1, status2xx: 1, status4xx: 0, status5xx: 0, routes: [] },
+    http: { inFlight: 0, total: 1, status2xx: 1, status4xx: 0, status5xx: 0, routes: [] as Array<Record<string, unknown>> },
     logs: { retainedEntries: 0, droppedEntries: 0, activeSubscribers: 0, slowSubscriberDisconnects: 0 },
     messages: validMessageMetrics(),
     runtime: {

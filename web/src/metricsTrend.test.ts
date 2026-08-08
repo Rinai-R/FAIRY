@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import type { MetricsSnapshot } from "./observability";
 import {
   appendMetricTrend,
+  buildSegmentedLinePaths,
   buildLineGeometry,
   chartDomainMax,
+  nearestMetricTrendIndex,
   projectMetricsTrend,
+  sameCoreProcess,
   type MetricsTrendPoint,
 } from "./metricsTrend";
 
@@ -45,11 +48,32 @@ describe("metrics trend projection", () => {
     const line = buildLineGeometry([0, 10], 10, 200, 100);
     expect(line.path).toBe("M48 76 L188 12");
   });
+
+  it("maps the plot pointer to the nearest bounded sample", () => {
+    expect(nearestMetricTrendIndex(48, 0, 640, 5)).toBe(0);
+    expect(nearestMetricTrendIndex(338, 0, 640, 5)).toBe(2);
+    expect(nearestMetricTrendIndex(628, 0, 640, 5)).toBe(4);
+    expect(nearestMetricTrendIndex(-200, 0, 640, 5)).toBe(0);
+    expect(nearestMetricTrendIndex(900, 0, 640, 5)).toBe(4);
+    expect(nearestMetricTrendIndex(10, 0, 0, 5)).toBe(-1);
+  });
+
+  it("breaks lines at Core process boundaries without losing hover points", () => {
+    const geometry = buildLineGeometry([1, 2, 3, 4], 4, 200, 100);
+    expect(buildSegmentedLinePaths(geometry.points, [1_000, 1_000, 8_000, 8_000])).toEqual([
+      "M48 60 L94.67 44",
+      "M141.33 28 L188 12",
+    ]);
+    expect(sameCoreProcess(1_000, 2_900)).toBe(true);
+    expect(sameCoreProcess(1_000, 3_100)).toBe(false);
+    expect(buildSegmentedLinePaths(geometry.points, [1])).toEqual([]);
+  });
 });
 
 function trendPoint(timestampUnixMs: number, httpTotal: number): MetricsTrendPoint {
   return {
     timestampUnixMs,
+    processStartedAtUnixMs: 1,
     httpTotal,
     httpInFlight: 0,
     httpStatus4xx: 0,
@@ -92,5 +116,6 @@ function snapshot(): MetricsSnapshot {
       ],
       turns: [], turnCount: 2, truncated: false,
     },
+    history: [],
   };
 }

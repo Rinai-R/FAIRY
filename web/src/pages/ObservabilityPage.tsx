@@ -1,14 +1,19 @@
-import { ChevronDownIcon, ChevronRightIcon, PauseIcon, PlayIcon, ReloadIcon } from "@radix-ui/react-icons";
+import { ChevronDownIcon, ChevronRightIcon, Cross2Icon, MagnifyingGlassIcon, PauseIcon, PlayIcon, ReloadIcon } from "@radix-ui/react-icons";
 import { Button, Select, Text, TextField } from "@radix-ui/themes";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { ApiError, api } from "../api";
 import { EmptyState, InlineNotice, PageHeader, SectionHeading } from "../components/ui";
+import { TurnRuntimeTimeline } from "./ConversationDebugPage";
 import {
   METRICS_POLL_INTERVAL_MS,
   appendMetricTrend,
+  buildSegmentedLinePaths,
   buildLineGeometry,
   chartDomainMax,
+  nearestMetricTrendIndex,
   projectMetricsTrend,
+  sameCoreProcess,
   type MetricTrendKey,
   type MetricsTrendPoint,
 } from "../metricsTrend";
@@ -18,6 +23,7 @@ import {
   mergeVisibleLogs,
   parseMetrics,
   parseTraceDetail,
+  parseTraceSearch,
   type LogEntry,
   type LogLevel,
   type MessageTrace,
@@ -37,6 +43,7 @@ import {
   type UsageLaneFilter,
   type UsageReport,
 } from "../usageReport";
+import { runtimeModelUsageTotals, type RuntimeEvent } from "../runtimeTimeline";
 
 type StreamStatus = "connecting" | "live" | "paused" | "disconnected" | "error";
 export type ObservabilityView = "metrics" | "tracing" | "logs";
@@ -67,7 +74,9 @@ export function ObservabilityPage({ token, view }: { token: string; view: Observ
       const snapshot = parseMetrics(await api<unknown>("/metrics"));
       if (requestVersion !== requestVersionRef.current) return;
       setMetrics(snapshot);
-      setMetricsTrend((history) => appendMetricTrend(history, projectMetricsTrend(snapshot)));
+      setMetricsTrend((current) => snapshot.history.length > 0
+        ? snapshot.history
+        : appendMetricTrend(current, projectMetricsTrend(snapshot)));
     } catch (error: unknown) {
       if (requestVersion !== requestVersionRef.current) return;
       setMetrics(null);
@@ -154,7 +163,7 @@ export function ObservabilityPage({ token, view }: { token: string; view: Observ
             <>
               {!metrics.messagesAvailable ? (
                 <InlineNotice tone="warning">当前 Core 未提供消息链路指标，请重启 Core 后查看。</InlineNotice>
-              ) : <TraceWorkbench metrics={metrics} token={token} />}
+              ) : <TraceWorkbench metrics={metrics} token={token} active={view === "tracing"} />}
             </>
           ) : null}
         </div>
@@ -191,14 +200,14 @@ const TREND_CHARTS: Array<{
   series: TrendSeries[];
 }> = [
   {
-    id: "http-traffic", className: "wide", title: "HTTP 请求", description: "累计请求与当前处理中请求",
+    id: "http-traffic", className: "wide", title: "对话接口请求", description: "Session 建连、消息历史与 Turn 调试接口",
     series: [
       { key: "httpTotal", label: "累计请求", color: "#2878d0" },
-      { key: "httpInFlight", label: "处理中", color: "#7d93aa" },
+      { key: "httpInFlight", label: "进行中 / 已连接", color: "#7d93aa" },
     ],
   },
   {
-    id: "http-errors", className: "narrow", title: "HTTP 错误", description: "客户端错误与服务端错误",
+    id: "http-errors", className: "narrow", title: "对话接口错误", description: "对话控制面 4xx 与 5xx",
     series: [
       { key: "httpStatus4xx", label: "4xx", color: "#b37622" },
       { key: "httpStatus5xx", label: "5xx", color: "#b84855" },
@@ -238,10 +247,10 @@ const TREND_CHARTS: Array<{
 
 function MetricsTrendDashboard({ history, messagesAvailable }: { history: MetricsTrendPoint[]; messagesAvailable: boolean }) {
   return (
-    <section className="observability-section metrics-trend-dashboard" aria-label="本次页面会话指标趋势">
+    <section className="observability-section metrics-trend-dashboard" aria-label="Core 持久化指标趋势">
       <SectionHeading
         title="实时指标趋势"
-        description="每 5 秒采样当前 Core 快照，曲线仅覆盖本次页面会话。"
+        description="每 5 秒读取当前快照并保留最近历史；Core 重启后旧样本继续存在，瞬时值按各自进程解释。"
         aside={`${history.length} / 60 个样本`}
       />
       {!messagesAvailable ? <InlineNotice tone="warning">当前 Core 未提供消息指标，消息曲线以零基线显示。</InlineNotice> : null}
@@ -273,23 +282,135 @@ function MetricTrendChart({
   const latest = history.at(-1);
   const titleID = `metric-chart-${id}-title`;
   const descriptionID = `metric-chart-${id}-description`;
+  const geometries = useMemo(() => new Map(series.map((item) => [
+    item.key,
+    buildLineGeometry(history.map((point) => point[item.key]), domainMax, width, height),
+  ])), [domainMax, history, series]);
+  const hoverIndexRef = useRef(-1);
+  const crosshairRef = useRef<SVGLineElement | null>(null);
+  const tooltipRef = useRef<HTMLDivElement | null>(null);
+  const tooltipTimeRef = useRef<HTMLTimeElement | null>(null);
+  const tooltipProcessRef = useRef<HTMLSpanElement | null>(null);
+  const readoutTimeRef = useRef<HTMLTimeElement | null>(null);
+  const readoutProcessRef = useRef<HTMLSpanElement | null>(null);
+  const liveRef = useRef<HTMLSpanElement | null>(null);
+  const dotRefs = useRef(new Map<MetricTrendKey, SVGCircleElement>());
+  const tooltipValueRefs = useRef(new Map<MetricTrendKey, HTMLElement>());
+  const readoutValueRefs = useRef(new Map<MetricTrendKey, HTMLElement>());
+
+  function showSample(index: number, canvasWidth: number) {
+    if (index < 0 || index >= history.length) return;
+    hoverIndexRef.current = index;
+    const point = history[index];
+    const reference = geometries.get(series[0]?.key)?.points[index];
+    if (!reference) return;
+    const crosshair = crosshairRef.current;
+    if (crosshair) {
+      crosshair.hidden = false;
+      crosshair.setAttribute("x1", String(reference.x));
+      crosshair.setAttribute("x2", String(reference.x));
+    }
+    const readable: string[] = [];
+    for (const item of series) {
+      const geometryPoint = geometries.get(item.key)?.points[index];
+      const dot = dotRefs.current.get(item.key);
+      if (dot && geometryPoint) {
+        dot.hidden = false;
+        dot.setAttribute("cx", String(geometryPoint.x));
+        dot.setAttribute("cy", String(geometryPoint.y));
+      }
+      const value = formatTrendValue(point[item.key], item.decimals);
+      const tooltipValue = tooltipValueRefs.current.get(item.key);
+      const readoutValue = readoutValueRefs.current.get(item.key);
+      if (tooltipValue) tooltipValue.textContent = value;
+      if (readoutValue) readoutValue.textContent = value;
+      readable.push(`${item.label} ${value}`);
+    }
+    const time = formatDateTimePrecise(point.timestampUnixMs);
+    const latestProcess = history.at(-1)?.processStartedAtUnixMs ?? point.processStartedAtUnixMs;
+    const currentProcess = sameCoreProcess(point.processStartedAtUnixMs, latestProcess);
+    const startsProcess = index > 0 && !sameCoreProcess(history[index - 1].processStartedAtUnixMs, point.processStartedAtUnixMs);
+    const processLabel = `${currentProcess ? "当前 Core" : "历史 Core"}${startsProcess ? " · 重启后首个样本" : ""}`;
+    if (tooltipTimeRef.current) tooltipTimeRef.current.textContent = time;
+    if (tooltipProcessRef.current) tooltipProcessRef.current.textContent = processLabel;
+    if (readoutTimeRef.current) readoutTimeRef.current.textContent = time;
+    if (readoutProcessRef.current) readoutProcessRef.current.textContent = processLabel;
+    if (liveRef.current) liveRef.current.textContent = `${time}，${processLabel}，${readable.join("，")}`;
+    const tooltip = tooltipRef.current;
+    if (tooltip) {
+      const x = reference.x / width * canvasWidth;
+      tooltip.hidden = false;
+      tooltip.style.left = `${x}px`;
+      tooltip.dataset.side = x > canvasWidth * 0.62 ? "left" : "right";
+    }
+  }
+
+  function hideSample() {
+    hoverIndexRef.current = -1;
+    if (crosshairRef.current) crosshairRef.current.hidden = true;
+    if (tooltipRef.current) tooltipRef.current.hidden = true;
+    for (const dot of dotRefs.current.values()) dot.hidden = true;
+    if (liveRef.current) liveRef.current.textContent = "";
+    if (latest) {
+      if (readoutTimeRef.current) readoutTimeRef.current.textContent = formatDateTimePrecise(latest.timestampUnixMs);
+      if (readoutProcessRef.current) readoutProcessRef.current.textContent = "最新样本";
+      for (const item of series) {
+        const readoutValue = readoutValueRefs.current.get(item.key);
+        if (readoutValue) readoutValue.textContent = formatTrendValue(latest[item.key], item.decimals);
+      }
+    }
+  }
+
+  function onPointerMove(event: ReactPointerEvent<SVGSVGElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const index = nearestMetricTrendIndex(event.clientX, bounds.left, bounds.width, history.length, width);
+    if (index >= 0) showSample(index, bounds.width);
+  }
+
+  function onChartKeyDown(event: ReactKeyboardEvent<SVGSVGElement>) {
+    if (history.length === 0 || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) return;
+    event.preventDefault();
+    const current = hoverIndexRef.current < 0 ? history.length - 1 : hoverIndexRef.current;
+    const delta = event.key === "ArrowLeft" ? -1 : 1;
+    const next = Math.min(history.length - 1, Math.max(0, current + delta));
+    showSample(next, event.currentTarget.getBoundingClientRect().width);
+  }
+
   return (
     <article className={`metric-trend-chart ${className}`} aria-labelledby={titleID}>
       <header className="metric-trend-heading">
         <div><h3 id={titleID}>{title}</h3><p>{description}</p></div>
-        <div className="metric-trend-legend" aria-label={`${title}图例`}>
-          {series.map((item) => (
-            <span key={item.key}>
-              <i style={{ backgroundColor: item.color }} aria-hidden="true" />
-              <span>{item.label}</span>
-              <strong>{formatTrendValue(latest?.[item.key] ?? 0, item.decimals)}</strong>
-            </span>
-          ))}
+        <div className="metric-trend-readout" aria-label={`${title}当前读数`}>
+          <div className="metric-trend-readout-time">
+            <time ref={readoutTimeRef}>{latest ? formatDateTimePrecise(latest.timestampUnixMs) : "等待样本"}</time>
+            <span ref={readoutProcessRef}>最新样本</span>
+          </div>
+          <div className="metric-trend-legend" aria-label={`${title}图例`}>
+            {series.map((item) => (
+              <span key={item.key}>
+                <i style={{ backgroundColor: item.color }} aria-hidden="true" />
+                <span>{item.label}</span>
+                <strong ref={(node) => { if (node) readoutValueRefs.current.set(item.key, node); else readoutValueRefs.current.delete(item.key); }}>
+                  {formatTrendValue(latest?.[item.key] ?? 0, item.decimals)}
+                </strong>
+              </span>
+            ))}
+          </div>
         </div>
       </header>
       <div className="metric-chart-canvas">
-        <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby={`${titleID} ${descriptionID}`}>
-          <desc id={descriptionID}>{history.length < 2 ? `${title}当前只有一个样本，正在积累趋势。` : `${title}包含本次页面会话最近${history.length}个样本。`}</desc>
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          role="img"
+          tabIndex={0}
+          aria-labelledby={`${titleID} ${descriptionID}`}
+          onPointerMove={onPointerMove}
+          onPointerLeave={hideSample}
+          onFocus={(event) => { if (history.length > 0) showSample(history.length - 1, event.currentTarget.getBoundingClientRect().width); }}
+          onBlur={hideSample}
+          onKeyDown={onChartKeyDown}
+        >
+          <desc id={descriptionID}>{history.length < 2 ? `${title}当前只有一个样本，正在积累趋势。` : `${title}包含 Core 保存的最近${history.length}个样本。`}</desc>
           {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
             const y = 12 + ratio * 184;
             const value = domainMax * (1 - ratio);
@@ -300,17 +421,53 @@ function MetricTrendChart({
               </g>
             );
           })}
+          {history.map((point, index) => {
+            if (index === 0 || sameCoreProcess(history[index - 1].processStartedAtUnixMs, point.processStartedAtUnixMs)) return null;
+            const x = geometries.get(series[0]?.key)?.points[index]?.x;
+            if (x === undefined) return null;
+            return (
+              <g key={`restart-${point.timestampUnixMs}`} className="metric-chart-process-boundary" aria-hidden="true">
+                <line x1={x} x2={x} y1="12" y2="196" />
+                <text x={x + 4} y="22">Core 重启</text>
+              </g>
+            );
+          })}
           {series.map((item) => {
-            const geometry = buildLineGeometry(history.map((point) => point[item.key]), domainMax, width, height);
+            const geometry = geometries.get(item.key) ?? { path: "", points: [] };
             const lastPoint = geometry.points.at(-1);
             return (
               <g key={item.key} className="metric-chart-series">
-                <path d={geometry.path} stroke={item.color} />
+                {buildSegmentedLinePaths(geometry.points, history.map((point) => point.processStartedAtUnixMs)).map((path, index) => (
+                  <path key={`${item.key}-${index}`} d={path} stroke={item.color} />
+                ))}
                 {lastPoint ? <circle cx={lastPoint.x} cy={lastPoint.y} r="3.5" fill={item.color} /> : null}
               </g>
             );
           })}
+          <line ref={crosshairRef} hidden className="metric-chart-crosshair" y1="12" y2="196" />
+          {series.map((item) => (
+            <circle
+              key={`hover-${item.key}`}
+              ref={(node) => { if (node) dotRefs.current.set(item.key, node); else dotRefs.current.delete(item.key); }}
+              hidden
+              className="metric-chart-hover-dot"
+              r="4.5"
+              fill={item.color}
+            />
+          ))}
         </svg>
+        <div ref={tooltipRef} className="metric-chart-tooltip" hidden data-side="right" aria-hidden="true">
+          <div className="metric-chart-tooltip-heading"><time ref={tooltipTimeRef} /><span ref={tooltipProcessRef} /></div>
+          <dl>
+            {series.map((item) => (
+              <div key={item.key}>
+                <dt><i style={{ backgroundColor: item.color }} />{item.label}</dt>
+                <dd ref={(node) => { if (node) tooltipValueRefs.current.set(item.key, node); else tooltipValueRefs.current.delete(item.key); }}>0</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+        <span ref={liveRef} className="sr-only" aria-live="polite" />
         <div className="metric-chart-time" aria-hidden="true">
           <span>{history[0] ? formatTime(history[0].timestampUnixMs) : "等待样本"}</span>
           <span>{latest ? formatTime(latest.timestampUnixMs) : "等待样本"}</span>
@@ -324,9 +481,9 @@ function MetricTrendChart({
 function HttpRoutes({ metrics }: { metrics: MetricsSnapshot }) {
   return (
     <section className="observability-section route-observability">
-      <SectionHeading title="HTTP 路由" description="按路由模板聚合请求与耗时，避免资源标识造成高基数。" aside={`${metrics.http.routes.length} 条路由`} />
+      <SectionHeading title="对话接口" description="只统计 Session 建连、消息历史与 Turn 调试接口；控制台轮询、配置和日志流不计入。长连接只记录连接和错误，不计算处理耗时。" aside={`${metrics.http.routes.length} 条路由`} />
       {metrics.http.routes.length === 0 ? (
-        <EmptyState title="还没有路由观测" description="Core 收到管理请求后，这里会显示调用与耗时。" />
+        <EmptyState title="还没有对话接口观测" description="建立调试会话或读取对话记录后，这里会显示调用与耗时。" />
       ) : (
         <div className="table-scroll">
           <table className="data-table route-table">
@@ -334,7 +491,8 @@ function HttpRoutes({ metrics }: { metrics: MetricsSnapshot }) {
             <tbody>{metrics.http.routes.map((route) => (
               <tr key={`${route.method}-${route.route}`}>
                 <td><code>{route.method}</code></td><td><code>{route.route}</code></td><td>{formatNumber(route.requestCount)}</td><td>{formatNumber(route.errorCount)}</td>
-                <td>{route.requestCount ? `${formatNumber(Math.round(route.totalDurationMs / route.requestCount))} ms` : "N/A"}</td><td>{route.requestCount ? `${formatNumber(route.maxDurationMs)} ms` : "N/A"}</td>
+                <td>{route.longLived ? "长连接" : route.requestCount ? `${formatNumber(Math.round(route.totalDurationMs / route.requestCount))} ms` : "N/A"}</td>
+                <td>{route.longLived ? "不适用" : route.requestCount ? `${formatNumber(route.maxDurationMs)} ms` : "N/A"}</td>
               </tr>
             ))}</tbody>
           </table>
@@ -347,9 +505,13 @@ function HttpRoutes({ metrics }: { metrics: MetricsSnapshot }) {
 type TraceDetailState = "idle" | "loading" | "ready" | "missing" | "unsupported" | "error";
 type TraceRow = { span: TraceSpan; depth: number; hasChildren: boolean };
 
-function TraceWorkbench({ metrics, token }: { metrics: MetricsSnapshot; token: string }) {
+function TraceWorkbench({ metrics, token, active }: { metrics: MetricsSnapshot; token: string; active: boolean }) {
   const traces = metrics.messages.recent;
-  const [selectedTraceID, setSelectedTraceID] = useState(traces[0]?.traceId ?? "");
+  const [selectedTraceID, setSelectedTraceID] = useState(() => traceIDFromHash() || traces[0]?.traceId || "");
+  const [messageIDQuery, setMessageIDQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<MessageTrace[] | null>(null);
+  const [searchState, setSearchState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [searchError, setSearchError] = useState("");
   const [detail, setDetail] = useState<TraceDetail | null>(null);
   const [detailState, setDetailState] = useState<TraceDetailState>(traces.length > 0 ? "loading" : "idle");
   const [detailError, setDetailError] = useState("");
@@ -359,14 +521,31 @@ function TraceWorkbench({ metrics, token }: { metrics: MetricsSnapshot; token: s
   const [clock, setClock] = useState(Date.now());
 
   useEffect(() => {
+    if (searchResults !== null) return;
     if (traces.length === 0) {
-      setSelectedTraceID("");
+      if (!selectedTraceID) setSelectedTraceID(traceIDFromHash());
       return;
     }
-    if (!traces.some((trace) => trace.traceId === selectedTraceID)) {
+    if (!selectedTraceID) {
       setSelectedTraceID(traces[0].traceId);
     }
-  }, [selectedTraceID, traces]);
+  }, [searchResults, selectedTraceID, traces]);
+
+  useEffect(() => {
+    if (!active) return;
+    const syncTrace = () => {
+      const linked = traceIDFromHash();
+      if (linked && linked !== selectedTraceID) setSelectedTraceID(linked);
+    };
+    window.addEventListener("hashchange", syncTrace);
+    return () => window.removeEventListener("hashchange", syncTrace);
+  }, [active, selectedTraceID]);
+
+  useEffect(() => {
+    if (!active || !selectedTraceID) return;
+    const next = `#/tracing?traceId=${encodeURIComponent(selectedTraceID)}`;
+    if (window.location.hash !== next) window.history.replaceState(null, "", next);
+  }, [active, selectedTraceID]);
 
   useEffect(() => {
     if (!selectedTraceID) {
@@ -413,6 +592,12 @@ function TraceWorkbench({ metrics, token }: { metrics: MetricsSnapshot; token: s
   const selectedSpan = detail?.spans.find((span) => span.spanId === selectedSpanID) ?? null;
   const traceEnd = detail?.endedAtUnixMs || clock;
   const traceDuration = detail ? Math.max(1, traceEnd - detail.startedAtUnixMs) : 1;
+  const visibleTraces = useMemo(() => {
+    if (searchResults !== null) return searchResults;
+    const base = traces;
+    if (!detail || base.some((trace) => trace.traceId === detail.traceId)) return base;
+    return [traceDetailSummary(detail), ...base];
+  }, [detail, searchResults, traces]);
 
   function toggleCollapsed(spanID: string) {
     setCollapsed((current) => {
@@ -422,24 +607,69 @@ function TraceWorkbench({ metrics, token }: { metrics: MetricsSnapshot; token: s
     });
   }
 
+  async function searchByMessageID() {
+    const messageID = messageIDQuery.trim();
+    if (!messageID || searchState === "loading") return;
+    setSearchState("loading");
+    setSearchError("");
+    try {
+      const result = parseTraceSearch(await api<unknown>(`/traces?messageId=${encodeURIComponent(messageID)}`));
+      if (result.messageId !== messageID) throw new Error("Trace 搜索结果与 messageId 不一致");
+      setSearchResults(result.traces);
+      setSearchState("ready");
+      if (result.traces[0]) {
+        setSelectedTraceID(result.traces[0].traceId);
+      } else {
+        setSelectedTraceID("");
+        window.history.replaceState(null, "", "#/tracing");
+      }
+    } catch (error: unknown) {
+      setSearchResults([]);
+      setSearchState("error");
+      setSearchError(errorMessage(error));
+    }
+  }
+
+  function clearSearch() {
+    setMessageIDQuery("");
+    setSearchResults(null);
+    setSearchState("idle");
+    setSearchError("");
+  }
+
   return (
     <section className="observability-section trace-workbench" aria-label="端到端调用链">
       <SectionHeading
         title="端到端调用链"
-        description="选择一条 Trace，沿父子 Span 查看每个调用点的开始、结束与耗时。"
-        aside={`${traces.length} 条最近 Trace`}
+        description="按 Trace 或外部 messageId 关联定位，并沿父子 Span 查看每个调用点。"
+        aside={`${visibleTraces.length} 条${searchResults ? "匹配" : "最近"} Trace`}
       />
-      {traces.length === 0 ? (
+      {traces.length === 0 && !selectedTraceID ? (
         <EmptyState title="还没有可查看的 Trace" description="完成一次消息处理后，这里会出现端到端调用链。" />
       ) : (
         <div className="trace-explorer">
           <aside className="trace-browser" aria-label="最近 Trace">
             <div className="trace-browser-heading">
-              <strong>最近 Trace</strong>
-              <span>按接收时间倒序</span>
+              <strong>{searchResults ? "messageId 结果" : "最近 Trace"}</strong>
+              <span>{searchResults ? `精确匹配 ${messageIDQuery.trim()}` : "按接收时间倒序"}</span>
             </div>
+            <form className="trace-search" onSubmit={(event) => { event.preventDefault(); void searchByMessageID(); }}>
+              <TextField.Root
+                value={messageIDQuery}
+                maxLength={128}
+                placeholder="输入 messageId"
+                aria-label="按 messageId 搜索 Trace"
+                onChange={(event) => setMessageIDQuery(event.target.value)}
+              />
+              <Button type="submit" size="1" variant="soft" disabled={!messageIDQuery.trim() || searchState === "loading"} aria-label="搜索 messageId">
+                <MagnifyingGlassIcon />{searchState === "loading" ? "查询中" : "查询"}
+              </Button>
+              {searchResults ? <Button type="button" size="1" variant="ghost" onClick={clearSearch}><Cross2Icon />清除</Button> : null}
+            </form>
+            {searchState === "error" ? <p className="trace-search-state error">{searchError}</p> : null}
+            {searchState === "ready" && visibleTraces.length === 0 ? <p className="trace-search-state">没有匹配 Trace</p> : null}
             <div className="trace-browser-list">
-              {traces.map((trace) => (
+              {visibleTraces.map((trace) => (
                 <TraceSummaryButton
                   key={trace.traceId}
                   trace={trace}
@@ -466,7 +696,7 @@ function TraceWorkbench({ metrics, token }: { metrics: MetricsSnapshot; token: s
                 <header className="trace-detail-header">
                   <div>
                     <div className="trace-detail-title"><code>{detail.traceId}</code><span className={`trace-status ${detail.status}`}>{statusLabel(detail.status)}</span></div>
-                    <span>{sourceLabel(detail.source)}，Conversation {shortID(detail.conversationId)}{detail.turnId ? `，Turn ${shortID(detail.turnId)}` : ""}</span>
+                    <span>{sourceLabel(detail.source)}{detail.messageId ? `，messageId ${detail.messageId}` : ""}，Conversation {shortID(detail.conversationId)}{detail.turnId ? `，Turn ${shortID(detail.turnId)}` : ""}</span>
                   </div>
                   <dl className="trace-summary-metrics">
                     <div><dt>开始</dt><dd>{formatDateTimePrecise(detail.startedAtUnixMs)}</dd></div>
@@ -528,6 +758,7 @@ function TraceWorkbench({ metrics, token }: { metrics: MetricsSnapshot; token: s
                 )}
 
                 {selectedSpan ? <TraceSpanInspector span={selectedSpan} /> : null}
+                <TraceTurnRuntime detail={detail} token={token} />
               </>
             ) : null}
           </div>
@@ -537,14 +768,101 @@ function TraceWorkbench({ metrics, token }: { metrics: MetricsSnapshot; token: s
   );
 }
 
+function TraceTurnRuntime({ detail, token }: { detail: TraceDetail; token: string }) {
+  const [events, setEvents] = useState<RuntimeEvent[]>([]);
+  const [state, setState] = useState<"loading" | "ready" | "error">(detail.turnId ? "loading" : "ready");
+  const [revision, setRevision] = useState(0);
+
+  useEffect(() => {
+    if (!detail.turnId) {
+      setEvents([]);
+      setState("ready");
+      return;
+    }
+    let active = true;
+    const load = async (showLoading: boolean) => {
+      if (showLoading) setState("loading");
+      try {
+        const response = await api<{ conversationId: string; turnId: string; events: RuntimeEvent[] }>(
+          `/sessions/${encodeURIComponent(detail.conversationId)}/turns/${encodeURIComponent(detail.turnId)}/runtime`,
+        );
+        if (!active) return;
+        if (response.conversationId !== detail.conversationId || response.turnId !== detail.turnId || !Array.isArray(response.events)) {
+          throw new Error("Turn 运行明细与 Trace 关联不一致");
+        }
+        setEvents(response.events);
+        setState("ready");
+      } catch {
+        if (active) setState("error");
+      }
+    };
+    void load(true);
+    const timer = detail.endedAtUnixMs ? 0 : window.setInterval(() => void load(false), 1000);
+    return () => {
+      active = false;
+      if (timer) window.clearInterval(timer);
+    };
+  }, [detail.conversationId, detail.endedAtUnixMs, detail.turnId, revision, token]);
+
+  if (!detail.turnId) {
+    return (
+      <section className="trace-turn-runtime empty">
+        <strong>未创建 Turn</strong>
+        <span>这条消息在参与判断阶段结束，诊断信息保留在上方 Span 与安全属性中。</span>
+      </section>
+    );
+  }
+
+  const usage = runtimeModelUsageTotals(events);
+  return (
+    <section className="trace-turn-runtime" aria-label="关联 Turn 运行明细">
+      <header>
+        <div><strong>Turn 运行明细</strong><span>与对话调试使用同一份隐私安全投影</span></div>
+        <code>{detail.turnId}</code>
+      </header>
+      <div className="debug-metric-grid trace-runtime-usage">
+        <div><span>输入 Token</span><strong>{usage.input?.toLocaleString() ?? (state === "loading" ? "统计中" : "不可用")}</strong></div>
+        <div><span>输出 Token</span><strong>{usage.output?.toLocaleString() ?? (state === "loading" ? "统计中" : "不可用")}</strong></div>
+        <div><span>缓存命中</span><strong>{usage.cached?.toLocaleString() ?? (state === "loading" ? "统计中" : "不可用")}</strong></div>
+        <div><span>运行事件</span><strong>{events.length.toLocaleString()}</strong></div>
+      </div>
+      <TurnRuntimeTimeline events={events} state={state} terminal={Boolean(detail.endedAtUnixMs)} onRetry={() => setRevision((value) => value + 1)} />
+    </section>
+  );
+}
+
 function TraceSummaryButton({ trace, selected, onSelect }: { trace: MessageTrace; selected: boolean; onSelect: () => void }) {
   return (
     <button type="button" className={`trace-summary ${selected ? "selected" : ""}`} aria-pressed={selected} onClick={onSelect}>
       <span><code>{trace.traceId}</code><span className={`trace-status ${trace.status}`}>{statusLabel(trace.status)}</span></span>
       <strong>{trace.turnId ? `Turn ${shortID(trace.turnId)}` : "尚未创建 Turn"}</strong>
+      {trace.messageId ? <small className="trace-message-id" title={trace.messageId}>messageId {trace.messageId}</small> : null}
       <small>{formatDateTimePrecise(trace.receivedAtUnixMs)}<span>{trace.completedAtUnixMs ? formatMilliseconds(trace.totalDurationMs) : "进行中"}</span></small>
     </button>
   );
+}
+
+function traceIDFromHash() {
+  const [, query = ""] = window.location.hash.split("?", 2);
+  const traceID = new URLSearchParams(query).get("traceId")?.trim() || "";
+  return traceID.length <= 128 && !/[\u0000-\u001f\u007f]/.test(traceID) ? traceID : "";
+}
+
+function traceDetailSummary(detail: TraceDetail): MessageTrace {
+  return {
+    traceId: detail.traceId,
+    messageId: detail.messageId,
+    source: detail.source,
+    conversationId: detail.conversationId,
+    turnId: detail.turnId,
+    status: detail.status,
+    receivedAtUnixMs: detail.startedAtUnixMs,
+    decisionAtUnixMs: 0,
+    turnStartedAtUnixMs: 0,
+    firstBeatAtUnixMs: 0,
+    completedAtUnixMs: detail.endedAtUnixMs,
+    totalDurationMs: detail.durationMs,
+  };
 }
 
 function TraceDetailLoading() {

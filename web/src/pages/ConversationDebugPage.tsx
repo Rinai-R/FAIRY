@@ -445,6 +445,101 @@ function ToolRuntimeDialog({ event, onClose }: { event: RuntimeEvent | null; onC
   );
 }
 
+export function TurnRuntimeTimeline({
+  events,
+  state,
+  terminal,
+  onRetry,
+}: {
+  events: RuntimeEvent[];
+  state: "loading" | "ready" | "error" | undefined;
+  terminal: boolean;
+  onRetry?: () => void;
+}) {
+  const [mode, setMode] = useState<RuntimeTimelineMode>("summary");
+  const [selectedToolSequence, setSelectedToolSequence] = useState<number | null>(null);
+  const selectedToolTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const projected = useMemo(() => projectRuntimeTimeline(events, mode), [events, mode]);
+  const selectedToolEvent = selectedToolSequence === null
+    ? null
+    : events.find((event) => event.eventType === "tool" && event.sequence === selectedToolSequence) || null;
+
+  useEffect(() => {
+    setSelectedToolSequence(null);
+    selectedToolTriggerRef.current = null;
+  }, [events]);
+
+  function closeToolRuntimeDialog() {
+    const trigger = selectedToolTriggerRef.current;
+    setSelectedToolSequence(null);
+    window.setTimeout(() => trigger?.focus(), 0);
+  }
+
+  return (
+    <>
+      <section className="debug-runtime-section">
+        <div className="debug-runtime-heading">
+          <div>
+            <strong>{mode === "raw" ? "原始事件" : "关键时间线"}</strong>
+            <span>{events.length ? `关键 ${projectRuntimeTimeline(events, "summary").length} / 原始 ${events.length}` : "隐私安全投影"}</span>
+          </div>
+          {events.length ? (
+            <Button className="debug-runtime-toggle" size="1" variant="ghost" aria-pressed={mode === "raw"} onClick={() => setMode((current) => current === "summary" ? "raw" : "summary")}>
+              {mode === "raw" ? "返回关键时间线" : `查看原始事件 (${events.length})`}
+            </Button>
+          ) : null}
+          {state === "error" && onRetry ? <Button size="1" variant="ghost" onClick={onRetry}><ReloadIcon /> 重试</Button> : null}
+        </div>
+        {state === "loading" ? (
+          <p className="debug-runtime-state">正在读取运行记录…</p>
+        ) : state === "error" ? (
+          <p className="debug-runtime-state error">运行记录读取失败</p>
+        ) : !events.length ? (
+          <p className="debug-runtime-state">{terminal ? "暂无运行记录" : "正在收集运行记录…"}</p>
+        ) : (
+          <ol className="debug-runtime-list" data-runtime-mode={mode}>
+            {projected.map((event, index) => {
+              const isTool = event.eventType === "tool";
+              return (
+                <li key={`${event.sequence}-${event.eventType}`}>
+                  <span>{mode === "raw" ? event.sequence : index + 1}</span>
+                  <div className="debug-runtime-entry">
+                    {isTool ? (
+                      <button
+                        type="button"
+                        className="debug-tool-toggle"
+                        aria-haspopup="dialog"
+                        onClick={(clickEvent) => {
+                          selectedToolTriggerRef.current = clickEvent.currentTarget;
+                          setSelectedToolSequence(event.sequence);
+                        }}
+                      >
+                        <span>
+                          <strong>{EVENT_LABELS[event.eventType] || event.eventType}</strong>
+                          <p>{runtimeEventSummary(event)}</p>
+                          <small>{toolEventScopeSummary(event)}</small>
+                        </span>
+                        <EnterFullScreenIcon aria-hidden="true" />
+                      </button>
+                    ) : (
+                      <>
+                        <strong>{EVENT_LABELS[event.eventType] || event.eventType}</strong>
+                        <p>{runtimeEventSummary(event)}</p>
+                      </>
+                    )}
+                  </div>
+                  <time>{new Date(event.createdAtUnixMs).toLocaleTimeString("zh-CN", { hour12: false })}</time>
+                </li>
+              );
+            })}
+          </ol>
+        )}
+      </section>
+      <ToolRuntimeDialog event={selectedToolEvent} onClose={closeToolRuntimeDialog} />
+    </>
+  );
+}
+
 export function ConversationDebugPage({ onOpenCharacters }: { onOpenCharacters: () => void }) {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [catalogError, setCatalogError] = useState("");
@@ -457,8 +552,6 @@ export function ConversationDebugPage({ onOpenCharacters }: { onOpenCharacters: 
   const [selectedTurnId, setSelectedTurnId] = useState("");
   const [activeTurnId, setActiveTurnId] = useState("");
   const [draft, setDraft] = useState("");
-  const [runtimeMode, setRuntimeMode] = useState<RuntimeTimelineMode>("summary");
-  const [selectedToolSequence, setSelectedToolSequence] = useState<number | null>(null);
   const [clockNow, setClockNow] = useState(() => Date.now());
   const clientRef = useRef<DebugSessionClient | null>(null);
   const endpointIdentityRef = useRef({ characterId: "", endpointKey: "" });
@@ -467,7 +560,6 @@ export function ConversationDebugPage({ onOpenCharacters }: { onOpenCharacters: 
   const pendingLocalMessageRef = useRef("");
   const runtimeRequestRef = useRef<Map<string, number>>(new Map());
   const transcriptRef = useRef<HTMLDivElement | null>(null);
-  const selectedToolTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const selectedCharacter = catalog?.characters.find((character) => character.characterId === selectedCharacterId) || null;
   const selectedTurn = turns.find((turn) => (turn.turnId || turn.localId) === selectedTurnId) || turns.at(-1);
@@ -487,24 +579,6 @@ export function ConversationDebugPage({ onOpenCharacters }: { onOpenCharacters: 
     if (!activeTurnId) return "";
     return turns.find((turn) => turn.turnId === activeTurnId || turn.localId === activeTurnId)?.turnId || "";
   }, [activeTurnId, turns]);
-  const selectedRuntime = useMemo(
-    () => projectRuntimeTimeline(selectedTurn?.runtime || [], runtimeMode),
-    [runtimeMode, selectedTurn?.runtime],
-  );
-  const selectedToolEvent = selectedToolSequence === null
-    ? null
-    : selectedTurn?.runtime?.find((event) => event.eventType === "tool" && event.sequence === selectedToolSequence) || null;
-
-  useEffect(() => {
-    setSelectedToolSequence(null);
-    selectedToolTriggerRef.current = null;
-  }, [selectedTurn?.turnId]);
-
-  function closeToolRuntimeDialog() {
-    const trigger = selectedToolTriggerRef.current;
-    setSelectedToolSequence(null);
-    window.setTimeout(() => trigger?.focus(), 0);
-  }
 
   useEffect(() => {
     if (!selectedTurn || isTerminal(selectedTurn.state)) return;
@@ -962,83 +1036,18 @@ export function ConversationDebugPage({ onOpenCharacters }: { onOpenCharacters: 
                 <div><span>缓存命中</span><strong>{selectedUsage.cached?.toLocaleString() ?? metricPlaceholder}</strong></div>
               </div>
 
-              <section className="debug-runtime-section">
-                <div className="debug-runtime-heading">
-                  <div>
-                    <strong>{runtimeMode === "raw" ? "原始事件" : "关键时间线"}</strong>
-                    <span>
-                      {selectedTurn.runtime?.length
-                        ? `关键 ${projectRuntimeTimeline(selectedTurn.runtime, "summary").length} / 原始 ${selectedTurn.runtime.length}`
-                        : "隐私安全投影"}
-                    </span>
-                  </div>
-                  {selectedTurn.runtime?.length ? (
-                    <Button
-                      className="debug-runtime-toggle"
-                      size="1"
-                      variant="ghost"
-                      aria-pressed={runtimeMode === "raw"}
-                      onClick={() => setRuntimeMode((current) => current === "summary" ? "raw" : "summary")}
-                    >
-                      {runtimeMode === "raw" ? "返回关键时间线" : `查看原始事件 (${selectedTurn.runtime.length})`}
-                    </Button>
-                  ) : null}
-                  {selectedTurn.turnId && selectedTurn.runtimeState === "error" && opened ? (
-                    <Button size="1" variant="ghost" onClick={() => void loadRuntime(opened.conversationId, selectedTurn.turnId, generationRef.current)}>
-                      <ReloadIcon /> 重试
-                    </Button>
-                  ) : null}
-                </div>
-                {selectedTurn.runtimeState === "loading" ? (
-                  <p className="debug-runtime-state">正在读取运行记录…</p>
-                ) : selectedTurn.runtimeState === "error" ? (
-                  <p className="debug-runtime-state error">运行记录读取失败</p>
-                ) : !selectedTurn.runtime?.length ? (
-                  <p className="debug-runtime-state">{selectedTurnTerminal ? "暂无运行记录" : "正在收集运行记录…"}</p>
-                ) : (
-                  <ol className="debug-runtime-list" data-runtime-mode={runtimeMode}>
-                    {selectedRuntime.map((event, index) => {
-                      const isTool = event.eventType === "tool";
-                      return (
-                        <li key={`${event.sequence}-${event.eventType}`}>
-                          <span>{runtimeMode === "raw" ? event.sequence : index + 1}</span>
-                          <div className="debug-runtime-entry">
-                            {isTool ? (
-                              <button
-                                type="button"
-                                className="debug-tool-toggle"
-                                aria-haspopup="dialog"
-                                onClick={(clickEvent) => {
-                                  selectedToolTriggerRef.current = clickEvent.currentTarget;
-                                  setSelectedToolSequence(event.sequence);
-                                }}
-                              >
-                                <span>
-                                  <strong>{EVENT_LABELS[event.eventType] || event.eventType}</strong>
-                                  <p>{runtimeEventSummary(event)}</p>
-                                  <small>{toolEventScopeSummary(event)}</small>
-                                </span>
-                                <EnterFullScreenIcon aria-hidden="true" />
-                              </button>
-                            ) : (
-                              <>
-                                <strong>{EVENT_LABELS[event.eventType] || event.eventType}</strong>
-                                <p>{runtimeEventSummary(event)}</p>
-                              </>
-                            )}
-                          </div>
-                          <time>{new Date(event.createdAtUnixMs).toLocaleTimeString("zh-CN", { hour12: false })}</time>
-                        </li>
-                      );
-                    })}
-                  </ol>
-                )}
-              </section>
+              <TurnRuntimeTimeline
+                events={selectedTurn.runtime || []}
+                state={selectedTurn.runtimeState}
+                terminal={selectedTurnTerminal}
+                onRetry={selectedTurn.turnId && opened
+                  ? () => void loadRuntime(opened.conversationId, selectedTurn.turnId, generationRef.current)
+                  : undefined}
+              />
             </div>
           )}
         </aside>
       </div>
-      <ToolRuntimeDialog event={selectedToolEvent} onClose={closeToolRuntimeDialog} />
     </section>
   );
 }

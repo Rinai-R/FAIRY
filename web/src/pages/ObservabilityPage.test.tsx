@@ -6,6 +6,7 @@ import { ObservabilityPage } from "./ObservabilityPage";
 
 afterEach(() => {
   cleanup();
+  window.history.replaceState(null, "", "#/");
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -91,11 +92,11 @@ describe("ObservabilityPage lifecycle", () => {
 
     render(<Theme><ObservabilityPage token="" view="metrics" /></Theme>);
     await screen.findByText("指标已更新");
-    expect(screen.getByLabelText("本次页面会话指标趋势")).toBeTruthy();
+    expect(screen.getByLabelText("Core 持久化指标趋势")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "刷新快照" }));
     await screen.findByText("指标不可用");
     expect(screen.getByText("usage metrics unavailable")).toBeTruthy();
-    expect(screen.queryByLabelText("本次页面会话指标趋势")).toBeNull();
+    expect(screen.queryByLabelText("Core 持久化指标趋势")).toBeNull();
   });
 
   it("shows message throughput, latency, and recent traces", async () => {
@@ -145,6 +146,10 @@ describe("ObservabilityPage lifecycle", () => {
       turnCount: 1,
       truncated: false,
     };
+    metrics.http.routes = [{
+      method: "GET", route: "/v1/session/ws", longLived: true,
+      requestCount: 1, errorCount: 0, totalDurationMs: 0, maxDurationMs: 0,
+    }];
     const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode("event: ready\ndata: {\"ok\":true}\n\n")); } });
     const paths: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
@@ -161,13 +166,19 @@ describe("ObservabilityPage lifecycle", () => {
     expect(screen.queryByRole("tablist", { name: "可观测诊断任务" })).toBeNull();
     expect(document.querySelector(".observability-tabs")).toBeNull();
     expect(screen.getByRole("heading", { name: "实时指标趋势" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "HTTP 请求" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "对话接口请求" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "模型 Token" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "堆内存" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "累计模型用量" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "消息时延" })).toBeNull();
     expect(screen.queryByText("接收 → Turn 开始")).toBeNull();
-    expect(screen.getByRole("heading", { name: "HTTP 路由" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "对话接口" })).toBeTruthy();
+    expect(screen.getByText("/v1/session/ws")).toBeTruthy();
+    expect(screen.getByText("长连接")).toBeTruthy();
+    expect(screen.queryByText("333,283 ms")).toBeNull();
+    const routeTable = screen.getByText("/v1/session/ws").closest("table");
+    expect(routeTable?.querySelectorAll("thead th")).toHaveLength(6);
+    expect(routeTable?.querySelectorAll("tbody tr:first-child td")).toHaveLength(6);
     expect(screen.queryByRole("heading", { name: "端到端调用链" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "实时日志" })).toBeNull();
     expect(screen.getAllByText("缓存命中率")).toHaveLength(1);
@@ -176,17 +187,72 @@ describe("ObservabilityPage lifecycle", () => {
 
     page.rerender(<Theme><ObservabilityPage token="" view="tracing" /></Theme>);
     expect(screen.getByRole("heading", { name: "端到端调用链" })).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "HTTP 路由" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "对话接口" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "实时指标趋势" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "累计模型用量" })).toBeNull();
 
     page.rerender(<Theme><ObservabilityPage token="" view="logs" /></Theme>);
     expect(screen.getByRole("heading", { name: "实时日志" })).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "HTTP 路由" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "对话接口" })).toBeNull();
 
     expect(paths.filter((path) => path === "/v1/metrics")).toHaveLength(1);
     expect(paths.some((path) => path === "/v1/usage")).toBe(false);
     expect(paths.filter((path) => path.includes("/logs/stream"))).toHaveLength(1);
+  });
+
+  it("shows the nearest historical sample when a metrics chart is focused or traversed", async () => {
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    vi.stubGlobal("localStorage", { getItem: () => "", setItem: () => undefined, removeItem: () => undefined, clear: () => undefined, key: () => null, length: 0 });
+    const metrics = validMetrics();
+    metrics.history = [metricHistoryPoint(10_000, 10, 1, 1_000), metricHistoryPoint(20_000, 20, 2, 15_000)];
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(metrics), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    })));
+
+    render(<Theme><ObservabilityPage token="" view="metrics" /></Theme>);
+    const chart = await screen.findByRole("img", { name: /对话接口请求/ });
+    vi.spyOn(chart, "getBoundingClientRect").mockReturnValue({
+      x: 0, y: 0, width: 640, height: 220, top: 0, right: 640, bottom: 220, left: 0,
+      toJSON: () => ({}),
+    });
+    const tooltip = chart.parentElement?.querySelector<HTMLElement>(".metric-chart-tooltip");
+    const readout = chart.closest(".metric-trend-chart")?.querySelector<HTMLElement>(".metric-trend-readout");
+
+    fireEvent.pointerMove(chart, { clientX: 50 });
+    expect(tooltip?.hidden).toBe(false);
+    expect(tooltip?.textContent).toContain("10");
+    expect(tooltip?.textContent).toContain("1");
+    expect(tooltip?.textContent).toContain("历史 Core");
+    expect(readout?.textContent).toContain("10");
+    expect(readout?.textContent).toContain("1");
+    fireEvent.pointerLeave(chart);
+    expect(tooltip?.hidden).toBe(true);
+    expect(readout?.textContent).toContain("最新样本");
+
+    fireEvent.focus(chart);
+    expect(tooltip?.hidden).toBe(false);
+    expect(tooltip?.textContent).toContain("20");
+    expect(tooltip?.textContent).toContain("2");
+    expect(tooltip?.textContent).toContain("当前 Core");
+    expect(readout?.textContent).toContain("20");
+    expect(readout?.textContent).toContain("2");
+    expect(readout?.textContent).toContain("当前 Core");
+    expect(document.querySelectorAll(".metric-chart-process-boundary")).toHaveLength(6);
+
+    fireEvent.keyDown(chart, { key: "ArrowLeft" });
+    expect(tooltip?.textContent).toContain("10");
+    expect(tooltip?.textContent).toContain("1");
+    expect(tooltip?.textContent).toContain("历史 Core");
+    expect(readout?.textContent).toContain("10");
+    expect(readout?.textContent).toContain("1");
+    expect(readout?.textContent).toContain("历史 Core");
+
+    fireEvent.pointerLeave(chart);
+    expect(tooltip?.hidden).toBe(true);
+    expect(readout?.textContent).toContain("20");
+    expect(readout?.textContent).toContain("2");
+    expect(readout?.textContent).toContain("最新样本");
   });
 
   it("preserves model filtering and stream state while switching tabs", async () => {
@@ -209,8 +275,9 @@ describe("ObservabilityPage lifecycle", () => {
 
     const page = render(<Theme><ObservabilityPage token="" view="metrics" /></Theme>);
     await screen.findByText("指标已更新");
+    window.history.replaceState(null, "", "#/metrics");
     fireEvent.click(screen.getByRole("button", { name: "仅回复" }));
-    expect(screen.getByLabelText("本次页面会话指标趋势")).toBeTruthy();
+    expect(screen.getByLabelText("Core 持久化指标趋势")).toBeTruthy();
     expect(screen.getByRole("button", { name: "仅回复" }).getAttribute("aria-pressed")).toBe("true");
 
     page.rerender(<Theme><ObservabilityPage token="" view="logs" /></Theme>);
@@ -220,8 +287,11 @@ describe("ObservabilityPage lifecycle", () => {
 
     page.rerender(<Theme><ObservabilityPage token="" view="tracing" /></Theme>);
     expect(screen.getByRole("heading", { name: "端到端调用链" })).toBeTruthy();
+    await waitFor(() => expect(window.location.hash).toContain("#/tracing?traceId="));
+    window.history.replaceState(null, "", "#/metrics");
     page.rerender(<Theme><ObservabilityPage token="" view="metrics" /></Theme>);
     expect(screen.getByRole("button", { name: "仅回复" }).getAttribute("aria-pressed")).toBe("true");
+    await waitFor(() => expect(window.location.hash).toBe("#/metrics"));
 
     page.rerender(<Theme><ObservabilityPage token="" view="logs" /></Theme>);
     expect(screen.getByText("已暂停")).toBeTruthy();
@@ -241,6 +311,9 @@ describe("ObservabilityPage lifecycle", () => {
       }
       if (path.includes("/traces/")) {
         return new Response(JSON.stringify(validTraceDetail()), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (path.includes("/turns/turn-1/runtime")) {
+        return new Response(JSON.stringify({ conversationId: "conversation-1", turnId: "turn-1", events: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       metricsRequests += 1;
       const metrics = validMetrics();
@@ -300,13 +373,56 @@ describe("ObservabilityPage lifecycle", () => {
     expect(screen.queryByText("模型调用")).toBeNull();
   });
 
+  it("searches by messageId, deep-links the selected trace, and reuses Turn runtime detail", async () => {
+    window.history.replaceState(null, "", "#/tracing?traceId=msg-linked");
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    vi.stubGlobal("localStorage", { getItem: () => "", setItem: () => undefined, removeItem: () => undefined, clear: () => undefined, key: () => null, length: 0 });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.includes("/traces?messageId=qq-77")) {
+        return new Response(JSON.stringify({
+          messageId: "qq-77",
+          traces: [{ traceId: "msg-search", messageId: "qq-77", source: "ambient", conversationId: "conversation-9", turnId: "turn-9", status: "completed", receivedAtUnixMs: 10, completedAtUnixMs: 30, totalDurationMs: 20 }],
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (path.includes("/turns/turn-9/runtime")) {
+        return new Response(JSON.stringify({ conversationId: "conversation-9", turnId: "turn-9", events: [runtimeToolEvent()] }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (path.includes("/turns/turn-linked/runtime")) {
+        return new Response(JSON.stringify({ conversationId: "conversation-linked", turnId: "turn-linked", events: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (path.includes("/traces/msg-search")) {
+        return new Response(JSON.stringify({ ...validTraceDetail(), traceId: "msg-search", messageId: "qq-77", conversationId: "conversation-9", turnId: "turn-9" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (path.includes("/traces/msg-linked")) {
+        return new Response(JSON.stringify({ ...validTraceDetail(), traceId: "msg-linked", conversationId: "conversation-linked", turnId: "turn-linked" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify(validMetrics()), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Theme><ObservabilityPage token="" view="tracing" /></Theme>);
+    expect((await screen.findAllByText("msg-linked")).length).toBeGreaterThan(0);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/traces/msg-linked"))).toBe(true);
+
+    fireEvent.change(screen.getByLabelText("按 messageId 搜索 Trace"), { target: { value: "qq-77" } });
+    fireEvent.click(screen.getByRole("button", { name: "搜索 messageId" }));
+    expect(await screen.findByText(/messageId qq-77/)).toBeTruthy();
+    expect(window.location.hash).toBe("#/tracing?traceId=msg-search");
+    expect(await screen.findByText("Turn 运行明细")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: /工具执行/ }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain("苍彼四重奏");
+    expect(dialog.textContent).toContain("最终注入上下文");
+  });
+
 });
 
 function validMetrics() {
   return {
     generatedAtUnixMs: 1,
     process: { uptimeSeconds: 1, goVersion: "go1.26", goroutines: 2, heapAllocBytes: 3 },
-    http: { inFlight: 0, total: 1, status2xx: 1, status4xx: 0, status5xx: 0, routes: [] },
+    http: { inFlight: 0, total: 1, status2xx: 1, status4xx: 0, status5xx: 0, routes: [] as Array<Record<string, unknown>> },
     logs: { retainedEntries: 0, droppedEntries: 0, activeSubscribers: 0, slowSubscriberDisconnects: 0 },
     messages: validMessageMetrics(),
     runtime: { activeBackgroundJobs: 0, eventSubscribers: 0 },
@@ -316,6 +432,7 @@ function validMetrics() {
       turnCount: 0,
       truncated: false,
     },
+    history: [] as Array<ReturnType<typeof metricHistoryPoint>>,
   };
 }
 
@@ -349,5 +466,50 @@ function validTraceDetail() {
       { spanId: "span-turn", parentSpanId: "span-root", operation: "Turn", category: "turn", status: "completed", startedAtUnixMs: 5, endedAtUnixMs: 65, durationMs: 60, attributes: { turn_id: "turn-1" } },
       { spanId: "span-model", parentSpanId: "span-turn", operation: "模型调用", category: "model", status: "completed", startedAtUnixMs: 10, endedAtUnixMs: 60, durationMs: 50, attributes: { lane: "respond", model: "deepseek-v4-flash" } },
     ],
+  };
+}
+
+function runtimeToolEvent() {
+  return {
+    sequence: 1,
+    eventType: "tool",
+    state: "planning",
+    metadata: {
+      tool: "web_search",
+      phase: "model_driven",
+      status: "ok",
+      detail: {
+        version: "v1",
+        arguments: { query: "苍彼四重奏" },
+        receipt: { status: "ok" },
+        result: { personalMemories: [], knowledge: [], socialMemories: { entries: [] }, semanticStatus: "ready" },
+        mergedContext: { personalMemories: [], knowledge: [], socialMemories: { entries: [] }, semanticStatus: "ready" },
+      },
+    },
+    createdAtUnixMs: 20,
+  };
+}
+
+function metricHistoryPoint(timestampUnixMs: number, httpTotal: number, httpInFlight: number, processStartedAtUnixMs = 1) {
+  return {
+    timestampUnixMs,
+    processStartedAtUnixMs,
+    httpTotal,
+    httpInFlight,
+    httpStatus4xx: 0,
+    httpStatus5xx: 0,
+    messagesReceived: 0,
+    messagesSent: 0,
+    messagesActive: 0,
+    messagesFailed: 0,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    modelCalls: 0,
+    goroutines: 1,
+    backgroundJobs: 0,
+    eventSubscribers: 0,
+    logSubscribers: 0,
+    heapMiB: 1,
   };
 }
