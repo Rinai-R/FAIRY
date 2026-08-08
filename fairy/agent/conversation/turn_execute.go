@@ -95,7 +95,12 @@ func (e *TurnEngine) submitCompiledTurn(
 	if telemetry != nil && request.TraceID != "" {
 		telemetry.TurnStarted(request.TraceID, request.ConversationID, persisted.ID)
 	}
-	defer s.endTurn(request.ConversationID, persisted.ID)
+	turnEnded := false
+	defer func() {
+		if !turnEnded {
+			s.endTurn(request.ConversationID, persisted.ID)
+		}
+	}()
 	turnStarted := time.Now()
 
 	lg := s.logger.With(zap.String("turn", persisted.ID))
@@ -839,7 +844,17 @@ func (e *TurnEngine) submitCompiledTurn(
 	if respondingErr != nil {
 		return respondingOutcome, respondingErr
 	}
-	return execution.persist(gathered, resolved, turnStarted)
+	persistedOutcome, persistErr := execution.persist(gathered, resolved, turnStarted)
+	if persistErr != nil {
+		return persistedOutcome, persistErr
+	}
+	// Retention is allowed to start an admitted job immediately. Release the
+	// conversation gate before scheduling so automatic compaction cannot be
+	// rejected by the Turn that just completed.
+	s.endTurn(request.ConversationID, persisted.ID)
+	turnEnded = true
+	s.scheduleAutoCompaction(request.ConversationID, gathered.events)
+	return persistedOutcome, nil
 }
 
 func desktopInitiationRetrievalQuery(context DesktopInitiationContext) string {

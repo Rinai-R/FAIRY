@@ -100,7 +100,6 @@ func (x *turnExecution) persist(gathered *turnContext, resolved session.Resolved
 			})
 		}
 	}
-	x.service.scheduleAutoCompaction(x.request.ConversationID, events)
 	return TurnOutcome{
 		ConversationID:  x.request.ConversationID,
 		TurnID:          x.persisted.ID,
