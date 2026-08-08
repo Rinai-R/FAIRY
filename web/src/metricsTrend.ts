@@ -19,6 +19,14 @@ export type MetricsTrendPoint = {
   cachedInputTokens: number;
   outputTokens: number;
   modelCalls: number;
+  learningEnqueued: number;
+  learningSucceeded: number;
+  learningFailed: number;
+  learningDropped: number;
+  feedbackRegistered: number;
+  feedbackSucceeded: number;
+  feedbackFailed: number;
+  feedbackDropped: number;
   goroutines: number;
   backgroundJobs: number;
   eventSubscribers: number;
@@ -74,6 +82,14 @@ export function projectMetricsTrend(snapshot: MetricsSnapshot): MetricsTrendPoin
     cachedInputTokens: usage.cachedInputTokens,
     outputTokens: usage.outputTokens,
     modelCalls: usage.callCount,
+    learningEnqueued: snapshot.runtime.experience.learning.enqueued,
+    learningSucceeded: snapshot.runtime.experience.learning.succeeded,
+    learningFailed: snapshot.runtime.experience.learning.failed,
+    learningDropped: snapshot.runtime.experience.learning.dropped,
+    feedbackRegistered: snapshot.runtime.experience.feedback.registered,
+    feedbackSucceeded: snapshot.runtime.experience.feedback.succeeded,
+    feedbackFailed: snapshot.runtime.experience.feedback.failed,
+    feedbackDropped: snapshot.runtime.experience.feedback.dropped,
     goroutines: snapshot.process.goroutines,
     backgroundJobs: snapshot.runtime.activeBackgroundJobs,
     eventSubscribers: snapshot.runtime.eventSubscribers,

@@ -87,6 +87,48 @@ describe("observability parsers", () => {
     expect(JSON.stringify(parsed.runtime.experience)).not.toContain("private observation");
   });
 
+  it("keeps old metric history compatible while strictly validating current experience counters", () => {
+    const input = validMetrics();
+    input.history = [{
+      timestampUnixMs: 1,
+      processStartedAtUnixMs: 1,
+      httpTotal: 0,
+      httpInFlight: 0,
+      httpStatus4xx: 0,
+      httpStatus5xx: 0,
+      messagesReceived: 0,
+      messagesSent: 0,
+      messagesActive: 0,
+      messagesFailed: 0,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      modelCalls: 0,
+      goroutines: 1,
+      backgroundJobs: 0,
+      eventSubscribers: 0,
+      logSubscribers: 0,
+      heapMiB: 1,
+    }];
+    expect(parseMetrics(input).history[0]).toMatchObject({
+      learningEnqueued: 0,
+      learningSucceeded: 0,
+      learningFailed: 0,
+      learningDropped: 0,
+      feedbackRegistered: 0,
+      feedbackSucceeded: 0,
+      feedbackFailed: 0,
+      feedbackDropped: 0,
+    });
+
+    const missing = validMetrics();
+    (missing.runtime as Record<string, unknown>).experience = undefined;
+    expect(() => parseMetrics(missing)).toThrow(/experience metrics/);
+    const negative = validMetrics();
+    ((negative.runtime.experience.learning as Record<string, unknown>)).enqueued = -1;
+    expect(() => parseMetrics(negative)).toThrow(/非负安全整数/);
+  });
+
   it("accepts legacy metrics without message telemetry", () => {
     const { messages: _messages, ...legacyMetrics } = validMetrics();
     const metrics = parseMetrics(legacyMetrics);
@@ -152,7 +194,11 @@ export function validMetrics() {
     runtime: {
       activeBackgroundJobs: 0,
       eventSubscribers: 0,
-      experience: undefined as undefined | Record<string, unknown>,
+      experience: {
+        learning: { enqueued: 0, dropped: 0, succeeded: 0, failed: 0 },
+        feedback: { registered: 0, dropped: 0, succeeded: 0, failed: 0 },
+        cacheIdentityVersion: "prompt-cache-v2",
+      } as Record<string, unknown>,
     },
     usage: {
       overall: [] as Array<Record<string, unknown>>,
@@ -160,6 +206,7 @@ export function validMetrics() {
       turnCount: 0,
       truncated: false,
     },
+    history: [] as Array<Record<string, unknown>>,
   };
 }
 

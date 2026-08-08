@@ -231,6 +231,24 @@ const TREND_CHARTS: Array<{
     ],
   },
   {
+    id: "experience-learning", className: "half", title: "公共经验学习", description: "异步学习任务的累计处理状态",
+    series: [
+      { key: "learningEnqueued", label: "入队", color: "#2878d0" },
+      { key: "learningSucceeded", label: "成功", color: "#3c8b72" },
+      { key: "learningFailed", label: "失败", color: "#b84855" },
+      { key: "learningDropped", label: "丢弃", color: "#b37622" },
+    ],
+  },
+  {
+    id: "experience-feedback", className: "half", title: "回复效果反馈", description: "反馈窗口的累计归因与处理状态",
+    series: [
+      { key: "feedbackRegistered", label: "注册", color: "#2878d0" },
+      { key: "feedbackSucceeded", label: "成功", color: "#3c8b72" },
+      { key: "feedbackFailed", label: "失败", color: "#b84855" },
+      { key: "feedbackDropped", label: "丢弃", color: "#b37622" },
+    ],
+  },
+  {
     id: "runtime", className: "wide", title: "运行任务", description: "Go 进程和后台工作负载",
     series: [
       { key: "goroutines", label: "Goroutine", color: "#2878d0" },

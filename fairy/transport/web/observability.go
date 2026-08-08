@@ -257,6 +257,9 @@ func (s *Server) collectCurrentMetrics(ctx context.Context) (metricsResponse, ob
 	if s.rt.Initiative != nil {
 		response.Runtime.Experience = s.rt.Initiative.ExperienceStats()
 	}
+	if err := validateExperienceStats(response.Runtime.Experience); err != nil {
+		return metricsResponse{}, observability.MetricHistoryPoint{}, err
+	}
 	if s.rt.TurnEventSubscriberCount != nil {
 		response.Runtime.EventSubscribers = s.rt.TurnEventSubscriberCount()
 	}
@@ -329,7 +332,15 @@ func metricHistoryPoint(response metricsResponse, startedAt time.Time, activeJob
 		HTTPStatus4xx: response.HTTP.Status4xx, HTTPStatus5xx: response.HTTP.Status5xx,
 		MessagesReceived: response.Messages.Received, MessagesSent: response.Messages.Sent,
 		MessagesActive: response.Messages.Active, MessagesFailed: response.Messages.Failed,
-		Goroutines: response.Process.Goroutines, BackgroundJobs: uint64(activeJobs),
+		LearningEnqueued:   uint64(response.Runtime.Experience.Learning.Enqueued),
+		LearningSucceeded:  uint64(response.Runtime.Experience.Learning.Succeeded),
+		LearningFailed:     uint64(response.Runtime.Experience.Learning.Failed),
+		LearningDropped:    uint64(response.Runtime.Experience.Learning.Dropped),
+		FeedbackRegistered: uint64(response.Runtime.Experience.Feedback.Registered),
+		FeedbackSucceeded:  uint64(response.Runtime.Experience.Feedback.Succeeded),
+		FeedbackFailed:     uint64(response.Runtime.Experience.Feedback.Failed),
+		FeedbackDropped:    uint64(response.Runtime.Experience.Feedback.Dropped),
+		Goroutines:         response.Process.Goroutines, BackgroundJobs: uint64(activeJobs),
 		EventSubscribers: response.Runtime.EventSubscribers, LogSubscribers: response.Logs.ActiveSubscribers,
 		HeapMiB: float64(response.Process.HeapAllocBytes) / 1024 / 1024,
 	}
@@ -340,6 +351,28 @@ func metricHistoryPoint(response metricsResponse, startedAt time.Time, activeJob
 		point.ModelCalls += lane.CallCount
 	}
 	return point
+}
+
+func validateExperienceStats(stats ExperienceStats) error {
+	values := []struct {
+		name  string
+		value int64
+	}{
+		{name: "learning.enqueued", value: stats.Learning.Enqueued},
+		{name: "learning.succeeded", value: stats.Learning.Succeeded},
+		{name: "learning.failed", value: stats.Learning.Failed},
+		{name: "learning.dropped", value: stats.Learning.Dropped},
+		{name: "feedback.registered", value: stats.Feedback.Registered},
+		{name: "feedback.succeeded", value: stats.Feedback.Succeeded},
+		{name: "feedback.failed", value: stats.Feedback.Failed},
+		{name: "feedback.dropped", value: stats.Feedback.Dropped},
+	}
+	for _, item := range values {
+		if item.value < 0 {
+			return fmt.Errorf("experience metric %s is negative", item.name)
+		}
+	}
+	return nil
 }
 
 func filterMetricHistoryScope(history []observability.MetricHistoryPoint, scope string) []observability.MetricHistoryPoint {

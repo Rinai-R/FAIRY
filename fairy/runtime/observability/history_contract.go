@@ -20,6 +20,14 @@ type MetricHistoryPoint struct {
 	CachedInputTokens    uint64  `json:"cachedInputTokens"`
 	OutputTokens         uint64  `json:"outputTokens"`
 	ModelCalls           uint64  `json:"modelCalls"`
+	LearningEnqueued     uint64  `json:"learningEnqueued"`
+	LearningSucceeded    uint64  `json:"learningSucceeded"`
+	LearningFailed       uint64  `json:"learningFailed"`
+	LearningDropped      uint64  `json:"learningDropped"`
+	FeedbackRegistered   uint64  `json:"feedbackRegistered"`
+	FeedbackSucceeded    uint64  `json:"feedbackSucceeded"`
+	FeedbackFailed       uint64  `json:"feedbackFailed"`
+	FeedbackDropped      uint64  `json:"feedbackDropped"`
 	Goroutines           uint64  `json:"goroutines"`
 	BackgroundJobs       uint64  `json:"backgroundJobs"`
 	EventSubscribers     uint64  `json:"eventSubscribers"`

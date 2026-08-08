@@ -23,6 +23,10 @@ describe("metrics trend projection", () => {
       cachedInputTokens: 50,
       outputTokens: 25,
       modelCalls: 3,
+      learningEnqueued: 7,
+      learningSucceeded: 5,
+      feedbackRegistered: 9,
+      feedbackSucceeded: 6,
       goroutines: 11,
       heapMiB: 8,
     });
@@ -86,6 +90,14 @@ function trendPoint(timestampUnixMs: number, httpTotal: number): MetricsTrendPoi
     cachedInputTokens: 0,
     outputTokens: 0,
     modelCalls: 0,
+    learningEnqueued: 0,
+    learningSucceeded: 0,
+    learningFailed: 0,
+    learningDropped: 0,
+    feedbackRegistered: 0,
+    feedbackSucceeded: 0,
+    feedbackFailed: 0,
+    feedbackDropped: 0,
     goroutines: 0,
     backgroundJobs: 0,
     eventSubscribers: 0,
@@ -108,7 +120,15 @@ function snapshot(): MetricsSnapshot {
       latencies: { receiveToDecision: latency, receiveToTurn: latency, turnToFirstBeat: latency, turnToCompleted: latency, receiveToFirstBeat: latency, receiveToCompleted: latency },
       recent: [],
     },
-    runtime: { activeBackgroundJobs: 1, eventSubscribers: 4 },
+    runtime: {
+      activeBackgroundJobs: 1,
+      eventSubscribers: 4,
+      experience: {
+        learning: { enqueued: 7, dropped: 1, succeeded: 5, failed: 1 },
+        feedback: { registered: 9, dropped: 1, succeeded: 6, failed: 2 },
+        cacheIdentityVersion: "prompt-cache-v2",
+      },
+    },
     usage: {
       overall: [
         { lane: "respond", inputTokens: 100, outputTokens: 20, cachedInputTokens: 40, cachedObservedInputTokens: 100, cacheWriteTokens: 0, callCount: 2 },

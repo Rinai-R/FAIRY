@@ -168,6 +168,8 @@ describe("ObservabilityPage lifecycle", () => {
     expect(screen.getByRole("heading", { name: "实时指标趋势" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "对话接口请求" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "模型 Token" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "公共经验学习" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "回复效果反馈" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "堆内存" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "累计模型用量" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "消息时延" })).toBeNull();
@@ -205,6 +207,10 @@ describe("ObservabilityPage lifecycle", () => {
     vi.stubGlobal("localStorage", { getItem: () => "", setItem: () => undefined, removeItem: () => undefined, clear: () => undefined, key: () => null, length: 0 });
     const metrics = validMetrics();
     metrics.history = [metricHistoryPoint(10_000, 10, 1, 1_000), metricHistoryPoint(20_000, 20, 2, 15_000)];
+    metrics.history[0].feedbackRegistered = 3;
+    metrics.history[0].feedbackSucceeded = 1;
+    metrics.history[1].feedbackRegistered = 8;
+    metrics.history[1].feedbackSucceeded = 6;
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(metrics), {
       status: 200,
       headers: { "Content-Type": "application/json" },
@@ -238,7 +244,7 @@ describe("ObservabilityPage lifecycle", () => {
     expect(readout?.textContent).toContain("20");
     expect(readout?.textContent).toContain("2");
     expect(readout?.textContent).toContain("当前 Core");
-    expect(document.querySelectorAll(".metric-chart-process-boundary")).toHaveLength(6);
+    expect(document.querySelectorAll(".metric-chart-process-boundary")).toHaveLength(8);
 
     fireEvent.keyDown(chart, { key: "ArrowLeft" });
     expect(tooltip?.textContent).toContain("10");
@@ -253,6 +259,19 @@ describe("ObservabilityPage lifecycle", () => {
     expect(readout?.textContent).toContain("20");
     expect(readout?.textContent).toContain("2");
     expect(readout?.textContent).toContain("最新样本");
+
+    const feedbackChart = screen.getByRole("img", { name: /回复效果反馈/ });
+    vi.spyOn(feedbackChart, "getBoundingClientRect").mockReturnValue({
+      x: 0, y: 0, width: 640, height: 220, top: 0, right: 640, bottom: 220, left: 0,
+      toJSON: () => ({}),
+    });
+    fireEvent.focus(feedbackChart);
+    const feedbackReadout = feedbackChart.closest(".metric-trend-chart")?.querySelector<HTMLElement>(".metric-trend-readout");
+    expect(feedbackReadout?.textContent).toContain("注册8");
+    expect(feedbackReadout?.textContent).toContain("成功6");
+    fireEvent.keyDown(feedbackChart, { key: "ArrowLeft" });
+    expect(feedbackReadout?.textContent).toContain("注册3");
+    expect(feedbackReadout?.textContent).toContain("成功1");
   });
 
   it("preserves model filtering and stream state while switching tabs", async () => {
@@ -519,7 +538,15 @@ function validMetrics() {
     http: { inFlight: 0, total: 1, status2xx: 1, status4xx: 0, status5xx: 0, routes: [] as Array<Record<string, unknown>> },
     logs: { retainedEntries: 0, droppedEntries: 0, activeSubscribers: 0, slowSubscriberDisconnects: 0 },
     messages: validMessageMetrics(),
-    runtime: { activeBackgroundJobs: 0, eventSubscribers: 0 },
+    runtime: {
+      activeBackgroundJobs: 0,
+      eventSubscribers: 0,
+      experience: {
+        learning: { enqueued: 0, dropped: 0, succeeded: 0, failed: 0 },
+        feedback: { registered: 0, dropped: 0, succeeded: 0, failed: 0 },
+        cacheIdentityVersion: "prompt-cache-v2",
+      },
+    },
     usage: {
       overall: [] as Array<Record<string, unknown>>,
       turns: [] as Array<Record<string, unknown>>,
@@ -600,6 +627,14 @@ function metricHistoryPoint(timestampUnixMs: number, httpTotal: number, httpInFl
     cachedInputTokens: 0,
     outputTokens: 0,
     modelCalls: 0,
+    learningEnqueued: 0,
+    learningSucceeded: 0,
+    learningFailed: 0,
+    learningDropped: 0,
+    feedbackRegistered: 0,
+    feedbackSucceeded: 0,
+    feedbackFailed: 0,
+    feedbackDropped: 0,
     goroutines: 1,
     backgroundJobs: 0,
     eventSubscribers: 0,

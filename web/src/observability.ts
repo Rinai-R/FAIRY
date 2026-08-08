@@ -140,7 +140,7 @@ export type MetricsSnapshot = {
   runtime: {
     activeBackgroundJobs: number;
     eventSubscribers: number;
-    experience?: ExperienceStats;
+    experience: ExperienceStats;
   };
   usage: { overall: UsageLane[]; turns: UsageTurn[]; turnCount: number; truncated: boolean };
   history: MetricsTrendPoint[];
@@ -245,7 +245,7 @@ export function parseMetrics(value: unknown): MetricsSnapshot {
     runtime: {
       activeBackgroundJobs: requiredNonNegativeInteger(runtime, "activeBackgroundJobs"),
       eventSubscribers: requiredNonNegativeInteger(runtime, "eventSubscribers"),
-      experience: runtime.experience === undefined ? undefined : parseExperienceStats(runtime.experience),
+      experience: parseExperienceStats(runtime.experience),
     },
     usage: {
       overall: usage.overall.map(parseUsageLane),
@@ -274,6 +274,14 @@ function parseMetricHistoryPoint(value: unknown): MetricsTrendPoint {
     cachedInputTokens: requiredNonNegativeInteger(point, "cachedInputTokens"),
     outputTokens: requiredNonNegativeInteger(point, "outputTokens"),
     modelCalls: requiredNonNegativeInteger(point, "modelCalls"),
+    learningEnqueued: optionalNonNegativeInteger(point, "learningEnqueued"),
+    learningSucceeded: optionalNonNegativeInteger(point, "learningSucceeded"),
+    learningFailed: optionalNonNegativeInteger(point, "learningFailed"),
+    learningDropped: optionalNonNegativeInteger(point, "learningDropped"),
+    feedbackRegistered: optionalNonNegativeInteger(point, "feedbackRegistered"),
+    feedbackSucceeded: optionalNonNegativeInteger(point, "feedbackSucceeded"),
+    feedbackFailed: optionalNonNegativeInteger(point, "feedbackFailed"),
+    feedbackDropped: optionalNonNegativeInteger(point, "feedbackDropped"),
     goroutines: requiredNonNegativeInteger(point, "goroutines"),
     backgroundJobs: requiredNonNegativeInteger(point, "backgroundJobs"),
     eventSubscribers: requiredNonNegativeInteger(point, "eventSubscribers"),
