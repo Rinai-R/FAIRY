@@ -14,6 +14,31 @@ import (
 	"github.com/cloudwego/hertz/pkg/route/param"
 )
 
+func TestExperienceQueueStatsKeepZeroValueSchema(t *testing.T) {
+	payload, err := json.Marshal(ExperienceStats{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := string(payload)
+	for _, field := range []string{`"enqueued":0`, `"registered":0`, `"dropped":0`, `"succeeded":0`, `"failed":0`} {
+		if !strings.Contains(encoded, field) {
+			t.Fatalf("experience metrics omitted %s: %s", field, encoded)
+		}
+	}
+	var decoded struct {
+		Learning map[string]any `json:"learning"`
+		Feedback map[string]any `json:"feedback"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	_, learningHasRegistered := decoded.Learning["registered"]
+	_, feedbackHasEnqueued := decoded.Feedback["enqueued"]
+	if learningHasRegistered || feedbackHasEnqueued {
+		t.Fatalf("experience metrics mixed queue semantics: %s", encoded)
+	}
+}
+
 func TestHandleLogStreamRejectsSubscriberCapacityBeforeSSE(t *testing.T) {
 	store := observability.NewLogStore(2)
 	unsubscribes := make([]func(), 0, observability.DefaultSubscriberCapacity)

@@ -11,7 +11,7 @@ afterEach(() => {
 });
 
 describe("ObservabilityPage lifecycle", () => {
-  it("uses an Authorization header, never the URL, and aborts the stream when unmounted", async () => {
+  it("keeps logs independent from metrics, authenticates the stream, and aborts it when unmounted", async () => {
     vi.stubGlobal("ResizeObserver", class {
       observe() {}
       unobserve() {}
@@ -41,8 +41,12 @@ describe("ObservabilityPage lifecycle", () => {
       return new Response(JSON.stringify(validMetrics()), { status: 200, headers: { "Content-Type": "application/json" } });
     });
     vi.stubGlobal("fetch", fetchMock);
-    const view = render(<Theme><ObservabilityPage token="" view="metrics" /></Theme>);
+    const view = render(<Theme><ObservabilityPage token="" view="logs" /></Theme>);
     await waitFor(() => expect(streamState.signal).not.toBeNull());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/logs/stream");
+    expect(screen.queryByText("指标不可用")).toBeNull();
+    expect(screen.queryByRole("button", { name: "刷新快照" })).toBeNull();
     for (const [input, init] of fetchMock.mock.calls) {
       expect(String(input)).not.toContain(token);
       expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${token}`);

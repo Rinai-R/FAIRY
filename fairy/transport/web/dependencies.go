@@ -122,18 +122,24 @@ type AgentLoopMetrics struct {
 	Completed         LatencyMetrics `json:"completed"`
 }
 
-type QueueStats struct {
-	Enqueued   int64 `json:"enqueued,omitempty"`
-	Registered int64 `json:"registered,omitempty"`
+type LearningQueueStats struct {
+	Enqueued  int64 `json:"enqueued"`
+	Dropped   int64 `json:"dropped"`
+	Succeeded int64 `json:"succeeded"`
+	Failed    int64 `json:"failed"`
+}
+
+type FeedbackQueueStats struct {
+	Registered int64 `json:"registered"`
 	Dropped    int64 `json:"dropped"`
 	Succeeded  int64 `json:"succeeded"`
 	Failed     int64 `json:"failed"`
 }
 
 type ExperienceStats struct {
-	Learning             QueueStats `json:"learning"`
-	Feedback             QueueStats `json:"feedback"`
-	CacheIdentityVersion string     `json:"cacheIdentityVersion"`
+	Learning             LearningQueueStats `json:"learning"`
+	Feedback             FeedbackQueueStats `json:"feedback"`
+	CacheIdentityVersion string             `json:"cacheIdentityVersion"`
 }
 
 func (s ParticipationSubscription) Unsubscribe() {

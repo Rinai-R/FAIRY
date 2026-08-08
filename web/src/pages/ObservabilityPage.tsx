@@ -49,6 +49,7 @@ const OBSERVABILITY_COPY: Record<ObservabilityView, { title: string; description
 
 export function ObservabilityPage({ token, view }: { token: string; view: ObservabilityView }) {
   const copy = OBSERVABILITY_COPY[view];
+  const needsMetrics = view !== "logs";
   const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null);
   const [metricsTrend, setMetricsTrend] = useState<MetricsTrendPoint[]>([]);
   const [metricsError, setMetricsError] = useState("");
@@ -81,12 +82,19 @@ export function ObservabilityPage({ token, view }: { token: string; view: Observ
   }, [token]);
 
   useEffect(() => {
+    if (!needsMetrics) {
+      requestVersionRef.current += 1;
+      requestInFlightRef.current = false;
+      setMetricsError("");
+      setMetricsLoading(false);
+      return;
+    }
     void refreshMetrics(true);
     return () => {
       requestVersionRef.current += 1;
       requestInFlightRef.current = false;
     };
-  }, [refreshMetrics]);
+  }, [needsMetrics, refreshMetrics]);
 
   useEffect(() => {
     if (view !== "metrics") return;
@@ -99,7 +107,7 @@ export function ObservabilityPage({ token, view }: { token: string; view: Observ
       <PageHeader
         title={copy.title}
         description={copy.description}
-        action={
+        action={view !== "logs" ? (
           <div className="observability-header-actions">
             <div className={`snapshot-status ${metricsError ? "error" : metrics ? "ready" : "loading"}`} aria-label="指标快照状态">
               <strong>{metricsLoading ? "读取指标" : metricsError ? "指标不可用" : metrics ? "指标已更新" : "等待指标"}</strong>
@@ -109,10 +117,10 @@ export function ObservabilityPage({ token, view }: { token: string; view: Observ
               <ReloadIcon /> 刷新快照
             </Button>
           </div>
-        }
+        ) : undefined}
       />
 
-      {metricsError ? (
+      {needsMetrics && metricsError ? (
         <InlineNotice tone="error" title="指标快照读取失败">{metricsError}</InlineNotice>
       ) : null}
 

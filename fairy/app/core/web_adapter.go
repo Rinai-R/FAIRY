@@ -124,11 +124,11 @@ func (a initiativeAPIAdapter) DecideParticipation(ctx context.Context, conversat
 func (a initiativeAPIAdapter) ExperienceStats() api.ExperienceStats {
 	stats := a.service.ExperienceStats()
 	return api.ExperienceStats{
-		Learning: api.QueueStats{
+		Learning: api.LearningQueueStats{
 			Enqueued: stats.Learning.Enqueued, Dropped: stats.Learning.Dropped,
 			Succeeded: stats.Learning.Succeeded, Failed: stats.Learning.Failed,
 		},
-		Feedback: api.QueueStats{
+		Feedback: api.FeedbackQueueStats{
 			Registered: stats.Feedback.Registered, Dropped: stats.Feedback.Dropped,
 			Succeeded: stats.Feedback.Succeeded, Failed: stats.Feedback.Failed,
 		},
