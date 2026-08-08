@@ -80,6 +80,7 @@ var postgresConstraints = []schemaConstraint{
 
 var postgresIndexes = []schemaIndex{
 	{"conversation_turns_extraction", "CREATE INDEX IF NOT EXISTS conversation_turns_extraction ON conversation_turns(conversation_id, extraction_state, extraction_next_attempt_at_ms, sequence ASC) WHERE status = 'completed'"},
+	{"conversation_messages_content_trgm", "CREATE INDEX IF NOT EXISTS conversation_messages_content_trgm ON conversation_messages USING gin (content public.gin_trgm_ops)"},
 	{"stickers_description_trgm", "CREATE INDEX IF NOT EXISTS stickers_description_trgm ON stickers USING gin (description public.gin_trgm_ops)"},
 	{"tool_executions_pending_deadline", "CREATE INDEX IF NOT EXISTS tool_executions_pending_deadline ON tool_executions(deadline_at_ms ASC, created_at_ms ASC, id ASC) WHERE status = 'pending'"},
 	{"personal_memories_content_trgm", "CREATE INDEX IF NOT EXISTS personal_memories_content_trgm ON personal_memories USING gin (content public.gin_trgm_ops)"},

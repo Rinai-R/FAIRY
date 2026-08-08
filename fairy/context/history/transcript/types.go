@@ -64,3 +64,14 @@ type MessagePage struct {
 	Messages           []MessageRecord `json:"messages"`
 	NextBeforeSequence *uint64         `json:"nextBeforeSequence,omitempty"`
 }
+
+type CompactedTranscriptTurn struct {
+	TurnID   string          `json:"turnId"`
+	Score    float64         `json:"score"`
+	Messages []MessageRecord `json:"messages"`
+}
+
+type CompactedTranscriptRecall struct {
+	Turns     []CompactedTranscriptTurn `json:"turns"`
+	Truncated bool                      `json:"truncated"`
+}

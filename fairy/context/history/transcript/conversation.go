@@ -454,6 +454,10 @@ func ScanMessageRecord(row scanner) (MessageRecord, error) {
 	if err := row.Scan(&message.ID, &message.MessageID, &message.ConversationID, &message.TurnID, &sequence, &message.Role, &message.Content, &expressionPartsJSON, &message.CreatedAtUnixMS); err != nil {
 		return MessageRecord{}, fmt.Errorf("scanning conversation message: %w", err)
 	}
+	return finishScannedMessage(message, sequence, expressionPartsJSON)
+}
+
+func finishScannedMessage(message MessageRecord, sequence int64, expressionPartsJSON []byte) (MessageRecord, error) {
 	if err := json.Unmarshal(expressionPartsJSON, &message.Parts); err != nil {
 		return MessageRecord{}, fmt.Errorf("decoding conversation message expression parts: %w", err)
 	}

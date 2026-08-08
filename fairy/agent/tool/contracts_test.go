@@ -26,8 +26,8 @@ func TestToolSpecsForInteraction(t *testing.T) {
 		webSearchEnabled bool
 		want             []string
 	}{
-		{name: "private", resolved: private, want: []string{MemorySearch}},
-		{name: "private with web", resolved: private, webSearchEnabled: true, want: []string{MemorySearch, WebSearch}},
+		{name: "private", resolved: private, want: []string{MemorySearch, ConversationHistorySearch}},
+		{name: "private with web", resolved: private, webSearchEnabled: true, want: []string{MemorySearch, ConversationHistorySearch, WebSearch}},
 		{name: "public", resolved: public, want: []string{PublicMemorySearch, SocialContextSearch, SocialExpressionSelect}},
 		{name: "public with web", resolved: public, webSearchEnabled: true, want: []string{PublicMemorySearch, SocialContextSearch, SocialExpressionSelect, WebSearch}},
 		{name: "external direct", resolved: externalDirect, want: []string{PublicMemorySearch}},

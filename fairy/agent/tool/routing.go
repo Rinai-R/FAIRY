@@ -74,9 +74,9 @@ func RouteCall(call model.FunctionCall, availability RuntimeAvailability, resolv
 	}
 	routed.Query = query
 	switch call.Name {
-	case MemorySearch:
+	case MemorySearch, ConversationHistorySearch:
 		if !resolved.AllowsPersonalMemory() {
-			return rejected(routed, errors.New("memory_search is unavailable for public interactions"))
+			return rejected(routed, errors.New(call.Name+" is unavailable for public interactions"))
 		}
 	case PublicMemorySearch:
 		if resolved.AllowsPersonalMemory() {

@@ -208,6 +208,23 @@ func (e *TurnEngine) submitCompiledTurn(
 		metadata["detail"] = tool.RetrievalRuntimeDetail(query, status, result, merged)
 		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, lifecycle.StatePlanning, "", metadata)
 	}
+	appendTranscriptToolResult := func(call model.FunctionCall, status string, result history.CompactedTranscriptRecall) error {
+		segments, err := tool.TranscriptContextSegments(tool.TranscriptPromptItems(call, status, result), time.Now())
+		if err != nil {
+			return err
+		}
+		agent.toolSegments = append(agent.toolSegments, segments...)
+		return nil
+	}
+	appendTranscriptToolRuntime := func(call model.FunctionCall, query, status string, result history.CompactedTranscriptRecall) {
+		detail := tool.TranscriptRuntimeProjection(query, status, result)
+		s.appendRuntimeLedger(request.ConversationID, persisted.ID, runtimeLedgerEventTool, lifecycle.StatePlanning, "", map[string]any{
+			"tool": call.Name, "phase": "model_driven", "status": status,
+			"modelDrivenIndex": agent.modelDrivenTools + 1, "queryHash": runtimeHash(query),
+			"turnCount": detail.Receipt.TurnCount, "messageCount": detail.Receipt.MessageCount,
+			"truncated": detail.Receipt.Truncated, "detail": detail,
+		})
+	}
 	runAgent := func() (TurnOutcome, error) {
 		for {
 			allowTools := agent.modelDrivenTools < agent.toolBudget
@@ -510,13 +527,21 @@ func (e *TurnEngine) submitCompiledTurn(
 							"tool": call.Name, "status": routed.Status, "errorCode": "MODEL_RESPONSE_INVALID",
 						})
 						lg.Warn("cognition loop", zap.String("phase", "tool_result_failure"), zap.String("tool", call.Name), zap.String("status", routed.Status), zap.Error(routed.Err))
-						toolResult := tool.FromError(call.Name, routed.Err)
-						retrieval = tool.MergeRetrieval(retrieval, toolResult)
-						if err := appendRetrievalToolResult(call, routed.Status, toolResult); err != nil {
-							return fail("PROMPT_BUILD_FAILED", err)
+						if call.Name == tool.ConversationHistorySearch {
+							empty := history.CompactedTranscriptRecall{Turns: []history.CompactedTranscriptTurn{}}
+							if err := appendTranscriptToolResult(call, routed.Status, empty); err != nil {
+								return fail("PROMPT_BUILD_FAILED", err)
+							}
+							appendTranscriptToolRuntime(call, query, routed.Status, empty)
+						} else {
+							toolResult := tool.FromError(call.Name, routed.Err)
+							retrieval = tool.MergeRetrieval(retrieval, toolResult)
+							if err := appendRetrievalToolResult(call, routed.Status, toolResult); err != nil {
+								return fail("PROMPT_BUILD_FAILED", err)
+							}
+							retrievalOmitReason = ""
+							appendRetrievalToolRuntime(call, query, routed.Status, toolResult, retrieval, nil)
 						}
-						retrievalOmitReason = ""
-						appendRetrievalToolRuntime(call, query, routed.Status, toolResult, retrieval, nil)
 						agent.modelDrivenTools++
 						continue
 					}
@@ -531,6 +556,26 @@ func (e *TurnEngine) submitCompiledTurn(
 					toolResult := recall.Context{}
 					appendToolResult := true
 					switch call.Name {
+					case tool.ConversationHistorySearch:
+						appendToolResult = false
+						transcriptResult, toolErr := s.memory.turn.transcriptRecall.SearchCompactedTranscript(
+							turnCtx, request.ConversationID, bootstrap.PromptWindow.CutoffMessageSequence,
+							query, history.MaxCompactedTranscriptTurns,
+						)
+						status := "ok"
+						if toolErr != nil {
+							status = "failed"
+							toolResultStatus = status
+							transcriptResult = history.CompactedTranscriptRecall{Turns: []history.CompactedTranscriptTurn{}}
+							lg.Warn("cognition loop", zap.String("phase", "tool_failed"), zap.String("tool", call.Name), zap.Error(toolErr))
+						}
+						if err := appendTranscriptToolResult(call, status, transcriptResult); err != nil {
+							return fail("PROMPT_BUILD_FAILED", err)
+						}
+						appendTranscriptToolRuntime(call, query, status, transcriptResult)
+						lg.Info("cognition loop", zap.String("phase", "tool_done"), zap.String("tool", call.Name),
+							zap.Int("turnCount", len(transcriptResult.Turns)), zap.Bool("truncated", transcriptResult.Truncated),
+							zap.Int("index", agent.modelDrivenTools+1))
 					case tool.DesktopObserve:
 						appendToolResult = false
 						agent.desktopToolUsed = true

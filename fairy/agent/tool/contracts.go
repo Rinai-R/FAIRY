@@ -12,13 +12,14 @@ import (
 )
 
 const (
-	MemorySearch           = "memory_search"
-	PublicMemorySearch     = "public_memory_search"
-	WebSearch              = "web_search"
-	SocialExpressionSelect = "social_expression_select"
-	SocialContextSearch    = "social_context_search"
-	DesktopObserve         = "desktop_observe"
-	StickerSearch          = "sticker_search"
+	MemorySearch              = "memory_search"
+	ConversationHistorySearch = "conversation_history_search"
+	PublicMemorySearch        = "public_memory_search"
+	WebSearch                 = "web_search"
+	SocialExpressionSelect    = "social_expression_select"
+	SocialContextSearch       = "social_context_search"
+	DesktopObserve            = "desktop_observe"
+	StickerSearch             = "sticker_search"
 
 	privateModelToolBudget = 2
 	publicModelToolBudget  = 3
@@ -26,7 +27,7 @@ const (
 )
 
 // respondInstructionsAllowTools extends reply rules with native function tools.
-const respondInstructionsAllowTools = character.RespondInstructions + ` When personal memories or public facts in context are insufficient, call function tools instead of guessing. Available tools: memory_search for profile, preference, experience, current-character relationship, and confirmed local knowledge; web_search (when provided) for timely public topics such as anime, games, versions, or news. When you call a tool, you MAY put one short in-character line for the user in the assistant content (plain text in textLanguage, not JSON) so you stay present while the tool runs—keep it to a single natural sentence in this character's voice, and never mention tool names, searches, retrieval, reasoning, or system internals. If you have nothing natural to say, leave content empty; never invent filler. After tool results appear in retrieved context, output chains only. Never output a gather JSON object.`
+const respondInstructionsAllowTools = character.RespondInstructions + ` When personal memories or public facts in context are insufficient, call function tools instead of guessing. Available tools: memory_search for durable profile, preference, experience, current-character relationship, and confirmed local knowledge; conversation_history_search for exact wording or concrete details from older compacted turns in this private conversation; web_search (when provided) for timely public topics such as anime, games, versions, or news. Prefer memory_search for semantic facts and conversation_history_search only when exact prior dialogue matters. If neither source contains evidence, say you do not remember instead of inventing. When you call a tool, you MAY put one short in-character line for the user in the assistant content (plain text in textLanguage, not JSON) so you stay present while the tool runs—keep it to a single natural sentence in this character's voice, and never mention tool names, searches, retrieval, reasoning, or system internals. If you have nothing natural to say, leave content empty; never invent filler. After tool results appear in retrieved context, output chains only. Never output a gather JSON object.`
 
 const respondInstructionsAllowPublicTools = ` When verified public knowledge or timely public facts are insufficient, call function tools instead of guessing. Available tools: public_memory_search for verified confirmed local knowledge only; social_context_search for reusable public group situation and behavior patterns from this conversation; social_expression_select for reusable public speaking-style patterns from this group conversation; web_search (when provided) for timely public topics. When you call a tool, you MAY put one short public in-character line in assistant content (plain text in textLanguage, not JSON). Never mention tools, searches, retrieval, reasoning, private memories, or system internals. After tool results appear, output chains only. Never output a gather JSON object.`
 
@@ -42,7 +43,7 @@ func Specs(webSearchEnabled bool) []model.ToolSpec {
 
 func SpecsForInteraction(webSearchEnabled bool, resolved session.Resolved) []model.ToolSpec {
 	querySchema := json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"Short search query"}},"required":["query"],"additionalProperties":false}`)
-	tools := make([]model.ToolSpec, 0, 3)
+	tools := make([]model.ToolSpec, 0, 4)
 	if !resolved.AllowsPersonalMemory() {
 		tools = append(tools, model.ToolSpec{
 			Name:        PublicMemorySearch,
@@ -65,6 +66,11 @@ func SpecsForInteraction(webSearchEnabled bool, resolved session.Resolved) []mod
 		tools = append(tools, model.ToolSpec{
 			Name:        MemorySearch,
 			Description: "Search layered local memory for user profile, preferences, experiences, current-character relationship facts, and confirmed local knowledge. Results include semanticStatus metadata; unavailable means FTS-only recall.",
+			Parameters:  querySchema,
+		})
+		tools = append(tools, model.ToolSpec{
+			Name:        ConversationHistorySearch,
+			Description: "Search older compacted turns in this private conversation for exact wording or concrete prior details. Use a short distinctive phrase. Results never cross conversations and exclude the active prompt window.",
 			Parameters:  querySchema,
 		})
 	}

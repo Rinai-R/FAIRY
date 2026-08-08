@@ -19,6 +19,8 @@ func TestRouteCallEnforcesInteractionAndAvailability(t *testing.T) {
 		status       string
 	}{
 		{name: "private memory", call: model.FunctionCall{Name: MemorySearch, Arguments: `{"query":"偏好"}`}, resolved: private, disposition: CallReady, status: "ok"},
+		{name: "private transcript", call: model.FunctionCall{Name: ConversationHistorySearch, Arguments: `{"query":"海边约定"}`}, resolved: private, disposition: CallReady, status: "ok"},
+		{name: "private transcript denied in public", call: model.FunctionCall{Name: ConversationHistorySearch, Arguments: `{"query":"海边约定"}`}, resolved: public, disposition: CallReject, status: "rejected"},
 		{name: "private memory denied in public", call: model.FunctionCall{Name: MemorySearch, Arguments: `{"query":"偏好"}`}, resolved: public, disposition: CallReject, status: "rejected"},
 		{name: "disabled web becomes result", call: model.FunctionCall{Name: WebSearch, Arguments: `{"query":"新闻"}`}, resolved: private, disposition: CallResult, status: "disabled"},
 		{name: "desktop empty args", call: model.FunctionCall{Name: DesktopObserve, Arguments: `{}`}, availability: RuntimeAvailability{Desktop: true}, resolved: private, disposition: CallReady, status: "ok"},

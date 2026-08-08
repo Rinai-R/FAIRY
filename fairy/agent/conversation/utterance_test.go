@@ -11,6 +11,9 @@ func TestToolUtteranceReason(t *testing.T) {
 	if delivery.ToolUtteranceReason(tool.MemorySearch) != "searching_memory" {
 		t.Fatal("memory tool reason")
 	}
+	if delivery.ToolUtteranceReason(tool.ConversationHistorySearch) != "searching_memory" {
+		t.Fatal("transcript tool reason")
+	}
 	if delivery.ToolUtteranceReason(tool.WebSearch) != "searching_web" {
 		t.Fatal("web tool reason")
 	}

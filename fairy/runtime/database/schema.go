@@ -2,7 +2,7 @@ package database
 
 import "github.com/pgvector/pgvector-go"
 
-const currentSchemaRevision = "2026-08-09-turn-message-correlation-1"
+const currentSchemaRevision = "2026-08-09-compacted-transcript-recall-1"
 
 type conversationSchema struct {
 	ID          string `gorm:"type:text;primaryKey;index:conversations_character_updated,priority:3"`

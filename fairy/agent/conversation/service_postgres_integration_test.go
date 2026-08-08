@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -62,6 +63,102 @@ var (
 )
 
 const structuredCompactSummary = `{"currentGoal":"继续当前对话","userConstraints":"遵守用户明确约束","relationship":"保持当前关系边界","keyFacts":[],"completedWork":"已整理较早对话","openQuestions":"等待用户继续","nextSteps":"结合最近原始对话回复","sourceRefs":[]}`
+
+func TestCompactedTranscriptRecallIsConversationAndCutoffScopedIntegration(t *testing.T) {
+	stores, pool, cleanup := openCompanionIntegrationStore(t)
+	defer cleanup()
+
+	first, err := stores.OpenOrCreateCharacterConversation("character-transcript-first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := stores.OpenOrCreateCharacterConversation("character-transcript-second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldTurn, err := stores.BeginTurn(first.Conversation.ID, "还记得海边约定吗")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stores.CompleteTurn(first.Conversation.ID, oldTurn.ID, "记得，等夏天一起去。 "); err != nil {
+		t.Fatal(err)
+	}
+	cutoff := oldTurn.UserMessage.Sequence + 1
+	newTurn, err := stores.BeginTurn(first.Conversation.ID, "海边约定后来改成了秋天")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stores.CompleteTurn(first.Conversation.ID, newTurn.ID, "这条在 cutoff 之后。 "); err != nil {
+		t.Fatal(err)
+	}
+	foreignTurn, err := stores.BeginTurn(second.Conversation.ID, "海边约定只属于另一个会话")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stores.CompleteTurn(second.Conversation.ID, foreignTurn.ID, "不能泄漏。 "); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := stores.history.SearchCompactedTranscript(t.Context(), first.Conversation.ID, cutoff, "海边约定", history.MaxCompactedTranscriptTurns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Turns) != 1 || result.Turns[0].TurnID != oldTurn.ID || len(result.Turns[0].Messages) != 2 {
+		t.Fatalf("recall = %#v", result)
+	}
+	for _, message := range result.Turns[0].Messages {
+		if message.ConversationID != first.Conversation.ID || message.Sequence > cutoff || strings.Contains(message.Content, "cutoff 之后") || strings.Contains(message.Content, "不能泄漏") {
+			t.Fatalf("out-of-scope message = %#v", message)
+		}
+	}
+	empty, err := stores.history.SearchCompactedTranscript(t.Context(), first.Conversation.ID, cutoff, "完全不存在的内容", history.MaxCompactedTranscriptTurns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty.Turns) != 0 || empty.Truncated {
+		t.Fatalf("empty recall = %#v", empty)
+	}
+	var hasIndex bool
+	if err := pool.QueryRow(t.Context(), "SELECT to_regclass('conversation_messages_content_trgm') IS NOT NULL").Scan(&hasIndex); err != nil {
+		t.Fatal(err)
+	}
+	if !hasIndex {
+		t.Fatal("conversation_messages_content_trgm is missing")
+	}
+}
+
+func TestCompactedTranscriptRecallReportsTurnLimitIntegration(t *testing.T) {
+	stores, _, cleanup := openCompanionIntegrationStore(t)
+	defer cleanup()
+	bootstrap, err := stores.OpenOrCreateCharacterConversation("character-transcript-limit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cutoff uint64
+	for index := 0; index < 4; index++ {
+		turn, err := stores.BeginTurn(bootstrap.Conversation.ID, fmt.Sprintf("共同暗号 海风 %d", index))
+		if err != nil {
+			t.Fatal(err)
+		}
+		message, err := stores.CompleteTurn(bootstrap.Conversation.ID, turn.ID, fmt.Sprintf("这一轮回答 %d", index))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cutoff = message.Sequence
+	}
+	result, err := stores.history.SearchCompactedTranscript(t.Context(), bootstrap.Conversation.ID, cutoff, "共同暗号", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Turns) != 2 || !result.Truncated {
+		t.Fatalf("limited recall = %#v", result)
+	}
+	for _, turn := range result.Turns {
+		if len(turn.Messages) != 2 {
+			t.Fatalf("turn was not returned as a semantic unit: %#v", turn)
+		}
+	}
+}
 
 type companionIntegrationModel struct {
 	chains []reply.ReplyChain
@@ -355,6 +452,24 @@ type desktopToolIntegrationModel struct {
 
 type emptyMemoryToolIntegrationModel struct {
 	requests []model.CompiledPromptRequest
+}
+
+type transcriptToolIntegrationModel struct {
+	requests []model.CompiledPromptRequest
+}
+
+func (provider *transcriptToolIntegrationModel) ExecuteRequestContext(_ context.Context, request model.CompiledPromptRequest) ([]model.StreamEvent, error) {
+	provider.requests = append(provider.requests, request)
+	if len(provider.requests) == 1 {
+		return []model.StreamEvent{{Type: "function_calls", FunctionCalls: []model.FunctionCall{{
+			CallID: "history-call-1", Name: tool.ConversationHistorySearch, Arguments: `{"query":"海边约定"}`,
+		}}}}, nil
+	}
+	return companionIntegrationModel{chains: []reply.ReplyChain{{VisualState: "idle", Text: "我记得，夏天一起去海边。"}}}.ExecuteRequestContext(context.Background(), request)
+}
+
+func (*transcriptToolIntegrationModel) ExecutePrompt(model.PromptLane, string, uint32, []model.PromptItem, string) ([]model.StreamEvent, error) {
+	return nil, errors.New("unexpected ExecutePrompt")
 }
 
 func (provider *emptyMemoryToolIntegrationModel) ExecuteRequestContext(_ context.Context, request model.CompiledPromptRequest) ([]model.StreamEvent, error) {
@@ -720,6 +835,97 @@ func TestPostgresEmptyMemoryToolResultsProgressToFinalReply(t *testing.T) {
 		if calls != wantPairs || results != wantPairs {
 			t.Fatalf("request %d call/result pairs = %d/%d, want %d", requestIndex+2, calls, results, wantPairs)
 		}
+	}
+}
+
+func TestPostgresTranscriptToolUsesCompactedHistoryWithoutChangingStableState(t *testing.T) {
+	stores, pool, cleanup := openCompanionIntegrationStore(t)
+	defer cleanup()
+	bootstrap, err := stores.OpenOrCreateCharacterConversation("character-transcript-tool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldTurn, err := stores.BeginTurn(bootstrap.Conversation.ID, "还记得海边约定吗")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stores.CompleteTurn(bootstrap.Conversation.ID, oldTurn.ID, "记得，夏天一起去海边。 "); err != nil {
+		t.Fatal(err)
+	}
+	cutoff := oldTurn.UserMessage.Sequence + 1
+	if _, err := pool.Exec(t.Context(), `UPDATE prompt_windows SET revision = 2, summary = $2, cutoff_message_sequence = $3 WHERE conversation_id = $1`, bootstrap.Conversation.ID, structuredCompactSummary, cutoff); err != nil {
+		t.Fatal(err)
+	}
+	provider := &transcriptToolIntegrationModel{}
+	service := newCompanionIntegrationService(stores, "character-transcript-tool", provider)
+	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
+
+	outcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+		ConversationID: bootstrap.Conversation.ID, Input: "你还记得那件事吗", MaxOutputTokens: 160,
+		AvailableVisualStates: []reply.VisualState{{ID: "idle", Description: "idle"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.ResponseText != "我记得，夏天一起去海边。" || len(provider.requests) != 2 {
+		t.Fatalf("outcome = %#v, requests = %d", outcome, len(provider.requests))
+	}
+	if provider.requests[0].CacheInput == nil || provider.requests[1].CacheInput == nil || *provider.requests[0].CacheInput != *provider.requests[1].CacheInput {
+		t.Fatalf("cache inputs changed: %#v %#v", provider.requests[0].CacheInput, provider.requests[1].CacheInput)
+	}
+	var contextProjection tool.TranscriptContext
+	var foundCall, foundResult, foundContext bool
+	for _, item := range provider.requests[1].Input {
+		switch item.Type {
+		case model.PromptItemToolCall:
+			foundCall = item.ToolCallID == "history-call-1" && item.ToolName == tool.ConversationHistorySearch
+		case model.PromptItemToolResult:
+			foundResult = item.ToolCallID == "history-call-1"
+		case model.PromptItemContextData:
+			if strings.Contains(item.Content, `"contextType":"compacted_transcript_recall"`) {
+				if err := json.Unmarshal([]byte(item.Content), &contextProjection); err != nil {
+					t.Fatal(err)
+				}
+				foundContext = true
+			}
+		}
+	}
+	if !foundCall || !foundResult || !foundContext || len(contextProjection.Turns) != 1 || len(contextProjection.Turns[0].Messages) != 2 {
+		t.Fatalf("post-tool input = %#v", provider.requests[1].Input)
+	}
+	ledger, err := stores.ListTurnRuntimeEvents(outcome.ConversationID, outcome.TurnID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inspected *tool.TranscriptContext
+	for _, event := range ledger {
+		if event.EventType != runtimeLedgerEventTool {
+			continue
+		}
+		var metadata struct {
+			Tool   string                       `json:"tool"`
+			Detail tool.TranscriptRuntimeDetail `json:"detail"`
+		}
+		if json.Unmarshal([]byte(event.MetadataJSON), &metadata) == nil && metadata.Tool == tool.ConversationHistorySearch {
+			inspected = metadata.Detail.Result
+		}
+	}
+	if inspected == nil || !reflect.DeepEqual(*inspected, contextProjection) {
+		t.Fatalf("inspected = %#v, model projection = %#v", inspected, contextProjection)
+	}
+	after, err := stores.LoadConversation(bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.PromptWindow.Revision != 2 || after.PromptWindow.CutoffMessageSequence != cutoff {
+		t.Fatalf("prompt window changed = %#v", after.PromptWindow)
+	}
+	var memoryCount int
+	if err := pool.QueryRow(t.Context(), "SELECT count(*) FROM personal_memories").Scan(&memoryCount); err != nil {
+		t.Fatal(err)
+	}
+	if memoryCount != 0 {
+		t.Fatalf("transcript search wrote %d memories", memoryCount)
 	}
 }
 

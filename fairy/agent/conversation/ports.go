@@ -38,6 +38,12 @@ type PromptContextStore interface {
 	LoadConversationPrompt(conversationID string) (history.ConversationPromptContext, error)
 }
 
+// CompactedTranscriptRecallStore reads exact older dialogue only within the
+// current conversation and only up to the trusted prompt-window cutoff.
+type CompactedTranscriptRecallStore interface {
+	SearchCompactedTranscript(context.Context, string, uint64, string, int) (history.CompactedTranscriptRecall, error)
+}
+
 // TurnStore owns the durable turn lifecycle writes consumed by TurnEngine.
 type TurnStore interface {
 	BeginCorrelatedTurn(conversationID string, userMessage string, messageID string) (history.PersistedTurn, error)
@@ -116,6 +122,7 @@ type SocialLearningStore interface {
 
 type turnMemoryPorts struct {
 	promptContext    PromptContextStore
+	transcriptRecall CompactedTranscriptRecallStore
 	turns            TurnStore
 	memoryRetrieval  MemoryRetrievalStore
 	knowledge        KnowledgeRetrievalStore
@@ -152,6 +159,7 @@ func memoryPortsFromStores(historyStore *history.Store, compactionStore *history
 	return memoryPorts{
 		turn: turnMemoryPorts{
 			promptContext:    historyStore,
+			transcriptRecall: historyStore,
 			turns:            historyStore,
 			memoryRetrieval:  memoryStore,
 			knowledge:        knowledgeStore,
@@ -174,6 +182,7 @@ func memoryPortsFromStores(historyStore *history.Store, compactionStore *history
 
 func (p memoryPorts) ready() bool {
 	return p.turn.promptContext != nil &&
+		p.turn.transcriptRecall != nil &&
 		p.turn.turns != nil &&
 		p.turn.memoryRetrieval != nil &&
 		p.turn.knowledge != nil &&

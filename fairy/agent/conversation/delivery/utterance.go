@@ -25,7 +25,7 @@ func SanitizeUtteranceText(draft string) string {
 
 func ToolUtteranceReason(toolName string) string {
 	switch toolName {
-	case tool.MemorySearch, tool.PublicMemorySearch:
+	case tool.MemorySearch, tool.PublicMemorySearch, tool.ConversationHistorySearch:
 		return "searching_memory"
 	case tool.WebSearch:
 		return "searching_web"

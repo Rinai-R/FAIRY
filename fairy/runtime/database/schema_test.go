@@ -104,6 +104,15 @@ func TestObservabilityRecordSchemaUsesOneTypedJSONHistoryTable(t *testing.T) {
 	}
 }
 
+func TestConversationMessagesHaveTranscriptRecallIndex(t *testing.T) {
+	if !slices.ContainsFunc(postgresIndexes, func(index schemaIndex) bool {
+		return index.Name == "conversation_messages_content_trgm" &&
+			index.DDL == "CREATE INDEX IF NOT EXISTS conversation_messages_content_trgm ON conversation_messages USING gin (content public.gin_trgm_ops)"
+	}) {
+		t.Fatal("conversation transcript trigram index is missing")
+	}
+}
+
 func TestSchemaModelsDeclareMovedIndexes(t *testing.T) {
 	var got []string
 	for _, model := range schemaModels() {
