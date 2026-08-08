@@ -125,6 +125,7 @@ func TestSchemaModelsDeclareMovedIndexes(t *testing.T) {
 		"conversation_turns_conversation_sequence_key",
 		"conversation_turns_conversation_status",
 		"conversation_turns_extraction_claim",
+		"conversation_turns_message_id",
 		"conversations_character_updated",
 		"endpoint_conversations_conversation",
 		"knowledge_entries_source_url",

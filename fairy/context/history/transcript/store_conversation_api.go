@@ -79,7 +79,15 @@ func (s *Store) BeginTurn(conversationID string, userMessage string) (PersistedT
 }
 
 func (s *Store) BeginTurnContext(ctx context.Context, conversationID string, userMessage string) (PersistedTurn, error) {
-	return s.beginTurnPostgres(ctx, conversationID, userMessage)
+	return s.beginTurnPostgres(ctx, conversationID, userMessage, "")
+}
+
+func (s *Store) BeginCorrelatedTurn(conversationID string, userMessage string, messageID string) (PersistedTurn, error) {
+	return s.BeginCorrelatedTurnContext(context.Background(), conversationID, userMessage, messageID)
+}
+
+func (s *Store) BeginCorrelatedTurnContext(ctx context.Context, conversationID string, userMessage string, messageID string) (PersistedTurn, error) {
+	return s.beginTurnPostgres(ctx, conversationID, userMessage, messageID)
 }
 
 func (s *Store) CompleteTurn(conversationID string, turnID string, assistantMessage string) (MessageRecord, error) {

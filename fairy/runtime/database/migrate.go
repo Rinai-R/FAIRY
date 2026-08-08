@@ -114,6 +114,9 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		if err := tx.AutoMigrate(schemaModels()...); err != nil {
 			return fmt.Errorf("auto-migrating PostgreSQL schema: %w", err)
 		}
+		if err := migrateTurnMessageCorrelationSchema(tx); err != nil {
+			return err
+		}
 		if err := migrateEndpointEvaluationSchema(tx); err != nil {
 			return err
 		}
@@ -158,6 +161,45 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		}
 		return nil
 	})
+}
+
+func migrateTurnMessageCorrelationSchema(tx *gorm.DB) error {
+	if err := tx.Exec(`
+UPDATE conversation_turns
+SET extraction_state = 'pending',
+    extraction_claim_id = NULL,
+    extraction_lease_owner = NULL,
+    extraction_lease_expires_at_ms = NULL,
+    extraction_next_attempt_at_ms = 0
+WHERE extraction_state = 'claimed'
+  AND (extraction_claim_id IS NULL OR extraction_lease_owner IS NULL OR extraction_lease_expires_at_ms IS NULL)`).Error; err != nil {
+		return fmt.Errorf("repairing incomplete extraction claims: %w", err)
+	}
+	if err := tx.Exec(`ALTER TABLE conversation_turns DROP CONSTRAINT IF EXISTS conversation_turns_invariants_check`).Error; err != nil {
+		return fmt.Errorf("dropping previous conversation turn invariant: %w", err)
+	}
+	if err := tx.Exec(`
+ALTER TABLE conversation_turns ADD CONSTRAINT conversation_turns_invariants_check CHECK (
+  sequence > 0
+  AND (message_id IS NULL OR (
+    message_id = btrim(message_id)
+    AND char_length(message_id) BETWEEN 1 AND 128
+    AND message_id !~ '[[:cntrl:]]'
+  ))
+  AND status IN ('interpreting', 'planning', 'responding', 'completed', 'interrupted', 'failed')
+  AND extraction_state IN ('ineligible', 'pending', 'claimed', 'processed', 'failed')
+  AND extraction_attempt_count >= 0
+  AND extraction_next_attempt_at_ms >= 0
+  AND (extraction_lease_expires_at_ms IS NULL OR extraction_lease_expires_at_ms >= 0)
+  AND ((extraction_state = 'claimed') = (extraction_claim_id IS NOT NULL AND extraction_lease_owner IS NOT NULL AND extraction_lease_expires_at_ms IS NOT NULL))
+  AND (extraction_state = 'claimed' OR (extraction_claim_id IS NULL AND extraction_lease_owner IS NULL AND extraction_lease_expires_at_ms IS NULL))
+  AND created_at_ms >= 0
+  AND updated_at_ms >= created_at_ms
+  AND ((status = 'failed') = (error_code IS NOT NULL AND error_message IS NOT NULL))
+)`).Error; err != nil {
+		return fmt.Errorf("creating conversation turn invariant: %w", err)
+	}
+	return nil
 }
 
 func migrateEndpointEvaluationSchema(tx *gorm.DB) error {

@@ -103,7 +103,12 @@ describe("DebugSessionClient", () => {
     expect(open.interaction).toEqual({ audience: "single", initiation: "direct", presentation: "chat", evaluation: true });
     expect(opened.conversationId).toBe("conversation-1");
 
-    await client.submitTurn(opened.conversationId, "测试");
+    await client.submitTurn(opened.conversationId, "测试", "debug-message-1");
+    expect(socket.sent.find((frame) => frame.type === "turn.submit")).toMatchObject({
+      conversationId: "conversation-1",
+      input: "测试",
+      messageId: "debug-message-1",
+    });
     expect(events).toHaveLength(1);
     expect(events[0].state).toBe("completed");
     await client.cancelTurn(opened.conversationId, "turn-1");

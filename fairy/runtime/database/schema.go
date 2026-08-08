@@ -2,7 +2,7 @@ package database
 
 import "github.com/pgvector/pgvector-go"
 
-const currentSchemaRevision = "2026-08-08-durable-observability-history-1"
+const currentSchemaRevision = "2026-08-09-turn-message-correlation-1"
 
 type conversationSchema struct {
 	ID          string `gorm:"type:text;primaryKey;index:conversations_character_updated,priority:3"`
@@ -16,7 +16,8 @@ func (conversationSchema) TableName() string { return "conversations" }
 type conversationTurnSchema struct {
 	ID                         string  `gorm:"type:text;primaryKey"`
 	ConversationID             string  `gorm:"type:text;not null;uniqueIndex:conversation_turns_conversation_sequence_key,priority:1;index:conversation_turns_conversation_status,priority:1"`
-	Sequence                   int64   `gorm:"not null;check:conversation_turns_invariants_check,(sequence > 0) AND (status IN ('interpreting', 'planning', 'responding', 'completed', 'interrupted', 'failed')) AND (extraction_state IN ('ineligible', 'pending', 'claimed', 'processed', 'failed')) AND (extraction_attempt_count >= 0) AND (extraction_next_attempt_at_ms >= 0) AND (extraction_lease_expires_at_ms IS NULL OR extraction_lease_expires_at_ms >= 0) AND ((extraction_state = 'claimed') = (extraction_claim_id IS NOT NULL AND extraction_lease_owner IS NOT NULL AND extraction_lease_expires_at_ms IS NOT NULL)) AND (extraction_state = 'claimed' OR (extraction_claim_id IS NULL AND extraction_lease_owner IS NULL AND extraction_lease_expires_at_ms IS NULL)) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms) AND ((status = 'failed') = (error_code IS NOT NULL AND error_message IS NOT NULL));uniqueIndex:conversation_turns_conversation_sequence_key,priority:2;index:conversation_turns_conversation_status,priority:3"`
+	MessageID                  *string `gorm:"column:message_id;type:text;index:conversation_turns_message_id"`
+	Sequence                   int64   `gorm:"not null;check:conversation_turns_invariants_check,(sequence > 0) AND (message_id IS NULL OR (message_id = btrim(message_id) AND char_length(message_id) BETWEEN 1 AND 128 AND message_id !~ '[[:cntrl:]]')) AND (status IN ('interpreting', 'planning', 'responding', 'completed', 'interrupted', 'failed')) AND (extraction_state IN ('ineligible', 'pending', 'claimed', 'processed', 'failed')) AND (extraction_attempt_count >= 0) AND (extraction_next_attempt_at_ms >= 0) AND (extraction_lease_expires_at_ms IS NULL OR extraction_lease_expires_at_ms >= 0) AND ((extraction_state = 'claimed') = (extraction_claim_id IS NOT NULL AND extraction_lease_owner IS NOT NULL AND extraction_lease_expires_at_ms IS NOT NULL)) AND (extraction_state = 'claimed' OR (extraction_claim_id IS NULL AND extraction_lease_owner IS NULL AND extraction_lease_expires_at_ms IS NULL)) AND (created_at_ms >= 0) AND (updated_at_ms >= created_at_ms) AND ((status = 'failed') = (error_code IS NOT NULL AND error_message IS NOT NULL));uniqueIndex:conversation_turns_conversation_sequence_key,priority:2;index:conversation_turns_conversation_status,priority:3"`
 	Status                     string  `gorm:"type:text;not null;index:conversation_turns_conversation_status,priority:2"`
 	Origin                     string  `gorm:"type:text;not null;default:user"`
 	ErrorCode                  *string `gorm:"type:text"`

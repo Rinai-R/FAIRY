@@ -434,8 +434,8 @@ func mustBindDesktopInteraction(t *testing.T, service *Service, conversationID s
 	}
 }
 
-func (m terminalFailureTurnStore) BeginTurn(conversationID, userMessage string) (history.PersistedTurn, error) {
-	return m.base.BeginTurn(conversationID, userMessage)
+func (m terminalFailureTurnStore) BeginCorrelatedTurn(conversationID, userMessage, messageID string) (history.PersistedTurn, error) {
+	return m.base.BeginCorrelatedTurn(conversationID, userMessage, messageID)
 }
 
 func (m terminalFailureTurnStore) BeginInitiationTurn(conversationID string, evidenceIDs []string) (history.PersistedTurn, error) {
@@ -1643,6 +1643,10 @@ func (s *companionIntegrationStores) OpenOrCreateCharacterConversation(character
 
 func (s *companionIntegrationStores) OpenOrCreateEndpointConversation(characterID string, binding session.Binding, digest string) (history.ConversationBootstrap, error) {
 	return s.history.OpenOrCreateEndpointConversation(characterID, binding, digest)
+}
+
+func (s *companionIntegrationStores) BeginCorrelatedTurn(conversationID, input, messageID string) (history.PersistedTurn, error) {
+	return s.history.BeginCorrelatedTurn(conversationID, input, messageID)
 }
 
 func (s *companionIntegrationStores) BeginTurn(conversationID, input string) (history.PersistedTurn, error) {

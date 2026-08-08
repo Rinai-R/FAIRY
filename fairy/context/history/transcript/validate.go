@@ -3,6 +3,8 @@ package transcript
 import (
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 func ValidateID(label, value string) error {
@@ -15,6 +17,21 @@ func ValidateID(label, value string) error {
 func ValidateContent(label, value string) error {
 	if value == "" || strings.TrimSpace(value) == "" || ContainsDisallowedControl(value) {
 		return fmt.Errorf("%s is invalid", label)
+	}
+	return nil
+}
+
+func ValidateOptionalMessageID(value string) error {
+	if value == "" {
+		return nil
+	}
+	if strings.TrimSpace(value) != value || !utf8.ValidString(value) || utf8.RuneCountInString(value) > 128 {
+		return fmt.Errorf("message_id is invalid")
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return fmt.Errorf("message_id is invalid")
+		}
 	}
 	return nil
 }

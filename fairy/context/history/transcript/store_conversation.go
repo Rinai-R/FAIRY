@@ -146,11 +146,14 @@ func (s *Store) loadConversationPromptContextPostgres(ctx context.Context, conve
 	return LoadConversationPromptContext(queryCtx, s.pool.Raw(), conversationID)
 }
 
-func (s *Store) beginTurnPostgres(ctx context.Context, conversationID string, userMessage string) (PersistedTurn, error) {
+func (s *Store) beginTurnPostgres(ctx context.Context, conversationID string, userMessage string, correlationMessageID string) (PersistedTurn, error) {
 	if err := ValidateID("conversation_id", conversationID); err != nil {
 		return PersistedTurn{}, err
 	}
 	if err := ValidateContent("user message", userMessage); err != nil {
+		return PersistedTurn{}, err
+	}
+	if err := ValidateOptionalMessageID(correlationMessageID); err != nil {
 		return PersistedTurn{}, err
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
@@ -174,7 +177,7 @@ func (s *Store) beginTurnPostgres(ctx context.Context, conversationID string, us
 	now := nowUnixMS()
 	turnID := newID()
 	messageID := newID()
-	if err := InsertUserTurn(queryCtx, tx, turnID, conversationID, messageID, userMessage, turnSequence, messageSequence, now); err != nil {
+	if err := InsertUserTurn(queryCtx, tx, turnID, conversationID, correlationMessageID, messageID, userMessage, turnSequence, messageSequence, now); err != nil {
 		return PersistedTurn{}, err
 	}
 	if err := TouchConversation(queryCtx, tx, conversationID, now); err != nil {
@@ -184,7 +187,7 @@ func (s *Store) beginTurnPostgres(ctx context.Context, conversationID string, us
 		return PersistedTurn{}, fmt.Errorf("committing user message transaction: %w", err)
 	}
 	return PersistedTurn{ID: turnID, ConversationID: conversationID, UserMessage: MessageRecord{
-		ID: messageID, ConversationID: conversationID, TurnID: turnID, Sequence: uint64(messageSequence),
+		ID: messageID, MessageID: correlationMessageID, ConversationID: conversationID, TurnID: turnID, Sequence: uint64(messageSequence),
 		Role: "user", Content: userMessage, Parts: []historyexpr.Part{}, CreatedAtUnixMS: now,
 	}}, nil
 }

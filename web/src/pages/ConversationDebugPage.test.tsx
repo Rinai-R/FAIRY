@@ -17,6 +17,8 @@ let assistantParts: unknown[] | undefined;
 let runtimeEvents: Array<Record<string, unknown>>;
 let holdTurnOpen: boolean;
 let includeCompletedUsage: boolean;
+let clipboardWriteText: ReturnType<typeof vi.fn>;
+let rejectSubmitAfterPersist: boolean;
 
 function metricValues(container: HTMLElement) {
   return Object.fromEntries(
@@ -72,7 +74,7 @@ class DebugPageSocket extends EventTarget {
       const messages = persistedMessagesByConversation.get(this.conversationId) || [];
       const sequence = messages.length + 1;
       if (holdTurnOpen) {
-        messages.push({ id: `message-user-${turnId}`, turnId, sequence, role: "user", content: frame.input, createdAtUnixMs: now });
+        messages.push({ id: `message-user-${turnId}`, messageId: frame.messageId, turnId, sequence, role: "user", content: frame.input, createdAtUnixMs: now });
         persistedMessagesByConversation.set(this.conversationId, messages);
         this.frame({
           type: "turn.event",
@@ -89,7 +91,7 @@ class DebugPageSocket extends EventTarget {
         return;
       }
       messages.push(
-        { id: `message-user-${turnId}`, turnId, sequence, role: "user", content: frame.input, createdAtUnixMs: now },
+        { id: `message-user-${turnId}`, messageId: frame.messageId, turnId, sequence, role: "user", content: frame.input, createdAtUnixMs: now },
         {
           id: `message-assistant-${turnId}`,
           turnId,
@@ -125,6 +127,10 @@ class DebugPageSocket extends EventTarget {
           },
         },
       });
+      if (rejectSubmitAfterPersist) {
+        this.dispatchEvent(new Event("close"));
+        return;
+      }
       this.frame({ type: "result", requestId: frame.requestId, payload: { outcome: { turnId } } });
     }
   }
@@ -149,6 +155,7 @@ beforeEach(() => {
   assistantParts = undefined;
   holdTurnOpen = false;
   includeCompletedUsage = true;
+  rejectSubmitAfterPersist = false;
   runtimeEvents = [
     { sequence: 1, eventType: "transition", state: "interpreting", metadata: {}, createdAtUnixMs: 1_001 },
     { sequence: 2, eventType: "transition", state: "gathering", metadata: {}, createdAtUnixMs: 1_002 },
@@ -168,6 +175,11 @@ beforeEach(() => {
   vi.stubGlobal("WebSocket", DebugPageSocket);
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal("crypto", { randomUUID: () => `id-${++nextIDNumber}` });
+  clipboardWriteText = vi.fn(async () => undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: clipboardWriteText },
+  });
   sessionStorageValues = new Map<string, string>();
   vi.stubGlobal("sessionStorage", {
     getItem: (key: string) => sessionStorageValues.get(key) ?? null,
@@ -330,6 +342,43 @@ describe("ConversationDebugPage", () => {
     expect(openedEndpointKeys.at(-1)).toBe(originalEndpointKey);
     expect(endpointConversations.size).toBe(1);
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("/turns/turn-1/runtime"))).toBe(true));
+  });
+
+  it("keeps one copyable messageId across optimistic delivery and history recovery", async () => {
+    const firstRender = render(<Theme><ConversationDebugPage onOpenCharacters={() => undefined} /></Theme>);
+    await screen.findAllByText("会话就绪", {}, { timeout: 3000 });
+    const composer = screen.getByLabelText("调试消息");
+    fireEvent.change(composer, { target: { value: "按消息关联链路" } });
+    fireEvent.keyDown(composer, { key: "Enter", shiftKey: false });
+    expect(await screen.findByText("真实角色回复")).toBeTruthy();
+
+    const copyButton = screen.getByRole("button", { name: /复制 messageId debug-msg-/ });
+    const messageId = copyButton.getAttribute("title");
+    expect(messageId).toMatch(/^debug-msg-id-/);
+    fireEvent.click(copyButton);
+    await waitFor(() => expect(clipboardWriteText).toHaveBeenCalledWith(messageId));
+
+    firstRender.unmount();
+    render(<Theme><ConversationDebugPage onOpenCharacters={() => undefined} /></Theme>);
+    await screen.findAllByText("会话就绪", {}, { timeout: 3000 });
+    expect(await screen.findByRole("button", { name: `复制 messageId ${messageId}` })).toBeTruthy();
+  });
+
+  it("keeps the accepted messageId when the request connection fails after persistence", async () => {
+    rejectSubmitAfterPersist = true;
+    render(<Theme><ConversationDebugPage onOpenCharacters={() => undefined} /></Theme>);
+    await screen.findAllByText("会话就绪", {}, { timeout: 3000 });
+    const composer = screen.getByLabelText("调试消息");
+    fireEvent.change(composer, { target: { value: "连接失败也不能换关联 ID" } });
+    fireEvent.keyDown(composer, { key: "Enter", shiftKey: false });
+    expect(await screen.findByText("真实角色回复")).toBeTruthy();
+    const original = screen.getByRole("button", { name: /复制 messageId debug-msg-/ }).getAttribute("title");
+    expect(await screen.findByRole("button", { name: "重连" })).toBeTruthy();
+
+    rejectSubmitAfterPersist = false;
+    fireEvent.click(screen.getByRole("button", { name: "重连" }));
+    await screen.findAllByText("会话就绪", {}, { timeout: 3000 });
+    expect(screen.getAllByRole("button", { name: `复制 messageId ${original}` })).toHaveLength(1);
   });
 
   it("migrates the existing session endpoint key into durable storage", async () => {

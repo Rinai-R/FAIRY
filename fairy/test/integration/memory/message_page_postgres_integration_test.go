@@ -76,3 +76,60 @@ FROM generate_series(1, 205) AS g`, conversationID); err != nil {
 		t.Fatal("missing conversation returned an empty success page")
 	}
 }
+
+func TestConversationMessageCorrelationSurvivesHistoryReloadIntegration(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatal(err)
+	}
+	store, err := newMemoryIntegrationStores(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := store.OpenOrCreateCharacterConversation("character-message-correlation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const messageID = "debug-msg-browser-1"
+	persisted, err := store.BeginCorrelatedTurnContext(ctx, bootstrap.Conversation.ID, "需要关联链路", messageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.UserMessage.MessageID != messageID {
+		t.Fatalf("persisted messageId = %q, want %q", persisted.UserMessage.MessageID, messageID)
+	}
+	if _, err := store.CompleteTurnContext(ctx, bootstrap.Conversation.ID, persisted.ID, "已经关联"); err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := store.ListConversationMessagesBeforeContext(ctx, bootstrap.Conversation.ID, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Messages) != 2 {
+		t.Fatalf("messages = %d, want 2", len(page.Messages))
+	}
+	for _, message := range page.Messages {
+		if message.MessageID != messageID {
+			t.Fatalf("reloaded %s messageId = %q, want %q", message.Role, message.MessageID, messageID)
+		}
+	}
+
+	reloaded, err := store.LoadConversationContext(ctx, bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Messages) != 2 || reloaded.Messages[0].MessageID != messageID || reloaded.Messages[1].MessageID != messageID {
+		t.Fatalf("reloaded correlation = %#v", reloaded.Messages)
+	}
+	if _, err := store.BeginCorrelatedTurnContext(ctx, bootstrap.Conversation.ID, "无效关联", "bad\nmessage"); err == nil {
+		t.Fatal("invalid messageId was accepted")
+	}
+	if _, err := pool.Raw().Exec(ctx, `
+INSERT INTO conversation_turns(id, conversation_id, message_id, sequence, status, origin, extraction_state, created_at_ms, updated_at_ms)
+VALUES ('turn-invalid-message-id', $1, E'bad\nmessage', 2, 'interpreting', 'user', 'ineligible', 1, 1)`, bootstrap.Conversation.ID); err == nil {
+		t.Fatal("database constraint accepted a control character in message_id")
+	}
+}

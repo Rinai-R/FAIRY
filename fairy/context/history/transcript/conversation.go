@@ -198,7 +198,12 @@ func LoadConversationBootstrap(ctx context.Context, db ConversationDB, conversat
 	if err != nil {
 		return ConversationBootstrap{}, err
 	}
-	rows, err := db.Query(ctx, "SELECT id, conversation_id, turn_id, sequence, role, content, expression_parts, created_at_ms FROM conversation_messages WHERE conversation_id = $1 ORDER BY sequence ASC", conversationID)
+	rows, err := db.Query(ctx, `
+SELECT m.id, COALESCE(t.message_id, ''), m.conversation_id, m.turn_id, m.sequence, m.role, m.content, m.expression_parts, m.created_at_ms
+FROM conversation_messages m
+JOIN conversation_turns t ON t.id = m.turn_id
+WHERE m.conversation_id = $1
+ORDER BY m.sequence ASC`, conversationID)
 	if err != nil {
 		return ConversationBootstrap{}, fmt.Errorf("loading conversation messages: %w", err)
 	}
@@ -255,10 +260,11 @@ func LoadConversationPromptContext(ctx context.Context, db ConversationDB, conve
 		return ConversationPromptContext{}, err
 	}
 	rows, err := db.Query(ctx, `
-SELECT id, conversation_id, turn_id, sequence, role, content, expression_parts, created_at_ms
-FROM conversation_messages
-WHERE conversation_id = $1 AND sequence > $2
-ORDER BY sequence ASC`, conversationID, int64(prompt.CutoffMessageSequence))
+SELECT m.id, COALESCE(t.message_id, ''), m.conversation_id, m.turn_id, m.sequence, m.role, m.content, m.expression_parts, m.created_at_ms
+FROM conversation_messages m
+JOIN conversation_turns t ON t.id = m.turn_id
+WHERE m.conversation_id = $1 AND m.sequence > $2
+ORDER BY m.sequence ASC`, conversationID, int64(prompt.CutoffMessageSequence))
 	if err != nil {
 		return ConversationPromptContext{}, fmt.Errorf("loading conversation prompt messages: %w", err)
 	}
@@ -355,10 +361,10 @@ func TouchConversation(ctx context.Context, tx pgx.Tx, conversationID string, no
 func InsertUserTurn(
 	ctx context.Context,
 	tx pgx.Tx,
-	turnID, conversationID, messageID, userMessage string,
+	turnID, conversationID, correlationMessageID, messageID, userMessage string,
 	turnSequence, messageSequence, now int64,
 ) error {
-	if _, err := tx.Exec(ctx, "INSERT INTO conversation_turns(id, conversation_id, sequence, status, origin, extraction_state, created_at_ms, updated_at_ms) VALUES ($1, $2, $3, 'interpreting', 'user', 'ineligible', $4, $4)", turnID, conversationID, turnSequence, now); err != nil {
+	if _, err := tx.Exec(ctx, "INSERT INTO conversation_turns(id, conversation_id, message_id, sequence, status, origin, extraction_state, created_at_ms, updated_at_ms) VALUES ($1, $2, $3, $4, 'interpreting', 'user', 'ineligible', $5, $5)", turnID, conversationID, nullableText(correlationMessageID), turnSequence, now); err != nil {
 		return fmt.Errorf("creating turn: %w", err)
 	}
 	if _, err := tx.Exec(ctx, "INSERT INTO conversation_messages(id, conversation_id, turn_id, sequence, role, content, created_at_ms) VALUES ($1, $2, $3, $4, 'user', $5, $6)", messageID, conversationID, turnID, messageSequence, userMessage, now); err != nil {
@@ -445,7 +451,7 @@ func ScanMessageRecord(row scanner) (MessageRecord, error) {
 	var message MessageRecord
 	var sequence int64
 	var expressionPartsJSON []byte
-	if err := row.Scan(&message.ID, &message.ConversationID, &message.TurnID, &sequence, &message.Role, &message.Content, &expressionPartsJSON, &message.CreatedAtUnixMS); err != nil {
+	if err := row.Scan(&message.ID, &message.MessageID, &message.ConversationID, &message.TurnID, &sequence, &message.Role, &message.Content, &expressionPartsJSON, &message.CreatedAtUnixMS); err != nil {
 		return MessageRecord{}, fmt.Errorf("scanning conversation message: %w", err)
 	}
 	if err := json.Unmarshal(expressionPartsJSON, &message.Parts); err != nil {

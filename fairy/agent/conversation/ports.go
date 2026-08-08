@@ -40,7 +40,7 @@ type PromptContextStore interface {
 
 // TurnStore owns the durable turn lifecycle writes consumed by TurnEngine.
 type TurnStore interface {
-	BeginTurn(conversationID string, userMessage string) (history.PersistedTurn, error)
+	BeginCorrelatedTurn(conversationID string, userMessage string, messageID string) (history.PersistedTurn, error)
 	BeginInitiationTurn(conversationID string, evidenceIDs []string) (history.PersistedTurn, error)
 	CompleteExpressionTurnForPolicy(conversationID string, turnID string, assistantMessage string, parts []historyexpr.Part, extractionEligible bool) (history.MessageRecord, error)
 	InterruptExpressionTurn(conversationID string, turnID string, publishedPrefix string, parts []historyexpr.Part) (*history.MessageRecord, error)

@@ -126,8 +126,13 @@ export class DebugSessionClient {
     };
   }
 
-  submitTurn(conversationId: string, input: string) {
-    return this.request({ type: "turn.submit", conversationId, input }, 10 * 60_000);
+  submitTurn(conversationId: string, input: string, messageId?: string) {
+    return this.request({
+      type: "turn.submit",
+      conversationId,
+      input,
+      ...(messageId ? { messageId } : {}),
+    }, 10 * 60_000);
   }
 
   cancelTurn(conversationId: string, turnId: string) {

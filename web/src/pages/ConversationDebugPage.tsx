@@ -1,5 +1,5 @@
 import { Badge, Button, Dialog, Select, Tabs, TextArea } from "@radix-ui/themes";
-import { Cross2Icon, EnterFullScreenIcon, PaperPlaneIcon, PlusIcon, ReloadIcon, StopIcon } from "@radix-ui/react-icons";
+import { CopyIcon, Cross2Icon, EnterFullScreenIcon, PaperPlaneIcon, PlusIcon, ReloadIcon, StopIcon } from "@radix-ui/react-icons";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { api } from "../api";
@@ -43,6 +43,7 @@ type ExpressionPart = {
 
 type MessageRecord = {
   id: string;
+  messageId?: string;
   turnId: string;
   sequence: number;
   role: "user" | "assistant";
@@ -552,6 +553,7 @@ export function ConversationDebugPage({ onOpenCharacters }: { onOpenCharacters: 
   const [selectedTurnId, setSelectedTurnId] = useState("");
   const [activeTurnId, setActiveTurnId] = useState("");
   const [draft, setDraft] = useState("");
+  const [copiedMessageId, setCopiedMessageId] = useState("");
   const [clockNow, setClockNow] = useState(() => Date.now());
   const clientRef = useRef<DebugSessionClient | null>(null);
   const endpointIdentityRef = useRef({ characterId: "", endpointKey: "" });
@@ -779,6 +781,7 @@ export function ConversationDebugPage({ onOpenCharacters }: { onOpenCharacters: 
     const input = draft.trim();
     if (!input || !opened || !clientRef.current || connection !== "ready" || activeTurnId) return;
     const localId = createID("turn");
+    const messageId = createID("debug-msg");
     pendingLocalMessageRef.current = localId;
     setDraft("");
     setTurns((current) => [...current, {
@@ -793,6 +796,7 @@ export function ConversationDebugPage({ onOpenCharacters }: { onOpenCharacters: 
     setActiveTurnId(localId);
     setMessages((current) => [...current, {
       id: localId,
+      messageId,
       turnId: localId,
       sequence: current.length + 1,
       role: "user",
@@ -801,13 +805,23 @@ export function ConversationDebugPage({ onOpenCharacters }: { onOpenCharacters: 
       optimistic: true,
     }]);
     try {
-      await clientRef.current.submitTurn(opened.conversationId, input);
+      await clientRef.current.submitTurn(opened.conversationId, input, messageId);
     } catch (error) {
       setTurns((current) => current.map((turn) => turn.localId === localId && !turn.turnId
         ? { ...turn, state: "failed", completedAt: Date.now(), error: error instanceof Error ? error.message : "提交失败" }
         : turn));
       if (pendingLocalMessageRef.current === localId) pendingLocalMessageRef.current = "";
       setActiveTurnId("");
+    }
+  }
+
+  async function copyMessageId(messageId: string) {
+    try {
+      await navigator.clipboard.writeText(messageId);
+      setCopiedMessageId(messageId);
+      window.setTimeout(() => setCopiedMessageId((current) => current === messageId ? "" : current), 1600);
+    } catch {
+      setConnectionError("无法复制 messageId，请检查浏览器剪贴板权限");
     }
   }
 
@@ -959,7 +973,21 @@ export function ConversationDebugPage({ onOpenCharacters }: { onOpenCharacters: 
                         </div>
                       ))}
                     </div>
-                    <time>{new Date(message.createdAtUnixMs).toLocaleTimeString("zh-CN", { hour12: false })}</time>
+                    <div className="debug-message-meta">
+                      {message.role === "user" && message.messageId ? (
+                        <button
+                          type="button"
+                          className="debug-message-id"
+                          title={message.messageId}
+                          aria-label={`复制 messageId ${message.messageId}`}
+                          onClick={() => void copyMessageId(message.messageId || "")}
+                        >
+                          <CopyIcon aria-hidden="true" />
+                          <code>{copiedMessageId === message.messageId ? "已复制" : message.messageId}</code>
+                        </button>
+                      ) : null}
+                      <time>{new Date(message.createdAtUnixMs).toLocaleTimeString("zh-CN", { hour12: false })}</time>
+                    </div>
                   </article>
                 );
               })

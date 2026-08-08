@@ -81,7 +81,7 @@ func (e *TurnEngine) submitCompiledTurn(
 	if request.Initiation != nil {
 		persisted, err = s.memory.turn.turns.BeginInitiationTurn(request.ConversationID, request.Initiation.ObservationEvidenceIDs)
 	} else {
-		persisted, err = s.memory.turn.turns.BeginTurn(request.ConversationID, request.Input)
+		persisted, err = s.memory.turn.turns.BeginCorrelatedTurn(request.ConversationID, request.Input, request.MessageID)
 	}
 	if err != nil {
 		s.endTurn(request.ConversationID, "")

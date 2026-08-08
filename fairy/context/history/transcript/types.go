@@ -14,6 +14,7 @@ type ConversationRecord struct {
 
 type MessageRecord struct {
 	ID              string             `json:"id"`
+	MessageID       string             `json:"messageId,omitempty"`
 	ConversationID  string             `json:"conversationId"`
 	TurnID          string             `json:"turnId"`
 	Sequence        uint64             `json:"sequence"`
