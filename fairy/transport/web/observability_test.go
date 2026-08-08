@@ -39,6 +39,43 @@ func TestExperienceQueueStatsKeepZeroValueSchema(t *testing.T) {
 	}
 }
 
+func TestConversationHTTPRouteExcludesManagementAndMarksWebSocketLongLived(t *testing.T) {
+	tests := []struct {
+		route     string
+		tracked   bool
+		longLived bool
+	}{
+		{route: "/v1/session/ws", tracked: true, longLived: true},
+		{route: "/v1/session/browser-ticket", tracked: true},
+		{route: "/v1/sessions/:conversationId/messages", tracked: true},
+		{route: "/v1/sessions/:conversationId/turns/:turnId/runtime", tracked: true},
+		{route: "/v1/logs/stream"},
+		{route: "/v1/metrics"},
+		{route: "/v1/status"},
+		{route: "/console/*filepath"},
+	}
+	for _, test := range tests {
+		t.Run(test.route, func(t *testing.T) {
+			tracked, longLived := conversationHTTPRoute(test.route)
+			if tracked != test.tracked || longLived != test.longLived {
+				t.Fatalf("classification = (%t, %t), want (%t, %t)", tracked, longLived, test.tracked, test.longLived)
+			}
+		})
+	}
+}
+
+func TestFilterMetricHistoryScopeDropsLegacyAllRouteSamples(t *testing.T) {
+	history := []observability.MetricHistoryPoint{
+		{TimestampUnixMS: 1, HTTPScope: ""},
+		{TimestampUnixMS: 2, HTTPScope: httpMetricScope},
+		{TimestampUnixMS: 3, HTTPScope: "other"},
+	}
+	filtered := filterMetricHistoryScope(history, httpMetricScope)
+	if len(filtered) != 1 || filtered[0].TimestampUnixMS != 2 {
+		t.Fatalf("filtered history = %#v", filtered)
+	}
+}
+
 func TestHandleLogStreamRejectsSubscriberCapacityBeforeSSE(t *testing.T) {
 	store := observability.NewLogStore(2)
 	unsubscribes := make([]func(), 0, observability.DefaultSubscriberCapacity)
@@ -113,4 +150,56 @@ func TestHandleTraceDetailReturnsSafeRecentTraceAndNotFound(t *testing.T) {
 	if got := request.Response.StatusCode(); got != http.StatusNotFound {
 		t.Fatalf("missing status = %d, want %d", got, http.StatusNotFound)
 	}
+
+	request.Reset()
+	request.Params = param.Params{{Key: "traceId", Value: "msg\tinvalid"}}
+	server.handleTraceDetail(context.Background(), &request)
+	if got := request.Response.StatusCode(); got != http.StatusBadRequest {
+		t.Fatalf("invalid trace id status = %d, want %d", got, http.StatusBadRequest)
+	}
+}
+
+func TestHandleTraceSearchFindsExactActiveMessageID(t *testing.T) {
+	metrics := observability.NewMessageMetrics()
+	t.Cleanup(metrics.Close)
+	traceID := metrics.BeginCorrelated("ambient", "conversation", "qq-message-17")
+	metrics.Participation([]string{traceID}, "", "silent")
+	waitForTraceStatus(t, metrics, traceID, "silent")
+
+	server := &Server{rt: &Dependencies{Messages: metrics}}
+	var request app.RequestContext
+	request.Request.SetRequestURI("/v1/traces?messageId=qq-message-17")
+	server.handleTraceSearch(context.Background(), &request)
+	if got := request.Response.StatusCode(); got != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", got, request.Response.Body())
+	}
+	var response struct {
+		MessageID string                       `json:"messageId"`
+		Traces    []observability.MessageTrace `json:"traces"`
+	}
+	if err := json.Unmarshal(request.Response.Body(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.MessageID != "qq-message-17" || len(response.Traces) != 1 || response.Traces[0].TraceID != traceID {
+		t.Fatalf("search response = %#v", response)
+	}
+
+	request.Reset()
+	request.Request.SetRequestURI("/v1/traces?messageId=%0A")
+	server.handleTraceSearch(context.Background(), &request)
+	if got := request.Response.StatusCode(); got != http.StatusBadRequest {
+		t.Fatalf("invalid status = %d, want %d", got, http.StatusBadRequest)
+	}
+}
+
+func waitForTraceStatus(t *testing.T, metrics *observability.MessageMetrics, traceID, status string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if detail, ok := metrics.Trace(traceID); ok && detail.Status == status {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("trace %s did not reach %s", traceID, status)
 }

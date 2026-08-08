@@ -84,6 +84,26 @@ func TestSchemaModelsDeclareOneInvariantPerTable(t *testing.T) {
 	}
 }
 
+func TestObservabilityRecordSchemaUsesOneTypedJSONHistoryTable(t *testing.T) {
+	parsed, err := gormschema.Parse(&observabilityRecordSchema{}, &sync.Map{}, gormschema.NamingStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Table != "observability_records" {
+		t.Fatalf("table = %q", parsed.Table)
+	}
+	payload := parsed.LookUpField("PayloadJSON")
+	if payload == nil || payload.DBName != "payload" || payload.TagSettings["TYPE"] != "jsonb" {
+		t.Fatalf("payload field = %#v", payload)
+	}
+	if !slices.ContainsFunc(postgresIndexes, func(index schemaIndex) bool {
+		return index.Name == "observability_records_trace_message_id" &&
+			index.DDL == "CREATE INDEX IF NOT EXISTS observability_records_trace_message_id ON observability_records ((payload->>'messageId'), recorded_at_ms DESC) WHERE kind = 'trace' AND payload ? 'messageId'"
+	}) {
+		t.Fatal("trace messageId correlation index is missing")
+	}
+}
+
 func TestSchemaModelsDeclareMovedIndexes(t *testing.T) {
 	var got []string
 	for _, model := range schemaModels() {
@@ -109,6 +129,8 @@ func TestSchemaModelsDeclareMovedIndexes(t *testing.T) {
 		"endpoint_conversations_conversation",
 		"knowledge_entries_source_url",
 		"knowledge_entries_status_updated",
+		"observability_records_kind_key",
+		"observability_records_kind_recorded",
 		"personal_memories_scope_status",
 		"social_memory_entries_person_note_key",
 		"social_memory_entries_scope_hash_key",

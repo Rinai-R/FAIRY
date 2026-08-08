@@ -23,6 +23,27 @@ func TestLogStoreOverflowAndQuery(t *testing.T) {
 	}
 }
 
+func TestLogStoreRestoreContinuesSequenceWithoutRepersisting(t *testing.T) {
+	store := NewLogStore(3)
+	persisted := make(chan LogEntry, 1)
+	store.Restore([]LogEntry{
+		{Sequence: 7, TimestampUnixMS: 1000, Level: "info", Message: "older", Fields: []LogField{}},
+		{Sequence: 9, TimestampUnixMS: 2000, Level: "warn", Message: "newer", Fields: []LogField{}},
+	})
+	store.SetHistorySink(func(entry LogEntry) bool { persisted <- entry; return true })
+	entry := store.Append(EntryInput{Time: time.UnixMilli(3000), Level: "info", Message: "live"})
+	if entry.Sequence != 10 {
+		t.Fatalf("restored sequence = %d, want 10", entry.Sequence)
+	}
+	if got := <-persisted; got.Sequence != 10 {
+		t.Fatalf("persisted sequence = %d, want 10", got.Sequence)
+	}
+	snapshot := store.Query(LogFilter{MinimumLevel: "debug"})
+	if len(snapshot.Entries) != 3 || snapshot.Entries[0].Sequence != 7 || snapshot.Entries[2].Sequence != 10 {
+		t.Fatalf("restored entries = %#v", snapshot.Entries)
+	}
+}
+
 func TestLogEntryWithoutFieldsUsesJSONArray(t *testing.T) {
 	store := NewLogStore(2)
 	entry := store.Append(EntryInput{Level: "info", Message: "empty fields"})

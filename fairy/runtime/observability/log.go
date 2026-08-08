@@ -102,6 +102,7 @@ type LogStore struct {
 	droppedEntries            uint64
 	slowSubscriberDisconnects uint64
 	subscribers               map[chan LogEntry]subscriber
+	historySink               func(LogEntry) bool
 	closed                    bool
 }
 
@@ -132,8 +133,8 @@ func (s *LogStore) Append(input EntryInput) LogEntry {
 	}
 	entry := normalizeEntry(input)
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return LogEntry{}
 	}
 	s.sequence++
@@ -157,7 +158,52 @@ func (s *LogStore) Append(input EntryInput) LogEntry {
 			s.slowSubscriberDisconnects++
 		}
 	}
-	return cloneLogEntry(entry)
+	sink := s.historySink
+	result := cloneLogEntry(entry)
+	s.mu.Unlock()
+	if sink != nil {
+		sink(result)
+	}
+	return result
+}
+
+// Restore seeds the bounded ring without publishing or persisting the same
+// entries again. It is intended for startup before live subscribers exist.
+func (s *LogStore) Restore(entries []LogEntry) {
+	if s == nil || len(entries) == 0 {
+		return
+	}
+	cloned := make([]LogEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Sequence == 0 || entry.TimestampUnixMS <= 0 {
+			continue
+		}
+		cloned = append(cloned, cloneLogEntry(entry))
+	}
+	sort.Slice(cloned, func(i, j int) bool { return cloned[i].Sequence < cloned[j].Sequence })
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	if len(cloned) > s.capacity {
+		cloned = cloned[len(cloned)-s.capacity:]
+	}
+	s.entries = cloned
+	for _, entry := range cloned {
+		if entry.Sequence > s.sequence {
+			s.sequence = entry.Sequence
+		}
+	}
+}
+
+func (s *LogStore) SetHistorySink(sink func(LogEntry) bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.historySink = sink
+	s.mu.Unlock()
 }
 
 // Query returns matching entries in ascending sequence order.

@@ -31,6 +31,7 @@ type initiativeAdapter struct {
 
 type observedMessages interface {
 	Begin(source, conversationID string) string
+	BeginCorrelated(source, conversationID, messageID string) string
 	Participation(traceIDs []string, targetTraceID, action string)
 	End(traceID, status string)
 }
@@ -166,11 +167,11 @@ func (a initiativeAdapter) ScheduleDesktopInitiation(conversationID string, evid
 	}, observation)
 }
 
-func (a initiativeAdapter) BeginMessageTrace(source, conversationID, traceID string) string {
+func (a initiativeAdapter) BeginMessageTrace(source, conversationID, messageID, traceID string) string {
 	if traceID != "" || a.messages == nil {
 		return traceID
 	}
-	return a.messages.Begin(source, conversationID)
+	return a.messages.BeginCorrelated(source, conversationID, messageID)
 }
 
 func (a initiativeAdapter) EndMessageTrace(traceID, status string) {

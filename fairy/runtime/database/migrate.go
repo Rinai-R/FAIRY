@@ -92,6 +92,7 @@ var postgresIndexes = []schemaIndex{
 	{"social_memory_entries_situation_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_situation_trgm ON social_memory_entries USING gin (situation public.gin_trgm_ops)"},
 	{"social_memory_entries_content_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_content_trgm ON social_memory_entries USING gin (content public.gin_trgm_ops)"},
 	{"social_memory_entries_recall_trgm", "CREATE INDEX IF NOT EXISTS social_memory_entries_recall_trgm ON social_memory_entries USING gin (recall_cue public.gin_trgm_ops)"},
+	{"observability_records_trace_message_id", "CREATE INDEX IF NOT EXISTS observability_records_trace_message_id ON observability_records ((payload->>'messageId'), recorded_at_ms DESC) WHERE kind = 'trace' AND payload ? 'messageId'"},
 }
 
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {

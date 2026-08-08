@@ -22,11 +22,13 @@ type Options struct {
 
 // Server wraps Hertz around Core-injected process services.
 type Server struct {
-	rt             *Dependencies
-	engine         *server.Hertz
-	token          string
-	logger         *zap.Logger
-	sessionTickets *browserSessionTicketRegistry
+	rt              *Dependencies
+	engine          *server.Hertz
+	token           string
+	logger          *zap.Logger
+	sessionTickets  *browserSessionTicketRegistry
+	metricCollector metricCollector
+	metricSampler   *metricSampler
 }
 
 func NewServer(rt *Dependencies, options Options) (*Server, error) {
@@ -59,6 +61,12 @@ func NewServer(rt *Dependencies, options Options) (*Server, error) {
 		rt: rt, engine: engine, token: options.Token, logger: logger,
 		sessionTickets: newBrowserSessionTicketRegistry(browserSessionTicketCapacity, browserSessionTicketTTL),
 	}
+	s.metricCollector = s.collectCurrentMetrics
+	if rt.History != nil {
+		s.metricSampler = newMetricSampler(defaultMetricSampleInterval, logger, func(ctx context.Context) error {
+			return enqueueMetricSample(ctx, s.currentMetrics, rt.History)
+		})
+	}
 	engine.Use(s.metricsMiddleware)
 	s.routes()
 	return s, nil
@@ -67,10 +75,17 @@ func NewServer(rt *Dependencies, options Options) (*Server, error) {
 func (s *Server) Engine() *server.Hertz { return s.engine }
 
 func (s *Server) Run() error {
+	if s.metricSampler != nil {
+		s.metricSampler.Start()
+		defer s.metricSampler.Stop()
+	}
 	return s.engine.Run()
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.metricSampler != nil {
+		s.metricSampler.Stop()
+	}
 	return s.engine.Shutdown(ctx)
 }
 

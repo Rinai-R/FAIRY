@@ -12,6 +12,7 @@ const httpMetricMethodOther = "OTHER"
 type HTTPRouteMetrics struct {
 	Method          string `json:"method"`
 	Route           string `json:"route"`
+	LongLived       bool   `json:"longLived"`
 	RequestCount    uint64 `json:"requestCount"`
 	ErrorCount      uint64 `json:"errorCount"`
 	TotalDurationMS uint64 `json:"totalDurationMs"`
@@ -42,40 +43,56 @@ type HTTPMetrics struct {
 	routes    map[routeKey]*HTTPRouteMetrics
 }
 
+type HTTPObservation struct {
+	key       routeKey
+	started   time.Time
+	longLived bool
+}
+
 func NewHTTPMetrics() *HTTPMetrics {
 	return &HTTPMetrics{routes: make(map[routeKey]*HTTPRouteMetrics)}
 }
 
-func (m *HTTPMetrics) Begin() time.Time {
-	if m == nil {
-		return time.Now()
-	}
-	m.mu.Lock()
-	m.inFlight++
-	m.mu.Unlock()
-	return time.Now()
-}
-
-func (m *HTTPMetrics) Finish(method, route string, status int, started time.Time) {
-	if m == nil {
-		return
-	}
+func (m *HTTPMetrics) Begin(method, route string, longLived bool) HTTPObservation {
 	method = normalizeHTTPMetricMethod(method)
 	if route == "" {
 		route = "unmatched"
 	}
-	duration := time.Since(started).Milliseconds()
+	observation := HTTPObservation{
+		key: routeKey{method: method, route: route}, started: time.Now(), longLived: longLived,
+	}
+	if m == nil {
+		return observation
+	}
+	m.mu.Lock()
+	m.inFlight++
+	m.total++
+	aggregate := m.routes[observation.key]
+	if aggregate == nil {
+		aggregate = &HTTPRouteMetrics{
+			Method: observation.key.method, Route: observation.key.route, LongLived: observation.longLived,
+		}
+		m.routes[observation.key] = aggregate
+	}
+	aggregate.RequestCount++
+	m.mu.Unlock()
+	return observation
+}
+
+func (m *HTTPMetrics) Finish(observation HTTPObservation, status int) {
+	if m == nil {
+		return
+	}
+	duration := time.Since(observation.started).Milliseconds()
 	if duration < 0 {
 		duration = 0
 	}
 	durationMS := uint64(duration)
-	key := routeKey{method: method, route: route}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.inFlight > 0 {
 		m.inFlight--
 	}
-	m.total++
 	switch {
 	case status >= 200 && status < 300:
 		m.status2xx++
@@ -84,18 +101,18 @@ func (m *HTTPMetrics) Finish(method, route string, status int, started time.Time
 	case status >= 500:
 		m.status5xx++
 	}
-	aggregate := m.routes[key]
+	aggregate := m.routes[observation.key]
 	if aggregate == nil {
-		aggregate = &HTTPRouteMetrics{Method: method, Route: route}
-		m.routes[key] = aggregate
+		return
 	}
-	aggregate.RequestCount++
 	if status >= 400 {
 		aggregate.ErrorCount++
 	}
-	aggregate.TotalDurationMS += durationMS
-	if durationMS > aggregate.MaxDurationMS {
-		aggregate.MaxDurationMS = durationMS
+	if !observation.longLived {
+		aggregate.TotalDurationMS += durationMS
+		if durationMS > aggregate.MaxDurationMS {
+			aggregate.MaxDurationMS = durationMS
+		}
 	}
 }
 

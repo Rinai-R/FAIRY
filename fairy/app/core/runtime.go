@@ -30,10 +30,13 @@ import (
 	"fairy/runtime/ledger"
 	"fairy/runtime/model"
 	"fairy/runtime/observability"
+	observabilityhistory "fairy/runtime/observability/history"
 	"fairy/transport/desktopcapture"
 	"fairy/transport/session"
 	api "fairy/transport/web"
 )
+
+var _ api.ObservabilityHistory = (*observabilityhistory.Store)(nil)
 
 // RuntimeOptions configures a Session Core process.
 type RuntimeOptions struct {
@@ -58,6 +61,7 @@ type Runtime struct {
 	Logs          *observability.LogStore
 	HTTPMetrics   *observability.HTTPMetrics
 	Messages      *observability.MessageMetrics
+	History       *observabilityhistory.Store
 	StartedAt     time.Time
 	Database      *coredb.Pool
 
@@ -98,6 +102,7 @@ func (rt *Runtime) APIDependencies() *api.Dependencies {
 		Turns: turnAPIAdapter{service: rt.Turn}, Initiative: initiativeAPIAdapter{service: rt.Initiative}, Character: rt.Character,
 		Config: rt.Config, Profile: rt.Profile, Stickers: rt.Stickers, Captures: rt.Captures,
 		Logs: rt.Logs, HTTPMetrics: rt.HTTPMetrics, Messages: rt.Messages,
+		History: rt.History,
 		BootstrapStatus: func() (any, error) {
 			return rt.Bootstrap.Status()
 		},
@@ -221,6 +226,22 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	observabilityHistory, err := observabilityhistory.New(opened.Database)
+	if err != nil {
+		return nil, err
+	}
+	keepHistory := false
+	defer func() {
+		if !keepHistory {
+			observabilityHistory.Close()
+		}
+	}()
+	restoredLogs, err := observabilityHistory.RecentLogs(context.Background(), observability.DefaultLogCapacity)
+	if err != nil {
+		return nil, fmt.Errorf("restoring observability logs: %w", err)
+	}
+	logStore.Restore(restoredLogs)
+	logStore.SetHistorySink(observabilityHistory.EnqueueLog)
 	services, err := wireCoreServices(configRoot, opened.Database, transcriptStore, compactionStore, runtimeStore, memoryStore, extractionStore, knowledgeStore, socialStore, opened.SecretStore, modelService, configReader)
 	if err != nil {
 		return nil, err
@@ -232,6 +253,7 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 	}
 	turn.AttachStickerSearch(services.Turn, stickerStore)
 	messageMetrics := observability.NewMessageMetrics()
+	messageMetrics.SetTerminalSink(observabilityHistory.EnqueueTrace)
 
 	rt := &Runtime{
 		ConfigRoot:         configRoot,
@@ -242,6 +264,7 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 		Logs:               logStore,
 		HTTPMetrics:        httpMetrics,
 		Messages:           messageMetrics,
+		History:            observabilityHistory,
 		StartedAt:          time.Now(),
 		Database:           opened.Database,
 		TranscriptStore:    opened.TranscriptStore,
@@ -306,6 +329,7 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 		}
 	})
 	keepDependencies = true
+	keepHistory = true
 	return rt, nil
 }
 
@@ -323,6 +347,7 @@ func (rt *Runtime) Close() error {
 		rt.Captures.Close()
 		rt.Messages.Close()
 		rt.Logs.Close()
+		rt.History.Close()
 		if rt.ownDatabase && rt.Database != nil {
 			rt.Database.Close()
 		}

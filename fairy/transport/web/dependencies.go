@@ -66,6 +66,7 @@ type TurnRuntime interface {
 type TurnSubmission struct {
 	ConversationID string
 	Input          string
+	MessageID      string
 }
 
 // InitiativeRuntime is the Web-facing port for the Presence domain.
@@ -142,6 +143,19 @@ type ExperienceStats struct {
 	CacheIdentityVersion string             `json:"cacheIdentityVersion"`
 }
 
+// ObservabilityHistory is the Web layer's read/write view of persisted
+// observability projections. The concrete PostgreSQL lifecycle remains owned
+// by the Core composition root.
+type ObservabilityHistory interface {
+	RecentLogs(context.Context, int) ([]observability.LogEntry, error)
+	RecentTraces(context.Context, int) ([]observability.MessageTraceDetail, error)
+	Trace(context.Context, string) (observability.MessageTraceDetail, bool, error)
+	TracesByMessageID(context.Context, string, int) ([]observability.MessageTraceDetail, error)
+	RecentMetrics(context.Context, int) ([]observability.MetricHistoryPoint, error)
+	EnqueueMetric(observability.MetricHistoryPoint) bool
+	Stats() observability.HistoryStats
+}
+
 func (s ParticipationSubscription) Unsubscribe() {
 	if s.Cancel != nil {
 		s.Cancel()
@@ -174,6 +188,7 @@ type Dependencies struct {
 	Logs               *observability.LogStore
 	HTTPMetrics        *observability.HTTPMetrics
 	Messages           *observability.MessageMetrics
+	History            ObservabilityHistory
 
 	BootstrapStatus          func() (any, error)
 	SubscribeTurnEvents      func(conversationID string) (EventSubscription, error)

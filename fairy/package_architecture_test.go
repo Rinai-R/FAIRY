@@ -48,6 +48,7 @@ var targetPackages = []string{
 	"fairy/context/social",
 	"fairy/runtime/model",
 	"fairy/runtime/observability",
+	"fairy/runtime/observability/history",
 	"fairy/agent/presence",
 	"fairy/agent/reply",
 	"fairy/transport/session",
@@ -476,6 +477,7 @@ func TestThirdPartySDKImportsMatchMigrationInventory(t *testing.T) {
 			"fairy/context/knowledge",
 			"fairy/context/social",
 			"fairy/runtime/ledger",
+			"fairy/runtime/observability/history",
 			"fairy/agent/sticker",
 		},
 		"gorm.io/":                     {"fairy/runtime/database"},
@@ -547,6 +549,29 @@ func TestIndependentSurfacesDoNotImportCoreInternals(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+func TestQQSurfaceDependencyGraphExcludesCoreDatabase(t *testing.T) {
+	command := exec.CommandContext(t.Context(), "go", "list", "-deps", "-f", "{{.ImportPath}}", ".")
+	command.Dir = filepath.Join("..", "surfaces", "qq-onebot")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("list QQ Surface dependencies: %v\n%s", err, output)
+	}
+
+	forbidden := []string{
+		"fairy/runtime/database",
+		"github.com/jackc/pgx",
+		"github.com/pgvector/pgvector-go",
+		"gorm.io",
+	}
+	for _, dependency := range strings.Fields(string(output)) {
+		for _, prefix := range forbidden {
+			if dependency == prefix || strings.HasPrefix(dependency, prefix+"/") {
+				t.Errorf("QQ Surface dependency graph contains Core database package %q", dependency)
+			}
 		}
 	}
 }

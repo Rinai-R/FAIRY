@@ -26,6 +26,71 @@ func TestMessageMetricsAggregatesDirectTrace(t *testing.T) {
 	}
 }
 
+func TestMessageMetricsPublishesTerminalTraceWithoutBlocking(t *testing.T) {
+	metrics := NewMessageMetrics()
+	t.Cleanup(metrics.Close)
+	persisted := make(chan MessageTraceDetail, 1)
+	metrics.SetTerminalSink(func(detail MessageTraceDetail) bool {
+		persisted <- detail
+		return true
+	})
+	traceID := metrics.Begin("direct", "conversation")
+	metrics.End(traceID, "failed")
+	select {
+	case detail := <-persisted:
+		if detail.TraceID != traceID || detail.Status != "failed" || len(detail.Spans) == 0 {
+			t.Fatalf("terminal detail = %#v", detail)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("terminal trace was not published")
+	}
+}
+
+func TestMessageMetricsKeepsFirstTerminalAndMessageCorrelation(t *testing.T) {
+	metrics := NewMessageMetrics()
+	t.Cleanup(metrics.Close)
+	persisted := make(chan MessageTraceDetail, 2)
+	metrics.SetTerminalSink(func(detail MessageTraceDetail) bool {
+		persisted <- detail
+		return true
+	})
+	traceID := metrics.BeginCorrelated("ambient", "conversation", "external-message-42")
+	metrics.Participation([]string{traceID}, "", "silent_error")
+	metrics.Participation([]string{traceID}, "", "failed")
+
+	detail := <-persisted
+	if detail.Status != "silent" || detail.MessageID != "external-message-42" {
+		t.Fatalf("terminal trace = %#v", detail)
+	}
+	participation := detail.Spans[1]
+	if participation.Status != "failed" || participation.Attributes["action"] != "silent" {
+		t.Fatalf("fail-closed participation span = %#v", participation)
+	}
+	select {
+	case duplicate := <-persisted:
+		t.Fatalf("conflicting late terminal was persisted: %#v", duplicate)
+	case <-time.After(20 * time.Millisecond):
+	}
+	snapshot := waitForMessageSnapshot(t, metrics, func(value MessageMetricsSnapshot) bool { return value.Silent == 1 })
+	if snapshot.Failed != 0 || snapshot.Active != 0 || snapshot.Recent[0].Status != "silent" || snapshot.Recent[0].MessageID != "external-message-42" {
+		t.Fatalf("first-terminal snapshot = %#v", snapshot)
+	}
+	found := metrics.TracesByMessageID("external-message-42", 10)
+	if len(found) != 1 || found[0].TraceID != traceID || found[0].Status != "silent" {
+		t.Fatalf("message correlation = %#v", found)
+	}
+}
+
+func TestMessageTraceIDsRemainUniqueAcrossMetricOwners(t *testing.T) {
+	first := NewMessageMetrics()
+	second := NewMessageMetrics()
+	t.Cleanup(first.Close)
+	t.Cleanup(second.Close)
+	if left, right := first.Begin("direct", "c1"), second.Begin("direct", "c2"); left == right {
+		t.Fatalf("trace ids collide across owners: %q", left)
+	}
+}
+
 func TestMessageMetricsParticipationClosesNonTargetTraces(t *testing.T) {
 	metrics := NewMessageMetrics()
 	t.Cleanup(metrics.Close)

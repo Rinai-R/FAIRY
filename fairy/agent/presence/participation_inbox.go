@@ -12,7 +12,7 @@ import (
 )
 
 type Host interface {
-	BeginMessageTrace(source, conversationID, traceID string) string
+	BeginMessageTrace(source, conversationID, messageID, traceID string) string
 	ObserveSocialFeedback(conversationID string, observation AmbientObservation)
 	EnqueueSocialLearning(conversationID string, messages []AmbientObservation)
 	CancelTurnBeforeDelivery(conversationID string)
@@ -106,6 +106,7 @@ const (
 	socialLearningObservationThreshold = 20
 	maxAmbientConversationStates       = 256
 	maxAmbientRecentReplies            = MaxAmbientObservations
+	participationTraceSilentError      = "silent_error"
 )
 
 func NewInbox(parent context.Context, host Host) *Inbox {
@@ -145,7 +146,7 @@ func (a *Inbox) Observe(conversationID string, observation AmbientObservation) e
 		return err
 	}
 	if a.host != nil {
-		observation.TraceID = a.host.BeginMessageTrace("ambient", conversationID, observation.TraceID)
+		observation.TraceID = a.host.BeginMessageTrace("ambient", conversationID, observation.MessageID, observation.TraceID)
 		a.host.ObserveSocialFeedback(conversationID, observation)
 	}
 	state.generation++
@@ -310,7 +311,7 @@ func (a *Inbox) run(batch ambientBatch, decisionCtx context.Context, decisionOwn
 		}
 		if err != nil {
 			a.warn("ambient participation failed", batch, err)
-			a.recordParticipation(batch, "", "failed")
+			a.recordParticipation(batch, "", participationTraceSilentError)
 			a.publishParticipation(batch, "failed", "", 0, nil)
 			state.running = false
 			a.mu.Unlock()
@@ -333,7 +334,7 @@ func (a *Inbox) run(batch ambientBatch, decisionCtx context.Context, decisionOwn
 			state.backoffUntil = time.Time{}
 			if decision.WaitSeconds == nil || *decision.WaitSeconds < 1 || *decision.WaitSeconds > 300 {
 				a.warn("ambient wait decision invalid", batch, nil)
-				a.recordParticipation(batch, "", "failed")
+				a.recordParticipation(batch, "", participationTraceSilentError)
 				a.publishParticipation(batch, "failed", "", 0, nil)
 				state.running = false
 				a.mu.Unlock()
@@ -350,7 +351,7 @@ func (a *Inbox) run(batch ambientBatch, decisionCtx context.Context, decisionOwn
 			state.backoffUntil = time.Time{}
 			if decision.TargetMessageID == nil || !ambientBatchContains(batch, *decision.TargetMessageID) {
 				a.warn("ambient reply target invalid", batch, nil)
-				a.recordParticipation(batch, "", "failed")
+				a.recordParticipation(batch, "", participationTraceSilentError)
 				a.publishParticipation(batch, "failed", "", 0, nil)
 				state.running = false
 				a.mu.Unlock()
@@ -410,7 +411,7 @@ func (a *Inbox) run(batch ambientBatch, decisionCtx context.Context, decisionOwn
 			return
 		default:
 			a.warn("ambient participation action invalid", batch, nil)
-			a.recordParticipation(batch, "", "failed")
+			a.recordParticipation(batch, "", participationTraceSilentError)
 			a.publishParticipation(batch, "failed", "", 0, nil)
 			state.running = false
 			a.mu.Unlock()

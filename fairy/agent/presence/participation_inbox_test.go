@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"fairy/runtime/observability"
 )
 
 func TestInboxStartsFirstMessageImmediately(t *testing.T) {
@@ -99,6 +101,86 @@ func TestInboxCancelsStaleDecision(t *testing.T) {
 	batch := receiveBatch(t, latest)
 	if batch.generation != 2 || len(batch.messages) != 2 || batch.messages[1].MessageID != "m2" {
 		t.Fatalf("latest = %#v", batch)
+	}
+}
+
+func TestInboxCancellationRefreshKeepsAllMessageTracesSilent(t *testing.T) {
+	metrics := observability.NewMessageMetrics()
+	t.Cleanup(metrics.Close)
+	host := &telemetryInboxHost{metrics: metrics}
+	inbox := NewInbox(t.Context(), host)
+	defer inbox.Close()
+	firstStarted := make(chan struct{})
+	var calls atomic.Int32
+	inbox.decideHook = func(ctx context.Context, _ ambientBatch) (ParticipationResult, error) {
+		if calls.Add(1) == 1 {
+			close(firstStarted)
+			<-ctx.Done()
+			return ParticipationResult{}, ctx.Err()
+		}
+		return ParticipationResult{Action: ParticipationSilent}, nil
+	}
+	if err := inbox.Observe("conversation-1", testObservation(1)); err != nil {
+		t.Fatal(err)
+	}
+	<-firstStarted
+	if err := inbox.Observe("conversation-1", testObservation(2)); err != nil {
+		t.Fatal(err)
+	}
+
+	waitUntil(t, func() bool {
+		first := metrics.TracesByMessageID("m1", 1)
+		second := metrics.TracesByMessageID("m2", 1)
+		return len(first) == 1 && first[0].Status == "silent" && len(second) == 1 && second[0].Status == "silent"
+	})
+	snapshot := metrics.Snapshot()
+	if snapshot.Silent != 2 || snapshot.Failed != 0 || snapshot.Active != 0 {
+		t.Fatalf("message metrics after refreshed decision = %#v", snapshot)
+	}
+}
+
+func TestInboxLaterDecisionFailureDoesNotRewriteEarlierSilentTrace(t *testing.T) {
+	metrics := observability.NewMessageMetrics()
+	t.Cleanup(metrics.Close)
+	host := &telemetryInboxHost{metrics: metrics}
+	inbox := NewInbox(t.Context(), host)
+	defer inbox.Close()
+	var calls atomic.Int32
+	inbox.decideHook = func(context.Context, ambientBatch) (ParticipationResult, error) {
+		if calls.Add(1) == 1 {
+			return ParticipationResult{Action: ParticipationSilent}, nil
+		}
+		return ParticipationResult{}, fmt.Errorf("participation provider unavailable")
+	}
+
+	if err := inbox.Observe("conversation-1", testObservation(1)); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, func() bool {
+		traces := metrics.TracesByMessageID("m1", 1)
+		return len(traces) == 1 && traces[0].Status == "silent"
+	})
+
+	if err := inbox.Observe("conversation-1", testObservation(2)); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, func() bool {
+		first := metrics.TracesByMessageID("m1", 1)
+		second := metrics.TracesByMessageID("m2", 1)
+		return len(first) == 1 && first[0].Status == "silent" && len(second) == 1 && second[0].Status == "silent"
+	})
+
+	first := metrics.TracesByMessageID("m1", 1)[0]
+	second := metrics.TracesByMessageID("m2", 1)[0]
+	if first.Status != "silent" || first.EndedAtUnixMS == 0 {
+		t.Fatalf("earlier trace was rewritten: %#v", first)
+	}
+	if len(second.Spans) < 2 || second.Spans[1].Status != "failed" || second.Spans[1].Attributes["action"] != "silent" {
+		t.Fatalf("later fail-closed trace = %#v", second)
+	}
+	snapshot := metrics.Snapshot()
+	if snapshot.Silent != 2 || snapshot.Failed != 0 || snapshot.Active != 0 {
+		t.Fatalf("message metrics after later failure = %#v", snapshot)
 	}
 }
 
@@ -303,6 +385,20 @@ func TestInboxEnqueuesLearningEveryObservationThresholdOnce(t *testing.T) {
 	}
 }
 
+func TestInboxRunsOneParticipationDecisionPerBatch(t *testing.T) {
+	inbox := NewInbox(t.Context(), fakeInboxHost{})
+	defer inbox.Close()
+	var calls atomic.Int32
+	inbox.decideHook = func(context.Context, ambientBatch) (ParticipationResult, error) {
+		calls.Add(1)
+		return ParticipationResult{Action: ParticipationSilent}, nil
+	}
+	observeAndWaitForIdle(t, inbox, "conversation-1", testObservation(1))
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("participation decisions = %d, want 1", got)
+	}
+}
+
 type learningInboxHost struct {
 	fakeInboxHost
 	enqueued atomic.Int32
@@ -314,7 +410,7 @@ func (h *learningInboxHost) EnqueueSocialLearning(string, []AmbientObservation) 
 
 type fakeInboxHost struct{}
 
-func (fakeInboxHost) BeginMessageTrace(_, _, traceID string) string      { return traceID }
+func (fakeInboxHost) BeginMessageTrace(_, _, _, traceID string) string   { return traceID }
 func (fakeInboxHost) ObserveSocialFeedback(string, AmbientObservation)   {}
 func (fakeInboxHost) EnqueueSocialLearning(string, []AmbientObservation) {}
 func (fakeInboxHost) CancelTurnBeforeDelivery(string)                    {}
@@ -327,6 +423,19 @@ func (fakeInboxHost) EmitParticipation(Event)                      {}
 func (fakeInboxHost) RecordParticipation([]string, string, string) {}
 func (fakeInboxHost) WarnAmbient(string, string, uint64, error)    {}
 
+type telemetryInboxHost struct {
+	fakeInboxHost
+	metrics *observability.MessageMetrics
+}
+
+func (h *telemetryInboxHost) BeginMessageTrace(source, conversationID, messageID, _ string) string {
+	return h.metrics.BeginCorrelated(source, conversationID, messageID)
+}
+
+func (h *telemetryInboxHost) RecordParticipation(traceIDs []string, targetTraceID, action string) {
+	h.metrics.Participation(traceIDs, targetTraceID, action)
+}
+
 type countingInboxHost struct {
 	fakeInboxHost
 	begins   atomic.Int32
@@ -334,7 +443,7 @@ type countingInboxHost struct {
 	cancels  atomic.Int32
 }
 
-func (h *countingInboxHost) BeginMessageTrace(_, _, traceID string) string {
+func (h *countingInboxHost) BeginMessageTrace(_, _, _, traceID string) string {
 	h.begins.Add(1)
 	return traceID
 }

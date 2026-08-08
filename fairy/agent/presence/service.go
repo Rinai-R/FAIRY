@@ -23,7 +23,7 @@ type InteractionResolver interface {
 }
 
 type Observer interface {
-	BeginMessageTrace(source, conversationID, traceID string) string
+	BeginMessageTrace(source, conversationID, messageID, traceID string) string
 	EndMessageTrace(traceID, status string)
 	EmitParticipation(Event)
 	RecordParticipation(traceIDs []string, targetTraceID, action string)
@@ -212,11 +212,11 @@ func (s *Service) ObserveAmbientReply(registration FeedbackRegistration) bool {
 	return s.experience.CompleteReply(registration)
 }
 
-func (s *Service) BeginMessageTrace(source, conversationID, traceID string) string {
+func (s *Service) BeginMessageTrace(source, conversationID, messageID, traceID string) string {
 	if s == nil || s.observer == nil {
 		return traceID
 	}
-	return s.observer.BeginMessageTrace(source, conversationID, traceID)
+	return s.observer.BeginMessageTrace(source, conversationID, messageID, traceID)
 }
 
 func (s *Service) ObserveSocialFeedback(conversationID string, observation AmbientObservation) {

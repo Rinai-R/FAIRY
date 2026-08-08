@@ -11,8 +11,9 @@ import (
 func TestHTTPMetricsNormalizesRoutesAndReturnsDeepCopy(t *testing.T) {
 	metrics := NewHTTPMetrics()
 	for _, status := range []int{200, 404} {
-		started := metrics.Begin()
-		metrics.Finish("POST", "/v1/sessions/:conversationId/turns", status, started.Add(-time.Millisecond))
+		observation := metrics.Begin("POST", "/v1/sessions/:conversationId/turns", false)
+		observation.started = observation.started.Add(-time.Millisecond)
+		metrics.Finish(observation, status)
 	}
 	snapshot := metrics.Snapshot()
 	if snapshot.Total != 2 || snapshot.InFlight != 0 || snapshot.Status2xx != 1 || snapshot.Status4xx != 1 {
@@ -35,8 +36,8 @@ func TestHTTPMetricsConcurrentRecordAndSnapshot(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < 100; i++ {
-				started := metrics.Begin()
-				metrics.Finish("GET", "/v1/status", 200, started)
+				observation := metrics.Begin("GET", "/v1/status", false)
+				metrics.Finish(observation, 200)
 				_ = metrics.Snapshot()
 			}
 		}()
@@ -52,7 +53,8 @@ func TestHTTPMetricsBoundsExtensionMethodCardinality(t *testing.T) {
 	metrics := NewHTTPMetrics()
 	const requests = 10_000
 	for index := 0; index < requests; index++ {
-		metrics.Finish(fmt.Sprintf("FAIRY-EXTENSION-%d", index), "/v1/status", http.StatusNotFound, time.Now())
+		observation := metrics.Begin(fmt.Sprintf("FAIRY-EXTENSION-%d", index), "/v1/status", false)
+		metrics.Finish(observation, http.StatusNotFound)
 	}
 
 	snapshot := metrics.Snapshot()
@@ -82,7 +84,7 @@ func TestHTTPMetricsPreservesStandardMethods(t *testing.T) {
 	}
 	metrics := NewHTTPMetrics()
 	for _, method := range methods {
-		metrics.Finish(method, "/v1/status", http.StatusOK, time.Now())
+		metrics.Finish(metrics.Begin(method, "/v1/status", false), http.StatusOK)
 	}
 
 	snapshot := metrics.Snapshot()
@@ -93,6 +95,35 @@ func TestHTTPMetricsPreservesStandardMethods(t *testing.T) {
 		if snapshot.Routes[index].Method != method || snapshot.Routes[index].RequestCount != 1 {
 			t.Fatalf("route[%d] = %#v, want method %q", index, snapshot.Routes[index], method)
 		}
+	}
+}
+
+func TestHTTPMetricsDoesNotTreatLongLivedConnectionAsRequestLatency(t *testing.T) {
+	metrics := NewHTTPMetrics()
+	observation := metrics.Begin("GET", "/v1/session/ws", true)
+	observation.started = observation.started.Add(-time.Hour)
+	metrics.Finish(observation, http.StatusSwitchingProtocols)
+
+	snapshot := metrics.Snapshot()
+	if snapshot.Total != 1 || snapshot.InFlight != 0 || len(snapshot.Routes) != 1 {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	route := snapshot.Routes[0]
+	if !route.LongLived || route.TotalDurationMS != 0 || route.MaxDurationMS != 0 {
+		t.Fatalf("long-lived route = %#v", route)
+	}
+}
+
+func TestHTTPMetricsCountsActiveLongLivedConnectionAtBegin(t *testing.T) {
+	metrics := NewHTTPMetrics()
+	_ = metrics.Begin("GET", "/v1/session/ws", true)
+
+	snapshot := metrics.Snapshot()
+	if snapshot.Total != 1 || snapshot.InFlight != 1 || len(snapshot.Routes) != 1 {
+		t.Fatalf("active snapshot = %#v", snapshot)
+	}
+	if route := snapshot.Routes[0]; !route.LongLived || route.RequestCount != 1 || route.TotalDurationMS != 0 {
+		t.Fatalf("active route = %#v", route)
 	}
 }
 

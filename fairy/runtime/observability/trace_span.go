@@ -90,25 +90,34 @@ func (s *messageMetricsState) removeTrace(traceID string) {
 func (s *messageMetricsState) traceDetails(recent []MessageTrace) map[string]MessageTraceDetail {
 	details := make(map[string]MessageTraceDetail, len(recent))
 	for _, summary := range recent {
-		trace := s.traces[summary.TraceID]
-		if trace == nil {
+		detail := s.detailForTrace(summary.TraceID)
+		if detail.TraceID == "" {
 			continue
 		}
-		spans := make([]TraceSpan, 0, len(trace.spanOrder))
-		for _, spanID := range trace.spanOrder {
-			span := trace.spans[spanID]
-			if span != nil {
-				spans = append(spans, cloneTraceSpan(*span))
-			}
-		}
-		details[summary.TraceID] = MessageTraceDetail{
-			TraceID: summary.TraceID, ConversationID: summary.ConversationID, TurnID: summary.TurnID,
-			Source: summary.Source, Status: summary.Status, StartedAtUnixMS: summary.ReceivedAtUnixMS,
-			EndedAtUnixMS: summary.CompletedAtUnixMS, DurationMS: summary.TotalDurationMS,
-			DroppedSpanCount: trace.dropped, Truncated: trace.dropped > 0, Spans: spans,
-		}
+		details[summary.TraceID] = detail
 	}
 	return details
+}
+
+func (s *messageMetricsState) detailForTrace(traceID string) MessageTraceDetail {
+	trace := s.traces[traceID]
+	if trace == nil {
+		return MessageTraceDetail{}
+	}
+	spans := make([]TraceSpan, 0, len(trace.spanOrder))
+	for _, spanID := range trace.spanOrder {
+		span := trace.spans[spanID]
+		if span != nil {
+			spans = append(spans, cloneTraceSpan(*span))
+		}
+	}
+	summary := trace.trace
+	return MessageTraceDetail{
+		TraceID: summary.TraceID, MessageID: summary.MessageID, ConversationID: summary.ConversationID, TurnID: summary.TurnID,
+		Source: summary.Source, Status: summary.Status, StartedAtUnixMS: summary.ReceivedAtUnixMS,
+		EndedAtUnixMS: summary.CompletedAtUnixMS, DurationMS: summary.TotalDurationMS,
+		DroppedSpanCount: trace.dropped, Truncated: trace.dropped > 0, Spans: spans,
+	}
 }
 
 func (t *messageTraceState) addSpan(span TraceSpan) bool {

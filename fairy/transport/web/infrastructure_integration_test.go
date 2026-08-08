@@ -84,6 +84,89 @@ func TestProductionInfrastructureStatusAndMetrics(t *testing.T) {
 	}
 }
 
+func TestProductionMetricSamplerPersistsWithoutMetricsRequestsAndRestoresAfterRestart(t *testing.T) {
+	databaseURL, cleanup := isolatedAPISchema(t)
+	defer cleanup()
+	masterKey := base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789"))
+	setAPIProductionEnv(t, databaseURL, masterKey)
+
+	rt, err := fairycore.Open(fairycore.RuntimeOptions{ConfigRoot: t.TempDir(), Logger: zap.NewNop()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := false
+	t.Cleanup(func() {
+		if !closed {
+			_ = rt.Close()
+		}
+	})
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := listener.Addr().String()
+	listener.Close()
+	server, err := api.NewServer(rt.APIDependencies(), api.Options{
+		Addr: addr, Token: "integration-test-token", Logger: zap.NewNop(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		_ = server.Run()
+	}()
+	waitHTTP(t, "http://"+addr+"/v1/status", "integration-test-token")
+	waitForPersistedMetricCount(t, rt, 2)
+
+	shutdownCtx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("metric sampler server did not stop")
+	}
+	if err := rt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	closed = true
+
+	restarted, err := fairycore.Open(fairycore.RuntimeOptions{ConfigRoot: t.TempDir(), Logger: zap.NewNop()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	points, err := restarted.History.RecentMetrics(t.Context(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(points) < 2 {
+		t.Fatalf("restored metric samples = %d, want at least 2", len(points))
+	}
+}
+
+func waitForPersistedMetricCount(t *testing.T, rt *fairycore.Runtime, want int) {
+	t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		points, err := rt.History.RecentMetrics(t.Context(), want)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(points) >= want {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("persisted metric samples did not reach %d without /v1/metrics requests", want)
+}
+
 func TestProductionPersonalMemoryContentLimitReturnsBadRequest(t *testing.T) {
 	databaseURL, cleanup := isolatedAPISchema(t)
 	defer cleanup()

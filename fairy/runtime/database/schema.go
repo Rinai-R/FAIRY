@@ -2,7 +2,7 @@ package database
 
 import "github.com/pgvector/pgvector-go"
 
-const currentSchemaRevision = "2026-08-06-conversation-debug-evaluation-1"
+const currentSchemaRevision = "2026-08-08-durable-observability-history-1"
 
 type conversationSchema struct {
 	ID          string `gorm:"type:text;primaryKey;index:conversations_character_updated,priority:3"`
@@ -306,6 +306,17 @@ func (socialMemoryFeedbackEventSchema) TableName() string {
 	return "social_memory_feedback_events"
 }
 
+type observabilityRecordSchema struct {
+	ID           int64  `gorm:"primaryKey;autoIncrement"`
+	Kind         string `gorm:"type:text;not null;uniqueIndex:observability_records_kind_key,priority:1;index:observability_records_kind_recorded,priority:1;check:observability_records_invariants_check,(kind IN ('log', 'trace', 'metric')) AND (record_key <> '') AND (recorded_at_ms > 0) AND (jsonb_typeof(payload) = 'object') AND (created_at_ms > 0)"`
+	RecordKey    string `gorm:"type:text;not null;uniqueIndex:observability_records_kind_key,priority:2"`
+	RecordedAtMS int64  `gorm:"not null;index:observability_records_kind_recorded,sort:desc,priority:2"`
+	PayloadJSON  []byte `gorm:"column:payload;type:jsonb;not null"`
+	CreatedAtMS  int64  `gorm:"not null"`
+}
+
+func (observabilityRecordSchema) TableName() string { return "observability_records" }
+
 type schemaState struct {
 	ID       int16  `gorm:"primaryKey;check:fairy_schema_state_invariants_check,id = 1"`
 	Revision string `gorm:"type:text;not null"`
@@ -333,6 +344,7 @@ func schemaModels() []any {
 		&ownerIdentitySchema{},
 		&socialMemoryEntrySchema{},
 		&socialMemoryFeedbackEventSchema{},
+		&observabilityRecordSchema{},
 		&schemaState{},
 	}
 }

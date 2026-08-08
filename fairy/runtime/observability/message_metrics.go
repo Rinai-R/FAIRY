@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -35,6 +37,7 @@ type MessageLatencySnapshot struct {
 
 type MessageTrace struct {
 	TraceID             string `json:"traceId"`
+	MessageID           string `json:"messageId,omitempty"`
 	Source              string `json:"source"`
 	ConversationID      string `json:"conversationId"`
 	TurnID              string `json:"turnId,omitempty"`
@@ -61,6 +64,7 @@ type TraceSpan struct {
 
 type MessageTraceDetail struct {
 	TraceID          string      `json:"traceId"`
+	MessageID        string      `json:"messageId,omitempty"`
 	ConversationID   string      `json:"conversationId"`
 	TurnID           string      `json:"turnId,omitempty"`
 	Source           string      `json:"source"`
@@ -108,6 +112,7 @@ type messageEvent struct {
 	targetTraceID string
 	source        string
 	conversation  string
+	messageID     string
 	turnID        string
 	action        string
 	stage         string
@@ -147,12 +152,17 @@ type MessageMetrics struct {
 	dropped        atomic.Uint64
 	retentionDrops atomic.Uint64
 	sequence       atomic.Uint64
+	ownerID        uint64
 	spanSequence   atomic.Uint64
 	recentCapacity int
 	activeCapacity int
 	snapshot       atomic.Value
 	details        atomic.Value
+	sinkMu         sync.RWMutex
+	terminalSink   func(MessageTraceDetail) bool
 }
+
+var messageMetricsOwnerSequence atomic.Uint64
 
 func NewMessageMetrics() *MessageMetrics {
 	return newMessageMetrics(defaultMessageEventCapacity, defaultRecentTraceCapacity, true)
@@ -172,6 +182,7 @@ func newMessageMetrics(queueCapacity, recentCapacity int, start bool) *MessageMe
 		// A lost terminal event cannot consume more than one queue's worth of
 		// process-local trace state.
 		activeCapacity: queueCapacity,
+		ownerID:        messageMetricsOwnerSequence.Add(1),
 	}
 	m.snapshot.Store(MessageMetricsSnapshot{Recent: []MessageTrace{}})
 	m.details.Store(map[string]MessageTraceDetail{})
@@ -182,12 +193,39 @@ func newMessageMetrics(queueCapacity, recentCapacity int, start bool) *MessageMe
 }
 
 func (m *MessageMetrics) Begin(source, conversationID string) string {
+	return m.BeginCorrelated(source, conversationID, "")
+}
+
+func (m *MessageMetrics) BeginCorrelated(source, conversationID, messageID string) string {
 	if m == nil {
 		return ""
 	}
-	traceID := fmt.Sprintf("msg-%d", m.sequence.Add(1))
-	m.submit(messageEvent{kind: messageBegin, at: time.Now(), traceID: traceID, source: source, conversation: conversationID})
+	traceID := fmt.Sprintf("msg-%d-%d-%d", time.Now().UnixNano(), m.ownerID, m.sequence.Add(1))
+	correlationID := sanitizeCorrelationID(messageID)
+	m.submit(messageEvent{kind: messageBegin, at: time.Now(), traceID: traceID, source: source, conversation: conversationID, messageID: correlationID})
 	return traceID
+}
+
+func sanitizeCorrelationID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || utf8.RuneCountInString(value) > 128 {
+		return ""
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return ""
+		}
+	}
+	return value
+}
+
+func (m *MessageMetrics) SetTerminalSink(sink func(MessageTraceDetail) bool) {
+	if m == nil {
+		return
+	}
+	m.sinkMu.Lock()
+	m.terminalSink = sink
+	m.sinkMu.Unlock()
 }
 
 func (m *MessageMetrics) Participation(traceIDs []string, targetTraceID, action string) {
@@ -245,6 +283,29 @@ func (m *MessageMetrics) Trace(traceID string) (MessageTraceDetail, bool) {
 		return MessageTraceDetail{}, false
 	}
 	return cloneTraceDetail(detail), true
+}
+
+func (m *MessageMetrics) TracesByMessageID(messageID string, limit int) []MessageTraceDetail {
+	if m == nil || messageID == "" || limit < 1 {
+		return []MessageTraceDetail{}
+	}
+	details := m.details.Load().(map[string]MessageTraceDetail)
+	result := make([]MessageTraceDetail, 0, min(limit, len(details)))
+	for _, detail := range details {
+		if detail.MessageID == messageID {
+			result = append(result, cloneTraceDetail(detail))
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].StartedAtUnixMS != result[j].StartedAtUnixMS {
+			return result[i].StartedAtUnixMS > result[j].StartedAtUnixMS
+		}
+		return result[i].TraceID > result[j].TraceID
+	})
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result
 }
 
 func (m *MessageMetrics) End(traceID, status string) {
@@ -306,18 +367,32 @@ func (m *MessageMetrics) run() {
 		select {
 		case event := <-m.events:
 			state.apply(event)
+			m.persistTerminal(state.drainTerminalDetails())
 			m.publishSnapshots(&state)
 		case <-m.stop:
 			for {
 				select {
 				case event := <-m.events:
 					state.apply(event)
+					m.persistTerminal(state.drainTerminalDetails())
 				default:
 					m.publishSnapshots(&state)
 					return
 				}
 			}
 		}
+	}
+}
+
+func (m *MessageMetrics) persistTerminal(details []MessageTraceDetail) {
+	m.sinkMu.RLock()
+	sink := m.terminalSink
+	m.sinkMu.RUnlock()
+	if sink == nil {
+		return
+	}
+	for _, detail := range details {
+		sink(detail)
 	}
 }
 
@@ -328,14 +403,15 @@ func (m *MessageMetrics) publishSnapshots(state *messageMetricsState) {
 }
 
 type messageMetricsState struct {
-	snapshotBase   MessageMetricsSnapshot
-	traces         map[string]*messageTraceState
-	turns          map[string]string
-	spanTraces     map[string]string
-	recentIDs      []string
-	recentCapacity int
-	activeCapacity int
-	retentionDrops *atomic.Uint64
+	snapshotBase    MessageMetricsSnapshot
+	traces          map[string]*messageTraceState
+	turns           map[string]string
+	spanTraces      map[string]string
+	recentIDs       []string
+	recentCapacity  int
+	activeCapacity  int
+	retentionDrops  *atomic.Uint64
+	terminalDetails []MessageTraceDetail
 }
 
 func (s *messageMetricsState) apply(event messageEvent) {
@@ -368,7 +444,7 @@ func (s *messageMetricsState) begin(event messageEvent) {
 	}
 	trace := &messageTraceState{
 		trace: MessageTrace{
-			TraceID: event.traceID, Source: event.source, ConversationID: event.conversation,
+			TraceID: event.traceID, MessageID: event.messageID, Source: event.source, ConversationID: event.conversation,
 			Status: "received", ReceivedAtUnixMS: event.at.UnixMilli(),
 		},
 		receivedAt: event.at,
@@ -434,7 +510,13 @@ func (s *messageMetricsState) participation(event messageEvent) {
 			trace.decisionAt = event.at
 			trace.trace.DecisionAtUnixMS = event.at.UnixMilli()
 			observeMessageLatency(&s.snapshotBase.Latencies.ReceiveToDecision, event.at.Sub(trace.receivedAt))
-			trace.closeSpan(traceID+"-participation", "completed", event.at, map[string]string{"action": event.action})
+			spanStatus := "completed"
+			attributes := map[string]string{"action": event.action}
+			if event.action == "silent_error" {
+				spanStatus = "failed"
+				attributes = map[string]string{"action": "silent"}
+			}
+			trace.closeSpan(traceID+"-participation", spanStatus, event.at, attributes)
 		}
 		switch event.action {
 		case "wait":
@@ -446,6 +528,8 @@ func (s *messageMetricsState) participation(event messageEvent) {
 				s.end(traceID, "silent", event.at)
 			}
 		case "silent":
+			s.end(traceID, "silent", event.at)
+		case "silent_error":
 			s.end(traceID, "silent", event.at)
 		case "failed":
 			s.end(traceID, "failed", event.at)
@@ -532,12 +616,19 @@ func (s *messageMetricsState) end(traceID, status string, at time.Time) {
 	if trace.trace.TurnID != "" {
 		delete(s.turns, trace.trace.TurnID)
 	}
+	s.terminalDetails = append(s.terminalDetails, s.detailForTrace(traceID))
 	s.recentIDs = append(s.recentIDs, traceID)
 	for len(s.recentIDs) > s.recentCapacity {
 		oldest := s.recentIDs[0]
 		s.recentIDs = s.recentIDs[1:]
 		s.removeTrace(oldest)
 	}
+}
+
+func (s *messageMetricsState) drainTerminalDetails() []MessageTraceDetail {
+	details := s.terminalDetails
+	s.terminalDetails = nil
+	return details
 }
 
 func (s *messageMetricsState) snapshot(dropped uint64) MessageMetricsSnapshot {
