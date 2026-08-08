@@ -149,7 +149,18 @@ export type MetricsSnapshot = {
 
 export type ExperienceStats = {
   learning: { enqueued: number; dropped: number; succeeded: number; failed: number };
-  feedback: { registered: number; dropped: number; succeeded: number; failed: number };
+  feedback: {
+    registered: number;
+    dropped: number;
+    succeeded: number;
+    failed: number;
+    modelCalls: number;
+    inputTokens: number;
+    cachedObservedInputTokens: number;
+    cachedInputTokens: number;
+    cacheWriteTokens: number;
+    outputTokens: number;
+  };
   cacheIdentityVersion: string;
 };
 
@@ -298,6 +309,12 @@ function parseMetricHistoryPoint(value: unknown): MetricsTrendPoint {
     feedbackSucceeded: optionalNonNegativeInteger(point, "feedbackSucceeded"),
     feedbackFailed: optionalNonNegativeInteger(point, "feedbackFailed"),
     feedbackDropped: optionalNonNegativeInteger(point, "feedbackDropped"),
+    feedbackModelCalls: optionalNonNegativeInteger(point, "feedbackModelCalls"),
+    feedbackInputTokens: optionalNonNegativeInteger(point, "feedbackInputTokens"),
+    feedbackCachedObservedInputTokens: optionalNonNegativeInteger(point, "feedbackCachedObservedInputTokens"),
+    feedbackCachedInputTokens: optionalNonNegativeInteger(point, "feedbackCachedInputTokens"),
+    feedbackCacheWriteTokens: optionalNonNegativeInteger(point, "feedbackCacheWriteTokens"),
+    feedbackOutputTokens: optionalNonNegativeInteger(point, "feedbackOutputTokens"),
     compactionL1Applied: optionalNonNegativeInteger(point, "compactionL1Applied"),
     compactionL2Applied: optionalNonNegativeInteger(point, "compactionL2Applied"),
     compactionL3Applied: optionalNonNegativeInteger(point, "compactionL3Applied"),
@@ -326,6 +343,12 @@ function parseExperienceStats(value: unknown): ExperienceStats {
       dropped: requiredNonNegativeInteger(feedback, "dropped"),
       succeeded: requiredNonNegativeInteger(feedback, "succeeded"),
       failed: requiredNonNegativeInteger(feedback, "failed"),
+      modelCalls: requiredNonNegativeInteger(feedback, "modelCalls"),
+      inputTokens: requiredNonNegativeInteger(feedback, "inputTokens"),
+      cachedObservedInputTokens: requiredNonNegativeInteger(feedback, "cachedObservedInputTokens"),
+      cachedInputTokens: requiredNonNegativeInteger(feedback, "cachedInputTokens"),
+      cacheWriteTokens: requiredNonNegativeInteger(feedback, "cacheWriteTokens"),
+      outputTokens: requiredNonNegativeInteger(feedback, "outputTokens"),
     },
     cacheIdentityVersion: requiredString(experience, "cacheIdentityVersion"),
   };

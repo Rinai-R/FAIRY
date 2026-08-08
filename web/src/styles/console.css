@@ -1471,6 +1471,7 @@ code,
 .metric-trend-chart.wide { grid-column: span 7; }
 .metric-trend-chart.narrow { grid-column: span 5; }
 .metric-trend-chart.half { grid-column: span 6; }
+.metric-trend-chart.full { grid-column: 1 / -1; }
 
 .metric-trend-heading {
   display: flex;
@@ -4133,6 +4134,7 @@ code,
   .metric-trend-chart.wide,
   .metric-trend-chart.narrow,
   .metric-trend-chart.half,
+  .metric-trend-chart.full,
   .metrics-loading span:nth-child(n) {
     grid-column: 1 / -1;
   }
@@ -4512,7 +4514,8 @@ code,
   .metrics-loading span:nth-child(n),
   .metric-trend-chart.wide,
   .metric-trend-chart.narrow,
-  .metric-trend-chart.half {
+  .metric-trend-chart.half,
+  .metric-trend-chart.full {
     grid-column: 1;
   }
 

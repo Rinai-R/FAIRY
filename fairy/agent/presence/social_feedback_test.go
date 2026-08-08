@@ -37,6 +37,16 @@ func feedbackInputs(host *learningTestHost) []social.SocialFeedbackBatchInput {
 	return append([]social.SocialFeedbackBatchInput(nil), host.feedback...)
 }
 
+func feedbackModelEvents(draft string, promptTokens, completionTokens int, cachedInputTokens, cacheWriteTokens *uint64) []model.StreamEvent {
+	return []model.StreamEvent{
+		{Type: "text_delta", Data: draft},
+		{Type: "usage", Usage: &model.Usage{
+			PromptTokens: promptTokens, CompletionTokens: completionTokens,
+			CachedInputTokens: cachedInputTokens, CacheWriteTokens: cacheWriteTokens,
+		}},
+	}
+}
+
 func TestFeedbackCompilerIsStrict(t *testing.T) {
 	candidates := []social.SocialFeedbackCandidate{{ID: "entry-1"}, {ID: "entry-2"}}
 	observations := []AmbientObservation{{MessageID: "later-1"}}
@@ -76,6 +86,9 @@ func TestFeedbackZeroObservationAndModelPathsPreserveContract(t *testing.T) {
 	if request.Shape.Lane != "" {
 		t.Fatalf("zero observation called model lane %q", request.Shape.Lane)
 	}
+	if stats := engine.Stats(); stats.ModelCalls != 0 || stats.InputTokens != 0 || stats.OutputTokens != 0 {
+		t.Fatalf("zero observation usage = %#v", stats)
+	}
 
 	host = newLearningTestHost()
 	host.draft = `{"evaluations":[{"entryId":"s0","adoption":"adopted","outcome":"positive","credit":"entry","evidenceMessageIds":["later-message"]}]}`
@@ -95,6 +108,67 @@ func TestFeedbackZeroObservationAndModelPathsPreserveContract(t *testing.T) {
 	feedback = feedbackInputs(host)
 	if len(feedback) != 1 || len(feedback[0].Evaluations) != 1 || feedback[0].Evaluations[0].Outcome != social.SocialFeedbackPositive || feedback[0].ObservedMessageCount != 2 || feedback[0].EvaluatorRevision != SocialFeedbackEvaluatorRevision {
 		t.Fatalf("model feedback = %#v", feedback)
+	}
+}
+
+func TestFeedbackModelUsagePreservesCacheObservationSemantics(t *testing.T) {
+	const draft = `{"evaluations":[{"entryId":"s0","adoption":"adopted","outcome":"positive","credit":"entry","evidenceMessageIds":["later-message"]}]}`
+	cached, written := uint64(640), uint64(80)
+	host := newLearningTestHost()
+	host.events = feedbackModelEvents(draft, 1024, 96, &cached, &written)
+	engine := &FeedbackEngine{host: host}
+	if err := engine.process(t.Context(), feedbackTestSnapshot(1)); err != nil {
+		t.Fatal(err)
+	}
+	if got := engine.Stats(); got.ModelCalls != 1 || got.InputTokens != 1024 || got.CachedObservedInputTokens != 1024 || got.CachedInputTokens != 640 || got.CacheWriteTokens != 80 || got.OutputTokens != 96 {
+		t.Fatalf("observed usage = %#v", got)
+	}
+
+	host = newLearningTestHost()
+	host.events = feedbackModelEvents(draft, 512, 48, nil, nil)
+	engine = &FeedbackEngine{host: host}
+	if err := engine.process(t.Context(), feedbackTestSnapshot(1)); err != nil {
+		t.Fatal(err)
+	}
+	if got := engine.Stats(); got.ModelCalls != 1 || got.InputTokens != 512 || got.OutputTokens != 48 || got.CachedObservedInputTokens != 0 || got.CachedInputTokens != 0 || got.CacheWriteTokens != 0 {
+		t.Fatalf("missing cache observation usage = %#v", got)
+	}
+}
+
+func TestFeedbackUsageRecordsProviderCostBeforeCompileOrStoreFailure(t *testing.T) {
+	cached := uint64(300)
+	for _, test := range []struct {
+		name        string
+		draft       string
+		feedbackErr error
+	}{
+		{name: "compile", draft: `{"evaluations":[]}`},
+		{name: "store", draft: `{"evaluations":[{"entryId":"s0","adoption":"adopted","outcome":"positive","credit":"entry","evidenceMessageIds":["later-message"]}]}`, feedbackErr: errors.New("store unavailable")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			host := newLearningTestHost()
+			host.events = feedbackModelEvents(test.draft, 400, 20, &cached, nil)
+			host.feedbackErr = test.feedbackErr
+			engine := &FeedbackEngine{host: host}
+			if err := engine.process(t.Context(), feedbackTestSnapshot(1)); err == nil {
+				t.Fatal("process unexpectedly succeeded")
+			}
+			if got := engine.Stats(); got.ModelCalls != 1 || got.InputTokens != 400 || got.CachedObservedInputTokens != 400 || got.CachedInputTokens != 300 || got.OutputTokens != 20 {
+				t.Fatalf("failed path usage = %#v", got)
+			}
+		})
+	}
+}
+
+func TestFeedbackRequestFailureDoesNotGuessProviderUsage(t *testing.T) {
+	host := newLearningTestHost()
+	host.modelErr = errors.New("provider unavailable")
+	engine := &FeedbackEngine{host: host}
+	if err := engine.process(t.Context(), feedbackTestSnapshot(1)); !errors.Is(err, host.modelErr) {
+		t.Fatalf("process error = %v", err)
+	}
+	if got := engine.Stats(); got.ModelCalls != 0 || got.InputTokens != 0 || got.OutputTokens != 0 {
+		t.Fatalf("request failure guessed usage = %#v", got)
 	}
 }
 

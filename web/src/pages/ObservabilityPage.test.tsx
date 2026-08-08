@@ -212,6 +212,18 @@ describe("ObservabilityPage lifecycle", () => {
     metrics.history[0].feedbackSucceeded = 1;
     metrics.history[1].feedbackRegistered = 8;
     metrics.history[1].feedbackSucceeded = 6;
+    metrics.history[0].feedbackModelCalls = 1;
+    metrics.history[0].feedbackInputTokens = 500;
+    metrics.history[0].feedbackCachedObservedInputTokens = 400;
+    metrics.history[0].feedbackCachedInputTokens = 300;
+    metrics.history[0].feedbackCacheWriteTokens = 25;
+    metrics.history[0].feedbackOutputTokens = 40;
+    metrics.history[1].feedbackModelCalls = 4;
+    metrics.history[1].feedbackInputTokens = 2_000;
+    metrics.history[1].feedbackCachedObservedInputTokens = 1_800;
+    metrics.history[1].feedbackCachedInputTokens = 1_400;
+    metrics.history[1].feedbackCacheWriteTokens = 100;
+    metrics.history[1].feedbackOutputTokens = 160;
     metrics.history[0].compactionL1Applied = 2;
     metrics.history[0].compactionL2Applied = 1;
     metrics.history[1].compactionL1Applied = 5;
@@ -249,7 +261,7 @@ describe("ObservabilityPage lifecycle", () => {
     expect(readout?.textContent).toContain("20");
     expect(readout?.textContent).toContain("2");
     expect(readout?.textContent).toContain("当前 Core");
-    expect(document.querySelectorAll(".metric-chart-process-boundary")).toHaveLength(9);
+    expect(document.querySelectorAll(".metric-chart-process-boundary")).toHaveLength(10);
 
     fireEvent.keyDown(chart, { key: "ArrowLeft" });
     expect(tooltip?.textContent).toContain("10");
@@ -274,9 +286,26 @@ describe("ObservabilityPage lifecycle", () => {
     const feedbackReadout = feedbackChart.closest(".metric-trend-chart")?.querySelector<HTMLElement>(".metric-trend-readout");
     expect(feedbackReadout?.textContent).toContain("注册8");
     expect(feedbackReadout?.textContent).toContain("成功6");
+    expect(feedbackReadout?.textContent).toContain("评估调用4");
     fireEvent.keyDown(feedbackChart, { key: "ArrowLeft" });
     expect(feedbackReadout?.textContent).toContain("注册3");
     expect(feedbackReadout?.textContent).toContain("成功1");
+    expect(feedbackReadout?.textContent).toContain("评估调用1");
+
+    const feedbackUsageChart = screen.getByRole("img", { name: /Feedback 模型用量/ });
+    vi.spyOn(feedbackUsageChart, "getBoundingClientRect").mockReturnValue({
+      x: 0, y: 0, width: 640, height: 220, top: 0, right: 640, bottom: 220, left: 0,
+      toJSON: () => ({}),
+    });
+    fireEvent.focus(feedbackUsageChart);
+    const feedbackUsageReadout = feedbackUsageChart.closest(".metric-trend-chart")?.querySelector<HTMLElement>(".metric-trend-readout");
+    expect(feedbackUsageReadout?.textContent).toContain("输入2,000");
+    expect(feedbackUsageReadout?.textContent).toContain("缓存观测输入1,800");
+    expect(feedbackUsageReadout?.textContent).toContain("缓存命中1,400");
+    fireEvent.keyDown(feedbackUsageChart, { key: "ArrowLeft" });
+    expect(feedbackUsageReadout?.textContent).toContain("输入500");
+    expect(feedbackUsageReadout?.textContent).toContain("缓存观测输入400");
+    expect(feedbackUsageReadout?.textContent).toContain("缓存命中300");
 
     const compactionChart = screen.getByRole("img", { name: /上下文压缩/ });
     vi.spyOn(compactionChart, "getBoundingClientRect").mockReturnValue({
@@ -564,7 +593,11 @@ function validMetrics() {
       },
       experience: {
         learning: { enqueued: 0, dropped: 0, succeeded: 0, failed: 0 },
-        feedback: { registered: 0, dropped: 0, succeeded: 0, failed: 0 },
+        feedback: {
+          registered: 0, dropped: 0, succeeded: 0, failed: 0,
+          modelCalls: 0, inputTokens: 0, cachedObservedInputTokens: 0,
+          cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0,
+        },
         cacheIdentityVersion: "prompt-cache-v2",
       },
     },
@@ -656,6 +689,12 @@ function metricHistoryPoint(timestampUnixMs: number, httpTotal: number, httpInFl
     feedbackSucceeded: 0,
     feedbackFailed: 0,
     feedbackDropped: 0,
+    feedbackModelCalls: 0,
+    feedbackInputTokens: 0,
+    feedbackCachedObservedInputTokens: 0,
+    feedbackCachedInputTokens: 0,
+    feedbackCacheWriteTokens: 0,
+    feedbackOutputTokens: 0,
     compactionL1Applied: 0,
     compactionL2Applied: 0,
     compactionL3Applied: 0,

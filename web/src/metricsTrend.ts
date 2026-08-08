@@ -27,6 +27,12 @@ export type MetricsTrendPoint = {
   feedbackSucceeded: number;
   feedbackFailed: number;
   feedbackDropped: number;
+  feedbackModelCalls: number;
+  feedbackInputTokens: number;
+  feedbackCachedObservedInputTokens: number;
+  feedbackCachedInputTokens: number;
+  feedbackCacheWriteTokens: number;
+  feedbackOutputTokens: number;
   compactionL1Applied: number;
   compactionL2Applied: number;
   compactionL3Applied: number;
@@ -94,6 +100,12 @@ export function projectMetricsTrend(snapshot: MetricsSnapshot): MetricsTrendPoin
     feedbackSucceeded: snapshot.runtime.experience.feedback.succeeded,
     feedbackFailed: snapshot.runtime.experience.feedback.failed,
     feedbackDropped: snapshot.runtime.experience.feedback.dropped,
+    feedbackModelCalls: snapshot.runtime.experience.feedback.modelCalls,
+    feedbackInputTokens: snapshot.runtime.experience.feedback.inputTokens,
+    feedbackCachedObservedInputTokens: snapshot.runtime.experience.feedback.cachedObservedInputTokens,
+    feedbackCachedInputTokens: snapshot.runtime.experience.feedback.cachedInputTokens,
+    feedbackCacheWriteTokens: snapshot.runtime.experience.feedback.cacheWriteTokens,
+    feedbackOutputTokens: snapshot.runtime.experience.feedback.outputTokens,
     compactionL1Applied: snapshot.runtime.compaction.l1Applied,
     compactionL2Applied: snapshot.runtime.compaction.l2Applied,
     compactionL3Applied: snapshot.runtime.compaction.l3Applied,

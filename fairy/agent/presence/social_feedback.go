@@ -49,10 +49,16 @@ type feedbackSnapshot struct {
 }
 
 type FeedbackStats struct {
-	Registered int64 `json:"registered"`
-	Dropped    int64 `json:"dropped"`
-	Succeeded  int64 `json:"succeeded"`
-	Failed     int64 `json:"failed"`
+	Registered                int64 `json:"registered"`
+	Dropped                   int64 `json:"dropped"`
+	Succeeded                 int64 `json:"succeeded"`
+	Failed                    int64 `json:"failed"`
+	ModelCalls                int64 `json:"modelCalls"`
+	InputTokens               int64 `json:"inputTokens"`
+	CachedObservedInputTokens int64 `json:"cachedObservedInputTokens"`
+	CachedInputTokens         int64 `json:"cachedInputTokens"`
+	CacheWriteTokens          int64 `json:"cacheWriteTokens"`
+	OutputTokens              int64 `json:"outputTokens"`
 }
 
 type FeedbackEngine struct {
@@ -63,17 +69,23 @@ type FeedbackEngine struct {
 	wg     sync.WaitGroup
 	once   sync.Once
 
-	mu                sync.Mutex
-	closed            bool
-	pending           map[string]map[string]*pendingFeedback
-	pendingCapacity   int
-	pendingCount      int
-	window            time.Duration
-	timerCallbackHook func()
-	registered        atomic.Int64
-	dropped           atomic.Int64
-	succeeded         atomic.Int64
-	failed            atomic.Int64
+	mu                        sync.Mutex
+	closed                    bool
+	pending                   map[string]map[string]*pendingFeedback
+	pendingCapacity           int
+	pendingCount              int
+	window                    time.Duration
+	timerCallbackHook         func()
+	registered                atomic.Int64
+	dropped                   atomic.Int64
+	succeeded                 atomic.Int64
+	failed                    atomic.Int64
+	modelCalls                atomic.Int64
+	inputTokens               atomic.Int64
+	cachedObservedInputTokens atomic.Int64
+	cachedInputTokens         atomic.Int64
+	cacheWriteTokens          atomic.Int64
+	outputTokens              atomic.Int64
 }
 
 type feedbackPromptPayload struct {
@@ -320,6 +332,7 @@ func (e *FeedbackEngine) process(ctx context.Context, snapshot feedbackSnapshot)
 		if err != nil {
 			return fmt.Errorf("executing social feedback request: %w", err)
 		}
+		e.observeModelUsage(events)
 		evaluations, err = compileSocialFeedback(model.CollectTextFromEvents(events), snapshot.registration.Candidates, snapshot.observations)
 		if err != nil {
 			return err
@@ -331,6 +344,27 @@ func (e *FeedbackEngine) process(ctx context.Context, snapshot feedbackSnapshot)
 		ObservedMessageCount: len(snapshot.observations), EvaluatorRevision: SocialFeedbackEvaluatorRevision,
 	})
 	return err
+}
+
+func (e *FeedbackEngine) observeModelUsage(events []model.StreamEvent) {
+	e.modelCalls.Add(1)
+	for _, lane := range model.LaneUsageFromEvents(model.PromptLaneSocialFeedback, events, 0) {
+		if lane.Usage.InputTokens != nil {
+			e.inputTokens.Add(int64(*lane.Usage.InputTokens))
+			if lane.Usage.CachedInputTokens.Status == "observed" {
+				e.cachedObservedInputTokens.Add(int64(*lane.Usage.InputTokens))
+			}
+		}
+		if lane.Usage.CachedInputTokens.Status == "observed" && lane.Usage.CachedInputTokens.Tokens != nil {
+			e.cachedInputTokens.Add(int64(*lane.Usage.CachedInputTokens.Tokens))
+		}
+		if lane.Usage.CacheWriteTokens.Status == "observed" && lane.Usage.CacheWriteTokens.Tokens != nil {
+			e.cacheWriteTokens.Add(int64(*lane.Usage.CacheWriteTokens.Tokens))
+		}
+		if lane.Usage.OutputTokens != nil {
+			e.outputTokens.Add(int64(*lane.Usage.OutputTokens))
+		}
+	}
 }
 
 func buildSocialFeedbackInput(snapshot feedbackSnapshot) ([]model.PromptItem, error) {
@@ -453,5 +487,9 @@ func (e *FeedbackEngine) Stats() FeedbackStats {
 	return FeedbackStats{
 		Registered: e.registered.Load(), Dropped: e.dropped.Load(),
 		Succeeded: e.succeeded.Load(), Failed: e.failed.Load(),
+		ModelCalls: e.modelCalls.Load(), InputTokens: e.inputTokens.Load(),
+		CachedObservedInputTokens: e.cachedObservedInputTokens.Load(),
+		CachedInputTokens:         e.cachedInputTokens.Load(), CacheWriteTokens: e.cacheWriteTokens.Load(),
+		OutputTokens: e.outputTokens.Load(),
 	}
 }

@@ -72,7 +72,11 @@ describe("observability parsers", () => {
     const input = validMetrics();
     input.runtime.experience = {
       learning: { enqueued: 4, dropped: 1, succeeded: 2, failed: 1 },
-      feedback: { registered: 3, dropped: 1, succeeded: 1, failed: 1 },
+      feedback: {
+        registered: 3, dropped: 1, succeeded: 1, failed: 1,
+        modelCalls: 2, inputTokens: 900, cachedObservedInputTokens: 800,
+        cachedInputTokens: 600, cacheWriteTokens: 50, outputTokens: 70,
+      },
       cacheIdentityVersion: "prompt-cache-v2",
       promptCacheKey: "secret-provider-key",
       evidence: "private observation",
@@ -80,7 +84,11 @@ describe("observability parsers", () => {
     const parsed = parseMetrics(input);
     expect(parsed.runtime.experience).toEqual({
       learning: { enqueued: 4, dropped: 1, succeeded: 2, failed: 1 },
-      feedback: { registered: 3, dropped: 1, succeeded: 1, failed: 1 },
+      feedback: {
+        registered: 3, dropped: 1, succeeded: 1, failed: 1,
+        modelCalls: 2, inputTokens: 900, cachedObservedInputTokens: 800,
+        cachedInputTokens: 600, cacheWriteTokens: 50, outputTokens: 70,
+      },
       cacheIdentityVersion: "prompt-cache-v2",
     });
     expect(JSON.stringify(parsed.runtime.experience)).not.toContain("secret-provider-key");
@@ -132,6 +140,12 @@ describe("observability parsers", () => {
       feedbackSucceeded: 0,
       feedbackFailed: 0,
       feedbackDropped: 0,
+      feedbackModelCalls: 0,
+      feedbackInputTokens: 0,
+      feedbackCachedObservedInputTokens: 0,
+      feedbackCachedInputTokens: 0,
+      feedbackCacheWriteTokens: 0,
+      feedbackOutputTokens: 0,
       compactionL1Applied: 0,
       compactionL2Applied: 0,
       compactionL3Applied: 0,
@@ -216,7 +230,11 @@ export function validMetrics() {
       },
       experience: {
         learning: { enqueued: 0, dropped: 0, succeeded: 0, failed: 0 },
-        feedback: { registered: 0, dropped: 0, succeeded: 0, failed: 0 },
+        feedback: {
+          registered: 0, dropped: 0, succeeded: 0, failed: 0,
+          modelCalls: 0, inputTokens: 0, cachedObservedInputTokens: 0,
+          cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0,
+        },
         cacheIdentityVersion: "prompt-cache-v2",
       } as Record<string, unknown>,
     },

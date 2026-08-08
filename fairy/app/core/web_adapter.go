@@ -140,6 +140,10 @@ func (a initiativeAPIAdapter) ExperienceStats() api.ExperienceStats {
 		Feedback: api.FeedbackQueueStats{
 			Registered: stats.Feedback.Registered, Dropped: stats.Feedback.Dropped,
 			Succeeded: stats.Feedback.Succeeded, Failed: stats.Feedback.Failed,
+			ModelCalls: stats.Feedback.ModelCalls, InputTokens: stats.Feedback.InputTokens,
+			CachedObservedInputTokens: stats.Feedback.CachedObservedInputTokens,
+			CachedInputTokens:         stats.Feedback.CachedInputTokens, CacheWriteTokens: stats.Feedback.CacheWriteTokens,
+			OutputTokens: stats.Feedback.OutputTokens,
 		},
 		CacheIdentityVersion: stats.CacheIdentityVersion,
 	}

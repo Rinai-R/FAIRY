@@ -246,6 +246,17 @@ const TREND_CHARTS: Array<{
       { key: "feedbackSucceeded", label: "成功", color: "#3c8b72" },
       { key: "feedbackFailed", label: "失败", color: "#b84855" },
       { key: "feedbackDropped", label: "丢弃", color: "#b37622" },
+      { key: "feedbackModelCalls", label: "评估调用", color: "#7059ad" },
+    ],
+  },
+  {
+    id: "feedback-model-usage", className: "full", title: "Feedback 模型用量", description: "固定前缀的真实 Token 与缓存观测；未观测不等于零命中",
+    series: [
+      { key: "feedbackInputTokens", label: "输入", color: "#2878d0" },
+      { key: "feedbackCachedObservedInputTokens", label: "缓存观测输入", color: "#7d93aa" },
+      { key: "feedbackCachedInputTokens", label: "缓存命中", color: "#3c8b72" },
+      { key: "feedbackCacheWriteTokens", label: "缓存写入", color: "#b37622" },
+      { key: "feedbackOutputTokens", label: "输出", color: "#7059ad" },
     ],
   },
   {

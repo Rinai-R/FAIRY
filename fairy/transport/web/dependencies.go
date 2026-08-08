@@ -139,10 +139,16 @@ type LearningQueueStats struct {
 }
 
 type FeedbackQueueStats struct {
-	Registered int64 `json:"registered"`
-	Dropped    int64 `json:"dropped"`
-	Succeeded  int64 `json:"succeeded"`
-	Failed     int64 `json:"failed"`
+	Registered                int64 `json:"registered"`
+	Dropped                   int64 `json:"dropped"`
+	Succeeded                 int64 `json:"succeeded"`
+	Failed                    int64 `json:"failed"`
+	ModelCalls                int64 `json:"modelCalls"`
+	InputTokens               int64 `json:"inputTokens"`
+	CachedObservedInputTokens int64 `json:"cachedObservedInputTokens"`
+	CachedInputTokens         int64 `json:"cachedInputTokens"`
+	CacheWriteTokens          int64 `json:"cacheWriteTokens"`
+	OutputTokens              int64 `json:"outputTokens"`
 }
 
 type ExperienceStats struct {
