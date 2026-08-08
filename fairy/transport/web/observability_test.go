@@ -235,11 +235,17 @@ func TestHandleTraceSearchFindsExactActiveMessageID(t *testing.T) {
 		t.Fatalf("search response = %#v", response)
 	}
 
-	request.Reset()
-	request.Request.SetRequestURI("/v1/traces?messageId=%0A")
-	server.handleTraceSearch(context.Background(), &request)
-	if got := request.Response.StatusCode(); got != http.StatusBadRequest {
-		t.Fatalf("invalid status = %d, want %d", got, http.StatusBadRequest)
+	for _, uri := range []string{
+		"/v1/traces?messageId=%0A",
+		"/v1/traces?messageId=%20qq-message-17%20",
+		"/v1/traces?messageId=%FF",
+	} {
+		request.Reset()
+		request.Request.SetRequestURI(uri)
+		server.handleTraceSearch(context.Background(), &request)
+		if got := request.Response.StatusCode(); got != http.StatusBadRequest {
+			t.Fatalf("invalid query %q status = %d, want %d", uri, got, http.StatusBadRequest)
+		}
 	}
 }
 

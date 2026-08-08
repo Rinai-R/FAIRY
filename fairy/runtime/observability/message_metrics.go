@@ -201,22 +201,26 @@ func (m *MessageMetrics) BeginCorrelated(source, conversationID, messageID strin
 		return ""
 	}
 	traceID := fmt.Sprintf("msg-%d-%d-%d", time.Now().UnixNano(), m.ownerID, m.sequence.Add(1))
-	correlationID := sanitizeCorrelationID(messageID)
+	correlationID := messageID
+	if !ValidCorrelationID(correlationID) {
+		correlationID = ""
+	}
 	m.submit(messageEvent{kind: messageBegin, at: time.Now(), traceID: traceID, source: source, conversation: conversationID, messageID: correlationID})
 	return traceID
 }
 
-func sanitizeCorrelationID(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" || utf8.RuneCountInString(value) > 128 {
-		return ""
+// ValidCorrelationID reports whether value can be preserved exactly as an
+// external message-to-trace correlation identifier.
+func ValidCorrelationID(value string) bool {
+	if value == "" || !utf8.ValidString(value) || strings.TrimSpace(value) != value || utf8.RuneCountInString(value) > 128 {
+		return false
 	}
 	for _, character := range value {
 		if unicode.IsControl(character) {
-			return ""
+			return false
 		}
 	}
-	return value
+	return true
 }
 
 func (m *MessageMetrics) SetTerminalSink(sink func(MessageTraceDetail) bool) {

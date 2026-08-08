@@ -2,9 +2,11 @@ package conversation
 
 import (
 	"errors"
-	"fairy/agent/reply"
-	"fairy/transport/session"
 	"strings"
+
+	"fairy/agent/reply"
+	"fairy/runtime/observability"
+	"fairy/transport/session"
 )
 
 var ErrTurnRuntimeUnavailable = errors.New("companion turn runtime is unavailable")
@@ -88,6 +90,16 @@ func ValidateSubmitTurnRequest(request SubmitTurnRequest) error {
 	if strings.TrimSpace(request.Input) == "" {
 		return errors.New("companion input is required")
 	}
+	return validateOptionalMessageID(request.MessageID)
+}
+
+func validateOptionalMessageID(value string) error {
+	if value == "" {
+		return nil
+	}
+	if !observability.ValidCorrelationID(value) {
+		return errors.New("message_id is invalid")
+	}
 	return nil
 }
 
@@ -122,6 +134,9 @@ func ValidateSubmitCompiledTurnRequest(request SubmitCompiledTurnRequest) error 
 	}
 	if request.MaxOutputTokens == 0 {
 		return errors.New("max_output_tokens is required")
+	}
+	if err := validateOptionalMessageID(request.MessageID); err != nil {
+		return err
 	}
 	return reply.ValidateAvailableVisualStates(request.AvailableVisualStates)
 }

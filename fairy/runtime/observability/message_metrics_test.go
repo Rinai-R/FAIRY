@@ -81,6 +81,46 @@ func TestMessageMetricsKeepsFirstTerminalAndMessageCorrelation(t *testing.T) {
 	}
 }
 
+func TestValidCorrelationIDRequiresExactSafeUTF8(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "ascii", value: "message-42", want: true},
+		{name: "unicode boundary", value: strings.Repeat("界", 128), want: true},
+		{name: "empty"},
+		{name: "leading whitespace", value: " message-42"},
+		{name: "trailing whitespace", value: "message-42 "},
+		{name: "control", value: "message\n42"},
+		{name: "invalid utf8", value: string([]byte{0xff})},
+		{name: "too long", value: strings.Repeat("界", 129)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ValidCorrelationID(tt.value); got != tt.want {
+				t.Fatalf("ValidCorrelationID(%q) = %v, want %v", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMessageMetricsDoesNotRewriteInvalidCorrelationID(t *testing.T) {
+	metrics := NewMessageMetrics()
+	t.Cleanup(metrics.Close)
+	traceID := metrics.BeginCorrelated("ambient", "conversation", " message-42 ")
+	metrics.Participation([]string{traceID}, "", "silent")
+	waitForMessageSnapshot(t, metrics, func(value MessageMetricsSnapshot) bool { return value.Silent == 1 })
+
+	detail, ok := metrics.Trace(traceID)
+	if !ok || detail.MessageID != "" {
+		t.Fatalf("invalid correlation detail = %#v, found=%v", detail, ok)
+	}
+	if found := metrics.TracesByMessageID("message-42", 10); len(found) != 0 {
+		t.Fatalf("trimmed correlation unexpectedly resolved: %#v", found)
+	}
+}
+
 func TestMessageTraceIDsRemainUniqueAcrossMetricOwners(t *testing.T) {
 	first := NewMessageMetrics()
 	second := NewMessageMetrics()

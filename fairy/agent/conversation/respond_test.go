@@ -1,9 +1,11 @@
 package conversation
 
 import (
+	"strings"
+	"testing"
+
 	"fairy/agent/reply"
 	"fairy/transport/session"
-	"testing"
 )
 
 func TestValidateSubmitTurnRequestRejectsInvalidInput(t *testing.T) {
@@ -15,6 +17,10 @@ func TestValidateSubmitTurnRequestRejectsInvalidInput(t *testing.T) {
 		{name: "blank conversation", request: SubmitTurnRequest{ConversationID: " ", Input: "你好"}},
 		{name: "missing input", request: SubmitTurnRequest{ConversationID: "conversation-1"}},
 		{name: "blank input", request: SubmitTurnRequest{ConversationID: "conversation-1", Input: "\t"}},
+		{name: "padded message id", request: SubmitTurnRequest{ConversationID: "conversation-1", Input: "你好", MessageID: " message-1 "}},
+		{name: "controlled message id", request: SubmitTurnRequest{ConversationID: "conversation-1", Input: "你好", MessageID: "message\n1"}},
+		{name: "invalid utf8 message id", request: SubmitTurnRequest{ConversationID: "conversation-1", Input: "你好", MessageID: string([]byte{0xff})}},
+		{name: "long unicode message id", request: SubmitTurnRequest{ConversationID: "conversation-1", Input: "你好", MessageID: strings.Repeat("界", 129)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -26,7 +32,7 @@ func TestValidateSubmitTurnRequestRejectsInvalidInput(t *testing.T) {
 }
 
 func TestValidateSubmitTurnRequestAcceptsValidInput(t *testing.T) {
-	if err := ValidateSubmitTurnRequest(SubmitTurnRequest{ConversationID: "conversation-1", Input: "你好"}); err != nil {
+	if err := ValidateSubmitTurnRequest(SubmitTurnRequest{ConversationID: "conversation-1", Input: "你好", MessageID: strings.Repeat("界", 128)}); err != nil {
 		t.Fatalf("ValidateSubmitTurnRequest() error = %v", err)
 	}
 }
@@ -57,6 +63,16 @@ func TestValidateSubmitCompiledTurnRequestRequiresVisualStates(t *testing.T) {
 	}
 	if err := ValidateSubmitCompiledTurnRequest(SubmitCompiledTurnRequest{ConversationID: "conversation-1", Input: "你好", MaxOutputTokens: 160, AvailableVisualStates: visualStates("idle", "happy")}); err != nil {
 		t.Fatalf("ValidateSubmitCompiledTurnRequest() error = %v", err)
+	}
+}
+
+func TestValidateSubmitCompiledTurnRequestRejectsInvalidMessageID(t *testing.T) {
+	err := ValidateSubmitCompiledTurnRequest(SubmitCompiledTurnRequest{
+		ConversationID: "conversation-1", Input: "你好", MessageID: " message-1 ",
+		MaxOutputTokens: 160, AvailableVisualStates: visualStates("idle"),
+	})
+	if err == nil {
+		t.Fatal("ValidateSubmitCompiledTurnRequest() error = nil, want message id error")
 	}
 }
 

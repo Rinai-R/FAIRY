@@ -10,8 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"fairy/runtime/ledger"
 	"fairy/runtime/observability"
@@ -61,7 +59,7 @@ func (s *Server) registerObservabilityRoutes() {
 const maxTraceSearchResults = 50
 
 func (s *Server) handleTraceSearch(ctx context.Context, c *app.RequestContext) {
-	messageID := strings.TrimSpace(c.Query("messageId"))
+	messageID := c.Query("messageId")
 	if !validTraceCorrelationID(messageID) {
 		writeErr(c, http.StatusBadRequest, errors.New("messageId is invalid"))
 		return
@@ -83,15 +81,7 @@ func (s *Server) handleTraceSearch(ctx context.Context, c *app.RequestContext) {
 }
 
 func validTraceCorrelationID(value string) bool {
-	if value == "" || utf8.RuneCountInString(value) > 128 {
-		return false
-	}
-	for _, character := range value {
-		if unicode.IsControl(character) {
-			return false
-		}
-	}
-	return true
+	return observability.ValidCorrelationID(value)
 }
 
 func (s *Server) handleTraceDetail(ctx context.Context, c *app.RequestContext) {

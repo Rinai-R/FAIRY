@@ -75,6 +75,23 @@ func TestBeginMessageTraceUsesExternalCorrelationWhenPresent(t *testing.T) {
 	}
 }
 
+func TestSubmitTurnRejectsInvalidMessageIDBeforeBeginningTrace(t *testing.T) {
+	service := NewService()
+	telemetry := newFakeMessageTelemetry()
+	AttachMessageTelemetry(service, telemetry)
+
+	if _, err := service.SubmitTurn(SubmitTurnRequest{
+		ConversationID: "conversation-1", Input: "你好", MessageID: " message-1 ",
+	}); err == nil {
+		t.Fatal("SubmitTurn() error = nil, want message id error")
+	}
+	select {
+	case call := <-telemetry.calls:
+		t.Fatalf("invalid request began telemetry: %#v", call)
+	default:
+	}
+}
+
 func TestPublishLifeReportsFinalBeatAndTerminalStages(t *testing.T) {
 	service := NewService()
 	telemetry := newFakeMessageTelemetry()
