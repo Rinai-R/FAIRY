@@ -13,13 +13,14 @@ import (
 	"fairy/runtime/observability"
 )
 
-func TestStoreRestoresSilentTraceByExternalMessageIDAfterRestart(t *testing.T) {
+func TestStoreKeepsFirstTraceTerminalAcrossRestart(t *testing.T) {
 	pool := openHistoryIntegrationPool(t)
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	conversationID := "conversation-history-" + suffix
 	silentTraceID := "trace-silent-" + suffix
 	failedTraceID := "trace-failed-" + suffix
 	silentMessageID := "message-silent-" + suffix
+	lateFailedMessageID := "message-late-failed-" + suffix
 	failedMessageID := "message-failed-" + suffix
 
 	t.Cleanup(func() {
@@ -56,6 +57,20 @@ WHERE kind = 'trace' AND record_key IN ($1, $2)`, silentTraceID, failedTraceID);
 	}
 	writer.Close()
 
+	lateWriter, err := New(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !lateWriter.EnqueueTrace(observability.MessageTraceDetail{
+		TraceID: silentTraceID, MessageID: lateFailedMessageID, Source: "ambient",
+		ConversationID: "late-" + conversationID, Status: "failed",
+		StartedAtUnixMS: now + 20, EndedAtUnixMS: now + 40, DurationMS: 20,
+	}) {
+		lateWriter.Close()
+		t.Fatalf("enqueue late failed trace %s", silentTraceID)
+	}
+	lateWriter.Close()
+
 	reader, err := New(pool)
 	if err != nil {
 		t.Fatal(err)
@@ -79,6 +94,14 @@ WHERE kind = 'trace' AND record_key IN ($1, $2)`, silentTraceID, failedTraceID);
 		t.Fatalf("trace %s was not restored", silentTraceID)
 	}
 	assertRestoredSilentTrace(t, byTraceID, silentTraceID, silentMessageID, conversationID)
+
+	lateByMessageID, err := reader.TracesByMessageID(t.Context(), lateFailedMessageID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lateByMessageID) != 0 {
+		t.Fatalf("late failed trace rewrote the first terminal: %#v", lateByMessageID)
+	}
 
 	failed, found, err := reader.Trace(t.Context(), failedTraceID)
 	if err != nil {

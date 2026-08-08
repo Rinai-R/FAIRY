@@ -304,7 +304,8 @@ func (s *Store) persistRecord(record historyRecord) error {
 INSERT INTO observability_records (kind, record_key, recorded_at_ms, payload, created_at_ms)
 VALUES ($1, $2, $3, $4::jsonb, $5)
 ON CONFLICT (kind, record_key) DO UPDATE
-SET recorded_at_ms = EXCLUDED.recorded_at_ms, payload = EXCLUDED.payload`,
+SET recorded_at_ms = EXCLUDED.recorded_at_ms, payload = EXCLUDED.payload
+WHERE observability_records.kind <> 'trace'`,
 		record.kind, record.key, record.recordedAtMS, record.payload, time.Now().UnixMilli())
 	return err
 }
