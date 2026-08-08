@@ -441,6 +441,26 @@ func (s *SessionSocket) Close() error {
 	return err
 }
 
+// Done is closed when the session WebSocket can no longer serve requests or
+// deliver subscribed events. Long-lived surfaces should treat closure as a
+// terminal connection failure and let their process supervisor restart them.
+func (s *SessionSocket) Done() <-chan struct{} {
+	if s == nil {
+		return nil
+	}
+	return s.done
+}
+
+// Err reports the terminal WebSocket error after Done is closed.
+func (s *SessionSocket) Err() error {
+	if s == nil {
+		return errors.New("session websocket is not open")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closeErr
+}
+
 func (s *SessionSocket) closeConn() error {
 	s.connOnce.Do(func() {
 		s.connErr = s.conn.Close()

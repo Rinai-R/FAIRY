@@ -916,6 +916,14 @@ func TestSessionSocketOpenedConversationCapacityTerminatesSocket(t *testing.T) {
 	if err := socket.Close(); err != nil && !errors.Is(err, websocket.ErrCloseSent) {
 		t.Fatalf("Close() error = %v", err)
 	}
+	select {
+	case <-socket.Done():
+	case <-time.After(time.Second):
+		t.Fatal("Done() remained open after Close()")
+	}
+	if socket.Err() == nil {
+		t.Fatal("Err() = nil after Close()")
+	}
 }
 
 func TestClientRejectsSecretWhitespaceAndRedactsServerErrors(t *testing.T) {

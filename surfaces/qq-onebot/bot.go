@@ -315,6 +315,10 @@ func runBot(ctx context.Context, cfg Config) error {
 			cfg.OneBotAPIEndpoint, cfg.OneBotToken,
 		)},
 	})
-	<-ctx.Done()
-	return nil
+	select {
+	case <-ctx.Done():
+		return nil
+	case <-socket.Done():
+		return fmt.Errorf("Core session websocket closed: %w", socket.Err())
+	}
 }
