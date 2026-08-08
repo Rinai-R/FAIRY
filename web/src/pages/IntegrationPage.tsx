@@ -1,8 +1,8 @@
-import { Button, Text, TextArea, Tooltip } from "@radix-ui/themes";
+import { Button, TextArea, Tooltip } from "@radix-ui/themes";
 import { ExternalLinkIcon, PlusIcon, ReloadIcon, TrashIcon } from "@radix-ui/react-icons";
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { Field, PageHeader } from "../components/ui";
+import { EmptyState, Field, PageHeader } from "../components/ui";
 
 type QQOneBotSettings = {
   schemaVersion: number;
@@ -111,9 +111,9 @@ export function IntegrationPage({ onToast }: { onToast: (message: string, error?
   }
 
   return (
-    <section className="integration-page">
+    <section className="integration-page config-flow">
       <PageHeader
-        title="接入"
+        title="QQ 接入"
         description="QQ 群参与范围与本机 LLOneBot 管理。"
         status={loading ? "读取中" : loadError ? "配置不可用" : `${groups.length} 个允许群`}
         ready={!loading && !loadError && groups.length > 0}
@@ -127,11 +127,11 @@ export function IntegrationPage({ onToast }: { onToast: (message: string, error?
         }
       />
 
-      <div className="integration-tool">
+      <section className="channel-section">
         <div className="integration-tool-heading">
           <div>
-            <Text weight="medium">允许参与的 QQ 群</Text>
-            <Text as="p" size="1" color="gray">{groups.length} / {MAX_GROUPS}</Text>
+            <h2>允许参与的 QQ 群</h2>
+            <p>未加入清单的群不会触发角色参与。当前 {groups.length} / {MAX_GROUPS}。</p>
           </div>
           <Tooltip content="重新读取群配置">
             <Button aria-label="重新读取群配置" variant="ghost" disabled={loading || saving} onClick={() => void reload()}>
@@ -169,7 +169,7 @@ export function IntegrationPage({ onToast }: { onToast: (message: string, error?
 
         <div className="integration-group-list" aria-label="允许参与的 QQ 群列表">
           {!loading && !loadError && groups.length === 0 ? (
-            <div className="integration-empty">当前拒绝全部 QQ 群</div>
+            <EmptyState title="当前拒绝全部 QQ 群" description="添加群号并保存后，角色才会参与这些群的对话。" />
           ) : groups.map((group) => (
             <div className="integration-group-row" key={group}>
               <code>{group}</code>
@@ -193,8 +193,7 @@ export function IntegrationPage({ onToast }: { onToast: (message: string, error?
             {saving ? "保存中" : "保存群配置"}
           </Button>
         </div>
-      </div>
+      </section>
     </section>
   );
 }
-

@@ -68,6 +68,32 @@ export type MessageTrace = {
   totalDurationMs: number;
 };
 
+export type TraceSpan = {
+  spanId: string;
+  parentSpanId: string;
+  operation: string;
+  category: string;
+  status: string;
+  startedAtUnixMs: number;
+  endedAtUnixMs: number;
+  durationMs: number;
+  attributes: Record<string, string>;
+};
+
+export type TraceDetail = {
+  traceId: string;
+  conversationId: string;
+  turnId: string;
+  source: string;
+  status: string;
+  startedAtUnixMs: number;
+  endedAtUnixMs: number;
+  durationMs: number;
+  droppedSpanCount: number;
+  truncated: boolean;
+  spans: TraceSpan[];
+};
+
 export type MetricsSnapshot = {
   generatedAtUnixMs: number;
   messagesAvailable: boolean;
@@ -107,8 +133,18 @@ export type MetricsSnapshot = {
     };
     recent: MessageTrace[];
   };
-  runtime: { activeBackgroundJobs: number; eventSubscribers: number };
+  runtime: {
+    activeBackgroundJobs: number;
+    eventSubscribers: number;
+    experience?: ExperienceStats;
+  };
   usage: { overall: UsageLane[]; turns: UsageTurn[]; turnCount: number; truncated: boolean };
+};
+
+export type ExperienceStats = {
+  learning: { enqueued: number; dropped: number; succeeded: number; failed: number };
+  feedback: { registered: number; dropped: number; succeeded: number; failed: number };
+  cacheIdentityVersion: string;
 };
 
 type SSEEvent = { id: string; event: string; data: string };
@@ -202,6 +238,7 @@ export function parseMetrics(value: unknown): MetricsSnapshot {
     runtime: {
       activeBackgroundJobs: requiredNonNegativeInteger(runtime, "activeBackgroundJobs"),
       eventSubscribers: requiredNonNegativeInteger(runtime, "eventSubscribers"),
+      experience: runtime.experience === undefined ? undefined : parseExperienceStats(runtime.experience),
     },
     usage: {
       overall: usage.overall.map(parseUsageLane),
@@ -209,6 +246,27 @@ export function parseMetrics(value: unknown): MetricsSnapshot {
       turnCount: requiredNonNegativeInteger(usage, "turnCount"),
       truncated: requiredBoolean(usage, "truncated"),
     },
+  };
+}
+
+function parseExperienceStats(value: unknown): ExperienceStats {
+  const experience = asRecord(value, "experience metrics");
+  const learning = asRecord(experience.learning, "experience learning metrics");
+  const feedback = asRecord(experience.feedback, "experience feedback metrics");
+  return {
+    learning: {
+      enqueued: requiredNonNegativeInteger(learning, "enqueued"),
+      dropped: requiredNonNegativeInteger(learning, "dropped"),
+      succeeded: requiredNonNegativeInteger(learning, "succeeded"),
+      failed: requiredNonNegativeInteger(learning, "failed"),
+    },
+    feedback: {
+      registered: requiredNonNegativeInteger(feedback, "registered"),
+      dropped: requiredNonNegativeInteger(feedback, "dropped"),
+      succeeded: requiredNonNegativeInteger(feedback, "succeeded"),
+      failed: requiredNonNegativeInteger(feedback, "failed"),
+    },
+    cacheIdentityVersion: requiredString(experience, "cacheIdentityVersion"),
   };
 }
 
@@ -261,6 +319,80 @@ function parseMessageTrace(value: unknown): MessageTrace {
     completedAtUnixMs: optionalNonNegativeInteger(trace, "completedAtUnixMs"),
     totalDurationMs: optionalNonNegativeInteger(trace, "totalDurationMs"),
   };
+}
+
+export function parseTraceDetail(value: unknown): TraceDetail {
+  const trace = asRecord(value, "trace detail");
+  if (!Array.isArray(trace.spans)) throw new Error("trace spans 必须是数组");
+  const detail: TraceDetail = {
+    traceId: requiredString(trace, "traceId"),
+    conversationId: requiredString(trace, "conversationId"),
+    turnId: optionalString(trace, "turnId"),
+    source: requiredString(trace, "source"),
+    status: requiredString(trace, "status"),
+    startedAtUnixMs: requiredPositiveInteger(trace, "startedAtUnixMs"),
+    endedAtUnixMs: optionalNonNegativeInteger(trace, "endedAtUnixMs"),
+    durationMs: requiredNonNegativeInteger(trace, "durationMs"),
+    droppedSpanCount: requiredNonNegativeInteger(trace, "droppedSpanCount"),
+    truncated: requiredBoolean(trace, "truncated"),
+    spans: trace.spans.map(parseTraceSpan),
+  };
+  if (detail.endedAtUnixMs > 0) {
+    if (detail.endedAtUnixMs < detail.startedAtUnixMs || detail.durationMs !== detail.endedAtUnixMs - detail.startedAtUnixMs) {
+      throw new Error("trace 起止时间与耗时不一致");
+    }
+  }
+  validateTraceTree(detail.spans);
+  return detail;
+}
+
+function parseTraceSpan(value: unknown): TraceSpan {
+  const span = asRecord(value, "trace span");
+  const rawAttributes = asRecord(span.attributes, "trace span attributes");
+  const attributes: Record<string, string> = {};
+  for (const [key, item] of Object.entries(rawAttributes)) {
+    if (typeof item !== "string") throw new Error(`trace span attribute ${key} 必须是 string`);
+    attributes[key] = item;
+  }
+  const parsed: TraceSpan = {
+    spanId: requiredString(span, "spanId"),
+    parentSpanId: optionalString(span, "parentSpanId"),
+    operation: requiredString(span, "operation"),
+    category: requiredString(span, "category"),
+    status: requiredString(span, "status"),
+    startedAtUnixMs: requiredPositiveInteger(span, "startedAtUnixMs"),
+    endedAtUnixMs: optionalNonNegativeInteger(span, "endedAtUnixMs"),
+    durationMs: requiredNonNegativeInteger(span, "durationMs"),
+    attributes,
+  };
+  if (parsed.endedAtUnixMs > 0) {
+    if (parsed.endedAtUnixMs < parsed.startedAtUnixMs || parsed.durationMs !== parsed.endedAtUnixMs - parsed.startedAtUnixMs) {
+      throw new Error(`span ${parsed.spanId} 起止时间与耗时不一致`);
+    }
+  } else if (parsed.status !== "running") {
+    throw new Error(`span ${parsed.spanId} 缺少结束时间`);
+  }
+  return parsed;
+}
+
+function validateTraceTree(spans: TraceSpan[]) {
+  const byID = new Map<string, TraceSpan>();
+  for (const span of spans) {
+    if (byID.has(span.spanId)) throw new Error(`重复 spanId：${span.spanId}`);
+    byID.set(span.spanId, span);
+  }
+  for (const span of spans) {
+    if (span.parentSpanId && !byID.has(span.parentSpanId)) {
+      throw new Error(`span ${span.spanId} 的 parentSpanId 不存在`);
+    }
+    const visited = new Set<string>();
+    let current: TraceSpan | undefined = span;
+    while (current?.parentSpanId) {
+      if (visited.has(current.spanId)) throw new Error(`span ${span.spanId} 存在父子环`);
+      visited.add(current.spanId);
+      current = byID.get(current.parentSpanId);
+    }
+  }
 }
 
 export class SSEParser {

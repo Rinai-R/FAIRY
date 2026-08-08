@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { apiBlob } from "./api";
@@ -43,6 +43,7 @@ beforeEach(() => {
     unobserve() {}
     disconnect() {}
   });
+  vi.stubGlobal("scrollTo", vi.fn());
 });
 
 afterEach(() => {
@@ -110,7 +111,6 @@ describe("App Core connection gate", () => {
       }
       return json({
         model: { configured: true, model: "test-model" },
-        speech: { configured: false, enabled: false },
         webSearch: { enabled: false },
         semanticEmbedding: { provider: "none", enabled: false },
       });
@@ -128,6 +128,35 @@ describe("App Core connection gate", () => {
     expect(requests[0]).toEqual({ path: "/v1/status", authorization: "Bearer candidate-token" });
     expect(requests.some(({ path }) => path.endsWith("/characters"))).toBe(true);
     expect(requests.every(({ authorization }) => authorization === "Bearer candidate-token")).toBe(true);
+    const navigation = screen.getByRole("navigation", { name: "控制台导航" });
+    expect(within(navigation).getAllByRole("button")).toHaveLength(11);
+    expect(within(navigation).getByRole("button", { name: "记忆与知识" })).toBeTruthy();
+    expect(within(navigation).getByRole("button", { name: "对话调试" })).toBeTruthy();
+    expect(within(navigation).getByRole("button", { name: "指标" })).toBeTruthy();
+    expect(within(navigation).getByRole("button", { name: "链路跟踪" })).toBeTruthy();
+    expect(within(navigation).getByRole("button", { name: "日志" })).toBeTruthy();
+    expect(within(navigation).queryByRole("button", { name: "可观测" })).toBeNull();
+    expect(within(navigation).queryByRole("button", { name: "用量" })).toBeNull();
+    expect(navigation.closest(".tool-rail")).toBeTruthy();
+    expect(screen.getByText("本地陪伴管理台")).toBeTruthy();
+    expect(document.querySelector(".page-eyebrow")).toBeNull();
+
+    fireEvent.click(within(navigation).getByRole("button", { name: "指标" }));
+    expect(within(navigation).getByRole("button", { name: "指标" }).getAttribute("aria-current")).toBe("page");
+    expect(document.querySelector(".observability-page .observability-tabs")).toBeNull();
+    expect(document.querySelector(".nav-subtasks")).toBeNull();
+    expect(document.getElementById("observability-panel-metrics")?.hidden).toBe(false);
+
+    fireEvent.click(within(navigation).getByRole("button", { name: "链路跟踪" }));
+    expect(within(navigation).getByRole("button", { name: "链路跟踪" }).getAttribute("aria-current")).toBe("page");
+    expect(document.getElementById("observability-panel-tracing")?.hidden).toBe(false);
+
+    fireEvent.click(within(navigation).getByRole("button", { name: "日志" }));
+    expect(within(navigation).getByRole("button", { name: "日志" }).getAttribute("aria-current")).toBe("page");
+    expect(document.getElementById("observability-panel-logs")?.hidden).toBe(false);
+
+    fireEvent.click(within(navigation).getByRole("button", { name: "角色" }));
+    expect(window.scrollTo).toHaveBeenCalledWith({ top: 0, left: 0, behavior: "auto" });
   });
 
   it("unmounts the business shell when a later API request returns 401", async () => {
@@ -139,7 +168,7 @@ describe("App Core connection gate", () => {
       requests.push(request);
       if (request.path.endsWith("/status")) {
         statusCalls += 1;
-        return json({ model: {}, speech: {}, webSearch: {}, semanticEmbedding: {} });
+        return json({ model: {}, webSearch: {}, semanticEmbedding: {} });
       }
       if (request.path.endsWith("/characters")) {
         return json({ error: "unauthorized" }, 401);
@@ -165,7 +194,7 @@ describe("App Core connection gate", () => {
       if (request.path.endsWith("/characters")) {
         return json({ active: { characterId: "char-1", name: "Alice" }, characters: [] });
       }
-      return json({ model: {}, speech: {}, webSearch: {}, semanticEmbedding: {} });
+      return json({ model: {}, webSearch: {}, semanticEmbedding: {} });
     }));
 
     render(<App />);
@@ -195,7 +224,7 @@ describe("App Core connection gate", () => {
       if (path.endsWith("/characters")) {
         return json({ active: { characterId: "char-1", name: "Alice" }, characters: [] });
       }
-      return json({ model: {}, speech: {}, webSearch: {}, semanticEmbedding: {} });
+      return json({ model: {}, webSearch: {}, semanticEmbedding: {} });
     }));
 
     render(<App />);
@@ -228,7 +257,7 @@ describe("App Core connection gate", () => {
       if (request.authorization === "Bearer new-token" && request.path.endsWith("/characters")) {
         return json({ active: { characterId: "char-2", name: "Bob" }, characters: [] });
       }
-      return json({ model: {}, speech: {}, webSearch: {}, semanticEmbedding: {} });
+      return json({ model: {}, webSearch: {}, semanticEmbedding: {} });
     }));
 
     render(<App />);
@@ -243,7 +272,7 @@ describe("App Core connection gate", () => {
     await waitFor(() => expect(newStatusCalls).toBe(1));
 
     resolveOldCharacters(json({ error: "unauthorized" }, 401));
-    resolveNewHandshake(json({ model: {}, speech: {}, webSearch: {}, semanticEmbedding: {} }));
+    resolveNewHandshake(json({ model: {}, webSearch: {}, semanticEmbedding: {} }));
 
     expect(await screen.findByText("Bob")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Core 拒绝了这个 Token" })).toBeNull();

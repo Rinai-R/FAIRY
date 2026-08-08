@@ -1,7 +1,7 @@
-import { Button, Select, Text, TextArea, TextField } from "@radix-ui/themes";
+import { Button, Select, TextArea, TextField } from "@radix-ui/themes";
 import { useEffect, useState } from "react";
 import { api, apiBlob } from "../api";
-import { Field, PageHeader } from "../components/ui";
+import { EmptyState, Field, PageHeader } from "../components/ui";
 
 type StickerStatus = "draft" | "active" | "disabled";
 
@@ -156,19 +156,24 @@ export function StickerPage({ onToast }: { onToast: (message: string, error?: bo
   const selected = items.find((item) => item.id === selectedID);
 
   return (
-    <section>
+    <section className="sticker-page">
       <PageHeader
         title="表情包"
-        description="图片含义完全由你填写。DeepSeek 只读取描述和标签，不会自动看图、OCR 或猜测语义。"
+        description="图片含义由人工描述。模型只读取描述与标签，不会自动看图、OCR 或猜测语义。"
         status={`${activeCount} 个可用 / ${items.length} 个`}
         ready={activeCount > 0}
       />
-      <div className="grid-2 sticker-layout">
-        <div className="card stack">
-          <Text weight="medium">资产库</Text>
+      <div className="master-detail sticker-workspace">
+        <aside className="collection-pane sticker-library">
+          <div className="pane-heading">
+            <div>
+              <span>资产库</span>
+              <strong>{items.length} 个表情包</strong>
+            </div>
+          </div>
           <div className="sticker-grid" aria-label="表情包资产">
             {items.length === 0 ? (
-              <Text size="2" color="gray">还没有表情包</Text>
+              <EmptyState title="还没有表情包" description="先选择图片并补充人工语义，再上传到本机资产库。" />
             ) : items.map((record) => (
               <button
                 type="button"
@@ -177,11 +182,14 @@ export function StickerPage({ onToast }: { onToast: (message: string, error?: bo
                 onClick={() => loadRecord(record)}
               >
                 <StickerPreview record={record} />
-                <span className={`sticker-status ${record.status}`}>{record.status}</span>
-                <small>{record.description || "等待人工描述"}</small>
+                <span className="sticker-tile-copy">
+                  <small>{record.description || "等待人工描述"}</small>
+                  <span className={`sticker-status ${record.status}`}>{stickerStatusLabel(record.status)}</span>
+                </span>
               </button>
             ))}
           </div>
+          <div className="collection-upload">
           <Field label="上传图片" hint="JPEG、PNG、GIF 或 WebP，最大 5 MiB。上传内容按 SHA-256 去重。">
             <input
               aria-label="上传表情包图片"
@@ -193,13 +201,16 @@ export function StickerPage({ onToast }: { onToast: (message: string, error?: bo
           <Button disabled={!uploadFile || busy} onClick={() => void upload()}>
             上传当前图片
           </Button>
-        </div>
+          </div>
+        </aside>
 
-        <div className="card">
-          <Text weight="medium">{selected ? "编辑人工语义" : "新资产默认信息"}</Text>
-          <Text as="p" size="1" color="gray" mb="3">
-            description 是模型理解图片含义的唯一依据；没有描述的资产不能启用。
-          </Text>
+        <section className="editor-pane sticker-editor">
+          <header className="editor-heading">
+            <div>
+              <h2>{selected ? "编辑人工语义" : "新资产默认信息"}</h2>
+              <p>人工描述是模型理解图片含义的唯一依据；没有描述的资产不能启用。</p>
+            </div>
+          </header>
           <Field label="人工描述" hint="描述它表达的情绪、语境和使用边界，不要只写文件名。">
             <TextArea
               aria-label="人工描述"
@@ -222,9 +233,9 @@ export function StickerPage({ onToast }: { onToast: (message: string, error?: bo
             <Select.Root value={status} onValueChange={(value) => setStatus(value as StickerStatus)}>
               <Select.Trigger aria-label="表情包状态" />
               <Select.Content position="popper" side="bottom" align="start" sideOffset={6}>
-                <Select.Item value="draft">draft（待完善）</Select.Item>
-                <Select.Item value="active">active（可供模型选择）</Select.Item>
-                <Select.Item value="disabled">disabled（停用）</Select.Item>
+                <Select.Item value="draft">待完善</Select.Item>
+                <Select.Item value="active">已启用</Select.Item>
+                <Select.Item value="disabled">已停用</Select.Item>
               </Select.Content>
             </Select.Root>
           </Field>
@@ -242,13 +253,18 @@ export function StickerPage({ onToast }: { onToast: (message: string, error?: bo
             </Button>
           </div>
           {selected ? (
-            <Text as="p" size="1" color="gray" mt="3">
-              {selected.mimeType} · {(selected.byteCount / 1024).toFixed(1)} KiB · {selected.id}
-            </Text>
+            <div className="asset-meta">
+              <span>{selected.mimeType}</span>
+              <span>{(selected.byteCount / 1024).toFixed(1)} KiB</span>
+              <code>{selected.id}</code>
+            </div>
           ) : null}
-        </div>
+        </section>
       </div>
     </section>
   );
 }
 
+function stickerStatusLabel(status: StickerStatus) {
+  return { draft: "待完善", active: "已启用", disabled: "已停用" }[status];
+}

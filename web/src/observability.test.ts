@@ -6,6 +6,7 @@ import {
   mergeVisibleLogs,
   parseLogEntry,
   parseMetrics,
+  parseTraceDetail,
   type LogEntry,
 } from "./observability";
 
@@ -61,6 +62,25 @@ describe("observability parsers", () => {
     expect(JSON.stringify(parsed)).not.toContain("private internal decision");
   });
 
+  it("parses low-sensitivity experience counters without projecting unknown fields", () => {
+    const input = validMetrics();
+    input.runtime.experience = {
+      learning: { enqueued: 4, dropped: 1, succeeded: 2, failed: 1 },
+      feedback: { registered: 3, dropped: 1, succeeded: 1, failed: 1 },
+      cacheIdentityVersion: "prompt-cache-v2",
+      promptCacheKey: "secret-provider-key",
+      evidence: "private observation",
+    };
+    const parsed = parseMetrics(input);
+    expect(parsed.runtime.experience).toEqual({
+      learning: { enqueued: 4, dropped: 1, succeeded: 2, failed: 1 },
+      feedback: { registered: 3, dropped: 1, succeeded: 1, failed: 1 },
+      cacheIdentityVersion: "prompt-cache-v2",
+    });
+    expect(JSON.stringify(parsed.runtime.experience)).not.toContain("secret-provider-key");
+    expect(JSON.stringify(parsed.runtime.experience)).not.toContain("private observation");
+  });
+
   it("accepts legacy metrics without message telemetry", () => {
     const { messages: _messages, ...legacyMetrics } = validMetrics();
     const metrics = parseMetrics(legacyMetrics);
@@ -69,6 +89,25 @@ describe("observability parsers", () => {
     expect(metrics.messages.received).toBe(0);
     expect(metrics.messages.latencies.receiveToCompleted.observations).toBe(0);
     expect(metrics.messages.recent).toEqual([]);
+  });
+
+  it("parses a complete trace tree and rejects malformed hierarchy or timing", () => {
+    const trace = parseTraceDetail(validTraceDetail());
+    expect(trace.traceId).toBe("msg-3");
+    expect(trace.spans.map((span) => span.operation)).toEqual(["消息处理", "Turn", "模型调用"]);
+    expect(trace.spans[2]?.attributes).toEqual({ lane: "respond", model: "deepseek-v4-flash" });
+
+    const missingParent = validTraceDetail();
+    missingParent.spans[1].parentSpanId = "unknown";
+    expect(() => parseTraceDetail(missingParent)).toThrow(/parentSpanId 不存在/);
+
+    const cyclic = validTraceDetail();
+    cyclic.spans[0].parentSpanId = "span-model";
+    expect(() => parseTraceDetail(cyclic)).toThrow(/父子环/);
+
+    const wrongDuration = validTraceDetail();
+    wrongDuration.spans[2].durationMs = 49;
+    expect(() => parseTraceDetail(wrongDuration)).toThrow(/起止时间与耗时不一致/);
   });
 
   it("parses split SSE frames and rejects incomplete final data", () => {
@@ -104,8 +143,67 @@ export function validMetrics() {
     http: { inFlight: 0, total: 1, status2xx: 1, status4xx: 0, status5xx: 0, routes: [] },
     logs: { retainedEntries: 0, droppedEntries: 0, activeSubscribers: 0, slowSubscriberDisconnects: 0 },
     messages: validMessageMetrics(),
-    runtime: { activeBackgroundJobs: 0, eventSubscribers: 0 },
-    usage: { overall: [], turns: [], turnCount: 0, truncated: false },
+    runtime: {
+      activeBackgroundJobs: 0,
+      eventSubscribers: 0,
+      experience: undefined as undefined | Record<string, unknown>,
+    },
+    usage: {
+      overall: [] as Array<Record<string, unknown>>,
+      turns: [] as Array<Record<string, unknown>>,
+      turnCount: 0,
+      truncated: false,
+    },
+  };
+}
+
+export function validTraceDetail() {
+  return {
+    traceId: "msg-3",
+    conversationId: "conversation-1",
+    turnId: "turn-1",
+    source: "ambient",
+    status: "completed",
+    startedAtUnixMs: 1,
+    endedAtUnixMs: 66,
+    durationMs: 65,
+    droppedSpanCount: 0,
+    truncated: false,
+    spans: [
+      {
+        spanId: "span-root",
+        parentSpanId: "",
+        operation: "消息处理",
+        category: "message",
+        status: "completed",
+        startedAtUnixMs: 1,
+        endedAtUnixMs: 66,
+        durationMs: 65,
+        attributes: { source: "ambient" },
+      },
+      {
+        spanId: "span-turn",
+        parentSpanId: "span-root",
+        operation: "Turn",
+        category: "turn",
+        status: "completed",
+        startedAtUnixMs: 5,
+        endedAtUnixMs: 65,
+        durationMs: 60,
+        attributes: { turn_id: "turn-1" },
+      },
+      {
+        spanId: "span-model",
+        parentSpanId: "span-turn",
+        operation: "模型调用",
+        category: "model",
+        status: "completed",
+        startedAtUnixMs: 10,
+        endedAtUnixMs: 60,
+        durationMs: 50,
+        attributes: { lane: "respond", model: "deepseek-v4-flash" },
+      },
+    ],
   };
 }
 

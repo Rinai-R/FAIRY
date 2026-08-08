@@ -57,7 +57,7 @@ describe("StickerPage", () => {
 
     render(<Theme><StickerPage onToast={() => undefined} /></Theme>);
     expect(await screen.findByDisplayValue("震惊")).toBeTruthy();
-    expect(screen.getByText(/DeepSeek 只读取描述和标签/)).toBeTruthy();
+    expect(screen.getByText(/模型只读取描述与标签/)).toBeTruthy();
     expect(screen.queryByText(/自动识别按钮/)).toBeNull();
 
     const description = screen.getByRole("textbox", { name: "人工描述" });
@@ -72,4 +72,3 @@ describe("StickerPage", () => {
     });
   });
 });
-

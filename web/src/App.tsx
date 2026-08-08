@@ -1,17 +1,18 @@
 import { Button, Popover, Text, TextField, Theme } from "@radix-ui/themes";
 import {
-  ActivityLogIcon,
   BarChartIcon,
+  ChatBubbleIcon,
   DashboardIcon,
+  FileTextIcon,
   IdCardIcon,
   ImageIcon,
   LightningBoltIcon,
   LockClosedIcon,
-	Link2Icon,
+  Link2Icon,
   MixerHorizontalIcon,
   PersonIcon,
-  SpeakerLoudIcon,
-  StarFilledIcon,
+  ReaderIcon,
+  Share2Icon,
 } from "@radix-ui/react-icons";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
@@ -20,30 +21,35 @@ import {
   CharacterPage,
   ModelPage,
   ProfilePage,
-  SpeechPage,
 } from "./pages/CorePages";
-import { IntelligencePage, OverviewPage, UsagePage } from "./pages/MorePages";
-import { ObservabilityPage } from "./pages/ObservabilityPage";
+import { IntelligencePage, OverviewPage } from "./pages/MorePages";
+import { ObservabilityPage, type ObservabilityView } from "./pages/ObservabilityPage";
 import { StickerPage } from "./pages/StickerPage";
 import { IntegrationPage } from "./pages/IntegrationPage";
+import { ConversationDebugPage } from "./pages/ConversationDebugPage";
 import "@radix-ui/themes/styles.css";
-import "./styles/pure.css";
+import "./styles/console.css";
 
 const NAV = [
   { id: "overview", label: "概览", icon: DashboardIcon },
   { id: "character", label: "角色", icon: PersonIcon },
-  { id: "profile", label: "称呼", icon: IdCardIcon },
+  { id: "profile", label: "用户", icon: IdCardIcon },
   { id: "model", label: "模型", icon: MixerHorizontalIcon },
-  { id: "speech", label: "语音", icon: SpeakerLoudIcon },
   { id: "stickers", label: "表情包", icon: ImageIcon },
-	{ id: "integrations", label: "接入", icon: Link2Icon },
-  { id: "intelligence", label: "智能", icon: LightningBoltIcon },
-  { id: "usage", label: "用量", icon: BarChartIcon },
-  { id: "logs", label: "日志", icon: ActivityLogIcon },
+  { id: "integrations", label: "接入", icon: Link2Icon },
+  { id: "intelligence", label: "记忆与知识", icon: LightningBoltIcon },
+  { id: "conversation-debug", label: "对话调试", icon: ChatBubbleIcon },
+  { id: "metrics", label: "指标", icon: BarChartIcon },
+  { id: "tracing", label: "链路跟踪", icon: Share2Icon },
+  { id: "logs", label: "日志", icon: FileTextIcon },
 ] as const;
 
 type Section = (typeof NAV)[number]["id"];
 type ConnectionState = "missing" | "checking" | "ready" | "rejected" | "unavailable";
+
+function isObservabilitySection(section: Section): section is ObservabilityView {
+  return section === "metrics" || section === "tracing" || section === "logs";
+}
 
 const CONNECTION_COPY: Record<Exclude<ConnectionState, "ready">, { title: string; detail: string }> = {
   missing: {
@@ -67,10 +73,10 @@ const CONNECTION_COPY: Record<Exclude<ConnectionState, "ready">, { title: string
 function Brand() {
   return (
     <div className="brand">
-      <span className="brand-mark" aria-hidden="true"><StarFilledIcon /></span>
-      <div>
+      <span className="brand-mark" aria-hidden="true"><ReaderIcon /></span>
+      <div className="brand-copy">
         <strong>FAIRY</strong>
-        <small>控制台</small>
+        <small>本地陪伴管理台</small>
       </div>
     </div>
   );
@@ -157,9 +163,9 @@ function ConnectionControl({ onConnect, onRetry }: { onConnect: (token: string) 
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger>
-        <Button className="connection-trigger" variant="soft" size="2">
+        <Button className="connection-trigger" variant="ghost" size="2" aria-label="Core 已连接">
           <LockClosedIcon aria-hidden="true" />
-          Core 已连接
+          <span>Core 已连接</span>
         </Button>
       </Popover.Trigger>
       <Popover.Content className="connection-popover" side="right" align="end" size="2">
@@ -245,8 +251,13 @@ export default function App() {
     if (!error) setTimeout(() => setToast(null), 2800);
   }
 
+  function selectSection(next: Section) {
+    setSection(next);
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }
+
   return (
-    <Theme appearance="light" accentColor="teal" grayColor="sand" radius="large" scaling="100%">
+    <Theme appearance="light" accentColor="blue" grayColor="slate" radius="small" scaling="100%">
       {connection !== "ready" ? (
         <ConnectionGate
           state={connection}
@@ -256,27 +267,30 @@ export default function App() {
         />
       ) : (
         <div className="shell">
-          <aside className="sidebar">
+          <aside className="tool-rail">
             <Brand />
             <nav className="nav" aria-label="控制台导航">
-              {NAV.map((item) => {
-                const Icon = item.icon;
-                const active = section === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className={`nav-item ${active ? "active" : ""}`}
-                    aria-current={active ? "page" : undefined}
-                    onClick={() => setSection(item.id)}
-                  >
-                    <span className="nav-icon" aria-hidden="true"><Icon /></span>
-                    <span className="nav-label">{item.label}</span>
-                  </button>
-                );
-              })}
+              <div className="nav-primary">
+                <span className="nav-section-label">工作台</span>
+                {NAV.map((item) => {
+                  const Icon = item.icon;
+                  const active = section === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`nav-item ${active ? "active" : ""}`}
+                      aria-current={active ? "page" : undefined}
+                      onClick={() => selectSection(item.id)}
+                    >
+                      <span className="nav-icon" aria-hidden="true"><Icon /></span>
+                      <span className="nav-label">{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </nav>
-            <div className="sidebar-foot">
+            <div className="tool-rail-foot">
               <ConnectionControl
                 onConnect={(token) => void verifyToken(token, true)}
                 onRetry={() => void verifyToken(activeToken, false)}
@@ -284,17 +298,30 @@ export default function App() {
             </div>
           </aside>
           <main className="main" key={readyRevision}>
-            {toast ? <div className={`toast ${toast.error ? "error" : ""}`}>{toast.message}</div> : null}
-            {section === "overview" ? <OverviewPage onToast={onToast} /> : null}
-            {section === "character" ? <CharacterPage onToast={onToast} /> : null}
-            {section === "profile" ? <ProfilePage onToast={onToast} /> : null}
-            {section === "model" ? <ModelPage onToast={onToast} /> : null}
-            {section === "speech" ? <SpeechPage onToast={onToast} /> : null}
-            {section === "stickers" ? <StickerPage onToast={onToast} /> : null}
-            {section === "integrations" ? <IntegrationPage onToast={onToast} /> : null}
-            {section === "intelligence" ? <IntelligencePage onToast={onToast} /> : null}
-            {section === "usage" ? <UsagePage onToast={onToast} /> : null}
-            {section === "logs" ? <ObservabilityPage token={activeToken} /> : null}
+            <header className="shell-topline" aria-label="控制台状态">
+              <div className="topline-path">
+                <span>控制台</span>
+                <i>/</i>
+                <strong>{NAV.find((item) => item.id === section)?.label}</strong>
+              </div>
+              <div className="topline-health">
+                <span className="core-status-dot" aria-hidden="true" />
+                <strong>Core 正常</strong>
+                <span className="topline-avatar" aria-hidden="true">F</span>
+              </div>
+            </header>
+            <div className="main-canvas">
+              {toast ? <div className={`toast ${toast.error ? "error" : ""}`} role="status">{toast.message}</div> : null}
+              {section === "overview" ? <OverviewPage onToast={onToast} /> : null}
+              {section === "character" ? <CharacterPage onToast={onToast} /> : null}
+              {section === "profile" ? <ProfilePage onToast={onToast} /> : null}
+              {section === "model" ? <ModelPage onToast={onToast} /> : null}
+              {section === "stickers" ? <StickerPage onToast={onToast} /> : null}
+              {section === "integrations" ? <IntegrationPage onToast={onToast} /> : null}
+              {section === "intelligence" ? <IntelligencePage onToast={onToast} /> : null}
+              {section === "conversation-debug" ? <ConversationDebugPage onOpenCharacters={() => selectSection("character")} /> : null}
+              {isObservabilitySection(section) ? <ObservabilityPage token={activeToken} view={section} /> : null}
+            </div>
           </main>
         </div>
       )}

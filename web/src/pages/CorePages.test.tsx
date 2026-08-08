@@ -2,12 +2,158 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Theme } from "@radix-ui/themes";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ModelPage } from "./CorePages";
+import { CharacterPage, ModelPage } from "./CorePages";
 import { IntelligencePage } from "./MorePages";
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+function installCharacterEnvironment() {
+  vi.stubGlobal("ResizeObserver", class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  });
+  vi.stubGlobal("localStorage", {
+    getItem: () => "",
+    setItem: () => undefined,
+    removeItem: () => undefined,
+    clear: () => undefined,
+    key: () => null,
+    length: 0,
+  });
+}
+
+function character(characterId: string, name: string) {
+  return {
+    characterId,
+    revision: 1,
+    name,
+    description: `${name} 的角色描述`,
+    dialogueStyle: `${name} 的说话方式`,
+    textLanguage: "zh",
+    speakingLanguage: "ja",
+    appearance: { status: "unassigned" },
+  };
+}
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+describe("CharacterPage deletion", () => {
+  it("cancels without sending a delete request", async () => {
+    installCharacterEnvironment();
+    const alpha = character("character-alpha", "阿尔法");
+    const requests: Array<{ path: string; method: string }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      requests.push({ path, method: init?.method || "GET" });
+      if (path.endsWith("/visual-packs")) return json({ visualPacks: [] });
+      return json({ active: alpha, characters: [alpha] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    render(<Theme><CharacterPage onToast={() => undefined} /></Theme>);
+    fireEvent.click(await screen.findByRole("button", { name: "删除角色" }));
+
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("阿尔法"));
+    expect(requests.filter(({ method }) => method === "DELETE")).toHaveLength(0);
+    expect(screen.getByDisplayValue("阿尔法")).toBeTruthy();
+  });
+
+  it("disables mutations and selects the first remaining character after deletion", async () => {
+    installCharacterEnvironment();
+    const alpha = character("character-alpha", "阿尔法");
+    const beta = character("character-beta", "贝塔");
+    let catalog: { active: typeof alpha | null; characters: typeof alpha[] } = {
+      active: alpha,
+      characters: [alpha, beta],
+    };
+    let resolveDelete!: () => void;
+    const requests: Array<{ path: string; method: string }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const method = init?.method || "GET";
+      requests.push({ path, method });
+      if (method === "DELETE") {
+        return new Promise<Response>((resolve) => {
+          resolveDelete = () => {
+            catalog = { active: null, characters: [beta] };
+            resolve(new Response(null, { status: 204 }));
+          };
+        });
+      }
+      if (path.endsWith("/visual-packs")) return json({ visualPacks: [] });
+      return json(catalog);
+    }));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const onToast = vi.fn();
+
+    render(<Theme><CharacterPage onToast={onToast} /></Theme>);
+    fireEvent.click(await screen.findByRole("button", { name: "删除角色" }));
+
+    const deletingButton = await screen.findByRole("button", { name: "删除中" });
+    expect(deletingButton.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "更新并激活" }).hasAttribute("disabled")).toBe(true);
+    expect(requests.filter(({ method }) => method === "DELETE")).toHaveLength(1);
+
+    resolveDelete();
+    await waitFor(() => expect(screen.getByDisplayValue("贝塔")).toBeTruthy());
+    expect(screen.queryByDisplayValue("阿尔法")).toBeNull();
+    expect(onToast).toHaveBeenCalledWith("角色“阿尔法”已删除");
+  });
+
+  it("returns to a blank creation form after deleting the last character", async () => {
+    installCharacterEnvironment();
+    const alpha = character("character-alpha", "阿尔法");
+    let catalog = { active: alpha as typeof alpha | null, characters: [alpha] };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (init?.method === "DELETE") {
+        catalog = { active: null, characters: [] };
+        return new Response(null, { status: 204 });
+      }
+      if (path.endsWith("/visual-packs")) return json({ visualPacks: [] });
+      return json(catalog);
+    }));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<Theme><CharacterPage onToast={() => undefined} /></Theme>);
+    fireEvent.click(await screen.findByRole("button", { name: "删除角色" }));
+
+    expect(await screen.findByRole("heading", { name: "新建角色" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "删除角色" })).toBeNull();
+    expect(screen.getByRole("button", { name: "创建并激活" })).toBeTruthy();
+    expect(screen.queryByDisplayValue("阿尔法")).toBeNull();
+  });
+
+  it("preserves the current form and reports a delete failure", async () => {
+    installCharacterEnvironment();
+    const alpha = character("character-alpha", "阿尔法");
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (init?.method === "DELETE") return json({ error: "角色仍在使用中" }, 500);
+      if (path.endsWith("/visual-packs")) return json({ visualPacks: [] });
+      return json({ active: alpha, characters: [alpha] });
+    }));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const onToast = vi.fn();
+
+    render(<Theme><CharacterPage onToast={onToast} /></Theme>);
+    fireEvent.click(await screen.findByRole("button", { name: "删除角色" }));
+
+    await waitFor(() => expect(onToast).toHaveBeenCalledWith("角色仍在使用中", true));
+    expect(screen.getByDisplayValue("阿尔法")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "删除角色" }).hasAttribute("disabled")).toBe(false);
+  });
 });
 
 describe("ModelPage vision capability", () => {

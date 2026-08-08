@@ -2,20 +2,24 @@ import { Button, Select, Switch, Text, TextArea, TextField } from "@radix-ui/the
 import { ReloadIcon } from "@radix-ui/react-icons";
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { Field, PageHeader } from "../components/ui";
-import {
-  USAGE_LANE_FILTER_ALL,
-  USAGE_LANE_FILTER_RESPOND,
-  aggregateUsage,
-  formatHitRate,
-  formatTokenCount,
-  formatUsageTime,
-  parseUsageReport,
-  turnMatchesLane,
-  usageHitRate,
-  type UsageLaneFilter,
-  type UsageReport,
-} from "../usageReport";
+import { ConfigSection, EmptyState, Field, PageHeader } from "../components/ui";
+
+const roleSummaryLimit = 160;
+
+export function summarizeRoleDescription(value: unknown): string {
+  if (typeof value !== "string") return "在角色库创建并激活角色后，她会成为 Fairy 的对话身份。";
+
+  const normalized = value.replace(/\s+/gu, " ").trim();
+  if (!normalized) return "在角色库补充角色描述后，这里会显示简短的身份摘要。";
+
+  const sentences = normalized.match(/[^。！？.!?]+[。！？.!?]+|[^。！？.!?]+$/gu) || [normalized];
+  const excerpt = sentences.slice(0, 2).map((sentence) => sentence.trim()).join(" ");
+  const characters = Array.from(excerpt);
+  const sourceWasShortened = excerpt.length < normalized.length || characters.length > roleSummaryLimit;
+  const bounded = characters.slice(0, roleSummaryLimit).join("").trim().replace(/[，、；,:：;。！？.!?]+$/u, "");
+
+  return sourceWasShortened ? `${bounded}…` : bounded;
+}
 
 export function OverviewPage({ onToast }: { onToast: (m: string, e?: boolean) => void }) {
   const [status, setStatus] = useState<any>(null);
@@ -32,29 +36,20 @@ export function OverviewPage({ onToast }: { onToast: (m: string, e?: boolean) =>
   }, []);
 
   const model = status?.model || {};
-  const speech = status?.speech || {};
   const web = status?.webSearch || {};
   const semantic = status?.semanticEmbedding || {};
   const active = characters?.active;
+  const roleSummary = active
+    ? summarizeRoleDescription(active.description)
+    : "在角色库创建并激活角色后，她会成为 Fairy 的对话身份。";
+  const coreReady = Boolean(status);
 
-  const cards = [
-    {
-      title: "激活角色",
-      ready: Boolean(active),
-      value: active?.name || "尚未激活",
-      detail: active ? active.characterId : "在角色页创建并激活",
-    },
+  const systems = [
     {
       title: "模型",
       ready: Boolean(model.configured),
       value: model.configured ? model.model || "已连接" : "尚未配置",
-      detail: model.endpoint || "保存 Endpoint 与模型后即可对话",
-    },
-    {
-      title: "语音 TTS",
-      ready: Boolean(speech.configured && speech.enabled),
-      value: speech.enabled ? "已启用" : speech.configured ? "已配置未启用" : "尚未配置",
-      detail: speech.defaultSpeaker || speech.synthesisModel || "火山语音克隆 HTTP",
+      detail: model.endpoint || "保存服务地址与模型后即可对话",
     },
     {
       title: "公开检索",
@@ -65,33 +60,67 @@ export function OverviewPage({ onToast }: { onToast: (m: string, e?: boolean) =>
     {
       title: "语义嵌入",
       ready: Boolean(semantic.configured && semantic.enabled),
-      value: semantic.provider && semantic.provider !== "none" ? semantic.provider : "FTS-only",
+      value: semantic.provider && semantic.provider !== "none" ? semantic.provider : "仅全文检索",
       detail: semantic.model || "默认关键词检索",
     },
   ];
 
   return (
-    <section>
+    <section className="overview-page">
       <PageHeader
-        title="运行概览"
-        description="一眼看清角色、模型、语音与检索是否就绪。"
+        title="概览"
+        description="查看当前角色、Core 状态和最近能力配置。"
         action={
           <Button variant="soft" onClick={() => void reload().then(() => onToast("已刷新")).catch((e) => onToast(e.message, true))}>
-            刷新
+            <ReloadIcon />刷新
           </Button>
         }
       />
-      <div className="grid-stats">
-        {cards.map((card) => (
-          <article key={card.title} className="card stat-card">
-            <div className="label">{card.title}</div>
-            <div className="value">{card.value}</div>
-            <div className="detail">{card.detail}</div>
-            <Text size="1" color={card.ready ? "teal" : "gray"} mt="2">
-              {card.ready ? "已就绪" : "待配置"}
-            </Text>
-          </article>
-        ))}
+      <div className="overview-dashboard">
+        <article className="companion-summary">
+          <div className="identity-glyph" aria-hidden="true">
+            {active?.name?.trim()?.slice(0, 1) || "F"}
+          </div>
+          <div className="identity-copy">
+            <span className="identity-label">当前角色</span>
+            <h2>{active?.name || "还没有激活角色"}</h2>
+            <p>{roleSummary}</p>
+            <div className="identity-meta">
+              <span className={`identity-state ${active ? "ready" : "pending"}`}>
+                {active ? "角色已就绪" : "等待角色"}
+              </span>
+              <span>完整设定在角色页维护</span>
+            </div>
+          </div>
+        </article>
+
+        <aside className="runtime-summary" aria-label="运行状态">
+          <header className="runtime-heading">
+            <div>
+              <span>运行状态</span>
+              <strong>{coreReady ? "Core 运行正常" : "正在读取状态"}</strong>
+            </div>
+            <span className={`system-state ${coreReady ? "ready" : "pending"}`}>
+              {coreReady ? "已连接" : "读取中"}
+            </span>
+          </header>
+          <div className="runtime-list">
+            {systems.map((system) => (
+              <div key={system.title} className="runtime-row">
+                <div>
+                  <span>{system.title}</span>
+                  <small>{system.detail}</small>
+                </div>
+                <div className="runtime-value">
+                  <strong>{system.value}</strong>
+                  <span className={`system-state ${system.ready ? "ready" : "pending"}`}>
+                    {system.ready ? "已就绪" : "待配置"}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </aside>
       </div>
     </section>
   );
@@ -129,34 +158,38 @@ export function IntelligencePage({ onToast }: { onToast: (m: string, e?: boolean
   const summary = intel?.summary || {};
 
   return (
-    <section>
+    <section className="intelligence-page">
       <PageHeader
-        title="智能层"
-        description="会话、个人记忆和知识都在本机。公开资料可走检索。"
+        title="记忆与知识"
+        description="管理本机记忆、知识召回和公开资料检索。"
         status={intel?.ready ? "本地层已就绪" : "本地层不可用"}
         ready={Boolean(intel?.ready)}
       />
-      <div className="grid-stats" style={{ marginBottom: 16 }}>
+      <div className="ledger-summary" aria-label="记忆与任务摘要">
         {[
           ["全局记忆", summary.activeGlobalMemories],
           ["角色关系", summary.activeCharacterMemories],
           ["待审记忆", summary.needsReviewMemories],
           ["后台任务", intel?.activeBackgroundJobs ?? 0],
         ].map(([label, value]) => (
-          <div key={String(label)} className="card stat-card">
-            <div className="label">{label}</div>
-            <div className="value">{value ?? "—"}</div>
+          <div key={String(label)} className="ledger-summary-item">
+            <span>{label}</span>
+            <strong>{value ?? "未获取"}</strong>
           </div>
         ))}
       </div>
 
-      <div className="stack">
-        <div className="card">
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+      <div className="intelligence-workspace">
+        <ConfigSection
+          title="公开资料检索"
+          description="Compose 环境默认通过 OpenSERP 获取公开网页结果。"
+          className="web-search-settings"
+        >
+          <div className="settings-row">
             <div>
               <Text weight="medium">允许检索公开资料</Text>
               <Text as="p" size="1" color="gray">
-                Compose 内默认走 OpenSERP sidecar。
+                关闭后只使用本机记忆和知识。
               </Text>
             </div>
             <Switch
@@ -172,7 +205,7 @@ export function IntelligencePage({ onToast }: { onToast: (m: string, e?: boolean
               }}
             />
           </div>
-          <Field label="Base URL">
+          <Field label="检索服务地址">
             <TextField.Root
               value={webBase}
               onChange={(e) => setWebBase(e.target.value)}
@@ -193,13 +226,13 @@ export function IntelligencePage({ onToast }: { onToast: (m: string, e?: boolean
               保存检索
             </Button>
           </div>
-        </div>
+        </ConfigSection>
 
-        <div className="card memory-ledger">
-          <Text weight="medium">个人记忆台账</Text>
-          <Text as="p" size="1" color="gray" mb="3">
-            手动写入需要已有会话回合；无对话时列表仍可浏览。
-          </Text>
+        <ConfigSection
+          title="个人记忆台账"
+          description="手动写入需要已有会话回合；没有对话时仍可浏览现有条目。"
+          className="memory-ledger"
+        >
           <div className="memory-compose">
             <Field label="类型">
               <Select.Root value={kind} onValueChange={setKind}>
@@ -266,9 +299,7 @@ export function IntelligencePage({ onToast }: { onToast: (m: string, e?: boolean
           </div>
           <div className="memory-panel">
             {(memories?.[memoryTab] || []).length === 0 ? (
-              <Text as="p" size="2" color="gray" className="memory-empty">
-                暂无条目
-              </Text>
+              <EmptyState title="暂无记忆条目" description="写入后会在这里按范围显示，不预留空白滚动区域。" />
             ) : (
               (memories?.[memoryTab] || []).map((m) => (
                 <div key={m.id} className="memory-row">
@@ -297,165 +328,8 @@ export function IntelligencePage({ onToast }: { onToast: (m: string, e?: boolean
               ))
             )}
           </div>
-        </div>
+        </ConfigSection>
       </div>
     </section>
-  );
-}
-
-export function UsagePage({ onToast }: { onToast: (m: string, e?: boolean) => void }) {
-  const [report, setReport] = useState<UsageReport | null>(null);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [revision, setRevision] = useState(0);
-  const [laneFilter, setLaneFilter] = useState<UsageLaneFilter>(USAGE_LANE_FILTER_ALL);
-
-  useEffect(() => {
-    let active = true;
-    setReport(null);
-    setError("");
-    setLoading(true);
-    api<unknown>("/usage")
-      .then((value) => {
-        if (active) setReport(parseUsageReport(value));
-      })
-      .catch((cause: unknown) => {
-        if (!active) return;
-        const message = cause instanceof Error ? cause.message : String(cause);
-        setError(message);
-        onToast(message, true);
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [revision]);
-
-  const total = report ? aggregateUsage(report.overall, laneFilter) : null;
-  const visibleTurns = report?.turns.filter((turn) => turnMatchesLane(turn, laneFilter)) ?? [];
-  const hasUsage = Boolean(report && report.overall.length > 0);
-
-  return (
-    <section className="usage-page">
-      <PageHeader
-        title="用量"
-        description="查看模型输入、缓存利用和每次发送的 Token 构成。"
-        status={loading ? "读取中" : error ? "数据不可用" : report ? `${formatTokenCount(report.turnCount)} 次发送` : undefined}
-        ready={Boolean(report)}
-        action={
-          <Button variant="soft" disabled={loading} onClick={() => setRevision((value) => value + 1)}>
-            <ReloadIcon /> 刷新
-          </Button>
-        }
-      />
-
-      {error ? (
-        <div className="usage-error" role="alert">
-          <strong>用量数据不可用</strong>
-          <span>{error}</span>
-        </div>
-      ) : null}
-
-      {report ? (
-        <>
-          <div className="usage-toolbar">
-            <div>
-              <h2>累计用量</h2>
-              <p>累计覆盖全部历史；缓存命中率只计算 provider 已报告观测的输入。</p>
-            </div>
-            <div className="usage-mode" role="group" aria-label="Lane 筛选">
-              <button
-                type="button"
-                className={laneFilter === USAGE_LANE_FILTER_ALL ? "active" : ""}
-                aria-pressed={laneFilter === USAGE_LANE_FILTER_ALL}
-                onClick={() => setLaneFilter(USAGE_LANE_FILTER_ALL)}
-              >
-                全部
-              </button>
-              <button
-                type="button"
-                className={laneFilter === USAGE_LANE_FILTER_RESPOND ? "active" : ""}
-                aria-pressed={laneFilter === USAGE_LANE_FILTER_RESPOND}
-                onClick={() => setLaneFilter(USAGE_LANE_FILTER_RESPOND)}
-              >
-                仅 respond
-              </button>
-            </div>
-          </div>
-
-          {hasUsage && total ? (
-            <div className="usage-summary" aria-label="累计 Token 指标">
-              <UsageMetric label="缓存命中" value={formatTokenCount(total.cachedInputTokens)} detail={`${formatTokenCount(total.callCount)} 次模型调用`} testId="usage-cached" />
-              <UsageMetric label="未命中输入" value={formatTokenCount(total.uncachedInputTokens)} detail={`${formatTokenCount(total.inputTokens)} 输入 Token`} testId="usage-uncached" />
-              <UsageMetric label="输出" value={formatTokenCount(total.outputTokens)} detail={`${formatTokenCount(total.cacheWriteTokens)} cache write`} testId="usage-output" />
-              <UsageMetric label="缓存命中率" value={formatHitRate(usageHitRate(total))} detail={`${formatTokenCount(total.cachedObservedInputTokens)} 已观测输入`} testId="usage-hit-rate" />
-            </div>
-          ) : (
-            <div className="usage-empty">还没有可统计的模型用量。</div>
-          )}
-
-          <div className="usage-recent">
-            <div className="usage-recent-heading">
-              <div>
-                <h2>最近发送</h2>
-                <p>{visibleTurns.length} 条可见 · 全部历史 {formatTokenCount(report.turnCount)} 次</p>
-              </div>
-              {report.truncated ? <span className="usage-truncated">仅展示最近记录，累计仍覆盖全部历史</span> : null}
-            </div>
-            {visibleTurns.length === 0 ? (
-              <div className="usage-empty">当前筛选下没有发送记录。</div>
-            ) : (
-              <div className="usage-table-wrap">
-                <table className="usage-table">
-                  <thead>
-                    <tr>
-                      <th>时间</th>
-                      <th>Turn</th>
-                      <th>角色</th>
-                      <th>状态</th>
-                      <th>输入</th>
-                      <th>缓存命中</th>
-                      <th>未命中</th>
-                      <th>输出</th>
-                      <th>命中率</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleTurns.map((turn) => {
-                      const usage = aggregateUsage(turn.lanes, laneFilter);
-                      return (
-                        <tr key={turn.turnId} data-testid={`usage-turn-${turn.turnId}`}>
-                          <td><time dateTime={new Date(turn.createdAtUnixMs).toISOString()}>{formatUsageTime(turn.createdAtUnixMs)}</time></td>
-                          <td><code>{turn.turnId.slice(0, 8)}</code></td>
-                          <td><code>{turn.characterId ? turn.characterId.slice(0, 8) : "—"}</code></td>
-                          <td><span className={`usage-status ${turn.status}`}>{turn.status}</span></td>
-                          <td>{formatTokenCount(usage.inputTokens)}</td>
-                          <td>{formatTokenCount(usage.cachedInputTokens)}</td>
-                          <td>{formatTokenCount(usage.uncachedInputTokens)}</td>
-                          <td>{formatTokenCount(usage.outputTokens)}</td>
-                          <td>{formatHitRate(usageHitRate(usage))}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </>
-      ) : null}
-    </section>
-  );
-}
-
-function UsageMetric({ label, value, detail, testId }: { label: string; value: string; detail: string; testId: string }) {
-  return (
-    <div className="usage-metric">
-      <span>{label}</span>
-      <strong data-testid={testId}>{value}</strong>
-      <small>{detail}</small>
-    </div>
   );
 }

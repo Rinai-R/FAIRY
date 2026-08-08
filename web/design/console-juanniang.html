@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FAIRY 管理控制台视觉原型</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f8fc;
+      --surface: #ffffff;
+      --surface-soft: #f8fbfe;
+      --blue-soft: #edf6ff;
+      --blue-soft-2: #dcedff;
+      --blue: #2878d0;
+      --blue-deep: #185b9d;
+      --ink: #17283b;
+      --muted: #687b8f;
+      --line: #d9e4ee;
+      --line-strong: #c6d6e4;
+      --success: #16705f;
+      --warning: #9a650d;
+      font-family: Inter, "HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-width: 320px; min-height: 100%; }
+    body { color: var(--ink); background: var(--bg); }
+    button { font: inherit; }
+
+    .shell {
+      display: grid;
+      min-height: 100vh;
+      grid-template-columns: 240px minmax(0, 1fr);
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      display: flex;
+      height: 100vh;
+      flex-direction: column;
+      background: var(--surface);
+      border-right: 1px solid var(--line);
+    }
+
+    .brand {
+      display: flex;
+      min-height: 72px;
+      padding: 14px 18px;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .brand-mark {
+      display: grid;
+      width: 42px;
+      height: 42px;
+      place-items: center;
+      color: #fff;
+      background: var(--blue);
+      border-radius: 12px;
+      box-shadow: 0 7px 18px rgba(40, 120, 208, .18);
+    }
+
+    .brand-mark svg { width: 22px; height: 22px; }
+    .brand strong { display: block; font-size: 16px; letter-spacing: .04em; }
+    .brand small { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+
+    .nav {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+      padding: 16px 12px;
+      flex-direction: column;
+      gap: 4px;
+      overflow-y: auto;
+    }
+
+    .nav-label {
+      padding: 10px 12px 6px;
+      color: #91a0ae;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .08em;
+    }
+
+    .nav-item {
+      display: flex;
+      width: 100%;
+      min-height: 44px;
+      padding: 0 12px;
+      align-items: center;
+      gap: 12px;
+      color: #53677a;
+      background: transparent;
+      border: 0;
+      border-radius: 9px;
+      cursor: pointer;
+    }
+
+    .nav-item svg { width: 18px; height: 18px; flex: none; }
+    .nav-item:hover { color: var(--blue-deep); background: var(--surface-soft); }
+    .nav-item.active { color: var(--blue-deep); background: var(--blue-soft); font-weight: 700; }
+
+    .sidebar-foot { padding: 12px; border-top: 1px solid var(--line); }
+    .connection {
+      display: flex;
+      min-height: 42px;
+      padding: 8px 10px;
+      align-items: center;
+      gap: 9px;
+      color: var(--success);
+      background: #f1faf7;
+      border: 1px solid #d8eee7;
+      border-radius: 9px;
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .connection::before { width: 7px; height: 7px; content: ""; background: #26a486; border-radius: 50%; }
+
+    .workspace { min-width: 0; }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      display: flex;
+      height: 60px;
+      padding: 0 32px;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--muted);
+      background: rgba(255,255,255,.96);
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+    }
+
+    .breadcrumb b { color: var(--ink); }
+    .top-actions { display: flex; align-items: center; gap: 12px; }
+    .core-chip {
+      display: flex;
+      height: 30px;
+      padding: 0 10px;
+      align-items: center;
+      gap: 7px;
+      color: var(--success);
+      background: #f4fbf9;
+      border: 1px solid #d8eee7;
+      border-radius: 8px;
+      font-weight: 650;
+    }
+    .core-chip::before { width: 6px; height: 6px; content: ""; background: #26a486; border-radius: 50%; }
+    .avatar { display: grid; width: 34px; height: 34px; place-items: center; color: var(--blue-deep); background: var(--blue-soft-2); border: 1px solid #c9e1f8; border-radius: 10px; font-weight: 800; }
+
+    .content { width: min(100%, 1440px); margin: 0 auto; padding: 32px 36px 64px; }
+    .page-head { display: flex; margin-bottom: 24px; align-items: end; justify-content: space-between; gap: 24px; }
+    .page-head h1 { margin: 0; font-size: 30px; line-height: 1.2; letter-spacing: -.025em; }
+    .page-head p { margin: 7px 0 0; color: var(--muted); font-size: 14px; }
+    .refresh { flex: none; height: 36px; padding: 0 14px; color: var(--blue-deep); background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; font-weight: 650; white-space: nowrap; }
+
+    .hero { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(290px, .75fr); gap: 16px; }
+    .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 1px 2px rgba(31, 55, 79, .04); }
+    .role-panel { display: grid; min-height: 252px; grid-template-columns: 128px minmax(0, 1fr); overflow: hidden; }
+    .role-portrait { display: grid; place-items: center; color: var(--blue-deep); background: linear-gradient(160deg, var(--blue-soft), #f7fbff); border-right: 1px solid var(--line); }
+    .role-glyph { display: grid; width: 72px; height: 72px; place-items: center; background: #fff; border: 1px solid #c8dff4; border-radius: 22px; box-shadow: 0 10px 24px rgba(40,120,208,.1); font-size: 27px; font-weight: 850; }
+    .role-body { padding: 26px 28px; }
+    .eyebrow { color: var(--blue); font-size: 11px; font-weight: 800; letter-spacing: .08em; }
+    .role-body h2 { margin: 8px 0 10px; font-size: 24px; }
+    .role-body p { max-width: 720px; margin: 0; color: #53677a; font-size: 14px; line-height: 1.75; }
+    .tags { display: flex; margin-top: 22px; gap: 8px; flex-wrap: wrap; }
+    .tag { padding: 5px 9px; color: var(--blue-deep); background: var(--blue-soft); border-radius: 7px; font-size: 12px; }
+
+    .status-panel { padding: 24px; }
+    .panel-title { display: flex; align-items: center; justify-content: space-between; }
+    .panel-title h2 { margin: 0; font-size: 16px; }
+    .state { color: var(--success); font-size: 12px; font-weight: 700; }
+    .model { margin-top: 22px; padding: 16px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .model small, .health-row span:first-child { color: var(--muted); }
+    .model strong { display: block; margin-top: 6px; font-size: 15px; }
+    .health { display: grid; margin-top: 4px; }
+    .health-row { display: flex; padding: 12px 0 0; justify-content: space-between; font-size: 13px; }
+
+    .summary { display: grid; margin-top: 16px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .summary-item { padding: 20px 22px; background: var(--surface); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); }
+    .summary-item:first-child { border-left: 1px solid var(--line); border-radius: 12px 0 0 12px; }
+    .summary-item:last-child { border-radius: 0 12px 12px 0; }
+    .summary-item small { color: var(--muted); font-size: 12px; }
+    .summary-item strong { display: block; margin-top: 8px; font-size: 22px; letter-spacing: -.02em; }
+    .summary-item em { display: block; margin-top: 5px; color: #8190a0; font-size: 11px; font-style: normal; }
+
+    .lower { display: grid; margin-top: 16px; grid-template-columns: minmax(0, 1.45fr) minmax(300px, .75fr); gap: 16px; }
+    .section-panel { padding: 22px 24px; }
+    .section-panel h2 { margin: 0; font-size: 16px; }
+    .section-panel > p { margin: 6px 0 18px; color: var(--muted); font-size: 13px; }
+    .activity { display: grid; }
+    .activity-row { display: grid; padding: 13px 0; grid-template-columns: 90px 1fr auto; align-items: center; gap: 14px; border-top: 1px solid var(--line); font-size: 13px; }
+    .activity-row time { color: #8291a0; font-variant-numeric: tabular-nums; }
+    .activity-row b { font-size: 12px; font-weight: 700; }
+    .ok { color: var(--success); }
+    .warn { color: var(--warning); }
+    .quick-links { display: grid; gap: 8px; }
+    .quick-link { display: flex; min-height: 48px; padding: 0 13px; align-items: center; justify-content: space-between; color: var(--ink); background: var(--surface-soft); border: 1px solid transparent; border-radius: 9px; text-decoration: none; font-size: 13px; }
+    .quick-link:hover { color: var(--blue-deep); border-color: var(--line-strong); }
+
+    @media (max-width: 1080px) {
+      .shell { display: block; }
+      .sidebar { position: sticky; z-index: 10; width: 100%; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+      .brand { min-height: 58px; }
+      .brand-mark { width: 36px; height: 36px; border-radius: 10px; }
+      .nav { padding: 8px 12px; flex-direction: row; overflow-x: auto; }
+      .nav-label { display: none; }
+      .nav-item { width: auto; min-width: max-content; min-height: 40px; }
+      .sidebar-foot { display: none; }
+      .topbar { position: static; }
+      .content { padding: 28px 24px 56px; }
+    }
+
+    @media (max-width: 760px) {
+      .brand { padding: 10px 14px; }
+      .topbar { height: 50px; padding: 0 16px; }
+      .breadcrumb { display: none; }
+      .top-actions { margin-left: auto; }
+      .content { padding: 22px 16px 44px; }
+      .page-head { align-items: flex-start; }
+      .page-head h1 { font-size: 26px; }
+      .page-head p { max-width: 260px; line-height: 1.55; }
+      .hero, .lower { grid-template-columns: 1fr; }
+      .role-panel { min-height: 0; grid-template-columns: 76px minmax(0, 1fr); }
+      .role-body { padding: 20px; }
+      .role-portrait { align-items: start; padding-top: 20px; }
+      .role-glyph { width: 46px; height: 46px; border-radius: 14px; font-size: 20px; }
+      .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+      .summary-item, .summary-item:first-child, .summary-item:last-child { border: 1px solid var(--line); border-radius: 10px; }
+      .activity-row { grid-template-columns: 72px minmax(0, 1fr); }
+      .activity-row b { grid-column: 2; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 4.5h9.5A2.5 2.5 0 0 1 18 7v12H8.5A2.5 2.5 0 0 1 6 16.5z"/><path d="M6 16.5A2.5 2.5 0 0 1 8.5 14H18M10 8h4"/></svg>
+        </span>
+        <span><strong>FAIRY</strong><small>本地陪伴管理台</small></span>
+      </div>
+      <nav class="nav" aria-label="控制台导航">
+        <span class="nav-label">工作台</span>
+        <button class="nav-item active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>概览</button>
+        <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/></svg>角色</button>
+        <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8" cy="11" r="2"/><path d="M12 10h6M12 14h5"/></svg>用户</button>
+        <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>模型</button>
+        <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 15-4-4-6 6-2-2-6 5"/></svg>表情包</button>
+        <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1"/></svg>接入</button>
+        <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m13 2-8 12h7l-1 8 8-12h-7z"/></svg>记忆与知识</button>
+        <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/></svg>可观测</button>
+      </nav>
+      <div class="sidebar-foot"><div class="connection">Core 已连接</div></div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div class="breadcrumb">控制台 / <b>概览</b></div>
+        <div class="top-actions"><span class="core-chip">Core 正常</span><span class="avatar">亚</span></div>
+      </header>
+      <div class="content">
+        <div class="page-head">
+          <div><h1>概览</h1><p>查看当前角色、Core 状态和最近活动。</p></div>
+          <button class="refresh">刷新数据</button>
+        </div>
+
+        <section class="hero">
+          <article class="panel role-panel">
+            <div class="role-portrait"><span class="role-glyph">亚</span></div>
+            <div class="role-body">
+              <span class="eyebrow">当前角色</span>
+              <h2>亚托莉</h2>
+              <p>温柔、自然，能够记住关系与偏好。当前角色已经绑定，可继续在角色页调整设定和互动方式。</p>
+              <div class="tags"><span class="tag">角色已激活</span><span class="tag">记忆已启用</span></div>
+            </div>
+          </article>
+          <article class="panel status-panel">
+            <div class="panel-title"><h2>Core 状态</h2><span class="state">运行正常</span></div>
+            <div class="model"><small>当前模型</small><strong>deepseek-v4-flash</strong></div>
+            <div class="health"><div class="health-row"><span>公开检索</span><b>已开启</b></div><div class="health-row"><span>语义嵌入</span><b>已就绪</b></div></div>
+          </article>
+        </section>
+
+        <section class="summary" aria-label="运行摘要">
+          <div class="summary-item"><small>会话消息</small><strong>1,248</strong><em>累计处理</em></div>
+          <div class="summary-item"><small>今日 Token</small><strong>86.4k</strong><em>输入与输出</em></div>
+          <div class="summary-item"><small>长期记忆</small><strong>42</strong><em>有效记录</em></div>
+          <div class="summary-item"><small>知识条目</small><strong>18</strong><em>角色知识</em></div>
+        </section>
+
+        <section class="lower">
+          <article class="panel section-panel">
+            <h2>最近活动</h2><p>来自会话、记忆与检索链路的最新变化。</p>
+            <div class="activity">
+              <div class="activity-row"><time>11:04:44</time><span>角色目录完成同步</span><b class="ok">成功</b></div>
+              <div class="activity-row"><time>11:03:19</time><span>用户记忆写入 2 条记录</span><b class="ok">成功</b></div>
+              <div class="activity-row"><time>10:58:02</time><span>网络检索未返回新文档</span><b class="warn">无变化</b></div>
+            </div>
+          </article>
+          <aside class="panel section-panel">
+            <h2>常用入口</h2><p>继续完成角色与模型配置。</p>
+            <div class="quick-links"><a class="quick-link" href="#">编辑当前角色 <span>›</span></a><a class="quick-link" href="#">检查模型连接 <span>›</span></a><a class="quick-link" href="#">查看实时日志 <span>›</span></a></div>
+          </aside>
+        </section>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

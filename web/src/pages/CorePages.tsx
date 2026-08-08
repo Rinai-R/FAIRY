@@ -1,7 +1,7 @@
 import { Button, Select, Switch, Text, TextArea, TextField } from "@radix-ui/themes";
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { Field, PageHeader } from "../components/ui";
+import { ConfigSection, Field, PageHeader } from "../components/ui";
 
 type Character = {
   characterId: string;
@@ -27,28 +27,47 @@ export function CharacterPage({ onToast }: { onToast: (m: string, e?: boolean) =
   const [textLanguage, setTextLanguage] = useState("zh");
   const [speakingLanguage, setSpeakingLanguage] = useState("ja");
   const [visualPackId, setVisualPackId] = useState("");
+  const [deleting, setDeleting] = useState(false);
 
-  async function reload() {
+  async function reload(preferredId = selectedId) {
     const [next, visuals] = await Promise.all([
       api<Catalog>("/characters"),
       api<{ visualPacks: VisualPack[] }>("/visual-packs"),
     ]);
+    const nextPacks = visuals.visualPacks || [];
     setCatalog(next);
-    setPacks(visuals.visualPacks || []);
-    const pick = next.active?.characterId || next.characters[0]?.characterId || "";
-    if (!selectedId && pick) selectCharacter(next, pick);
+    setPacks(nextPacks);
+    const retainedId = preferredId && next.characters.some((c) => c.characterId === preferredId)
+      ? preferredId
+      : "";
+    const pick = retainedId || next.active?.characterId || next.characters[0]?.characterId || "";
+    if (pick) {
+      selectCharacter(next, pick);
+      return;
+    }
+    resetEditor(nextPacks[0]?.packId || "");
   }
 
   function selectCharacter(source: Catalog, id: string) {
     const c = source.characters.find((x) => x.characterId === id);
-    setSelectedId(id);
     if (!c) return;
+    setSelectedId(id);
     setName(c.name);
     setDescription(c.description);
     setDialogueStyle(c.dialogueStyle || "");
     setTextLanguage(c.textLanguage || "zh");
     setSpeakingLanguage(c.speakingLanguage || "ja");
     setVisualPackId(c.appearance.visual?.packId || "");
+  }
+
+  function resetEditor(defaultVisualPackId = "") {
+    setSelectedId("");
+    setName("");
+    setDescription("");
+    setDialogueStyle("");
+    setTextLanguage("zh");
+    setSpeakingLanguage("ja");
+    setVisualPackId(defaultVisualPackId);
   }
 
   useEffect(() => {
@@ -94,10 +113,29 @@ export function CharacterPage({ onToast }: { onToast: (m: string, e?: boolean) =
         });
       }
       onToast(isNew ? "角色已创建并激活" : "角色已更新并激活");
-      setSelectedId(record.characterId);
-      await reload();
+      await reload(record.characterId);
     } catch (e: any) {
       onToast(e.message, true);
+    }
+  }
+
+  async function deleteSelected() {
+    if (!selected) return;
+    const target = selected;
+    const confirmed = window.confirm(
+      `删除角色“${target.name}”？角色配置和外观绑定会被删除，历史会话、知识和记忆仍会保留。`,
+    );
+    if (!confirmed) return;
+
+    setDeleting(true);
+    try {
+      await api(`/characters/${target.characterId}`, { method: "DELETE" });
+      onToast(`角色“${target.name}”已删除`);
+      await reload("");
+    } catch (e: any) {
+      onToast(e.message, true);
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -136,64 +174,68 @@ export function CharacterPage({ onToast }: { onToast: (m: string, e?: boolean) =
   }
 
   return (
-    <section>
+    <section className="character-page">
       <PageHeader
         title="角色库"
         description="选择当前角色，导入外部角色包，或把本地角色导出成可迁移的 .pack。"
         status={catalog?.active ? `当前：${catalog.active.name}` : "尚未激活"}
         ready={Boolean(catalog?.active)}
       />
-      <div className="grid-2">
-        <div className="card stack">
-          <div className="form-actions" style={{ justifyContent: "space-between" }}>
-            <Text weight="medium">角色列表</Text>
+      <div className="master-detail character-workspace">
+        <aside className="collection-pane character-index">
+          <div className="pane-heading">
+            <div>
+              <span>角色</span>
+              <strong>{catalog?.characters.length || 0} 个本地角色</strong>
+            </div>
             <Button
               variant="soft"
-              onClick={() => {
-                setSelectedId("");
-                setName("");
-                setDescription("");
-                setDialogueStyle("");
-                setTextLanguage("zh");
-                setSpeakingLanguage("ja");
-                setVisualPackId(packs[0]?.packId || "");
-              }}
+              disabled={deleting}
+              onClick={() => resetEditor(packs[0]?.packId || "")}
             >
               新建
             </Button>
           </div>
-          <div className="list">
+          <div className="collection-list">
             {(catalog?.characters || []).map((c) => (
               <button
                 key={c.characterId}
                 type="button"
-                className={`list-item ${c.characterId === selectedId ? "active" : ""}`}
+                className={`collection-item ${c.characterId === selectedId ? "active" : ""}`}
+                disabled={deleting}
                 onClick={() => catalog && selectCharacter(catalog, c.characterId)}
               >
-                <strong>{c.name}</strong>
-                <small>{c.appearance.status === "assigned" ? "外观已绑定" : "等待外观"}</small>
+                <span className="collection-avatar" aria-hidden="true">{c.name.trim().slice(0, 1) || "F"}</span>
+                <span>
+                  <strong>{c.name}</strong>
+                  <small>{c.appearance.status === "assigned" ? "外观已绑定" : "等待外观"}</small>
+                </span>
               </button>
             ))}
           </div>
-          <label className="hint">
-            导入角色包
+          <label className="collection-import">
+            <span>导入角色包</span>
             <input
               type="file"
               accept=".pack,.zip"
-              style={{ display: "block", marginTop: 8 }}
+              className="file-input"
+              disabled={deleting}
               onChange={(e) => void importPack(e.target.files?.[0] || null)}
             />
           </label>
-          <Button variant="soft" disabled={!selectedId} onClick={() => void exportPack()}>
+          <Button variant="soft" disabled={!selectedId || deleting} onClick={() => void exportPack()}>
             导出选中角色
           </Button>
-        </div>
+        </aside>
 
-        <div className="card">
-          <Text weight="medium">{isNew ? "新建角色" : "编辑选中角色"}</Text>
-          <Text size="1" color="gray" as="p" mb="3">
-            保存后会激活该角色；外观选择只影响桌宠画面。
-          </Text>
+        <section className="editor-pane character-editor">
+          <header className="editor-heading">
+            <div>
+              <h2>{isNew ? "新建角色" : "编辑角色"}</h2>
+              <p>保存后会激活该角色；外观选择只影响桌宠画面。</p>
+            </div>
+            {selected ? <span>版本 {selected.revision}</span> : null}
+          </header>
           <Field label="角色名称">
             <TextField.Root value={name} onChange={(e) => setName(e.target.value)} maxLength={48} required />
           </Field>
@@ -203,7 +245,7 @@ export function CharacterPage({ onToast }: { onToast: (m: string, e?: boolean) =
           <Field label="日常说话方式">
             <TextArea value={dialogueStyle} onChange={(e) => setDialogueStyle(e.target.value)} rows={3} />
           </Field>
-          <div className="grid-2">
+          <div className="form-grid form-grid-2">
             <Field label="文本语言">
               <Select.Root value={textLanguage} onValueChange={setTextLanguage}>
                 <Select.Trigger />
@@ -214,7 +256,7 @@ export function CharacterPage({ onToast }: { onToast: (m: string, e?: boolean) =
                 </Select.Content>
               </Select.Root>
             </Field>
-            <Field label="语音语言">
+            <Field label="角色语言偏好">
               <Select.Root value={speakingLanguage} onValueChange={setSpeakingLanguage}>
                 <Select.Trigger />
                 <Select.Content position="popper" side="bottom" align="start" sideOffset={6}>
@@ -237,15 +279,20 @@ export function CharacterPage({ onToast }: { onToast: (m: string, e?: boolean) =
               </Select.Content>
             </Select.Root>
           </Field>
-          <div className="form-actions">
-            <Button onClick={() => void save()}>{isNew ? "创建并激活" : "更新并激活"}</Button>
+          <div className={`form-actions ${selected ? "spread" : ""}`}>
+            {selected ? (
+              <Button color="red" variant="soft" disabled={deleting} onClick={() => void deleteSelected()}>
+                {deleting ? "删除中" : "删除角色"}
+              </Button>
+            ) : null}
+            <Button disabled={deleting} onClick={() => void save()}>
+              {isNew ? "创建并激活" : "更新并激活"}
+            </Button>
           </div>
           {selected ? (
-            <Text size="1" color="gray" mt="2">
-              ID {selected.characterId} · rev {selected.revision}
-            </Text>
+            <Text size="1" color="gray" mt="2">ID {selected.characterId}</Text>
           ) : null}
-        </div>
+        </section>
       </div>
     </section>
   );
@@ -265,14 +312,14 @@ export function ProfilePage({ onToast }: { onToast: (m: string, e?: boolean) => 
   }, []);
 
   return (
-    <section>
+    <section className="profile-page config-flow narrow-flow">
       <PageHeader
         title="怎样称呼你"
-        description="这个称呼会进入对话上下文，让文字与语音都能自然提到你。"
+        description="这个称呼会进入对话上下文，让角色在交流中自然提到你。"
         status={name || "可以留空"}
         ready={Boolean(name)}
       />
-      <div className="card">
+      <ConfigSection title="偏好称呼" description="这个称呼会进入每次对话的角色上下文。">
         <Field label="偏好称呼" hint="例如 Rinai、凛，或任何让你觉得自然的名字。">
           <TextField.Root
             value={name}
@@ -310,7 +357,7 @@ export function ProfilePage({ onToast }: { onToast: (m: string, e?: boolean) => 
             保存称呼
           </Button>
         </div>
-      </div>
+      </ConfigSection>
     </section>
   );
 }
@@ -361,19 +408,14 @@ export function ModelPage({ onToast }: { onToast: (m: string, e?: boolean) => vo
   }, []);
 
   return (
-    <section>
+    <section className="model-page config-flow">
       <PageHeader
         title="模型连接"
-        description="明确选择协议；FAIRY 不会自动试错、切换接口或回退 Provider。"
+        description="明确选择协议；FAIRY 不会自动试错、切换接口或回退提供商。"
         status={configured ? "已就绪" : "需要配置"}
         ready={configured}
       />
-      <div className="stack">
-      <div className="card">
-        <Text weight="medium">对话模型</Text>
-        <Text as="p" size="1" color="gray" mb="3">
-          负责对话、规划、记忆提取与知识整理。
-        </Text>
+      <ConfigSection title="对话模型" description="负责对话、规划、记忆提取与知识整理。">
         <Field label="OpenAI 兼容协议">
           <Select.Root value={protocol} onValueChange={setProtocol}>
             <Select.Trigger />
@@ -383,15 +425,15 @@ export function ModelPage({ onToast }: { onToast: (m: string, e?: boolean) => vo
             </Select.Content>
           </Select.Root>
         </Field>
-        <div className="grid-2">
-          <Field label="Base URL" hint="不要附带具体接口路径。">
+        <div className="form-grid form-grid-2">
+          <Field label="服务地址" hint="不要附带具体接口路径。">
             <TextField.Root value={endpoint} onChange={(e) => setEndpoint(e.target.value)} />
           </Field>
           <Field label="模型名称">
             <TextField.Root value={model} onChange={(e) => setModel(e.target.value)} />
           </Field>
         </div>
-        <div className="grid-2">
+        <div className="form-grid form-grid-2">
           <Field label="上下文窗口">
             <TextField.Root value={contextWindowTokens} onChange={(e) => setCtx(e.target.value)} type="number" />
           </Field>
@@ -399,13 +441,13 @@ export function ModelPage({ onToast }: { onToast: (m: string, e?: boolean) => vo
             <Select.Root value={authMode} onValueChange={setAuthMode}>
               <Select.Trigger />
               <Select.Content position="popper" side="bottom" align="start" sideOffset={6}>
-                <Select.Item value="bearer_key">Bearer Key</Select.Item>
-                <Select.Item value="no_auth">No Auth</Select.Item>
+                <Select.Item value="bearer_key">Bearer 密钥</Select.Item>
+                <Select.Item value="no_auth">无需认证</Select.Item>
               </Select.Content>
             </Select.Root>
           </Field>
         </div>
-        <Field label="API Key" hint="留空则保留已保存的密钥。">
+        <Field label="API 密钥" hint="留空则保留已保存的密钥。">
           <TextField.Root type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
         </Field>
         <Field label="视觉输入" hint="仅在确认当前模型支持图片输入时启用。">
@@ -449,13 +491,9 @@ export function ModelPage({ onToast }: { onToast: (m: string, e?: boolean) => vo
             保存连接
           </Button>
         </div>
-      </div>
-      <div className="card">
-        <Text weight="medium">语义嵌入模型</Text>
-        <Text as="p" size="1" color="gray" mb="3">
-          启用后，允许生成 embedding 的记忆与知识正文会发送到外部模型提供商。
-        </Text>
-        <Field label="Provider">
+      </ConfigSection>
+      <ConfigSection title="语义嵌入模型" description="启用后，允许生成向量的记忆与知识正文会发送到外部模型提供商。">
+        <Field label="嵌入提供商">
           <Select.Root
             value={semanticProvider}
             onValueChange={(value) => {
@@ -472,35 +510,35 @@ export function ModelPage({ onToast }: { onToast: (m: string, e?: boolean) => vo
           >
             <Select.Trigger />
             <Select.Content position="popper" side="bottom" align="start" sideOffset={6}>
-              <Select.Item value="none">none（FTS-only）</Select.Item>
+              <Select.Item value="none">不启用（仅全文检索）</Select.Item>
               <Select.Item value="siliconflow">SiliconFlow（BGE-M3）</Select.Item>
-              <Select.Item value="openai_compatible_api">openai_compatible_api</Select.Item>
+              <Select.Item value="openai_compatible_api">OpenAI 兼容接口</Select.Item>
             </Select.Content>
           </Select.Root>
         </Field>
-        <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <label className="toggle-row">
           <Switch checked={semanticEnabled} onCheckedChange={setSemanticEnabled} disabled={semanticProvider === "none"} aria-label="启用语义检索" />
           <Text size="2">启用语义检索</Text>
         </label>
-        <div className="grid-2">
-          <Field label="Base URL">
+        <div className="form-grid form-grid-2">
+          <Field label="嵌入服务地址">
             <TextField.Root value={semanticEndpoint} onChange={(e) => setSemanticEndpoint(e.target.value)} placeholder="https://api.siliconflow.cn/v1" />
           </Field>
-          <Field label="Embedding model">
+          <Field label="嵌入模型">
             <TextField.Root value={semanticModel} onChange={(e) => setSemanticModel(e.target.value)} disabled={semanticProvider === "siliconflow"} />
           </Field>
         </div>
-        <div className="grid-2">
-          <Field label="Dimensions">
+        <div className="form-grid form-grid-2">
+          <Field label="向量维度">
             <TextField.Root type="number" value={String(semanticDimensions)} readOnly />
           </Field>
-          <Field label="API key（仅写入，不会回显）">
+          <Field label="API 密钥（仅写入，不会回显）">
             <TextField.Root
               type="password"
               value={semanticApiKey}
               onChange={(e) => setSemanticApiKey(e.target.value)}
               autoComplete="new-password"
-              placeholder={semanticCredentialConfigured ? "已配置，留空表示保持不变" : "输入 provider API key"}
+              placeholder={semanticCredentialConfigured ? "已配置，留空表示保持不变" : "输入提供商 API 密钥"}
             />
           </Field>
         </div>
@@ -548,142 +586,7 @@ export function ModelPage({ onToast }: { onToast: (m: string, e?: boolean) => vo
             保存语义嵌入
           </Button>
         </div>
-      </div>
-      </div>
-    </section>
-  );
-}
-
-export function SpeechPage({ onToast }: { onToast: (m: string, e?: boolean) => void }) {
-  const [enabled, setEnabled] = useState(false);
-  const [configured, setConfigured] = useState(false);
-  const [form, setForm] = useState({
-    baseUrl: "",
-    appId: "",
-    synthesisResourceId: "",
-    synthesisModel: "",
-    defaultSpeaker: "",
-    defaultFormat: "mp3",
-    apiKey: "",
-    accessToken: "",
-  });
-
-  async function reload() {
-    const s = await api<any>("/config/speech");
-    setConfigured(Boolean(s.configured));
-    setEnabled(Boolean(s.enabled));
-    setForm((f) => ({
-      ...f,
-      baseUrl: s.baseUrl || "",
-      appId: s.appId || "",
-      synthesisResourceId: s.synthesisResourceId || "",
-      synthesisModel: s.synthesisModel || "",
-      defaultSpeaker: s.defaultSpeaker || "",
-      defaultFormat: s.defaultFormat || "mp3",
-      apiKey: "",
-      accessToken: "",
-    }));
-  }
-
-  useEffect(() => {
-    reload().catch((e) => onToast(e.message, true));
-  }, []);
-
-  function set<K extends keyof typeof form>(key: K, value: string) {
-    setForm((f) => ({ ...f, [key]: value }));
-  }
-
-  return (
-    <section>
-      <PageHeader
-        title="语音 TTS"
-        description="火山语音克隆 HTTP；ASR / 打断后置。"
-        status={enabled ? "已启用" : configured ? "已配置" : "未启用"}
-        ready={enabled && configured}
-      />
-      <div className="card">
-        <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-          <Switch checked={enabled} onCheckedChange={setEnabled} />
-          <Text size="2">启用语音合成</Text>
-        </label>
-        <Field label="Base URL">
-          <TextField.Root value={form.baseUrl} onChange={(e) => set("baseUrl", e.target.value)} />
-        </Field>
-        <div className="grid-2">
-          <Field label="App ID">
-            <TextField.Root value={form.appId} onChange={(e) => set("appId", e.target.value)} />
-          </Field>
-          <Field label="Synthesis resource ID">
-            <TextField.Root value={form.synthesisResourceId} onChange={(e) => set("synthesisResourceId", e.target.value)} />
-          </Field>
-        </div>
-        <div className="grid-2">
-          <Field label="Synthesis model">
-            <TextField.Root value={form.synthesisModel} onChange={(e) => set("synthesisModel", e.target.value)} />
-          </Field>
-          <Field label="Default speaker">
-            <TextField.Root value={form.defaultSpeaker} onChange={(e) => set("defaultSpeaker", e.target.value)} />
-          </Field>
-        </div>
-        <Field label="Default format">
-          <TextField.Root value={form.defaultFormat} onChange={(e) => set("defaultFormat", e.target.value)} />
-        </Field>
-        <div className="grid-2">
-          <Field label="API Key" hint="留空保留">
-            <TextField.Root type="password" value={form.apiKey} onChange={(e) => set("apiKey", e.target.value)} />
-          </Field>
-          <Field label="Access Token" hint="留空保留">
-            <TextField.Root type="password" value={form.accessToken} onChange={(e) => set("accessToken", e.target.value)} />
-          </Field>
-        </div>
-        <div className="form-actions">
-          <Button
-            color="tomato"
-            variant="soft"
-            onClick={() =>
-              void api("/config/speech", { method: "DELETE" })
-                .then(() => {
-                  onToast("语音已清除");
-                  return reload();
-                })
-                .catch((e) => onToast(e.message, true))
-            }
-          >
-            清除全部
-          </Button>
-          <Button
-            onClick={() =>
-              void api("/config/speech", {
-                method: "PUT",
-                body: JSON.stringify({
-                  enabled,
-                  baseUrl: form.baseUrl,
-                  appId: form.appId,
-                  synthesisResourceId: form.synthesisResourceId,
-                  synthesisModel: form.synthesisModel,
-                  defaultSpeaker: form.defaultSpeaker,
-                  defaultFormat: form.defaultFormat,
-                  defaultLanguage: 0,
-                  apiKey: form.apiKey,
-                  accessToken: form.accessToken,
-                  clearApiKey: false,
-                  clearAccessToken: false,
-                  trainPath: "",
-                  queryPath: "",
-                  upgradePath: "",
-                }),
-              })
-                .then(() => {
-                  onToast("语音已保存");
-                  return reload();
-                })
-                .catch((e) => onToast(e.message, true))
-            }
-          >
-            保存
-          </Button>
-        </div>
-      </div>
+      </ConfigSection>
     </section>
   );
 }
