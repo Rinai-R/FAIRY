@@ -1,11 +1,13 @@
-import { open, readdir, readFile, rename, stat } from "node:fs/promises";
+import { chmod, mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
-const DEFAULT_DATA_DIR = "/root/llonebot/data";
+const DEFAULT_DATA_DIR = "/app/llbot/data";
 const DEFAULT_INTERVAL_MS = 2000;
 const ACCOUNT_CONFIG_PATTERN = /^config_[1-9][0-9]*\.json$/;
+const AUTH_TOKEN_FILE = "auth_token.txt";
+const WEBUI_TOKEN_FILE = "webui_token.txt";
 
 export class ConfigError extends Error {
   constructor(code) {
@@ -49,6 +51,58 @@ function uniqueConnection(connections, type) {
     throw new ConfigError(`${type.replace("-", "_")}_connection_required`);
   }
   return matches[0];
+}
+
+async function configureTokenFile(dataDir, token, fileName, codePrefix) {
+  if (typeof token !== "string" || token.length === 0 || token !== token.trim()) {
+    throw new ConfigError(`${codePrefix}_required`);
+  }
+  try {
+    await mkdir(dataDir, { recursive: true, mode: 0o700 });
+  } catch {
+    throw new ConfigError("data_dir_unavailable");
+  }
+
+  const filePath = path.join(dataDir, fileName);
+  const content = `${token}\n`;
+  try {
+    const [current, currentStat] = await Promise.all([readFile(filePath, "utf8"), stat(filePath)]);
+    if (current === content) {
+      if ((currentStat.mode & 0o777) !== 0o600) {
+        await chmod(filePath, 0o600);
+        return true;
+      }
+      return false;
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw new ConfigError(`${codePrefix}_read_failed`);
+  }
+
+  const temporaryPath = path.join(dataDir, `.${fileName}.${process.pid}.tmp`);
+  let handle;
+  try {
+    await rm(temporaryPath, { force: true });
+    handle = await open(temporaryPath, "wx", 0o600);
+    await handle.writeFile(content, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(temporaryPath, filePath);
+    await chmod(filePath, 0o600);
+  } catch {
+    if (handle) await handle.close().catch(() => undefined);
+    await rm(temporaryPath, { force: true }).catch(() => undefined);
+    throw new ConfigError(`${codePrefix}_write_failed`);
+  }
+  return true;
+}
+
+export function configureAuthToken(dataDir, token) {
+  return configureTokenFile(dataDir, token, AUTH_TOKEN_FILE, "auth_token");
+}
+
+export function configureWebUIToken(dataDir, token) {
+  return configureTokenFile(dataDir, token, WEBUI_TOKEN_FILE, "webui_token");
 }
 
 export async function configureFile(filePath, token) {
@@ -114,7 +168,32 @@ async function run() {
     process.exitCode = 1;
     return;
   }
-  const dataDir = process.env.LLONEBOT_DATA_DIR || DEFAULT_DATA_DIR;
+  const webuiToken = process.env.LLBOT_WEBUI_TOKEN;
+  if (typeof webuiToken !== "string" || webuiToken.length === 0 || webuiToken !== webuiToken.trim()) {
+    console.error("llonebot-config: webui_token_required");
+    process.exitCode = 1;
+    return;
+  }
+  const authToken = process.env.LLBOT_AUTH_TOKEN;
+  if (typeof authToken !== "string" || authToken.length === 0 || authToken !== authToken.trim()) {
+    console.error("llonebot-config: auth_token_required");
+    process.exitCode = 1;
+    return;
+  }
+  const dataDir = process.env.LLBOT_DATA_DIR || DEFAULT_DATA_DIR;
+  try {
+    const [authChanged, webuiChanged] = await Promise.all([
+      configureAuthToken(dataDir, authToken),
+      configureWebUIToken(dataDir, webuiToken),
+    ]);
+    console.log(`llonebot-config: auth_token: ok${authChanged ? ": updated" : ""}`);
+    console.log(`llonebot-config: webui_token: ok${webuiChanged ? ": updated" : ""}`);
+  } catch (error) {
+    const code = error instanceof ConfigError ? error.code : "unknown_error";
+    console.error(`llonebot-config: initialization: ${code}`);
+    process.exitCode = 1;
+    return;
+  }
   let stopped = false;
   process.once("SIGINT", () => { stopped = true; });
   process.once("SIGTERM", () => { stopped = true; });
@@ -140,4 +219,3 @@ async function run() {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await run();
 }
-

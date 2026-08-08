@@ -1,31 +1,48 @@
 services:
-  llonebot:
-    image: initialencounter/llonebot@sha256:da9e3a2b3e23daa2d9f5b48c5963a328dcc8471e8143c2a22f8e759dc26cb590
-    restart: unless-stopped
-    environment:
-      AUTH_TOKEN: ${LLONEBOT_AUTH_TOKEN:?LLONEBOT_AUTH_TOKEN is required}
-      QUICK_LOGIN_QQ: ${LLONEBOT_QUICK_LOGIN_QQ:-}
-    ports:
-      - "127.0.0.1:3080:3080"
-    expose:
-      - "3000"
-    volumes:
-      - llonebot-qq-login:/root/.config/QQ
-      - llonebot-data:/root/llonebot
-
-  llonebot-config:
+  llbot-config:
     image: node:22-alpine
     restart: unless-stopped
     command: ["node", "/opt/fairy/configure.mjs"]
     environment:
       FAIRY_ONEBOT_TOKEN: ${FAIRY_ONEBOT_TOKEN:?FAIRY_ONEBOT_TOKEN is required}
-      LLONEBOT_DATA_DIR: /root/llonebot/data
+      LLBOT_AUTH_TOKEN: ${LLBOT_AUTH_TOKEN:?LLBOT_AUTH_TOKEN is required}
+      LLBOT_WEBUI_TOKEN: ${LLBOT_WEBUI_TOKEN:?LLBOT_WEBUI_TOKEN is required}
+      LLBOT_DATA_DIR: /app/llbot/data
     volumes:
-      - llonebot-data:/root/llonebot
+      - llbot-data:/app/llbot/data
       - ./deploy/llonebot/configure.mjs:/opt/fairy/configure.mjs:ro
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "const fs=require('node:fs');const root='/app/llbot/data/';const ok=['auth_token.txt','webui_token.txt'].every(n=>{const s=fs.statSync(root+n);return s.isFile()&&s.size>0&&(s.mode&0o777)===0o600});process.exit(ok?0:1)"
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  llbot:
+    image: linyuchen/llbot:8.1.5@sha256:e36f38ea086cd383b2bf9ed019cb95c8a4b407fc16acd107a9b87193f3b0dc9c
+    restart: unless-stopped
+    environment:
+      WEBUI_PORT: "3080"
+    ports:
+      - "127.0.0.1:3080:3080"
+    expose:
+      - "3000"
+    volumes:
+      - llbot-data:/app/llbot/data
     depends_on:
-      llonebot:
-        condition: service_started
+      llbot-config:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "fetch('http://127.0.0.1:'+(process.env.WEBUI_PORT||3080)).then(()=>process.exit(0),()=>process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   qq-onebot:
     build:
@@ -38,17 +55,16 @@ services:
       FAIRY_CORE_ENDPOINT: http://fairy:8787
       FAIRY_CORE_TOKEN: ${FAIRY_API_TOKEN:?FAIRY_API_TOKEN is required}
       FAIRY_ONEBOT_WEBHOOK_ENDPOINT: http://0.0.0.0:3002
-      FAIRY_ONEBOT_API_ENDPOINT: http://llonebot:3000
+      FAIRY_ONEBOT_API_ENDPOINT: http://llbot:3000
       FAIRY_ONEBOT_TOKEN: ${FAIRY_ONEBOT_TOKEN:?FAIRY_ONEBOT_TOKEN is required}
       FAIRY_ONEBOT_CONTAINER_NETWORK: "true"
     depends_on:
       fairy:
         condition: service_healthy
-      llonebot:
-        condition: service_started
-      llonebot-config:
-        condition: service_started
+      llbot:
+        condition: service_healthy
+      llbot-config:
+        condition: service_healthy
 
 volumes:
-  llonebot-qq-login:
-  llonebot-data:
+  llbot-data:

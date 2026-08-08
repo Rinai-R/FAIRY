@@ -23,32 +23,34 @@ docker compose up --build
 
 ## QQ 群聊 Docker 接入
 
-仓库提供可选的 `docker-compose.qq.yml`，组合 LLOneBot 镜像、自动配置 sidecar 和独立 QQ Surface。LLOneBot 当前固定到已验证的 multi-arch manifest digest，对应 LLOneBot `8.1.5`、PMHQ `8.1.1`、QQ `3.2.31-260710`，支持 `linux/amd64` 与 `linux/arm64`；完整来源和 child digest 见 `deploy/llonebot/image-contract.json`。首次使用先从示例创建本地 env，并填写全部必需空值：
+仓库提供可选的 `docker-compose.qq.yml`，组合 LLBot direct、自动配置 sidecar 和独立 QQ Surface。Compose 采用 [LLOneBot 官方安装脚本](https://github.com/LLOneBot/LuckyLilliaBot/blob/a0337794382612cbedd0aea9955ce749925f776c/script/install-llbot-docker.sh)的 direct 单容器拓扑，并以完整 manifest digest 固定 `linyuchen/llbot:8.1.5`。`linyuchen` 是镜像发布者的个人 Docker Hub namespace，不是 LLOneBot 组织 namespace；公开 manifest、amd64/arm64 child digest 和固定上游 revision 记录在 `deploy/llonebot/image-contract.json`。首次使用先从示例创建本地 env，并填写全部必需空值：
 
 ```bash
 cp .env.example .env
 docker compose -f docker-compose.yml -f docker-compose.qq.yml up -d --build
 ```
 
-其中 `LLONEBOT_AUTH_TOKEN` 是从 [LuckyLillia Auth](https://auth.luckylillia.com) 获取的 PMHQ/LuckyLillia 授权，不能本地随机生成；`FAIRY_ONEBOT_TOKEN` 是 FAIRY 与 LLOneBot HTTP API/事件回调共同使用的 OneBot access token，两者不能复用。`FAIRY_API_TOKEN` 是 QQ Surface 访问 Core 的 token。
+其中 `LLBOT_AUTH_TOKEN` 是从 [LuckyLillia Auth](https://auth.luckylillia.com) 获取的 LLBot direct 授权，不能本地随机生成；`LLBOT_WEBUI_TOKEN` 是独立的 LLBot WebUI 密码，只使用英文字母和数字；`FAIRY_ONEBOT_TOKEN` 是 FAIRY 与 LLBot HTTP API/事件回调共同使用的 OneBot access token；`FAIRY_API_TOKEN` 是 QQ Surface 访问 Core 的 token。四种凭据不得复用。若旧授权曾交给不再信任的镜像或环境，必须在 LuckyLillia Auth 页面撤销并重新签发；清空本地 `.env` 不能撤销远端授权。
 
-启动后打开 [FAIRY 控制台](http://127.0.0.1:8787/console/) 的“接入”页，填写允许 FAIRY 参与的 QQ 群号并保存；空列表会拒绝全部群。随后打开 [LLOneBot WebUI](http://127.0.0.1:3080) 完成 QQ 扫码登录。登录前，LLOneBot 配置 sidecar 会等待 `/root/llonebot/data/config_<uin>.json`，不会伪造 QQ 已连接；登录后它会自动启用容器内 OneBot HTTP API 和指向 QQ Surface 的 HTTP POST，无需在 WebUI 手工填写 endpoint。控制台保存的群范围对 QQ Surface 下一条群事件生效，无需重启。
+启动后打开 [FAIRY 控制台](http://127.0.0.1:8787/console/) 的“接入”页，填写允许 FAIRY 参与的 QQ 群号并保存；空列表会拒绝全部群。随后打开 [LLBot WebUI](http://127.0.0.1:3080)，使用 `.env` 中的 `LLBOT_WEBUI_TOKEN` 登录并完成 QQ 扫码。配置 sidecar 会先以 mode `0600` 原子初始化 `/app/llbot/data/auth_token.txt` 和 `/app/llbot/data/webui_token.txt`，再等待 LLBot 生成 `/app/llbot/data/config_<uin>.json`；它不会伪造 QQ 已连接。登录后 sidecar 自动启用容器内 `http://llbot:3000` action API 和指向 `http://qq-onebot:3002` 的 HTTP POST，无需在 WebUI 手工填写 endpoint。控制台保存的群范围对 QQ Surface 下一条群事件生效，无需重启。
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.qq.yml logs -f llonebot llonebot-config qq-onebot
+docker compose -f docker-compose.yml -f docker-compose.qq.yml logs -f llbot llbot-config qq-onebot
 docker compose -f docker-compose.yml -f docker-compose.qq.yml down
 ```
 
-QQ 登录态和 LLOneBot 数据保存在 `llonebot-qq-login`、`llonebot-data` volume。普通 `down` 不删除它们；不要使用 `down -v`，除非明确要清除登录态。宿主机只通过回环地址访问 Core `8787` 和 LLOneBot WebUI `3080`，OneBot `3000` 与事件 listener `3002` 不发布到宿主机。
+QQ 登录态、LLBot 配置和两个授权文件统一保存在 `llbot-data` volume。普通 `down` 不删除该卷；不要使用 `down -v`，除非明确要清除登录态和配置。配置 sidecar 是唯一通过环境变量接收 LLBot auth/WebUI token 的服务，LLBot 只读取卷内文件；QQ overlay 不使用 `privileged`，任何服务都不挂载 Docker socket。宿主机只通过回环地址访问 Core `8787` 和 LLBot WebUI `3080`，OneBot `3000` 与事件 listener `3002` 均不发布到宿主机。
 
-升级 LLOneBot 时不得把 image 改回 `latest`。先核对候选公开 manifest 和 pinned 上游默认配置，再同步修改 `deploy/llonebot/image-contract.json` 与 `docker-compose.qq.yml`，最后执行：
+从旧有头部署迁移时，先执行普通 `down`，不要附加 `-v`；把 `.env` 中的旧授权变量改名为 `LLBOT_AUTH_TOKEN` 后再启动新 overlay。旧登录卷不会被新部署读取，也不会被自动删除；direct 首次启动通常需要重新扫码。回滚时恢复旧 overlay 和旧变量，并重新挂载保留的旧登录卷。确认不再回滚后，才由 operator 手工清理孤立卷。
+
+升级 LLBot 时不得把 image 改成 `latest` 或只写 tag。先核对官方安装脚本、候选版本标签、公开 manifest 和上游默认配置，再同步修改 `deploy/llonebot/image-contract.json` 与 `docker-compose.qq.yml`，最后执行：
 
 ```bash
 node deploy/llonebot/verify-image.mjs
 node --test deploy/llonebot/image-contract.test.mjs deploy/llonebot/configure.test.mjs
 ```
 
-第一条命令会实时验证 registry 的 amd64/arm64 manifest 和 sidecar 依赖的唯一 `http`/`http-post` 结构；网络或上游不可用时会明确失败，不会 fallback 到浮动 tag。它不需要 PMHQ 授权或 QQ 登录，也不能替代 operator 的真实登录与测试群 smoke。
+第一条命令会实时验证 LLBot registry tag 的 manifest/digest、官方安装脚本的 direct 拓扑、两个授权文件和 sidecar 依赖的唯一 `http`/`http-post` 结构；网络或上游不可用时会明确失败，不会 fallback 到浮动 tag。它不需要真实授权或 QQ 登录，也不能替代 operator 的真实登录与测试群 smoke。真实扫码和群消息结果必须单独记录为 PASS、INCOMPLETE 或 N/A，不能用受控 HTTP fixture 代替。
 
 ## CLI
 
@@ -70,7 +72,6 @@ go -C fairy run . metrics
 ```bash
 go -C fairy run . config get model
 go -C fairy run . config apply model --file model.json
-go -C fairy run . config apply speech --file - < speech.json
 go -C fairy run . profile apply --file profile.json
 go -C fairy run . character create --file character.json
 go -C fairy run . character activate --character <id> --revision <revision>
@@ -140,4 +141,4 @@ docker compose up -d --build --wait
 git diff --check
 ```
 
-项目结构、产品边界和当前领域事实见 `openspec/project.md` 与 `openspec/domains/`。
+项目结构和产品边界见 `openspec/project.md`，当前行为合同位于 `openspec/specs/`，工程知识参考位于 `openspec/domains/`。

@@ -1,23 +1,21 @@
 {
-  "schemaVersion": 1,
-  "repository": "initialencounter/llonebot",
-  "manifestDigest": "sha256:da9e3a2b3e23daa2d9f5b48c5963a328dcc8471e8143c2a22f8e759dc26cb590",
-  "platforms": {
-    "linux/amd64": "sha256:712a5693ffa7fad6e3b47adad1ead053189e890e68cfc6acc4b5f809a8a6e7ae",
-    "linux/arm64": "sha256:e5f137571b580f83ae129120f4abb30e0500ec7c7be0248b906e8047e9fde080"
+  "schemaVersion": 3,
+  "images": {
+    "llbot": {
+      "repository": "linyuchen/llbot",
+      "tag": "8.1.5",
+      "manifestDigest": "sha256:e36f38ea086cd383b2bf9ed019cb95c8a4b407fc16acd107a9b87193f3b0dc9c",
+      "platforms": {
+        "linux/amd64": "sha256:a67c6e23dadf7e0767087ad92e4bb33caf9453d7c16c9c0ddcb5bd206f4ed0de",
+        "linux/arm64": "sha256:5cdbd390e27c6e49f49b37c8c2f5a618790cb50ddb3c26c5c6dd9334057d51a7"
+      }
+    }
   },
   "upstream": {
-    "llonebotNix": {
-      "revision": "52baa412eeb13a828d9049bf992901bb62db54ce",
-      "sourceUrl": "https://github.com/LLOneBot/llonebot.nix/tree/52baa412eeb13a828d9049bf992901bb62db54ce"
-    },
-    "llonebot": {
-      "version": "8.1.5",
-      "revision": "a0337794382612cbedd0aea9955ce749925f776c",
-      "sourceUrl": "https://github.com/LLOneBot/LuckyLilliaBot/tree/a0337794382612cbedd0aea9955ce749925f776c",
-      "defaultConfigUrl": "https://raw.githubusercontent.com/LLOneBot/LuckyLilliaBot/a0337794382612cbedd0aea9955ce749925f776c/src/main/config/default_config.json"
-    },
-    "pmhqVersion": "8.1.1",
-    "qqVersion": "3.2.31-260710"
+    "repository": "LLOneBot/LuckyLilliaBot",
+    "revision": "a0337794382612cbedd0aea9955ce749925f776c",
+    "sourceUrl": "https://github.com/LLOneBot/LuckyLilliaBot/tree/a0337794382612cbedd0aea9955ce749925f776c",
+    "installerUrl": "https://raw.githubusercontent.com/LLOneBot/LuckyLilliaBot/a0337794382612cbedd0aea9955ce749925f776c/script/install-llbot-docker.sh",
+    "defaultConfigUrl": "https://raw.githubusercontent.com/LLOneBot/LuckyLilliaBot/a0337794382612cbedd0aea9955ce749925f776c/src/main/config/default_config.json"
   }
 }

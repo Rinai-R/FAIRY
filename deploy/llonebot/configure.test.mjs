@@ -4,9 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { ConfigError, configureAvailableFiles, configureFile } from "./configure.mjs";
+import { ConfigError, configureAuthToken, configureAvailableFiles, configureFile, configureWebUIToken } from "./configure.mjs";
 
 const secret = "test-onebot-token-not-for-production";
+const webuiSecret = "test-webui-token-not-for-production";
+const authSecret = "test-auth-token-not-for-production";
 
 function fixture() {
   return {
@@ -48,6 +50,56 @@ test("configures account JSON atomically and remains idempotent", async () => {
   assert.equal(await readFile(filePath, "utf8"), first);
 });
 
+test("initializes the WebUI token atomically with private permissions", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "fairy-llbot-webui-"));
+  const filePath = path.join(directory, "webui_token.txt");
+
+  assert.equal(await configureWebUIToken(directory, webuiSecret), true);
+  assert.equal(await readFile(filePath, "utf8"), `${webuiSecret}\n`);
+  assert.equal((await stat(filePath)).mode & 0o777, 0o600);
+  assert.equal(await configureWebUIToken(directory, webuiSecret), false);
+
+  await writeFile(filePath, "old-token\n", { mode: 0o644 });
+  assert.equal(await configureWebUIToken(directory, webuiSecret), true);
+  assert.equal(await readFile(filePath, "utf8"), `${webuiSecret}\n`);
+  assert.equal((await stat(filePath)).mode & 0o777, 0o600);
+});
+
+test("initializes the direct auth token atomically with private permissions", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "fairy-llbot-auth-"));
+  const filePath = path.join(directory, "auth_token.txt");
+
+  assert.equal(await configureAuthToken(directory, authSecret), true);
+  assert.equal(await readFile(filePath, "utf8"), `${authSecret}\n`);
+  assert.equal((await stat(filePath)).mode & 0o777, 0o600);
+  assert.equal(await configureAuthToken(directory, authSecret), false);
+
+  await writeFile(filePath, "old-token\n", { mode: 0o644 });
+  assert.equal(await configureAuthToken(directory, authSecret), true);
+  assert.equal(await readFile(filePath, "utf8"), `${authSecret}\n`);
+  assert.equal((await stat(filePath)).mode & 0o777, 0o600);
+});
+
+test("rejects missing or padded WebUI tokens without exposing them", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "fairy-llbot-webui-invalid-"));
+  for (const token of ["", ` ${webuiSecret}`]) {
+    await assert.rejects(
+      configureWebUIToken(directory, token),
+      (error) => error instanceof ConfigError && !error.message.includes(webuiSecret),
+    );
+  }
+});
+
+test("rejects missing or padded auth tokens without exposing them", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "fairy-llbot-auth-invalid-"));
+  for (const token of ["", ` ${authSecret}`]) {
+    await assert.rejects(
+      configureAuthToken(directory, token),
+      (error) => error instanceof ConfigError && !error.message.includes(authSecret),
+    );
+  }
+});
+
 test("leaves invalid or unsupported account files unchanged with redacted errors", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "fairy-llonebot-invalid-"));
   const cases = [
@@ -76,4 +128,3 @@ test("scans only account config names and reports bounded results", async () => 
   assert.deepEqual(results, [{ name: "config_20001.json", changed: true, code: "ok" }]);
   assert.equal(JSON.parse(await readFile(path.join(directory, "default_config.json"), "utf8")).ob11.enable, false);
 });
-

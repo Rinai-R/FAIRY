@@ -28,12 +28,12 @@ export FAIRY_ONEBOT_TOKEN='LLOneBot access token'
 docker compose -f docker-compose.yml -f docker-compose.qq.yml up -d --build
 ```
 
-先打开 `http://127.0.0.1:8787/console/` 的“接入”页保存允许参与的 QQ 群，再打开 `http://127.0.0.1:3080` 完成 QQ 登录。配置 sidecar 会等待 LLOneBot 生成 `data/config_<uin>.json`，再自动启用容器内 `http://llonebot:3000` action API 和指向 `http://qq-onebot:3002` 的 HTTP POST。不要把 `LLONEBOT_AUTH_TOKEN`（PMHQ 授权）当成 `FAIRY_ONEBOT_TOKEN`（OneBot access token）。详细变量、volume 和日志命令见仓库根 `README.md`。
+先打开 `http://127.0.0.1:8787/console/` 的“接入”页保存允许参与的 QQ 群，再打开 `http://127.0.0.1:3080`，用 `LLBOT_WEBUI_TOKEN` 登录并完成 QQ 扫码。配置 sidecar 会先原子写入 direct 模式所需的 `auth_token.txt` 和 `webui_token.txt`，等待 LLBot 生成 `/app/llbot/data/config_<uin>.json` 后，再自动启用容器内 `http://llbot:3000` action API 和指向 `http://qq-onebot:3002` 的 HTTP POST。`LLBOT_AUTH_TOKEN`、`LLBOT_WEBUI_TOKEN`、`FAIRY_ONEBOT_TOKEN` 和 `FAIRY_API_TOKEN` 各自独立；详细来源、volume、镜像信任边界和日志命令见仓库根 `README.md`。
 
 ## LLOneBot 操作顺序
 
 1. 确认 FAIRY Core 已启动、`FAIRY_CORE_ENDPOINT` 可访问，并在控制台“接入”页保存允许参与的群号。
-2. 在 LLOneBot 中完成 QQ 扫码和登录，启用 OneBot 11 HTTP API，并把 HTTP 事件上报地址设为 `FAIRY_ONEBOT_WEBHOOK_ENDPOINT`；access token 与 `FAIRY_ONEBOT_TOKEN` 一致。
+2. 在 LLBot WebUI 中完成 QQ 扫码和登录。Compose 配置 sidecar 会启用 OneBot 11 HTTP API，并把 HTTP 事件上报地址和 access token 原子写成 `FAIRY_ONEBOT_WEBHOOK_ENDPOINT` 与 `FAIRY_ONEBOT_TOKEN` 对应的值。
 3. 非 Compose 部署在本目录构建并运行：
 
    ```bash
