@@ -255,6 +255,7 @@ func (e *TurnEngine) submitCompiledTurn(
 			if retrievalOmitReason != "" && retrieval.Empty() {
 				setContextSlotOmitReason(slots, "retrieved_context", retrievalOmitReason)
 			}
+			l1Applied := false
 			if agent.lastInputTokens > 0 && len(agent.toolSegments) > 0 {
 				policy := contextplan.PolicyFromContextWindow(agent.connectionConfig.ContextWindowTokens)
 				if policy.AutoInputTokenThreshold != nil &&
@@ -268,6 +269,7 @@ func (e *TurnEngine) submitCompiledTurn(
 						HardPressure:        hardPressure,
 					})
 					agent.toolSegments = contextplan.ApplyToolResultPlan(agent.toolSegments, l1Plan)
+					l1Applied = len(l1Plan.OmittedSegmentIDs) > 0
 					s.appendRuntimeLedger(
 						request.ConversationID, persisted.ID,
 						runtimeLedgerEventCompaction, lifecycle.StatePlanning, "",
@@ -285,6 +287,9 @@ func (e *TurnEngine) submitCompiledTurn(
 			input, err := (character.ContextProjector{}).ProjectSlotsWithTail(slots, agent.toolSegments)
 			if err != nil {
 				return fail("PROMPT_BUILD_FAILED", err)
+			}
+			if l1Applied {
+				s.loopMetrics.compactionApplied("l1")
 			}
 			cacheInput := model.NewCacheKeyInput(model.PromptLaneRespond, agent.connectionConfig.Model, request.ConversationID, instructions)
 			cacheInput.CharacterRevision = characterRecord.Revision

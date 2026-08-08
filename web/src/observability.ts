@@ -140,6 +140,7 @@ export type MetricsSnapshot = {
   runtime: {
     activeBackgroundJobs: number;
     eventSubscribers: number;
+    compaction: CompactionStats;
     experience: ExperienceStats;
   };
   usage: { overall: UsageLane[]; turns: UsageTurn[]; turnCount: number; truncated: boolean };
@@ -150,6 +151,13 @@ export type ExperienceStats = {
   learning: { enqueued: number; dropped: number; succeeded: number; failed: number };
   feedback: { registered: number; dropped: number; succeeded: number; failed: number };
   cacheIdentityVersion: string;
+};
+
+export type CompactionStats = {
+  l1Applied: number;
+  l2Applied: number;
+  l3Applied: number;
+  failed: number;
 };
 
 type SSEEvent = { id: string; event: string; data: string };
@@ -190,6 +198,8 @@ export function parseMetrics(value: unknown): MetricsSnapshot {
   const messages = messagesAvailable ? asRecord(root.messages, "message metrics") : emptyMessageMetrics();
   const messageLatencies = asRecord(messages.latencies, "message latency metrics");
   const runtime = asRecord(root.runtime, "runtime metrics");
+  const agentLoop = asRecord(runtime.agentLoop, "agent loop metrics");
+  const compaction = asRecord(agentLoop.compaction, "context compaction metrics");
   const usage = asRecord(root.usage, "usage metrics");
   const history = root.history === undefined ? [] : root.history;
   if (!Array.isArray(http.routes)) throw new Error("metrics.http.routes 必须是数组");
@@ -245,6 +255,12 @@ export function parseMetrics(value: unknown): MetricsSnapshot {
     runtime: {
       activeBackgroundJobs: requiredNonNegativeInteger(runtime, "activeBackgroundJobs"),
       eventSubscribers: requiredNonNegativeInteger(runtime, "eventSubscribers"),
+      compaction: {
+        l1Applied: requiredNonNegativeInteger(compaction, "l1Applied"),
+        l2Applied: requiredNonNegativeInteger(compaction, "l2Applied"),
+        l3Applied: requiredNonNegativeInteger(compaction, "l3Applied"),
+        failed: requiredNonNegativeInteger(compaction, "failed"),
+      },
       experience: parseExperienceStats(runtime.experience),
     },
     usage: {
@@ -282,6 +298,10 @@ function parseMetricHistoryPoint(value: unknown): MetricsTrendPoint {
     feedbackSucceeded: optionalNonNegativeInteger(point, "feedbackSucceeded"),
     feedbackFailed: optionalNonNegativeInteger(point, "feedbackFailed"),
     feedbackDropped: optionalNonNegativeInteger(point, "feedbackDropped"),
+    compactionL1Applied: optionalNonNegativeInteger(point, "compactionL1Applied"),
+    compactionL2Applied: optionalNonNegativeInteger(point, "compactionL2Applied"),
+    compactionL3Applied: optionalNonNegativeInteger(point, "compactionL3Applied"),
+    compactionFailed: optionalNonNegativeInteger(point, "compactionFailed"),
     goroutines: requiredNonNegativeInteger(point, "goroutines"),
     backgroundJobs: requiredNonNegativeInteger(point, "backgroundJobs"),
     eventSubscribers: requiredNonNegativeInteger(point, "eventSubscribers"),

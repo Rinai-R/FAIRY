@@ -27,6 +27,10 @@ describe("metrics trend projection", () => {
       learningSucceeded: 5,
       feedbackRegistered: 9,
       feedbackSucceeded: 6,
+      compactionL1Applied: 4,
+      compactionL2Applied: 2,
+      compactionL3Applied: 1,
+      compactionFailed: 3,
       goroutines: 11,
       heapMiB: 8,
     });
@@ -98,6 +102,10 @@ function trendPoint(timestampUnixMs: number, httpTotal: number): MetricsTrendPoi
     feedbackSucceeded: 0,
     feedbackFailed: 0,
     feedbackDropped: 0,
+    compactionL1Applied: 0,
+    compactionL2Applied: 0,
+    compactionL3Applied: 0,
+    compactionFailed: 0,
     goroutines: 0,
     backgroundJobs: 0,
     eventSubscribers: 0,
@@ -123,6 +131,7 @@ function snapshot(): MetricsSnapshot {
     runtime: {
       activeBackgroundJobs: 1,
       eventSubscribers: 4,
+      compaction: { l1Applied: 4, l2Applied: 2, l3Applied: 1, failed: 3 },
       experience: {
         learning: { enqueued: 7, dropped: 1, succeeded: 5, failed: 1 },
         feedback: { registered: 9, dropped: 1, succeeded: 6, failed: 2 },

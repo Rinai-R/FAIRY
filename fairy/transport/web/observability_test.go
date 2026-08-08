@@ -45,12 +45,16 @@ func TestMetricHistoryPointProjectsExperienceCounters(t *testing.T) {
 		Learning: LearningQueueStats{Enqueued: 7, Succeeded: 5, Failed: 1, Dropped: 1},
 		Feedback: FeedbackQueueStats{Registered: 9, Succeeded: 6, Failed: 2, Dropped: 1},
 	}
+	response.Runtime.AgentLoop.Compaction = CompactionMetrics{L1Applied: 2, L2Applied: 3, L3Applied: 1, Failed: 4}
 	point := metricHistoryPoint(response, time.UnixMilli(1), 0)
 	if point.LearningEnqueued != 7 || point.LearningSucceeded != 5 || point.LearningFailed != 1 || point.LearningDropped != 1 {
 		t.Fatalf("learning history = %#v", point)
 	}
 	if point.FeedbackRegistered != 9 || point.FeedbackSucceeded != 6 || point.FeedbackFailed != 2 || point.FeedbackDropped != 1 {
 		t.Fatalf("feedback history = %#v", point)
+	}
+	if point.CompactionL1Applied != 2 || point.CompactionL2Applied != 3 || point.CompactionL3Applied != 1 || point.CompactionFailed != 4 {
+		t.Fatalf("compaction history = %#v", point)
 	}
 }
 

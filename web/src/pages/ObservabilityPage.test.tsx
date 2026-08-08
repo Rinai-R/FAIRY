@@ -170,6 +170,7 @@ describe("ObservabilityPage lifecycle", () => {
     expect(screen.getByRole("heading", { name: "模型 Token" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "公共经验学习" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "回复效果反馈" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "上下文压缩" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "堆内存" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "累计模型用量" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "消息时延" })).toBeNull();
@@ -211,6 +212,10 @@ describe("ObservabilityPage lifecycle", () => {
     metrics.history[0].feedbackSucceeded = 1;
     metrics.history[1].feedbackRegistered = 8;
     metrics.history[1].feedbackSucceeded = 6;
+    metrics.history[0].compactionL1Applied = 2;
+    metrics.history[0].compactionL2Applied = 1;
+    metrics.history[1].compactionL1Applied = 5;
+    metrics.history[1].compactionL2Applied = 3;
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(metrics), {
       status: 200,
       headers: { "Content-Type": "application/json" },
@@ -244,7 +249,7 @@ describe("ObservabilityPage lifecycle", () => {
     expect(readout?.textContent).toContain("20");
     expect(readout?.textContent).toContain("2");
     expect(readout?.textContent).toContain("当前 Core");
-    expect(document.querySelectorAll(".metric-chart-process-boundary")).toHaveLength(8);
+    expect(document.querySelectorAll(".metric-chart-process-boundary")).toHaveLength(9);
 
     fireEvent.keyDown(chart, { key: "ArrowLeft" });
     expect(tooltip?.textContent).toContain("10");
@@ -272,6 +277,19 @@ describe("ObservabilityPage lifecycle", () => {
     fireEvent.keyDown(feedbackChart, { key: "ArrowLeft" });
     expect(feedbackReadout?.textContent).toContain("注册3");
     expect(feedbackReadout?.textContent).toContain("成功1");
+
+    const compactionChart = screen.getByRole("img", { name: /上下文压缩/ });
+    vi.spyOn(compactionChart, "getBoundingClientRect").mockReturnValue({
+      x: 0, y: 0, width: 640, height: 220, top: 0, right: 640, bottom: 220, left: 0,
+      toJSON: () => ({}),
+    });
+    fireEvent.focus(compactionChart);
+    const compactionReadout = compactionChart.closest(".metric-trend-chart")?.querySelector<HTMLElement>(".metric-trend-readout");
+    expect(compactionReadout?.textContent).toContain("L1 Tool Result5");
+    expect(compactionReadout?.textContent).toContain("L2 记忆覆盖3");
+    fireEvent.keyDown(compactionChart, { key: "ArrowLeft" });
+    expect(compactionReadout?.textContent).toContain("L1 Tool Result2");
+    expect(compactionReadout?.textContent).toContain("L2 记忆覆盖1");
   });
 
   it("preserves model filtering and stream state while switching tabs", async () => {
@@ -541,6 +559,9 @@ function validMetrics() {
     runtime: {
       activeBackgroundJobs: 0,
       eventSubscribers: 0,
+      agentLoop: {
+        compaction: { l1Applied: 0, l2Applied: 0, l3Applied: 0, failed: 0 },
+      },
       experience: {
         learning: { enqueued: 0, dropped: 0, succeeded: 0, failed: 0 },
         feedback: { registered: 0, dropped: 0, succeeded: 0, failed: 0 },
@@ -635,6 +656,10 @@ function metricHistoryPoint(timestampUnixMs: number, httpTotal: number, httpInFl
     feedbackSucceeded: 0,
     feedbackFailed: 0,
     feedbackDropped: 0,
+    compactionL1Applied: 0,
+    compactionL2Applied: 0,
+    compactionL3Applied: 0,
+    compactionFailed: 0,
     goroutines: 1,
     backgroundJobs: 0,
     eventSubscribers: 0,

@@ -420,7 +420,11 @@ func (s *Service) terminalPersistenceFailure(life *lifecycle.Lifecycle, conversa
 }
 
 func (s *Service) CompactConversation(conversationID string) (historycompaction.Result, error) {
-	return s.compactConversation(conversationID, "manual")
+	result, err := s.compactConversation(conversationID, "manual")
+	if err != nil {
+		s.loopMetrics.compactionFailed()
+	}
+	return result, err
 }
 
 func (s *Service) compactConversation(conversationID string, trigger string) (historycompaction.Result, error) {
@@ -527,6 +531,7 @@ func (s *Service) compactConversation(conversationID string, trigger string) (hi
 	if err != nil {
 		return historycompaction.Result{}, err
 	}
+	s.loopMetrics.compactionApplied("l3")
 	result.RetainedDialogueItems = len(tail)
 	s.appendRuntimeLedger(
 		conversationID, windowed[len(windowed)-1].TurnID,

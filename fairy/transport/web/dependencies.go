@@ -117,10 +117,18 @@ type LatencyMetrics struct {
 }
 
 type AgentLoopMetrics struct {
-	ProviderFirstByte LatencyMetrics `json:"providerFirstByte"`
-	ReplyPreview      LatencyMetrics `json:"replyPreview"`
-	FirstBeat         LatencyMetrics `json:"firstBeat"`
-	Completed         LatencyMetrics `json:"completed"`
+	ProviderFirstByte LatencyMetrics    `json:"providerFirstByte"`
+	ReplyPreview      LatencyMetrics    `json:"replyPreview"`
+	FirstBeat         LatencyMetrics    `json:"firstBeat"`
+	Completed         LatencyMetrics    `json:"completed"`
+	Compaction        CompactionMetrics `json:"compaction"`
+}
+
+type CompactionMetrics struct {
+	L1Applied uint64 `json:"l1Applied"`
+	L2Applied uint64 `json:"l2Applied"`
+	L3Applied uint64 `json:"l3Applied"`
+	Failed    uint64 `json:"failed"`
 }
 
 type LearningQueueStats struct {

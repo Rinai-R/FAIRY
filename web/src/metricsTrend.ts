@@ -27,6 +27,10 @@ export type MetricsTrendPoint = {
   feedbackSucceeded: number;
   feedbackFailed: number;
   feedbackDropped: number;
+  compactionL1Applied: number;
+  compactionL2Applied: number;
+  compactionL3Applied: number;
+  compactionFailed: number;
   goroutines: number;
   backgroundJobs: number;
   eventSubscribers: number;
@@ -90,6 +94,10 @@ export function projectMetricsTrend(snapshot: MetricsSnapshot): MetricsTrendPoin
     feedbackSucceeded: snapshot.runtime.experience.feedback.succeeded,
     feedbackFailed: snapshot.runtime.experience.feedback.failed,
     feedbackDropped: snapshot.runtime.experience.feedback.dropped,
+    compactionL1Applied: snapshot.runtime.compaction.l1Applied,
+    compactionL2Applied: snapshot.runtime.compaction.l2Applied,
+    compactionL3Applied: snapshot.runtime.compaction.l3Applied,
+    compactionFailed: snapshot.runtime.compaction.failed,
     goroutines: snapshot.process.goroutines,
     backgroundJobs: snapshot.runtime.activeBackgroundJobs,
     eventSubscribers: snapshot.runtime.eventSubscribers,

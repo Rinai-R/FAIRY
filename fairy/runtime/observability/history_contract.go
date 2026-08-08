@@ -28,6 +28,10 @@ type MetricHistoryPoint struct {
 	FeedbackSucceeded    uint64  `json:"feedbackSucceeded"`
 	FeedbackFailed       uint64  `json:"feedbackFailed"`
 	FeedbackDropped      uint64  `json:"feedbackDropped"`
+	CompactionL1Applied  uint64  `json:"compactionL1Applied"`
+	CompactionL2Applied  uint64  `json:"compactionL2Applied"`
+	CompactionL3Applied  uint64  `json:"compactionL3Applied"`
+	CompactionFailed     uint64  `json:"compactionFailed"`
 	Goroutines           uint64  `json:"goroutines"`
 	BackgroundJobs       uint64  `json:"backgroundJobs"`
 	EventSubscribers     uint64  `json:"eventSubscribers"`

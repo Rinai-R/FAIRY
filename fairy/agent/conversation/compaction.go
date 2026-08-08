@@ -142,6 +142,7 @@ func (s *Service) scheduleAutoCompaction(conversationID string, events []model.S
 	if err := s.retention.ScheduleCompaction(func() {
 		cacheObservation := lastCacheObservation(events)
 		if err := s.coordinatePressureCompaction(conversationID, promptTokens, cacheObservation, false); err != nil {
+			s.loopMetrics.compactionFailed()
 			if recordErr := s.recordContextWindowFailure(conversationID); recordErr != nil {
 				s.setBackgroundError(recordErr)
 				return
@@ -151,6 +152,7 @@ func (s *Service) scheduleAutoCompaction(conversationID string, events []model.S
 		}
 		s.clearBackgroundError()
 	}); err != nil {
+		s.loopMetrics.compactionFailed()
 		s.setBackgroundError(err)
 		return
 	}
@@ -246,6 +248,7 @@ func (s *Service) prepareBeforeTurn(
 		if errors.Is(err, ErrTurnInProgress) {
 			return result, nil
 		}
+		s.loopMetrics.compactionFailed()
 		if recordErr := s.recordContextWindowFailure(request.ConversationID); recordErr != nil {
 			result.compactionErr = recordErr
 			return result, nil

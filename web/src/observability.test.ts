@@ -87,6 +87,19 @@ describe("observability parsers", () => {
     expect(JSON.stringify(parsed.runtime.experience)).not.toContain("private observation");
   });
 
+  it("parses strict low-sensitivity compaction counters", () => {
+    const input = validMetrics();
+    input.runtime.agentLoop.compaction = { l1Applied: 4, l2Applied: 2, l3Applied: 1, failed: 3 };
+    expect(parseMetrics(input).runtime.compaction).toEqual({ l1Applied: 4, l2Applied: 2, l3Applied: 1, failed: 3 });
+
+    const missing = validMetrics();
+    delete (missing.runtime.agentLoop.compaction as Record<string, unknown>).l2Applied;
+    expect(() => parseMetrics(missing)).toThrow(/l2Applied/);
+    const negative = validMetrics();
+    negative.runtime.agentLoop.compaction.failed = -1;
+    expect(() => parseMetrics(negative)).toThrow(/非负安全整数/);
+  });
+
   it("keeps old metric history compatible while strictly validating current experience counters", () => {
     const input = validMetrics();
     input.history = [{
@@ -119,6 +132,10 @@ describe("observability parsers", () => {
       feedbackSucceeded: 0,
       feedbackFailed: 0,
       feedbackDropped: 0,
+      compactionL1Applied: 0,
+      compactionL2Applied: 0,
+      compactionL3Applied: 0,
+      compactionFailed: 0,
     });
 
     const missing = validMetrics();
@@ -194,6 +211,9 @@ export function validMetrics() {
     runtime: {
       activeBackgroundJobs: 0,
       eventSubscribers: 0,
+      agentLoop: {
+        compaction: { l1Applied: 0, l2Applied: 0, l3Applied: 0, failed: 0 },
+      },
       experience: {
         learning: { enqueued: 0, dropped: 0, succeeded: 0, failed: 0 },
         feedback: { registered: 0, dropped: 0, succeeded: 0, failed: 0 },

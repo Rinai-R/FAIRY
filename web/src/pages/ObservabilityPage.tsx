@@ -249,6 +249,15 @@ const TREND_CHARTS: Array<{
     ],
   },
   {
+    id: "context-compaction", className: "wide", title: "上下文压缩", description: "三层压缩的实际应用与失败累计",
+    series: [
+      { key: "compactionL1Applied", label: "L1 Tool Result", color: "#2878d0" },
+      { key: "compactionL2Applied", label: "L2 记忆覆盖", color: "#3c8b72" },
+      { key: "compactionL3Applied", label: "L3 Full Compact", color: "#7059ad" },
+      { key: "compactionFailed", label: "失败", color: "#b84855" },
+    ],
+  },
+  {
     id: "runtime", className: "wide", title: "运行任务", description: "Go 进程和后台工作负载",
     series: [
       { key: "goroutines", label: "Goroutine", color: "#2878d0" },

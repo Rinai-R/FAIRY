@@ -12,10 +12,18 @@ type LatencyMetrics struct {
 }
 
 type AgentLoopMetricsSnapshot struct {
-	ProviderFirstByte LatencyMetrics `json:"providerFirstByte"`
-	ReplyPreview      LatencyMetrics `json:"replyPreview"`
-	FirstBeat         LatencyMetrics `json:"firstBeat"`
-	Completed         LatencyMetrics `json:"completed"`
+	ProviderFirstByte LatencyMetrics    `json:"providerFirstByte"`
+	ReplyPreview      LatencyMetrics    `json:"replyPreview"`
+	FirstBeat         LatencyMetrics    `json:"firstBeat"`
+	Completed         LatencyMetrics    `json:"completed"`
+	Compaction        CompactionMetrics `json:"compaction"`
+}
+
+type CompactionMetrics struct {
+	L1Applied uint64 `json:"l1Applied"`
+	L2Applied uint64 `json:"l2Applied"`
+	L3Applied uint64 `json:"l3Applied"`
+	Failed    uint64 `json:"failed"`
 }
 
 type agentLoopMetrics struct {
@@ -51,6 +59,25 @@ func (m *agentLoopMetrics) firstBeat(duration time.Duration) {
 
 func (m *agentLoopMetrics) completed(duration time.Duration) {
 	m.observe(&m.snapshot.Completed, duration)
+}
+
+func (m *agentLoopMetrics) compactionApplied(layer string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	switch layer {
+	case "l1":
+		m.snapshot.Compaction.L1Applied++
+	case "l2":
+		m.snapshot.Compaction.L2Applied++
+	case "l3":
+		m.snapshot.Compaction.L3Applied++
+	}
+}
+
+func (m *agentLoopMetrics) compactionFailed() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.snapshot.Compaction.Failed++
 }
 
 func (m *agentLoopMetrics) Snapshot() AgentLoopMetricsSnapshot {

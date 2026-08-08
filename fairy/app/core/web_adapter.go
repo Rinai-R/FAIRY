@@ -54,6 +54,12 @@ func (a turnAPIAdapter) AgentLoopMetrics() api.AgentLoopMetrics {
 		ReplyPreview:      latencyMetricsProjection(metrics.ReplyPreview),
 		FirstBeat:         latencyMetricsProjection(metrics.FirstBeat),
 		Completed:         latencyMetricsProjection(metrics.Completed),
+		Compaction: api.CompactionMetrics{
+			L1Applied: metrics.Compaction.L1Applied,
+			L2Applied: metrics.Compaction.L2Applied,
+			L3Applied: metrics.Compaction.L3Applied,
+			Failed:    metrics.Compaction.Failed,
+		},
 	}
 }
 

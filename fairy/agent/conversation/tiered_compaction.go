@@ -103,6 +103,7 @@ func (s *Service) commitAvailableL2Projection(
 		if err != nil {
 			return currentTokens, err
 		}
+		s.loopMetrics.compactionApplied("l2")
 		if len(bootstrap.Messages) > 0 {
 			s.appendRuntimeLedger(
 				conversationID, bootstrap.Messages[len(bootstrap.Messages)-1].TurnID,
