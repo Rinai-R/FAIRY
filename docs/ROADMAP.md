@@ -7,15 +7,13 @@
 - [x] Session Core：显式 Agent Loop、可取消 Turn、白名单工具、节奏化回复、持久会话与分层记忆
 - [x] 数据底座：PostgreSQL 17、GORM additive migration、pg_trgm + pgvector 单库混合召回与 OpenSERP 可选公开检索
 - [x] Desktop Surface：Wails v3 桌宠、快捷输入、历史消息、coarse observation 与受控的模型按需主屏捕获
-- [x] Web 控制台：角色、称呼、模型、语音、表情包、智能、用量与可观测性管理
+- [x] Web 控制台：角色、称呼、模型、表情包、智能、用量与可观测性管理
 - [x] 公共社交陪伴：QQ 群聊接入，由 Core 判断是否自然参与
-- [x] 语音输出：火山声音复刻 HTTP、逐 chain TTS、翻译 lane、串行 speech pipeline 与 Desktop 有序播放
 - [x] 表情包输出：人工语义元数据、Agent 工具、有序投递、Surface 回执与 Desktop 历史语义展示
 
 ## 下一阶段
 
 - [ ] 收口真实运行质量：模型回复自然度、长会话稳定性、QQ operator 环境 smoke 与失败诊断
-- [ ] 按具体平台需要接通 QQ/其他 IM 音频；麦克风、VAD、ASR、抢占式打断和口型同步后置
 - [ ] 提升表情包语义质量；当前依赖人工描述与标签，不使用未经设计的 VLM/OCR 自动识别
 - [ ] 丰富角色渲染；当前本地单图状态可用，Live2D 不阻塞聊天主线
 - [ ] 评估飞书、Telegram 等其他 IM Surface

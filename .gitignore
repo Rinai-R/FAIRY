@@ -38,5 +38,4 @@ logs.txt
 *.pack/
 *.character-pack.zip
 /openspec/
-.agents/
-AGENTS.md
+/.agents/*
