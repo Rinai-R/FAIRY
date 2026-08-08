@@ -10,8 +10,8 @@ import (
 )
 
 type telemetryCall struct {
-	kind, traceID, action, stage string
-	traceIDs                     []string
+	kind, traceID, action, stage, messageID string
+	traceIDs                                []string
 }
 
 type fakeMessageTelemetry struct {
@@ -25,11 +25,15 @@ func newFakeMessageTelemetry() *fakeMessageTelemetry {
 }
 
 func (f *fakeMessageTelemetry) Begin(source, conversationID string) string {
+	return f.BeginCorrelated(source, conversationID, "")
+}
+
+func (f *fakeMessageTelemetry) BeginCorrelated(source, conversationID, messageID string) string {
 	f.mu.Lock()
 	f.sequence++
 	traceID := "trace-" + string(rune('0'+f.sequence))
 	f.mu.Unlock()
-	f.calls <- telemetryCall{kind: "begin", traceID: traceID}
+	f.calls <- telemetryCall{kind: "begin", traceID: traceID, messageID: messageID}
 	return traceID
 }
 
@@ -47,6 +51,28 @@ func (f *fakeMessageTelemetry) TurnStage(conversationID, turnID, stage string) {
 
 func (f *fakeMessageTelemetry) End(traceID, status string) {
 	f.calls <- telemetryCall{kind: "end", traceID: traceID, action: status}
+}
+
+func TestBeginMessageTraceUsesExternalCorrelationWhenPresent(t *testing.T) {
+	service := NewService()
+	telemetry := newFakeMessageTelemetry()
+	AttachMessageTelemetry(service, telemetry)
+
+	traceID := service.beginMessageTrace("qq_private", "conversation-1", "qq-message-42", "")
+	call := receiveTelemetryCall(t, telemetry.calls)
+	if traceID == "" || call.kind != "begin" || call.traceID != traceID || call.messageID != "qq-message-42" {
+		t.Fatalf("correlated begin = %#v, traceID=%q", call, traceID)
+	}
+
+	existing := service.beginMessageTrace("qq_private", "conversation-1", "ignored", traceID)
+	if existing != traceID {
+		t.Fatalf("existing trace = %q, want %q", existing, traceID)
+	}
+	select {
+	case unexpected := <-telemetry.calls:
+		t.Fatalf("existing trace emitted telemetry: %#v", unexpected)
+	default:
+	}
 }
 
 func TestPublishLifeReportsFinalBeatAndTerminalStages(t *testing.T) {

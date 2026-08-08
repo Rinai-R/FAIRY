@@ -90,6 +90,7 @@ type wsClientFrame struct {
 	Message            *session.AmbientObservation       `json:"message,omitempty"`
 	DesktopObservation *session.DesktopObservation       `json:"desktopObservation,omitempty"`
 	Input              string                            `json:"input,omitempty"`
+	MessageID          string                            `json:"messageId,omitempty"`
 	TurnID             string                            `json:"turnId,omitempty"`
 	CaptureResult      *session.DesktopCaptureResult     `json:"captureResult,omitempty"`
 	DeliveryResult     *session.ExpressionDeliveryResult `json:"deliveryResult,omitempty"`
@@ -630,6 +631,7 @@ func (c *sessionConn) handleSubmitTurn(frame wsClientFrame) {
 		outcome, err := c.server.rt.Turns.SubmitTurn(TurnSubmission{
 			ConversationID: frame.ConversationID,
 			Input:          frame.Input,
+			MessageID:      frame.MessageID,
 		})
 		if err != nil {
 			_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})

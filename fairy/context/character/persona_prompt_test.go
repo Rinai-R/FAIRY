@@ -106,6 +106,38 @@ func TestPublicRespondContextStripsPrivateAndCrossGroupRetrieval(t *testing.T) {
 	}
 }
 
+func TestExternalDirectContextStripsPrivateAndGroupMemory(t *testing.T) {
+	resolved := session.Resolved{
+		Endpoint: session.EndpointIM,
+		Facts: session.Facts{
+			Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationChat,
+			PrincipalNamespace: "qq.onebot", PrincipalDigest: strings.Repeat("a", 64),
+		},
+		Principal: session.PrincipalExternal, Memory: session.MemoryPublic,
+	}
+	slots, err := BuildRespondContextSlots(
+		testCharacter(), nil, history.PromptWindowRecord{Revision: 1}, nil,
+		[]VisualState{{ID: "idle", Description: "待机"}}, recall.Context{
+			PersonalMemories: []personal.Retrieved{{ID: "private-1", Content: "只属于主人"}},
+			SocialMemories: social.SocialMemoryContext{Entries: []social.SocialMemoryEntry{{
+				ID: "group-1", Kind: social.SocialMemoryEpisode, Situation: "其他群", Content: "群聊秘密",
+			}}},
+		}, resolved,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := promptText(PromptItemsFromContextSlots(slots))
+	for _, forbidden := range []string{"private-1", "只属于主人", "group-1", "群聊秘密", "public social setting", "context from this group"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("external direct prompt contains %q: %s", forbidden, joined)
+		}
+	}
+	if !strings.Contains(joined, "one-to-one conversation with an external person") {
+		t.Fatalf("external direct guidance missing: %s", joined)
+	}
+}
+
 func TestBuildRespondInputAppliesSummaryCutoff(t *testing.T) {
 	summary := "此前用户打过招呼。"
 	items, err := BuildRespondInput(

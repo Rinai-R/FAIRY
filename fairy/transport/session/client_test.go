@@ -345,6 +345,36 @@ func newSessionWSServer(t *testing.T, handle func(*websocket.Conn)) *httptest.Se
 	}))
 }
 
+func TestSessionSocketSubmitTurnPreservesExternalMessageID(t *testing.T) {
+	server := newSessionWSServer(t, func(conn *websocket.Conn) {
+		var frame sessionClientFrame
+		if err := conn.ReadJSON(&frame); err != nil {
+			t.Error(err)
+			return
+		}
+		if frame.Type != "turn.submit" || frame.ConversationID != "c1" || frame.Input != "hello" || frame.MessageID != "qq-private-42" {
+			t.Errorf("submit frame = %#v", frame)
+			return
+		}
+		_ = conn.WriteJSON(sessionServerFrame{
+			Type: "result", RequestID: frame.RequestID,
+			Payload: json.RawMessage(`{"outcome":{"conversationId":"c1","turnId":"t1","responseText":"ok"}}`),
+		})
+	})
+	defer server.Close()
+	client, err := New(Options{Endpoint: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.SubmitTurn(t.Context(), "c1", SubmitTurnRequest{Input: "hello", MessageID: "qq-private-42"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Outcome.TurnID != "t1" {
+		t.Fatalf("turn = %#v", response)
+	}
+}
+
 func TestSessionSocketTurnEventOverflowFailsConnection(t *testing.T) {
 	sent := make(chan struct{})
 	server := newSessionWSServer(t, func(conn *websocket.Conn) {

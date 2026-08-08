@@ -97,11 +97,11 @@ func (e *TurnEngine) SubmitTurn(request SubmitTurnRequest) (TurnOutcome, error) 
 			return TurnOutcome{}, err
 		}
 		resolved = &current
-		if !current.AllowsPersonalMemory() {
-			return TurnOutcome{}, errors.New("direct trigger requires a private interaction")
+		if !allowsDirectTurn(current) {
+			return TurnOutcome{}, errors.New("direct trigger requires a single direct interaction")
 		}
 	}
-	request.TraceID = s.beginMessageTrace(request.MessageSource, request.ConversationID, request.TraceID)
+	request.TraceID = s.beginMessageTrace(request.MessageSource, request.ConversationID, request.MessageID, request.TraceID)
 	if request.MessageSource == "" {
 		request.MessageSource = "direct"
 	}
@@ -110,10 +110,15 @@ func (e *TurnEngine) SubmitTurn(request SubmitTurnRequest) (TurnOutcome, error) 
 		Input:               request.Input,
 		MaxOutputTokens:     RespondMaxOutputTokens,
 		TraceID:             request.TraceID,
+		MessageID:           request.MessageID,
 		MessageSource:       request.MessageSource,
 		ReplyIntent:         request.ReplyIntent,
 		RecentTargetReply:   request.RecentTargetReply,
 		PersonNoteSenderIDs: append([]string(nil), request.PersonNoteSenderIDs...),
 		OutputCapabilities:  s.OutputCapabilities(request.ConversationID),
 	}, resolved)
+}
+
+func allowsDirectTurn(resolved session.Resolved) bool {
+	return resolved.Facts.Audience == session.AudienceSingle && resolved.Facts.Initiation == session.InitiationDirect
 }

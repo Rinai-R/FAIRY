@@ -33,6 +33,7 @@ func (a turnAPIAdapter) SubmitTurn(request api.TurnSubmission) (any, error) {
 	return a.service.SubmitTurn(turn.SubmitTurnRequest{
 		ConversationID: request.ConversationID,
 		Input:          request.Input,
+		MessageID:      request.MessageID,
 	})
 }
 

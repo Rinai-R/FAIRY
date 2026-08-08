@@ -103,6 +103,149 @@ func TestZeroBotWebhookCoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestZeroBotPrivateWebhookCoreRoundTrip(t *testing.T) {
+	turnSubmitted := make(chan struct{})
+	actionReceived := make(chan struct{})
+	errorsCh := make(chan error, 8)
+	coreServer := newPrivateCoreWSTestServer(turnSubmitted, errorsCh)
+	defer coreServer.Close()
+	actionServer := newPrivateOneBotActionServer(actionReceived, errorsCh)
+	defer actionServer.Close()
+	webhookEndpoint := availableLoopbackEndpoint(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestZeroBotWebhookServeHelper$")
+	command.Env = append(os.Environ(),
+		"FAIRY_ZEROBOT_TEST_HELPER=1",
+		"FAIRY_TEST_CORE_URL="+coreServer.URL,
+		"FAIRY_TEST_WEBHOOK_URL="+webhookEndpoint,
+		"FAIRY_TEST_ONEBOT_API_URL="+actionServer.URL,
+	)
+	var output lockedBuffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	postSignedWebhook(t, ctx, webhookEndpoint, privateEvent(40001, 71001, "私聊你好"))
+	for _, signal := range []<-chan struct{}{turnSubmitted, actionReceived} {
+		select {
+		case <-signal:
+		case err := <-errorsCh:
+			t.Fatalf("private round trip failed: %v\n%s", err, output.String())
+		case <-ctx.Done():
+			t.Fatalf("private round trip timeout: %v\n%s", ctx.Err(), output.String())
+		}
+	}
+	if err := command.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Wait(); err != nil {
+		t.Fatalf("helper failed: %v\n%s", err, output.String())
+	}
+}
+
+func newPrivateCoreWSTestServer(turnSubmitted chan struct{}, errorsCh chan<- error) *httptest.Server {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer core-token" {
+			errorsCh <- fmt.Errorf("Core authorization = %q", r.Header.Get("Authorization"))
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path == "/v1/config/qq-onebot" {
+			errorsCh <- fmt.Errorf("private message unexpectedly requested group allowlist")
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+			return
+		}
+		if r.URL.Path != "/v1/session/ws" {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			errorsCh <- err
+			return
+		}
+		defer conn.Close()
+		if err := conn.WriteJSON(map[string]any{"type": "ready"}); err != nil {
+			return
+		}
+		for {
+			var frame map[string]any
+			if err := conn.ReadJSON(&frame); err != nil {
+				return
+			}
+			requestID, _ := frame["requestId"].(string)
+			switch frame["type"] {
+			case "session.open":
+				interaction, _ := frame["interaction"].(map[string]any)
+				principal, _ := interaction["principal"].(map[string]any)
+				if frame["endpoint"] != "im" || frame["endpointKey"] != "onebot-private:40001" ||
+					interaction["audience"] != "single" || interaction["initiation"] != "direct" || interaction["presentation"] != "chat" ||
+					principal["namespace"] != "qq.onebot" || principal["subject"] != "40001" {
+					errorsCh <- fmt.Errorf("private session open = %#v", frame)
+					return
+				}
+				_ = conn.WriteJSON(map[string]any{
+					"type": "session.opened", "requestId": requestID,
+					"conversationId": "private-c1", "characterId": "character-1", "messageCount": 0, "endpoint": "im",
+				})
+			case "session.watch":
+				_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID, "conversationId": "private-c1"})
+			case "turn.submit":
+				if frame["conversationId"] != "private-c1" || frame["input"] != "私聊你好" || frame["messageId"] != "71001" {
+					errorsCh <- fmt.Errorf("private turn submit = %#v", frame)
+					return
+				}
+				_ = conn.WriteJSON(map[string]any{
+					"type": "result", "requestId": requestID,
+					"payload": map[string]any{"outcome": map[string]any{"conversationId": "private-c1", "turnId": "private-t1", "responseText": "私聊真实回复"}},
+				})
+				_ = conn.WriteJSON(map[string]any{
+					"type": "turn.event", "conversationId": "private-c1",
+					"event": map[string]any{
+						"conversationId": "private-c1", "turnId": "private-t1", "sequence": 1, "state": "responding",
+						"payload": json.RawMessage(`{"type":"beat.ready","beatId":"private-b1","kind":"final","displayText":"私聊真实回复"}`),
+					},
+				})
+				close(turnSubmitted)
+			default:
+				errorsCh <- fmt.Errorf("unexpected private frame %#v", frame)
+			}
+		}
+	}))
+}
+
+func newPrivateOneBotActionServer(actionReceived chan struct{}, errorsCh chan<- error) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer onebot-token" {
+			errorsCh <- fmt.Errorf("OneBot authorization = %q", r.Header.Get("Authorization"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/get_login_info":
+			fmt.Fprint(w, `{"status":"ok","retcode":0,"data":{"user_id":10001,"nickname":"bot"}}`)
+		case "/send_private_msg":
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				errorsCh <- err
+				return
+			}
+			if !bytes.Contains(body, []byte(`"user_id":40001`)) || !bytes.Contains(body, []byte("私聊真实回复")) {
+				errorsCh <- fmt.Errorf("send_private_msg body = %s", body)
+				return
+			}
+			fmt.Fprint(w, `{"status":"ok","retcode":0,"data":{"message_id":51001}}`)
+			close(actionReceived)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
 func newCoreWSTestServer(silentObserved, waitObserved chan struct{}, openCalls, observeCalls *atomic.Int32, errorsCh chan<- error) *httptest.Server {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	var mu sync.Mutex
@@ -269,6 +412,16 @@ func groupEvent(groupID, messageID int64, message string) []byte {
 		"message_id": messageID, "message": message,
 		"group_id": groupID, "user_id": 40001, "self_id": 10001, "time": time.Now().Unix(),
 		"sender": map[string]any{"user_id": 40001, "nickname": "测试成员", "card": "测试成员", "role": "member"},
+	})
+	return body
+}
+
+func privateEvent(userID, messageID int64, message string) []byte {
+	body, _ := json.Marshal(map[string]any{
+		"post_type": "message", "message_type": "private", "sub_type": "friend",
+		"message_id": messageID, "message": message,
+		"user_id": userID, "self_id": 10001, "time": time.Now().Unix(),
+		"sender": map[string]any{"user_id": userID, "nickname": "测试用户"},
 	})
 	return body
 }

@@ -30,6 +30,8 @@ const respondInstructionsAllowTools = character.RespondInstructions + ` When per
 
 const respondInstructionsAllowPublicTools = ` When verified public knowledge or timely public facts are insufficient, call function tools instead of guessing. Available tools: public_memory_search for verified confirmed local knowledge only; social_context_search for reusable public group situation and behavior patterns from this conversation; social_expression_select for reusable public speaking-style patterns from this group conversation; web_search (when provided) for timely public topics. When you call a tool, you MAY put one short public in-character line in assistant content (plain text in textLanguage, not JSON). Never mention tools, searches, retrieval, reasoning, private memories, or system internals. After tool results appear, output chains only. Never output a gather JSON object.`
 
+const respondInstructionsAllowExternalDirectTools = ` When verified public knowledge or timely public facts are insufficient, call function tools instead of guessing. Available tools: public_memory_search for verified confirmed local knowledge only; web_search (when provided) for timely public topics. When you call a tool, you MAY put one short in-character line in assistant content (plain text in textLanguage, not JSON). Never mention tools, searches, retrieval, reasoning, private memories, other conversations, or system internals. After tool results appear, output chains only. Never output a gather JSON object.`
+
 type toolQueryArgs struct {
 	Query string `json:"query"`
 }
@@ -47,16 +49,18 @@ func SpecsForInteraction(webSearchEnabled bool, resolved session.Resolved) []mod
 			Description: "Search verified confirmed local knowledge only. This tool never returns user profile, preferences, experiences, or relationship memories.",
 			Parameters:  querySchema,
 		})
-		tools = append(tools, model.ToolSpec{
-			Name:        SocialContextSearch,
-			Description: "Search reusable public group situation context and behavior patterns for this conversation only. Pass a short situation query (often from memoryQuery). Returns abstract episode/behavior guides; never private memories or speaking-style expressions.",
-			Parameters:  querySchema,
-		})
-		tools = append(tools, model.ToolSpec{
-			Name:        SocialExpressionSelect,
-			Description: "Select reusable public speaking-style expression patterns for this group conversation only. Pass a short situation query (often from expressionQuery). Returns up to five abstract style guides; never private memories.",
-			Parameters:  querySchema,
-		})
+		if resolved.AllowsAmbientParticipation() {
+			tools = append(tools, model.ToolSpec{
+				Name:        SocialContextSearch,
+				Description: "Search reusable public group situation context and behavior patterns for this conversation only. Pass a short situation query (often from memoryQuery). Returns abstract episode/behavior guides; never private memories or speaking-style expressions.",
+				Parameters:  querySchema,
+			})
+			tools = append(tools, model.ToolSpec{
+				Name:        SocialExpressionSelect,
+				Description: "Select reusable public speaking-style expression patterns from this group conversation only. Pass a short situation query (often from expressionQuery). Returns up to five abstract style guides; never private memories.",
+				Parameters:  querySchema,
+			})
+		}
 	} else {
 		tools = append(tools, model.ToolSpec{
 			Name:        MemorySearch,
@@ -96,10 +100,17 @@ func InstructionsForInteraction(toolsEnabled bool, resolved session.Resolved) st
 			"Use memories only as stable preference, relationship, and situational style clues;", "Use retrieved public knowledge only as factual context;",
 			"Preferred name is optional. ", "",
 		).Replace(character.RespondInstructions)
-		instructions += " PUBLIC GROUP REPLY SHAPE: Follow the supplied delivery contract. Answer exactly one conversational hook as an immediate peer turn, not a summary of the whole transcript or a balanced response to every participant. Unless explicitly requested, do not turn a reaction into unsolicited advice, a complete solution, or a concluding lecture. Keep emoji light."
+		if resolved.AllowsAmbientParticipation() {
+			instructions += " PUBLIC GROUP REPLY SHAPE: Follow the supplied delivery contract. Answer exactly one conversational hook as an immediate peer turn, not a summary of the whole transcript or a balanced response to every participant. Unless explicitly requested, do not turn a reaction into unsolicited advice, a complete solution, or a concluding lecture. Keep emoji light."
+		} else {
+			instructions += " EXTERNAL DIRECT REPLY SHAPE: This is a one-to-one chat with an external person. Answer the current user naturally without implying private familiarity, owner-only profile knowledge, personal memory, or access to any other conversation. Do not describe this as a group interaction."
+		}
 		instructions += " PUBLIC GROUP IDENTITY OVERRIDE: Never say or imply that you are a robot, AI, bot, model, assistant, product, or system, even when character data asks for that self-description. Never use 'high-performance robot' or similar identity or capability boasts. Keep the character's emotional energy, curiosity, confidence, and verbal rhythm without those claims. This rule overrides conflicting character description."
 		if toolsEnabled {
-			return instructions + respondInstructionsAllowPublicTools
+			if resolved.AllowsAmbientParticipation() {
+				return instructions + respondInstructionsAllowPublicTools
+			}
+			return instructions + respondInstructionsAllowExternalDirectTools
 		}
 		return instructions
 	}

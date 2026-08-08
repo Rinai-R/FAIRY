@@ -3,7 +3,8 @@ package session
 import "encoding/json"
 
 type SubmitRequest struct {
-	Input string `json:"input"`
+	Input     string `json:"input"`
+	MessageID string `json:"messageId,omitempty"`
 }
 
 type Outcome struct {

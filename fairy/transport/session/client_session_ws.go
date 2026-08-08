@@ -50,6 +50,7 @@ type sessionClientFrame struct {
 	Message            *AmbientObservation       `json:"message,omitempty"`
 	DesktopObservation *DesktopObservation       `json:"desktopObservation,omitempty"`
 	Input              string                    `json:"input,omitempty"`
+	MessageID          string                    `json:"messageId,omitempty"`
 	TurnID             string                    `json:"turnId,omitempty"`
 	CaptureResult      *DesktopCaptureResult     `json:"captureResult,omitempty"`
 	DeliveryResult     *ExpressionDeliveryResult `json:"deliveryResult,omitempty"`
@@ -747,7 +748,7 @@ func (s *SessionSocket) SubmitTurn(ctx context.Context, conversationID string, r
 	// Turn execution follows caller context; do not impose the short request timeout.
 	reply, err := s.request(ctx, sessionClientFrame{
 		Type: "turn.submit", ConversationID: conversationID,
-		Input: request.Input,
+		Input: request.Input, MessageID: request.MessageID,
 	}, "result")
 	if err != nil {
 		return SubmitTurnResponse{}, err

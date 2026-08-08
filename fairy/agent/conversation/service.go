@@ -63,6 +63,7 @@ type Service struct {
 
 type MessageTelemetry interface {
 	Begin(source, conversationID string) string
+	BeginCorrelated(source, conversationID, messageID string) string
 	Participation(traceIDs []string, targetTraceID, action string)
 	TurnStarted(traceID, conversationID, turnID string)
 	TurnStage(conversationID, turnID, stage string)
@@ -156,7 +157,7 @@ func messageTelemetryStage(event session.Event) string {
 	}
 }
 
-func (s *Service) beginMessageTrace(source, conversationID, traceID string) string {
+func (s *Service) beginMessageTrace(source, conversationID, messageID, traceID string) string {
 	if traceID != "" {
 		return traceID
 	}
@@ -168,6 +169,9 @@ func (s *Service) beginMessageTrace(source, conversationID, traceID string) stri
 	}
 	if source == "" {
 		source = "direct"
+	}
+	if messageID != "" {
+		return telemetry.BeginCorrelated(source, conversationID, messageID)
 	}
 	return telemetry.Begin(source, conversationID)
 }

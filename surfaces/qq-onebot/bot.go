@@ -25,7 +25,7 @@ type bot struct {
 
 	mu            sync.Mutex
 	ensureMu      sync.Mutex
-	conversations map[int64]string
+	conversations map[string]string
 	senders       map[string]expressionSender
 }
 
@@ -33,6 +33,7 @@ type sessionSocket interface {
 	OpenSession(context.Context, session.OpenSessionRequest) (session.OpenSessionResponse, error)
 	Watch(context.Context, string) (<-chan session.TurnEvent, error)
 	ObserveAmbient(context.Context, string, session.AmbientObservation) error
+	SubmitTurn(context.Context, string, session.SubmitTurnRequest) (session.SubmitTurnResponse, error)
 	ReportExpressionDelivery(context.Context, session.ExpressionDeliveryResult) error
 }
 
@@ -55,13 +56,14 @@ func newBot(ctx context.Context, socket sessionSocket, stickers stickerContentRe
 	}
 	return &bot{
 		ctx: ctx, authorizer: authorizer, socket: socket, stickers: stickers,
-		conversations: make(map[int64]string),
+		conversations: make(map[string]string),
 		senders:       make(map[string]expressionSender),
 	}, nil
 }
 
 func (b *bot) register(engine *zero.Engine) {
 	engine.OnMessage(zero.OnlyGroup).Handle(b.handle)
+	engine.OnMessage(zero.OnlyPrivate).Handle(b.handlePrivate)
 }
 
 func (b *bot) handle(ctx *zero.Ctx) {
@@ -102,6 +104,40 @@ func (b *bot) handle(ctx *zero.Ctx) {
 	}
 }
 
+func (b *bot) handlePrivate(ctx *zero.Ctx) {
+	if b == nil || ctx == nil || b.ctx.Err() != nil || ctx.Event == nil {
+		return
+	}
+	input, messageID, userID, err := privateTurnFromEvent(ctx)
+	if err != nil {
+		log.Printf("private message ignored: %v", err)
+		return
+	}
+	send := expressionSender{
+		text: func(text string) error {
+			return sendChain(ctx, message.Text(text))
+		},
+		image: func(content []byte) error {
+			return sendChain(ctx, message.ImageBytes(content))
+		},
+	}
+	conversationID, err := b.ensureEndpointConversation(
+		"onebot-private:"+userID,
+		session.Context{
+			Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationChat,
+			Principal: &session.PrincipalRef{Namespace: "qq.onebot", Subject: userID},
+		},
+		send,
+	)
+	if err != nil {
+		log.Printf("private message open session failed: %v", err)
+		return
+	}
+	if _, err := b.socket.SubmitTurn(b.ctx, conversationID, session.SubmitTurnRequest{Input: input, MessageID: messageID}); err != nil {
+		log.Printf("private message submit turn failed: %v", err)
+	}
+}
+
 func sendChain(ctx *zero.Ctx, segment message.Segment) error {
 	id := ctx.SendChain(segment)
 	if id.ID() == 0 {
@@ -111,10 +147,18 @@ func sendChain(ctx *zero.Ctx, segment message.Segment) error {
 }
 
 func (b *bot) ensureConversation(groupID int64, send expressionSender) (string, error) {
+	return b.ensureEndpointConversation(
+		"onebot-group:"+strconv.FormatInt(groupID, 10),
+		session.Context{Audience: session.AudienceMulti, Initiation: session.InitiationAmbient, Presentation: session.PresentationChat},
+		send,
+	)
+}
+
+func (b *bot) ensureEndpointConversation(endpointKey string, interaction session.Context, send expressionSender) (string, error) {
 	b.ensureMu.Lock()
 	defer b.ensureMu.Unlock()
 	b.mu.Lock()
-	if conversationID, ok := b.conversations[groupID]; ok {
+	if conversationID, ok := b.conversations[endpointKey]; ok {
 		b.senders[conversationID] = send
 		b.mu.Unlock()
 		return conversationID, nil
@@ -122,8 +166,8 @@ func (b *bot) ensureConversation(groupID int64, send expressionSender) (string, 
 	b.mu.Unlock()
 
 	session, err := b.socket.OpenSession(b.ctx, session.OpenSessionRequest{
-		Endpoint: session.EndpointIM, EndpointKey: "onebot-group:" + strconv.FormatInt(groupID, 10),
-		Interaction:        session.Context{Audience: session.AudienceMulti, Initiation: session.InitiationAmbient, Presentation: session.PresentationChat},
+		Endpoint: session.EndpointIM, EndpointKey: endpointKey,
+		Interaction:        interaction,
 		OutputCapabilities: session.OutputCapabilities{Sticker: true},
 	})
 	if err != nil {
@@ -134,11 +178,31 @@ func (b *bot) ensureConversation(groupID int64, send expressionSender) (string, 
 		return "", err
 	}
 	b.mu.Lock()
-	b.conversations[groupID] = session.ConversationID
+	b.conversations[endpointKey] = session.ConversationID
 	b.senders[session.ConversationID] = send
 	b.mu.Unlock()
 	go b.consumeTurnEvents(session.ConversationID, stream)
 	return session.ConversationID, nil
+}
+
+func privateTurnFromEvent(ctx *zero.Ctx) (input, messageID, userID string, err error) {
+	if ctx == nil || ctx.Event == nil || ctx.Event.Sender == nil {
+		return "", "", "", errors.New("OneBot event sender is required")
+	}
+	if ctx.Event.UserID <= 0 || ctx.Event.Time <= 0 {
+		return "", "", "", errors.New("sender ID and timestamp are required")
+	}
+	if ctx.Event.MessageID == nil {
+		return "", "", "", errors.New("message ID is required")
+	}
+	input, _, err = projectOneBotMessage(sourceOneBotMessage(ctx.Event))
+	if err != nil {
+		return "", "", "", err
+	}
+	if input == "" {
+		return "", "", "", errors.New("readable message text is empty")
+	}
+	return input, fmt.Sprint(ctx.Event.MessageID), strconv.FormatInt(ctx.Event.UserID, 10), nil
 }
 
 func (b *bot) consumeTurnEvents(conversationID string, stream <-chan session.TurnEvent) {

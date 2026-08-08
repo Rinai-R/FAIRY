@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"fairy/agent/reply"
+	"fairy/transport/session"
 	"testing"
 )
 
@@ -27,6 +28,25 @@ func TestValidateSubmitTurnRequestRejectsInvalidInput(t *testing.T) {
 func TestValidateSubmitTurnRequestAcceptsValidInput(t *testing.T) {
 	if err := ValidateSubmitTurnRequest(SubmitTurnRequest{ConversationID: "conversation-1", Input: "你好"}); err != nil {
 		t.Fatalf("ValidateSubmitTurnRequest() error = %v", err)
+	}
+}
+
+func TestAllowsDirectTurnSeparatesConversationModeFromMemoryPolicy(t *testing.T) {
+	for _, resolved := range []session.Resolved{
+		{Facts: session.Facts{Audience: session.AudienceSingle, Initiation: session.InitiationDirect}, Memory: session.MemoryPersonal},
+		{Facts: session.Facts{Audience: session.AudienceSingle, Initiation: session.InitiationDirect}, Memory: session.MemoryPublic},
+	} {
+		if !allowsDirectTurn(resolved) {
+			t.Fatalf("single direct interaction rejected: %#v", resolved)
+		}
+	}
+	for _, resolved := range []session.Resolved{
+		{Facts: session.Facts{Audience: session.AudienceMulti, Initiation: session.InitiationAmbient}, Memory: session.MemoryPublic},
+		{Facts: session.Facts{Audience: session.AudienceSingle, Initiation: session.InitiationAmbient}, Memory: session.MemoryPublic},
+	} {
+		if allowsDirectTurn(resolved) {
+			t.Fatalf("non-direct interaction accepted: %#v", resolved)
+		}
 	}
 }
 

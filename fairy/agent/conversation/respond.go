@@ -13,6 +13,7 @@ type SubmitTurnRequest struct {
 	ConversationID      string                     `json:"conversationId"`
 	Input               string                     `json:"input"`
 	TraceID             string                     `json:"-"`
+	MessageID           string                     `json:"-"`
 	MessageSource       string                     `json:"-"`
 	ReplyIntent         *ReplyIntent               `json:"-"`
 	RecentTargetReply   string                     `json:"-"`
@@ -26,6 +27,7 @@ type SubmitCompiledTurnRequest struct {
 	MaxOutputTokens       uint32                     `json:"maxOutputTokens"`
 	AvailableVisualStates []reply.VisualState        `json:"availableVisualStates"`
 	TraceID               string                     `json:"-"`
+	MessageID             string                     `json:"-"`
 	MessageSource         string                     `json:"-"`
 	ReplyIntent           *ReplyIntent               `json:"-"`
 	RecentTargetReply     string                     `json:"-"`

@@ -24,11 +24,26 @@ func TestAmbientObservationPreservesOtherUserMentions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observation.Text != "是吗 @秋 快看新同学 @秋" || observation.DirectedToBot {
+	if observation.MessageID != "7" || observation.Text != "是吗 @秋 快看新同学 @秋" || observation.DirectedToBot {
 		t.Fatalf("observation = %#v", observation)
 	}
 	if len(observation.Mentions) != 1 || observation.Mentions[0] != (session.MessageMention{UserID: "718249954", DisplayName: "秋"}) {
 		t.Fatalf("mentions = %#v", observation.Mentions)
+	}
+}
+
+func TestAmbientObservationPreservesStringMessageID(t *testing.T) {
+	ctx := &zero.Ctx{Event: &zero.Event{
+		Time: 1, MessageID: "guild-message-7", UserID: 10001,
+		Sender:  &zero.User{NickName: "群友"},
+		Message: message.Message{message.Text("你好")},
+	}}
+	observation, err := ambientObservationFromEvent(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.MessageID != "guild-message-7" {
+		t.Fatalf("message id = %q", observation.MessageID)
 	}
 }
 
@@ -88,7 +103,7 @@ func TestConsumeTurnEventsDeliversConversationStreamInOrder(t *testing.T) {
 				return nil
 			}},
 		},
-		conversations: make(map[int64]string),
+		conversations: make(map[string]string),
 	}
 	stream := make(chan session.TurnEvent, 2)
 	var wg sync.WaitGroup
@@ -146,7 +161,7 @@ func TestConsumeTurnEventsDeliversStickerAndReportsSuccess(t *testing.T) {
 				return nil
 			}},
 		},
-		conversations: make(map[int64]string),
+		conversations: make(map[string]string),
 	}
 	stream := make(chan session.TurnEvent, 1)
 	done := make(chan struct{})
@@ -191,7 +206,7 @@ func TestConsumeTurnEventsReportsStickerFailure(t *testing.T) {
 				return nil
 			}},
 		},
-		conversations: make(map[int64]string),
+		conversations: make(map[string]string),
 	}
 	stream := make(chan session.TurnEvent, 1)
 	done := make(chan struct{})
@@ -226,7 +241,7 @@ func TestEnsureConversationDeclaresStickerCapability(t *testing.T) {
 		ctx:           t.Context(),
 		socket:        socket,
 		stickers:      fakeStickerReader{},
-		conversations: make(map[int64]string),
+		conversations: make(map[string]string),
 		senders:       make(map[string]expressionSender),
 	}
 	if _, err := bot.ensureConversation(20001, expressionSender{}); err != nil {
@@ -235,6 +250,94 @@ func TestEnsureConversationDeclaresStickerCapability(t *testing.T) {
 	if !socket.openRequest.OutputCapabilities.Sticker {
 		t.Fatalf("output capabilities = %#v", socket.openRequest.OutputCapabilities)
 	}
+}
+
+func TestPrivateMessageUsesDirectSessionAndPreservesMessageID(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	socket := &fakeSessionSocket{
+		stream: make(chan session.TurnEvent),
+		openResponse: session.OpenSessionResponse{
+			ConversationID: "private-conversation",
+			CharacterID:    "character-1",
+			Endpoint:       session.EndpointIM,
+		},
+	}
+	authorizer := &mutableGroupAuthorizer{allowed: map[int64]bool{40001: false}}
+	bot, err := newBot(ctx, socket, fakeStickerReader{}, authorizer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	private := privateMessageContext(40001, 70001, "你好")
+	bot.handlePrivate(private)
+	bot.handlePrivate(privateMessageContext(40001, 70002, "还记得我吗"))
+
+	if len(authorizer.calls) != 0 {
+		t.Fatalf("private message called group authorizer: %#v", authorizer.calls)
+	}
+	if socket.openCalls != 1 || socket.submitCalls != 2 {
+		t.Fatalf("opens=%d submits=%d", socket.openCalls, socket.submitCalls)
+	}
+	request := socket.openRequest
+	if request.EndpointKey != "onebot-private:40001" || request.Endpoint != session.EndpointIM ||
+		request.Interaction.Audience != session.AudienceSingle || request.Interaction.Initiation != session.InitiationDirect ||
+		request.Interaction.Presentation != session.PresentationChat || request.Interaction.Principal == nil ||
+		request.Interaction.Principal.Namespace != "qq.onebot" || request.Interaction.Principal.Subject != "40001" ||
+		!request.OutputCapabilities.Sticker {
+		t.Fatalf("private open request = %#v", request)
+	}
+	if socket.submitID != "private-conversation" || socket.submit.Input != "还记得我吗" || socket.submit.MessageID != "70002" {
+		t.Fatalf("private submit = conversation %q, request %#v", socket.submitID, socket.submit)
+	}
+}
+
+func TestPrivateAndGroupWithSameNumericIDRemainIsolated(t *testing.T) {
+	socket := &fakeSessionSocket{stream: make(chan session.TurnEvent)}
+	socket.open = func(request session.OpenSessionRequest) (session.OpenSessionResponse, error) {
+		return session.OpenSessionResponse{
+			ConversationID: request.EndpointKey + "-conversation",
+			CharacterID:    "character-1",
+			Endpoint:       session.EndpointIM,
+		}, nil
+	}
+	bot := &bot{
+		ctx: t.Context(), socket: socket, stickers: fakeStickerReader{},
+		conversations: make(map[string]string), senders: make(map[string]expressionSender),
+	}
+	privateID, err := bot.ensureEndpointConversation("onebot-private:40001", session.Context{
+		Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationChat,
+		Principal: &session.PrincipalRef{Namespace: "qq.onebot", Subject: "40001"},
+	}, expressionSender{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupID, err := bot.ensureConversation(40001, expressionSender{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if privateID == groupID || socket.openCalls != 2 || len(bot.conversations) != 2 {
+		t.Fatalf("private=%q group=%q opens=%d conversations=%#v", privateID, groupID, socket.openCalls, bot.conversations)
+	}
+	if socket.openRequests[0].EndpointKey != "onebot-private:40001" || socket.openRequests[1].EndpointKey != "onebot-group:40001" {
+		t.Fatalf("open requests = %#v", socket.openRequests)
+	}
+}
+
+func TestPrivateMessageRejectsIncompleteEventBeforeSessionWork(t *testing.T) {
+	socket := &fakeSessionSocket{}
+	bot := &bot{ctx: t.Context(), socket: socket, conversations: make(map[string]string), senders: make(map[string]expressionSender)}
+	bot.handlePrivate(&zero.Ctx{Event: &zero.Event{UserID: 40001, Time: time.Now().Unix(), Sender: &zero.User{ID: 40001}}})
+	if socket.openCalls != 0 || socket.submitCalls != 0 {
+		t.Fatalf("invalid private event reached session: opens=%d submits=%d", socket.openCalls, socket.submitCalls)
+	}
+}
+
+func privateMessageContext(userID, messageID int64, text string) *zero.Ctx {
+	return &zero.Ctx{Event: &zero.Event{
+		PostType: "message", DetailType: "private", Time: time.Now().Unix(),
+		UserID: userID, MessageID: messageID, Message: message.Message{message.Text(text)},
+		Sender: &zero.User{ID: userID, NickName: "测试用户"},
+	}}
 }
 
 func stickerBeatEvent(conversationID, turnID, beatID, stickerID, mimeType string) session.TurnEvent {
@@ -263,11 +366,20 @@ type fakeSessionSocket struct {
 	reports      chan session.ExpressionDeliveryResult
 	openCalls    int
 	observeCalls int
+	submitCalls  int
+	submitID     string
+	submit       session.SubmitTurnRequest
+	openRequests []session.OpenSessionRequest
+	open         func(session.OpenSessionRequest) (session.OpenSessionResponse, error)
 }
 
 func (socket *fakeSessionSocket) OpenSession(_ context.Context, request session.OpenSessionRequest) (session.OpenSessionResponse, error) {
 	socket.openCalls++
 	socket.openRequest = request
+	socket.openRequests = append(socket.openRequests, request)
+	if socket.open != nil {
+		return socket.open(request)
+	}
 	return socket.openResponse, nil
 }
 
@@ -278,6 +390,13 @@ func (socket *fakeSessionSocket) Watch(context.Context, string) (<-chan session.
 func (socket *fakeSessionSocket) ObserveAmbient(context.Context, string, session.AmbientObservation) error {
 	socket.observeCalls++
 	return nil
+}
+
+func (socket *fakeSessionSocket) SubmitTurn(_ context.Context, conversationID string, request session.SubmitTurnRequest) (session.SubmitTurnResponse, error) {
+	socket.submitCalls++
+	socket.submitID = conversationID
+	socket.submit = request
+	return session.SubmitTurnResponse{Outcome: session.TurnOutcome{ConversationID: conversationID, TurnID: "turn-1"}}, nil
 }
 
 func (socket *fakeSessionSocket) ReportExpressionDelivery(_ context.Context, result session.ExpressionDeliveryResult) error {

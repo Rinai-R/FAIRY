@@ -16,6 +16,10 @@ func TestToolSpecsForInteraction(t *testing.T) {
 		Memory: session.MemoryPublic,
 		Facts:  session.Facts{Initiation: session.InitiationAmbient},
 	}
+	externalDirect := session.Resolved{
+		Memory: session.MemoryPublic,
+		Facts:  session.Facts{Audience: session.AudienceSingle, Initiation: session.InitiationDirect},
+	}
 	tests := []struct {
 		name             string
 		resolved         session.Resolved
@@ -26,6 +30,8 @@ func TestToolSpecsForInteraction(t *testing.T) {
 		{name: "private with web", resolved: private, webSearchEnabled: true, want: []string{MemorySearch, WebSearch}},
 		{name: "public", resolved: public, want: []string{PublicMemorySearch, SocialContextSearch, SocialExpressionSelect}},
 		{name: "public with web", resolved: public, webSearchEnabled: true, want: []string{PublicMemorySearch, SocialContextSearch, SocialExpressionSelect, WebSearch}},
+		{name: "external direct", resolved: externalDirect, want: []string{PublicMemorySearch}},
+		{name: "external direct with web", resolved: externalDirect, webSearchEnabled: true, want: []string{PublicMemorySearch, WebSearch}},
 	}
 
 	for _, tt := range tests {
@@ -86,6 +92,21 @@ func TestInstructionsForInteraction(t *testing.T) {
 	for _, forbidden := range []string{"personal memories", "Preferred name is optional"} {
 		if strings.Contains(withTools, forbidden) {
 			t.Fatalf("public instructions contain %q", forbidden)
+		}
+	}
+
+	externalDirect := session.Resolved{
+		Memory: session.MemoryPublic,
+		Facts:  session.Facts{Audience: session.AudienceSingle, Initiation: session.InitiationDirect},
+	}
+	directWithoutTools := InstructionsForInteraction(false, externalDirect)
+	directWithTools := InstructionsForInteraction(true, externalDirect)
+	if directWithTools != directWithoutTools+respondInstructionsAllowExternalDirectTools {
+		t.Fatal("external direct tool instructions are not an exact suffix")
+	}
+	for _, forbidden := range []string{"social_context_search", "social_expression_select", "PUBLIC GROUP REPLY SHAPE"} {
+		if strings.Contains(directWithTools, forbidden) {
+			t.Fatalf("external direct instructions contain %q", forbidden)
 		}
 	}
 }

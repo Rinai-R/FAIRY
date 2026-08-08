@@ -195,6 +195,10 @@ type countingOwnerIdentity struct {
 	lookups atomic.Int64
 }
 
+type externalOwnerIdentity struct{}
+
+func (externalOwnerIdentity) IsOwner(string, string) (bool, error) { return false, nil }
+
 func (o *countingOwnerIdentity) IsOwner(string, string) (bool, error) {
 	o.lookups.Add(1)
 	return true, nil
@@ -1266,6 +1270,68 @@ func TestPostgresPrivateTurnSeesCrossGroupSocialMemoryButPublicTurnDoesNot(t *te
 	publicProvider.mu.Unlock()
 	if compiledPromptContains(publicRequest, "大家先听完项目经历再给建议") {
 		t.Fatal("public prompt leaked cross-group social memory")
+	}
+}
+
+func TestPostgresExternalDirectTurnRepliesWithoutPrivateOrGroupMemory(t *testing.T) {
+	store, pool, cleanup := openCompanionIntegrationStore(t)
+	defer cleanup()
+	const characterID = "character-external-direct"
+	binding := session.Binding{Endpoint: session.EndpointIM, Facts: session.Facts{
+		Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationChat,
+		PrincipalNamespace: "qq.onebot", PrincipalDigest: strings.Repeat("e", 64),
+	}}
+	bootstrap, err := store.OpenOrCreateEndpointConversation(characterID, binding, strings.Repeat("f", 64))
+	if err != nil {
+		t.Fatalf("OpenOrCreateEndpointConversation: %v", err)
+	}
+	ownerConversation, err := store.OpenOrCreateCharacterConversation(characterID)
+	if err != nil {
+		t.Fatalf("OpenOrCreateCharacterConversation: %v", err)
+	}
+	seedTurn, err := store.BeginTurn(ownerConversation.Conversation.ID, "主人提供个人偏好")
+	if err != nil {
+		t.Fatalf("BeginTurn(private fixture): %v", err)
+	}
+	if _, err := store.CompleteTurn(ownerConversation.Conversation.ID, seedTurn.ID, "已记录"); err != nil {
+		t.Fatalf("CompleteTurn(private fixture): %v", err)
+	}
+	const privateFixture = "外部私聊绝不能读取的个人记忆-31af"
+	if _, err := store.CreatePersonalMemory("preference", personal.Scope{Type: "global"}, privateFixture, 9000); err != nil {
+		t.Fatalf("CreatePersonalMemory: %v", err)
+	}
+	provider := &capturingIntegrationModel{}
+	service := newCompanionIntegrationService(store, characterID, provider)
+	AttachProfileSource(service, rejectingGroupProfile{})
+	AttachOwnerIdentityStore(service, externalOwnerIdentity{})
+	if err := service.BindInteraction(bootstrap.Conversation.ID, binding); err != nil {
+		t.Fatalf("BindInteraction: %v", err)
+	}
+	before := groupPrivacyJobCounts(t, pool)
+	if _, err := service.SubmitTurn(SubmitTurnRequest{
+		ConversationID: bootstrap.Conversation.ID,
+		Input:          "普通用户私聊",
+		MessageSource:  "direct",
+	}); err != nil {
+		t.Fatalf("external direct SubmitTurn: %v", err)
+	}
+	provider.mu.Lock()
+	request := provider.request
+	provider.mu.Unlock()
+	toolNames := make(map[string]bool, len(request.Tools))
+	for _, spec := range request.Tools {
+		toolNames[spec.Name] = true
+	}
+	if !toolNames[tool.PublicMemorySearch] || toolNames[tool.MemorySearch] || toolNames[tool.SocialContextSearch] || toolNames[tool.SocialExpressionSelect] {
+		t.Fatalf("external direct tools = %#v", request.Tools)
+	}
+	for _, item := range request.Input {
+		if strings.Contains(item.Content, privateFixture) {
+			t.Fatalf("external direct prompt leaked private fixture: %s", item.Content)
+		}
+	}
+	if after := groupPrivacyJobCounts(t, pool); after != before {
+		t.Fatalf("external direct background jobs changed: before=%v after=%v", before, after)
 	}
 }
 

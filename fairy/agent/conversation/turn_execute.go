@@ -53,7 +53,7 @@ func (e *TurnEngine) submitCompiledTurn(
 	if !s.TurnRuntimeReady() {
 		return TurnOutcome{}, ErrTurnRuntimeUnavailable
 	}
-	request.TraceID = s.beginMessageTrace(request.MessageSource, request.ConversationID, request.TraceID)
+	request.TraceID = s.beginMessageTrace(request.MessageSource, request.ConversationID, request.MessageID, request.TraceID)
 	defer func() {
 		if err != nil {
 			s.endMessageTrace(request.TraceID, "failed")

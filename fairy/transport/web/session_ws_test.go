@@ -33,7 +33,7 @@ func (r testTurnRuntime) UnbindOutputCapabilities(ownerID, conversationID string
 	r.service.UnbindOutputCapabilities(ownerID, conversationID)
 }
 func (r testTurnRuntime) SubmitTurn(request TurnSubmission) (any, error) {
-	return r.service.SubmitTurn(turn.SubmitTurnRequest{ConversationID: request.ConversationID, Input: request.Input})
+	return r.service.SubmitTurn(turn.SubmitTurnRequest{ConversationID: request.ConversationID, Input: request.Input, MessageID: request.MessageID})
 }
 func (r testTurnRuntime) CancelTurn(conversationID, turnID string) error {
 	return r.service.CancelTurn(conversationID, turnID)
