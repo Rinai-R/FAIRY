@@ -2055,7 +2055,28 @@ code,
   white-space: nowrap;
 }
 
+.trace-summary .trace-identifier {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.trace-summary .trace-identifier-label,
+.trace-detail-title > span:first-child {
+  display: inline-block;
+  flex: none;
+  color: var(--fairy-muted-light);
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 8.5px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 .trace-summary code {
+  min-width: 0;
+  flex: 1;
   overflow: hidden;
   color: inherit;
   font-size: 11px;

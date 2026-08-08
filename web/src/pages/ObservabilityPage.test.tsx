@@ -385,6 +385,9 @@ describe("ObservabilityPage lifecycle", () => {
           traces: [{ traceId: "msg-search", messageId: "qq-77", source: "ambient", conversationId: "conversation-9", turnId: "turn-9", status: "completed", receivedAtUnixMs: 10, completedAtUnixMs: 30, totalDurationMs: 20 }],
         }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
+      if (path.includes("/traces/qq-77")) {
+        return new Response(JSON.stringify({ error: "trace not found" }), { status: 404, headers: { "Content-Type": "application/json" } });
+      }
       if (path.includes("/turns/turn-9/runtime")) {
         return new Response(JSON.stringify({ conversationId: "conversation-9", turnId: "turn-9", events: [runtimeToolEvent()] }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
@@ -405,8 +408,8 @@ describe("ObservabilityPage lifecycle", () => {
     expect((await screen.findAllByText("msg-linked")).length).toBeGreaterThan(0);
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/traces/msg-linked"))).toBe(true);
 
-    fireEvent.change(screen.getByLabelText("按 messageId 搜索 Trace"), { target: { value: "qq-77" } });
-    fireEvent.click(screen.getByRole("button", { name: "搜索 messageId" }));
+    fireEvent.change(screen.getByLabelText("按 traceId 或 messageId 搜索 Trace"), { target: { value: "qq-77" } });
+    fireEvent.click(screen.getByRole("button", { name: "搜索 Trace 关联标识" }));
     expect(await screen.findByText(/messageId qq-77/)).toBeTruthy();
     expect(window.location.hash).toBe("#/tracing?traceId=msg-search");
     expect(await screen.findByText("Turn 运行明细")).toBeTruthy();
@@ -414,6 +417,97 @@ describe("ObservabilityPage lifecycle", () => {
     const dialog = await screen.findByRole("dialog");
     expect(dialog.textContent).toContain("苍彼四重奏");
     expect(dialog.textContent).toContain("最终注入上下文");
+  });
+
+  it("accepts a visible traceId in the unified lookup and deduplicates both exact branches", async () => {
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    vi.stubGlobal("localStorage", { getItem: () => "", setItem: () => undefined, removeItem: () => undefined, clear: () => undefined, key: () => null, length: 0 });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.includes("/traces?messageId=msg-copy")) {
+        return new Response(JSON.stringify({
+          messageId: "msg-copy",
+          traces: [{ traceId: "msg-copy", messageId: "msg-copy", source: "ambient", conversationId: "conversation-copy", turnId: "", status: "silent", receivedAtUnixMs: 10, completedAtUnixMs: 30, totalDurationMs: 20 }],
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (path.includes("/traces/msg-copy")) {
+        return new Response(JSON.stringify({ ...validTraceDetail(), traceId: "msg-copy", messageId: "msg-copy", conversationId: "conversation-copy", turnId: "" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (path.includes("/traces/msg-3")) {
+        return new Response(JSON.stringify(validTraceDetail()), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify(validMetrics()), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Theme><ObservabilityPage token="" view="tracing" /></Theme>);
+    await screen.findByText("模型调用");
+    fireEvent.change(screen.getByLabelText("按 traceId 或 messageId 搜索 Trace"), { target: { value: "msg-copy" } });
+    fireEvent.click(screen.getByRole("button", { name: "搜索 Trace 关联标识" }));
+
+    await waitFor(() => expect(window.location.hash).toBe("#/tracing?traceId=msg-copy"));
+    expect(screen.getByText("关联查询结果")).toBeTruthy();
+    expect(screen.getAllByText("msg-copy").length).toBeGreaterThan(0);
+    expect(document.querySelectorAll(".trace-summary")).toHaveLength(1);
+    expect(screen.getByText("Trace ID", { selector: ".trace-detail-title > span" })).toBeTruthy();
+    expect(screen.getAllByText(/外部 messageId msg-copy/)).toHaveLength(2);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/traces?messageId=msg-copy"))).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/traces/msg-copy"))).toBe(true);
+  });
+
+  it("does not keep an old trace selected for multi-match or empty lookup results", async () => {
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    vi.stubGlobal("localStorage", { getItem: () => "", setItem: () => undefined, removeItem: () => undefined, clear: () => undefined, key: () => null, length: 0 });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.includes("/traces?messageId=external-many")) {
+        return new Response(JSON.stringify({
+          messageId: "external-many",
+          traces: [
+            { traceId: "trace-a", messageId: "external-many", source: "ambient", conversationId: "c-a", turnId: "", status: "silent", receivedAtUnixMs: 10, completedAtUnixMs: 20, totalDurationMs: 10 },
+            { traceId: "trace-b", messageId: "external-many", source: "ambient", conversationId: "c-b", turnId: "", status: "failed", receivedAtUnixMs: 30, completedAtUnixMs: 40, totalDurationMs: 10 },
+          ],
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (path.includes("/traces?messageId=not-found")) {
+        return new Response(JSON.stringify({ messageId: "not-found", traces: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (path.includes("/traces?messageId=broken")) {
+        return new Response(JSON.stringify({ error: "trace storage unavailable" }), { status: 503, headers: { "Content-Type": "application/json" } });
+      }
+      if (path.includes("/traces/external-many") || path.includes("/traces/not-found")) {
+        return new Response(JSON.stringify({ error: "trace not found" }), { status: 404, headers: { "Content-Type": "application/json" } });
+      }
+      if (path.includes("/traces/broken")) {
+        return new Response(JSON.stringify({ error: "trace not found" }), { status: 404, headers: { "Content-Type": "application/json" } });
+      }
+      if (path.includes("/traces/msg-3")) {
+        return new Response(JSON.stringify(validTraceDetail()), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify(validMetrics()), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+
+    render(<Theme><ObservabilityPage token="" view="tracing" /></Theme>);
+    await screen.findByText("模型调用");
+    const input = screen.getByLabelText("按 traceId 或 messageId 搜索 Trace");
+    fireEvent.change(input, { target: { value: "broken" } });
+    fireEvent.click(screen.getByRole("button", { name: "搜索 Trace 关联标识" }));
+    expect(await screen.findByText(/messageId 查询失败/)).toBeTruthy();
+    expect(window.location.hash).toBe("#/tracing");
+    expect(screen.queryByText("模型调用")).toBeNull();
+
+    fireEvent.change(input, { target: { value: "external-many" } });
+    fireEvent.click(screen.getByRole("button", { name: "搜索 Trace 关联标识" }));
+    expect(await screen.findByText("选择一条 Trace")).toBeTruthy();
+    expect(document.querySelectorAll(".trace-summary")).toHaveLength(2);
+    expect(window.location.hash).toBe("#/tracing");
+    expect(screen.queryByText("模型调用")).toBeNull();
+
+    fireEvent.change(input, { target: { value: "not-found" } });
+    fireEvent.click(screen.getByRole("button", { name: "搜索 Trace 关联标识" }));
+    expect((await screen.findAllByText("没有匹配 Trace")).length).toBeGreaterThan(0);
+    expect(document.querySelectorAll(".trace-summary")).toHaveLength(0);
+    expect(window.location.hash).toBe("#/tracing");
   });
 
 });

@@ -504,6 +504,7 @@ function HttpRoutes({ metrics }: { metrics: MetricsSnapshot }) {
 
 type TraceDetailState = "idle" | "loading" | "ready" | "missing" | "unsupported" | "error";
 type TraceRow = { span: TraceSpan; depth: number; hasChildren: boolean };
+type TraceLookupResult = { traces: MessageTrace[]; errors: string[] };
 
 function TraceWorkbench({ metrics, token, active }: { metrics: MetricsSnapshot; token: string; active: boolean }) {
   const traces = metrics.messages.recent;
@@ -607,17 +608,25 @@ function TraceWorkbench({ metrics, token, active }: { metrics: MetricsSnapshot; 
     });
   }
 
-  async function searchByMessageID() {
-    const messageID = messageIDQuery.trim();
-    if (!messageID || searchState === "loading") return;
+  async function searchByIdentifier() {
+    const identifier = messageIDQuery.trim();
+    if (!identifier || searchState === "loading") return;
+    if (!isValidTraceIdentifier(identifier)) {
+      setSearchResults([]);
+      setSelectedTraceID("");
+      setSearchState("error");
+      setSearchError("关联标识必须为 1–128 个不含控制字符的字符");
+      window.history.replaceState(null, "", "#/tracing");
+      return;
+    }
     setSearchState("loading");
     setSearchError("");
     try {
-      const result = parseTraceSearch(await api<unknown>(`/traces?messageId=${encodeURIComponent(messageID)}`));
-      if (result.messageId !== messageID) throw new Error("Trace 搜索结果与 messageId 不一致");
+      const result = await lookupTraceIdentifier(identifier);
+      if (result.errors.length > 0) throw new Error(result.errors.join("；"));
       setSearchResults(result.traces);
       setSearchState("ready");
-      if (result.traces[0]) {
+      if (result.traces.length === 1) {
         setSelectedTraceID(result.traces[0].traceId);
       } else {
         setSelectedTraceID("");
@@ -625,8 +634,10 @@ function TraceWorkbench({ metrics, token, active }: { metrics: MetricsSnapshot; 
       }
     } catch (error: unknown) {
       setSearchResults([]);
+      setSelectedTraceID("");
       setSearchState("error");
       setSearchError(errorMessage(error));
+      window.history.replaceState(null, "", "#/tracing");
     }
   }
 
@@ -641,7 +652,7 @@ function TraceWorkbench({ metrics, token, active }: { metrics: MetricsSnapshot; 
     <section className="observability-section trace-workbench" aria-label="端到端调用链">
       <SectionHeading
         title="端到端调用链"
-        description="按 Trace 或外部 messageId 关联定位，并沿父子 Span 查看每个调用点。"
+        description="按 traceId 或外部 messageId 精确关联，并沿父子 Span 查看每个调用点。"
         aside={`${visibleTraces.length} 条${searchResults ? "匹配" : "最近"} Trace`}
       />
       {traces.length === 0 && !selectedTraceID ? (
@@ -650,18 +661,18 @@ function TraceWorkbench({ metrics, token, active }: { metrics: MetricsSnapshot; 
         <div className="trace-explorer">
           <aside className="trace-browser" aria-label="最近 Trace">
             <div className="trace-browser-heading">
-              <strong>{searchResults ? "messageId 结果" : "最近 Trace"}</strong>
+              <strong>{searchResults ? "关联查询结果" : "最近 Trace"}</strong>
               <span>{searchResults ? `精确匹配 ${messageIDQuery.trim()}` : "按接收时间倒序"}</span>
             </div>
-            <form className="trace-search" onSubmit={(event) => { event.preventDefault(); void searchByMessageID(); }}>
+            <form className="trace-search" onSubmit={(event) => { event.preventDefault(); void searchByIdentifier(); }}>
               <TextField.Root
                 value={messageIDQuery}
                 maxLength={128}
-                placeholder="输入 messageId"
-                aria-label="按 messageId 搜索 Trace"
+                placeholder="输入 traceId 或 messageId"
+                aria-label="按 traceId 或 messageId 搜索 Trace"
                 onChange={(event) => setMessageIDQuery(event.target.value)}
               />
-              <Button type="submit" size="1" variant="soft" disabled={!messageIDQuery.trim() || searchState === "loading"} aria-label="搜索 messageId">
+              <Button type="submit" size="1" variant="soft" disabled={!messageIDQuery.trim() || searchState === "loading"} aria-label="搜索 Trace 关联标识">
                 <MagnifyingGlassIcon />{searchState === "loading" ? "查询中" : "查询"}
               </Button>
               {searchResults ? <Button type="button" size="1" variant="ghost" onClick={clearSearch}><Cross2Icon />清除</Button> : null}
@@ -681,6 +692,12 @@ function TraceWorkbench({ metrics, token, active }: { metrics: MetricsSnapshot; 
           </aside>
 
           <div className="trace-detail-shell">
+            {detailState === "idle" && searchState === "ready" && visibleTraces.length > 1 ? (
+              <EmptyState title="选择一条 Trace" description="该关联标识匹配多条 Trace，请从左侧结果中选择要查看的调用链。" />
+            ) : null}
+            {detailState === "idle" && searchState === "ready" && visibleTraces.length === 0 ? (
+              <EmptyState title="没有匹配 Trace" description="没有找到精确匹配该 traceId 或 messageId 的调用链。" />
+            ) : null}
             {detailState === "loading" ? <TraceDetailLoading /> : null}
             {detailState === "missing" ? (
               <TraceFailure title="Trace 已离开保留窗口" description="刷新指标快照后重新选择一条最近 Trace。" onRetry={() => setDetailRevision((value) => value + 1)} />
@@ -695,8 +712,8 @@ function TraceWorkbench({ metrics, token, active }: { metrics: MetricsSnapshot; 
               <>
                 <header className="trace-detail-header">
                   <div>
-                    <div className="trace-detail-title"><code>{detail.traceId}</code><span className={`trace-status ${detail.status}`}>{statusLabel(detail.status)}</span></div>
-                    <span>{sourceLabel(detail.source)}{detail.messageId ? `，messageId ${detail.messageId}` : ""}，Conversation {shortID(detail.conversationId)}{detail.turnId ? `，Turn ${shortID(detail.turnId)}` : ""}</span>
+                    <div className="trace-detail-title"><span>Trace ID</span><code>{detail.traceId}</code><span className={`trace-status ${detail.status}`}>{statusLabel(detail.status)}</span></div>
+                    <span>{sourceLabel(detail.source)}{detail.messageId ? `，外部 messageId ${detail.messageId}` : "，无外部 messageId"}，Conversation {shortID(detail.conversationId)}{detail.turnId ? `，Turn ${shortID(detail.turnId)}` : ""}</span>
                   </div>
                   <dl className="trace-summary-metrics">
                     <div><dt>开始</dt><dd>{formatDateTimePrecise(detail.startedAtUnixMs)}</dd></div>
@@ -834,12 +851,51 @@ function TraceTurnRuntime({ detail, token }: { detail: TraceDetail; token: strin
 function TraceSummaryButton({ trace, selected, onSelect }: { trace: MessageTrace; selected: boolean; onSelect: () => void }) {
   return (
     <button type="button" className={`trace-summary ${selected ? "selected" : ""}`} aria-pressed={selected} onClick={onSelect}>
-      <span><code>{trace.traceId}</code><span className={`trace-status ${trace.status}`}>{statusLabel(trace.status)}</span></span>
+      <span><span className="trace-identifier"><small className="trace-identifier-label">Trace ID</small><code>{trace.traceId}</code></span><span className={`trace-status ${trace.status}`}>{statusLabel(trace.status)}</span></span>
       <strong>{trace.turnId ? `Turn ${shortID(trace.turnId)}` : "尚未创建 Turn"}</strong>
-      {trace.messageId ? <small className="trace-message-id" title={trace.messageId}>messageId {trace.messageId}</small> : null}
+      {trace.messageId ? <small className="trace-message-id" title={trace.messageId}>外部 messageId {trace.messageId}</small> : null}
       <small>{formatDateTimePrecise(trace.receivedAtUnixMs)}<span>{trace.completedAtUnixMs ? formatMilliseconds(trace.totalDurationMs) : "进行中"}</span></small>
     </button>
   );
+}
+
+async function lookupTraceIdentifier(identifier: string): Promise<TraceLookupResult> {
+  const outcomes = await Promise.allSettled([
+    api<unknown>(`/traces?messageId=${encodeURIComponent(identifier)}`),
+    api<unknown>(`/traces/${encodeURIComponent(identifier)}`),
+  ]);
+  const matches: MessageTrace[] = [];
+  const errors: string[] = [];
+
+  const byMessageID = outcomes[0];
+  if (byMessageID.status === "fulfilled") {
+    const parsed = parseTraceSearch(byMessageID.value);
+    if (parsed.messageId !== identifier) throw new Error("Trace 搜索结果与外部 messageId 不一致");
+    matches.push(...parsed.traces);
+  } else if (!isTraceNotFound(byMessageID.reason)) {
+    errors.push(`messageId 查询失败：${errorMessage(byMessageID.reason)}`);
+  }
+
+  const byTraceID = outcomes[1];
+  if (byTraceID.status === "fulfilled") {
+    const detail = parseTraceDetail(byTraceID.value);
+    if (detail.traceId !== identifier) throw new Error("Trace 详情与查询的 traceId 不一致");
+    matches.push(traceDetailSummary(detail));
+  } else if (!isTraceNotFound(byTraceID.reason)) {
+    errors.push(`traceId 查询失败：${errorMessage(byTraceID.reason)}`);
+  }
+
+  const unique = new Map<string, MessageTrace>();
+  for (const trace of matches) unique.set(trace.traceId, trace);
+  return { traces: [...unique.values()], errors };
+}
+
+function isTraceNotFound(error: unknown) {
+  return error instanceof ApiError && error.status === 404;
+}
+
+function isValidTraceIdentifier(value: string) {
+  return value.length > 0 && value.length <= 128 && !/[\u0000-\u001f\u007f]/.test(value);
 }
 
 function traceIDFromHash() {
