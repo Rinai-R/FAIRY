@@ -43,6 +43,7 @@ WHERE kind = 'trace' AND record_key IN ($1, $2)`, silentTraceID, failedTraceID);
 			TraceID: silentTraceID, MessageID: silentMessageID, Source: "ambient",
 			ConversationID: conversationID, Status: "silent",
 			StartedAtUnixMS: now, EndedAtUnixMS: now + 2, DurationMS: 2,
+			Spans: participationHistorySpans(silentTraceID, now),
 		},
 		{
 			TraceID: failedTraceID, MessageID: failedMessageID, Source: "ambient",
@@ -116,6 +117,30 @@ func assertRestoredSilentTrace(t *testing.T, detail observability.MessageTraceDe
 	t.Helper()
 	if detail.TraceID != traceID || detail.MessageID != messageID || detail.ConversationID != conversationID || detail.Status != "silent" {
 		t.Fatalf("restored silent trace = %#v", detail)
+	}
+	if len(detail.Spans) != 5 {
+		t.Fatalf("restored participation spans = %#v", detail.Spans)
+	}
+	participation := detail.Spans[1]
+	for index, span := range detail.Spans[2:] {
+		if span.ParentSpanID != participation.SpanID {
+			t.Fatalf("participation child %d = %#v", index, span)
+		}
+	}
+	if modelSpan := detail.Spans[3]; modelSpan.Operation != "参与模型调用" || modelSpan.Attributes["lane"] != "participate" || modelSpan.Attributes["inputTokens"] != "31" {
+		t.Fatalf("restored participation model span = %#v", modelSpan)
+	}
+}
+
+func participationHistorySpans(traceID string, startedAt int64) []observability.TraceSpan {
+	rootID := traceID + "-root"
+	participationID := traceID + "-participation"
+	return []observability.TraceSpan{
+		{SpanID: rootID, Operation: "消息处理", Category: "message", Status: "silent", StartedAtUnixMS: startedAt, EndedAtUnixMS: startedAt + 2, DurationMS: 2, Attributes: map[string]string{"source": "ambient"}},
+		{SpanID: participationID, ParentSpanID: rootID, Operation: "参与判断", Category: "participation", Status: "completed", StartedAtUnixMS: startedAt, EndedAtUnixMS: startedAt + 2, DurationMS: 2, Attributes: map[string]string{"action": "silent"}},
+		{SpanID: traceID + "-context", ParentSpanID: participationID, Operation: "参与上下文准备", Category: "context", Status: "completed", StartedAtUnixMS: startedAt, EndedAtUnixMS: startedAt + 1, DurationMS: 1, Attributes: map[string]string{"itemCount": "6"}},
+		{SpanID: traceID + "-model", ParentSpanID: participationID, Operation: "参与模型调用", Category: "model", Status: "completed", StartedAtUnixMS: startedAt + 1, EndedAtUnixMS: startedAt + 2, DurationMS: 1, Attributes: map[string]string{"attempt": "1", "lane": "participate", "inputTokens": "31"}},
+		{SpanID: traceID + "-compile", ParentSpanID: participationID, Operation: "参与结果编译", Category: "compile", Status: "completed", StartedAtUnixMS: startedAt + 2, EndedAtUnixMS: startedAt + 2, Attributes: map[string]string{"attempt": "1", "action": "silent"}},
 	}
 }
 

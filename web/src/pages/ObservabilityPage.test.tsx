@@ -501,7 +501,7 @@ describe("ObservabilityPage lifecycle", () => {
         }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       if (path.includes("/traces/msg-copy")) {
-        return new Response(JSON.stringify({ ...validTraceDetail(), traceId: "msg-copy", messageId: "msg-copy", conversationId: "conversation-copy", turnId: "" }), { status: 200, headers: { "Content-Type": "application/json" } });
+        return new Response(JSON.stringify(ambientParticipationTraceDetail()), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       if (path.includes("/traces/msg-3")) {
         return new Response(JSON.stringify(validTraceDetail()), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -521,6 +521,10 @@ describe("ObservabilityPage lifecycle", () => {
     expect(document.querySelectorAll(".trace-summary")).toHaveLength(1);
     expect(screen.getByText("Trace ID", { selector: ".trace-detail-title > span" })).toBeTruthy();
     expect(screen.getAllByText(/外部 messageId msg-copy/)).toHaveLength(2);
+    expect(screen.getByText("参与上下文准备")).toBeTruthy();
+    expect(screen.getByText("参与模型调用")).toBeTruthy();
+    expect(screen.getByText("参与结果编译")).toBeTruthy();
+    expect(screen.getByText("未创建 Turn")).toBeTruthy();
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/traces?messageId=msg-copy"))).toBe(true);
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/traces/msg-copy"))).toBe(true);
   });
@@ -644,6 +648,29 @@ function validTraceDetail() {
       { spanId: "span-root", parentSpanId: "", operation: "消息处理", category: "message", status: "completed", startedAtUnixMs: 1, endedAtUnixMs: 66, durationMs: 65, attributes: { source: "ambient" } },
       { spanId: "span-turn", parentSpanId: "span-root", operation: "Turn", category: "turn", status: "completed", startedAtUnixMs: 5, endedAtUnixMs: 65, durationMs: 60, attributes: { turn_id: "turn-1" } },
       { spanId: "span-model", parentSpanId: "span-turn", operation: "模型调用", category: "model", status: "completed", startedAtUnixMs: 10, endedAtUnixMs: 60, durationMs: 50, attributes: { lane: "respond", model: "deepseek-v4-flash" } },
+    ],
+  };
+}
+
+function ambientParticipationTraceDetail() {
+  return {
+    traceId: "msg-copy",
+    messageId: "msg-copy",
+    conversationId: "conversation-copy",
+    turnId: "",
+    source: "ambient",
+    status: "silent",
+    startedAtUnixMs: 10,
+    endedAtUnixMs: 30,
+    durationMs: 20,
+    droppedSpanCount: 0,
+    truncated: false,
+    spans: [
+      { spanId: "ambient-root", parentSpanId: "", operation: "消息处理", category: "message", status: "silent", startedAtUnixMs: 10, endedAtUnixMs: 30, durationMs: 20, attributes: { source: "ambient" } },
+      { spanId: "ambient-participation", parentSpanId: "ambient-root", operation: "参与判断", category: "participation", status: "completed", startedAtUnixMs: 10, endedAtUnixMs: 30, durationMs: 20, attributes: { action: "silent" } },
+      { spanId: "ambient-context", parentSpanId: "ambient-participation", operation: "参与上下文准备", category: "context", status: "completed", startedAtUnixMs: 10, endedAtUnixMs: 12, durationMs: 2, attributes: { itemCount: "6" } },
+      { spanId: "ambient-model", parentSpanId: "ambient-participation", operation: "参与模型调用", category: "model", status: "completed", startedAtUnixMs: 12, endedAtUnixMs: 29, durationMs: 17, attributes: { lane: "participate", attempt: "1", inputTokens: "31" } },
+      { spanId: "ambient-compile", parentSpanId: "ambient-participation", operation: "参与结果编译", category: "compile", status: "completed", startedAtUnixMs: 29, endedAtUnixMs: 30, durationMs: 1, attributes: { attempt: "1", action: "silent" } },
     ],
   };
 }

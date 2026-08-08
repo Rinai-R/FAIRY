@@ -33,6 +33,8 @@ type observedMessages interface {
 	Begin(source, conversationID string) string
 	BeginCorrelated(source, conversationID, messageID string) string
 	Participation(traceIDs []string, targetTraceID, action string)
+	StartParticipationSpan(traceID, operation, category string, attributes map[string]string) string
+	FinishSpan(spanID, status string, attributes map[string]string)
 	End(traceID, status string)
 }
 
@@ -177,6 +179,19 @@ func (a initiativeAdapter) BeginMessageTrace(source, conversationID, messageID, 
 func (a initiativeAdapter) EndMessageTrace(traceID, status string) {
 	if traceID != "" && a.messages != nil {
 		a.messages.End(traceID, status)
+	}
+}
+
+func (a initiativeAdapter) StartParticipationSpan(traceID, operation, category string, attributes map[string]string) string {
+	if traceID == "" || a.messages == nil {
+		return ""
+	}
+	return a.messages.StartParticipationSpan(traceID, operation, category, attributes)
+}
+
+func (a initiativeAdapter) FinishParticipationSpan(spanID, status string, attributes map[string]string) {
+	if spanID != "" && a.messages != nil {
+		a.messages.FinishSpan(spanID, status, attributes)
 	}
 }
 

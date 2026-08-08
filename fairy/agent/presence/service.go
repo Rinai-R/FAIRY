@@ -25,6 +25,8 @@ type InteractionResolver interface {
 type Observer interface {
 	BeginMessageTrace(source, conversationID, messageID, traceID string) string
 	EndMessageTrace(traceID, status string)
+	StartParticipationSpan(traceID, operation, category string, attributes map[string]string) string
+	FinishParticipationSpan(spanID, status string, attributes map[string]string)
 	EmitParticipation(Event)
 	RecordParticipation(traceIDs []string, targetTraceID, action string)
 	WarnInitiative(message, conversationID string, generation uint64, err error)
@@ -57,7 +59,7 @@ func NewService(parent context.Context, options ServiceOptions) *Service {
 		turns:        options.Turns,
 		interactions: options.Interactions,
 		observer:     options.Observer,
-		decisions:    NewEngine(options.Decisions),
+		decisions:    NewEngine(options.Decisions, options.Observer),
 		experience:   NewExperienceLoop(options.Learning, options.Feedback),
 		attention:    NewAttentionEvaluator(),
 		evidence:     NewEvidenceRegistry(),

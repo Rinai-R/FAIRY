@@ -81,6 +81,43 @@ func TestMessageMetricsKeepsFirstTerminalAndMessageCorrelation(t *testing.T) {
 	}
 }
 
+func TestMessageMetricsNestsParticipationStagesAndKeepsSilentRootTerminal(t *testing.T) {
+	metrics := NewMessageMetrics()
+	t.Cleanup(metrics.Close)
+	persisted := make(chan MessageTraceDetail, 1)
+	metrics.SetTerminalSink(func(detail MessageTraceDetail) bool {
+		persisted <- detail
+		return true
+	})
+	traceID := metrics.BeginCorrelated("ambient", "conversation", "external-participation-message")
+	contextSpan := metrics.StartParticipationSpan(traceID, "参与上下文准备", "context", nil)
+	metrics.FinishSpan(contextSpan, "completed", map[string]string{"itemCount": "7"})
+	modelSpan := metrics.StartParticipationSpan(traceID, "参与模型调用", "model", map[string]string{"attempt": "1", "lane": "participate"})
+	metrics.FinishSpan(modelSpan, "failed", map[string]string{
+		"attempt": "1", "lane": "participate", "errorCode": "model_request_failed", "inputTokens": "23",
+	})
+	metrics.Participation([]string{traceID}, "", "silent_error")
+
+	select {
+	case detail := <-persisted:
+		if detail.Status != "silent" || len(detail.Spans) != 4 {
+			t.Fatalf("terminal participation trace = %#v", detail)
+		}
+		participation := detail.Spans[1]
+		if participation.Status != "failed" || participation.Attributes["action"] != "silent" {
+			t.Fatalf("participation parent = %#v", participation)
+		}
+		if detail.Spans[2].ParentSpanID != participation.SpanID || detail.Spans[2].Status != "completed" {
+			t.Fatalf("context child = %#v", detail.Spans[2])
+		}
+		if detail.Spans[3].ParentSpanID != participation.SpanID || detail.Spans[3].Status != "failed" || detail.Spans[3].Attributes["inputTokens"] != "23" || detail.Spans[3].Attributes["errorCode"] != "model_request_failed" {
+			t.Fatalf("model child = %#v", detail.Spans[3])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("participation trace was not persisted")
+	}
+}
+
 func TestValidCorrelationIDRequiresExactSafeUTF8(t *testing.T) {
 	tests := []struct {
 		name  string

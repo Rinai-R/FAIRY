@@ -267,6 +267,15 @@ func (m *MessageMetrics) StartSpan(traceID, parentSpanID, operation, category st
 	return spanID
 }
 
+// StartParticipationSpan starts a child beneath the ambient participation
+// span without exposing the metrics package's span-ID convention to callers.
+func (m *MessageMetrics) StartParticipationSpan(traceID, operation, category string, attributes map[string]string) string {
+	if traceID == "" {
+		return ""
+	}
+	return m.StartSpan(traceID, participationSpanID(traceID), operation, category, attributes)
+}
+
 func (m *MessageMetrics) FinishSpan(spanID, status string, attributes map[string]string) {
 	if m == nil || spanID == "" {
 		return
@@ -459,7 +468,7 @@ func (s *messageMetricsState) begin(event messageEvent) {
 		SpanID: trace.rootSpanID, Operation: "消息处理", Category: "message", Status: "running",
 		StartedAtUnixMS: event.at.UnixMilli(), Attributes: map[string]string{"source": normalizeSource(event.source)},
 	})
-	participationID := event.traceID + "-participation"
+	participationID := participationSpanID(event.traceID)
 	trace.addSpan(TraceSpan{
 		SpanID: participationID, ParentSpanID: trace.rootSpanID, Operation: "参与判断", Category: "participation", Status: "running",
 		StartedAtUnixMS: event.at.UnixMilli(), Attributes: map[string]string{},
@@ -473,6 +482,10 @@ func (s *messageMetricsState) begin(event messageEvent) {
 	} else {
 		s.snapshotBase.DirectReceived++
 	}
+}
+
+func participationSpanID(traceID string) string {
+	return traceID + "-participation"
 }
 
 func (s *messageMetricsState) evictOldestActive() bool {

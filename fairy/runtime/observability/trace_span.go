@@ -15,7 +15,8 @@ var allowedSpanCategories = map[string]struct{}{
 var allowedSpanAttributeKeys = map[string]struct{}{
 	"source": {}, "action": {}, "stage": {}, "attempt": {}, "model": {}, "cacheMode": {},
 	"tool": {}, "status": {}, "itemCount": {}, "resultCount": {}, "errorCode": {},
-	"chainCount": {}, "callIndex": {}, "outputKind": {},
+	"chainCount": {}, "callIndex": {}, "outputKind": {}, "lane": {},
+	"inputTokens": {}, "outputTokens": {}, "cachedInputTokens": {}, "cacheWriteTokens": {},
 }
 
 func (s *messageMetricsState) startSpan(event messageEvent) {

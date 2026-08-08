@@ -564,7 +564,11 @@ type participationDecisionHost struct {
 }
 
 func decideParticipation(service *Service, ctx context.Context, request initiative.ParticipationRequest) (initiative.ParticipationResult, error) {
-	return initiative.NewEngine(participationDecisionHost{service: service}).DecideParticipation(ctx, request)
+	return initiative.NewEngine(participationDecisionHost{service: service}, nil).DecideParticipation(ctx, request)
+}
+
+func decideParticipationWithTrace(service *Service, tracer initiative.ParticipationTraceObserver, ctx context.Context, request initiative.ParticipationRequest) (initiative.ParticipationResult, error) {
+	return initiative.NewEngine(participationDecisionHost{service: service}, tracer).DecideParticipation(ctx, request)
 }
 
 func (h participationDecisionHost) LoadConversationActivity(conversationID string, nowUnixMS int64) (history.ConversationActivity, error) {
@@ -613,6 +617,72 @@ type participationModel struct {
 	request  model.CompiledPromptRequest
 	requests []model.CompiledPromptRequest
 	err      error
+}
+
+type recordedParticipationSpan struct {
+	spanID     string
+	traceID    string
+	operation  string
+	category   string
+	status     string
+	attributes map[string]string
+}
+
+type participationTraceRecorder struct {
+	spans []recordedParticipationSpan
+}
+
+func (r *participationTraceRecorder) StartParticipationSpan(traceID, operation, category string, attributes map[string]string) string {
+	spanID := fmt.Sprintf("participation-span-%d", len(r.spans)+1)
+	r.spans = append(r.spans, recordedParticipationSpan{
+		spanID: spanID, traceID: traceID, operation: operation, category: category,
+		attributes: cloneTraceAttributes(attributes),
+	})
+	return spanID
+}
+
+func (r *participationTraceRecorder) FinishParticipationSpan(spanID, status string, attributes map[string]string) {
+	for index := range r.spans {
+		if r.spans[index].spanID != spanID {
+			continue
+		}
+		r.spans[index].status = status
+		for key, value := range attributes {
+			r.spans[index].attributes[key] = value
+		}
+		return
+	}
+}
+
+func cloneTraceAttributes(attributes map[string]string) map[string]string {
+	cloned := make(map[string]string, len(attributes))
+	for key, value := range attributes {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func newParticipationTraceService(t *testing.T, modelPort *participationModel) *Service {
+	t.Helper()
+	service := NewService()
+	service.memory = participationMemoryPorts(&participationMemory{bootstrap: history.ConversationBootstrap{Conversation: history.ConversationRecord{ID: "c1", CharacterID: "character-1"}}})
+	service.model = modelPort
+	service.characterLookup = participationCharacterLookup{record: character.Record{CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "群友", TextLanguage: "zh", SpeakingLanguage: "zh"}}
+	service.cfg = participationConfig{}
+	if err := service.BindInteraction("c1", publicAmbientBinding()); err != nil {
+		t.Fatal(err)
+	}
+	return service
+}
+
+func tracedParticipationRequest() initiative.ParticipationRequest {
+	return initiative.ParticipationRequest{
+		ConversationID: "c1", EvaluationReason: initiative.ParticipationReasonMessage,
+		Messages: []initiative.AmbientObservation{
+			{MessageID: "old", TraceID: "trace-old", SenderID: "u1", SenderName: "甲", Text: "前一条", TimestampUnixMS: 1},
+			{MessageID: "new", TraceID: "trace-new", SenderID: "u2", SenderName: "乙", Text: "新消息", TimestampUnixMS: 2, IsNew: true},
+		},
+	}
 }
 
 func (m *participationModel) ExecuteRequestContext(ctx context.Context, request model.CompiledPromptRequest) ([]model.StreamEvent, error) {
@@ -672,6 +742,99 @@ func TestDecideParticipationRetriesOneInvalidDraftAndAccumulatesUsage(t *testing
 	}
 	if got := *result.Usage[1].Usage.CachedInputTokens.Tokens; got != secondCached {
 		t.Fatalf("second cached tokens = %d", got)
+	}
+}
+
+func TestDecideParticipationTracesContextModelAndCompileRetriesOnNewestMessage(t *testing.T) {
+	cached := uint64(13)
+	modelPort := &participationModel{
+		drafts: []string{"provider-secret-draft", `{"action":"silent"}`},
+		usages: []*model.Usage{
+			{PromptTokens: 21, CompletionTokens: 2},
+			{PromptTokens: 22, CompletionTokens: 3, CachedInputTokens: &cached},
+		},
+	}
+	service := newParticipationTraceService(t, modelPort)
+	tracer := &participationTraceRecorder{}
+
+	result, err := decideParticipationWithTrace(service, tracer, t.Context(), tracedParticipationRequest())
+	if err != nil || result.Action != initiative.ParticipationSilent {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if len(tracer.spans) != 5 {
+		t.Fatalf("participation spans = %#v", tracer.spans)
+	}
+	wantOperations := []string{"参与上下文准备", "参与模型调用", "参与结果编译", "参与模型调用", "参与结果编译"}
+	for index, span := range tracer.spans {
+		if span.traceID != "trace-new" || span.operation != wantOperations[index] || span.status == "" {
+			t.Fatalf("span %d = %#v", index, span)
+		}
+		for key, value := range span.attributes {
+			if strings.Contains(key, "provider-secret") || strings.Contains(value, "provider-secret") {
+				t.Fatalf("span leaked model draft: %#v", span)
+			}
+		}
+	}
+	if got := tracer.spans[2]; got.status != "failed" || got.attributes["attempt"] != "1" || got.attributes["errorCode"] != "invalid_decision" {
+		t.Fatalf("first compile span = %#v", got)
+	}
+	if got := tracer.spans[3]; got.status != "completed" || got.attributes["attempt"] != "2" || got.attributes["lane"] != "participate" || got.attributes["cachedInputTokens"] != "13" {
+		t.Fatalf("second model span = %#v", got)
+	}
+	if got := tracer.spans[4]; got.status != "completed" || got.attributes["action"] != "silent" {
+		t.Fatalf("final compile span = %#v", got)
+	}
+}
+
+func TestDecideParticipationTraceRecordsWaitAction(t *testing.T) {
+	service := newParticipationTraceService(t, &participationModel{draft: `{"action":"wait","waitSeconds":7}`})
+	tracer := &participationTraceRecorder{}
+
+	result, err := decideParticipationWithTrace(service, tracer, t.Context(), tracedParticipationRequest())
+	if err != nil || result.Action != initiative.ParticipationWait || result.WaitSeconds == nil || *result.WaitSeconds != 7 {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if len(tracer.spans) != 3 || tracer.spans[2].operation != "参与结果编译" || tracer.spans[2].status != "completed" || tracer.spans[2].attributes["action"] != "wait" {
+		t.Fatalf("wait participation spans = %#v", tracer.spans)
+	}
+}
+
+func TestDecideParticipationTraceClassifiesModelFailureAndSupersededCancellation(t *testing.T) {
+	tests := []struct {
+		name       string
+		ctx        func() context.Context
+		modelErr   error
+		wantStatus string
+		wantCode   string
+	}{
+		{name: "provider failure", ctx: func() context.Context { return t.Context() }, modelErr: errors.New("Bearer provider-secret-response"), wantStatus: "failed", wantCode: "model_request_failed"},
+		{name: "superseded", ctx: func() context.Context {
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			return ctx
+		}, modelErr: context.Canceled, wantStatus: "interrupted", wantCode: "superseded"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := newParticipationTraceService(t, &participationModel{err: test.modelErr})
+			tracer := &participationTraceRecorder{}
+			_, err := decideParticipationWithTrace(service, tracer, test.ctx(), tracedParticipationRequest())
+			if err == nil {
+				t.Fatal("expected participation failure")
+			}
+			if len(tracer.spans) != 2 {
+				t.Fatalf("participation spans = %#v", tracer.spans)
+			}
+			modelSpan := tracer.spans[1]
+			if modelSpan.status != test.wantStatus || modelSpan.attributes["errorCode"] != test.wantCode || modelSpan.attributes["attempt"] != "1" {
+				t.Fatalf("model span = %#v", modelSpan)
+			}
+			for _, value := range modelSpan.attributes {
+				if strings.Contains(value, "provider-secret") || strings.Contains(value, "Bearer") {
+					t.Fatalf("model span leaked provider error: %#v", modelSpan)
+				}
+			}
+		})
 	}
 }
 
