@@ -13,6 +13,13 @@ import (
 func main() {
 	root := &cobra.Command{Use: "fairy-qq-onebot", SilenceUsage: true, SilenceErrors: true}
 	root.CompletionOptions.DisableDefaultCmd = true
+	root.AddCommand(&cobra.Command{Use: "healthcheck", Short: "验证 QQ Surface 运行依赖", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		cfg, err := configFromEnv()
+		if err != nil {
+			return fmt.Errorf("config check: %w", err)
+		}
+		return runReadinessCheck(cmd.Context(), cfg)
+	}})
 	root.AddCommand(&cobra.Command{Use: "serve", Short: "运行 ZeroBot QQ Surface", Long: `运行 ZeroBot QQ Surface。
 
 配置仅来自 FAIRY_CORE_ENDPOINT、FAIRY_CORE_TOKEN、FAIRY_ONEBOT_WEBHOOK_ENDPOINT、

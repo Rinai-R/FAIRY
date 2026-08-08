@@ -34,7 +34,11 @@ docker compose -f docker-compose.yml -f docker-compose.qq.yml up -d --build
 
 启动后打开 [FAIRY 控制台](http://127.0.0.1:8787/console/) 的“接入”页，填写允许 FAIRY 参与的 QQ 群号并保存；空列表会拒绝全部群。随后打开 [LLBot WebUI](http://127.0.0.1:3080)，使用 `.env` 中的 `LLBOT_WEBUI_TOKEN` 登录并完成 QQ 扫码。配置 sidecar 会先以 mode `0600` 原子初始化 `/app/llbot/data/auth_token.txt` 和 `/app/llbot/data/webui_token.txt`，再等待 LLBot 生成 `/app/llbot/data/config_<uin>.json`；它不会伪造 QQ 已连接。登录后 sidecar 自动启用容器内 `http://llbot:3000` action API 和指向 `http://qq-onebot:3002` 的 HTTP POST，无需在 WebUI 手工填写 endpoint。控制台保存的群范围对 QQ Surface 下一条群事件生效，无需重启。
 
+QQ Surface 的 `running` 只表示进程存在；Compose 只有在已认证 Core status、OneBot 登录 action 和容器内 webhook listener 都可用时才显示 `healthy`。可用下面两条命令查看状态并主动复查；`healthcheck` 成功时不输出账号或 token，失败时只输出 `core_unavailable`、`onebot_unavailable` 或 `webhook_unavailable`。`healthy` 证明依赖链就绪，但不等于已经观察到真实群消息和回复；真实群消息 smoke 仍需在 allowlist 测试群中单独记录。
+
 ```bash
+docker compose -f docker-compose.yml -f docker-compose.qq.yml ps
+docker compose -f docker-compose.yml -f docker-compose.qq.yml exec qq-onebot /usr/local/bin/fairy-qq-onebot healthcheck
 docker compose -f docker-compose.yml -f docker-compose.qq.yml logs -f llbot llbot-config qq-onebot
 docker compose -f docker-compose.yml -f docker-compose.qq.yml down
 ```
