@@ -43,8 +43,8 @@ func TestNoPackageImportsWails(t *testing.T) {
 			if imported == "fairy/desktop" {
 				t.Fatalf("%s imports removed desktop shell package", pkg.ImportPath)
 			}
-			if (imported == "github.com/spf13/cobra" || imported == "github.com/spf13/viper") && pkg.ImportPath != "fairy/cmd" {
-				t.Fatalf("%s imports CLI framework package %s; only fairy/cmd may import Cobra/Viper", pkg.ImportPath, imported)
+			if (imported == "github.com/spf13/cobra" || imported == "github.com/spf13/viper") && pkg.ImportPath != "fairy/app/cmd" {
+				t.Fatalf("%s imports CLI framework package %s; only fairy/app/cmd may import Cobra/Viper", pkg.ImportPath, imported)
 			}
 		}
 	}
@@ -52,20 +52,22 @@ func TestNoPackageImportsWails(t *testing.T) {
 
 func TestDomainPackagesDoNotImportCompositionOrTransport(t *testing.T) {
 	domains := []string{
-		"./character",
-		"./companion",
-		"./config",
-		"./desktopcapture",
-		"./initiative",
-		"./memory",
-		"./model",
-		"./observability",
-		"./persona",
-		"./reply",
-		"./session",
+		"./context/character",
+		"./runtime/config",
+		"./agent/conversation",
+		"./runtime/database",
+		"./transport/desktopcapture",
+		"./context/knowledge",
+		"./agent/learning",
+		"./context/memory/...",
+		"./runtime/model",
+		"./runtime/observability",
+		"./agent/presence",
+		"./transport/session",
+		"./agent/sticker",
 	}
 	forbidden := map[string]struct{}{
-		"fairy/api": {}, "fairy/cmd": {}, "fairy/core": {}, "fairy/coreclient": {},
+		"fairy/app/cmd": {}, "fairy/app/core": {}, "fairy/transport/web": {},
 	}
 
 	args := append([]string{"list", "-json"}, domains...)
@@ -94,7 +96,7 @@ func TestDomainPackagesDoNotImportCompositionOrTransport(t *testing.T) {
 }
 
 func TestModelCallSitesProvideExplicitCacheIdentity(t *testing.T) {
-	for _, directory := range []string{"companion", "participation", "sociallearning"} {
+	for _, directory := range []string{"agent/conversation", "agent/presence"} {
 		files, err := filepath.Glob(filepath.Join(directory, "*.go"))
 		if err != nil {
 			t.Fatal(err)
@@ -146,13 +148,13 @@ func TestSessionCoreHasNoDesktopPackage(t *testing.T) {
 }
 
 func TestDesktopCaptureHasOneProductionOwner(t *testing.T) {
-	if _, err := os.Stat("core/capture_hub.go"); err == nil {
+	if _, err := os.Stat("app/core/capture_hub.go"); err == nil {
 		t.Fatal("core must not own the desktop capture state machine")
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("stat core capture hub: %v", err)
 	}
 
-	out, err := exec.Command("go", "list", "-json", "./desktopcapture").Output()
+	out, err := exec.Command("go", "list", "-json", "./transport/desktopcapture").Output()
 	if err != nil {
 		t.Fatalf("go list desktopcapture: %v", err)
 	}
@@ -163,7 +165,7 @@ func TestDesktopCaptureHasOneProductionOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, imported := range pkg.Imports {
-		for _, forbidden := range []string{"fairy/api", "fairy/cmd", "fairy/core", "fairy/coreclient"} {
+		for _, forbidden := range []string{"fairy/app/cmd", "fairy/app/core", "fairy/transport/web"} {
 			if imported == forbidden || strings.HasPrefix(imported, forbidden+"/") {
 				t.Fatalf("desktopcapture imports forbidden transport/composition package %s", imported)
 			}
@@ -172,7 +174,7 @@ func TestDesktopCaptureHasOneProductionOwner(t *testing.T) {
 }
 
 func TestCoreDoesNotRetainTurnEventHistory(t *testing.T) {
-	file, err := parser.ParseFile(token.NewFileSet(), "core/runtime.go", nil, 0)
+	file, err := parser.ParseFile(token.NewFileSet(), "app/core/runtime.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +202,7 @@ func TestCoreDoesNotRetainTurnEventHistory(t *testing.T) {
 				}
 				selector, ok := slice.Elt.(*ast.SelectorExpr)
 				owner, ownerOK := selector.X.(*ast.Ident)
-				if ok && ownerOK && owner.Name == "companion" && selector.Sel.Name == "TurnEvent" {
+				if ok && ownerOK && owner.Name == "turn" && selector.Sel.Name == "TurnEvent" {
 					t.Fatal("core retains an unbounded TurnEvent history slice")
 				}
 			}
@@ -276,8 +278,8 @@ func TestProductionBuildHasNoSQLite(t *testing.T) {
 	}
 }
 
-func TestCompanionLogsDoNotEmitConversationTextFields(t *testing.T) {
-	files, err := filepath.Glob("companion/*.go")
+func TestTurnLogsDoNotEmitConversationTextFields(t *testing.T) {
+	files, err := filepath.Glob("conversation/*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +332,7 @@ func TestProductionGraphHasNoGroupEvaluator(t *testing.T) {
 			t.Fatalf("production dependency graph contains local evaluator marker %q", marker)
 		}
 	}
-	files, err := filepath.Glob("cmd/*.go")
+	files, err := filepath.Glob("app/cmd/*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +353,7 @@ func TestProductionGraphHasNoGroupEvaluator(t *testing.T) {
 }
 
 func TestDesktopCapturePersistenceBoundary(t *testing.T) {
-	for _, directory := range []string{"memory", "postgres", "observability"} {
+	for _, directory := range []string{"context/memory", "postgres", "runtime/observability"} {
 		files, err := filepath.Glob(filepath.Join(directory, "*.go"))
 		if err != nil {
 			t.Fatal(err)
@@ -371,7 +373,7 @@ func TestDesktopCapturePersistenceBoundary(t *testing.T) {
 			}
 		}
 	}
-	schema, err := os.ReadFile("coredb/schema.go")
+	schema, err := os.ReadFile("runtime/database/schema.go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -407,7 +409,7 @@ func TestDesktopSurfaceDependencyBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, imported := range pkg.Imports {
-		for _, forbidden := range []string{"fairy/companion", "fairy/core", "fairy/memory", "fairy/model", "github.com/wailsapp/wails/v2"} {
+		for _, forbidden := range []string{"fairy/agent/conversation", "fairy/agent/presence", "fairy/agent/learning", "fairy/app/core", "fairy/context/memory", "fairy/context/knowledge", "fairy/runtime/model", "fairy/transport/web", "github.com/wailsapp/wails/v2"} {
 			if imported == forbidden || strings.HasPrefix(imported, forbidden+"/") {
 				t.Fatalf("desktop Surface imports forbidden package %s", imported)
 			}

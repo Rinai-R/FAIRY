@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"fairy/coreclient"
+	coreclient "fairy/transport/session"
 
 	"github.com/gorilla/websocket"
 )

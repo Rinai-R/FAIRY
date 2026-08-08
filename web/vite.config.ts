@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   base: "/console/",
   build: {
-    outDir: "../fairy/api/console/dist",
+    outDir: "../fairy/transport/web/console/dist",
     emptyOutDir: true,
   },
   server: {

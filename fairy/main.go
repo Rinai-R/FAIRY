@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	fairycmd "fairy/cmd"
+	fairycmd "fairy/app/cmd"
 )
 
 func main() {

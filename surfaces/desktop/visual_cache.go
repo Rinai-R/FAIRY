@@ -14,7 +14,7 @@ import (
 	"strings"
 	"sync"
 
-	"fairy/coreclient"
+	coreclient "fairy/transport/session"
 
 	"github.com/spf13/fileflow"
 	"github.com/spf13/pathologize"

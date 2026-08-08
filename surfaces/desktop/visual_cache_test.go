@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"fairy/coreclient"
+	coreclient "fairy/transport/session"
 )
 
 var testPNG = []byte("\x89PNG\r\n\x1a\nvisual")

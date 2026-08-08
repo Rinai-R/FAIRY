@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"fairy/session"
+	"fairy/transport/session"
 )
 
 // desktopObservationSampler is the only platform-specific seam. Implementations

@@ -6,13 +6,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fairy/transport/session"
 	"image"
 	"image/color"
 	"testing"
 	"time"
-
-	"fairy/coreclient"
-	"fairy/session"
 )
 
 type fakeDesktopCapturer struct {
@@ -101,8 +99,8 @@ func TestDesktopCaptureRuntimeDoesNotFallbackAfterCaptureFailure(t *testing.T) {
 	}
 }
 
-func validDesktopCaptureRequest() coreclient.DesktopCaptureRequest {
-	return coreclient.DesktopCaptureRequest{
+func validDesktopCaptureRequest() session.DesktopCaptureRequest {
+	return session.DesktopCaptureRequest{
 		ExecutionID: "execution-1", ConversationID: "conversation-1", TurnID: "turn-1", CallID: "call-1",
 		DeadlineUnixMS: time.Now().Add(time.Minute).UnixMilli(), MaxDecodedBytes: 768 << 10,
 		MaxDimension: 2048, AllowedMIMETypes: []string{"image/png", "image/jpeg"},

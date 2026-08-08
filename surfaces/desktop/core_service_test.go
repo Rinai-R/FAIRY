@@ -3,15 +3,13 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fairy/transport/session"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"fairy/coreclient"
-	"fairy/session"
 
 	"github.com/gorilla/websocket"
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -66,7 +64,7 @@ func (w *fakeWindow) Focus()          { w.focused = true }
 
 func TestDecodeDesktopTurnEventKeepsTextOnlyBeat(t *testing.T) {
 	payload := `{"type":"beat.ready","beatId":"b1","kind":"final","displayText":"只显示文字","visualState":"idle"}`
-	event := decodeDesktopTurnEvent(coreclient.TurnEvent{TurnID: "turn-1", Payload: json.RawMessage(payload)})
+	event := decodeDesktopTurnEvent(session.TurnEvent{TurnID: "turn-1", Payload: json.RawMessage(payload)})
 	if event.Beat == nil || event.Beat.DisplayText != "只显示文字" {
 		t.Fatalf("decoded text-only beat = %#v", event.Beat)
 	}
@@ -271,12 +269,12 @@ func TestCoreServiceUsesOneSocketAndClearsCompletedTurn(t *testing.T) {
 		case "/v1/status":
 			writeServiceFixtureJSON(t, w, serviceStatusFixture())
 		case "/v1/characters":
-			writeServiceFixtureJSON(t, w, coreclient.CharacterCatalog{Characters: []coreclient.CharacterRecord{serviceCharacterFixture()}, Active: ptr(serviceCharacterFixture())})
+			writeServiceFixtureJSON(t, w, session.CharacterCatalog{Characters: []session.CharacterRecord{serviceCharacterFixture()}, Active: ptr(serviceCharacterFixture())})
 		case "/v1/visual-assets/fairy.test/images/idle.png":
 			w.Header().Set("Content-Type", "image/png")
 			_, _ = w.Write(testPNG)
 		case "/v1/sessions/c1/messages":
-			writeServiceFixtureJSON(t, w, coreclient.MessagePage{Messages: []coreclient.MessageRecord{}})
+			writeServiceFixtureJSON(t, w, session.MessagePage{Messages: []session.MessageRecord{}})
 		case "/v1/session/ws":
 			mu.Lock()
 			connections++
@@ -375,12 +373,12 @@ func TestCoreServiceRejectsSendAndCancelsProactiveTurn(t *testing.T) {
 		case "/v1/status":
 			writeServiceFixtureJSON(t, w, serviceStatusFixture())
 		case "/v1/characters":
-			writeServiceFixtureJSON(t, w, coreclient.CharacterCatalog{Characters: []coreclient.CharacterRecord{serviceCharacterFixture()}, Active: ptr(serviceCharacterFixture())})
+			writeServiceFixtureJSON(t, w, session.CharacterCatalog{Characters: []session.CharacterRecord{serviceCharacterFixture()}, Active: ptr(serviceCharacterFixture())})
 		case "/v1/visual-assets/fairy.test/images/idle.png":
 			w.Header().Set("Content-Type", "image/png")
 			_, _ = w.Write(testPNG)
 		case "/v1/sessions/c1/messages":
-			writeServiceFixtureJSON(t, w, coreclient.MessagePage{Messages: []coreclient.MessageRecord{}})
+			writeServiceFixtureJSON(t, w, session.MessagePage{Messages: []session.MessageRecord{}})
 		case "/v1/session/ws":
 			conn, err := upgrader.Upgrade(w, r, nil)
 			if err != nil {
@@ -470,18 +468,18 @@ func TestCoreServiceRejectsSendAndCancelsProactiveTurn(t *testing.T) {
 
 func TestCoreServicePreparesControlledStickerAndReportsRenderSuccess(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	deliveryReceived := make(chan coreclient.ExpressionDeliveryResult, 1)
+	deliveryReceived := make(chan session.ExpressionDeliveryResult, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/status":
 			writeServiceFixtureJSON(t, w, serviceStatusFixture())
 		case "/v1/characters":
-			writeServiceFixtureJSON(t, w, coreclient.CharacterCatalog{Characters: []coreclient.CharacterRecord{serviceCharacterFixture()}, Active: ptr(serviceCharacterFixture())})
+			writeServiceFixtureJSON(t, w, session.CharacterCatalog{Characters: []session.CharacterRecord{serviceCharacterFixture()}, Active: ptr(serviceCharacterFixture())})
 		case "/v1/visual-assets/fairy.test/images/idle.png":
 			w.Header().Set("Content-Type", "image/png")
 			_, _ = w.Write(testPNG)
 		case "/v1/sessions/c1/messages":
-			writeServiceFixtureJSON(t, w, coreclient.MessagePage{Messages: []coreclient.MessageRecord{}})
+			writeServiceFixtureJSON(t, w, session.MessagePage{Messages: []session.MessageRecord{}})
 		case "/v1/stickers/sticker-1/content":
 			if r.Header.Get("Authorization") != "Bearer desktop-test-token" {
 				t.Errorf("sticker authorization = %q", r.Header.Get("Authorization"))
@@ -522,7 +520,7 @@ func TestCoreServicePreparesControlledStickerAndReportsRenderSuccess(t *testing.
 					submitRequestID = requestID
 					writeTurnEventFixture(conn, "t1", 1, "responding", `{"type":"beat.ready","beatId":"b1","kind":"final","visualState":"idle","part":{"kind":"sticker","visualState":"idle","sticker":{"id":"sticker-1","description":"开心","mimeType":"image/gif"}}}`)
 				case "expression.delivery":
-					var result coreclient.ExpressionDeliveryResult
+					var result session.ExpressionDeliveryResult
 					_ = json.Unmarshal(frame["deliveryResult"], &result)
 					deliveryReceived <- result
 					_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID, "conversationId": "c1"})
@@ -596,7 +594,7 @@ func TestCoreServicePreparesControlledStickerAndReportsRenderSuccess(t *testing.
 
 func TestCoreServiceReportsStickerFetchFailure(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	deliveryReceived := make(chan coreclient.ExpressionDeliveryResult, 1)
+	deliveryReceived := make(chan session.ExpressionDeliveryResult, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/stickers/missing/content":
@@ -620,7 +618,7 @@ func TestCoreServiceReportsStickerFetchFailure(t *testing.T) {
 				if kind != "expression.delivery" {
 					continue
 				}
-				var result coreclient.ExpressionDeliveryResult
+				var result session.ExpressionDeliveryResult
 				_ = json.Unmarshal(frame["deliveryResult"], &result)
 				deliveryReceived <- result
 				_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID})
@@ -630,7 +628,7 @@ func TestCoreServiceReportsStickerFetchFailure(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client, err := coreclient.New(coreclient.Options{Endpoint: server.URL, Token: "desktop-test-token"})
+	client, err := session.New(session.Options{Endpoint: server.URL, Token: "desktop-test-token"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -654,7 +652,7 @@ func TestCoreServiceReportsStickerFetchFailure(t *testing.T) {
 			},
 		},
 	}
-	service.prepareDesktopSticker(socket, coreclient.TurnEvent{ConversationID: "c1", TurnID: "t1"}, &beat)
+	service.prepareDesktopSticker(socket, session.TurnEvent{ConversationID: "c1", TurnID: "t1"}, &beat)
 	if !beat.StickerUnavailable || beat.StickerURL != "" || beat.StickerError != "无法从 Core 读取表情包" {
 		t.Fatalf("failed sticker beat = %#v", beat)
 	}
@@ -677,13 +675,13 @@ func TestForwardTurnEventsClearsActiveWhenStreamCloses(t *testing.T) {
 			turns <- payload.(desktopTurnEvent)
 		}
 	})
-	events := make(chan coreclient.TurnEvent)
+	events := make(chan session.TurnEvent)
 	done := make(chan struct{})
 	go func() {
 		service.forwardTurnEvents(nil, "c1", events)
 		close(done)
 	}()
-	events <- coreclient.TurnEvent{
+	events <- session.TurnEvent{
 		ConversationID: "c1",
 		TurnID:         "proactive-turn",
 		State:          "responding",
@@ -720,14 +718,14 @@ func TestForwardTurnEventsTracksProactiveTurnUntilMatchingTerminal(t *testing.T)
 			turns <- payload.(desktopTurnEvent)
 		}
 	})
-	events := make(chan coreclient.TurnEvent)
+	events := make(chan session.TurnEvent)
 	done := make(chan struct{})
 	go func() {
 		service.forwardTurnEvents(nil, "c1", events)
 		close(done)
 	}()
 
-	events <- coreclient.TurnEvent{
+	events <- session.TurnEvent{
 		ConversationID: "c1",
 		TurnID:         "proactive-turn",
 		State:          "interpreting",
@@ -744,7 +742,7 @@ func TestForwardTurnEventsTracksProactiveTurnUntilMatchingTerminal(t *testing.T)
 		t.Fatalf("proactive speech bubble shown=%t position=(%d, %d), want true at (686, 180)", bubble.shown, bubble.x, bubble.y)
 	}
 
-	events <- coreclient.TurnEvent{
+	events <- session.TurnEvent{
 		ConversationID: "c1",
 		TurnID:         "proactive-turn",
 		State:          "gathering",
@@ -755,7 +753,7 @@ func TestForwardTurnEventsTracksProactiveTurnUntilMatchingTerminal(t *testing.T)
 		t.Fatalf("same proactive turn showed speech bubble %d times, want 1", bubble.showCount)
 	}
 
-	events <- coreclient.TurnEvent{
+	events <- session.TurnEvent{
 		ConversationID: "c1",
 		TurnID:         "older-turn",
 		State:          "completed",
@@ -769,7 +767,7 @@ func TestForwardTurnEventsTracksProactiveTurnUntilMatchingTerminal(t *testing.T)
 		t.Fatalf("unrelated terminal changed active state to (%t, %q)", active, activeTurnID)
 	}
 
-	events <- coreclient.TurnEvent{
+	events <- session.TurnEvent{
 		ConversationID: "c1",
 		TurnID:         "proactive-turn",
 		State:          "completed",
@@ -830,7 +828,7 @@ func TestForwardTurnEventsDropsStaleSocketBeforeStickerDelivery(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := coreclient.New(coreclient.Options{Endpoint: server.URL})
+	client, err := session.New(session.Options{Endpoint: server.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -846,7 +844,7 @@ func TestForwardTurnEventsDropsStaleSocketBeforeStickerDelivery(t *testing.T) {
 	}
 	service := NewCoreService()
 	service.client = client
-	service.socket = &coreclient.SessionSocket{}
+	service.socket = &session.SessionSocket{}
 	service.visualCache = cache
 	staleEmission := make(chan struct{}, 1)
 	service.attachEmitter(func(name string, _ any) {
@@ -854,13 +852,13 @@ func TestForwardTurnEventsDropsStaleSocketBeforeStickerDelivery(t *testing.T) {
 			staleEmission <- struct{}{}
 		}
 	})
-	events := make(chan coreclient.TurnEvent, 1)
+	events := make(chan session.TurnEvent, 1)
 	done := make(chan struct{})
 	go func() {
 		service.forwardTurnEvents(staleSocket, "c1", events)
 		close(done)
 	}()
-	events <- coreclient.TurnEvent{
+	events <- session.TurnEvent{
 		ConversationID: "c1",
 		TurnID:         "stale-turn",
 		State:          "responding",
@@ -913,15 +911,15 @@ func TestDesktopTurnStateClassification(t *testing.T) {
 	}
 }
 
-func serviceStatusFixture() coreclient.Status {
-	return coreclient.Status{
+func serviceStatusFixture() session.Status {
+	return session.Status{
 		Bootstrap: json.RawMessage(`{}`), ConfigRoot: "test", WebSearch: json.RawMessage(`{}`), SemanticEmbedding: json.RawMessage(`{}`),
-		Database: coreclient.DependencyStatus{Ready: true, Mode: "test"}, SecretKey: coreclient.DependencyStatus{Ready: true, Mode: "test"},
+		Database: session.DependencyStatus{Ready: true, Mode: "test"}, SecretKey: session.DependencyStatus{Ready: true, Mode: "test"},
 	}
 }
 
-func serviceCharacterFixture() coreclient.CharacterRecord {
-	return coreclient.CharacterRecord{CharacterID: "character-1", Name: "Test", Appearance: coreclient.CharacterAppearance{Status: "assigned", Visual: &coreclient.VisualManifest{SchemaVersion: 2, PackID: "fairy.test", Renderer: "state_images", Frame: coreclient.VisualFrame{Width: 16, Height: 16}, Scale: 1, Anchor: coreclient.VisualAnchor{X: 8, Y: 16}, States: []coreclient.VisualState{{ID: "idle", ImagePath: "images/idle.png"}}}}}
+func serviceCharacterFixture() session.CharacterRecord {
+	return session.CharacterRecord{CharacterID: "character-1", Name: "Test", Appearance: session.CharacterAppearance{Status: "assigned", Visual: &session.VisualManifest{SchemaVersion: 2, PackID: "fairy.test", Renderer: "state_images", Frame: session.VisualFrame{Width: 16, Height: 16}, Scale: 1, Anchor: session.VisualAnchor{X: 8, Y: 16}, States: []session.VisualState{{ID: "idle", ImagePath: "images/idle.png"}}}}}
 }
 
 func writeServiceFixtureJSON(t *testing.T, w http.ResponseWriter, value any) {
@@ -933,7 +931,7 @@ func writeServiceFixtureJSON(t *testing.T, w http.ResponseWriter, value any) {
 }
 
 func writeTurnEventFixture(conn *websocket.Conn, turnID string, sequence uint64, state, payload string) {
-	event := coreclient.TurnEvent{ConversationID: "c1", TurnID: turnID, Sequence: sequence, State: state, Payload: json.RawMessage(payload)}
+	event := session.TurnEvent{ConversationID: "c1", TurnID: turnID, Sequence: sequence, State: state, Payload: json.RawMessage(payload)}
 	_ = conn.WriteJSON(map[string]any{"type": "turn.event", "conversationId": "c1", "event": event})
 }
 

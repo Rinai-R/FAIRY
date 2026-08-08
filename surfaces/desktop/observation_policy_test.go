@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"fairy/session"
+	"fairy/transport/session"
 )
 
 func TestObservationPolicyDeduplicatesAndSuppressesPrivacy(t *testing.T) {

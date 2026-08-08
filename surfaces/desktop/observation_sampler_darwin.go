@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"fairy/session"
+	"fairy/transport/session"
 )
 
 var hidIdleTimePattern = regexp.MustCompile(`"HIDIdleTime"\s*=\s*([0-9]+)`)

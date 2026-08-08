@@ -4,12 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fairy/transport/session"
 	"reflect"
 	"testing"
 	"time"
-
-	"fairy/coreclient"
-	"fairy/session"
 
 	zero "github.com/wdvxdr1123/ZeroBot"
 	"github.com/wdvxdr1123/ZeroBot/message"
@@ -74,12 +72,12 @@ func TestBotReadsCurrentAllowlistBeforeAnySessionWork(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	socket := &fakeSessionSocket{
-		openResponse: coreclient.OpenSessionResponse{
+		openResponse: session.OpenSessionResponse{
 			ConversationID: "conversation-1",
 			CharacterID:    "character-1",
 			Endpoint:       session.EndpointIM,
 		},
-		stream: make(chan coreclient.TurnEvent),
+		stream: make(chan session.TurnEvent),
 	}
 	authorizer := &mutableGroupAuthorizer{allowed: map[int64]bool{}}
 	bot, err := newBot(ctx, socket, fakeStickerReader{}, authorizer)

@@ -8,10 +8,7 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as coreclient$0 from "../fairy/coreclient/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as session$0 from "../fairy/session/models.js";
+import * as session$0 from "../fairy/transport/session/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -97,7 +94,7 @@ export function OpenHistory() {
 }
 
 /**
- * @returns {$CancellablePromise<coreclient$0.MessageRecord[]>}
+ * @returns {$CancellablePromise<session$0.MessageRecord[]>}
  */
 export function RecentMessages() {
     return $Call.ByID(983675989).then(/** @type {($result: any) => any} */(($result) => {

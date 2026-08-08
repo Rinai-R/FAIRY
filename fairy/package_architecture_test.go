@@ -18,23 +18,42 @@ import (
 
 var targetPackages = []string{
 	"fairy",
-	"fairy/api",
-	"fairy/character",
-	"fairy/cmd",
-	"fairy/companion",
-	"fairy/config",
-	"fairy/core",
-	"fairy/coreclient",
-	"fairy/coredb",
-	"fairy/desktopcapture",
-	"fairy/initiative",
-	"fairy/memory",
-	"fairy/model",
-	"fairy/observability",
-	"fairy/persona",
-	"fairy/reply",
-	"fairy/session",
-	"fairy/sticker",
+	"fairy/context/character",
+	"fairy/app/cmd",
+	"fairy/runtime/config",
+	"fairy/agent/conversation",
+	"fairy/agent/conversation/contextplan",
+	"fairy/agent/conversation/delivery",
+	"fairy/agent/conversation/interaction",
+	"fairy/agent/conversation/lifecycle",
+	"fairy/agent/conversation/turngate",
+	"fairy/app/core",
+	"fairy/runtime/database",
+	"fairy/runtime/embedding",
+	"fairy/runtime/ledger",
+	"fairy/transport/desktopcapture",
+	"fairy/context/history/compaction",
+	"fairy/context/history/expression",
+	"fairy/context/history/projection",
+	"fairy/context/history/runtime",
+	"fairy/context/history/transcript",
+	"fairy/context/identity",
+	"fairy/context/knowledge",
+	"fairy/agent/learning",
+	"fairy/context/memory/admin",
+	"fairy/context/memory/extraction",
+	"fairy/context/memory/personal",
+	"fairy/context/memory/retrieval",
+	"fairy/context/recall",
+	"fairy/context/social",
+	"fairy/runtime/model",
+	"fairy/runtime/observability",
+	"fairy/agent/presence",
+	"fairy/agent/reply",
+	"fairy/transport/session",
+	"fairy/agent/sticker",
+	"fairy/agent/tool",
+	"fairy/transport/web",
 }
 
 type listedPackage struct {
@@ -85,6 +104,141 @@ func TestPackageInventoryMatchesConsolidatedLayout(t *testing.T) {
 		for _, pkg := range want {
 			if !slices.Contains(got, pkg) {
 				t.Errorf("missing package after consolidation: %s", pkg)
+			}
+		}
+	}
+}
+
+func TestProductionPackagesLiveUnderRegisteredSubsystems(t *testing.T) {
+	allowed := map[string]bool{
+		"agent": true, "app": true, "context": true, "runtime": true, "transport": true,
+	}
+	for _, pkg := range listPackages(t, "./...") {
+		if pkg.ImportPath == "fairy" {
+			continue
+		}
+		relative := strings.TrimPrefix(pkg.ImportPath, "fairy/")
+		parts := strings.Split(relative, "/")
+		if len(parts) < 2 || !allowed[parts[0]] {
+			t.Errorf("production package %s is outside a registered subsystem leaf", pkg.ImportPath)
+		}
+	}
+	for namespace := range allowed {
+		entries, err := os.ReadDir(namespace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".go") {
+				t.Errorf("subsystem namespace %s contains Go source %s; behavior belongs in a leaf package", namespace, entry.Name())
+			}
+		}
+	}
+}
+
+func TestFunctionalNamespacesContainNoGoSource(t *testing.T) {
+	for _, namespace := range []string{
+		filepath.Join("context", "history"),
+		filepath.Join("context", "memory"),
+	} {
+		entries, err := os.ReadDir(namespace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".go") {
+				t.Errorf("functional namespace %s contains Go source %s; a child package must own it", namespace, entry.Name())
+			}
+		}
+	}
+}
+
+func TestTranscriptDoesNotDependOnCompaction(t *testing.T) {
+	for _, pkg := range listPackages(t, "./context/history/transcript") {
+		for _, imported := range pkg.Imports {
+			if imported == "fairy/context/history/compaction" {
+				t.Errorf("transcript owner depends on compaction owner")
+			}
+		}
+	}
+}
+
+func TestExtractedStoresDoNotLeakBackIntoMemory(t *testing.T) {
+	for _, name := range []string{
+		"conversation.go", "runtime_state.go", "compaction.go",
+		"store_conversation.go", "store_runtime_state.go", "store_compaction.go",
+		"tool_execution.go", "store_usage.go", "usage.go",
+		"identity_store.go", "social.go", "social_person.go", "social_types.go",
+		"store_social.go", "store_social_api.go", "store_social_person.go", "store_social_person_api.go",
+		"store_knowledge.go", "store_knowledge_api.go", "store_knowledge_documents.go", "store_knowledge_ingest.go",
+	} {
+		if _, err := os.Stat(filepath.Join("context", "memory", name)); err == nil {
+			t.Errorf("context/memory regained extracted responsibility %s", name)
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("stat context/memory/%s: %v", name, err)
+		}
+	}
+	for _, required := range []string{
+		filepath.Join("context", "history", "transcript", "store_conversation.go"),
+		filepath.Join("context", "history", "compaction", "store_compaction.go"),
+		filepath.Join("context", "history", "runtime", "store_postgres.go"),
+		filepath.Join("runtime", "ledger", "tool_execution.go"),
+		filepath.Join("runtime", "ledger", "store_usage.go"),
+		filepath.Join("context", "identity", "store.go"),
+		filepath.Join("context", "social", "records.go"),
+		filepath.Join("context", "knowledge", "store_documents.go"),
+	} {
+		if _, err := os.Stat(required); err != nil {
+			t.Errorf("required responsibility owner %s is missing: %v", required, err)
+		}
+	}
+}
+
+func TestKnowledgeSQLDoesNotLeakIntoMemory(t *testing.T) {
+	entries, err := os.ReadDir(filepath.Join("context", "memory"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		path := filepath.Join("context", "memory", entry.Name())
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(content), "knowledge_entries") || strings.Contains(string(content), "knowledge_sources") {
+			t.Errorf("knowledge SQL leaked into %s", path)
+		}
+	}
+}
+
+func TestPersonalMemorySQLDoesNotLeakIntoExtraction(t *testing.T) {
+	entries, err := os.ReadDir(filepath.Join("context", "memory", "extraction"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		path := filepath.Join("context", "memory", "extraction", entry.Name())
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(content), "personal_memories") {
+			t.Errorf("personal-memory SQL leaked into %s", path)
+		}
+	}
+}
+
+func TestRuntimePackagesDoNotDependOnContextDomains(t *testing.T) {
+	for _, pkg := range listPackages(t, "./runtime/...") {
+		for _, imported := range pkg.Imports {
+			if strings.HasPrefix(imported, "fairy/context/") {
+				t.Errorf("runtime package %s depends on context domain %s", pkg.ImportPath, imported)
 			}
 		}
 	}
@@ -149,22 +303,41 @@ func TestApplicationPackagesDoNotImportInternalLayers(t *testing.T) {
 
 func TestBusinessPackagesDoNotImportComposition(t *testing.T) {
 	for _, pkg := range listPackages(t, "./...") {
-		if slices.Contains([]string{"fairy", "fairy/api", "fairy/cmd", "fairy/core"}, pkg.ImportPath) {
+		if slices.Contains([]string{"fairy", "fairy/transport/web", "fairy/app/cmd", "fairy/app/core"}, pkg.ImportPath) {
 			continue
 		}
 		for _, imported := range pkg.Imports {
-			if slices.Contains([]string{"fairy/api", "fairy/cmd", "fairy/core"}, imported) {
+			if slices.Contains([]string{"fairy/transport/web", "fairy/app/cmd", "fairy/app/core"}, imported) {
 				t.Errorf("business package %s imports composition package %s", pkg.ImportPath, imported)
 			}
 		}
 	}
 }
 
-func TestMemoryPackageDoesNotImportCompanion(t *testing.T) {
-	for _, pkg := range listPackages(t, "./memory") {
+func TestMemoryPackageDoesNotImportTurn(t *testing.T) {
+	for _, pkg := range listPackages(t, "./context/memory/...") {
 		for _, imported := range pkg.Imports {
-			if imported == "fairy/companion" || strings.HasPrefix(imported, "fairy/companion/") {
-				t.Errorf("memory owner imports companion consumer package %s", imported)
+			if imported == "fairy/agent/conversation" {
+				t.Errorf("memory owner imports turn consumer package %s", imported)
+			}
+		}
+	}
+}
+
+func TestRemovedTechnicalPackagesDoNotReturn(t *testing.T) {
+	removed := []string{"companion", "agenttool", "persona", "coreclient", "coredb", "api", "orchestration"}
+	for _, directory := range removed {
+		if _, err := os.Stat(directory); !os.IsNotExist(err) {
+			t.Errorf("removed technical package %s exists again: %v", directory, err)
+		}
+	}
+	for _, pkg := range listPackages(t, "./...") {
+		for _, imported := range pkg.Imports {
+			for _, directory := range removed {
+				path := "fairy/" + directory
+				if imported == path || strings.HasPrefix(imported, path+"/") {
+					t.Errorf("package %s imports removed package %s", pkg.ImportPath, imported)
+				}
 			}
 		}
 	}
@@ -185,7 +358,7 @@ func TestProductionMemorySQLDoesNotUseRemovedAuxiliaryTables(t *testing.T) {
 		"extraction_batch_turns",
 		"knowledge_ingest_jobs",
 	}
-	for _, directory := range []string{"memory", "coredb"} {
+	for _, directory := range []string{"context/memory", "runtime/database"} {
 		entries, err := os.ReadDir(directory)
 		if err != nil {
 			t.Fatal(err)
@@ -193,7 +366,7 @@ func TestProductionMemorySQLDoesNotUseRemovedAuxiliaryTables(t *testing.T) {
 		for _, entry := range entries {
 			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") ||
 				strings.HasSuffix(entry.Name(), "_test.go") ||
-				directory == "coredb" && entry.Name() == "migrate.go" {
+				directory == "runtime/database" && entry.Name() == "migrate.go" {
 				continue
 			}
 			path := filepath.Join(directory, entry.Name())
@@ -222,9 +395,9 @@ func TestProductionMemorySQLDoesNotUseRemovedAuxiliaryTables(t *testing.T) {
 
 func TestSocialFeedbackLedgerHasNarrowProductionOwner(t *testing.T) {
 	allowed := map[string]bool{
-		"coredb/migrate.go": true,
-		"coredb/schema.go":  true,
-		"memory/social.go":  true,
+		"runtime/database/migrate.go": true,
+		"runtime/database/schema.go":  true,
+		"context/social/records.go":   true,
 	}
 	err := filepath.WalkDir(".", func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -248,14 +421,43 @@ func TestSocialFeedbackLedgerHasNarrowProductionOwner(t *testing.T) {
 	}
 }
 
-func TestOrchestrationPackagesDoNotImportEachOther(t *testing.T) {
-	for _, pkg := range listPackages(t, "./companion", "./initiative") {
+func TestExecutionDomainsDoNotImportEachOther(t *testing.T) {
+	executionDomains := []string{"fairy/agent/conversation", "fairy/agent/presence", "fairy/agent/learning"}
+	for _, pkg := range listPackages(t, "./agent/conversation", "./agent/presence", "./agent/learning") {
 		for _, imported := range pkg.Imports {
-			if pkg.ImportPath == "fairy/companion" && imported == "fairy/initiative" {
-				t.Error("companion imports initiative; Core must adapt the two orchestration boundaries")
+			if slices.Contains(executionDomains, imported) {
+				t.Errorf("execution domain %s imports peer %s; core must adapt lifecycle boundaries", pkg.ImportPath, imported)
 			}
-			if pkg.ImportPath == "fairy/initiative" && imported == "fairy/companion" {
-				t.Error("initiative imports companion; TurnStarter must remain a consumption-side interface")
+		}
+	}
+}
+
+func TestCapabilityPackagesDoNotImportExecutionOrComposition(t *testing.T) {
+	capabilities := []string{
+		"./context/knowledge", "./context/memory/...", "./context/social", "./runtime/model", "./context/character", "./agent/sticker", "./transport/desktopcapture", "./agent/reply", "./agent/tool",
+	}
+	forbidden := []string{
+		"fairy/agent/conversation", "fairy/agent/presence", "fairy/agent/learning",
+		"fairy/app/core", "fairy/transport/web", "fairy/app/cmd",
+	}
+	for _, pkg := range listPackages(t, capabilities...) {
+		for _, imported := range pkg.Imports {
+			if slices.Contains(forbidden, imported) {
+				t.Errorf("capability package %s imports execution/composition package %s", pkg.ImportPath, imported)
+			}
+		}
+	}
+}
+
+func TestOnlyCoreComposesExecutionDomains(t *testing.T) {
+	executionDomains := []string{"fairy/agent/conversation", "fairy/agent/presence", "fairy/agent/learning"}
+	for _, pkg := range listPackages(t, "./...") {
+		if pkg.ImportPath == "fairy/app/core" {
+			continue
+		}
+		for _, imported := range pkg.Imports {
+			if slices.Contains(executionDomains, imported) {
+				t.Errorf("package %s composes execution domain %s outside core", pkg.ImportPath, imported)
 			}
 		}
 	}
@@ -264,18 +466,25 @@ func TestOrchestrationPackagesDoNotImportEachOther(t *testing.T) {
 func TestThirdPartySDKImportsMatchMigrationInventory(t *testing.T) {
 	allowed := map[string][]string{
 		"github.com/jackc/pgx/": {
-			"fairy/coredb",
-			"fairy/config",
-			"fairy/memory",
-			"fairy/sticker",
+			"fairy/runtime/database",
+			"fairy/runtime/config",
+			"fairy/context/history/compaction",
+			"fairy/context/history/runtime",
+			"fairy/context/history/transcript",
+			"fairy/context/memory/extraction",
+			"fairy/context/memory/personal",
+			"fairy/context/knowledge",
+			"fairy/context/social",
+			"fairy/runtime/ledger",
+			"fairy/agent/sticker",
 		},
-		"gorm.io/":                     {"fairy/coredb"},
-		"github.com/pgvector/":         {"fairy/coredb", "fairy/memory"},
-		"github.com/openai/":           {"fairy/model"},
-		"github.com/cloudwego/hertz/":  {"fairy/api"},
-		"github.com/gorilla/websocket": {"fairy/api", "fairy/coreclient"},
-		"github.com/spf13/cobra":       {"fairy/cmd"},
-		"github.com/spf13/viper":       {"fairy/cmd"},
+		"gorm.io/":                     {"fairy/runtime/database"},
+		"github.com/pgvector/":         {"fairy/runtime/database", "fairy/runtime/embedding", "fairy/context/memory/personal", "fairy/context/knowledge"},
+		"github.com/openai/":           {"fairy/runtime/model"},
+		"github.com/cloudwego/hertz/":  {"fairy/transport/web"},
+		"github.com/gorilla/websocket": {"fairy/transport/web", "fairy/transport/session"},
+		"github.com/spf13/cobra":       {"fairy/app/cmd"},
+		"github.com/spf13/viper":       {"fairy/app/cmd"},
 	}
 	for _, pkg := range listPackages(t, "./...") {
 		for _, imported := range pkg.Imports {
@@ -330,8 +539,8 @@ func TestIndependentSurfacesDoNotImportCoreInternals(t *testing.T) {
 			scanner := bufio.NewScanner(file)
 			for scanner.Scan() {
 				line := scanner.Text()
-				if strings.Contains(line, `"fairy/internal/`) || strings.Contains(line, `"fairy/companion`) || strings.Contains(line, `"fairy/memory`) {
-					t.Errorf("independent Surface source %s imports Core implementation: %s", path, strings.TrimSpace(line))
+				if strings.Contains(line, `"fairy/`) && !strings.Contains(line, `"fairy/transport/session"`) {
+					t.Errorf("independent Surface source %s imports outside the public session boundary: %s", path, strings.TrimSpace(line))
 				}
 			}
 			return scanner.Err()
@@ -472,7 +681,7 @@ func TestProductionKnowledgeIngestHasOnlyWholeDocumentActionRuntime(t *testing.T
 		"sourceCount": {},
 	}
 	var files []string
-	for _, directory := range []string{"memory", "companion"} {
+	for _, directory := range []string{"context/memory", "agent/conversation"} {
 		matches, err := filepath.Glob(filepath.Join(directory, "*.go"))
 		if err != nil {
 			t.Fatal(err)

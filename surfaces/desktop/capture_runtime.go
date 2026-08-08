@@ -7,14 +7,12 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fairy/transport/session"
 	"image"
 	"image/jpeg"
 	"image/png"
 	"math"
 	"time"
-
-	"fairy/coreclient"
-	"fairy/session"
 
 	"golang.org/x/image/draw"
 )
@@ -35,7 +33,7 @@ func newDesktopCaptureRuntime(capturer desktopImageCapturer, privacy func() sess
 	return &desktopCaptureRuntime{capturer: capturer, privacy: privacy}, nil
 }
 
-func (runtime *desktopCaptureRuntime) Handle(ctx context.Context, request coreclient.DesktopCaptureRequest) coreclient.DesktopCaptureResult {
+func (runtime *desktopCaptureRuntime) Handle(ctx context.Context, request session.DesktopCaptureRequest) session.DesktopCaptureResult {
 	if err := request.Validate(); err != nil {
 		return failedCaptureResult("invalid_request")
 	}
@@ -64,8 +62,8 @@ func (runtime *desktopCaptureRuntime) Handle(ctx context.Context, request corecl
 	return result
 }
 
-func failedCaptureResult(code string) coreclient.DesktopCaptureResult {
-	return coreclient.DesktopCaptureResult{Status: "failed", ErrorCode: code, ErrorMessage: "desktop capture failed"}
+func failedCaptureResult(code string) session.DesktopCaptureResult {
+	return session.DesktopCaptureResult{Status: "failed", ErrorCode: code, ErrorMessage: "desktop capture failed"}
 }
 
 func captureErrorCode(err error) string {
@@ -81,13 +79,13 @@ func captureErrorCode(err error) string {
 	}
 }
 
-func encodeDesktopCapture(source image.Image, request coreclient.DesktopCaptureRequest) (coreclient.DesktopCaptureResult, error) {
+func encodeDesktopCapture(source image.Image, request session.DesktopCaptureRequest) (session.DesktopCaptureResult, error) {
 	if source == nil || source.Bounds().Dx() <= 0 || source.Bounds().Dy() <= 0 {
-		return coreclient.DesktopCaptureResult{}, errors.New("captured image is empty")
+		return session.DesktopCaptureResult{}, errors.New("captured image is empty")
 	}
 	maxDimension := request.MaxDimension
 	if maxDimension <= 0 {
-		return coreclient.DesktopCaptureResult{}, errors.New("capture dimension limit is invalid")
+		return session.DesktopCaptureResult{}, errors.New("capture dimension limit is invalid")
 	}
 	width, height := boundedCaptureDimensions(source.Bounds().Dx(), source.Bounds().Dy(), maxDimension)
 	current := resizeCapture(source, width, height)
@@ -115,7 +113,7 @@ func encodeDesktopCapture(source image.Image, request coreclient.DesktopCaptureR
 		}
 		current = resizeCapture(current, max(1, bounds.Dx()*3/4), max(1, bounds.Dy()*3/4))
 	}
-	return coreclient.DesktopCaptureResult{}, errors.New("capture cannot satisfy encoding budget")
+	return session.DesktopCaptureResult{}, errors.New("capture cannot satisfy encoding budget")
 }
 
 func boundedCaptureDimensions(width, height, maxDimension int) (int, int) {
@@ -132,26 +130,26 @@ func resizeCapture(source image.Image, width, height int) *image.RGBA {
 	return destination
 }
 
-func encodeCapturePNG(frame image.Image, limit int) (coreclient.DesktopCaptureResult, bool) {
+func encodeCapturePNG(frame image.Image, limit int) (session.DesktopCaptureResult, bool) {
 	var output bytes.Buffer
 	encoder := png.Encoder{CompressionLevel: png.BestSpeed}
 	if err := encoder.Encode(&output, frame); err != nil || output.Len() > limit {
-		return coreclient.DesktopCaptureResult{}, false
+		return session.DesktopCaptureResult{}, false
 	}
 	return completedCaptureResult("image/png", frame.Bounds().Dx(), frame.Bounds().Dy(), output.Bytes()), true
 }
 
-func encodeCaptureJPEG(frame image.Image, quality, limit int) (coreclient.DesktopCaptureResult, bool) {
+func encodeCaptureJPEG(frame image.Image, quality, limit int) (session.DesktopCaptureResult, bool) {
 	var output bytes.Buffer
 	if err := jpeg.Encode(&output, frame, &jpeg.Options{Quality: quality}); err != nil || output.Len() > limit {
-		return coreclient.DesktopCaptureResult{}, false
+		return session.DesktopCaptureResult{}, false
 	}
 	return completedCaptureResult("image/jpeg", frame.Bounds().Dx(), frame.Bounds().Dy(), output.Bytes()), true
 }
 
-func completedCaptureResult(mediaType string, width, height int, content []byte) coreclient.DesktopCaptureResult {
+func completedCaptureResult(mediaType string, width, height int, content []byte) session.DesktopCaptureResult {
 	digest := sha256.Sum256(content)
-	return coreclient.DesktopCaptureResult{
+	return session.DesktopCaptureResult{
 		Status: "completed", MediaType: mediaType, Width: width, Height: height, ByteCount: len(content),
 		SHA256: hex.EncodeToString(digest[:]), DataURL: "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(content),
 	}

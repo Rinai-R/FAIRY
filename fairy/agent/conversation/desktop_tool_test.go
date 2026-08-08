@@ -1,0 +1,61 @@
+package conversation
+
+import (
+	"context"
+	"fairy/agent/tool"
+	"fairy/runtime/model"
+	"testing"
+)
+
+type gateDesktopCoordinator struct{ available bool }
+
+func (coordinator gateDesktopCoordinator) Available(string) bool { return coordinator.available }
+func (gateDesktopCoordinator) Begin(context.Context, DesktopToolRequest, func()) (DesktopToolExecution, error) {
+	return DesktopToolExecution{}, nil
+}
+func (gateDesktopCoordinator) DispatchExecution(context.Context, DesktopToolExecution) error {
+	return nil
+}
+func (gateDesktopCoordinator) Result(context.Context, string) (DesktopToolEvidence, error) {
+	return DesktopToolEvidence{}, nil
+}
+func (gateDesktopCoordinator) CancelTurn(context.Context, string, string) error { return nil }
+
+func TestDesktopToolRequiresVisionPrivateDesktopAndAvailableSurface(t *testing.T) {
+	available := gateDesktopCoordinator{available: true}
+	if !desktopToolAllowed(true, desktopResolved(), available, "conversation-1") {
+		t.Fatal("valid private desktop tool was rejected")
+	}
+	for name, allowed := range map[string]bool{
+		"vision disabled": desktopToolAllowed(false, desktopResolved(), available, "conversation-1"),
+		"surface missing": desktopToolAllowed(true, desktopResolved(), gateDesktopCoordinator{}, "conversation-1"),
+		"owner IM":        desktopToolAllowed(true, ownerIMResolved(), available, "conversation-1"),
+		"public IM":       desktopToolAllowed(true, publicAmbientResolved(), available, "conversation-1"),
+	} {
+		if allowed {
+			t.Fatalf("%s unexpectedly enabled desktop tool", name)
+		}
+	}
+	tools := tool.SpecsForRuntime(tool.RuntimeAvailability{Desktop: true}, desktopResolved())
+	if tools[len(tools)-1].Name != tool.DesktopObserve {
+		t.Fatalf("runtime tools = %#v", tools)
+	}
+}
+
+func TestDesktopToolArgumentsAndLedgerRedaction(t *testing.T) {
+	if result := tool.RouteCall(model.FunctionCall{Name: tool.DesktopObserve, Arguments: `{}`}, tool.RuntimeAvailability{Desktop: true}, desktopResolved()); result.Disposition != tool.CallReady {
+		t.Fatal(result.Err)
+	}
+	if result := tool.RouteCall(model.FunctionCall{Name: tool.DesktopObserve, Arguments: `{"query":"secret"}`}, tool.RuntimeAvailability{Desktop: true}, desktopResolved()); result.Disposition != tool.CallResult {
+		t.Fatal("desktop tool accepted arguments")
+	}
+	left := desktopToolPromptItems("call-1", `{}`, DesktopToolEvidence{MediaType: "image/png", DataURL: "data:image/png;base64,AAAA"})
+	right := desktopToolPromptItems("call-1", `{}`, DesktopToolEvidence{MediaType: "image/png", DataURL: "data:image/png;base64,BBBB"})
+	if runtimeHash(redactPromptImagesForLedger(left)) != runtimeHash(redactPromptImagesForLedger(right)) {
+		t.Fatal("runtime ledger identity depends on raw desktop image")
+	}
+	parts := *left[1].Parts
+	if parts[1].Type != model.PromptContentImage || parts[1].ImagePurpose != "desktop_observation" {
+		t.Fatalf("desktop result parts = %#v", parts)
+	}
+}

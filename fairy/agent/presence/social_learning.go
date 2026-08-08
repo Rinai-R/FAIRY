@@ -1,0 +1,468 @@
+package presence
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"unicode"
+	"unicode/utf8"
+
+	"fairy/context/social"
+	"fairy/runtime/model"
+	"fairy/transport/session"
+)
+
+type LearningSnapshot struct {
+	ConversationID string
+	Messages       []AmbientObservation
+}
+
+type LearningStats struct {
+	Enqueued  int64 `json:"enqueued"`
+	Dropped   int64 `json:"dropped"`
+	Succeeded int64 `json:"succeeded"`
+	Failed    int64 `json:"failed"`
+}
+
+type LearningEngine struct {
+	host   LearningHost
+	ctx    context.Context
+	cancel context.CancelFunc
+	queue  *boundedQueue[LearningSnapshot]
+	wg     sync.WaitGroup
+	once   sync.Once
+	closed atomic.Bool
+
+	enqueued  atomic.Int64
+	dropped   atomic.Int64
+	succeeded atomic.Int64
+	failed    atomic.Int64
+}
+
+type socialLearnPayload struct {
+	Entries     json.RawMessage `json:"entries"`
+	PersonNotes json.RawMessage `json:"personNotes"`
+}
+
+type socialLearnEntryDraft struct {
+	Kind             string   `json:"kind"`
+	Situation        string   `json:"situation"`
+	Content          string   `json:"content"`
+	RecallCue        string   `json:"recallCue"`
+	SourceMessageIDs []string `json:"sourceMessageIds"`
+}
+
+type socialLearnPersonNoteDraft struct {
+	SenderID         string   `json:"senderId"`
+	Note             string   `json:"note"`
+	SourceMessageIDs []string `json:"sourceMessageIds"`
+}
+
+type socialLearnCompiled struct {
+	Entries []social.SocialMemoryEntryInput
+	Notes   []socialLearnCompiledPersonNote
+}
+
+type socialLearnCompiledPersonNote struct {
+	SenderID   string
+	SenderName string
+	Note       string
+}
+
+type socialLearnObservationPayload struct {
+	ContextType     string `json:"contextType"`
+	MessageID       string `json:"messageId"`
+	SenderID        string `json:"senderId"`
+	SenderName      string `json:"senderName"`
+	Text            string `json:"text"`
+	TimestampUnixMS int64  `json:"timestampUnixMs"`
+}
+
+func NewLearningEngine(host LearningHost, capacity int) *LearningEngine {
+	if capacity < 1 {
+		capacity = 1
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	engine := &LearningEngine{host: host, ctx: ctx, cancel: cancel, queue: newBoundedQueue[LearningSnapshot](capacity)}
+	engine.wg.Add(1)
+	go engine.run()
+	return engine
+}
+
+func (e *LearningEngine) Enqueue(snapshot LearningSnapshot) bool {
+	if e == nil || e.closed.Load() || strings.TrimSpace(snapshot.ConversationID) == "" || len(snapshot.Messages) == 0 {
+		return false
+	}
+	snapshot.Messages = append([]AmbientObservation(nil), snapshot.Messages...)
+	select {
+	case <-e.ctx.Done():
+		return false
+	default:
+	}
+	if !e.queue.tryPush(snapshot) {
+		e.dropped.Add(1)
+		return false
+	}
+	e.enqueued.Add(1)
+	return true
+}
+
+func (e *LearningEngine) Stats() LearningStats {
+	if e == nil {
+		return LearningStats{}
+	}
+	return LearningStats{
+		Enqueued: e.enqueued.Load(), Dropped: e.dropped.Load(),
+		Succeeded: e.succeeded.Load(), Failed: e.failed.Load(),
+	}
+}
+
+func (e *LearningEngine) Close() {
+	if e == nil {
+		return
+	}
+	e.once.Do(func() {
+		e.closed.Store(true)
+		e.cancel()
+		e.wg.Wait()
+	})
+}
+
+func (e *LearningEngine) run() {
+	defer e.wg.Done()
+	for {
+		select {
+		case <-e.ctx.Done():
+			return
+		case snapshot := <-e.queue.receive():
+			if err := e.process(e.ctx, snapshot); err != nil {
+				e.failed.Add(1)
+				if e.host != nil {
+					e.host.WarnLearning(snapshot.ConversationID, err)
+				}
+				continue
+			}
+			e.succeeded.Add(1)
+		}
+	}
+}
+
+func (e *LearningEngine) process(ctx context.Context, snapshot LearningSnapshot) error {
+	if e.host == nil {
+		return errors.New("social learning runtime is not configured")
+	}
+	resolved, err := e.host.ResolveInteraction(snapshot.ConversationID)
+	if err != nil {
+		return err
+	}
+	if !resolved.AllowsAmbientParticipation() || resolved.Memory != session.MemoryPublic {
+		return errors.New("social learning requires a public ambient interaction")
+	}
+	conversation, err := e.host.LoadConversationRecord(snapshot.ConversationID)
+	if err != nil {
+		return fmt.Errorf("loading social learning conversation metadata: %w", err)
+	}
+	record, err := e.host.ActiveCharacter(conversation.CharacterID)
+	if err != nil {
+		return err
+	}
+	stablePrefix, err := buildSocialStablePrefix(record, resolved)
+	if err != nil {
+		return err
+	}
+	input, err := buildSocialLearningInput(stablePrefix, snapshot.Messages)
+	if err != nil {
+		return err
+	}
+	connection, err := e.host.ModelConnection()
+	if err != nil {
+		return err
+	}
+	cacheKey := ""
+	if connection.Capabilities.PromptCacheKey {
+		cacheKey = model.LaneCacheKey(snapshot.ConversationID, model.PromptLaneSocialLearn)
+	}
+	cacheInput, err := model.NewCacheKeyInputWithStablePrefix(
+		model.PromptLaneSocialLearn, connection.Model, snapshot.ConversationID,
+		SocialLearnInstructions, stablePrefix,
+	)
+	if err != nil {
+		return fmt.Errorf("building social learning cache identity: %w", err)
+	}
+	cacheInput.CharacterRevision = record.Revision
+	events, err := e.host.ExecuteRequest(ctx, model.CompiledPromptRequest{
+		Shape: model.ModelRequestShape{
+			Lane: model.PromptLaneSocialLearn, Model: connection.Model,
+			Instructions: SocialLearnInstructions, MaxOutputTokens: SocialLearnMaxOutputTokens,
+			PromptCacheKey: cacheKey,
+		},
+		Input:      input,
+		CacheInput: &cacheInput,
+	})
+	if err != nil {
+		return fmt.Errorf("executing social learning request: %w", err)
+	}
+	draft := model.CollectTextFromEvents(events)
+	if strings.TrimSpace(draft) == "" {
+		return emptySocialLearningResultError(events)
+	}
+	compiled, err := compileSocialLearning(draft, snapshot.Messages)
+	if err != nil {
+		return err
+	}
+	if len(compiled.Entries) == 0 && len(compiled.Notes) == 0 {
+		return nil
+	}
+	if len(compiled.Entries) > 0 {
+		_, err = e.host.StoreSocialMemoryEntries(ctx, social.SocialMemoryBatchInput{
+			CharacterID: conversation.CharacterID, ConversationID: snapshot.ConversationID, Entries: compiled.Entries,
+		})
+		if err != nil {
+			return fmt.Errorf("storing social learning entries: %w", err)
+		}
+	}
+	for _, note := range compiled.Notes {
+		_, err = e.host.UpsertSocialPersonNote(ctx, social.SocialPersonNoteInput{
+			CharacterID: conversation.CharacterID, ConversationID: snapshot.ConversationID,
+			SenderID: note.SenderID, SenderName: note.SenderName, Note: note.Note,
+		})
+		if err != nil {
+			return fmt.Errorf("upserting social person note: %w", err)
+		}
+	}
+	return nil
+}
+
+func emptySocialLearningResultError(events []model.StreamEvent) error {
+	finishReason := "unobserved"
+	completionTokens := "unobserved"
+	for _, event := range events {
+		switch {
+		case event.Type == "completed" && strings.TrimSpace(event.FinishReason) != "":
+			finishReason = strings.TrimSpace(event.FinishReason)
+		case event.Type == "usage" && event.Usage != nil:
+			completionTokens = fmt.Sprintf("%d", event.Usage.CompletionTokens)
+		}
+	}
+	return fmt.Errorf("social learning result is empty: finishReason=%q completionTokens=%s", finishReason, completionTokens)
+}
+
+func buildSocialLearningInput(stablePrefix []model.PromptItem, messages []AmbientObservation) ([]model.PromptItem, error) {
+	items := make([]model.PromptItem, 0, len(messages)+len(stablePrefix))
+	items = append(items, stablePrefix...)
+	for _, message := range messages {
+		payload, err := json.Marshal(socialLearnObservationPayload{
+			ContextType: "external_group_observation", MessageID: message.MessageID,
+			SenderID: message.SenderID, SenderName: message.SenderName, Text: message.Text,
+			TimestampUnixMS: message.TimestampUnixMS,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("serializing social learning observation: %w", err)
+		}
+		items = append(items, model.PromptItem{Type: model.PromptItemContextData, Content: string(payload)})
+	}
+	return items, nil
+}
+
+func compileSocialLearning(draft string, messages []AmbientObservation) (socialLearnCompiled, error) {
+	decoder := json.NewDecoder(strings.NewReader(strings.TrimSpace(draft)))
+	decoder.DisallowUnknownFields()
+	var payload socialLearnPayload
+	if err := decoder.Decode(&payload); err != nil {
+		return socialLearnCompiled{}, fmt.Errorf("decoding social learning result: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return socialLearnCompiled{}, errors.New("social learning result contains trailing data")
+	}
+	if len(payload.Entries) == 0 || string(payload.Entries) == "null" {
+		return socialLearnCompiled{}, errors.New("social learning result requires an entries array")
+	}
+	entryDecoder := json.NewDecoder(strings.NewReader(string(payload.Entries)))
+	entryDecoder.DisallowUnknownFields()
+	var drafts []socialLearnEntryDraft
+	if err := entryDecoder.Decode(&drafts); err != nil {
+		return socialLearnCompiled{}, fmt.Errorf("decoding social learning entries: %w", err)
+	}
+	if len(drafts) > maxLearningEntries {
+		return socialLearnCompiled{}, fmt.Errorf("social learning result must contain at most %d entries", maxLearningEntries)
+	}
+	messageByID := make(map[string]AmbientObservation, len(messages))
+	for _, message := range messages {
+		messageByID[message.MessageID] = message
+	}
+	entries := make([]social.SocialMemoryEntryInput, 0, len(drafts))
+	for index, item := range drafts {
+		entry, err := compileSocialLearningEntry(index, item, messageByID)
+		if err != nil {
+			return socialLearnCompiled{}, err
+		}
+		entries = append(entries, entry)
+	}
+	notes, err := compileSocialLearningPersonNotes(payload.PersonNotes, messageByID)
+	if err != nil {
+		return socialLearnCompiled{}, err
+	}
+	return socialLearnCompiled{Entries: entries, Notes: notes}, nil
+}
+
+func compileSocialLearningPersonNotes(raw json.RawMessage, messages map[string]AmbientObservation) ([]socialLearnCompiledPersonNote, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if string(raw) == "null" {
+		return nil, errors.New("social learning result personNotes must not be null")
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	var drafts []socialLearnPersonNoteDraft
+	if err := decoder.Decode(&drafts); err != nil {
+		return nil, fmt.Errorf("decoding social learning personNotes: %w", err)
+	}
+	if len(drafts) > maxLearningPersonNotes {
+		return nil, fmt.Errorf("social learning result must contain at most %d personNotes", maxLearningPersonNotes)
+	}
+	senders := make(map[string]string, len(messages))
+	for _, message := range messages {
+		if message.SenderID == "" {
+			continue
+		}
+		if _, exists := senders[message.SenderID]; !exists {
+			senders[message.SenderID] = message.SenderName
+		}
+	}
+	notes := make([]socialLearnCompiledPersonNote, 0, len(drafts))
+	seenSender := make(map[string]struct{}, len(drafts))
+	for index, item := range drafts {
+		note, err := compileSocialLearningPersonNote(index, item, messages, senders)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := seenSender[note.SenderID]; exists {
+			return nil, fmt.Errorf("social learning personNote %d duplicates senderId", index)
+		}
+		seenSender[note.SenderID] = struct{}{}
+		notes = append(notes, note)
+	}
+	return notes, nil
+}
+
+func compileSocialLearningPersonNote(
+	index int,
+	item socialLearnPersonNoteDraft,
+	messages map[string]AmbientObservation,
+	senders map[string]string,
+) (socialLearnCompiledPersonNote, error) {
+	senderID := strings.TrimSpace(item.SenderID)
+	if senderID == "" || senderID != item.SenderID {
+		return socialLearnCompiledPersonNote{}, fmt.Errorf("social learning personNote %d senderId is invalid", index)
+	}
+	senderName, known := senders[senderID]
+	if !known {
+		return socialLearnCompiledPersonNote{}, fmt.Errorf("social learning personNote %d references an unknown sender", index)
+	}
+	note := strings.TrimSpace(item.Note)
+	if note == "" || note != item.Note || utf8.RuneCountInString(note) > social.MaxSocialPersonNoteRunes {
+		return socialLearnCompiledPersonNote{}, fmt.Errorf("social learning personNote %d note is invalid", index)
+	}
+	for _, r := range note {
+		if unicode.IsControl(r) {
+			return socialLearnCompiledPersonNote{}, fmt.Errorf("social learning personNote %d note contains control characters", index)
+		}
+	}
+	if len(item.SourceMessageIDs) == 0 || len(item.SourceMessageIDs) > maxLearningSourceIDs {
+		return socialLearnCompiledPersonNote{}, fmt.Errorf("social learning personNote %d sourceMessageIds count is invalid", index)
+	}
+	seen := make(map[string]struct{}, len(item.SourceMessageIDs))
+	fromSender := false
+	for _, id := range item.SourceMessageIDs {
+		if _, exists := seen[id]; exists {
+			return socialLearnCompiledPersonNote{}, fmt.Errorf("social learning personNote %d contains duplicate source IDs", index)
+		}
+		seen[id] = struct{}{}
+		message, exists := messages[id]
+		if !exists {
+			return socialLearnCompiledPersonNote{}, fmt.Errorf("social learning personNote %d references an unknown source message", index)
+		}
+		if message.SenderID == senderID {
+			fromSender = true
+		}
+		if containsLongSocialQuote(note, message.Text) {
+			return socialLearnCompiledPersonNote{}, fmt.Errorf("social learning personNote %d copies a long source passage", index)
+		}
+	}
+	if !fromSender {
+		return socialLearnCompiledPersonNote{}, fmt.Errorf("social learning personNote %d must cite at least one message from the sender", index)
+	}
+	return socialLearnCompiledPersonNote{SenderID: senderID, SenderName: senderName, Note: note}, nil
+}
+
+func compileSocialLearningEntry(index int, item socialLearnEntryDraft, messages map[string]AmbientObservation) (social.SocialMemoryEntryInput, error) {
+	if item.Kind != social.SocialMemoryEpisode && item.Kind != social.SocialMemoryExpression && item.Kind != social.SocialMemoryBehavior {
+		return social.SocialMemoryEntryInput{}, fmt.Errorf("social learning entry %d kind is invalid", index)
+	}
+	for name, value := range map[string]string{"situation": item.Situation, "content": item.Content, "recallCue": item.RecallCue} {
+		limit := social.MaxSocialContentRunes
+		switch name {
+		case "situation":
+			limit = social.MaxSocialSituationRunes
+		case "recallCue":
+			limit = social.MaxSocialRecallRunes
+		}
+		if strings.TrimSpace(value) == "" || strings.TrimSpace(value) != value || utf8.RuneCountInString(value) > limit {
+			return social.SocialMemoryEntryInput{}, fmt.Errorf("social learning entry %d %s is invalid", index, name)
+		}
+		for _, r := range value {
+			if unicode.IsControl(r) {
+				return social.SocialMemoryEntryInput{}, fmt.Errorf("social learning entry %d %s contains control characters", index, name)
+			}
+		}
+	}
+	if len(item.SourceMessageIDs) == 0 || len(item.SourceMessageIDs) > maxLearningSourceIDs {
+		return social.SocialMemoryEntryInput{}, fmt.Errorf("social learning entry %d sourceMessageIds count is invalid", index)
+	}
+	seen := make(map[string]struct{}, len(item.SourceMessageIDs))
+	var start, end int64
+	for _, id := range item.SourceMessageIDs {
+		if _, exists := seen[id]; exists {
+			return social.SocialMemoryEntryInput{}, fmt.Errorf("social learning entry %d contains duplicate source IDs", index)
+		}
+		seen[id] = struct{}{}
+		message, exists := messages[id]
+		if !exists {
+			return social.SocialMemoryEntryInput{}, fmt.Errorf("social learning entry %d references an unknown source message", index)
+		}
+		if start == 0 || message.TimestampUnixMS < start {
+			start = message.TimestampUnixMS
+		}
+		if message.TimestampUnixMS > end {
+			end = message.TimestampUnixMS
+		}
+		if containsLongSocialQuote(item.Content, message.Text) {
+			return social.SocialMemoryEntryInput{}, fmt.Errorf("social learning entry %d copies a long source passage", index)
+		}
+	}
+	return social.SocialMemoryEntryInput{
+		Kind: item.Kind, Situation: item.Situation, Content: item.Content, RecallCue: item.RecallCue,
+		SourceStartUnixMS: start, SourceEndUnixMS: end,
+	}, nil
+}
+
+func containsLongSocialQuote(candidate, source string) bool {
+	const quoteRunes = 24
+	candidate = strings.Join(strings.Fields(candidate), "")
+	sourceRunes := []rune(strings.Join(strings.Fields(source), ""))
+	if len(sourceRunes) < quoteRunes {
+		return false
+	}
+	for index := 0; index+quoteRunes <= len(sourceRunes); index++ {
+		if strings.Contains(candidate, string(sourceRunes[index:index+quoteRunes])) {
+			return true
+		}
+	}
+	return false
+}

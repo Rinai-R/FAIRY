@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"fairy/session"
+	"fairy/transport/session"
 )
 
 func TestMacOSIdleSamplerReportsReturnedWithoutSensitiveApplicationData(t *testing.T) {

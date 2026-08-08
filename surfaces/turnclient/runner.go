@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"fairy/coreclient"
+	coreclient "fairy/transport/session"
 )
 
 const defaultReadyTimeout = 15 * time.Second

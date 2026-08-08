@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"fairy/session"
+	"fairy/transport/session"
 )
 
 func TestDesktopObservationRuntimeKeepsSamplingAndSubmittingSeparate(t *testing.T) {

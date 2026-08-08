@@ -1,0 +1,99 @@
+package session
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/url"
+)
+
+var configSections = map[string]struct{}{
+	"model": {}, "web-search": {}, "semantic-embedding": {}, "qq-onebot": {},
+}
+
+type OwnerIdentity struct {
+	Namespace       string `json:"namespace"`
+	PrincipalDigest string `json:"principalDigest"`
+	CreatedAtUnixMS int64  `json:"createdAtUnixMs"`
+}
+
+func (c *Client) ListOwnerIdentities(ctx context.Context) ([]OwnerIdentity, error) {
+	var result []OwnerIdentity
+	err := c.doJSON(ctx, "list owner identities", http.MethodGet, "/v1/identities/owners", nil, &result)
+	return result, err
+}
+
+func (c *Client) BindOwnerIdentity(ctx context.Context, namespace, subject string) (OwnerIdentity, error) {
+	body, _ := json.Marshal(map[string]string{"namespace": namespace, "subject": subject})
+	var result OwnerIdentity
+	err := c.doJSON(ctx, "bind owner identity", http.MethodPut, "/v1/identities/owners", body, &result)
+	return result, err
+}
+
+func (c *Client) UnbindOwnerIdentity(ctx context.Context, namespace, subject string) error {
+	body, _ := json.Marshal(map[string]string{"namespace": namespace, "subject": subject})
+	_, err := c.doRawJSON(ctx, "unbind owner identity", http.MethodDelete, "/v1/identities/owners", body)
+	return err
+}
+
+func (c *Client) GetConfig(ctx context.Context, section string) (json.RawMessage, error) {
+	if _, ok := configSections[section]; !ok {
+		return nil, errors.New("unsupported config section")
+	}
+	return c.doRawJSON(ctx, "read "+section+" config", http.MethodGet, "/v1/config/"+section, nil)
+}
+
+func (c *Client) ApplyConfig(ctx context.Context, section string, payload []byte) (json.RawMessage, error) {
+	if _, ok := configSections[section]; !ok {
+		return nil, errors.New("unsupported config section")
+	}
+	if err := validateJSONObject(payload); err != nil {
+		return nil, err
+	}
+	return c.doRawJSON(ctx, "apply "+section+" config", http.MethodPut, "/v1/config/"+section, payload)
+}
+
+func (c *Client) DeleteConfig(ctx context.Context, section string) (json.RawMessage, error) {
+	if section != "model" {
+		return nil, errors.New("delete is supported only for model")
+	}
+	return c.doRawJSON(ctx, "delete "+section+" config", http.MethodDelete, "/v1/config/"+section, nil)
+}
+
+func (c *Client) GetProfile(ctx context.Context) (json.RawMessage, error) {
+	return c.doRawJSON(ctx, "read profile", http.MethodGet, "/v1/profile", nil)
+}
+
+func (c *Client) ApplyProfile(ctx context.Context, payload []byte) (json.RawMessage, error) {
+	if err := validateJSONObject(payload); err != nil {
+		return nil, err
+	}
+	return c.doRawJSON(ctx, "apply profile", http.MethodPut, "/v1/profile", payload)
+}
+
+func (c *Client) DeleteProfile(ctx context.Context) (json.RawMessage, error) {
+	return c.doRawJSON(ctx, "delete profile", http.MethodDelete, "/v1/profile", nil)
+}
+
+func (c *Client) ListCharacters(ctx context.Context) (CharacterCatalog, error) {
+	var result CharacterCatalog
+	err := c.doJSON(ctx, "list characters", http.MethodGet, "/v1/characters", nil, &result)
+	if err == nil && result.Characters == nil {
+		err = errors.New("character response is missing characters")
+	}
+	return result, err
+}
+
+func (c *Client) CreateCharacter(ctx context.Context, payload []byte) (json.RawMessage, error) {
+	if err := validateJSONObject(payload); err != nil {
+		return nil, err
+	}
+	return c.doRawJSON(ctx, "create character", http.MethodPost, "/v1/characters", payload)
+}
+
+func (c *Client) ActivateCharacter(ctx context.Context, characterID string, revision uint64) (json.RawMessage, error) {
+	body, _ := json.Marshal(map[string]uint64{"revision": revision})
+	path := "/v1/characters/" + url.PathEscape(characterID) + "/activate"
+	return c.doRawJSON(ctx, "activate character", http.MethodPost, path, body)
+}

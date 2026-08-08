@@ -4,12 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fairy/transport/session"
 	"sync"
 	"testing"
 	"time"
-
-	"fairy/coreclient"
-	"fairy/session"
 )
 
 func TestConsumeTurnEventsDeliversConversationStreamInOrder(t *testing.T) {
@@ -26,7 +24,7 @@ func TestConsumeTurnEventsDeliversConversationStreamInOrder(t *testing.T) {
 		},
 		conversations: make(map[int64]string),
 	}
-	stream := make(chan coreclient.TurnEvent, 2)
+	stream := make(chan session.TurnEvent, 2)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -35,7 +33,7 @@ func TestConsumeTurnEventsDeliversConversationStreamInOrder(t *testing.T) {
 	}()
 	for _, text := range []string{"第一拍", "第二拍"} {
 		payload, _ := json.Marshal(map[string]any{"type": "beat.ready", "kind": "final", "displayText": text})
-		stream <- coreclient.TurnEvent{ConversationID: "c1", Payload: payload}
+		stream <- session.TurnEvent{ConversationID: "c1", Payload: payload}
 	}
 	for _, want := range []string{"第一拍", "第二拍"} {
 		select {
@@ -53,11 +51,11 @@ func TestConsumeTurnEventsDeliversConversationStreamInOrder(t *testing.T) {
 
 func TestFinalExpressionBeatRequiresFinalKind(t *testing.T) {
 	payload, _ := json.Marshal(map[string]any{"type": "beat.ready", "kind": "utterance", "displayText": "skip"})
-	if _, ok := finalExpressionBeat(coreclient.TurnEvent{Payload: payload}); ok {
+	if _, ok := finalExpressionBeat(session.TurnEvent{Payload: payload}); ok {
 		t.Fatal("utterance accepted as final")
 	}
 	payload, _ = json.Marshal(map[string]any{"type": "beat.ready", "kind": "final", "displayText": "你好"})
-	beat, ok := finalExpressionBeat(coreclient.TurnEvent{Payload: payload})
+	beat, ok := finalExpressionBeat(session.TurnEvent{Payload: payload})
 	if !ok || beat.Part.Kind != session.ExpressionUtterance || beat.Part.Text != "你好" {
 		t.Fatalf("beat=%#v ok=%v", beat, ok)
 	}
@@ -66,8 +64,8 @@ func TestFinalExpressionBeatRequiresFinalKind(t *testing.T) {
 func TestConsumeTurnEventsDeliversStickerAndReportsSuccess(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	socket := &fakeSessionSocket{reports: make(chan coreclient.ExpressionDeliveryResult, 1)}
-	reader := fakeStickerReader{content: coreclient.StickerContent{
+	socket := &fakeSessionSocket{reports: make(chan session.ExpressionDeliveryResult, 1)}
+	reader := fakeStickerReader{content: session.StickerContent{
 		MIMEType: "image/gif",
 		Bytes:    []byte("GIF89a-content"),
 	}}
@@ -84,7 +82,7 @@ func TestConsumeTurnEventsDeliversStickerAndReportsSuccess(t *testing.T) {
 		},
 		conversations: make(map[int64]string),
 	}
-	stream := make(chan coreclient.TurnEvent, 1)
+	stream := make(chan session.TurnEvent, 1)
 	done := make(chan struct{})
 	go func() {
 		bot.consumeTurnEvents("c1", stream)
@@ -116,7 +114,7 @@ func TestConsumeTurnEventsDeliversStickerAndReportsSuccess(t *testing.T) {
 func TestConsumeTurnEventsReportsStickerFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	socket := &fakeSessionSocket{reports: make(chan coreclient.ExpressionDeliveryResult, 1)}
+	socket := &fakeSessionSocket{reports: make(chan session.ExpressionDeliveryResult, 1)}
 	bot := &bot{
 		ctx:      ctx,
 		socket:   socket,
@@ -129,7 +127,7 @@ func TestConsumeTurnEventsReportsStickerFailure(t *testing.T) {
 		},
 		conversations: make(map[int64]string),
 	}
-	stream := make(chan coreclient.TurnEvent, 1)
+	stream := make(chan session.TurnEvent, 1)
 	done := make(chan struct{})
 	go func() {
 		bot.consumeTurnEvents("c1", stream)
@@ -151,8 +149,8 @@ func TestConsumeTurnEventsReportsStickerFailure(t *testing.T) {
 
 func TestEnsureConversationDeclaresStickerCapability(t *testing.T) {
 	socket := &fakeSessionSocket{
-		stream: make(chan coreclient.TurnEvent),
-		openResponse: coreclient.OpenSessionResponse{
+		stream: make(chan session.TurnEvent),
+		openResponse: session.OpenSessionResponse{
 			ConversationID: "c1",
 			CharacterID:    "character-1",
 			Endpoint:       session.EndpointIM,
@@ -173,7 +171,7 @@ func TestEnsureConversationDeclaresStickerCapability(t *testing.T) {
 	}
 }
 
-func stickerBeatEvent(conversationID, turnID, beatID, stickerID, mimeType string) coreclient.TurnEvent {
+func stickerBeatEvent(conversationID, turnID, beatID, stickerID, mimeType string) session.TurnEvent {
 	payload, _ := json.Marshal(map[string]any{
 		"type":   "beat.ready",
 		"kind":   "final",
@@ -185,7 +183,7 @@ func stickerBeatEvent(conversationID, turnID, beatID, stickerID, mimeType string
 			},
 		},
 	})
-	return coreclient.TurnEvent{
+	return session.TurnEvent{
 		ConversationID: conversationID,
 		TurnID:         turnID,
 		Payload:        payload,
@@ -193,40 +191,40 @@ func stickerBeatEvent(conversationID, turnID, beatID, stickerID, mimeType string
 }
 
 type fakeSessionSocket struct {
-	openRequest  coreclient.OpenSessionRequest
-	openResponse coreclient.OpenSessionResponse
-	stream       chan coreclient.TurnEvent
-	reports      chan coreclient.ExpressionDeliveryResult
+	openRequest  session.OpenSessionRequest
+	openResponse session.OpenSessionResponse
+	stream       chan session.TurnEvent
+	reports      chan session.ExpressionDeliveryResult
 	openCalls    int
 	observeCalls int
 }
 
-func (socket *fakeSessionSocket) OpenSession(_ context.Context, request coreclient.OpenSessionRequest) (coreclient.OpenSessionResponse, error) {
+func (socket *fakeSessionSocket) OpenSession(_ context.Context, request session.OpenSessionRequest) (session.OpenSessionResponse, error) {
 	socket.openCalls++
 	socket.openRequest = request
 	return socket.openResponse, nil
 }
 
-func (socket *fakeSessionSocket) Watch(context.Context, string) (<-chan coreclient.TurnEvent, error) {
+func (socket *fakeSessionSocket) Watch(context.Context, string) (<-chan session.TurnEvent, error) {
 	return socket.stream, nil
 }
 
-func (socket *fakeSessionSocket) ObserveAmbient(context.Context, string, coreclient.AmbientObservation) error {
+func (socket *fakeSessionSocket) ObserveAmbient(context.Context, string, session.AmbientObservation) error {
 	socket.observeCalls++
 	return nil
 }
 
-func (socket *fakeSessionSocket) ReportExpressionDelivery(_ context.Context, result coreclient.ExpressionDeliveryResult) error {
+func (socket *fakeSessionSocket) ReportExpressionDelivery(_ context.Context, result session.ExpressionDeliveryResult) error {
 	socket.reports <- result
 	return nil
 }
 
 type fakeStickerReader struct {
-	content coreclient.StickerContent
+	content session.StickerContent
 	err     error
 }
 
-func (reader fakeStickerReader) ReadStickerContent(context.Context, string) (coreclient.StickerContent, error) {
+func (reader fakeStickerReader) ReadStickerContent(context.Context, string) (session.StickerContent, error) {
 	return reader.content, reader.err
 }
 

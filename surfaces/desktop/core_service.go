@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fairy/transport/session"
 	"fmt"
 	"net"
 	"net/http"
@@ -14,9 +15,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"fairy/coreclient"
-	"fairy/session"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -30,10 +28,10 @@ type CoreSettings struct {
 }
 
 type CoreSession struct {
-	Settings       CoreSettings               `json:"settings"`
-	ConversationID string                     `json:"conversationId"`
-	Character      coreclient.CharacterRecord `json:"character"`
-	Messages       []coreclient.MessageRecord `json:"messages"`
+	Settings       CoreSettings            `json:"settings"`
+	ConversationID string                  `json:"conversationId"`
+	Character      session.CharacterRecord `json:"character"`
+	Messages       []session.MessageRecord `json:"messages"`
 }
 
 type CoreService struct {
@@ -46,8 +44,8 @@ type CoreService struct {
 	speechBubble application.Window
 	controlOpen  bool
 	historyOpen  bool
-	client       *coreclient.Client
-	socket       *coreclient.SessionSocket
+	client       *session.Client
+	socket       *session.SessionSocket
 	visualCache  *visualCache
 	newCache     func() (*visualCache, error)
 	conversation string
@@ -319,7 +317,7 @@ func (s *CoreService) RepositionHistory() {
 	history.SetPosition(x-340, y-24)
 }
 
-func (s *CoreService) RecentMessages() ([]coreclient.MessageRecord, error) {
+func (s *CoreService) RecentMessages() ([]session.MessageRecord, error) {
 	s.mu.Lock()
 	client, conversation := s.client, s.conversation
 	s.mu.Unlock()
@@ -420,7 +418,7 @@ func (s *CoreService) Connect() (CoreSession, error) {
 		return CoreSession{}, fmt.Errorf("load Desktop Core connection: %w", err)
 	}
 	settings := settingsForConnection(connection)
-	client, err := coreclient.New(coreclient.Options{Endpoint: connection.Endpoint, Token: connection.Token})
+	client, err := session.New(session.Options{Endpoint: connection.Endpoint, Token: connection.Token})
 	if err != nil {
 		return CoreSession{}, err
 	}
@@ -433,7 +431,7 @@ func (s *CoreService) Connect() (CoreSession, error) {
 	if err != nil {
 		return CoreSession{}, err
 	}
-	if err := socket.SetDesktopCaptureHandler(func(ctx context.Context, request coreclient.DesktopCaptureRequest) coreclient.DesktopCaptureResult {
+	if err := socket.SetDesktopCaptureHandler(func(ctx context.Context, request session.DesktopCaptureRequest) session.DesktopCaptureResult {
 		s.mu.Lock()
 		capture := s.capture
 		s.mu.Unlock()
@@ -450,7 +448,7 @@ func (s *CoreService) Connect() (CoreSession, error) {
 			_ = socket.Close()
 		}
 	}()
-	opened, err := socket.OpenSession(ctx, coreclient.OpenSessionRequest{
+	opened, err := socket.OpenSession(ctx, session.OpenSessionRequest{
 		Endpoint:    session.EndpointDesktop,
 		EndpointKey: settings.EndpointKey,
 		Interaction: session.Context{
@@ -529,7 +527,7 @@ func (s *CoreService) Send(input string) error {
 	// before any harness events that the forwarder may deliver concurrently.
 	s.emitTurnEvent(desktopTurnEvent{Type: "state_changed", State: "planning"})
 	s.showSpeechBubble()
-	if _, err := socket.SubmitTurn(context.Background(), conversation, coreclient.SubmitTurnRequest{Input: input}); err != nil {
+	if _, err := socket.SubmitTurn(context.Background(), conversation, session.SubmitTurnRequest{Input: input}); err != nil {
 		s.clearActive()
 		s.emitTurnEvent(desktopTurnEvent{Type: "failed", Message: "提交对话失败：" + err.Error()})
 		return err
@@ -594,7 +592,7 @@ type desktopBeat struct {
 	StickerError       string                  `json:"stickerError,omitempty"`
 }
 
-func (s *CoreService) forwardTurnEvents(socket *coreclient.SessionSocket, conversation string, events <-chan coreclient.TurnEvent) {
+func (s *CoreService) forwardTurnEvents(socket *session.SessionSocket, conversation string, events <-chan session.TurnEvent) {
 	for event := range events {
 		if event.ConversationID != conversation {
 			continue
@@ -640,7 +638,7 @@ func (s *CoreService) forwardTurnEvents(socket *coreclient.SessionSocket, conver
 	}
 }
 
-func (s *CoreService) prepareDesktopSticker(socket *coreclient.SessionSocket, event coreclient.TurnEvent, beat *desktopBeat) {
+func (s *CoreService) prepareDesktopSticker(socket *session.SessionSocket, event session.TurnEvent, beat *desktopBeat) {
 	fail := func(message string) {
 		beat.StickerUnavailable = true
 		beat.StickerError = message
@@ -655,7 +653,7 @@ func (s *CoreService) prepareDesktopSticker(socket *coreclient.SessionSocket, ev
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := socket.ReportExpressionDelivery(ctx, coreclient.ExpressionDeliveryResult{
+		if err := socket.ReportExpressionDelivery(ctx, session.ExpressionDeliveryResult{
 			ConversationID: event.ConversationID,
 			TurnID:         event.TurnID,
 			BeatID:         beat.BeatID,
@@ -716,7 +714,7 @@ func (s *CoreService) ReportStickerDelivery(turnID, beatID string, succeeded boo
 	if socket == nil || conversation == "" {
 		return errors.New("Core session is not connected")
 	}
-	result := coreclient.ExpressionDeliveryResult{
+	result := session.ExpressionDeliveryResult{
 		ConversationID: conversation,
 		TurnID:         turnID,
 		BeatID:         beatID,
@@ -731,7 +729,7 @@ func (s *CoreService) ReportStickerDelivery(turnID, beatID string, succeeded boo
 	return socket.ReportExpressionDelivery(ctx, result)
 }
 
-func decodeDesktopTurnEvent(event coreclient.TurnEvent) desktopTurnEvent {
+func decodeDesktopTurnEvent(event session.TurnEvent) desktopTurnEvent {
 	converted := desktopTurnEvent{Type: "state_changed", TurnID: event.TurnID, State: event.State}
 	var envelope struct {
 		Type string `json:"type"`
@@ -767,7 +765,7 @@ func (s *CoreService) emitTurnEvent(event desktopTurnEvent) {
 	}
 }
 
-func (s *CoreService) emitDesktopSession(messages []coreclient.MessageRecord) {
+func (s *CoreService) emitDesktopSession(messages []session.MessageRecord) {
 	s.mu.Lock()
 	emit := s.emit
 	s.mu.Unlock()

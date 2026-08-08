@@ -1,0 +1,499 @@
+package cmd
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"fairy/app/core"
+	"fairy/runtime/observability"
+	coreclient "fairy/transport/session"
+)
+
+func TestHelpExposesOnlySupportedSurface(t *testing.T) {
+	root := NewRootCmd(testDependencies(&fakeClient{}))
+	output := new(bytes.Buffer)
+	root.SetOut(output)
+	root.SetErr(output)
+	root.SetArgs([]string{"--help"})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"serve", "status", "doctor", "session", "turn", "events", "logs", "metrics", "config", "character", "profile", "db"} {
+		if !strings.Contains(output.String(), name) {
+			t.Fatalf("help missing %q:\n%s", name, output)
+		}
+	}
+	for _, forbidden := range []string{"\n  shell ", "\n  sql ", "\n  api "} {
+		if strings.Contains(strings.ToLower(output.String()), forbidden) {
+			t.Fatalf("help contains forbidden surface %q", forbidden)
+		}
+	}
+}
+
+func TestFreshTreesKeepFlagsAndEnvironmentIsolated(t *testing.T) {
+	t.Setenv("FAIRY_ENDPOINT", "http://127.0.0.1:9000")
+	var configs []ConnectionConfig
+	deps := testDependencies(&fakeClient{status: validStatus("/tmp")})
+	deps.ClientFactory = func(config ConnectionConfig) (APIClient, error) {
+		configs = append(configs, config)
+		return &fakeClient{status: validStatus("/tmp")}, nil
+	}
+	for _, args := range [][]string{
+		{"status", "--endpoint", "http://127.0.0.1:9100"},
+		{"status"},
+	} {
+		root := NewRootCmd(deps)
+		root.SetOut(io.Discard)
+		root.SetErr(io.Discard)
+		root.SetArgs(args)
+		if err := root.ExecuteContext(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if configs[0].Endpoint != "http://127.0.0.1:9100" || configs[1].Endpoint != "http://127.0.0.1:9000" {
+		t.Fatalf("configs = %#v", configs)
+	}
+}
+
+func TestStatusOutputAndSecretWhitespace(t *testing.T) {
+	client := &fakeClient{status: validStatus("/tmp/fairy")}
+	deps := testDependencies(client)
+	output := new(bytes.Buffer)
+	root := NewRootCmd(deps)
+	root.SetOut(output)
+	root.SetErr(output)
+	root.SetArgs([]string{"status"})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), `"configRoot":"/tmp/fairy"`) {
+		t.Fatalf("output = %q", output.String())
+	}
+
+	deps.Getenv = func(key string) string {
+		if key == "FAIRY_API_TOKEN" {
+			return " secret "
+		}
+		return ""
+	}
+	root = NewRootCmd(deps)
+	root.SetArgs([]string{"status"})
+	if err := root.ExecuteContext(context.Background()); err == nil || !strings.Contains(err.Error(), "whitespace") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestServeRequiresAPIToken(t *testing.T) {
+	deps := testDependencies(&fakeClient{})
+	deps.Getenv = func(string) string { return "" }
+	deps.Serve = func(context.Context, core.Options) error {
+		t.Fatal("serve must not run without token")
+		return nil
+	}
+	root := NewRootCmd(deps)
+	root.SetArgs([]string{"serve"})
+	if err := root.ExecuteContext(context.Background()); err == nil || !strings.Contains(err.Error(), "FAIRY_API_TOKEN") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestNoArgumentAndExplicitServeUseRunner(t *testing.T) {
+	for _, args := range [][]string{nil, {"serve", "--addr", "127.0.0.1:9999"}} {
+		var got core.Options
+		deps := testDependencies(&fakeClient{})
+		deps.Getenv = func(key string) string {
+			if key == "FAIRY_API_TOKEN" {
+				return "test-token"
+			}
+			return ""
+		}
+		deps.Serve = func(ctx context.Context, options core.Options) error {
+			got = options
+			return nil
+		}
+		root := NewRootCmd(deps)
+		root.SetArgs(args)
+		if err := root.ExecuteContext(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got.Addr == "" {
+			t.Fatalf("args=%v options=%#v", args, got)
+		}
+		if got.Token != "test-token" {
+			t.Fatalf("token = %q", got.Token)
+		}
+	}
+}
+
+func TestLocalValidationDoesNotCreateClient(t *testing.T) {
+	var factories int
+	deps := testDependencies(&fakeClient{})
+	deps.Stdin = strings.NewReader(`{"ok":true}`)
+	deps.ClientFactory = func(config ConnectionConfig) (APIClient, error) {
+		factories++
+		return &fakeClient{}, nil
+	}
+	for _, args := range [][]string{
+		{"session", "open", "--endpoint-kind", "web_widget", "--endpoint-key", "x", "--audience", "single", "--initiation", "direct", "--presentation", "chat"},
+		{"session", "open", "--endpoint-kind", "im", "--endpoint-key", "x", "--audience", "single", "--initiation", "direct", "--presentation", "chat"},
+		{"config", "delete", "web-search"},
+	} {
+		root := NewRootCmd(deps)
+		root.SetArgs(args)
+		if err := root.ExecuteContext(context.Background()); err == nil {
+			t.Fatalf("args %v succeeded", args)
+		}
+	}
+	if factories != 0 {
+		t.Fatalf("client factories = %d", factories)
+	}
+}
+
+func TestConfigApplyReadsStdinAndCapturesOutput(t *testing.T) {
+	client := &fakeClient{raw: json.RawMessage(`{"configured":true}`)}
+	deps := testDependencies(client)
+	deps.Stdin = strings.NewReader(`{"model":"demo","apiKey":"secret"}`)
+	output := new(bytes.Buffer)
+	root := NewRootCmd(deps)
+	root.SetOut(output)
+	root.SetErr(output)
+	root.SetArgs([]string{"config", "apply", "model", "--file", "-"})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "secret") || !strings.Contains(output.String(), "configured") {
+		t.Fatalf("output = %q", output.String())
+	}
+	if !strings.Contains(string(client.applied), "secret") {
+		t.Fatalf("payload = %q", client.applied)
+	}
+}
+
+func TestSessionParticipateReadsStrictJSONBeforeCreatingClient(t *testing.T) {
+	target := "m1"
+	client := &fakeClient{participation: coreclient.ParticipationResponse{Action: "reply", TargetMessageID: &target}}
+	deps := testDependencies(client)
+	deps.Stdin = strings.NewReader(`{"evaluationReason":"message","messages":[{"messageId":"m1","senderId":"u1","senderName":"群友","text":"在吗","directedToBot":true,"isNew":true,"timestampUnixMs":1}]}`)
+	output := new(bytes.Buffer)
+	root := NewRootCmd(deps)
+	root.SetOut(output)
+	root.SetErr(output)
+	root.SetArgs([]string{"session", "participate", "--conversation", "c1", "--file", "-"})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if client.participationConversation != "c1" || client.participationRequest.EvaluationReason != "message" || len(client.participationRequest.Messages) != 1 {
+		t.Fatalf("request = %#v conversation=%q", client.participationRequest, client.participationConversation)
+	}
+	if !strings.Contains(output.String(), `"action":"reply"`) || !strings.Contains(output.String(), `"targetMessageId":"m1"`) {
+		t.Fatalf("output = %q", output.String())
+	}
+
+	for _, payload := range []string{
+		`{"evaluationReason":"message","messages":[],"unknown":true}`,
+		`{"evaluationReason":"message","messages":[]} {}`,
+		`[]`,
+	} {
+		factories := 0
+		badDeps := testDependencies(&fakeClient{})
+		badDeps.Stdin = strings.NewReader(payload)
+		badDeps.ClientFactory = func(ConnectionConfig) (APIClient, error) {
+			factories++
+			return &fakeClient{}, nil
+		}
+		badRoot := NewRootCmd(badDeps)
+		badRoot.SetArgs([]string{"session", "participate", "--conversation", "c1", "--file", "-"})
+		if err := badRoot.ExecuteContext(context.Background()); err == nil {
+			t.Fatalf("payload %q accepted", payload)
+		}
+		if factories != 0 {
+			t.Fatalf("payload %q created %d clients", payload, factories)
+		}
+	}
+}
+
+func TestIdentityBindRoutesValidatedPrincipalWithoutEchoingSubject(t *testing.T) {
+	client := &fakeClient{ownerIdentity: coreclient.OwnerIdentity{Namespace: "qq.onebot", PrincipalDigest: strings.Repeat("a", 64)}}
+	output := new(bytes.Buffer)
+	root := NewRootCmd(testDependencies(client))
+	root.SetOut(output)
+	root.SetErr(output)
+	root.SetArgs([]string{"identity", "bind", "--namespace", "qq.onebot", "--subject", "raw-owner-123"})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if client.ownerNamespace != "qq.onebot" || client.ownerSubject != "raw-owner-123" {
+		t.Fatalf("identity request = %q/%q", client.ownerNamespace, client.ownerSubject)
+	}
+	if strings.Contains(output.String(), "raw-owner-123") || !strings.Contains(output.String(), strings.Repeat("a", 64)) {
+		t.Fatalf("identity output = %q", output.String())
+	}
+}
+
+func TestTurnSendWritesJSONLAndReturnsTerminalError(t *testing.T) {
+	for _, state := range []string{"completed", "failed", "interrupted"} {
+		t.Run(state, func(t *testing.T) {
+			events := []coreclient.SSEEvent{{
+				Event: state,
+				Data:  mustJSON(coreclient.TurnEvent{ConversationID: "c1", TurnID: "t1", Sequence: 1, State: state, Payload: json.RawMessage(`{}`)}),
+			}}
+			if state == "failed" {
+				events = []coreclient.SSEEvent{
+					{Event: "planning", Data: mustJSON(coreclient.TurnEvent{ConversationID: "c1", TurnID: "t1", Sequence: 1, State: "planning", Payload: json.RawMessage(`{}`)})},
+					{Event: "failed", Data: mustJSON(coreclient.TurnEvent{ConversationID: "c1", TurnID: "t1", Sequence: 2, State: "failed", Payload: json.RawMessage(`{"error":"invalid provider reply"}`)})},
+				}
+			}
+			client := &fakeClient{
+				stream: &fakeStream{events: events},
+				turn:   coreclient.SubmitTurnResponse{Outcome: coreclient.TurnOutcome{ConversationID: "c1", TurnID: "t1"}},
+			}
+			root := NewRootCmd(testDependencies(client))
+			output := new(bytes.Buffer)
+			root.SetOut(output)
+			root.SetErr(output)
+			root.SetArgs([]string{"turn", "send", "--conversation", "c1", "--input", "hello"})
+			err := root.ExecuteContext(context.Background())
+			if (state == "completed" && err != nil) || (state != "completed" && err == nil) {
+				t.Fatalf("state=%s error=%v", state, err)
+			}
+			if !strings.Contains(output.String(), `"state":"`+state+`"`) {
+				t.Fatalf("output = %q", output.String())
+			}
+			if state == "failed" && !strings.Contains(output.String(), `"state":"planning"`) {
+				t.Fatalf("failed turn omitted planning event: %q", output.String())
+			}
+		})
+	}
+}
+
+func TestLogsFollowClosesStreamAndReturnsCleanlyOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	closed := make(chan struct{})
+	client := &fakeClient{
+		openLogs: func(ctx context.Context, _ coreclient.LogQuery, _ time.Duration) (coreclient.EventStream, error) {
+			return &blockingStream{ctx: ctx, started: started, closed: closed}, nil
+		},
+	}
+	root := NewRootCmd(testDependencies(client))
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"logs", "--follow", "--level", "warn"})
+	done := make(chan error, 1)
+	go func() { done <- root.ExecuteContext(ctx) }()
+
+	select {
+	case <-started:
+		cancel()
+	case <-time.After(time.Second):
+		t.Fatal("logs follow did not start reading")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("logs follow cancellation error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("logs follow did not return after cancellation")
+	}
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("logs follow did not close stream")
+	}
+}
+
+func TestDoctorStoppedCoreWritesFailure(t *testing.T) {
+	client := &fakeClient{statusErr: errors.New("connection refused")}
+	root := NewRootCmd(testDependencies(client))
+	output := new(bytes.Buffer)
+	root.SetOut(output)
+	root.SetErr(output)
+	root.SetArgs([]string{"doctor", "--endpoint", "http://127.0.0.1:65534"})
+	err := root.ExecuteContext(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "65534") || !strings.Contains(output.String(), `"status":"fail"`) {
+		t.Fatalf("error=%v output=%q", err, output.String())
+	}
+}
+
+func TestDoctorFailsRequiredInfrastructureDependency(t *testing.T) {
+	client := &fakeClient{status: coreclient.Status{
+		Database:  coreclient.DependencyStatus{Ready: false, Mode: "production", Error: "schema revision mismatch"},
+		SecretKey: coreclient.DependencyStatus{Ready: true, Mode: "production"},
+	}}
+	report, err := runDoctor(context.Background(), client, "http://core.test")
+	if err == nil || !strings.Contains(err.Error(), "schema revision mismatch") {
+		t.Fatalf("runDoctor() error = %v", err)
+	}
+	var database doctorCheck
+	for _, check := range report.Checks {
+		if check.Name == "database" {
+			database = check
+		}
+	}
+	if database.Status != "fail" || database.Detail != "schema revision mismatch" {
+		t.Fatalf("database check = %#v", database)
+	}
+}
+
+func testDependencies(client APIClient) Dependencies {
+	return Dependencies{
+		Getenv: func(string) string { return "" },
+		Stdin:  strings.NewReader(""),
+		ClientFactory: func(ConnectionConfig) (APIClient, error) {
+			return client, nil
+		},
+		Serve: func(context.Context, core.Options) error { return nil },
+	}
+}
+
+type fakeClient struct {
+	status                    coreclient.Status
+	statusErr                 error
+	raw                       json.RawMessage
+	applied                   []byte
+	stream                    coreclient.EventStream
+	openLogs                  func(context.Context, coreclient.LogQuery, time.Duration) (coreclient.EventStream, error)
+	turn                      coreclient.SubmitTurnResponse
+	participation             coreclient.ParticipationResponse
+	participationConversation string
+	participationRequest      coreclient.ParticipationRequest
+	ownerIdentity             coreclient.OwnerIdentity
+	ownerNamespace            string
+	ownerSubject              string
+}
+
+func (f *fakeClient) Status(context.Context) (coreclient.Status, error) { return f.status, f.statusErr }
+func (f *fakeClient) OpenSession(context.Context, coreclient.OpenSessionRequest) (coreclient.OpenSessionResponse, error) {
+	return coreclient.OpenSessionResponse{ConversationID: "c1"}, nil
+}
+func (f *fakeClient) DecideParticipation(_ context.Context, conversationID string, request coreclient.ParticipationRequest) (coreclient.ParticipationResponse, error) {
+	f.participationConversation = conversationID
+	f.participationRequest = request
+	return f.participation, nil
+}
+func (f *fakeClient) SubmitTurn(context.Context, string, coreclient.SubmitTurnRequest) (coreclient.SubmitTurnResponse, error) {
+	return f.turn, nil
+}
+func (f *fakeClient) CancelTurn(context.Context, string, string) error { return nil }
+func (f *fakeClient) OpenEvents(context.Context, string, time.Duration) (coreclient.EventStream, error) {
+	if f.stream == nil {
+		return &fakeStream{}, nil
+	}
+	return f.stream, nil
+}
+func (f *fakeClient) GetConfig(context.Context, string) (json.RawMessage, error) {
+	if f.raw == nil {
+		return json.RawMessage(`{"configured":false}`), nil
+	}
+	return f.raw, nil
+}
+func (f *fakeClient) ApplyConfig(_ context.Context, _ string, payload []byte) (json.RawMessage, error) {
+	f.applied = append([]byte(nil), payload...)
+	return f.raw, nil
+}
+func (f *fakeClient) DeleteConfig(context.Context, string) (json.RawMessage, error) {
+	return f.raw, nil
+}
+func (f *fakeClient) GetProfile(context.Context) (json.RawMessage, error) {
+	return json.RawMessage(`{"revision":0}`), nil
+}
+func (f *fakeClient) ApplyProfile(context.Context, []byte) (json.RawMessage, error) {
+	return f.raw, nil
+}
+func (f *fakeClient) DeleteProfile(context.Context) (json.RawMessage, error) { return f.raw, nil }
+func (f *fakeClient) ListCharacters(context.Context) (coreclient.CharacterCatalog, error) {
+	return coreclient.CharacterCatalog{Characters: []coreclient.CharacterRecord{}}, nil
+}
+func (f *fakeClient) CreateCharacter(context.Context, []byte) (json.RawMessage, error) {
+	return f.raw, nil
+}
+func (f *fakeClient) ActivateCharacter(context.Context, string, uint64) (json.RawMessage, error) {
+	return f.raw, nil
+}
+func (f *fakeClient) Logs(context.Context, coreclient.LogQuery) (coreclient.LogResponse, error) {
+	return coreclient.LogResponse{Entries: []observability.LogEntry{}}, nil
+}
+func (f *fakeClient) OpenLogs(ctx context.Context, query coreclient.LogQuery, timeout time.Duration) (coreclient.EventStream, error) {
+	if f.openLogs != nil {
+		return f.openLogs(ctx, query, timeout)
+	}
+	return f.stream, nil
+}
+func (f *fakeClient) Metrics(context.Context) (coreclient.Metrics, error) {
+	return coreclient.Metrics{}, nil
+}
+func (f *fakeClient) ListOwnerIdentities(context.Context) ([]coreclient.OwnerIdentity, error) {
+	return []coreclient.OwnerIdentity{}, nil
+}
+
+func (f *fakeClient) BindOwnerIdentity(_ context.Context, namespace, subject string) (coreclient.OwnerIdentity, error) {
+	f.ownerNamespace = namespace
+	f.ownerSubject = subject
+	return f.ownerIdentity, nil
+}
+func (f *fakeClient) UnbindOwnerIdentity(context.Context, string, string) error { return nil }
+
+type fakeStream struct {
+	mu     sync.Mutex
+	events []coreclient.SSEEvent
+	closed bool
+}
+
+type blockingStream struct {
+	ctx     context.Context
+	started chan struct{}
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingStream) Next() (coreclient.SSEEvent, error) {
+	s.once.Do(func() { close(s.started) })
+	<-s.ctx.Done()
+	return coreclient.SSEEvent{}, s.ctx.Err()
+}
+
+func (s *blockingStream) Close() error {
+	close(s.closed)
+	return nil
+}
+
+func (s *fakeStream) Next() (coreclient.SSEEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.events) == 0 {
+		return coreclient.SSEEvent{}, io.EOF
+	}
+	event := s.events[0]
+	s.events = s.events[1:]
+	return event, nil
+}
+
+func (s *fakeStream) Close() error {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+	return nil
+}
+
+func mustJSON(value any) []byte {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return raw
+}
+
+func validStatus(root string) coreclient.Status {
+	return coreclient.Status{
+		Bootstrap: json.RawMessage(`{}`), ConfigRoot: root,
+		WebSearch: json.RawMessage(`{}`), SemanticEmbedding: json.RawMessage(`{}`),
+	}
+}

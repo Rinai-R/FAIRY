@@ -4,15 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fairy/transport/session"
 	"fmt"
 	"log"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"fairy/coreclient"
-	"fairy/session"
 
 	zero "github.com/wdvxdr1123/ZeroBot"
 	"github.com/wdvxdr1123/ZeroBot/driver"
@@ -32,14 +30,14 @@ type bot struct {
 }
 
 type sessionSocket interface {
-	OpenSession(context.Context, coreclient.OpenSessionRequest) (coreclient.OpenSessionResponse, error)
-	Watch(context.Context, string) (<-chan coreclient.TurnEvent, error)
-	ObserveAmbient(context.Context, string, coreclient.AmbientObservation) error
-	ReportExpressionDelivery(context.Context, coreclient.ExpressionDeliveryResult) error
+	OpenSession(context.Context, session.OpenSessionRequest) (session.OpenSessionResponse, error)
+	Watch(context.Context, string) (<-chan session.TurnEvent, error)
+	ObserveAmbient(context.Context, string, session.AmbientObservation) error
+	ReportExpressionDelivery(context.Context, session.ExpressionDeliveryResult) error
 }
 
 type stickerContentReader interface {
-	ReadStickerContent(context.Context, string) (coreclient.StickerContent, error)
+	ReadStickerContent(context.Context, string) (session.StickerContent, error)
 }
 
 type groupAuthorizer interface {
@@ -123,7 +121,7 @@ func (b *bot) ensureConversation(groupID int64, send expressionSender) (string, 
 	}
 	b.mu.Unlock()
 
-	session, err := b.socket.OpenSession(b.ctx, coreclient.OpenSessionRequest{
+	session, err := b.socket.OpenSession(b.ctx, session.OpenSessionRequest{
 		Endpoint: session.EndpointIM, EndpointKey: "onebot-group:" + strconv.FormatInt(groupID, 10),
 		Interaction:        session.Context{Audience: session.AudienceMulti, Initiation: session.InitiationAmbient, Presentation: session.PresentationChat},
 		OutputCapabilities: session.OutputCapabilities{Sticker: true},
@@ -143,9 +141,9 @@ func (b *bot) ensureConversation(groupID int64, send expressionSender) (string, 
 	return session.ConversationID, nil
 }
 
-func (b *bot) consumeTurnEvents(conversationID string, stream <-chan coreclient.TurnEvent) {
+func (b *bot) consumeTurnEvents(conversationID string, stream <-chan session.TurnEvent) {
 	for {
-		var event coreclient.TurnEvent
+		var event session.TurnEvent
 		select {
 		case <-b.ctx.Done():
 			return
@@ -185,8 +183,8 @@ type expressionBeat struct {
 	Part   session.ExpressionPart
 }
 
-func (b *bot) deliverSticker(conversationID string, event coreclient.TurnEvent, beat expressionBeat, send expressionSender) {
-	result := coreclient.ExpressionDeliveryResult{
+func (b *bot) deliverSticker(conversationID string, event session.TurnEvent, beat expressionBeat, send expressionSender) {
+	result := session.ExpressionDeliveryResult{
 		ConversationID: conversationID,
 		TurnID:         event.TurnID,
 		BeatID:         beat.BeatID,
@@ -229,31 +227,31 @@ func (b *bot) deliverSticker(conversationID string, event coreclient.TurnEvent, 
 	}
 }
 
-func ambientObservationFromEvent(ctx *zero.Ctx) (coreclient.AmbientObservation, error) {
+func ambientObservationFromEvent(ctx *zero.Ctx) (session.AmbientObservation, error) {
 	if ctx == nil || ctx.Event == nil || ctx.Event.Sender == nil {
-		return coreclient.AmbientObservation{}, errors.New("OneBot event sender is required")
+		return session.AmbientObservation{}, errors.New("OneBot event sender is required")
 	}
 	text := strings.TrimSpace(ctx.ExtractPlainText())
 	if text == "" {
-		return coreclient.AmbientObservation{}, errors.New("plain text is empty")
+		return session.AmbientObservation{}, errors.New("plain text is empty")
 	}
 	if ctx.Event.MessageID == nil {
-		return coreclient.AmbientObservation{}, errors.New("message ID is required")
+		return session.AmbientObservation{}, errors.New("message ID is required")
 	}
 	senderName := strings.TrimSpace(ctx.Event.Sender.Card)
 	if senderName == "" {
 		senderName = strings.TrimSpace(ctx.Event.Sender.NickName)
 	}
 	if senderName == "" || ctx.Event.UserID <= 0 || ctx.Event.Time <= 0 {
-		return coreclient.AmbientObservation{}, errors.New("sender name, sender ID, and timestamp are required")
+		return session.AmbientObservation{}, errors.New("sender name, sender ID, and timestamp are required")
 	}
-	return coreclient.AmbientObservation{
+	return session.AmbientObservation{
 		MessageID: fmt.Sprint(ctx.Event.MessageID), SenderID: strconv.FormatInt(ctx.Event.UserID, 10), SenderName: senderName,
 		Text: text, DirectedToBot: ctx.Event.IsToMe, TimestampUnixMS: ctx.Event.Time * 1000,
 	}, nil
 }
 
-func finalExpressionBeat(event coreclient.TurnEvent) (expressionBeat, bool) {
+func finalExpressionBeat(event session.TurnEvent) (expressionBeat, bool) {
 	var envelope struct {
 		Type        string                 `json:"type"`
 		BeatID      string                 `json:"beatId"`
@@ -294,7 +292,7 @@ func runBot(ctx context.Context, cfg Config) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	core, err := coreclient.New(coreclient.Options{Endpoint: cfg.CoreEndpoint, Token: cfg.CoreToken})
+	core, err := session.New(session.Options{Endpoint: cfg.CoreEndpoint, Token: cfg.CoreToken})
 	if err != nil {
 		return err
 	}

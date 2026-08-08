@@ -7,7 +7,7 @@ import (
 	"errors"
 	"time"
 
-	"fairy/session"
+	"fairy/transport/session"
 )
 
 type macOSIdleSampler struct{}

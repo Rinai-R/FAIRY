@@ -14,7 +14,7 @@ WORKDIR /src
 COPY fairy/go.mod fairy/go.sum ./
 RUN go mod download
 COPY fairy/ ./
-COPY --from=web /src/fairy/api/console/dist ./api/console/dist
+COPY --from=web /src/fairy/transport/web/console/dist ./transport/web/console/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/fairy .
 
 FROM alpine:3.21
