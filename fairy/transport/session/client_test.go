@@ -84,7 +84,8 @@ func TestDecideParticipationUsesTypedSessionEndpoint(t *testing.T) {
 		if frame.Type != "participation.decide" || frame.ConversationID != "c/1" {
 			t.Fatalf("frame = %#v", frame)
 		}
-		if frame.EvaluationReason != "message" || len(frame.Messages) != 1 || frame.Messages[0].SenderName != "群友" || !frame.Messages[0].DirectedToBot || !frame.Messages[0].IsNew {
+		if frame.EvaluationReason != "message" || len(frame.Messages) != 1 || frame.Messages[0].SenderName != "群友" || !frame.Messages[0].DirectedToBot || !frame.Messages[0].IsNew ||
+			len(frame.Messages[0].Mentions) != 1 || frame.Messages[0].Mentions[0] != (MessageMention{UserID: "u2", DisplayName: "小明"}) {
 			t.Fatalf("frame = %#v", frame)
 		}
 		_ = conn.WriteJSON(sessionServerFrame{
@@ -94,7 +95,7 @@ func TestDecideParticipationUsesTypedSessionEndpoint(t *testing.T) {
 	defer server.Close()
 	client, _ := New(Options{Endpoint: server.URL})
 	response, err := client.DecideParticipation(t.Context(), "c/1", ParticipationRequest{EvaluationReason: "message", Messages: []AmbientObservation{{
-		MessageID: "m1", SenderID: "u1", SenderName: "群友", Text: "不用回", DirectedToBot: true, IsNew: true, TimestampUnixMS: 1,
+		MessageID: "m1", SenderID: "u1", SenderName: "群友", Text: "@小明 不用回", Mentions: []MessageMention{{UserID: "u2", DisplayName: "小明"}}, DirectedToBot: true, IsNew: true, TimestampUnixMS: 1,
 	}}})
 	if err != nil || response.Action != "wait" || response.WaitSeconds == nil || *response.WaitSeconds != 7 {
 		t.Fatalf("response=%#v err=%v", response, err)

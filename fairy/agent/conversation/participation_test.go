@@ -35,7 +35,11 @@ func validReplyDecision(target string) string {
 }
 
 func TestParticipationInstructionsRequireOneConversationalHook(t *testing.T) {
-	for _, required := range []string{"choose exactly one conversational hook", "surrounding messages are background only", `"focus":"<one conversational hook to answer>"`} {
+	for _, required := range []string{
+		"choose exactly one conversational hook", "surrounding messages are background only", `"focus":"<one conversational hook to answer>"`,
+		"mentions without directedToBot means other participants were mentioned",
+		"neither mentioning the active character nor mentioning someone else forces reply, wait, or silent",
+	} {
 		if !strings.Contains(initiative.ParticipationInstructions, required) {
 			t.Fatalf("ParticipationInstructions missing %q", required)
 		}
@@ -83,6 +87,17 @@ func TestCompileParticipationIsStrict(t *testing.T) {
 		if _, err := initiative.CompileParticipation(invalid, messages); err == nil {
 			t.Fatalf("invalid participation accepted: %q", invalid)
 		}
+	}
+}
+
+func TestCompileParticipationKeepsMessageDirectedToOtherUsersEligible(t *testing.T) {
+	messages := []initiative.AmbientObservation{{
+		MessageID: "m-other", SenderID: "u1", SenderName: "白色季节", Text: "@秋 快看新同学",
+		Mentions: []session.MessageMention{{UserID: "718249954", DisplayName: "秋"}}, IsNew: true, TimestampUnixMS: 1,
+	}}
+	result, err := initiative.CompileParticipation(validReplyDecision("m-other"), messages)
+	if err != nil || result.Action != initiative.ParticipationReply {
+		t.Fatalf("directed-to-other result = %#v, error = %v", result, err)
 	}
 }
 
@@ -203,6 +218,53 @@ func TestBuildParticipationInputHasPolicyPresenceAndNoProfile(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("participation input missing %q: %s", want, joined)
 		}
+	}
+}
+
+func TestBuildParticipationInputPreservesMentionsWithoutChangingCandidateEligibility(t *testing.T) {
+	observation := initiative.AmbientObservation{
+		MessageID: "m-other", SenderID: "u1", SenderName: "白色季节", Text: "是吗 @秋 快看新同学",
+		Mentions: []session.MessageMention{{UserID: "718249954", DisplayName: "秋"}}, IsNew: true, TimestampUnixMS: 1,
+	}
+	input, err := initiative.BuildParticipationInput(character.Record{
+		CharacterID: "character-1", Revision: 1, Name: "亚托莉", Description: "自然参与群聊", TextLanguage: "zh", SpeakingLanguage: "zh",
+	}, publicAmbientResolved(), initiative.ParticipationReasonMessage, []initiative.AmbientObservation{observation}, initiative.RecentPresence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := ""
+	for _, item := range input {
+		joined += item.Content
+	}
+	if !strings.Contains(joined, `"text":"是吗 @秋 快看新同学"`) || !strings.Contains(joined, `"mentions":[{"userId":"718249954","displayName":"秋"}]`) {
+		t.Fatalf("mention addressing missing from prompt: %s", joined)
+	}
+	if !strings.Contains(joined, `"replyCandidateMessageIds":["m-other"]`) {
+		t.Fatalf("other-directed message lost ordinary candidate eligibility: %s", joined)
+	}
+}
+
+func TestValidateAmbientObservationRejectsInvalidMentionSets(t *testing.T) {
+	for _, mentions := range [][]session.MessageMention{
+		{{UserID: "", DisplayName: "小明"}},
+		{{UserID: " u2", DisplayName: "小明"}},
+		{{UserID: "u2", DisplayName: ""}},
+		{{UserID: "u2", DisplayName: "小\n明"}},
+		{{UserID: "u2", DisplayName: "小明"}, {UserID: "u2", DisplayName: "明明"}},
+	} {
+		observation := validAmbientObservation()
+		observation.Mentions = mentions
+		if err := initiative.ValidateAmbientObservation(observation); err == nil {
+			t.Fatalf("invalid mention set accepted: %#v", mentions)
+		}
+	}
+	observation := validAmbientObservation()
+	observation.Mentions = make([]session.MessageMention, 17)
+	for index := range observation.Mentions {
+		observation.Mentions[index] = session.MessageMention{UserID: fmt.Sprintf("u%d", index), DisplayName: fmt.Sprintf("用户%d", index)}
+	}
+	if err := initiative.ValidateAmbientObservation(observation); err == nil {
+		t.Fatal("oversized mention set accepted")
 	}
 }
 

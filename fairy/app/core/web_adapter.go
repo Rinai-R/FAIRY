@@ -71,6 +71,7 @@ func (a initiativeAPIAdapter) ObserveAmbient(conversationID string, observation 
 	return a.service.ObserveAmbient(conversationID, initiative.AmbientObservation{
 		MessageID: observation.MessageID, SenderID: observation.SenderID,
 		SenderName: observation.SenderName, Text: observation.Text,
+		Mentions:      append([]session.MessageMention(nil), observation.Mentions...),
 		DirectedToBot: observation.DirectedToBot, IsNew: observation.IsNew,
 		TimestampUnixMS: observation.TimestampUnixMS,
 	})
@@ -105,6 +106,7 @@ func (a initiativeAPIAdapter) DecideParticipation(ctx context.Context, conversat
 		messages[index] = initiative.AmbientObservation{
 			MessageID: observation.MessageID, SenderID: observation.SenderID,
 			SenderName: observation.SenderName, Text: observation.Text,
+			Mentions:      append([]session.MessageMention(nil), observation.Mentions...),
 			DirectedToBot: observation.DirectedToBot, IsNew: observation.IsNew,
 			TimestampUnixMS: observation.TimestampUnixMS,
 		}

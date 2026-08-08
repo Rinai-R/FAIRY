@@ -8,7 +8,73 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	zero "github.com/wdvxdr1123/ZeroBot"
+	"github.com/wdvxdr1123/ZeroBot/message"
 )
+
+func TestAmbientObservationPreservesOtherUserMentions(t *testing.T) {
+	ctx := &zero.Ctx{Event: &zero.Event{
+		Time: 1, MessageID: int64(7), UserID: 10001,
+		Sender:     &zero.User{Card: "白色季节"},
+		RawMessage: "是吗[CQ:at,qq=718249954,name=秋] 快看新同学[CQ:at,qq=718249954,name=秋]",
+		Message:    message.Message{message.Text("是吗"), message.Text(" 快看新同学")},
+	}}
+	observation, err := ambientObservationFromEvent(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.Text != "是吗 @秋 快看新同学 @秋" || observation.DirectedToBot {
+		t.Fatalf("observation = %#v", observation)
+	}
+	if len(observation.Mentions) != 1 || observation.Mentions[0] != (session.MessageMention{UserID: "718249954", DisplayName: "秋"}) {
+		t.Fatalf("mentions = %#v", observation.Mentions)
+	}
+}
+
+func TestAmbientObservationPreservesDirectedToBotWithoutSelfAtSegment(t *testing.T) {
+	ctx := &zero.Ctx{Event: &zero.Event{
+		Time: 1, MessageID: int64(8), UserID: 10001, IsToMe: true,
+		Sender:     &zero.User{NickName: "群友"},
+		RawMessage: "[CQ:at,qq=527338184,name=亚托莉] 你好",
+		Message:    message.Message{message.Text("你好")},
+	}}
+	observation, err := ambientObservationFromEvent(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !observation.DirectedToBot || observation.Text != "@亚托莉 你好" || len(observation.Mentions) != 1 || observation.Mentions[0].DisplayName != "亚托莉" {
+		t.Fatalf("observation = %#v", observation)
+	}
+}
+
+func TestAmbientObservationRejectsInvalidMentionUserID(t *testing.T) {
+	ctx := &zero.Ctx{Event: &zero.Event{
+		Time: 1, MessageID: int64(9), UserID: 10001,
+		Sender:     &zero.User{NickName: "群友"},
+		RawMessage: "你好[CQ:at,qq=invalid,name=坏数据]",
+		Message:    message.Message{message.Text("你好")},
+	}}
+	if _, err := ambientObservationFromEvent(ctx); err == nil {
+		t.Fatal("invalid mention accepted")
+	}
+}
+
+func TestAmbientObservationFallsBackToMentionUserIDWhenNameMissing(t *testing.T) {
+	ctx := &zero.Ctx{Event: &zero.Event{
+		Time: 1, MessageID: int64(10), UserID: 10001,
+		Sender:     &zero.User{NickName: "群友"},
+		RawMessage: "看这里[CQ:at,qq=718249954]",
+		Message:    message.Message{message.Text("看这里")},
+	}}
+	observation, err := ambientObservationFromEvent(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.Text != "看这里 @718249954" || len(observation.Mentions) != 1 || observation.Mentions[0].DisplayName != "718249954" {
+		t.Fatalf("observation = %#v", observation)
+	}
+}
 
 func TestConsumeTurnEventsDeliversConversationStreamInOrder(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())

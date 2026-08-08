@@ -231,9 +231,12 @@ func ambientObservationFromEvent(ctx *zero.Ctx) (session.AmbientObservation, err
 	if ctx == nil || ctx.Event == nil || ctx.Event.Sender == nil {
 		return session.AmbientObservation{}, errors.New("OneBot event sender is required")
 	}
-	text := strings.TrimSpace(ctx.ExtractPlainText())
+	text, mentions, err := projectOneBotMessage(sourceOneBotMessage(ctx.Event))
+	if err != nil {
+		return session.AmbientObservation{}, err
+	}
 	if text == "" {
-		return session.AmbientObservation{}, errors.New("plain text is empty")
+		return session.AmbientObservation{}, errors.New("readable message text is empty")
 	}
 	if ctx.Event.MessageID == nil {
 		return session.AmbientObservation{}, errors.New("message ID is required")
@@ -247,8 +250,58 @@ func ambientObservationFromEvent(ctx *zero.Ctx) (session.AmbientObservation, err
 	}
 	return session.AmbientObservation{
 		MessageID: fmt.Sprint(ctx.Event.MessageID), SenderID: strconv.FormatInt(ctx.Event.UserID, 10), SenderName: senderName,
-		Text: text, DirectedToBot: ctx.Event.IsToMe, TimestampUnixMS: ctx.Event.Time * 1000,
+		Text: text, Mentions: mentions,
+		DirectedToBot: ctx.Event.IsToMe, TimestampUnixMS: ctx.Event.Time * 1000,
 	}, nil
+}
+
+func sourceOneBotMessage(event *zero.Event) message.Message {
+	if len(event.NativeMessage) > 0 {
+		if elements := message.ParseMessage(event.NativeMessage); len(elements) > 0 {
+			return elements
+		}
+	}
+	if strings.TrimSpace(event.RawMessage) != "" {
+		if elements := message.ParseMessageFromString(event.RawMessage); len(elements) > 0 {
+			return elements
+		}
+	}
+	return event.Message
+}
+
+func projectOneBotMessage(elements message.Message) (string, []session.MessageMention, error) {
+	parts := make([]string, 0, len(elements))
+	mentions := make([]session.MessageMention, 0)
+	seen := make(map[string]struct{})
+	for _, element := range elements {
+		switch element.Type {
+		case "text":
+			if text := strings.TrimSpace(element.Data["text"]); text != "" {
+				parts = append(parts, text)
+			}
+		case "at":
+			userID := strings.TrimSpace(element.Data["qq"])
+			if userID == "all" {
+				parts = append(parts, "@全体成员")
+				continue
+			}
+			parsed, err := strconv.ParseInt(userID, 10, 64)
+			if err != nil || parsed <= 0 || strconv.FormatInt(parsed, 10) != userID {
+				return "", nil, fmt.Errorf("OneBot at segment contains invalid user ID %q", userID)
+			}
+			displayName := strings.TrimSpace(element.Data["name"])
+			if displayName == "" {
+				displayName = userID
+			}
+			parts = append(parts, "@"+displayName)
+			if _, exists := seen[userID]; exists {
+				continue
+			}
+			seen[userID] = struct{}{}
+			mentions = append(mentions, session.MessageMention{UserID: userID, DisplayName: displayName})
+		}
+	}
+	return strings.Join(parts, " "), mentions, nil
 }
 
 func finalExpressionBeat(event session.TurnEvent) (expressionBeat, bool) {

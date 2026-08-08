@@ -102,13 +102,19 @@ type MessagePage struct {
 }
 
 type AmbientObservation struct {
-	MessageID       string `json:"messageId"`
-	SenderID        string `json:"senderId"`
-	SenderName      string `json:"senderName"`
-	Text            string `json:"text"`
-	DirectedToBot   bool   `json:"directedToBot"`
-	IsNew           bool   `json:"isNew"`
-	TimestampUnixMS int64  `json:"timestampUnixMs"`
+	MessageID       string           `json:"messageId"`
+	SenderID        string           `json:"senderId"`
+	SenderName      string           `json:"senderName"`
+	Text            string           `json:"text"`
+	Mentions        []MessageMention `json:"mentions,omitempty"`
+	DirectedToBot   bool             `json:"directedToBot"`
+	IsNew           bool             `json:"isNew"`
+	TimestampUnixMS int64            `json:"timestampUnixMs"`
+}
+
+type MessageMention struct {
+	UserID      string `json:"userId"`
+	DisplayName string `json:"displayName"`
 }
 
 type ParticipationRequest struct {
