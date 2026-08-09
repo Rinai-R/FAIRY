@@ -35,7 +35,7 @@
 
 ```bash
 go test -C fairy -tags=live ./agent/presence ./agent/conversation \
-  -run 'TestLive(EvalInbox|ReplyQualityContract|ProviderErrorSummaryDoesNotExposeResponseBody|PersonaConfigRequiresCompleteExplicitProvider)' \
+  -run 'TestLive(EvalInbox|ReplyQualityContract|ProviderErrorSummaryDoesNotExposeResponseBody|UsageEvidenceDistinguishesUnobservedFromZero|PersonaConfigRequiresCompleteExplicitProvider)' \
   -count=1
 ```
 

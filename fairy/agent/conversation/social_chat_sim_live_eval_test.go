@@ -77,6 +77,24 @@ func TestLiveProviderErrorSummaryDoesNotExposeResponseBody(t *testing.T) {
 	}
 }
 
+func TestLiveUsageEvidenceDistinguishesUnobservedFromZero(t *testing.T) {
+	if got := formatLiveUsage(nil); len(got) != 1 || !strings.Contains(got[0], "input=unobserved") || !strings.Contains(got[0], "cache_read=unobserved") {
+		t.Fatalf("missing usage = %#v", got)
+	}
+	input, output := uint64(12), uint64(3)
+	got := formatLiveUsage([]model.LaneModelUsage{{
+		Lane: string(model.PromptLaneRespond),
+		Usage: model.LaneUsage{
+			InputTokens: &input, OutputTokens: &output,
+			CachedInputTokens: model.CacheObserved(0), CacheWriteTokens: model.CacheMissing(),
+		},
+	}})
+	if len(got) != 1 || !strings.Contains(got[0], "input=12") || !strings.Contains(got[0], "output=3") ||
+		!strings.Contains(got[0], "cache_read=0") || !strings.Contains(got[0], "cache_write=unobserved") {
+		t.Fatalf("observed usage = %#v", got)
+	}
+}
+
 func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 	persona := loadPersonaLiveConfig(t)
 	modelPort := newLiveModelPort(t, persona)
@@ -156,8 +174,14 @@ func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 		}
 		mu.Lock()
 		decisions = append(decisions, line)
+		for _, usage := range formatLiveUsage(result.Usage) {
+			decisions = append(decisions, fmt.Sprintf("gen=%d %s", batch.Generation, usage))
+		}
 		mu.Unlock()
 		t.Log(line)
+		for _, usage := range formatLiveUsage(result.Usage) {
+			t.Logf("participate %s", usage)
+		}
 		return result, nil
 	})
 	inbox.SetLiveEvalSubmitHook(func(request initiative.TurnRequest) (initiative.TurnOutcome, error) {
@@ -172,7 +196,7 @@ func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 		cache := append([]initiative.AmbientObservation(nil), lastBatch.CacheMessages...)
 		mu.Unlock()
 		started := time.Now()
-		draft, tools, _, err := livePublicRespondWithTools(context.Background(), service, modelPort, persona.Model, cache, request.ReplyIntent)
+		draft, tools, phases, err := livePublicRespondWithTools(context.Background(), service, modelPort, persona.Model, cache, request.ReplyIntent)
 		if err != nil {
 			mu.Lock()
 			activeSubmits--
@@ -191,6 +215,9 @@ func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 		replies = append(replies, compiled.DisplayText)
 		mu.Unlock()
 		t.Logf("submit reply (%dms, tools=%v): %q", time.Since(started).Milliseconds(), tools, compiled.DisplayText)
+		for _, phase := range phases {
+			t.Logf("respond phase=%s", phase)
+		}
 		return initiative.TurnOutcome{ResponseText: compiled.DisplayText}, nil
 	})
 
