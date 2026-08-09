@@ -23,10 +23,16 @@ type LearningSnapshot struct {
 }
 
 type LearningStats struct {
-	Enqueued  int64 `json:"enqueued"`
-	Dropped   int64 `json:"dropped"`
-	Succeeded int64 `json:"succeeded"`
-	Failed    int64 `json:"failed"`
+	Enqueued                  int64 `json:"enqueued"`
+	Dropped                   int64 `json:"dropped"`
+	Succeeded                 int64 `json:"succeeded"`
+	Failed                    int64 `json:"failed"`
+	ModelCalls                int64 `json:"modelCalls"`
+	InputTokens               int64 `json:"inputTokens"`
+	CachedObservedInputTokens int64 `json:"cachedObservedInputTokens"`
+	CachedInputTokens         int64 `json:"cachedInputTokens"`
+	CacheWriteTokens          int64 `json:"cacheWriteTokens"`
+	OutputTokens              int64 `json:"outputTokens"`
 }
 
 type LearningEngine struct {
@@ -42,6 +48,13 @@ type LearningEngine struct {
 	dropped   atomic.Int64
 	succeeded atomic.Int64
 	failed    atomic.Int64
+
+	modelCalls                atomic.Int64
+	inputTokens               atomic.Int64
+	cachedObservedInputTokens atomic.Int64
+	cachedInputTokens         atomic.Int64
+	cacheWriteTokens          atomic.Int64
+	outputTokens              atomic.Int64
 }
 
 type socialLearnPayload struct {
@@ -119,6 +132,10 @@ func (e *LearningEngine) Stats() LearningStats {
 	return LearningStats{
 		Enqueued: e.enqueued.Load(), Dropped: e.dropped.Load(),
 		Succeeded: e.succeeded.Load(), Failed: e.failed.Load(),
+		ModelCalls: e.modelCalls.Load(), InputTokens: e.inputTokens.Load(),
+		CachedObservedInputTokens: e.cachedObservedInputTokens.Load(),
+		CachedInputTokens:         e.cachedInputTokens.Load(), CacheWriteTokens: e.cacheWriteTokens.Load(),
+		OutputTokens: e.outputTokens.Load(),
 	}
 }
 
@@ -207,6 +224,7 @@ func (e *LearningEngine) process(ctx context.Context, snapshot LearningSnapshot)
 	if err != nil {
 		return fmt.Errorf("executing social learning request: %w", err)
 	}
+	e.observeModelUsage(events)
 	draft := model.CollectTextFromEvents(events)
 	if strings.TrimSpace(draft) == "" {
 		return emptySocialLearningResultError(events)
@@ -236,6 +254,27 @@ func (e *LearningEngine) process(ctx context.Context, snapshot LearningSnapshot)
 		}
 	}
 	return nil
+}
+
+func (e *LearningEngine) observeModelUsage(events []model.StreamEvent) {
+	e.modelCalls.Add(1)
+	for _, lane := range model.LaneUsageFromEvents(model.PromptLaneSocialLearn, events, 0) {
+		if lane.Usage.InputTokens != nil {
+			e.inputTokens.Add(int64(*lane.Usage.InputTokens))
+			if lane.Usage.CachedInputTokens.Status == "observed" {
+				e.cachedObservedInputTokens.Add(int64(*lane.Usage.InputTokens))
+			}
+		}
+		if lane.Usage.CachedInputTokens.Status == "observed" && lane.Usage.CachedInputTokens.Tokens != nil {
+			e.cachedInputTokens.Add(int64(*lane.Usage.CachedInputTokens.Tokens))
+		}
+		if lane.Usage.CacheWriteTokens.Status == "observed" && lane.Usage.CacheWriteTokens.Tokens != nil {
+			e.cacheWriteTokens.Add(int64(*lane.Usage.CacheWriteTokens.Tokens))
+		}
+		if lane.Usage.OutputTokens != nil {
+			e.outputTokens.Add(int64(*lane.Usage.OutputTokens))
+		}
+	}
 }
 
 func emptySocialLearningResultError(events []model.StreamEvent) error {

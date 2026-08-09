@@ -226,6 +226,18 @@ describe("ObservabilityPage lifecycle", () => {
     metrics.history[1].feedbackCachedInputTokens = 1_400;
     metrics.history[1].feedbackCacheWriteTokens = 100;
     metrics.history[1].feedbackOutputTokens = 160;
+    metrics.history[0].learningModelCalls = 1;
+    metrics.history[0].learningInputTokens = 300;
+    metrics.history[0].learningCachedObservedInputTokens = 250;
+    metrics.history[0].learningCachedInputTokens = 180;
+    metrics.history[0].learningCacheWriteTokens = 20;
+    metrics.history[0].learningOutputTokens = 30;
+    metrics.history[1].learningModelCalls = 3;
+    metrics.history[1].learningInputTokens = 1_200;
+    metrics.history[1].learningCachedObservedInputTokens = 1_000;
+    metrics.history[1].learningCachedInputTokens = 700;
+    metrics.history[1].learningCacheWriteTokens = 80;
+    metrics.history[1].learningOutputTokens = 110;
     metrics.history[0].compactionL1Applied = 2;
     metrics.history[0].compactionL2Applied = 1;
     metrics.history[1].compactionL1Applied = 5;
@@ -268,7 +280,23 @@ describe("ObservabilityPage lifecycle", () => {
     expect(readout?.textContent).toContain("20");
     expect(readout?.textContent).toContain("2");
     expect(readout?.textContent).toContain("当前 Core");
-    expect(document.querySelectorAll(".metric-chart-process-boundary")).toHaveLength(10);
+    expect(document.querySelectorAll(".metric-chart-process-boundary")).toHaveLength(11);
+
+    const learningChart = screen.getByRole("img", { name: /Learning 模型用量/ });
+    const learningReadout = learningChart.closest(".metric-trend-chart")?.querySelector<HTMLElement>(".metric-trend-readout");
+    fireEvent.focus(learningChart);
+    expect(learningReadout?.textContent).toContain("1,200");
+    expect(learningReadout?.textContent).toContain("1,000");
+    expect(learningReadout?.textContent).toContain("700");
+    expect(learningReadout?.textContent).toContain("80");
+    expect(learningReadout?.textContent).toContain("110");
+    fireEvent.keyDown(learningChart, { key: "ArrowLeft" });
+    expect(learningReadout?.textContent).toContain("300");
+    expect(learningReadout?.textContent).toContain("250");
+    expect(learningReadout?.textContent).toContain("180");
+    expect(learningReadout?.textContent).toContain("20");
+    expect(learningReadout?.textContent).toContain("30");
+    fireEvent.blur(learningChart);
 
     fireEvent.keyDown(chart, { key: "ArrowLeft" });
     expect(tooltip?.textContent).toContain("10");
@@ -612,7 +640,11 @@ function validMetrics() {
         compaction: { l1Applied: 0, l2Applied: 0, l3Applied: 0, failed: 0 },
       },
       experience: {
-        learning: { enqueued: 0, dropped: 0, succeeded: 0, failed: 0 },
+        learning: {
+          enqueued: 0, dropped: 0, succeeded: 0, failed: 0,
+          modelCalls: 0, inputTokens: 0, cachedObservedInputTokens: 0,
+          cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0,
+        },
         feedback: {
           registered: 0, superseded: 0, dropped: 0, succeeded: 0, failed: 0,
           modelCalls: 0, inputTokens: 0, cachedObservedInputTokens: 0,
@@ -728,6 +760,12 @@ function metricHistoryPoint(timestampUnixMs: number, httpTotal: number, httpInFl
     learningSucceeded: 0,
     learningFailed: 0,
     learningDropped: 0,
+    learningModelCalls: 0,
+    learningInputTokens: 0,
+    learningCachedObservedInputTokens: 0,
+    learningCachedInputTokens: 0,
+    learningCacheWriteTokens: 0,
+    learningOutputTokens: 0,
     feedbackRegistered: 0,
     feedbackSuperseded: 0,
     feedbackSucceeded: 0,

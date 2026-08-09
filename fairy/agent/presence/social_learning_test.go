@@ -3,6 +3,7 @@ package presence
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -39,6 +40,8 @@ type learningTestHost struct {
 	draft             string
 	events            []model.StreamEvent
 	modelErr          error
+	storeErr          error
+	noteErr           error
 	block             bool
 	started           chan struct{}
 	request           model.CompiledPromptRequest
@@ -108,14 +111,14 @@ func (h *learningTestHost) StoreSocialMemoryEntries(_ context.Context, input soc
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.stored = append(h.stored, input)
-	return []social.SocialMemoryEntry{{ID: "entry-1"}}, nil
+	return []social.SocialMemoryEntry{{ID: "entry-1"}}, h.storeErr
 }
 
 func (h *learningTestHost) UpsertSocialPersonNote(_ context.Context, input social.SocialPersonNoteInput) (social.SocialPersonNote, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.upserted = append(h.upserted, input)
-	return social.SocialPersonNote{ID: "note-1"}, nil
+	return social.SocialPersonNote{ID: "note-1"}, h.noteErr
 }
 
 func (h *learningTestHost) WarnLearning(_ string, err error) {
@@ -197,6 +200,77 @@ func TestLearningEngineUsesDedicatedLaneAndCacheIdentity(t *testing.T) {
 	}
 	if metadataLoads != 1 {
 		t.Fatalf("conversation metadata loads = %d, want 1", metadataLoads)
+	}
+}
+
+func TestLearningModelUsagePreservesCacheObservationSemantics(t *testing.T) {
+	const draft = `{"entries":[{"kind":"episode","situation":"群友谈论求职准备","content":"群内会交换整理项目经历的建议","recallCue":"求职或实习准备","sourceMessageIds":["m1","m2"]}]}`
+	cached, written := uint64(640), uint64(80)
+	host := newLearningTestHost()
+	host.events = learningModelEvents(draft, 1024, 96, &cached, &written)
+	engine := &LearningEngine{host: host}
+	if err := engine.process(t.Context(), LearningSnapshot{ConversationID: "conversation-1", Messages: learningObservations()}); err != nil {
+		t.Fatal(err)
+	}
+	if got := engine.Stats(); got.ModelCalls != 1 || got.InputTokens != 1024 || got.CachedObservedInputTokens != 1024 || got.CachedInputTokens != 640 || got.CacheWriteTokens != 80 || got.OutputTokens != 96 {
+		t.Fatalf("observed usage = %#v", got)
+	}
+
+	host = newLearningTestHost()
+	host.events = learningModelEvents(draft, 512, 48, nil, nil)
+	engine = &LearningEngine{host: host}
+	if err := engine.process(t.Context(), LearningSnapshot{ConversationID: "conversation-1", Messages: learningObservations()}); err != nil {
+		t.Fatal(err)
+	}
+	if got := engine.Stats(); got.ModelCalls != 1 || got.InputTokens != 512 || got.OutputTokens != 48 || got.CachedObservedInputTokens != 0 || got.CachedInputTokens != 0 || got.CacheWriteTokens != 0 {
+		t.Fatalf("missing cache observation usage = %#v", got)
+	}
+}
+
+func TestLearningUsageRecordsProviderCostBeforeCompileOrStoreFailure(t *testing.T) {
+	cached := uint64(300)
+	for _, test := range []struct {
+		name     string
+		draft    string
+		storeErr error
+	}{
+		{name: "compile", draft: `{"entries":null}`},
+		{name: "store", draft: `{"entries":[{"kind":"episode","situation":"群友谈论求职准备","content":"群内会交换整理项目经历的建议","recallCue":"求职或实习准备","sourceMessageIds":["m1","m2"]}]}`, storeErr: errors.New("store unavailable")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			host := newLearningTestHost()
+			host.events = learningModelEvents(test.draft, 400, 20, &cached, nil)
+			host.storeErr = test.storeErr
+			engine := &LearningEngine{host: host}
+			if err := engine.process(t.Context(), LearningSnapshot{ConversationID: "conversation-1", Messages: learningObservations()}); err == nil {
+				t.Fatal("process unexpectedly succeeded")
+			}
+			if got := engine.Stats(); got.ModelCalls != 1 || got.InputTokens != 400 || got.CachedObservedInputTokens != 400 || got.CachedInputTokens != 300 || got.OutputTokens != 20 {
+				t.Fatalf("failed path usage = %#v", got)
+			}
+		})
+	}
+}
+
+func TestLearningRequestFailureDoesNotGuessProviderUsage(t *testing.T) {
+	host := newLearningTestHost()
+	host.modelErr = errors.New("provider unavailable")
+	engine := &LearningEngine{host: host}
+	if err := engine.process(t.Context(), LearningSnapshot{ConversationID: "conversation-1", Messages: learningObservations()}); !errors.Is(err, host.modelErr) {
+		t.Fatalf("process error = %v", err)
+	}
+	if got := engine.Stats(); got.ModelCalls != 0 || got.InputTokens != 0 || got.OutputTokens != 0 || got.CachedObservedInputTokens != 0 {
+		t.Fatalf("request failure guessed usage = %#v", got)
+	}
+}
+
+func learningModelEvents(draft string, promptTokens, completionTokens int, cachedInputTokens, cacheWriteTokens *uint64) []model.StreamEvent {
+	return []model.StreamEvent{
+		{Type: "text_delta", Data: draft},
+		{Type: "usage", Usage: &model.Usage{
+			PromptTokens: promptTokens, CompletionTokens: completionTokens,
+			CachedInputTokens: cachedInputTokens, CacheWriteTokens: cacheWriteTokens,
+		}},
 	}
 }
 

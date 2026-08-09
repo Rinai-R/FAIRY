@@ -237,6 +237,17 @@ const TREND_CHARTS: Array<{
       { key: "learningSucceeded", label: "成功", color: "#3c8b72" },
       { key: "learningFailed", label: "失败", color: "#b84855" },
       { key: "learningDropped", label: "丢弃", color: "#b37622" },
+      { key: "learningModelCalls", label: "学习调用", color: "#7059ad" },
+    ],
+  },
+  {
+    id: "learning-model-usage", className: "full", title: "Learning 模型用量", description: "公共自学习固定前缀的真实 Token 与缓存观测；未观测不等于零命中",
+    series: [
+      { key: "learningInputTokens", label: "输入", color: "#2878d0" },
+      { key: "learningCachedObservedInputTokens", label: "缓存观测输入", color: "#7d93aa" },
+      { key: "learningCachedInputTokens", label: "缓存命中", color: "#3c8b72" },
+      { key: "learningCacheWriteTokens", label: "缓存写入", color: "#b37622" },
+      { key: "learningOutputTokens", label: "输出", color: "#7059ad" },
     ],
   },
   {

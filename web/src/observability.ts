@@ -148,7 +148,18 @@ export type MetricsSnapshot = {
 };
 
 export type ExperienceStats = {
-  learning: { enqueued: number; dropped: number; succeeded: number; failed: number };
+  learning: {
+    enqueued: number;
+    dropped: number;
+    succeeded: number;
+    failed: number;
+    modelCalls: number;
+    inputTokens: number;
+    cachedObservedInputTokens: number;
+    cachedInputTokens: number;
+    cacheWriteTokens: number;
+    outputTokens: number;
+  };
   feedback: {
     registered: number;
     superseded: number;
@@ -306,6 +317,12 @@ function parseMetricHistoryPoint(value: unknown): MetricsTrendPoint {
     learningSucceeded: optionalNonNegativeInteger(point, "learningSucceeded"),
     learningFailed: optionalNonNegativeInteger(point, "learningFailed"),
     learningDropped: optionalNonNegativeInteger(point, "learningDropped"),
+    learningModelCalls: optionalNonNegativeInteger(point, "learningModelCalls"),
+    learningInputTokens: optionalNonNegativeInteger(point, "learningInputTokens"),
+    learningCachedObservedInputTokens: optionalNonNegativeInteger(point, "learningCachedObservedInputTokens"),
+    learningCachedInputTokens: optionalNonNegativeInteger(point, "learningCachedInputTokens"),
+    learningCacheWriteTokens: optionalNonNegativeInteger(point, "learningCacheWriteTokens"),
+    learningOutputTokens: optionalNonNegativeInteger(point, "learningOutputTokens"),
     feedbackRegistered: optionalNonNegativeInteger(point, "feedbackRegistered"),
     feedbackSuperseded: optionalNonNegativeInteger(point, "feedbackSuperseded"),
     feedbackSucceeded: optionalNonNegativeInteger(point, "feedbackSucceeded"),
@@ -339,6 +356,12 @@ function parseExperienceStats(value: unknown): ExperienceStats {
       dropped: requiredNonNegativeInteger(learning, "dropped"),
       succeeded: requiredNonNegativeInteger(learning, "succeeded"),
       failed: requiredNonNegativeInteger(learning, "failed"),
+      modelCalls: requiredNonNegativeInteger(learning, "modelCalls"),
+      inputTokens: requiredNonNegativeInteger(learning, "inputTokens"),
+      cachedObservedInputTokens: requiredNonNegativeInteger(learning, "cachedObservedInputTokens"),
+      cachedInputTokens: requiredNonNegativeInteger(learning, "cachedInputTokens"),
+      cacheWriteTokens: requiredNonNegativeInteger(learning, "cacheWriteTokens"),
+      outputTokens: requiredNonNegativeInteger(learning, "outputTokens"),
     },
     feedback: {
       registered: requiredNonNegativeInteger(feedback, "registered"),

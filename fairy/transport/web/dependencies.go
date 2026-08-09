@@ -132,10 +132,16 @@ type CompactionMetrics struct {
 }
 
 type LearningQueueStats struct {
-	Enqueued  int64 `json:"enqueued"`
-	Dropped   int64 `json:"dropped"`
-	Succeeded int64 `json:"succeeded"`
-	Failed    int64 `json:"failed"`
+	Enqueued                  int64 `json:"enqueued"`
+	Dropped                   int64 `json:"dropped"`
+	Succeeded                 int64 `json:"succeeded"`
+	Failed                    int64 `json:"failed"`
+	ModelCalls                int64 `json:"modelCalls"`
+	InputTokens               int64 `json:"inputTokens"`
+	CachedObservedInputTokens int64 `json:"cachedObservedInputTokens"`
+	CachedInputTokens         int64 `json:"cachedInputTokens"`
+	CacheWriteTokens          int64 `json:"cacheWriteTokens"`
+	OutputTokens              int64 `json:"outputTokens"`
 }
 
 type FeedbackQueueStats struct {

@@ -71,7 +71,11 @@ describe("observability parsers", () => {
   it("parses low-sensitivity experience counters without projecting unknown fields", () => {
     const input = validMetrics();
     input.runtime.experience = {
-      learning: { enqueued: 4, dropped: 1, succeeded: 2, failed: 1 },
+      learning: {
+        enqueued: 4, dropped: 1, succeeded: 2, failed: 1,
+        modelCalls: 2, inputTokens: 700, cachedObservedInputTokens: 600,
+        cachedInputTokens: 400, cacheWriteTokens: 40, outputTokens: 50,
+      },
       feedback: {
         registered: 3, superseded: 1, dropped: 1, succeeded: 1, failed: 1,
         modelCalls: 2, inputTokens: 900, cachedObservedInputTokens: 800,
@@ -83,7 +87,11 @@ describe("observability parsers", () => {
     };
     const parsed = parseMetrics(input);
     expect(parsed.runtime.experience).toEqual({
-      learning: { enqueued: 4, dropped: 1, succeeded: 2, failed: 1 },
+      learning: {
+        enqueued: 4, dropped: 1, succeeded: 2, failed: 1,
+        modelCalls: 2, inputTokens: 700, cachedObservedInputTokens: 600,
+        cachedInputTokens: 400, cacheWriteTokens: 40, outputTokens: 50,
+      },
       feedback: {
         registered: 3, superseded: 1, dropped: 1, succeeded: 1, failed: 1,
         modelCalls: 2, inputTokens: 900, cachedObservedInputTokens: 800,
@@ -142,6 +150,12 @@ describe("observability parsers", () => {
       learningSucceeded: 0,
       learningFailed: 0,
       learningDropped: 0,
+      learningModelCalls: 0,
+      learningInputTokens: 0,
+      learningCachedObservedInputTokens: 0,
+      learningCachedInputTokens: 0,
+      learningCacheWriteTokens: 0,
+      learningOutputTokens: 0,
       feedbackRegistered: 0,
       feedbackSuperseded: 0,
       feedbackSucceeded: 0,
@@ -165,6 +179,9 @@ describe("observability parsers", () => {
     const negative = validMetrics();
     ((negative.runtime.experience.learning as Record<string, unknown>)).enqueued = -1;
     expect(() => parseMetrics(negative)).toThrow(/非负安全整数/);
+    const missingLearningUsage = validMetrics();
+    delete (missingLearningUsage.runtime.experience.learning as Record<string, unknown>).cachedObservedInputTokens;
+    expect(() => parseMetrics(missingLearningUsage)).toThrow(/cachedObservedInputTokens/);
   });
 
   it("accepts legacy metrics without message telemetry", () => {
@@ -236,7 +253,11 @@ export function validMetrics() {
         compaction: { l1Applied: 0, l2Applied: 0, l3Applied: 0, failed: 0 },
       },
       experience: {
-        learning: { enqueued: 0, dropped: 0, succeeded: 0, failed: 0 },
+        learning: {
+          enqueued: 0, dropped: 0, succeeded: 0, failed: 0,
+          modelCalls: 0, inputTokens: 0, cachedObservedInputTokens: 0,
+          cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0,
+        },
         feedback: {
           registered: 0, superseded: 0, dropped: 0, succeeded: 0, failed: 0,
           modelCalls: 0, inputTokens: 0, cachedObservedInputTokens: 0,

@@ -133,7 +133,10 @@ func TestExperienceLoopConcurrentCloseIsIdempotent(t *testing.T) {
 
 func TestExperienceStatsJSONIsLowSensitivity(t *testing.T) {
 	payload, err := json.Marshal(ExperienceStats{
-		Learning: LearningStats{Enqueued: 2, Dropped: 1, Succeeded: 1},
+		Learning: LearningStats{
+			Enqueued: 2, Dropped: 1, Succeeded: 1, ModelCalls: 1, InputTokens: 700,
+			CachedObservedInputTokens: 700, CachedInputTokens: 400, CacheWriteTokens: 30, OutputTokens: 50,
+		},
 		Feedback: FeedbackStats{
 			Registered: 2, Superseded: 1, Failed: 1, ModelCalls: 1, InputTokens: 500,
 			CachedObservedInputTokens: 500, CachedInputTokens: 300, CacheWriteTokens: 20, OutputTokens: 40,
@@ -145,7 +148,7 @@ func TestExperienceStatsJSONIsLowSensitivity(t *testing.T) {
 	}
 	encoded := string(payload)
 	for _, required := range []string{
-		`"learning"`, `"feedback"`, `"cacheIdentityVersion"`, `"modelCalls":1`,
+		`"learning"`, `"feedback"`, `"cacheIdentityVersion"`, `"modelCalls":1`, `"inputTokens":700`,
 		`"superseded":1`,
 		`"cachedObservedInputTokens":500`, `"cachedInputTokens":300`, `"cacheWriteTokens":20`,
 	} {

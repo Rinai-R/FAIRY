@@ -24,6 +24,12 @@ type MetricHistoryPoint struct {
 	LearningSucceeded                 uint64  `json:"learningSucceeded"`
 	LearningFailed                    uint64  `json:"learningFailed"`
 	LearningDropped                   uint64  `json:"learningDropped"`
+	LearningModelCalls                uint64  `json:"learningModelCalls"`
+	LearningInputTokens               uint64  `json:"learningInputTokens"`
+	LearningCachedObservedInputTokens uint64  `json:"learningCachedObservedInputTokens"`
+	LearningCachedInputTokens         uint64  `json:"learningCachedInputTokens"`
+	LearningCacheWriteTokens          uint64  `json:"learningCacheWriteTokens"`
+	LearningOutputTokens              uint64  `json:"learningOutputTokens"`
 	FeedbackRegistered                uint64  `json:"feedbackRegistered"`
 	FeedbackSuperseded                uint64  `json:"feedbackSuperseded"`
 	FeedbackSucceeded                 uint64  `json:"feedbackSucceeded"`

@@ -46,7 +46,11 @@ func TestExperienceQueueStatsKeepZeroValueSchema(t *testing.T) {
 func TestMetricHistoryPointProjectsExperienceCounters(t *testing.T) {
 	response := metricsResponse{GeneratedAtUnixMS: 42}
 	response.Runtime.Experience = ExperienceStats{
-		Learning: LearningQueueStats{Enqueued: 7, Succeeded: 5, Failed: 1, Dropped: 1},
+		Learning: LearningQueueStats{
+			Enqueued: 7, Succeeded: 5, Failed: 1, Dropped: 1,
+			ModelCalls: 4, InputTokens: 900, CachedObservedInputTokens: 800,
+			CachedInputTokens: 600, CacheWriteTokens: 70, OutputTokens: 60,
+		},
 		Feedback: FeedbackQueueStats{
 			Registered: 9, Superseded: 2, Succeeded: 6, Failed: 2, Dropped: 1,
 			ModelCalls: 5, InputTokens: 1200, CachedObservedInputTokens: 1000,
@@ -57,6 +61,9 @@ func TestMetricHistoryPointProjectsExperienceCounters(t *testing.T) {
 	point := metricHistoryPoint(response, time.UnixMilli(1), 0)
 	if point.LearningEnqueued != 7 || point.LearningSucceeded != 5 || point.LearningFailed != 1 || point.LearningDropped != 1 {
 		t.Fatalf("learning history = %#v", point)
+	}
+	if point.LearningModelCalls != 4 || point.LearningInputTokens != 900 || point.LearningCachedObservedInputTokens != 800 || point.LearningCachedInputTokens != 600 || point.LearningCacheWriteTokens != 70 || point.LearningOutputTokens != 60 {
+		t.Fatalf("learning usage history = %#v", point)
 	}
 	if point.FeedbackRegistered != 9 || point.FeedbackSuperseded != 2 || point.FeedbackSucceeded != 6 || point.FeedbackFailed != 2 || point.FeedbackDropped != 1 {
 		t.Fatalf("feedback history = %#v", point)
@@ -72,6 +79,13 @@ func TestMetricHistoryPointProjectsExperienceCounters(t *testing.T) {
 func TestValidateExperienceStatsRejectsNegativeCounters(t *testing.T) {
 	stats := ExperienceStats{Learning: LearningQueueStats{Enqueued: -1}}
 	if err := validateExperienceStats(stats); err == nil || !strings.Contains(err.Error(), "learning.enqueued") {
+		t.Fatalf("validation error = %v", err)
+	}
+}
+
+func TestValidateExperienceStatsRejectsNegativeLearningUsage(t *testing.T) {
+	stats := ExperienceStats{Learning: LearningQueueStats{CachedObservedInputTokens: -1}}
+	if err := validateExperienceStats(stats); err == nil || !strings.Contains(err.Error(), "learning.cachedObservedInputTokens") {
 		t.Fatalf("validation error = %v", err)
 	}
 }
