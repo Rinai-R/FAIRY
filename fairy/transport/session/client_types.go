@@ -164,6 +164,47 @@ type RuntimeMetrics struct {
 	ActiveBackgroundJobs uint64           `json:"activeBackgroundJobs"`
 	EventSubscribers     uint64           `json:"eventSubscribers"`
 	AgentLoop            AgentLoopMetrics `json:"agentLoop"`
+	Experience           ExperienceStats  `json:"experience"`
+}
+
+// LearningQueueStats is the low-sensitivity CLI projection of the bounded
+// public-group learning worker. It intentionally contains counters only.
+type LearningQueueStats struct {
+	Enqueued                  int64 `json:"enqueued"`
+	Dropped                   int64 `json:"dropped"`
+	Succeeded                 int64 `json:"succeeded"`
+	Failed                    int64 `json:"failed"`
+	ModelCalls                int64 `json:"modelCalls"`
+	InputTokens               int64 `json:"inputTokens"`
+	CachedObservedInputTokens int64 `json:"cachedObservedInputTokens"`
+	CachedInputTokens         int64 `json:"cachedInputTokens"`
+	CacheWriteTokens          int64 `json:"cacheWriteTokens"`
+	OutputTokens              int64 `json:"outputTokens"`
+}
+
+// FeedbackQueueStats is the low-sensitivity CLI projection of immediate
+// post-reply feedback processing. Dynamic observations and cache keys are not
+// part of this wire contract.
+type FeedbackQueueStats struct {
+	Registered                int64 `json:"registered"`
+	Superseded                int64 `json:"superseded"`
+	Dropped                   int64 `json:"dropped"`
+	Succeeded                 int64 `json:"succeeded"`
+	Failed                    int64 `json:"failed"`
+	ModelCalls                int64 `json:"modelCalls"`
+	InputTokens               int64 `json:"inputTokens"`
+	CachedObservedInputTokens int64 `json:"cachedObservedInputTokens"`
+	CachedInputTokens         int64 `json:"cachedInputTokens"`
+	CacheWriteTokens          int64 `json:"cacheWriteTokens"`
+	OutputTokens              int64 `json:"outputTokens"`
+}
+
+// ExperienceStats preserves the current Experience diagnostics returned by
+// Core without importing the server-owned web transport package.
+type ExperienceStats struct {
+	Learning             LearningQueueStats `json:"learning"`
+	Feedback             FeedbackQueueStats `json:"feedback"`
+	CacheIdentityVersion string             `json:"cacheIdentityVersion"`
 }
 
 type LatencyMetrics struct {

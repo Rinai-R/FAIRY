@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"fairy/runtime/observability"
@@ -39,7 +41,48 @@ func (c *Client) Metrics(ctx context.Context) (Metrics, error) {
 	if err == nil && (result.GeneratedAtUnixMS == 0 || result.Process.GoVersion == "" || result.HTTP.Routes == nil || result.Messages.Recent == nil || len(result.Usage.Overall) == 0 || len(result.Usage.Turns) == 0 || len(result.Database) == 0) {
 		err = errors.New("metrics response is missing required fields")
 	}
+	if err == nil {
+		err = validateExperienceMetrics(result.Runtime.Experience)
+	}
 	return result, err
+}
+
+func validateExperienceMetrics(stats ExperienceStats) error {
+	if strings.TrimSpace(stats.CacheIdentityVersion) == "" {
+		return errors.New("metrics response experience cache identity version is required")
+	}
+	values := []struct {
+		name  string
+		value int64
+	}{
+		{name: "learning.enqueued", value: stats.Learning.Enqueued},
+		{name: "learning.dropped", value: stats.Learning.Dropped},
+		{name: "learning.succeeded", value: stats.Learning.Succeeded},
+		{name: "learning.failed", value: stats.Learning.Failed},
+		{name: "learning.modelCalls", value: stats.Learning.ModelCalls},
+		{name: "learning.inputTokens", value: stats.Learning.InputTokens},
+		{name: "learning.cachedObservedInputTokens", value: stats.Learning.CachedObservedInputTokens},
+		{name: "learning.cachedInputTokens", value: stats.Learning.CachedInputTokens},
+		{name: "learning.cacheWriteTokens", value: stats.Learning.CacheWriteTokens},
+		{name: "learning.outputTokens", value: stats.Learning.OutputTokens},
+		{name: "feedback.registered", value: stats.Feedback.Registered},
+		{name: "feedback.superseded", value: stats.Feedback.Superseded},
+		{name: "feedback.dropped", value: stats.Feedback.Dropped},
+		{name: "feedback.succeeded", value: stats.Feedback.Succeeded},
+		{name: "feedback.failed", value: stats.Feedback.Failed},
+		{name: "feedback.modelCalls", value: stats.Feedback.ModelCalls},
+		{name: "feedback.inputTokens", value: stats.Feedback.InputTokens},
+		{name: "feedback.cachedObservedInputTokens", value: stats.Feedback.CachedObservedInputTokens},
+		{name: "feedback.cachedInputTokens", value: stats.Feedback.CachedInputTokens},
+		{name: "feedback.cacheWriteTokens", value: stats.Feedback.CacheWriteTokens},
+		{name: "feedback.outputTokens", value: stats.Feedback.OutputTokens},
+	}
+	for _, item := range values {
+		if item.value < 0 {
+			return fmt.Errorf("metrics response experience metric %s is negative", item.name)
+		}
+	}
+	return nil
 }
 
 type TraceSearchResponse struct {

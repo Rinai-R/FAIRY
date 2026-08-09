@@ -20,10 +20,13 @@ func TestMetricsDecodesMessageTraceSnapshot(t *testing.T) {
 
 func TestRuntimeMetricsDecodesAgentLoopLatency(t *testing.T) {
 	var metrics RuntimeMetrics
-	if err := json.Unmarshal([]byte(`{"activeBackgroundJobs":0,"eventSubscribers":1,"agentLoop":{"providerFirstByte":{"observations":2,"totalDurationMs":30,"maxDurationMs":20},"replyPreview":{"observations":1,"totalDurationMs":25,"maxDurationMs":25},"firstBeat":{"observations":1,"totalDurationMs":40,"maxDurationMs":40},"completed":{"observations":1,"totalDurationMs":45,"maxDurationMs":45}}}`), &metrics); err != nil {
+	if err := json.Unmarshal([]byte(`{"activeBackgroundJobs":0,"eventSubscribers":1,"agentLoop":{"providerFirstByte":{"observations":2,"totalDurationMs":30,"maxDurationMs":20},"replyPreview":{"observations":1,"totalDurationMs":25,"maxDurationMs":25},"firstBeat":{"observations":1,"totalDurationMs":40,"maxDurationMs":40},"completed":{"observations":1,"totalDurationMs":45,"maxDurationMs":45}},"experience":{"learning":{"enqueued":2,"dropped":1,"succeeded":1,"failed":0,"modelCalls":1,"inputTokens":700,"cachedObservedInputTokens":700,"cachedInputTokens":400,"cacheWriteTokens":30,"outputTokens":50},"feedback":{"registered":3,"superseded":1,"dropped":0,"succeeded":1,"failed":1,"modelCalls":2,"inputTokens":500,"cachedObservedInputTokens":500,"cachedInputTokens":300,"cacheWriteTokens":20,"outputTokens":40},"cacheIdentityVersion":"v2"}}`), &metrics); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
 	if metrics.AgentLoop.ProviderFirstByte.Observations != 2 || metrics.AgentLoop.Completed.MaxDurationMS != 45 {
 		t.Fatalf("agent loop metrics = %#v", metrics.AgentLoop)
+	}
+	if metrics.Experience.Learning.CachedInputTokens != 400 || metrics.Experience.Feedback.Superseded != 1 || metrics.Experience.CacheIdentityVersion != "v2" {
+		t.Fatalf("experience metrics = %#v", metrics.Experience)
 	}
 }

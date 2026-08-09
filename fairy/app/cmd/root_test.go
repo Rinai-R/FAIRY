@@ -37,6 +37,39 @@ func TestHelpExposesOnlySupportedSurface(t *testing.T) {
 	}
 }
 
+func TestMetricsOutputPreservesLowSensitivityExperienceCounters(t *testing.T) {
+	client := &fakeClient{metrics: coreclient.Metrics{Runtime: coreclient.RuntimeMetrics{
+		Experience: coreclient.ExperienceStats{
+			Learning: coreclient.LearningQueueStats{
+				Enqueued: 2, ModelCalls: 1, CachedObservedInputTokens: 700, CachedInputTokens: 400,
+			},
+			Feedback: coreclient.FeedbackQueueStats{
+				Registered: 3, Superseded: 1, ModelCalls: 2, CachedObservedInputTokens: 500, CachedInputTokens: 300,
+			},
+			CacheIdentityVersion: "v2",
+		},
+	}}}
+	output := new(bytes.Buffer)
+	root := NewRootCmd(testDependencies(client))
+	root.SetOut(output)
+	root.SetErr(output)
+	root.SetArgs([]string{"metrics"})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	encoded := output.String()
+	for _, required := range []string{`"experience"`, `"learning"`, `"feedback"`, `"cachedObservedInputTokens":700`, `"cachedInputTokens":300`, `"cacheIdentityVersion":"v2"`} {
+		if !strings.Contains(encoded, required) {
+			t.Fatalf("metrics output missing %s: %s", required, encoded)
+		}
+	}
+	for _, forbidden := range []string{"private observation", "promptCacheKey", "stablePromptHash", "evidenceMessageIds"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("metrics output leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 func TestFreshTreesKeepFlagsAndEnvironmentIsolated(t *testing.T) {
 	t.Setenv("FAIRY_ENDPOINT", "http://127.0.0.1:9000")
 	var configs []ConnectionConfig
@@ -460,6 +493,8 @@ type fakeClient struct {
 	ownerIdentity             coreclient.OwnerIdentity
 	ownerNamespace            string
 	ownerSubject              string
+	metrics                   coreclient.Metrics
+	metricsErr                error
 }
 
 func (f *fakeClient) Status(context.Context) (coreclient.Status, error) { return f.status, f.statusErr }
@@ -520,7 +555,7 @@ func (f *fakeClient) OpenLogs(ctx context.Context, query coreclient.LogQuery, ti
 	return f.stream, nil
 }
 func (f *fakeClient) Metrics(context.Context) (coreclient.Metrics, error) {
-	return coreclient.Metrics{}, nil
+	return f.metrics, f.metricsErr
 }
 func (f *fakeClient) ListOwnerIdentities(context.Context) ([]coreclient.OwnerIdentity, error) {
 	return []coreclient.OwnerIdentity{}, nil
