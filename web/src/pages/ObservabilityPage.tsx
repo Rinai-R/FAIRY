@@ -345,7 +345,7 @@ function MetricTrendChart({
     if (!reference) return;
     const crosshair = crosshairRef.current;
     if (crosshair) {
-      crosshair.hidden = false;
+      crosshair.style.display = "";
       crosshair.setAttribute("x1", String(reference.x));
       crosshair.setAttribute("x2", String(reference.x));
     }
@@ -354,7 +354,7 @@ function MetricTrendChart({
       const geometryPoint = geometries.get(item.key)?.points[index];
       const dot = dotRefs.current.get(item.key);
       if (dot && geometryPoint) {
-        dot.hidden = false;
+        dot.style.display = "";
         dot.setAttribute("cx", String(geometryPoint.x));
         dot.setAttribute("cy", String(geometryPoint.y));
       }
@@ -386,9 +386,9 @@ function MetricTrendChart({
 
   function hideSample() {
     hoverIndexRef.current = -1;
-    if (crosshairRef.current) crosshairRef.current.hidden = true;
+    if (crosshairRef.current) crosshairRef.current.style.display = "none";
     if (tooltipRef.current) tooltipRef.current.hidden = true;
-    for (const dot of dotRefs.current.values()) dot.hidden = true;
+    for (const dot of dotRefs.current.values()) dot.style.display = "none";
     if (liveRef.current) liveRef.current.textContent = "";
     if (latest) {
       if (readoutTimeRef.current) readoutTimeRef.current.textContent = formatDateTimePrecise(latest.timestampUnixMs);
@@ -483,12 +483,12 @@ function MetricTrendChart({
               </g>
             );
           })}
-          <line ref={crosshairRef} hidden className="metric-chart-crosshair" y1="12" y2="196" />
+          <line ref={crosshairRef} style={{ display: "none" }} className="metric-chart-crosshair" y1="12" y2="196" />
           {series.map((item) => (
             <circle
               key={`hover-${item.key}`}
               ref={(node) => { if (node) dotRefs.current.set(item.key, node); else dotRefs.current.delete(item.key); }}
-              hidden
+              style={{ display: "none" }}
               className="metric-chart-hover-dot"
               r="4.5"
               fill={item.color}

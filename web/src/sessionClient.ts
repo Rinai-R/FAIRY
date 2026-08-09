@@ -58,6 +58,13 @@ type PendingRequest = {
   timer: ReturnType<typeof setTimeout>;
 };
 
+type ExpressionDeliveryResult = {
+  conversationId: string;
+  turnId: string;
+  beatId: string;
+  status: "succeeded";
+};
+
 export type DebugSessionHandlers = {
   onTurnEvent: (event: TurnEvent) => void;
   onDisconnect: (reason: string) => void;
@@ -73,6 +80,28 @@ function requestID() {
 function sessionURL() {
   const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${scheme}//${window.location.host}/v1/session/ws`;
+}
+
+function finalUtteranceDelivery(event: TurnEvent): ExpressionDeliveryResult | null {
+  const payload = event.payload;
+  if (payload.type !== "beat.ready" || payload.kind !== "final") return null;
+  if (!event.conversationId.trim() || !event.turnId.trim()) return null;
+  const beatId = typeof payload.beatId === "string" ? payload.beatId : "";
+  if (!beatId || beatId.trim() !== beatId) return null;
+  const displayText = typeof payload.displayText === "string" ? payload.displayText.trim() : "";
+  const part = payload.part && typeof payload.part === "object"
+    ? payload.part as Record<string, unknown>
+    : null;
+  const partText = part?.kind === "utterance" && typeof part.text === "string"
+    ? part.text.trim()
+    : "";
+  if (!displayText && !partText) return null;
+  return {
+    conversationId: event.conversationId,
+    turnId: event.turnId,
+    beatId,
+    status: "succeeded",
+  };
 }
 
 export class DebugSessionClient {
@@ -207,7 +236,20 @@ export class DebugSessionClient {
       return;
     }
     if (frame.type === "turn.event" && frame.event) {
-      this.handlers.onTurnEvent(frame.event);
+      try {
+        this.handlers.onTurnEvent(frame.event);
+      } catch {
+        this.fail("页面无法接纳回复事件");
+        return;
+      }
+      const deliveryResult = finalUtteranceDelivery(frame.event);
+      if (deliveryResult) {
+        void this.request({
+          type: "expression.delivery",
+          conversationId: deliveryResult.conversationId,
+          deliveryResult,
+        }, 15_000).catch(() => this.fail("回复投递回执失败"));
+      }
       return;
     }
     if (!frame.requestId) return;
@@ -235,5 +277,13 @@ export class DebugSessionClient {
     this.closed = true;
     this.rejectPending(new Error(reason));
     this.handlers.onDisconnect(reason);
+  }
+
+  private fail(reason: string) {
+    if (this.closed) return;
+    this.closed = true;
+    this.rejectPending(new Error(reason));
+    this.handlers.onDisconnect(reason);
+    this.socket.close(1011, reason);
   }
 }

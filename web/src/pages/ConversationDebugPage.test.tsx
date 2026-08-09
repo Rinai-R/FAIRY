@@ -31,17 +31,21 @@ function metricValues(container: HTMLElement) {
 
 class DebugPageSocket extends EventTarget {
   static readonly OPEN = 1;
+  static instances: DebugPageSocket[] = [];
   readonly protocol = "fairy.session.v1";
   readyState = DebugPageSocket.OPEN;
+  sent: Array<Record<string, unknown>> = [];
   private conversationId = "";
 
   constructor() {
     super();
+    DebugPageSocket.instances.push(this);
     setTimeout(() => this.frame({ type: "ready" }), 0);
   }
 
   send(raw: string) {
     const frame = JSON.parse(raw);
+    this.sent.push(frame);
     if (frame.type === "session.open") {
       const endpointKey = String(frame.endpointKey || "");
       openedEndpointKeys.push(endpointKey);
@@ -64,6 +68,10 @@ class DebugPageSocket extends EventTarget {
       return;
     }
     if (frame.type === "session.watch") {
+      this.frame({ type: "ack", requestId: frame.requestId, conversationId: this.conversationId });
+      return;
+    }
+    if (frame.type === "expression.delivery") {
       this.frame({ type: "ack", requestId: frame.requestId, conversationId: this.conversationId });
       return;
     }
@@ -90,6 +98,23 @@ class DebugPageSocket extends EventTarget {
         this.frame({ type: "result", requestId: frame.requestId, payload: { outcome: { turnId } } });
         return;
       }
+      this.frame({
+        type: "turn.event",
+        conversationId: this.conversationId,
+        event: {
+          conversationId: this.conversationId,
+          turnId,
+          sequence: 1,
+          state: "responding",
+          payload: {
+            type: "beat.ready",
+            kind: "final",
+            beatId: "final-0",
+            displayText: assistantContent,
+            part: { kind: "utterance", text: assistantContent, visualState: "idle" },
+          },
+        },
+      });
       messages.push(
         { id: `message-user-${turnId}`, messageId: frame.messageId, turnId, sequence, role: "user", content: frame.input, createdAtUnixMs: now },
         {
@@ -109,7 +134,7 @@ class DebugPageSocket extends EventTarget {
         event: {
           conversationId: this.conversationId,
           turnId,
-          sequence: 1,
+          sequence: 2,
           state: "completed",
           payload: {
             type: "completed",
@@ -145,6 +170,7 @@ class DebugPageSocket extends EventTarget {
 }
 
 beforeEach(() => {
+  DebugPageSocket.instances = [];
   persistedMessagesByConversation = new Map();
   endpointConversations = new Map();
   openedEndpointKeys = [];
@@ -341,6 +367,8 @@ describe("ConversationDebugPage", () => {
     expect(screen.getByText("1 个 Turn")).toBeTruthy();
     expect(openedEndpointKeys.at(-1)).toBe(originalEndpointKey);
     expect(endpointConversations.size).toBe(1);
+    expect(DebugPageSocket.instances.flatMap((socket) => socket.sent)
+      .filter((frame) => frame.type === "expression.delivery")).toHaveLength(1);
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("/turns/turn-1/runtime"))).toBe(true));
   });
 
