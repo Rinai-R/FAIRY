@@ -56,7 +56,7 @@ func TestLivePublicSocialMultiStepToolUse(t *testing.T) {
 		Tools: tools,
 	})
 	if err != nil {
-		t.Fatalf("ExecuteRequestContext: %v", err)
+		t.Fatalf("ExecuteRequestContext: %v", summarizeLiveProviderError(err))
 	}
 	calls := model.FunctionCallsFromEvents(events)
 	toolNames := make([]string, 0, len(calls))
@@ -261,7 +261,7 @@ func loadRepoDotEnv(t *testing.T) {
 				}
 				_ = os.Setenv(key, value)
 			}
-			t.Logf("loaded dotenv from %s", path)
+			t.Logf("loaded live dotenv %s", name)
 			loaded = true
 		}
 		if loaded {
@@ -273,5 +273,5 @@ func loadRepoDotEnv(t *testing.T) {
 		}
 		dir = parent
 	}
-	t.Logf("no .env found walking up from %s", wd)
+	t.Log("no live dotenv found")
 }

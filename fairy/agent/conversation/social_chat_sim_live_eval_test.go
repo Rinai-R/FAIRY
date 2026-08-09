@@ -66,6 +66,17 @@ func TestLiveReplyQualityContract(t *testing.T) {
 	}
 }
 
+func TestLiveProviderErrorSummaryDoesNotExposeResponseBody(t *testing.T) {
+	raw := errors.New(`POST "https://provider.invalid/chat": 401 Unauthorized {"message":"secret provider detail"}`)
+	summary := summarizeLiveProviderError(raw)
+	if summary == nil || summary.Error() != "provider request failed: HTTP 401" {
+		t.Fatalf("summary = %v", summary)
+	}
+	if strings.Contains(summary.Error(), "secret provider detail") || strings.Contains(summary.Error(), "provider.invalid") {
+		t.Fatalf("provider response leaked: %v", summary)
+	}
+}
+
 func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 	persona := loadPersonaLiveConfig(t)
 	modelPort := newLiveModelPort(t, persona)
@@ -124,7 +135,7 @@ func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 			if ctx.Err() != nil {
 				decisions = append(decisions, fmt.Sprintf("gen=%d reason=%s superseded (%dms)", batch.Generation, batch.EvaluationReason, elapsed))
 			} else {
-				decisions = append(decisions, fmt.Sprintf("gen=%d reason=%s failed (%dms): %v", batch.Generation, batch.EvaluationReason, elapsed, err))
+				decisions = append(decisions, fmt.Sprintf("gen=%d reason=%s failed (%dms): %v", batch.Generation, batch.EvaluationReason, elapsed, summarizeLiveProviderError(err)))
 			}
 			mu.Unlock()
 			return initiative.ParticipationResult{}, err
@@ -365,7 +376,7 @@ func runLiveGroupChatSimulation(t *testing.T, scenario liveGroupChatScenario) {
 	})
 	participateMS := time.Since(participateStarted).Milliseconds()
 	if err != nil {
-		t.Fatalf("DecideParticipation: %v", err)
+		t.Fatalf("DecideParticipation: %v", summarizeLiveProviderError(err))
 	}
 	t.Logf("latency participate_ms=%d", participateMS)
 	t.Logf("participate action=%s wait=%v", result.Action, result.WaitSeconds)
@@ -379,9 +390,8 @@ func runLiveGroupChatSimulation(t *testing.T, scenario liveGroupChatScenario) {
 		}
 	}
 	if result.Intent != nil {
-		t.Logf("intent act=%q focus=%q mode=%q memoryQuery=%q expressionQuery=%q drift=%q",
-			result.Intent.ReplyAct, result.Intent.Focus, result.Intent.ReplyMode,
-			result.Intent.MemoryQuery, result.Intent.ExpressionQuery, result.Intent.DriftLevel)
+		t.Logf("intent act=%q mode=%q drift=%q",
+			result.Intent.ReplyAct, result.Intent.ReplyMode, result.Intent.DriftLevel)
 	}
 	if result.Action != initiative.ParticipationReply || result.Intent == nil {
 		t.Log("simulation stopped at participate (no reply)")
@@ -647,7 +657,7 @@ func livePublicRespondWithTools(
 		})
 		modelMS := time.Since(modelStarted).Milliseconds()
 		if execErr != nil {
-			return "", nil, phases, execErr
+			return "", nil, phases, summarizeLiveProviderError(execErr)
 		}
 		calls := model.FunctionCallsFromEvents(events)
 		phases = append(phases, formatLiveUsage(model.LaneUsageFromEvents(model.PromptLaneRespond, events, 0))...)
@@ -665,7 +675,7 @@ func livePublicRespondWithTools(
 			if queryErr != nil {
 				return "", toolsUsed, phases, queryErr
 			}
-			toolsUsed = append(toolsUsed, call.Name+"("+query+")")
+			toolsUsed = append(toolsUsed, call.Name)
 			var extra recall.Context
 			switch call.Name {
 			case tool.SocialContextSearch:
@@ -714,6 +724,26 @@ func liveCacheValue(observation model.CachedTokenObservation) string {
 		return "unobserved"
 	}
 	return fmt.Sprint(*observation.Tokens)
+}
+
+func summarizeLiveProviderError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	message := err.Error()
+	for status := 400; status < 600; status++ {
+		code := fmt.Sprint(status)
+		if strings.Contains(message, " "+code+" ") || strings.Contains(message, ": "+code+" ") {
+			return fmt.Errorf("provider request failed: HTTP %s", code)
+		}
+	}
+	return errors.New("provider request failed without an HTTP status; inspect Core diagnostics")
 }
 
 func liveConversationReplyIntent(intent *initiative.ReplyIntent) *ReplyIntent {
