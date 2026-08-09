@@ -130,12 +130,6 @@ func (a initiativeAdapter) WarnFeedback(conversationID, turnID string, err error
 	a.warn("social feedback failed", conversationID, turnID, 0, err)
 }
 
-func (a initiativeAdapter) CancelTurnBeforeDelivery(conversationID string) {
-	if a.turns != nil {
-		a.turns.CancelTurnBeforeDelivery(conversationID)
-	}
-}
-
 func (a initiativeAdapter) SubmitTurn(request initiative.TurnRequest) (initiative.TurnOutcome, error) {
 	if a.turns == nil {
 		return initiative.TurnOutcome{}, turn.ErrTurnRuntimeUnavailable

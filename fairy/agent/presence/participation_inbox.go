@@ -15,7 +15,6 @@ type Host interface {
 	BeginMessageTrace(source, conversationID, messageID, traceID string) string
 	ObserveSocialFeedback(conversationID string, observation AmbientObservation)
 	EnqueueSocialLearning(conversationID string, messages []AmbientObservation)
-	CancelTurnBeforeDelivery(conversationID string)
 	DecideParticipation(context.Context, ParticipationRequest) (ParticipationResult, error)
 	SubmitTurn(TurnRequest) (TurnOutcome, error)
 	EndMessageTrace(traceID, status string)
@@ -169,9 +168,6 @@ func (a *Inbox) Observe(conversationID string, observation AmbientObservation) e
 	if a.host != nil && state.generation-state.lastLearnedGeneration >= socialLearningObservationThreshold {
 		a.host.EnqueueSocialLearning(conversationID, learningMessagesFromState(state))
 		state.lastLearnedGeneration = state.generation
-	}
-	if a.host != nil {
-		a.host.CancelTurnBeforeDelivery(conversationID)
 	}
 	a.cancelTimerLocked(state)
 	if state.decisionCancel != nil {

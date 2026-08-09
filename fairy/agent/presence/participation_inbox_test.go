@@ -104,6 +104,75 @@ func TestInboxCancelsStaleDecision(t *testing.T) {
 	}
 }
 
+func TestInboxPreservesAcceptedTurnAndProcessesLatestGenerationAfterTerminal(t *testing.T) {
+	inbox := NewInbox(t.Context(), fakeInboxHost{})
+	defer inbox.Close()
+
+	decisions := make(chan ambientBatch, 2)
+	inbox.decideHook = func(_ context.Context, batch ambientBatch) (ParticipationResult, error) {
+		decisions <- batch
+		if batch.generation == 1 {
+			target := batch.messages[0].MessageID
+			return ParticipationResult{Action: ParticipationReply, TargetMessageID: &target}, nil
+		}
+		return ParticipationResult{Action: ParticipationSilent}, nil
+	}
+
+	submitStarted := make(chan TurnRequest, 1)
+	releaseSubmit := make(chan struct{})
+	var activeSubmissions atomic.Int32
+	var maximumSubmissions atomic.Int32
+	inbox.submitHook = func(request TurnRequest) (TurnOutcome, error) {
+		current := activeSubmissions.Add(1)
+		for current > maximumSubmissions.Load() && !maximumSubmissions.CompareAndSwap(maximumSubmissions.Load(), current) {
+		}
+		submitStarted <- request
+		<-releaseSubmit
+		activeSubmissions.Add(-1)
+		return TurnOutcome{ResponseText: "first reply"}, nil
+	}
+
+	if err := inbox.Observe("conversation-1", testObservation(1)); err != nil {
+		t.Fatal(err)
+	}
+	firstBatch := receiveBatch(t, decisions)
+	if firstBatch.generation != 1 {
+		t.Fatalf("first generation = %d, want 1", firstBatch.generation)
+	}
+	<-submitStarted
+
+	if err := inbox.Observe("conversation-1", testObservation(2)); err != nil {
+		t.Fatal(err)
+	}
+	inbox.mu.Lock()
+	state := inbox.states["conversation-1"]
+	queuedGeneration := state.generation
+	stillRunning := state.running
+	inbox.mu.Unlock()
+	if queuedGeneration != 2 || !stillRunning {
+		t.Fatalf("accepted turn state: generation=%d running=%t", queuedGeneration, stillRunning)
+	}
+	select {
+	case batch := <-decisions:
+		t.Fatalf("overlapping participation decision before turn terminal: %#v", batch)
+	default:
+	}
+
+	close(releaseSubmit)
+	latest := receiveBatch(t, decisions)
+	if latest.generation != 2 || len(latest.messages) != 2 || latest.messages[1].MessageID != "m2" || !latest.messages[1].IsNew {
+		t.Fatalf("latest batch = %#v", latest)
+	}
+	waitUntil(t, func() bool {
+		inbox.mu.Lock()
+		defer inbox.mu.Unlock()
+		return !inbox.states["conversation-1"].running
+	})
+	if maximumSubmissions.Load() != 1 {
+		t.Fatalf("maximum concurrent submissions = %d, want 1", maximumSubmissions.Load())
+	}
+}
+
 func TestInboxDuplicateObservationIsNoOpWhileDecisionActive(t *testing.T) {
 	host := &countingInboxHost{}
 	inbox := NewInbox(t.Context(), host)
@@ -146,9 +215,6 @@ func TestInboxDuplicateObservationIsNoOpWhileDecisionActive(t *testing.T) {
 	}
 	if got := host.feedback.Load(); got != 1 {
 		t.Fatalf("ObserveSocialFeedback calls = %d, want 1", got)
-	}
-	if got := host.cancels.Load(); got != 1 {
-		t.Fatalf("CancelTurnBeforeDelivery calls = %d, want 1", got)
 	}
 	if got := host.learning.Load(); got != 0 {
 		t.Fatalf("EnqueueSocialLearning calls = %d, want 0", got)
@@ -350,9 +416,6 @@ func TestInboxRejectsNewConversationWhenAllStateIsActiveBeforeHostSideEffects(t 
 	if got := host.feedback.Load(); got != 2 {
 		t.Fatalf("ObserveSocialFeedback calls = %d, want 2", got)
 	}
-	if got := host.cancels.Load(); got != 2 {
-		t.Fatalf("CancelTurnBeforeDelivery calls = %d, want 2", got)
-	}
 	inbox.mu.Lock()
 	_, rejectedStateExists := inbox.states["conversation-3"]
 	stateCount := len(inbox.states)
@@ -457,9 +520,6 @@ func TestInboxDeduplicationIsConversationScopedAndReleasedWithState(t *testing.T
 	if got := host.feedback.Load(); got != 3 {
 		t.Fatalf("accepted feedback observations = %d, want 3", got)
 	}
-	if got := host.cancels.Load(); got != 3 {
-		t.Fatalf("accepted turn cancellations = %d, want 3", got)
-	}
 	inbox.mu.Lock()
 	recreated := inbox.states["conversation-1"]
 	inbox.mu.Unlock()
@@ -537,7 +597,6 @@ type fakeInboxHost struct{}
 func (fakeInboxHost) BeginMessageTrace(_, _, _, traceID string) string   { return traceID }
 func (fakeInboxHost) ObserveSocialFeedback(string, AmbientObservation)   {}
 func (fakeInboxHost) EnqueueSocialLearning(string, []AmbientObservation) {}
-func (fakeInboxHost) CancelTurnBeforeDelivery(string)                    {}
 func (fakeInboxHost) DecideParticipation(context.Context, ParticipationRequest) (ParticipationResult, error) {
 	return ParticipationResult{Action: ParticipationSilent}, nil
 }
@@ -564,7 +623,6 @@ type countingInboxHost struct {
 	fakeInboxHost
 	begins   atomic.Int32
 	feedback atomic.Int32
-	cancels  atomic.Int32
 	learning atomic.Int32
 }
 
@@ -575,10 +633,6 @@ func (h *countingInboxHost) BeginMessageTrace(_, _, _, traceID string) string {
 
 func (h *countingInboxHost) ObserveSocialFeedback(string, AmbientObservation) {
 	h.feedback.Add(1)
-}
-
-func (h *countingInboxHost) CancelTurnBeforeDelivery(string) {
-	h.cancels.Add(1)
 }
 
 func (h *countingInboxHost) EnqueueSocialLearning(string, []AmbientObservation) {

@@ -34,7 +34,6 @@ func (x *turnExecution) deliverReply(ctx context.Context, gathered *turnContext,
 		}
 		s.finishMessageSpan(deliverySpan, status, attributes)
 	}()
-	s.markTurnDelivering(request.ConversationID, x.persisted.ID)
 	var profileRevision *uint64
 	if gathered.profile != nil {
 		value := gathered.profile.Revision

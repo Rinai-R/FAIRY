@@ -45,10 +45,6 @@ type companionInitiativeTestTurnStarter struct {
 	service *Service
 }
 
-func (a companionInitiativeTestTurnStarter) CancelTurnBeforeDelivery(conversationID string) {
-	a.service.CancelTurnBeforeDelivery(conversationID)
-}
-
 func (a companionInitiativeTestTurnStarter) SubmitTurn(initiative.TurnRequest) (initiative.TurnOutcome, error) {
 	return initiative.TurnOutcome{}, errors.New("unexpected ambient turn")
 }

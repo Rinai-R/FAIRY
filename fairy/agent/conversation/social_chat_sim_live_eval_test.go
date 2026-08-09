@@ -292,7 +292,6 @@ func (*liveEvalInboxHost) BeginMessageTrace(_, _, messageID, traceID string) str
 
 func (*liveEvalInboxHost) ObserveSocialFeedback(string, initiative.AmbientObservation)   {}
 func (*liveEvalInboxHost) EnqueueSocialLearning(string, []initiative.AmbientObservation) {}
-func (*liveEvalInboxHost) CancelTurnBeforeDelivery(string)                               {}
 func (*liveEvalInboxHost) SubmitTurn(initiative.TurnRequest) (initiative.TurnOutcome, error) {
 	return initiative.TurnOutcome{}, errors.New("live submit hook is not configured")
 }

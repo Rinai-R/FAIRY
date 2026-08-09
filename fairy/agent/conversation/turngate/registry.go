@@ -17,9 +17,8 @@ var (
 type CancelHook func(context.Context, string, string) error
 
 type activeTurn struct {
-	turnID     string
-	cancel     context.CancelFunc
-	delivering bool
+	turnID string
+	cancel context.CancelFunc
 }
 
 type turnGate struct {
@@ -105,41 +104,6 @@ func (r *Registry) Bind(conversationID, turnID string) {
 	if g.activeTurn != nil {
 		g.activeTurn.turnID = turnID
 	}
-}
-
-func (r *Registry) MarkDelivering(conversationID, turnID string) {
-	g := r.acquire(conversationID, false)
-	if g == nil {
-		return
-	}
-	defer r.release(conversationID, g)
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.activeTurn != nil && g.activeTurn.turnID == turnID {
-		g.activeTurn.delivering = true
-	}
-}
-
-// CancelBeforeDelivery cancels only a turn that has not entered final delivery.
-func (r *Registry) CancelBeforeDelivery(conversationID string) (bool, error) {
-	g := r.acquire(conversationID, false)
-	if g == nil {
-		return false, nil
-	}
-	defer r.release(conversationID, g)
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.activeTurn == nil || g.activeTurn.delivering {
-		return false, nil
-	}
-	var hookErr error
-	if r.cancelHook != nil && g.activeTurn.turnID != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		hookErr = r.cancelHook(ctx, conversationID, g.activeTurn.turnID)
-		cancel()
-	}
-	g.activeTurn.cancel()
-	return true, hookErr
 }
 
 // Cancel cancels a specific active turn and its external execution.

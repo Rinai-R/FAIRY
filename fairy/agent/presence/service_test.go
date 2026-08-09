@@ -22,8 +22,6 @@ type recordingTurnStarter struct {
 	scheduled []session.DesktopObservation
 }
 
-func (*recordingTurnStarter) CancelTurnBeforeDelivery(string) {}
-
 func (*recordingTurnStarter) SubmitTurn(TurnRequest) (TurnOutcome, error) {
 	return TurnOutcome{}, errors.New("unexpected ambient turn")
 }

@@ -13,7 +13,6 @@ import (
 // TurnStarter is declared at Presence's consumption boundary. Core adapts
 // Conversation to this contract, so neither execution domain imports the other.
 type TurnStarter interface {
-	CancelTurnBeforeDelivery(conversationID string)
 	SubmitTurn(TurnRequest) (TurnOutcome, error)
 	ScheduleDesktopInitiation(conversationID string, evidenceIDs []string, observation session.DesktopObservation) error
 }
@@ -238,12 +237,6 @@ func (s *Service) ExperienceStats() ExperienceStats {
 		return ExperienceStats{CacheIdentityVersion: model.PromptCacheKeyVersion}
 	}
 	return s.experience.Stats()
-}
-
-func (s *Service) CancelTurnBeforeDelivery(conversationID string) {
-	if s != nil && s.turns != nil {
-		s.turns.CancelTurnBeforeDelivery(conversationID)
-	}
 }
 
 func (s *Service) SubmitTurn(request TurnRequest) (TurnOutcome, error) {

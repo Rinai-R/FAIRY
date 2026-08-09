@@ -53,12 +53,6 @@ func AttachAmbientReplyObserver(service *Service, observer AmbientReplyObserver)
 	service.ambientReplies = observer
 }
 
-func (s *Service) CancelTurnBeforeDelivery(conversationID string) {
-	if s != nil {
-		s.cancelTurnBeforeDelivery(conversationID)
-	}
-}
-
 func (s *Service) ScheduleDesktopInitiation(request DesktopInitiationRequest, observation session.DesktopObservation) error {
 	if s == nil || s.deferredTurns == nil {
 		return ErrTurnRuntimeUnavailable
