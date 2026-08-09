@@ -17,6 +17,7 @@
   - [x] 恢复当前 Presence Engine / Inbox / Conversation 回复合同上的 live 群聊质量门；覆盖新增消息目标、superseded 取消、单飞提交、严格回复编译、长度与内部协议泄漏边界
   - [x] 使用有效真实 provider 完成 SRE、galgame 直接参与与 Inbox burst 固定场景基线审阅；目标选择、工具续接、superseded 取消、单飞提交与最终可见回复均通过，配置或真实请求失败仍会直接 FAIL，不会降级或伪造通过
   - [x] 增加真实 PostgreSQL 长会话稳定性门；连续执行 32 个生产 Turn、中点重建 Service/Retention，并验证 64 条完整历史、重复 L3、唯一终态、有界活动窗口与资源收敛
+  - [x] 增加只读 QQ operator smoke；以真实入站 message ID 关联持久 Trace/Turn、逐拍 Surface 回执与 OneBot `get_msg`，自动合同不冒充真实环境 PASS
 - [ ] 提升表情包语义质量；当前依赖人工描述与标签，不使用未经设计的 VLM/OCR 自动识别
 - [ ] 丰富角色渲染；当前本地单图状态可用，Live2D 不阻塞聊天主线
 - [ ] 评估飞书、Telegram 等其他 IM Surface

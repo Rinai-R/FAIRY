@@ -263,6 +263,7 @@ func TestCoreServiceUsesOneSocketAndClearsCompletedTurn(t *testing.T) {
 	var mu sync.Mutex
 	var frameTypes []string
 	connections := 0
+	deliveryReceived := make(chan session.ExpressionDeliveryResult, 1)
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -286,6 +287,7 @@ func TestCoreServiceUsesOneSocketAndClearsCompletedTurn(t *testing.T) {
 			}
 			defer conn.Close()
 			_ = conn.WriteJSON(map[string]any{"type": "ready"})
+			var submitRequestID string
 			for {
 				var frame map[string]json.RawMessage
 				if err := conn.ReadJSON(&frame); err != nil {
@@ -309,13 +311,19 @@ func TestCoreServiceUsesOneSocketAndClearsCompletedTurn(t *testing.T) {
 				case "session.watch":
 					_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID})
 				case "turn.submit":
+					submitRequestID = requestID
 					if _, present := frame["speechEnabled"]; present {
 						t.Error("Desktop turn sent removed speech option")
 						return
 					}
-					writeTurnEventFixture(conn, "t1", 1, "responding", `{"type":"beat.ready","kind":"reply","displayText":"ok","visualState":"idle"}`)
+					writeTurnEventFixture(conn, "t1", 1, "responding", `{"type":"beat.ready","beatId":"b1","kind":"final","displayText":"ok","visualState":"idle"}`)
+				case "expression.delivery":
+					var result session.ExpressionDeliveryResult
+					_ = json.Unmarshal(frame["deliveryResult"], &result)
+					deliveryReceived <- result
+					_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID})
 					writeTurnEventFixture(conn, "t1", 2, "completed", `{"type":"completed"}`)
-					_ = conn.WriteJSON(map[string]any{"type": "result", "requestId": requestID, "payload": json.RawMessage(`{"outcome":{"conversationId":"c1","turnId":"t1","responseText":"ok"}}`)})
+					_ = conn.WriteJSON(map[string]any{"type": "result", "requestId": submitRequestID, "payload": json.RawMessage(`{"outcome":{"conversationId":"c1","turnId":"t1","responseText":"ok"}}`)})
 					return
 				}
 			}
@@ -352,12 +360,20 @@ func TestCoreServiceUsesOneSocketAndClearsCompletedTurn(t *testing.T) {
 	if active {
 		t.Fatal("completed turn left service active")
 	}
+	select {
+	case result := <-deliveryReceived:
+		if result.Status != session.ExpressionDeliverySucceeded || result.ConversationID != "c1" || result.TurnID != "t1" || result.BeatID != "b1" || result.ExternalMessageID != "" {
+			t.Fatalf("delivery result = %#v", result)
+		}
+	default:
+		t.Fatal("Desktop did not report accepted final utterance")
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	if connections != 1 {
 		t.Fatalf("websocket connections = %d, want 1", connections)
 	}
-	if got, want := frameTypes, []string{"session.open", "session.watch", "turn.submit"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+	if got, want := frameTypes, []string{"session.open", "session.watch", "turn.submit", "expression.delivery"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] || got[3] != want[3] {
 		t.Fatalf("socket frames = %v, want %v", got, want)
 	}
 }

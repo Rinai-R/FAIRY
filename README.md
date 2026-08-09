@@ -39,9 +39,12 @@ QQ Surface 的 `running` 只表示进程存在；Compose 只有在已认证 Core
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.qq.yml ps
 docker compose -f docker-compose.yml -f docker-compose.qq.yml exec qq-onebot /usr/local/bin/fairy-qq-onebot healthcheck
+docker compose -f docker-compose.yml -f docker-compose.qq.yml exec -T qq-onebot /usr/local/bin/fairy-qq-onebot smoke --message-id '<真实入站 message_id>' --wait 60s
 docker compose -f docker-compose.yml -f docker-compose.qq.yml logs -f llbot llbot-config qq-onebot
 docker compose -f docker-compose.yml -f docker-compose.qq.yml down
 ```
+
+`smoke` 不发送消息：它精确查询该入站 ID 的持久 Trace/Turn 和成功 `Surface 回执`，再用回执中的出站 ID 调用 OneBot `get_msg`。只有同一链路四段证据完整才输出低敏 `PASS`；没有新鲜真实消息时应记录 INCOMPLETE，不能用自动 fixture、readiness 或 Core completed 冒充。
 
 QQ 登录态、LLBot 配置和两个授权文件统一保存在 `llbot-data` volume。普通 `down` 不删除该卷；不要使用 `down -v`，除非明确要清除登录态和配置。配置 sidecar 是唯一通过环境变量接收 LLBot auth/WebUI token 的服务，LLBot 只读取卷内文件；QQ overlay 不使用 `privileged`，任何服务都不挂载 Docker socket。宿主机只通过回环地址访问 Core `8787` 和 LLBot WebUI `3080`，OneBot `3000` 与事件 listener `3002` 均不发布到宿主机。
 

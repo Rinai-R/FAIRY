@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -30,6 +31,22 @@ func main() {
 		}
 		return runBot(cmd.Context(), cfg)
 	}})
+	var smokeMessageID string
+	var smokeWait time.Duration
+	smoke := &cobra.Command{Use: "smoke", Short: "核验一条真实 QQ 入站到出站的投递证据", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		if smokeWait < minimumSmokeWait || smokeWait > maximumSmokeWait {
+			return errSmokeConfigInvalid
+		}
+		cfg, err := configFromEnv()
+		if err != nil {
+			return errSmokeConfigInvalid
+		}
+		return runDeliverySmoke(cmd.Context(), cfg, smokeMessageID, smokeWait, cmd.OutOrStdout())
+	}}
+	smoke.Flags().StringVar(&smokeMessageID, "message-id", "", "真实入站 OneBot message ID")
+	smoke.Flags().DurationVar(&smokeWait, "wait", defaultSmokeWait, "有界等待时间（1s 到 5m）")
+	_ = smoke.MarkFlagRequired("message-id")
+	root.AddCommand(smoke)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	root.SetContext(ctx)

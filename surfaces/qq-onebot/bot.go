@@ -46,8 +46,8 @@ type groupAuthorizer interface {
 }
 
 type expressionSender struct {
-	text  func(string) error
-	image func([]byte) error
+	text  func(string) (string, error)
+	image func([]byte) (string, error)
 }
 
 func newBot(ctx context.Context, socket sessionSocket, stickers stickerContentReader, authorizer groupAuthorizer) (*bot, error) {
@@ -87,10 +87,10 @@ func (b *bot) handle(ctx *zero.Ctx) {
 		return
 	}
 	send := expressionSender{
-		text: func(text string) error {
+		text: func(text string) (string, error) {
 			return sendChain(ctx, message.Text(text))
 		},
-		image: func(content []byte) error {
+		image: func(content []byte) (string, error) {
 			return sendChain(ctx, message.ImageBytes(content))
 		},
 	}
@@ -114,10 +114,10 @@ func (b *bot) handlePrivate(ctx *zero.Ctx) {
 		return
 	}
 	send := expressionSender{
-		text: func(text string) error {
+		text: func(text string) (string, error) {
 			return sendChain(ctx, message.Text(text))
 		},
-		image: func(content []byte) error {
+		image: func(content []byte) (string, error) {
 			return sendChain(ctx, message.ImageBytes(content))
 		},
 	}
@@ -138,12 +138,12 @@ func (b *bot) handlePrivate(ctx *zero.Ctx) {
 	}
 }
 
-func sendChain(ctx *zero.Ctx, segment message.Segment) error {
+func sendChain(ctx *zero.Ctx, segment message.Segment) (string, error) {
 	id := ctx.SendChain(segment)
 	if id.ID() == 0 {
-		return errors.New("ZeroBot send_group_msg returned empty message ID")
+		return "", errors.New("OneBot send action returned empty message ID")
 	}
-	return nil
+	return strconv.FormatInt(id.ID(), 10), nil
 }
 
 func (b *bot) ensureConversation(groupID int64, send expressionSender) (string, error) {
@@ -229,16 +229,36 @@ func (b *bot) consumeTurnEvents(conversationID string, stream <-chan session.Tur
 		b.mu.Unlock()
 		switch beat.Part.Kind {
 		case session.ExpressionUtterance:
-			if send.text == nil {
-				log.Printf("deliver utterance failed: sender is unavailable")
-				continue
-			}
-			if err := send.text(beat.Part.Text); err != nil {
-				log.Printf("deliver utterance failed: %v", err)
-			}
+			b.deliverUtterance(conversationID, event, beat, send)
 		case session.ExpressionSticker:
 			b.deliverSticker(conversationID, event, beat, send)
 		}
+	}
+}
+
+func (b *bot) deliverUtterance(conversationID string, event session.TurnEvent, beat expressionBeat, send expressionSender) {
+	result := session.ExpressionDeliveryResult{
+		ConversationID: conversationID,
+		TurnID:         event.TurnID,
+		BeatID:         beat.BeatID,
+		Status:         session.ExpressionDeliveryFailed,
+	}
+	if send.text == nil {
+		result.ErrorMessage = "QQ 文字发送器不可用"
+		log.Printf("QQ 文字投递失败")
+	} else if externalMessageID, err := send.text(beat.Part.Text); err != nil {
+		result.ErrorMessage = "QQ 文字发送失败"
+		log.Printf("QQ 文字投递失败")
+	} else {
+		result.Status = session.ExpressionDeliverySucceeded
+		result.ExternalMessageID = externalMessageID
+	}
+	b.reportExpressionDelivery(result)
+}
+
+func (b *bot) reportExpressionDelivery(result session.ExpressionDeliveryResult) {
+	if err := b.socket.ReportExpressionDelivery(b.ctx, result); err != nil {
+		log.Printf("QQ 投递回执上报失败")
 	}
 }
 
@@ -254,41 +274,37 @@ func (b *bot) deliverSticker(conversationID string, event session.TurnEvent, bea
 		BeatID:         beat.BeatID,
 		Status:         session.ExpressionDeliveryFailed,
 	}
-	fail := func(message string, cause error) {
+	fail := func(message string) {
 		result.ErrorMessage = message
-		if cause != nil {
-			log.Printf("%s: %v", message, cause)
-		}
-		if err := b.socket.ReportExpressionDelivery(b.ctx, result); err != nil {
-			log.Printf("report sticker delivery failure failed: %v", err)
-		}
+		log.Printf("QQ 图片投递失败")
+		b.reportExpressionDelivery(result)
 	}
 	if beat.Part.Sticker == nil {
-		fail("QQ 表情包引用缺失", nil)
+		fail("QQ 表情包引用缺失")
 		return
 	}
 	if send.image == nil {
-		fail("QQ 图片发送器不可用", nil)
+		fail("QQ 图片发送器不可用")
 		return
 	}
 	content, err := b.stickers.ReadStickerContent(b.ctx, beat.Part.Sticker.ID)
 	if err != nil {
-		fail("从 Core 读取表情包失败", err)
+		fail("从 Core 读取表情包失败")
 		return
 	}
 	if content.MIMEType != beat.Part.Sticker.MIMEType {
-		fail("Core 表情包 MIME 与回复快照不一致", nil)
+		fail("Core 表情包 MIME 与回复快照不一致")
 		return
 	}
-	if err := send.image(content.Bytes); err != nil {
-		fail("QQ 图片发送失败", err)
+	externalMessageID, err := send.image(content.Bytes)
+	if err != nil {
+		fail("QQ 图片发送失败")
 		return
 	}
 	result.Status = session.ExpressionDeliverySucceeded
+	result.ExternalMessageID = externalMessageID
 	result.ErrorMessage = ""
-	if err := b.socket.ReportExpressionDelivery(b.ctx, result); err != nil {
-		log.Printf("report sticker delivery success failed: %v", err)
-	}
+	b.reportExpressionDelivery(result)
 }
 
 func ambientObservationFromEvent(ctx *zero.Ctx) (session.AmbientObservation, error) {
@@ -382,6 +398,10 @@ func finalExpressionBeat(event session.TurnEvent) (expressionBeat, bool) {
 	if envelope.Type != "beat.ready" || envelope.Kind != "final" {
 		return expressionBeat{}, false
 	}
+	envelope.BeatID = strings.TrimSpace(envelope.BeatID)
+	if envelope.BeatID == "" {
+		return expressionBeat{}, false
+	}
 	if envelope.Part.Kind == "" && strings.TrimSpace(envelope.DisplayText) != "" {
 		envelope.Part = session.ExpressionPart{
 			Kind: session.ExpressionUtterance,
@@ -395,7 +415,7 @@ func finalExpressionBeat(event session.TurnEvent) (expressionBeat, bool) {
 			return expressionBeat{}, false
 		}
 	case session.ExpressionSticker:
-		if strings.TrimSpace(envelope.BeatID) == "" || envelope.Part.Sticker == nil ||
+		if envelope.Part.Sticker == nil ||
 			strings.TrimSpace(envelope.Part.Sticker.ID) == "" || strings.TrimSpace(envelope.Part.Sticker.MIMEType) == "" {
 			return expressionBeat{}, false
 		}

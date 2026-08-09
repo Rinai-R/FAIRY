@@ -623,7 +623,10 @@ func (s *CoreService) forwardTurnEvents(socket *session.SessionSocket, conversat
 			if showBubble {
 				s.showSpeechBubble()
 			}
-			s.emitTurnEvent(converted)
+			accepted := s.emitTurnEvent(converted)
+			if accepted && desktopFinalUtterance(converted) {
+				s.reportDesktopUtterance(socket, event, converted.Beat)
+			}
 		}
 	}
 	s.mu.Lock()
@@ -636,6 +639,36 @@ func (s *CoreService) forwardTurnEvents(socket *session.SessionSocket, conversat
 	if current && active {
 		s.emitTurnEvent(desktopTurnEvent{Type: "stream.closed", Message: "与 Core 的会话连接已断开"})
 	}
+}
+
+func desktopFinalUtterance(event desktopTurnEvent) bool {
+	if event.Type != "beat.ready" || event.Beat == nil || event.Beat.Kind != "final" || strings.TrimSpace(event.Beat.BeatID) == "" {
+		return false
+	}
+	if event.Beat.Part == nil {
+		return strings.TrimSpace(event.Beat.DisplayText) != ""
+	}
+	return event.Beat.Part.Kind == session.ExpressionUtterance && strings.TrimSpace(event.Beat.Part.Text) != ""
+}
+
+func (s *CoreService) reportDesktopUtterance(socket *session.SessionSocket, event session.TurnEvent, beat *desktopBeat) {
+	if socket == nil || beat == nil || strings.TrimSpace(event.ConversationID) == "" || strings.TrimSpace(event.TurnID) == "" {
+		return
+	}
+	s.mu.Lock()
+	current := s.socket == socket
+	s.mu.Unlock()
+	if !current {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = socket.ReportExpressionDelivery(ctx, session.ExpressionDeliveryResult{
+		ConversationID: event.ConversationID,
+		TurnID:         event.TurnID,
+		BeatID:         beat.BeatID,
+		Status:         session.ExpressionDeliverySucceeded,
+	})
 }
 
 func (s *CoreService) prepareDesktopSticker(socket *session.SessionSocket, event session.TurnEvent, beat *desktopBeat) {
@@ -756,13 +789,15 @@ func decodeDesktopTurnEvent(event session.TurnEvent) desktopTurnEvent {
 	return converted
 }
 
-func (s *CoreService) emitTurnEvent(event desktopTurnEvent) {
+func (s *CoreService) emitTurnEvent(event desktopTurnEvent) bool {
 	s.mu.Lock()
 	emit := s.emit
 	s.mu.Unlock()
-	if emit != nil {
-		emit("desktop:turn", event)
+	if emit == nil {
+		return false
 	}
+	emit("desktop:turn", event)
+	return true
 }
 
 func (s *CoreService) emitDesktopSession(messages []session.MessageRecord) {

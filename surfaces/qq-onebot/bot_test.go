@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fairy/transport/session"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -95,12 +96,14 @@ func TestConsumeTurnEventsDeliversConversationStreamInOrder(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	delivered := make(chan string, 2)
+	socket := &fakeSessionSocket{reports: make(chan session.ExpressionDeliveryResult, 2)}
 	bot := &bot{
-		ctx: ctx,
+		ctx:    ctx,
+		socket: socket,
 		senders: map[string]expressionSender{
-			"c1": {text: func(text string) error {
+			"c1": {text: func(text string) (string, error) {
 				delivered <- text
-				return nil
+				return strconv.Itoa(50000 + len(delivered)), nil
 			}},
 		},
 		conversations: make(map[string]string),
@@ -112,9 +115,19 @@ func TestConsumeTurnEventsDeliversConversationStreamInOrder(t *testing.T) {
 		defer wg.Done()
 		bot.consumeTurnEvents("c1", stream)
 	}()
-	for _, text := range []string{"第一拍", "第二拍"} {
-		payload, _ := json.Marshal(map[string]any{"type": "beat.ready", "kind": "final", "displayText": text})
-		stream <- session.TurnEvent{ConversationID: "c1", Payload: payload}
+	for index, text := range []string{"第一拍", "第二拍"} {
+		payload, _ := json.Marshal(map[string]any{"type": "beat.ready", "beatId": "b" + strconv.Itoa(index+1), "kind": "final", "displayText": text})
+		stream <- session.TurnEvent{ConversationID: "c1", TurnID: "t1", Payload: payload}
+	}
+	for index, wantID := range []string{"50001", "50002"} {
+		select {
+		case report := <-socket.reports:
+			if report.Status != session.ExpressionDeliverySucceeded || report.ConversationID != "c1" || report.TurnID != "t1" || report.BeatID != "b"+strconv.Itoa(index+1) || report.ExternalMessageID != wantID {
+				t.Fatalf("report = %#v", report)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for delivery report %d", index+1)
+		}
 	}
 	for _, want := range []string{"第一拍", "第二拍"} {
 		select {
@@ -135,7 +148,7 @@ func TestFinalExpressionBeatRequiresFinalKind(t *testing.T) {
 	if _, ok := finalExpressionBeat(session.TurnEvent{Payload: payload}); ok {
 		t.Fatal("utterance accepted as final")
 	}
-	payload, _ = json.Marshal(map[string]any{"type": "beat.ready", "kind": "final", "displayText": "你好"})
+	payload, _ = json.Marshal(map[string]any{"type": "beat.ready", "beatId": "b1", "kind": "final", "displayText": "你好"})
 	beat, ok := finalExpressionBeat(session.TurnEvent{Payload: payload})
 	if !ok || beat.Part.Kind != session.ExpressionUtterance || beat.Part.Text != "你好" {
 		t.Fatalf("beat=%#v ok=%v", beat, ok)
@@ -156,9 +169,9 @@ func TestConsumeTurnEventsDeliversStickerAndReportsSuccess(t *testing.T) {
 		socket:   socket,
 		stickers: reader,
 		senders: map[string]expressionSender{
-			"c1": {image: func(content []byte) error {
+			"c1": {image: func(content []byte) (string, error) {
 				delivered <- append([]byte(nil), content...)
-				return nil
+				return "55123", nil
 			}},
 		},
 		conversations: make(map[string]string),
@@ -182,7 +195,7 @@ func TestConsumeTurnEventsDeliversStickerAndReportsSuccess(t *testing.T) {
 	select {
 	case report := <-socket.reports:
 		if report.Status != session.ExpressionDeliverySucceeded || report.ConversationID != "c1" ||
-			report.TurnID != "t1" || report.BeatID != "b1" || report.ErrorMessage != "" {
+			report.TurnID != "t1" || report.BeatID != "b1" || report.ExternalMessageID != "55123" || report.ErrorMessage != "" {
 			t.Fatalf("report = %#v", report)
 		}
 	case <-time.After(time.Second):
@@ -201,9 +214,9 @@ func TestConsumeTurnEventsReportsStickerFailure(t *testing.T) {
 		socket:   socket,
 		stickers: fakeStickerReader{err: errors.New("content unavailable")},
 		senders: map[string]expressionSender{
-			"c1": {image: func([]byte) error {
+			"c1": {image: func([]byte) (string, error) {
 				t.Fatal("image sender called after content failure")
-				return nil
+				return "", nil
 			}},
 		},
 		conversations: make(map[string]string),
@@ -219,6 +232,43 @@ func TestConsumeTurnEventsReportsStickerFailure(t *testing.T) {
 	select {
 	case report := <-socket.reports:
 		if report.Status != session.ExpressionDeliveryFailed || report.ErrorMessage != "从 Core 读取表情包失败" {
+			t.Fatalf("report = %#v", report)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for failed delivery report")
+	}
+	cancel()
+	<-done
+}
+
+func TestConsumeTurnEventsReportsUtteranceFailureWithoutExternalMessageID(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	socket := &fakeSessionSocket{reports: make(chan session.ExpressionDeliveryResult, 1)}
+	bot := &bot{
+		ctx:    ctx,
+		socket: socket,
+		senders: map[string]expressionSender{
+			"c1": {text: func(string) (string, error) {
+				return "should-not-leak", errors.New("downstream response body")
+			}},
+		},
+		conversations: make(map[string]string),
+	}
+	stream := make(chan session.TurnEvent, 1)
+	done := make(chan struct{})
+	go func() {
+		bot.consumeTurnEvents("c1", stream)
+		close(done)
+	}()
+	payload, _ := json.Marshal(map[string]any{
+		"type": "beat.ready", "beatId": "b1", "kind": "final", "displayText": "你好",
+	})
+	stream <- session.TurnEvent{ConversationID: "c1", TurnID: "t1", Payload: payload}
+
+	select {
+	case report := <-socket.reports:
+		if report.Status != session.ExpressionDeliveryFailed || report.ErrorMessage != "QQ 文字发送失败" || report.ExternalMessageID != "" {
 			t.Fatalf("report = %#v", report)
 		}
 	case <-time.After(time.Second):

@@ -7,6 +7,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"fairy/transport/session"
 	"fmt"
 	"io"
 	"net"
@@ -27,12 +28,13 @@ func TestZeroBotWebhookCoreRoundTrip(t *testing.T) {
 	silentObserved := make(chan struct{})
 	waitObserved := make(chan struct{})
 	actionReceived := make(chan struct{})
+	deliveryReceived := make(chan session.ExpressionDeliveryResult, 1)
 	errorsCh := make(chan error, 8)
 	var openCalls atomic.Int32
 	var observeCalls atomic.Int32
 	var actionCalls atomic.Int32
 
-	coreServer := newCoreWSTestServer(silentObserved, waitObserved, &openCalls, &observeCalls, errorsCh)
+	coreServer := newCoreWSTestServer(silentObserved, waitObserved, deliveryReceived, &openCalls, &observeCalls, errorsCh)
 	defer coreServer.Close()
 	actionServer := newOneBotActionServer(actionReceived, &actionCalls, errorsCh)
 	defer actionServer.Close()
@@ -92,6 +94,16 @@ func TestZeroBotWebhookCoreRoundTrip(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatalf("round trip timeout: %v\n%s", ctx.Err(), output.String())
 	}
+	select {
+	case result := <-deliveryReceived:
+		if result.Status != session.ExpressionDeliverySucceeded || result.ConversationID != "c1" || result.TurnID != "t1" || result.BeatID != "b1" || result.ExternalMessageID != "50001" {
+			t.Fatalf("group delivery result = %#v", result)
+		}
+	case err := <-errorsCh:
+		t.Fatalf("group delivery report failed: %v\n%s", err, output.String())
+	case <-ctx.Done():
+		t.Fatalf("group delivery report timeout: %v\n%s", ctx.Err(), output.String())
+	}
 	if openCalls.Load() != 1 || observeCalls.Load() != 3 || actionCalls.Load() != 1 {
 		t.Fatalf("calls open=%d observe=%d action=%d", openCalls.Load(), observeCalls.Load(), actionCalls.Load())
 	}
@@ -106,8 +118,9 @@ func TestZeroBotWebhookCoreRoundTrip(t *testing.T) {
 func TestZeroBotPrivateWebhookCoreRoundTrip(t *testing.T) {
 	turnSubmitted := make(chan struct{})
 	actionReceived := make(chan struct{})
+	deliveryReceived := make(chan session.ExpressionDeliveryResult, 1)
 	errorsCh := make(chan error, 8)
-	coreServer := newPrivateCoreWSTestServer(turnSubmitted, errorsCh)
+	coreServer := newPrivateCoreWSTestServer(turnSubmitted, deliveryReceived, errorsCh)
 	defer coreServer.Close()
 	actionServer := newPrivateOneBotActionServer(actionReceived, errorsCh)
 	defer actionServer.Close()
@@ -138,6 +151,16 @@ func TestZeroBotPrivateWebhookCoreRoundTrip(t *testing.T) {
 			t.Fatalf("private round trip timeout: %v\n%s", ctx.Err(), output.String())
 		}
 	}
+	select {
+	case result := <-deliveryReceived:
+		if result.Status != session.ExpressionDeliverySucceeded || result.ConversationID != "private-c1" || result.TurnID != "private-t1" || result.BeatID != "private-b1" || result.ExternalMessageID != "51001" {
+			t.Fatalf("private delivery result = %#v", result)
+		}
+	case err := <-errorsCh:
+		t.Fatalf("private delivery report failed: %v\n%s", err, output.String())
+	case <-ctx.Done():
+		t.Fatalf("private delivery report timeout: %v\n%s", ctx.Err(), output.String())
+	}
 	if err := command.Process.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +169,51 @@ func TestZeroBotPrivateWebhookCoreRoundTrip(t *testing.T) {
 	}
 }
 
-func newPrivateCoreWSTestServer(turnSubmitted chan struct{}, errorsCh chan<- error) *httptest.Server {
+func TestZeroBotPrivateActionFailureReportsFailedDelivery(t *testing.T) {
+	turnSubmitted := make(chan struct{})
+	deliveryReceived := make(chan session.ExpressionDeliveryResult, 1)
+	errorsCh := make(chan error, 8)
+	coreServer := newPrivateCoreWSTestServer(turnSubmitted, deliveryReceived, errorsCh)
+	defer coreServer.Close()
+	actionServer := newFailedPrivateOneBotActionServer(errorsCh)
+	defer actionServer.Close()
+	webhookEndpoint := availableLoopbackEndpoint(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestZeroBotWebhookServeHelper$")
+	command.Env = append(os.Environ(),
+		"FAIRY_ZEROBOT_TEST_HELPER=1",
+		"FAIRY_TEST_CORE_URL="+coreServer.URL,
+		"FAIRY_TEST_WEBHOOK_URL="+webhookEndpoint,
+		"FAIRY_TEST_ONEBOT_API_URL="+actionServer.URL,
+	)
+	var output lockedBuffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	postSignedWebhook(t, ctx, webhookEndpoint, privateEvent(40001, 71001, "私聊你好"))
+	select {
+	case result := <-deliveryReceived:
+		if result.Status != session.ExpressionDeliveryFailed || result.ConversationID != "private-c1" || result.TurnID != "private-t1" || result.BeatID != "private-b1" || result.ExternalMessageID != "" || result.ErrorMessage != "QQ 文字发送失败" {
+			t.Fatalf("failed private delivery result = %#v", result)
+		}
+	case err := <-errorsCh:
+		t.Fatalf("failed private delivery report failed: %v\n%s", err, output.String())
+	case <-ctx.Done():
+		t.Fatalf("failed private delivery report timeout: %v\n%s", ctx.Err(), output.String())
+	}
+	if err := command.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Wait(); err != nil {
+		t.Fatalf("helper failed: %v\n%s", err, output.String())
+	}
+}
+
+func newPrivateCoreWSTestServer(turnSubmitted chan struct{}, deliveryReceived chan<- session.ExpressionDeliveryResult, errorsCh chan<- error) *httptest.Server {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer core-token" {
@@ -211,6 +278,14 @@ func newPrivateCoreWSTestServer(turnSubmitted chan struct{}, errorsCh chan<- err
 					},
 				})
 				close(turnSubmitted)
+			case "expression.delivery":
+				result, err := decodeDeliveryResult(frame["deliveryResult"])
+				if err != nil {
+					errorsCh <- err
+					return
+				}
+				deliveryReceived <- result
+				_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID, "conversationId": "private-c1"})
 			default:
 				errorsCh <- fmt.Errorf("unexpected private frame %#v", frame)
 			}
@@ -246,7 +321,25 @@ func newPrivateOneBotActionServer(actionReceived chan struct{}, errorsCh chan<- 
 	}))
 }
 
-func newCoreWSTestServer(silentObserved, waitObserved chan struct{}, openCalls, observeCalls *atomic.Int32, errorsCh chan<- error) *httptest.Server {
+func newFailedPrivateOneBotActionServer(errorsCh chan<- error) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer onebot-token" {
+			errorsCh <- fmt.Errorf("OneBot authorization missing")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/get_login_info":
+			fmt.Fprint(w, `{"status":"ok","retcode":0,"data":{"user_id":10001,"nickname":"bot"}}`)
+		case "/send_private_msg":
+			fmt.Fprint(w, `{"status":"failed","retcode":100,"data":null}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+func newCoreWSTestServer(silentObserved, waitObserved chan struct{}, deliveryReceived chan<- session.ExpressionDeliveryResult, openCalls, observeCalls *atomic.Int32, errorsCh chan<- error) *httptest.Server {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	var mu sync.Mutex
 	var watchConn *websocket.Conn
@@ -340,11 +433,31 @@ func newCoreWSTestServer(silentObserved, waitObserved chan struct{}, openCalls, 
 				default:
 					errorsCh <- fmt.Errorf("unexpected observe call %d", call)
 				}
+			case "expression.delivery":
+				result, err := decodeDeliveryResult(frame["deliveryResult"])
+				if err != nil {
+					errorsCh <- err
+					return
+				}
+				deliveryReceived <- result
+				_ = conn.WriteJSON(map[string]any{"type": "ack", "requestId": requestID, "conversationId": "c1"})
 			default:
 				errorsCh <- fmt.Errorf("unexpected frame %#v", frame)
 			}
 		}
 	}))
+}
+
+func decodeDeliveryResult(value any) (session.ExpressionDeliveryResult, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return session.ExpressionDeliveryResult{}, err
+	}
+	var result session.ExpressionDeliveryResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return session.ExpressionDeliveryResult{}, err
+	}
+	return result, nil
 }
 
 type lockedBuffer struct {
