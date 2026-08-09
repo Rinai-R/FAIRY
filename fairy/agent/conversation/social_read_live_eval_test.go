@@ -144,14 +144,14 @@ func loadPersonaLiveConfig(t *testing.T) personaLiveConfig {
 	// keeps a stale desktop credential from shadowing an intentionally supplied
 	// provider and makes the quality gate reproducible in CI.
 	if cfg, ok := personaConfigFromEnv(); ok {
-		t.Logf("live model source=env model=%s endpoint=%s", cfg.Model, cfg.BaseURL)
+		t.Logf("live model source=env model=%s", cfg.Model)
 		return cfg
 	}
 	if cfg, ok := personaConfigFromHarness(t); ok {
-		t.Logf("live model source=harness model=%s endpoint=%s", cfg.Model, cfg.BaseURL)
+		t.Logf("live model source=harness model=%s", cfg.Model)
 		return cfg
 	}
-	t.Skip("no live model credential: set FAIRY_PERSONA_TEST_* or provide harness model/connection.json + secrets.sqlite3")
+	t.Skip("no live model credential: configure the explicit live provider or local harness")
 	return personaLiveConfig{}
 }
 
@@ -261,7 +261,7 @@ func loadRepoDotEnv(t *testing.T) {
 				}
 				_ = os.Setenv(key, value)
 			}
-			t.Logf("loaded live dotenv %s", name)
+			t.Log("loaded live dotenv configuration")
 			loaded = true
 		}
 		if loaded {

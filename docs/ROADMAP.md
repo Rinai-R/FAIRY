@@ -15,7 +15,7 @@
 
 - [ ] 收口真实运行质量：模型回复自然度、长会话稳定性、QQ operator 环境 smoke 与失败诊断
   - [x] 恢复当前 Presence Engine / Inbox / Conversation 回复合同上的 live 群聊质量门；覆盖新增消息目标、superseded 取消、单飞提交、严格回复编译、长度与内部协议泄漏边界
-  - [ ] 使用有效真实 provider 完成 SRE 与 galgame 固定场景基线审阅；当前已验证配置存在但 provider 鉴权失败会直接 FAIL，不会降级或伪造通过
+  - [x] 使用有效真实 provider 完成 SRE、galgame 直接参与与 Inbox burst 固定场景基线审阅；目标选择、工具续接、superseded 取消、单飞提交与最终可见回复均通过，配置或真实请求失败仍会直接 FAIL，不会降级或伪造通过
 - [ ] 提升表情包语义质量；当前依赖人工描述与标签，不使用未经设计的 VLM/OCR 自动识别
 - [ ] 丰富角色渲染；当前本地单图状态可用，Live2D 不阻塞聊天主线
 - [ ] 评估飞书、Telegram 等其他 IM Surface
