@@ -19,6 +19,7 @@ func TestStoreKeepsFirstTraceTerminalAcrossRestart(t *testing.T) {
 	conversationID := "conversation-history-" + suffix
 	silentTraceID := "trace-silent-" + suffix
 	failedTraceID := "trace-failed-" + suffix
+	deliveryTraceID := "trace-delivery-" + suffix
 	silentMessageID := "message-silent-" + suffix
 	lateFailedMessageID := "message-late-failed-" + suffix
 	failedMessageID := "message-failed-" + suffix
@@ -28,7 +29,7 @@ func TestStoreKeepsFirstTraceTerminalAcrossRestart(t *testing.T) {
 		defer cancel()
 		if _, err := pool.Raw().Exec(cleanupCtx, `
 DELETE FROM observability_records
-WHERE kind = 'trace' AND record_key IN ($1, $2)`, silentTraceID, failedTraceID); err != nil {
+WHERE kind = 'trace' AND record_key IN ($1, $2, $3)`, silentTraceID, failedTraceID, deliveryTraceID); err != nil {
 			t.Errorf("clean observability integration records: %v", err)
 		}
 	})
@@ -49,6 +50,17 @@ WHERE kind = 'trace' AND record_key IN ($1, $2)`, silentTraceID, failedTraceID);
 			TraceID: failedTraceID, MessageID: failedMessageID, Source: "ambient",
 			ConversationID: conversationID, Status: "failed",
 			StartedAtUnixMS: now + 3, EndedAtUnixMS: now + 7, DurationMS: 4,
+		},
+		{
+			TraceID: deliveryTraceID, MessageID: "message-delivery-" + suffix, Source: "ambient",
+			ConversationID: conversationID, TurnID: "turn-delivery-" + suffix, Status: "completed",
+			StartedAtUnixMS: now + 8, EndedAtUnixMS: now + 12, DurationMS: 4,
+			Spans: []observability.TraceSpan{{
+				SpanID: deliveryTraceID + "-receipt", ParentSpanID: deliveryTraceID + "-turn",
+				Operation: "Surface 回执", Category: "delivery", Status: "completed",
+				StartedAtUnixMS: now + 11, EndedAtUnixMS: now + 11,
+				Attributes: map[string]string{"beatId": "final-0", "status": "succeeded", "externalMessageId": "45123"},
+			}},
 		},
 	} {
 		if !writer.EnqueueTrace(detail) {
@@ -110,6 +122,18 @@ WHERE kind = 'trace' AND record_key IN ($1, $2)`, silentTraceID, failedTraceID);
 	}
 	if !found || failed.Status != "failed" || failed.MessageID != failedMessageID || failed.ConversationID != conversationID {
 		t.Fatalf("later failed trace = %#v, found = %t", failed, found)
+	}
+
+	delivery, found, err := reader.Trace(t.Context(), deliveryTraceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || delivery.Status != "completed" || len(delivery.Spans) != 1 {
+		t.Fatalf("delivery trace = %#v, found = %t", delivery, found)
+	}
+	receipt := delivery.Spans[0]
+	if receipt.Operation != "Surface 回执" || receipt.Category != "delivery" || receipt.Status != "completed" || receipt.Attributes["beatId"] != "final-0" || receipt.Attributes["externalMessageId"] != "45123" {
+		t.Fatalf("restored delivery receipt = %#v", receipt)
 	}
 }
 

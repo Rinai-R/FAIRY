@@ -268,7 +268,7 @@ func newLongSessionService(
 	AttachConfigSource(service, hardPressureIntegrationConfig{})
 	AttachRetention(service, newLongSessionRetention())
 	mustBindDesktopInteraction(t, service, conversationID)
-	AttachEventEmitter(service, recorder.record)
+	attachSuccessfulTestSurface(t, service, recorder.record)
 	return service
 }
 

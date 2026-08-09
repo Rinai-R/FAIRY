@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -63,21 +64,62 @@ func TestOpenRequestCharacterAndEvaluationJSONContract(t *testing.T) {
 }
 
 func TestExpressionDeliveryResultValidation(t *testing.T) {
-	valid := ExpressionDeliveryResult{
+	base := ExpressionDeliveryResult{
 		ConversationID: "conversation-1", TurnID: "turn-1", BeatID: "final-0",
 		Status: ExpressionDeliverySucceeded,
 	}
-	if err := valid.Validate(); err != nil {
+	tests := []struct {
+		name    string
+		mutate  func(*ExpressionDeliveryResult)
+		wantErr bool
+	}{
+		{name: "local success"},
+		{name: "external success", mutate: func(result *ExpressionDeliveryResult) { result.ExternalMessageID = "45123" }},
+		{name: "unicode boundary", mutate: func(result *ExpressionDeliveryResult) { result.ExternalMessageID = strings.Repeat("界", 128) }},
+		{name: "failed", mutate: func(result *ExpressionDeliveryResult) {
+			result.Status = ExpressionDeliveryFailed
+			result.ErrorMessage = "surface send failed"
+		}},
+		{name: "failed without error", mutate: func(result *ExpressionDeliveryResult) {
+			result.Status = ExpressionDeliveryFailed
+		}, wantErr: true},
+		{name: "failed with external ID", mutate: func(result *ExpressionDeliveryResult) {
+			result.Status = ExpressionDeliveryFailed
+			result.ErrorMessage = "surface send failed"
+			result.ExternalMessageID = "45123"
+		}, wantErr: true},
+		{name: "leading whitespace", mutate: func(result *ExpressionDeliveryResult) { result.ExternalMessageID = " 45123" }, wantErr: true},
+		{name: "trailing whitespace", mutate: func(result *ExpressionDeliveryResult) { result.ExternalMessageID = "45123 " }, wantErr: true},
+		{name: "control", mutate: func(result *ExpressionDeliveryResult) { result.ExternalMessageID = "45\n123" }, wantErr: true},
+		{name: "invalid utf8", mutate: func(result *ExpressionDeliveryResult) { result.ExternalMessageID = string([]byte{0xff}) }, wantErr: true},
+		{name: "too long", mutate: func(result *ExpressionDeliveryResult) { result.ExternalMessageID = strings.Repeat("界", 129) }, wantErr: true},
+		{name: "success with error", mutate: func(result *ExpressionDeliveryResult) { result.ErrorMessage = "unexpected" }, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := base
+			if tt.mutate != nil {
+				tt.mutate(&result)
+			}
+			if err := result.Validate(); (err != nil) != tt.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestExpressionDeliveryResultJSONContractIncludesExternalMessageID(t *testing.T) {
+	result := ExpressionDeliveryResult{
+		ConversationID: "conversation-1", TurnID: "turn-1", BeatID: "final-0",
+		Status: ExpressionDeliverySucceeded, ExternalMessageID: "45123",
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
 		t.Fatal(err)
 	}
-	valid.Status = ExpressionDeliveryFailed
-	valid.ErrorMessage = "image send failed"
-	if err := valid.Validate(); err != nil {
-		t.Fatal(err)
-	}
-	valid.ErrorMessage = ""
-	if err := valid.Validate(); err == nil {
-		t.Fatal("failed delivery without error accepted")
+	const want = `{"conversationId":"conversation-1","turnId":"turn-1","beatId":"final-0","status":"succeeded","externalMessageId":"45123"}`
+	if string(raw) != want {
+		t.Fatalf("ExpressionDeliveryResult JSON = %s, want %s", raw, want)
 	}
 }
 

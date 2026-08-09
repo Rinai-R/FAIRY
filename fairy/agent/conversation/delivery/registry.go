@@ -55,21 +55,26 @@ func NewRegistryWithCapacity(timeout time.Duration, capacity int) *Registry {
 }
 
 func (registry *Registry) Await(ctx context.Context, key Key, publish func() error) error {
+	_, err := registry.AwaitResult(ctx, key, publish)
+	return err
+}
+
+func (registry *Registry) AwaitResult(ctx context.Context, key Key, publish func() error) (session.ExpressionDeliveryResult, error) {
 	if registry == nil {
-		return errors.New("expression delivery registry is unavailable")
+		return session.ExpressionDeliveryResult{}, errors.New("expression delivery registry is unavailable")
 	}
 	registry.mu.Lock()
 	if registry.closed {
 		registry.mu.Unlock()
-		return ErrClosed
+		return session.ExpressionDeliveryResult{}, ErrClosed
 	}
 	if _, exists := registry.pending[key]; exists {
 		registry.mu.Unlock()
-		return errors.New("expression delivery is already pending")
+		return session.ExpressionDeliveryResult{}, errors.New("expression delivery is already pending")
 	}
 	if len(registry.pending) >= registry.capacity {
 		registry.mu.Unlock()
-		return ErrOverloaded
+		return session.ExpressionDeliveryResult{}, ErrOverloaded
 	}
 	result := make(chan session.ExpressionDeliveryResult, 1)
 	registry.pending[key] = result
@@ -81,23 +86,23 @@ func (registry *Registry) Await(ctx context.Context, key Key, publish func() err
 	}()
 
 	if err := publish(); err != nil {
-		return err
+		return session.ExpressionDeliveryResult{}, err
 	}
 	timer := time.NewTimer(registry.timeout)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return session.ExpressionDeliveryResult{}, ctx.Err()
 	case <-timer.C:
-		return errors.New("surface sticker delivery timed out")
+		return session.ExpressionDeliveryResult{}, errors.New("surface expression delivery timed out")
 	case delivered, open := <-result:
 		if !open {
-			return ErrClosed
+			return session.ExpressionDeliveryResult{}, ErrClosed
 		}
 		if delivered.Status == session.ExpressionDeliveryFailed {
-			return fmt.Errorf("surface sticker delivery failed: %s", delivered.ErrorMessage)
+			return delivered, fmt.Errorf("surface expression delivery failed: %s", delivered.ErrorMessage)
 		}
-		return nil
+		return delivered, nil
 	}
 }
 

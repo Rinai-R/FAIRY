@@ -75,6 +75,10 @@ type MessageSpanTelemetry interface {
 	FinishSpan(spanID, status string, attributes map[string]string)
 }
 
+type MessageDeliveryTelemetry interface {
+	SurfaceDelivery(turnID, beatID, status, externalMessageID, errorCode string)
+}
+
 // WebSearchBackend is the optional OpenSERP sidecar search surface.
 type WebSearchBackend interface {
 	Search(ctx context.Context, query string, limit int) ([]knowledge.WebSearchHit, error)
@@ -210,6 +214,18 @@ func (s *Service) finishMessageSpan(spanID, status string, attributes map[string
 	s.emitMu.Unlock()
 	if ok {
 		telemetry.FinishSpan(spanID, status, attributes)
+	}
+}
+
+func (s *Service) recordSurfaceDelivery(turnID, beatID, status, externalMessageID, errorCode string) {
+	if turnID == "" || beatID == "" {
+		return
+	}
+	s.emitMu.Lock()
+	telemetry, ok := s.messageTelemetry.(MessageDeliveryTelemetry)
+	s.emitMu.Unlock()
+	if ok {
+		telemetry.SurfaceDelivery(turnID, beatID, status, externalMessageID, errorCode)
 	}
 }
 

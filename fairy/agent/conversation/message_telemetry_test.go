@@ -10,8 +10,8 @@ import (
 )
 
 type telemetryCall struct {
-	kind, traceID, action, stage, messageID string
-	traceIDs                                []string
+	kind, traceID, action, stage, messageID, turnID, beatID, status, externalMessageID, errorCode string
+	traceIDs                                                                                      []string
 }
 
 type fakeMessageTelemetry struct {
@@ -51,6 +51,25 @@ func (f *fakeMessageTelemetry) TurnStage(conversationID, turnID, stage string) {
 
 func (f *fakeMessageTelemetry) End(traceID, status string) {
 	f.calls <- telemetryCall{kind: "end", traceID: traceID, action: status}
+}
+
+func (f *fakeMessageTelemetry) SurfaceDelivery(turnID, beatID, status, externalMessageID, errorCode string) {
+	f.calls <- telemetryCall{
+		kind: "delivery", turnID: turnID, beatID: beatID, status: status,
+		externalMessageID: externalMessageID, errorCode: errorCode,
+	}
+}
+
+func TestRecordSurfaceDeliveryUsesOptionalTelemetry(t *testing.T) {
+	service := NewService()
+	telemetry := newFakeMessageTelemetry()
+	AttachMessageTelemetry(service, telemetry)
+
+	service.recordSurfaceDelivery("turn-1", "final-0", "succeeded", "45123", "")
+	call := receiveTelemetryCall(t, telemetry.calls)
+	if call.kind != "delivery" || call.turnID != "turn-1" || call.beatID != "final-0" || call.status != "succeeded" || call.externalMessageID != "45123" || call.errorCode != "" {
+		t.Fatalf("delivery telemetry = %#v", call)
+	}
 }
 
 func TestBeginMessageTraceUsesExternalCorrelationWhenPresent(t *testing.T) {

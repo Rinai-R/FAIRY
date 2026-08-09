@@ -3,6 +3,8 @@ package session
 import (
 	"errors"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -70,11 +72,12 @@ const (
 )
 
 type ExpressionDeliveryResult struct {
-	ConversationID string                   `json:"conversationId"`
-	TurnID         string                   `json:"turnId"`
-	BeatID         string                   `json:"beatId"`
-	Status         ExpressionDeliveryStatus `json:"status"`
-	ErrorMessage   string                   `json:"errorMessage,omitempty"`
+	ConversationID    string                   `json:"conversationId"`
+	TurnID            string                   `json:"turnId"`
+	BeatID            string                   `json:"beatId"`
+	Status            ExpressionDeliveryStatus `json:"status"`
+	ExternalMessageID string                   `json:"externalMessageId,omitempty"`
+	ErrorMessage      string                   `json:"errorMessage,omitempty"`
 }
 
 func (result ExpressionDeliveryResult) Validate() error {
@@ -86,14 +89,32 @@ func (result ExpressionDeliveryResult) Validate() error {
 		if result.ErrorMessage != "" {
 			return errors.New("successful expression delivery must not contain error")
 		}
+		if result.ExternalMessageID != "" && !validExternalMessageID(result.ExternalMessageID) {
+			return errors.New("expression delivery external message ID is invalid")
+		}
 	case ExpressionDeliveryFailed:
 		if strings.TrimSpace(result.ErrorMessage) == "" {
 			return errors.New("failed expression delivery requires error")
+		}
+		if result.ExternalMessageID != "" {
+			return errors.New("failed expression delivery must not contain external message ID")
 		}
 	default:
 		return errors.New("expression delivery status is invalid")
 	}
 	return nil
+}
+
+func validExternalMessageID(value string) bool {
+	if value == "" || !utf8.ValidString(value) || strings.TrimSpace(value) != value || utf8.RuneCountInString(value) > 128 {
+		return false
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return false
+		}
+	}
+	return true
 }
 
 type MessagePage struct {

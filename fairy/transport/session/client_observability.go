@@ -42,6 +42,61 @@ func (c *Client) Metrics(ctx context.Context) (Metrics, error) {
 	return result, err
 }
 
+type TraceSearchResponse struct {
+	MessageID string         `json:"messageId"`
+	Traces    []MessageTrace `json:"traces"`
+}
+
+type MessageTrace = observability.MessageTrace
+type MessageTraceDetail = observability.MessageTraceDetail
+type TraceSpan = observability.TraceSpan
+
+func ValidCorrelationID(value string) bool {
+	return observability.ValidCorrelationID(value)
+}
+
+func (c *Client) TracesByMessageID(ctx context.Context, messageID string) (TraceSearchResponse, error) {
+	if !observability.ValidCorrelationID(messageID) {
+		return TraceSearchResponse{}, errors.New("message ID is invalid")
+	}
+	values := url.Values{}
+	values.Set("messageId", messageID)
+	var result TraceSearchResponse
+	if err := c.doJSON(ctx, "search traces", http.MethodGet, "/v1/traces?"+values.Encode(), nil, &result); err != nil {
+		return TraceSearchResponse{}, err
+	}
+	if result.MessageID != messageID || result.Traces == nil {
+		return TraceSearchResponse{}, errors.New("trace search response is invalid")
+	}
+	for _, trace := range result.Traces {
+		if !validTraceSummary(trace, messageID) {
+			return TraceSearchResponse{}, errors.New("trace search response contains invalid trace")
+		}
+	}
+	return result, nil
+}
+
+func (c *Client) Trace(ctx context.Context, traceID string) (MessageTraceDetail, error) {
+	if !observability.ValidCorrelationID(traceID) {
+		return MessageTraceDetail{}, errors.New("trace ID is invalid")
+	}
+	var result MessageTraceDetail
+	if err := c.doJSON(ctx, "read trace", http.MethodGet, "/v1/traces/"+url.PathEscape(traceID), nil, &result); err != nil {
+		return MessageTraceDetail{}, err
+	}
+	if result.TraceID != traceID || result.ConversationID == "" || result.Status == "" || result.StartedAtUnixMS <= 0 || result.Spans == nil {
+		return observability.MessageTraceDetail{}, errors.New("trace response is invalid")
+	}
+	return result, nil
+}
+
+func validTraceSummary(trace MessageTrace, messageID string) bool {
+	if !observability.ValidCorrelationID(trace.TraceID) || trace.MessageID != messageID || trace.ConversationID == "" || trace.Status == "" || trace.ReceivedAtUnixMS <= 0 {
+		return false
+	}
+	return true
+}
+
 func DecodeLogEntry(event SSEEvent) (observability.LogEntry, error) {
 	if event.Event != "log" {
 		return observability.LogEntry{}, errors.New("SSE event is not log")

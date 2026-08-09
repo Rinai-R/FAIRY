@@ -17,6 +17,47 @@ var allowedSpanAttributeKeys = map[string]struct{}{
 	"tool": {}, "status": {}, "itemCount": {}, "resultCount": {}, "errorCode": {},
 	"chainCount": {}, "callIndex": {}, "outputKind": {}, "lane": {},
 	"inputTokens": {}, "outputTokens": {}, "cachedInputTokens": {}, "cacheWriteTokens": {},
+	"beatId": {}, "externalMessageId": {},
+}
+
+func (s *messageMetricsState) surfaceDelivery(event messageEvent) {
+	traceID := s.turns[event.turnID]
+	trace := s.traces[traceID]
+	if trace == nil || trace.terminal || event.spanID == "" {
+		return
+	}
+	if len(trace.spans) >= maxTraceSpans {
+		trace.dropped++
+		return
+	}
+	parentSpanID := trace.stageSpan
+	if parentSpanID == "" {
+		parentSpanID = trace.turnSpanID
+	}
+	if parentSpanID == "" {
+		parentSpanID = trace.rootSpanID
+	}
+	attributes := map[string]string{"beatId": event.beatID, "status": event.status}
+	if event.externalID != "" {
+		attributes["externalMessageId"] = event.externalID
+	}
+	if event.errorCode != "" {
+		attributes["errorCode"] = event.errorCode
+	}
+	spanStatus := "completed"
+	if event.status == "failed" {
+		spanStatus = "failed"
+	} else if event.status == "interrupted" {
+		spanStatus = "interrupted"
+	}
+	if !trace.addSpan(TraceSpan{
+		SpanID: event.spanID, ParentSpanID: parentSpanID, Operation: "Surface 回执", Category: "delivery",
+		Status: spanStatus, StartedAtUnixMS: event.at.UnixMilli(), EndedAtUnixMS: event.at.UnixMilli(), Attributes: attributes,
+	}) {
+		trace.dropped++
+		return
+	}
+	s.spanTraces[event.spanID] = traceID
 }
 
 func (s *messageMetricsState) startSpan(event messageEvent) {

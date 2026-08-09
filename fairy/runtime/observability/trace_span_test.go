@@ -68,6 +68,84 @@ func TestMessageTraceDetailBoundsSpansAndReportsTruncation(t *testing.T) {
 	}
 }
 
+func TestMessageTracePersistsBoundedSurfaceDeliveryReceiptBeforeTerminal(t *testing.T) {
+	metrics := NewMessageMetrics()
+	t.Cleanup(metrics.Close)
+	persisted := make(chan MessageTraceDetail, 1)
+	metrics.SetTerminalSink(func(detail MessageTraceDetail) bool {
+		persisted <- detail
+		return true
+	})
+	traceID := metrics.BeginCorrelated("ambient", "conversation-1", "inbound-45122")
+	metrics.Participation([]string{traceID}, traceID, "reply")
+	metrics.TurnStarted(traceID, "conversation-1", "turn-1")
+	metrics.TurnStage("conversation-1", "turn-1", "lifecycle:responding")
+	metrics.SurfaceDelivery("turn-1", "final-0", "succeeded", "45123", "")
+	metrics.End(traceID, "completed")
+
+	select {
+	case detail := <-persisted:
+		var receipt *TraceSpan
+		for index := range detail.Spans {
+			if detail.Spans[index].Operation == "Surface 回执" {
+				receipt = &detail.Spans[index]
+				break
+			}
+		}
+		if receipt == nil || receipt.Category != "delivery" || receipt.Status != "completed" || receipt.Attributes["beatId"] != "final-0" || receipt.Attributes["status"] != "succeeded" || receipt.Attributes["externalMessageId"] != "45123" {
+			t.Fatalf("surface receipt = %#v, detail = %#v", receipt, detail)
+		}
+		if receipt.ParentSpanID == "" || receipt.StartedAtUnixMS != receipt.EndedAtUnixMS || receipt.DurationMS != 0 {
+			t.Fatalf("surface receipt timing = %#v", receipt)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("terminal trace was not persisted")
+	}
+}
+
+func TestMessageTraceRejectsInvalidSurfaceDeliveryAttributes(t *testing.T) {
+	metrics := NewMessageMetrics()
+	t.Cleanup(metrics.Close)
+	traceID := metrics.Begin("direct", "conversation-1")
+	metrics.Participation([]string{traceID}, traceID, "reply")
+	metrics.TurnStarted(traceID, "conversation-1", "turn-1")
+	metrics.SurfaceDelivery("turn-1", "final-0", "succeeded", " external-id ", "")
+	metrics.SurfaceDelivery("turn-1", "final-1", "failed", "", "provider response body")
+	metrics.End(traceID, "failed")
+
+	detail := waitForTraceDetail(t, metrics, traceID, func(value MessageTraceDetail) bool { return value.Status == "failed" })
+	for _, span := range detail.Spans {
+		if span.Operation == "Surface 回执" {
+			t.Fatalf("invalid delivery receipt was accepted: %#v", span)
+		}
+	}
+}
+
+func TestMessageTraceStoresOnlyStableSurfaceDeliveryFailure(t *testing.T) {
+	metrics := NewMessageMetrics()
+	t.Cleanup(metrics.Close)
+	traceID := metrics.Begin("direct", "conversation-1")
+	metrics.Participation([]string{traceID}, traceID, "reply")
+	metrics.TurnStarted(traceID, "conversation-1", "turn-1")
+	metrics.SurfaceDelivery("turn-1", "final-0", "failed", "", "SURFACE_DELIVERY_FAILED")
+	metrics.End(traceID, "failed")
+
+	detail := waitForTraceDetail(t, metrics, traceID, func(value MessageTraceDetail) bool { return value.Status == "failed" })
+	for _, span := range detail.Spans {
+		if span.Operation != "Surface 回执" {
+			continue
+		}
+		if span.Status != "failed" || span.Attributes["errorCode"] != "SURFACE_DELIVERY_FAILED" || span.Attributes["status"] != "failed" {
+			t.Fatalf("failed delivery receipt = %#v", span)
+		}
+		if _, exists := span.Attributes["externalMessageId"]; exists {
+			t.Fatalf("failed receipt contains external message ID: %#v", span)
+		}
+		return
+	}
+	t.Fatal("failed surface receipt is missing")
+}
+
 func TestSpanProducerNeverBlocksOnFullQueue(t *testing.T) {
 	metrics := newMessageMetrics(1, 1, false)
 	metrics.Begin("direct", "conversation")

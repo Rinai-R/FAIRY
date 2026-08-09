@@ -160,6 +160,101 @@ func TestReportExpressionDeliveryUsesCorrelatedSessionFrame(t *testing.T) {
 	}
 }
 
+func TestTraceObservabilityClientUsesBearerAndExactCorrelation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer exact-token" {
+			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/traces":
+			if r.URL.Query().Get("messageId") != "qq/message 17" {
+				t.Fatalf("messageId query = %q", r.URL.RawQuery)
+			}
+			io.WriteString(w, `{"messageId":"qq/message 17","traces":[{"traceId":"trace-17","messageId":"qq/message 17","source":"ambient","conversationId":"conversation-1","turnId":"turn-1","status":"completed","receivedAtUnixMs":1000,"completedAtUnixMs":1002,"totalDurationMs":2}]}`)
+		case "/v1/traces/trace-17":
+			io.WriteString(w, `{"traceId":"trace-17","messageId":"qq/message 17","conversationId":"conversation-1","turnId":"turn-1","source":"ambient","status":"completed","startedAtUnixMs":1000,"endedAtUnixMs":1002,"durationMs":2,"droppedSpanCount":0,"truncated":false,"spans":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client, err := New(Options{Endpoint: server.URL, Token: "exact-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	search, err := client.TracesByMessageID(t.Context(), "qq/message 17")
+	if err != nil || len(search.Traces) != 1 || search.Traces[0].TraceID != "trace-17" {
+		t.Fatalf("trace search = %#v, error = %v", search, err)
+	}
+	detail, err := client.Trace(t.Context(), "trace-17")
+	if err != nil || detail.TraceID != "trace-17" || detail.Spans == nil {
+		t.Fatalf("trace detail = %#v, error = %v", detail, err)
+	}
+}
+
+func TestTraceObservabilityClientRejectsInvalidBoundaries(t *testing.T) {
+	client, err := New(Options{Endpoint: "http://127.0.0.1:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, messageID := range []string{"", " message-1", "message-1 ", "message\n1", string([]byte{0xff}), strings.Repeat("界", 129)} {
+		if _, err := client.TracesByMessageID(t.Context(), messageID); err == nil {
+			t.Fatalf("invalid message ID %q was accepted", messageID)
+		}
+	}
+	for _, traceID := range []string{"", " trace-1", "trace-1 ", "trace\n1", string([]byte{0xff}), strings.Repeat("界", 129)} {
+		if _, err := client.Trace(t.Context(), traceID); err == nil {
+			t.Fatalf("invalid trace ID %q was accepted", traceID)
+		}
+	}
+}
+
+func TestTraceObservabilityClientRejectsMalformedResponses(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		body string
+		call func(*Client) error
+	}{
+		{
+			name: "search correlation mismatch", path: "/v1/traces", body: `{"messageId":"other","traces":[]}`,
+			call: func(client *Client) error { _, err := client.TracesByMessageID(t.Context(), "message-1"); return err },
+		},
+		{
+			name: "search missing traces", path: "/v1/traces", body: `{"messageId":"message-1"}`,
+			call: func(client *Client) error { _, err := client.TracesByMessageID(t.Context(), "message-1"); return err },
+		},
+		{
+			name: "detail mismatch", path: "/v1/traces/trace-1", body: `{"traceId":"other","conversationId":"conversation-1","status":"completed","startedAtUnixMs":1,"spans":[]}`,
+			call: func(client *Client) error { _, err := client.Trace(t.Context(), "trace-1"); return err },
+		},
+		{
+			name: "detail missing spans", path: "/v1/traces/trace-1", body: `{"traceId":"trace-1","conversationId":"conversation-1","status":"completed","startedAtUnixMs":1}`,
+			call: func(client *Client) error { _, err := client.Trace(t.Context(), "trace-1"); return err },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tt.path {
+					t.Fatalf("path = %q, want %q", r.URL.Path, tt.path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, tt.body)
+			}))
+			defer server.Close()
+			client, err := New(Options{Endpoint: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tt.call(client); err == nil {
+				t.Fatal("malformed response was accepted")
+			}
+		})
+	}
+}
+
 func TestDecideParticipationRejectsInvalidActionShapes(t *testing.T) {
 	for _, body := range []string{
 		`{"action":"maybe"}`,

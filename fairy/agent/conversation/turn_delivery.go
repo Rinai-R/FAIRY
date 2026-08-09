@@ -8,6 +8,7 @@ import (
 	"fairy/agent/reply"
 	"fairy/transport/session"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,16 +51,14 @@ func (x *turnExecution) deliverReply(ctx context.Context, gathered *turnContext,
 				})
 				return err
 			}
-			var err error
-			if completion.Chain != nil && completion.Chain.Kind == reply.ChainSticker {
-				err = s.expressionDeliveries.Await(ctx, delivery.Key{
-					ConversationID: request.ConversationID,
-					TurnID:         x.persisted.ID,
-					BeatID:         completion.BeatID,
-				}, publish)
-			} else {
-				err = publish()
+			key := delivery.Key{
+				ConversationID: request.ConversationID,
+				TurnID:         x.persisted.ID,
+				BeatID:         completion.BeatID,
 			}
+			delivered, err := s.expressionDeliveries.AwaitResult(ctx, key, publish)
+			status, externalMessageID, errorCode := surfaceDeliveryTelemetry(delivered, err)
+			s.recordSurfaceDelivery(key.TurnID, key.BeatID, status, externalMessageID, errorCode)
 			if err == nil && completion.Kind == reply.BeatKindFinal {
 				firstBeatOnce.Do(func() { s.loopMetrics.firstBeat(time.Since(turnStarted)) })
 			}
@@ -124,4 +123,20 @@ func (x *turnExecution) deliverReply(ctx context.Context, gathered *turnContext,
 	gathered.profileRevision = profileRevision
 	logger.Debug("reply delivered", zap.Int("chains", len(compiled.Chains)))
 	return TurnOutcome{}, nil
+}
+
+func surfaceDeliveryTelemetry(result session.ExpressionDeliveryResult, err error) (status, externalMessageID, errorCode string) {
+	if err == nil {
+		return string(session.ExpressionDeliverySucceeded), result.ExternalMessageID, ""
+	}
+	if result.Status == session.ExpressionDeliveryFailed {
+		return string(session.ExpressionDeliveryFailed), "", "SURFACE_DELIVERY_FAILED"
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, ErrTurnInterrupted) {
+		return "interrupted", "", "SURFACE_DELIVERY_INTERRUPTED"
+	}
+	if strings.Contains(err.Error(), "timed out") {
+		return string(session.ExpressionDeliveryFailed), "", "SURFACE_DELIVERY_TIMEOUT"
+	}
+	return string(session.ExpressionDeliveryFailed), "", "SURFACE_DELIVERY_UNAVAILABLE"
 }

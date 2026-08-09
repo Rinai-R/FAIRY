@@ -23,7 +23,7 @@ func TestExpressionDeliveryRegistryPropagatesSurfaceResult(t *testing.T) {
 			name: "succeeded",
 			result: session.ExpressionDeliveryResult{
 				ConversationID: "conversation-1", TurnID: "turn-1", BeatID: "beat-1",
-				Status: session.ExpressionDeliverySucceeded,
+				Status: session.ExpressionDeliverySucceeded, ExternalMessageID: "45123",
 			},
 		},
 		{
@@ -38,7 +38,7 @@ func TestExpressionDeliveryRegistryPropagatesSurfaceResult(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			registry := delivery.NewRegistry(time.Second)
 			key := delivery.Key{ConversationID: "conversation-1", TurnID: "turn-1", BeatID: "beat-1"}
-			err := registry.Await(t.Context(), key, func() error {
+			delivered, err := registry.AwaitResult(t.Context(), key, func() error {
 				return registry.Report(test.result)
 			})
 			if test.wantErr == "" && err != nil {
@@ -46,6 +46,9 @@ func TestExpressionDeliveryRegistryPropagatesSurfaceResult(t *testing.T) {
 			}
 			if test.wantErr != "" && (err == nil || !strings.Contains(err.Error(), test.wantErr)) {
 				t.Fatalf("delivery error = %v", err)
+			}
+			if delivered != test.result {
+				t.Fatalf("delivery result = %#v, want %#v", delivered, test.result)
 			}
 			if err := registry.Report(test.result); !errors.Is(err, delivery.ErrNotPending) {
 				t.Fatalf("late report error = %v", err)

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"fairy/agent/conversation/delivery"
 	"fairy/agent/conversation/lifecycle"
 	"fairy/agent/reply"
 	"fairy/agent/tool"
@@ -31,6 +32,7 @@ import (
 	"fairy/runtime/config"
 	coredb "fairy/runtime/database"
 	"fairy/runtime/model"
+	"fairy/runtime/observability"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -597,6 +599,7 @@ func TestPostgresDirectTurnPreparationCallBounds(t *testing.T) {
 	if err := service.BindInteraction(bootstrap.Conversation.ID, binding); err != nil {
 		t.Fatalf("BindInteraction: %v", err)
 	}
+	attachSuccessfulTestSurface(t, service, nil)
 	if _, err := service.SubmitTurn(SubmitTurnRequest{
 		ConversationID: bootstrap.Conversation.ID,
 		Input:          "测试准备阶段读取次数",
@@ -655,10 +658,18 @@ func TestPostgresCompanionMultiBeatCompletesWithPacing(t *testing.T) {
 		{VisualState: "idle", Text: "第一拍。"},
 		{VisualState: "happy", Text: "第二拍"},
 	}})
+	metrics := observability.NewMessageMetrics()
+	t.Cleanup(metrics.Close)
+	persistedTrace := make(chan observability.MessageTraceDetail, 1)
+	metrics.SetTerminalSink(func(detail observability.MessageTraceDetail) bool {
+		persistedTrace <- detail
+		return true
+	})
+	AttachMessageTelemetry(service, metrics)
 	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
 	var mu sync.Mutex
 	var events []session.Event
-	AttachEventEmitter(service, func(event session.Event) {
+	attachSuccessfulTestSurface(t, service, func(event session.Event) {
 		mu.Lock()
 		events = append(events, event)
 		mu.Unlock()
@@ -686,6 +697,26 @@ func TestPostgresCompanionMultiBeatCompletesWithPacing(t *testing.T) {
 	if terminalEventCount(events, lifecycle.StateCompleted) != 1 || terminalEventCount(events, lifecycle.StateInterrupted) != 0 {
 		t.Fatalf("terminal events = %#v", events)
 	}
+	if len(events) == 0 || events[len(events)-1].State != string(lifecycle.StateCompleted) {
+		t.Fatalf("completed was not the final event: %#v", events)
+	}
+	select {
+	case detail := <-persistedTrace:
+		receipts := 0
+		for _, span := range detail.Spans {
+			if span.Operation == "Surface 回执" {
+				receipts++
+				if span.Status != "completed" || span.Attributes["status"] != "succeeded" {
+					t.Fatalf("delivery receipt = %#v", span)
+				}
+			}
+		}
+		if detail.Status != "completed" || receipts != 2 {
+			t.Fatalf("terminal trace = %#v", detail)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("terminal trace was not persisted")
+	}
 	reloaded, err := store.LoadConversation(bootstrap.Conversation.ID)
 	if err != nil {
 		t.Fatalf("LoadConversation: %v", err)
@@ -699,6 +730,86 @@ func TestPostgresCompanionMultiBeatCompletesWithPacing(t *testing.T) {
 	}
 	if !hasRuntimeLedgerType(ledger, runtimeLedgerEventBeatDelivery) {
 		t.Fatalf("ledger missing beat_delivery: %#v", ledger)
+	}
+}
+
+func TestPostgresCompanionDeliveryFailureStopsFollowingBeats(t *testing.T) {
+	store, _, cleanup := openCompanionIntegrationStore(t)
+	defer cleanup()
+	bootstrap, err := store.OpenOrCreateCharacterConversation("character-delivery-failed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := newCompanionIntegrationService(store, bootstrap.Conversation.CharacterID, companionIntegrationModel{chains: []reply.ReplyChain{
+		{VisualState: "idle", Text: "第一拍。"},
+		{VisualState: "idle", Text: "不应发布的第二拍"},
+	}})
+	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
+	var events []session.Event
+	AttachEventEmitter(service, func(event session.Event) {
+		events = append(events, event)
+		var payload lifecycle.BeatReadyPayload
+		if json.Unmarshal(event.Payload, &payload) != nil || payload.Type != "beat.ready" || payload.Kind != reply.BeatKindFinal {
+			return
+		}
+		if reportErr := service.ReportExpressionDelivery(session.ExpressionDeliveryResult{
+			ConversationID: event.ConversationID,
+			TurnID:         event.TurnID,
+			BeatID:         payload.BeatID,
+			Status:         session.ExpressionDeliveryFailed,
+			ErrorMessage:   "test surface rejected expression",
+		}); reportErr != nil {
+			t.Errorf("ReportExpressionDelivery: %v", reportErr)
+		}
+	})
+
+	_, submitErr := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+		ConversationID:        bootstrap.Conversation.ID,
+		Input:                 "测试失败停止",
+		MaxOutputTokens:       160,
+		AvailableVisualStates: []reply.VisualState{{ID: "idle", Description: "idle"}},
+	})
+	if submitErr == nil || !strings.Contains(submitErr.Error(), "surface expression delivery failed") {
+		t.Fatalf("SubmitCompiledTurn() error = %v", submitErr)
+	}
+	if beats := finalBeatEvents(events); len(beats) != 1 || beats[0].ChainIndex != 0 {
+		t.Fatalf("final beats = %#v", beats)
+	}
+	if terminalEventCount(events, lifecycle.StateFailed) != 1 || terminalEventCount(events, lifecycle.StateCompleted) != 0 {
+		t.Fatalf("terminal events = %#v", events)
+	}
+}
+
+func TestPostgresCompanionDeliveryTimeoutFailsWithoutCompleting(t *testing.T) {
+	store, _, cleanup := openCompanionIntegrationStore(t)
+	defer cleanup()
+	bootstrap, err := store.OpenOrCreateCharacterConversation("character-delivery-timeout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := newCompanionIntegrationService(store, bootstrap.Conversation.CharacterID, companionIntegrationModel{chains: []reply.ReplyChain{
+		{VisualState: "idle", Text: "等待 Surface 回执。"},
+		{VisualState: "idle", Text: "不应发布的第二拍"},
+	}})
+	service.expressionDeliveries = delivery.NewRegistry(5 * time.Millisecond)
+	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
+	var events []session.Event
+	AttachEventEmitter(service, func(event session.Event) { events = append(events, event) })
+
+	_, submitErr := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
+		ConversationID:        bootstrap.Conversation.ID,
+		Input:                 "测试回执超时",
+		MaxOutputTokens:       160,
+		AvailableVisualStates: []reply.VisualState{{ID: "idle", Description: "idle"}},
+	})
+	if submitErr == nil || !strings.Contains(submitErr.Error(), "surface expression delivery timed out") {
+		t.Fatalf("SubmitCompiledTurn() error = %v", submitErr)
+	}
+	if beats := finalBeatEvents(events); len(beats) != 1 || beats[0].ChainIndex != 0 {
+		t.Fatalf("final beats = %#v", beats)
+	}
+	if terminalEventCount(events, lifecycle.StateFailed) != 1 || terminalEventCount(events, lifecycle.StateCompleted) != 0 {
+		t.Fatalf("terminal events = %#v", events)
 	}
 }
 
@@ -1034,7 +1145,7 @@ func TestPostgresDesktopObservationDirectFlowSchedulesInitiation(t *testing.T) {
 	AttachDeferredTurnScheduler(service, immediateDeferredTurnScheduler{})
 	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
 	completed := make(chan session.Event, 1)
-	AttachEventEmitter(service, func(event session.Event) {
+	attachSuccessfulTestSurface(t, service, func(event session.Event) {
 		if event.State == string(lifecycle.StateCompleted) {
 			select {
 			case completed <- event:
@@ -1142,7 +1253,7 @@ func TestPostgresCompanionRetriesOneInvalidReplyWithoutDuplicatingTurn(t *testin
 	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
 	var mu sync.Mutex
 	var events []session.Event
-	AttachEventEmitter(service, func(event session.Event) {
+	attachSuccessfulTestSurface(t, service, func(event session.Event) {
 		mu.Lock()
 		events = append(events, event)
 		mu.Unlock()
@@ -1224,14 +1335,24 @@ func TestPostgresCompanionCancelAfterFirstBeatPersistsPrefix(t *testing.T) {
 	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
 	var mu sync.Mutex
 	var events []session.Event
-	var cancelErr error
+	cancelled := make(chan error, 1)
 	AttachEventEmitter(service, func(event session.Event) {
 		mu.Lock()
 		events = append(events, event)
 		mu.Unlock()
 		payload := decodeEventPayload[lifecycle.BeatReadyPayload](t, event.Payload)
 		if payload.Type == "beat.ready" && payload.Kind == reply.BeatKindFinal && payload.ChainIndex == 0 {
-			cancelErr = service.CancelTurn(event.ConversationID, event.TurnID)
+			if err := service.ReportExpressionDelivery(session.ExpressionDeliveryResult{
+				ConversationID: event.ConversationID, TurnID: event.TurnID, BeatID: payload.BeatID,
+				Status: session.ExpressionDeliverySucceeded,
+			}); err != nil {
+				t.Errorf("ReportExpressionDelivery: %v", err)
+				return
+			}
+			go func() {
+				time.Sleep(10 * time.Millisecond)
+				cancelled <- service.CancelTurn(event.ConversationID, event.TurnID)
+			}()
 		}
 	})
 
@@ -1241,6 +1362,7 @@ func TestPostgresCompanionCancelAfterFirstBeatPersistsPrefix(t *testing.T) {
 		MaxOutputTokens:       160,
 		AvailableVisualStates: []reply.VisualState{{ID: "idle", Description: "idle"}},
 	})
+	cancelErr := <-cancelled
 	if !errors.Is(submitErr, ErrTurnInterrupted) || cancelErr != nil {
 		t.Fatalf("SubmitCompiledTurn = %v, CancelTurn = %v", submitErr, cancelErr)
 	}
@@ -1281,7 +1403,7 @@ func TestPostgresCompanionTerminalPersistenceFailureEmitsFailed(t *testing.T) {
 	}})
 	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
 	var events []session.Event
-	AttachEventEmitter(service, func(event session.Event) { events = append(events, event) })
+	attachSuccessfulTestSurface(t, service, func(event session.Event) { events = append(events, event) })
 	_, submitErr := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
 		ConversationID:        bootstrap.Conversation.ID,
 		Input:                 "测试持久化错误",
@@ -1315,11 +1437,22 @@ func TestPostgresCompanionInterruptPersistenceFailureEmitsFailed(t *testing.T) {
 	}})
 	mustBindDesktopInteraction(t, service, bootstrap.Conversation.ID)
 	var events []session.Event
+	cancelled := make(chan error, 1)
 	AttachEventEmitter(service, func(event session.Event) {
 		events = append(events, event)
 		payload := decodeEventPayload[lifecycle.BeatReadyPayload](t, event.Payload)
 		if payload.Type == "beat.ready" && payload.ChainIndex == 0 {
-			_ = service.CancelTurn(event.ConversationID, event.TurnID)
+			if err := service.ReportExpressionDelivery(session.ExpressionDeliveryResult{
+				ConversationID: event.ConversationID, TurnID: event.TurnID, BeatID: payload.BeatID,
+				Status: session.ExpressionDeliverySucceeded,
+			}); err != nil {
+				t.Errorf("ReportExpressionDelivery: %v", err)
+				return
+			}
+			go func() {
+				time.Sleep(10 * time.Millisecond)
+				cancelled <- service.CancelTurn(event.ConversationID, event.TurnID)
+			}()
 		}
 	})
 	_, submitErr := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
@@ -1328,6 +1461,7 @@ func TestPostgresCompanionInterruptPersistenceFailureEmitsFailed(t *testing.T) {
 		MaxOutputTokens:       160,
 		AvailableVisualStates: []reply.VisualState{{ID: "idle", Description: "idle"}},
 	})
+	<-cancelled
 	if !errors.Is(submitErr, errInterruptPersistence) || !errors.Is(submitErr, ErrTurnInterrupted) {
 		t.Fatalf("SubmitCompiledTurn = %v, want interrupt and persistence errors", submitErr)
 	}
@@ -1723,7 +1857,35 @@ func newCompanionIntegrationServiceWithPorts(ports memoryPorts, characterID stri
 	AttachCharacterLookup(service, companionIntegrationCharacterLookup{record: companionIntegrationCharacter(characterID)})
 	AttachProfileSource(service, companionIntegrationProfile{})
 	AttachConfigSource(service, companionIntegrationConfig{})
+	attachSuccessfulTestSurface(nil, service, nil)
 	return service
+}
+
+func attachSuccessfulTestSurface(t *testing.T, service *Service, observe func(session.Event)) {
+	if t != nil {
+		t.Helper()
+	}
+	AttachEventEmitter(service, func(event session.Event) {
+		if observe != nil {
+			observe(event)
+		}
+		var payload lifecycle.BeatReadyPayload
+		if json.Unmarshal(event.Payload, &payload) != nil || payload.Type != "beat.ready" || payload.Kind != reply.BeatKindFinal {
+			return
+		}
+		err := service.ReportExpressionDelivery(session.ExpressionDeliveryResult{
+			ConversationID: event.ConversationID,
+			TurnID:         event.TurnID,
+			BeatID:         payload.BeatID,
+			Status:         session.ExpressionDeliverySucceeded,
+		})
+		if err == nil {
+			return
+		}
+		if t != nil {
+			t.Errorf("ReportExpressionDelivery: %v", err)
+		}
+	})
 }
 
 func companionIntegrationCharacter(characterID string) character.Record {

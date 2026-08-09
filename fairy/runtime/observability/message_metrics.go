@@ -102,6 +102,7 @@ const (
 	messageEnd
 	messageSpanStart
 	messageSpanFinish
+	messageSurfaceDelivery
 )
 
 type messageEvent struct {
@@ -122,6 +123,9 @@ type messageEvent struct {
 	operation     string
 	category      string
 	attributes    map[string]string
+	beatID        string
+	externalID    string
+	errorCode     string
 }
 
 type messageTraceState struct {
@@ -286,6 +290,35 @@ func (m *MessageMetrics) FinishSpan(spanID, status string, attributes map[string
 	})
 }
 
+func (m *MessageMetrics) SurfaceDelivery(turnID, beatID, status, externalMessageID, errorCode string) {
+	if m == nil || !ValidCorrelationID(turnID) || !ValidCorrelationID(beatID) || !validSurfaceDelivery(status, externalMessageID, errorCode) {
+		return
+	}
+	m.submit(messageEvent{
+		kind: messageSurfaceDelivery, at: time.Now(), spanID: fmt.Sprintf("span-%d", m.spanSequence.Add(1)),
+		turnID: turnID, beatID: beatID, status: status, externalID: externalMessageID, errorCode: errorCode,
+	})
+}
+
+func validSurfaceDelivery(status, externalMessageID, errorCode string) bool {
+	switch status {
+	case "succeeded":
+		return (externalMessageID == "" || ValidCorrelationID(externalMessageID)) && errorCode == ""
+	case "failed", "interrupted":
+		if externalMessageID != "" {
+			return false
+		}
+		switch errorCode {
+		case "SURFACE_DELIVERY_FAILED", "SURFACE_DELIVERY_TIMEOUT", "SURFACE_DELIVERY_INTERRUPTED", "SURFACE_DELIVERY_UNAVAILABLE":
+			return true
+		default:
+			return false
+		}
+	default:
+		return false
+	}
+}
+
 func (m *MessageMetrics) Trace(traceID string) (MessageTraceDetail, bool) {
 	if m == nil || traceID == "" {
 		return MessageTraceDetail{}, false
@@ -443,6 +476,8 @@ func (s *messageMetricsState) apply(event messageEvent) {
 		s.startSpan(event)
 	case messageSpanFinish:
 		s.finishSpan(event)
+	case messageSurfaceDelivery:
+		s.surfaceDelivery(event)
 	}
 }
 

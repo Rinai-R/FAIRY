@@ -224,13 +224,11 @@ func TestPostgresMixedExpressionsDeliverInCompiledOrderIntegration(t *testing.T)
 			return
 		}
 		delivered = append(delivered, payload)
-		if payload.Part.Kind == session.ExpressionSticker {
-			if err := service.ReportExpressionDelivery(session.ExpressionDeliveryResult{
-				ConversationID: event.ConversationID, TurnID: event.TurnID, BeatID: payload.BeatID,
-				Status: session.ExpressionDeliverySucceeded,
-			}); err != nil {
-				t.Errorf("ReportExpressionDelivery: %v", err)
-			}
+		if err := service.ReportExpressionDelivery(session.ExpressionDeliveryResult{
+			ConversationID: event.ConversationID, TurnID: event.TurnID, BeatID: payload.BeatID,
+			Status: session.ExpressionDeliverySucceeded,
+		}); err != nil {
+			t.Errorf("ReportExpressionDelivery: %v", err)
 		}
 	})
 	outcome, err := service.SubmitCompiledTurn(SubmitCompiledTurnRequest{
