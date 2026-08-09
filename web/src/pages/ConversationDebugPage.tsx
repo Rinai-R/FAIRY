@@ -82,6 +82,7 @@ type DebugTurn = {
 type ConnectionState = "loading" | "connecting" | "ready" | "disconnected" | "error";
 
 const DEBUG_ENDPOINT_STORAGE_PREFIX = "fairy.console.debug.endpoint.v1.";
+const TERMINAL_RUNTIME_CONVERGENCE_DELAYS_MS = [0, 100, 200, 400, 800, 1600, 2000] as const;
 
 const STATE_LABELS: Record<string, string> = {
   submitted: "已提交",
@@ -187,6 +188,26 @@ function mergeMessageRecords(current: MessageRecord[], incoming: MessageRecord[]
 
 function isTerminal(state: string) {
   return state === "completed" || state === "interrupted" || state === "failed";
+}
+
+function runtimeSnapshotSignature(events: RuntimeEvent[]) {
+  return events.map((event) => [
+    event.sequence,
+    event.eventType,
+    event.state || "",
+    event.code || "",
+  ].join(":")).join("|");
+}
+
+function runtimeContainsTerminal(events: RuntimeEvent[], terminalState: string) {
+  return events.some((event) => event.eventType === "terminal" && (
+    event.state === terminalState || event.metadata?.status === terminalState
+  ));
+}
+
+function waitForRuntimeRetry(delayMs: number) {
+  if (delayMs <= 0) return Promise.resolve();
+  return new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
 }
 
 function projectMessageBubbles(message: MessageRecord): MessageBubble[] {
@@ -561,6 +582,7 @@ export function ConversationDebugPage({ onOpenCharacters }: { onOpenCharacters: 
   const messageRequestRef = useRef(0);
   const pendingLocalMessageRef = useRef("");
   const runtimeRequestRef = useRef<Map<string, number>>(new Map());
+  const terminalRuntimeRef = useRef<Set<string>>(new Set());
   const transcriptRef = useRef<HTMLDivElement | null>(null);
 
   const selectedCharacter = catalog?.characters.find((character) => character.characterId === selectedCharacterId) || null;
@@ -606,15 +628,33 @@ export function ConversationDebugPage({ onOpenCharacters }: { onOpenCharacters: 
     }
     try {
       const response = await api<RuntimeResponse>(`/sessions/${conversationId}/turns/${turnId}/runtime`);
-      if (generation !== generationRef.current || runtimeRequestRef.current.get(requestKey) !== requestSequence) return;
+      if (generation !== generationRef.current || runtimeRequestRef.current.get(requestKey) !== requestSequence) return null;
+      const events = response.events || [];
       setTurns((current) => current.map((turn) => turn.turnId === turnId
-        ? { ...turn, runtime: response.events || [], runtimeState: "ready" }
+        ? { ...turn, runtime: events, runtimeState: "ready" }
         : turn));
+      return events;
     } catch {
-      if (generation !== generationRef.current || runtimeRequestRef.current.get(requestKey) !== requestSequence) return;
+      if (generation !== generationRef.current || runtimeRequestRef.current.get(requestKey) !== requestSequence) return null;
       if (!silent) {
         setTurns((current) => current.map((turn) => turn.turnId === turnId ? { ...turn, runtimeState: "error" } : turn));
       }
+      return null;
+    }
+  }
+
+  async function convergeTerminalRuntime(conversationId: string, turnId: string, terminalState: string, generation: number) {
+    const convergenceKey = `${generation}:${turnId}`;
+    terminalRuntimeRef.current.add(convergenceKey);
+    let previousSignature = "";
+    for (const delayMs of TERMINAL_RUNTIME_CONVERGENCE_DELAYS_MS) {
+      await waitForRuntimeRetry(delayMs);
+      if (generation !== generationRef.current) return;
+      const events = await loadRuntime(conversationId, turnId, generation, true);
+      if (!events) continue;
+      const signature = runtimeSnapshotSignature(events);
+      if (runtimeContainsTerminal(events, terminalState) && signature === previousSignature) return;
+      previousSignature = signature;
     }
   }
 
@@ -666,6 +706,7 @@ export function ConversationDebugPage({ onOpenCharacters }: { onOpenCharacters: 
     if (terminal) {
       pendingLocalMessageRef.current = "";
       void loadMessages(event.conversationId, generation).catch(() => undefined);
+      void convergeTerminalRuntime(event.conversationId, event.turnId, event.state, generation);
     }
   }
 
@@ -673,6 +714,7 @@ export function ConversationDebugPage({ onOpenCharacters }: { onOpenCharacters: 
     const generation = generationRef.current + 1;
     generationRef.current = generation;
     messageRequestRef.current += 1;
+    terminalRuntimeRef.current.clear();
     clientRef.current?.close();
     clientRef.current = null;
     setConnection("connecting");
@@ -751,7 +793,9 @@ export function ConversationDebugPage({ onOpenCharacters }: { onOpenCharacters: 
     const generation = generationRef.current;
     let disposed = false;
     const refresh = () => {
-      if (!disposed) void loadRuntime(conversationId, activeRuntimeTurnId, generation, true);
+      if (!disposed && !terminalRuntimeRef.current.has(`${generation}:${activeRuntimeTurnId}`)) {
+        void loadRuntime(conversationId, activeRuntimeTurnId, generation, true);
+      }
     };
     refresh();
     const timer = window.setInterval(refresh, 1000);

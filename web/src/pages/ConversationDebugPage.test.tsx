@@ -15,6 +15,9 @@ let sessionStorageValues: Map<string, string>;
 let assistantContent: string;
 let assistantParts: unknown[] | undefined;
 let runtimeEvents: Array<Record<string, unknown>>;
+let runtimeSnapshots: Array<Array<Record<string, unknown>>> | null;
+let runtimeResponder: ((requestIndex: number, conversationId: string, turnId: string) => Promise<Response>) | null;
+let runtimeRequestCount: number;
 let holdTurnOpen: boolean;
 let includeCompletedUsage: boolean;
 let clipboardWriteText: ReturnType<typeof vi.fn>;
@@ -198,6 +201,9 @@ beforeEach(() => {
     { sequence: 13, eventType: "terminal", state: "completed", metadata: { status: "completed" }, createdAtUnixMs: 1_013 },
     { sequence: 14, eventType: "context_window", state: "completed", metadata: { windowNumber: 1, observedPrefillTokens: 120 }, createdAtUnixMs: 1_014 },
   ];
+  runtimeSnapshots = null;
+  runtimeResponder = null;
+  runtimeRequestCount = 0;
   vi.stubGlobal("WebSocket", DebugPageSocket);
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal("crypto", { randomUUID: () => `id-${++nextIDNumber}` });
@@ -235,10 +241,12 @@ beforeEach(() => {
     }
     if (path.includes("/runtime")) {
       const [, conversationId = "", turnId = ""] = path.match(/\/sessions\/([^/]+)\/turns\/([^/]+)\/runtime/) || [];
+      runtimeRequestCount += 1;
+      if (runtimeResponder) return runtimeResponder(runtimeRequestCount, conversationId, turnId);
       return Response.json({
         conversationId,
         turnId,
-        events: runtimeEvents,
+        events: runtimeSnapshots?.length ? runtimeSnapshots.shift() : runtimeEvents,
       });
     }
     return Response.json({ error: "not found" }, { status: 404 });
@@ -323,6 +331,63 @@ describe("ConversationDebugPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "返回关键时间线" }));
     expect(screen.queryByText("上下文窗口")).toBeNull();
     expect(screen.getAllByText("回复交付")).toHaveLength(1);
+  });
+
+  it("converges a terminal Turn from an incomplete runtime snapshot to a stable durable ledger", async () => {
+    const incomplete = runtimeEvents.slice(0, 6);
+    runtimeSnapshots = [incomplete, incomplete, runtimeEvents, runtimeEvents];
+    render(<Theme><ConversationDebugPage onOpenCharacters={() => undefined} /></Theme>);
+    await screen.findAllByText("会话就绪", {}, { timeout: 3000 });
+    const composer = screen.getByLabelText("调试消息");
+    fireEvent.change(composer, { target: { value: "终态明细收敛" } });
+    fireEvent.keyDown(composer, { key: "Enter", shiftKey: false });
+
+    expect(await screen.findByText("关键 11 / 原始 14", {}, { timeout: 3000 })).toBeTruthy();
+    expect(screen.getByText("Turn 终态")).toBeTruthy();
+    await waitFor(() => expect(runtimeRequestCount).toBeGreaterThanOrEqual(4), { timeout: 2000 });
+    const settledRequestCount = runtimeRequestCount;
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    expect(runtimeRequestCount).toBe(settledRequestCount);
+  });
+
+  it("rejects an older incomplete runtime response after a terminal snapshot is accepted", async () => {
+    const incomplete = runtimeEvents.slice(0, 6);
+    let resolveOlder: ((response: Response) => void) | undefined;
+    runtimeResponder = async (requestIndex, conversationId, turnId) => {
+      if (requestIndex === 1) {
+        return new Promise<Response>((resolve) => { resolveOlder = resolve; });
+      }
+      return Response.json({ conversationId, turnId, events: runtimeEvents });
+    };
+    render(<Theme><ConversationDebugPage onOpenCharacters={() => undefined} /></Theme>);
+    await screen.findAllByText("会话就绪", {}, { timeout: 3000 });
+    const composer = screen.getByLabelText("调试消息");
+    fireEvent.change(composer, { target: { value: "拒绝旧 runtime 响应" } });
+    fireEvent.keyDown(composer, { key: "Enter", shiftKey: false });
+
+    expect(await screen.findByText("关键 11 / 原始 14", {}, { timeout: 3000 })).toBeTruthy();
+    resolveOlder?.(Response.json({ conversationId: "conversation-1", turnId: "turn-1", events: incomplete }));
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(screen.getByText("关键 11 / 原始 14")).toBeTruthy();
+    expect(screen.queryByText("关键 6 / 原始 6")).toBeNull();
+  });
+
+  it("loads a restored historical terminal Turn once without starting convergence polling", async () => {
+    const endpointKey = "web-evaluation-history-only";
+    const conversationId = "conversation-history";
+    durableStorageValues.set("fairy.console.debug.endpoint.v1.character-1", endpointKey);
+    endpointConversations.set(endpointKey, conversationId);
+    persistedMessagesByConversation.set(conversationId, [
+      { id: "history-user", messageId: "debug-msg-history", turnId: "turn-history", sequence: 1, role: "user", content: "历史问题", createdAtUnixMs: 1_000 },
+      { id: "history-assistant", messageId: "debug-msg-history", turnId: "turn-history", sequence: 2, role: "assistant", content: "历史回复", createdAtUnixMs: 2_000 },
+    ]);
+
+    render(<Theme><ConversationDebugPage onOpenCharacters={() => undefined} /></Theme>);
+    await screen.findAllByText("会话就绪", {}, { timeout: 3000 });
+    expect(await screen.findByText("关键 11 / 原始 14", {}, { timeout: 3000 })).toBeTruthy();
+    expect(runtimeRequestCount).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    expect(runtimeRequestCount).toBe(1);
   });
 
   it("appends consecutive turns without replacing the earlier transcript", async () => {
