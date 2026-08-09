@@ -3,6 +3,7 @@ package conversation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -63,10 +64,14 @@ type socialLearningMemory struct {
 	storeErr               error
 	upsertErr              error
 	retrieved              social.SocialMemoryContext
+	retrievedByQuery       map[string]social.SocialMemoryContext
 	retrieveErr            error
+	retrieveErrByQuery     map[string]error
 	retrieveCharacterID    string
 	retrieveConversationID string
 	retrieveQuery          string
+	retrieveQueries        []string
+	personNotes            []social.SocialPersonNote
 	feedbackErr            error
 	metadataLoads          int
 }
@@ -93,6 +98,13 @@ func (m *socialLearningMemory) RetrieveSocialMemoryContext(_ context.Context, ch
 	m.retrieveCharacterID = characterID
 	m.retrieveConversationID = conversationID
 	m.retrieveQuery = query
+	m.retrieveQueries = append(m.retrieveQueries, query)
+	if err := m.retrieveErrByQuery[query]; err != nil {
+		return social.SocialMemoryContext{}, err
+	}
+	if retrieved, ok := m.retrievedByQuery[query]; ok {
+		return retrieved, nil
+	}
 	return m.retrieved, m.retrieveErr
 }
 
@@ -155,7 +167,9 @@ func (m *socialLearningMemory) UpsertSocialPersonNote(_ context.Context, input s
 }
 
 func (m *socialLearningMemory) ListSocialPersonNotes(context.Context, string, string, []string) ([]social.SocialPersonNote, error) {
-	return nil, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]social.SocialPersonNote(nil), m.personNotes...), nil
 }
 
 type socialLearningModel struct {
@@ -236,14 +250,14 @@ func TestRetrieveSocialRespondContextUsesPublicConversationScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if context == nil || len(context.Memory.Entries) != 1 || context.Memory.Entries[0].Kind != social.SocialMemoryEpisode {
+	if context == nil || len(context.Memory.Entries) != 2 || context.Memory.Entries[0].Kind != social.SocialMemoryEpisode || context.Memory.Entries[1].Kind != social.SocialMemoryExpression {
 		t.Fatalf("context = %#v", context)
 	}
 	if memoryPort.retrieveCharacterID != "character-1" || memoryPort.retrieveConversationID != "conversation-1" {
 		t.Fatalf("scope = (%q, %q)", memoryPort.retrieveCharacterID, memoryPort.retrieveConversationID)
 	}
-	if memoryPort.retrieveQuery != "之前的实习讨论" {
-		t.Fatalf("query = %q", memoryPort.retrieveQuery)
+	if strings.Join(memoryPort.retrieveQueries, "|") != "之前的实习讨论|安慰焦虑的群友" {
+		t.Fatalf("queries = %#v", memoryPort.retrieveQueries)
 	}
 	if context.RecentFeedback != "" {
 		t.Fatalf("reply-level feedback should not be injected: %q", context.RecentFeedback)
@@ -252,21 +266,90 @@ func TestRetrieveSocialRespondContextUsesPublicConversationScope(t *testing.T) {
 	if err != nil || privateContext != nil {
 		t.Fatalf("private context = %#v, error = %v", privateContext, err)
 	}
+	if len(memoryPort.retrieveQueries) != 2 {
+		t.Fatalf("private path queried social memory: %#v", memoryPort.retrieveQueries)
+	}
 }
 
 func TestRetrieveSocialRespondContextAllowsExpressionOnlyIntent(t *testing.T) {
-	memoryPort := &socialLearningMemory{}
+	memoryPort := &socialLearningMemory{retrieved: social.SocialMemoryContext{Entries: []social.SocialMemoryEntry{
+		{ID: "expression-1", Kind: social.SocialMemoryExpression, Situation: "安慰", Content: "先短句接住", RecallCue: "焦虑"},
+	}}}
 	service := newSocialLearningTestService(memoryPort, &socialLearningModel{})
 	intent := &ReplyIntent{ExpressionQuery: "安慰焦虑的群友"}
 	context, err := service.retrieveSocialRespondContext(t.Context(), "character-1", "conversation-1", publicAmbientResolved(), intent, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if context == nil || len(context.Memory.Entries) != 0 {
+	if context == nil || len(context.Memory.Entries) != 1 || context.Memory.Entries[0].Kind != social.SocialMemoryExpression {
 		t.Fatalf("context = %#v", context)
 	}
-	if memoryPort.retrieveQuery != "" {
-		t.Fatalf("unexpected retrieve query %q", memoryPort.retrieveQuery)
+	if memoryPort.retrieveQuery != "安慰焦虑的群友" {
+		t.Fatalf("retrieve query = %q", memoryPort.retrieveQuery)
+	}
+}
+
+func TestRetrieveSocialRespondContextReusesIdenticalQueries(t *testing.T) {
+	memoryPort := &socialLearningMemory{
+		retrieved: social.SocialMemoryContext{Entries: []social.SocialMemoryEntry{
+			{ID: "episode-1", Kind: social.SocialMemoryEpisode, Situation: "实习", Content: "最近在投简历", RecallCue: "焦虑"},
+			{ID: "behavior-1", Kind: social.SocialMemoryBehavior, Situation: "群友焦虑", Content: "先接住情绪", RecallCue: "焦虑"},
+			{ID: "expression-1", Kind: social.SocialMemoryExpression, Situation: "安慰", Content: "用短句自然回应", RecallCue: "焦虑"},
+		}},
+		personNotes: []social.SocialPersonNote{{ID: "note-1", SenderID: "user-1", Note: "正在找实习"}},
+	}
+	service := newSocialLearningTestService(memoryPort, &socialLearningModel{})
+	intent := &ReplyIntent{MemoryQuery: " 实习焦虑 ", ExpressionQuery: "实习焦虑"}
+	context, err := service.retrieveSocialRespondContext(t.Context(), "character-1", "conversation-1", publicAmbientResolved(), intent, []string{"user-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(memoryPort.retrieveQueries) != 1 || memoryPort.retrieveQueries[0] != "实习焦虑" {
+		t.Fatalf("queries = %#v", memoryPort.retrieveQueries)
+	}
+	if len(context.Memory.Entries) != 3 || len(context.PersonNotes) != 1 {
+		t.Fatalf("context = %#v", context)
+	}
+}
+
+func TestRetrieveSocialRespondContextDeduplicatesAndBoundsCandidates(t *testing.T) {
+	memoryEntries := make([]social.SocialMemoryEntry, 0, 9)
+	for index := 0; index < 9; index++ {
+		memoryEntries = append(memoryEntries, social.SocialMemoryEntry{ID: fmt.Sprintf("memory-%02d", index), Kind: social.SocialMemoryEpisode})
+	}
+	expressionEntries := []social.SocialMemoryEntry{{ID: "memory-04", Kind: social.SocialMemoryExpression}}
+	for index := 0; index < 9; index++ {
+		expressionEntries = append(expressionEntries, social.SocialMemoryEntry{ID: fmt.Sprintf("expression-%02d", index), Kind: social.SocialMemoryExpression})
+	}
+	memoryPort := &socialLearningMemory{retrievedByQuery: map[string]social.SocialMemoryContext{
+		"memory":     {Entries: memoryEntries},
+		"expression": {Entries: expressionEntries},
+	}}
+	service := newSocialLearningTestService(memoryPort, &socialLearningModel{})
+	context, err := service.retrieveSocialRespondContext(t.Context(), "character-1", "conversation-1", publicAmbientResolved(), &ReplyIntent{MemoryQuery: "memory", ExpressionQuery: "expression"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(context.Memory.Entries) != social.MaxSocialFeedbackIDs {
+		t.Fatalf("entry count = %d, want %d", len(context.Memory.Entries), social.MaxSocialFeedbackIDs)
+	}
+	for index := 0; index < 9; index++ {
+		if context.Memory.Entries[index].ID != fmt.Sprintf("memory-%02d", index) {
+			t.Fatalf("memory order at %d = %q", index, context.Memory.Entries[index].ID)
+		}
+	}
+	for index, want := range []string{"expression-00", "expression-01", "expression-02"} {
+		if context.Memory.Entries[9+index].ID != want {
+			t.Fatalf("expression order at %d = %q, want %q", index, context.Memory.Entries[9+index].ID, want)
+		}
+	}
+}
+
+func TestRetrieveSocialRespondContextReturnsExpressionStorageFailure(t *testing.T) {
+	service := newSocialLearningTestService(&socialLearningMemory{retrieveErrByQuery: map[string]error{"expression": errors.New("database failed")}}, &socialLearningModel{})
+	intent := &ReplyIntent{MemoryQuery: "memory", ExpressionQuery: "expression"}
+	if _, err := service.retrieveSocialRespondContext(t.Context(), "character-1", "conversation-1", publicAmbientResolved(), intent, nil); err == nil {
+		t.Fatal("retrieveSocialRespondContext() expression error = nil")
 	}
 }
 

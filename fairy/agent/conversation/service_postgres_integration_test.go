@@ -248,6 +248,17 @@ type capturingIntegrationModel struct {
 	request model.CompiledPromptRequest
 }
 
+type capturingAmbientReplyObserver struct {
+	mu    sync.Mutex
+	reply AmbientReply
+}
+
+func (o *capturingAmbientReplyObserver) ObserveAmbientReply(reply AmbientReply) {
+	o.mu.Lock()
+	o.reply = reply
+	o.mu.Unlock()
+}
+
 func (m *capturingIntegrationModel) ExecuteRequestContext(_ context.Context, request model.CompiledPromptRequest) ([]model.StreamEvent, error) {
 	m.mu.Lock()
 	m.request = request
@@ -1688,7 +1699,9 @@ func TestPostgresPublicTurnNaturalSocialQueryStaysInCurrentConversation(t *testi
 		t.Fatalf("OpenOrCreateEndpointConversation(other): %v", err)
 	}
 	const currentFixture = "当前群的项目经历线索-9ac1"
+	const currentExpressionFixture = "先用短句接住焦虑，再自然追问具体卡点-2f3b"
 	const otherFixture = "另一个群的项目经历线索-4de7"
+	const otherExpressionFixture = "另一个群的表达方式绝不进入当前提示-15bd"
 	const privateFixture = "私人记忆绝不进入公共提示-78be"
 	for _, fixture := range []struct {
 		conversationID string
@@ -1707,6 +1720,23 @@ func TestPostgresPublicTurnNaturalSocialQueryStaysInCurrentConversation(t *testi
 			t.Fatalf("StoreSocialMemoryEntries(%s): %v", fixture.conversationID, err)
 		}
 	}
+	for _, fixture := range []struct {
+		conversationID string
+		content        string
+	}{
+		{conversationID: current.Conversation.ID, content: currentExpressionFixture},
+		{conversationID: other.Conversation.ID, content: otherExpressionFixture},
+	} {
+		if _, err := store.StoreSocialMemoryEntries(context.Background(), social.SocialMemoryBatchInput{
+			CharacterID: characterID, ConversationID: fixture.conversationID,
+			Entries: []social.SocialMemoryEntryInput{{
+				Kind: social.SocialMemoryExpression, Situation: "群友对实习感到焦虑", Content: fixture.content, RecallCue: "实习焦虑 安慰",
+				SourceStartUnixMS: 10, SourceEndUnixMS: 20,
+			}},
+		}); err != nil {
+			t.Fatalf("StoreSocialMemoryEntries(expression %s): %v", fixture.conversationID, err)
+		}
+	}
 	privateConversation, err := store.OpenOrCreateCharacterConversation(characterID)
 	if err != nil {
 		t.Fatalf("OpenOrCreateCharacterConversation(private fixture): %v", err)
@@ -1723,7 +1753,9 @@ func TestPostgresPublicTurnNaturalSocialQueryStaysInCurrentConversation(t *testi
 	}
 
 	provider := &capturingIntegrationModel{}
+	feedback := &capturingAmbientReplyObserver{}
 	service := newCompanionIntegrationService(store, characterID, provider)
+	AttachAmbientReplyObserver(service, feedback)
 	if err := service.BindInteraction(current.Conversation.ID, publicAmbientBinding()); err != nil {
 		t.Fatalf("BindInteraction: %v", err)
 	}
@@ -1740,10 +1772,28 @@ func TestPostgresPublicTurnNaturalSocialQueryStaysInCurrentConversation(t *testi
 	if !compiledPromptContains(request, currentFixture) {
 		t.Fatal("public prompt did not include current-conversation social memory")
 	}
-	for _, forbidden := range []string{otherFixture, privateFixture} {
+	if !compiledPromptContains(request, currentExpressionFixture) {
+		t.Fatal("first public model request did not include scoped expression memory")
+	}
+	for _, forbidden := range []string{otherFixture, otherExpressionFixture, privateFixture} {
 		if compiledPromptContains(request, forbidden) {
 			t.Fatalf("public prompt leaked %q", forbidden)
 		}
+	}
+	feedback.mu.Lock()
+	observed := feedback.reply
+	feedback.mu.Unlock()
+	foundExpression := false
+	for _, candidate := range observed.Candidates {
+		if candidate.Kind == social.SocialMemoryExpression && candidate.Content == currentExpressionFixture {
+			foundExpression = true
+		}
+		if candidate.Content == otherExpressionFixture {
+			t.Fatalf("feedback candidates leaked expression from another conversation: %#v", observed.Candidates)
+		}
+	}
+	if !foundExpression {
+		t.Fatalf("feedback candidates did not include scoped expression: %#v", observed.Candidates)
 	}
 }
 

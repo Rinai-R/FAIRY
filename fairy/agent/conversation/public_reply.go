@@ -8,13 +8,14 @@ import (
 	"strings"
 
 	"fairy/agent/reply"
+	"fairy/agent/tool"
 	"fairy/context/social"
 
 	"fairy/transport/session"
 )
 
 func socialMemoryQuery(intent ReplyIntent) string {
-	return strings.TrimSpace(intent.MemoryQuery)
+	return strings.TrimSpace(intent.MemoryQuery) + "\x00" + strings.TrimSpace(intent.ExpressionQuery)
 }
 
 func (s *Service) retrieveSocialRespondContext(ctx context.Context, characterID, conversationID string, resolved session.Resolved, intent *ReplyIntent, senderIDs []string) (*SocialRespondContext, error) {
@@ -26,19 +27,47 @@ func (s *Service) retrieveSocialRespondContext(ctx context.Context, characterID,
 	if memoryQuery == "" && expressionQuery == "" {
 		return nil, errors.New("public reply intent requires a social memory or expression query")
 	}
-	var socialMemory social.SocialMemoryContext
-	if memoryQuery != "" {
-		retrieved, err := s.memory.ambient.socialRetrieval.RetrieveSocialMemoryContext(ctx, characterID, conversationID, memoryQuery)
-		if err != nil {
-			return nil, err
-		}
-		socialMemory.Entries = filterSocialMemoryKinds(retrieved.Entries, social.SocialMemoryEpisode, social.SocialMemoryBehavior)
+	socialMemory, err := s.retrievePublicReplySocialMemory(ctx, characterID, conversationID, memoryQuery, expressionQuery)
+	if err != nil {
+		return nil, err
 	}
 	notes, err := s.memory.ambient.socialContext.ListSocialPersonNotes(ctx, characterID, conversationID, senderIDs)
 	if err != nil {
 		return nil, err
 	}
 	return &SocialRespondContext{Intent: intent, Memory: socialMemory, PersonNotes: notes}, nil
+}
+
+func (s *Service) retrievePublicReplySocialMemory(ctx context.Context, characterID, conversationID, memoryQuery, expressionQuery string) (social.SocialMemoryContext, error) {
+	var memoryContext social.SocialMemoryContext
+	var sharedContext social.SocialMemoryContext
+	if memoryQuery != "" {
+		retrieved, err := s.memory.ambient.socialRetrieval.RetrieveSocialMemoryContext(ctx, characterID, conversationID, memoryQuery)
+		if err != nil {
+			return social.SocialMemoryContext{}, err
+		}
+		sharedContext = retrieved
+		memoryContext.Entries = filterSocialMemoryKinds(retrieved.Entries, social.SocialMemoryEpisode, social.SocialMemoryBehavior)
+	}
+
+	var expressionContext social.SocialMemoryContext
+	if expressionQuery != "" {
+		retrieved := sharedContext
+		if memoryQuery == "" || expressionQuery != memoryQuery {
+			var err error
+			retrieved, err = s.memory.ambient.socialRetrieval.RetrieveSocialMemoryContext(ctx, characterID, conversationID, expressionQuery)
+			if err != nil {
+				return social.SocialMemoryContext{}, err
+			}
+		}
+		expressionContext.Entries = filterSocialMemoryKinds(retrieved.Entries, social.SocialMemoryExpression)
+	}
+
+	merged := tool.MergeSocialMemory(memoryContext, expressionContext)
+	if len(merged.Entries) > social.MaxSocialFeedbackIDs {
+		merged.Entries = append([]social.SocialMemoryEntry(nil), merged.Entries[:social.MaxSocialFeedbackIDs]...)
+	}
+	return merged, nil
 }
 
 func filterSocialMemoryKinds(entries []social.SocialMemoryEntry, kinds ...string) []social.SocialMemoryEntry {
