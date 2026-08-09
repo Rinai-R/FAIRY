@@ -4,7 +4,7 @@
 
 当前交付以独立进程运行。`serve` 由 ZeroBot HTTP driver 启动本机事件回调 listener；FAIRY 不实现第二套 HTTP handler/server。进程同时向 LLOneBot HTTP API 和 FAIRY Core HTTP/SSE 发起请求。
 
-同一二进制还提供短生命周期 `healthcheck` 子命令。它复用 `serve` 的环境配置，依次验证已认证 Core status、OneBot `get_login_info` 和本地 webhook TCP listener；不会启动第二套 server、发送 QQ 消息或输出登录账号。任一边界失败时只返回稳定的组件错误类别。
+同一二进制还提供短生命周期 `healthcheck` 子命令。它复用 `serve` 的环境配置，依次验证已认证 Core status、OneBot `get_login_info` 和本地 webhook TCP listener；不会启动第二套 server、发送 QQ 消息或输出登录账号。单依赖请求最多等待 5 秒，整次检查最多等待 12 秒，Compose 在 15 秒时才终止检查。任一边界失败时只返回稳定的组件错误类别。
 
 ## 配置
 
@@ -50,6 +50,17 @@ docker compose -f docker-compose.yml -f docker-compose.qq.yml up -d --build
 Core 或 action 失败会记录错误，不输出默认道歉或 mock 文本。回复频度、近期存在感和消息价值由 Core 根据真实 transcript 语义权衡；QQ Surface 不实现关键词、随机概率或评分公式。群聊 Prompt 不读取私人 profile，`public_memory_search` 只查询 PostgreSQL verified knowledge；私人 Surface 仍使用完整 `memory_search`。
 
 ZeroBot 独占 webhook listener、签名校验与 HTTP action caller；FAIRY 不叠加 HTTP bridge、doctor transport、队列、去重或重试。进程 context 取消后 `serve` 返回，ZeroBot driver 随进程退出。
+
+### Readiness 诊断
+
+`onebot_unavailable` 是低敏聚合类别，表示 action endpoint 网络失败、超时、HTTP 非 2xx、响应结构无效或账号尚未就绪中的任一种；它本身不等于 HTTP 401。需要区分 HTTP 状态与超时时，可执行下面的受控探针。命令只打印状态码和总耗时，不打印 token、响应体或 QQ 标识：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.qq.yml exec -T llbot-config \
+  node -e 'const t=Date.now();const r=await fetch("http://llbot:3000/get_login_info",{method:"POST",headers:{Authorization:`Bearer ${process.env.FAIRY_ONEBOT_TOKEN}`,"Content-Type":"application/json"},body:"{}"});await r.arrayBuffer();console.log(`http_status=${r.status} elapsed_ms=${Date.now()-t}`)'
+```
+
+若探针明确返回 401，再核对 `qq-onebot` 与 `llbot-config` 容器注入的是同一份 `FAIRY_ONEBOT_TOKEN`，并重建/重启 LLBot 使配置生效；不要把 token 内容写入命令输出或日志。若探针返回 200 但超过 5 秒，应调查 LLBot action 延迟；readiness 不会用无限等待或重试掩盖该故障。
 
 ## 验证
 

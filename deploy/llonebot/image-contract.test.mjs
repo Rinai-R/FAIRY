@@ -118,7 +118,7 @@ test("keeps the direct topology, readiness, ports, credentials, and volume isola
   assert.equal(surface.environment.FAIRY_ONEBOT_GROUP_ALLOWLIST, undefined);
   assert.deepEqual(surface.healthcheck.test, ["CMD", "/usr/local/bin/fairy-qq-onebot", "healthcheck"]);
   assert.equal(surface.healthcheck.interval, "15s");
-  assert.equal(surface.healthcheck.timeout, "5s");
+  assert.equal(surface.healthcheck.timeout, "15s");
   assert.equal(surface.healthcheck.retries, 4);
   assert.equal(surface.healthcheck.start_period, "20s");
 

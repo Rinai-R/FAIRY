@@ -16,10 +16,22 @@ import (
 )
 
 const (
-	readinessTimeout           = 4 * time.Second
-	readinessRequestTimeout    = 2 * time.Second
+	readinessTimeout           = 12 * time.Second
+	readinessRequestTimeout    = 5 * time.Second
 	maxOneBotReadinessResponse = 64 << 10
 )
+
+type readinessPolicy struct {
+	totalTimeout   time.Duration
+	requestTimeout time.Duration
+}
+
+func defaultReadinessPolicy() readinessPolicy {
+	return readinessPolicy{
+		totalTimeout:   readinessTimeout,
+		requestTimeout: readinessRequestTimeout,
+	}
+}
 
 type readinessError string
 
@@ -32,28 +44,35 @@ const (
 func (err readinessError) Error() string { return string(err) }
 
 func runReadinessCheck(ctx context.Context, cfg Config) error {
+	return runReadinessCheckWithPolicy(ctx, cfg, defaultReadinessPolicy())
+}
+
+func runReadinessCheckWithPolicy(ctx context.Context, cfg Config, policy readinessPolicy) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	checkCtx, cancel := context.WithTimeout(ctx, readinessTimeout)
+	if policy.totalTimeout <= 0 || policy.requestTimeout <= 0 || policy.totalTimeout < policy.requestTimeout {
+		return errors.New("readiness timeout policy is invalid")
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, policy.totalTimeout)
 	defer cancel()
-	if err := checkCoreReadiness(checkCtx, cfg); err != nil {
+	if err := checkCoreReadiness(checkCtx, cfg, policy.requestTimeout); err != nil {
 		return errCoreUnavailable
 	}
-	if err := checkOneBotReadiness(checkCtx, cfg); err != nil {
+	if err := checkOneBotReadiness(checkCtx, cfg, policy.requestTimeout); err != nil {
 		return errOneBotUnavailable
 	}
-	if err := checkWebhookReadiness(checkCtx, cfg); err != nil {
+	if err := checkWebhookReadiness(checkCtx, cfg, policy.requestTimeout); err != nil {
 		return errWebhookUnavailable
 	}
 	return nil
 }
 
-func checkCoreReadiness(ctx context.Context, cfg Config) error {
+func checkCoreReadiness(ctx context.Context, cfg Config, requestTimeout time.Duration) error {
 	client, err := session.New(session.Options{
 		Endpoint: cfg.CoreEndpoint,
 		Token:    cfg.CoreToken,
-		Timeout:  readinessRequestTimeout,
+		Timeout:  requestTimeout,
 	})
 	if err != nil {
 		return err
@@ -68,8 +87,8 @@ func checkCoreReadiness(ctx context.Context, cfg Config) error {
 	return nil
 }
 
-func checkOneBotReadiness(ctx context.Context, cfg Config) error {
-	requestCtx, cancel := context.WithTimeout(ctx, readinessRequestTimeout)
+func checkOneBotReadiness(ctx context.Context, cfg Config, requestTimeout time.Duration) error {
+	requestCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	endpoint := strings.TrimRight(cfg.OneBotAPIEndpoint, "/") + "/get_login_info"
 	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, bytes.NewReader([]byte("{}")))
@@ -78,7 +97,7 @@ func checkOneBotReadiness(ctx context.Context, cfg Config) error {
 	}
 	request.Header.Set("Authorization", "Bearer "+cfg.OneBotToken)
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: readinessRequestTimeout}).Do(request)
+	response, err := (&http.Client{Timeout: requestTimeout}).Do(request)
 	if err != nil {
 		return err
 	}
@@ -113,7 +132,7 @@ func checkOneBotReadiness(ctx context.Context, cfg Config) error {
 	return nil
 }
 
-func checkWebhookReadiness(ctx context.Context, cfg Config) error {
+func checkWebhookReadiness(ctx context.Context, cfg Config, requestTimeout time.Duration) error {
 	parsed, err := url.Parse(cfg.OneBotWebhookEndpoint)
 	if err != nil {
 		return err
@@ -126,9 +145,9 @@ func checkWebhookReadiness(ctx context.Context, cfg Config) error {
 	if port == "" {
 		port = "80"
 	}
-	dialCtx, cancel := context.WithTimeout(ctx, readinessRequestTimeout)
+	dialCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	connection, err := (&net.Dialer{Timeout: readinessRequestTimeout}).DialContext(dialCtx, "tcp", net.JoinHostPort(host, port))
+	connection, err := (&net.Dialer{Timeout: requestTimeout}).DialContext(dialCtx, "tcp", net.JoinHostPort(host, port))
 	if err != nil {
 		return err
 	}

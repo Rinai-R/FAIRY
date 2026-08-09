@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -25,6 +26,57 @@ func TestRunReadinessCheck(t *testing.T) {
 
 	if err := runReadinessCheck(t.Context(), readinessConfig(core.URL, oneBot.URL, listener.Addr().String())); err != nil {
 		t.Fatalf("runReadinessCheck: %v", err)
+	}
+}
+
+func TestProductionReadinessPolicyCoversObservedLLBotLatency(t *testing.T) {
+	policy := defaultReadinessPolicy()
+	if policy.requestTimeout != 5*time.Second {
+		t.Fatalf("request timeout = %s, want 5s", policy.requestTimeout)
+	}
+	if policy.totalTimeout != 12*time.Second {
+		t.Fatalf("total timeout = %s, want 12s", policy.totalTimeout)
+	}
+	if policy.totalTimeout <= policy.requestTimeout {
+		t.Fatal("total readiness timeout must contain the dependency request timeout")
+	}
+}
+
+func TestRunReadinessCheckAcceptsSlowOneBotWithinPolicy(t *testing.T) {
+	core := newReadyCoreServer(t)
+	defer core.Close()
+	oneBot := newDelayedOneBotReadinessServer(t, 40*time.Millisecond)
+	defer oneBot.Close()
+	listener := newReadinessListener(t)
+	defer listener.Close()
+
+	policy := readinessPolicy{totalTimeout: 250 * time.Millisecond, requestTimeout: 100 * time.Millisecond}
+	if err := runReadinessCheckWithPolicy(t.Context(), readinessConfig(core.URL, oneBot.URL, listener.Addr().String()), policy); err != nil {
+		t.Fatalf("runReadinessCheckWithPolicy: %v", err)
+	}
+}
+
+func TestRunReadinessCheckBoundsSlowOneBotAndKeepsDiagnosticsLowSensitivity(t *testing.T) {
+	core := newReadyCoreServer(t)
+	defer core.Close()
+	oneBot := newDelayedOneBotReadinessServer(t, 250*time.Millisecond)
+	defer oneBot.Close()
+	listener := newReadinessListener(t)
+	defer listener.Close()
+
+	policy := readinessPolicy{totalTimeout: 100 * time.Millisecond, requestTimeout: 30 * time.Millisecond}
+	started := time.Now()
+	err := runReadinessCheckWithPolicy(t.Context(), readinessConfig(core.URL, oneBot.URL, listener.Addr().String()), policy)
+	if err == nil || err.Error() != errOneBotUnavailable.Error() {
+		t.Fatalf("runReadinessCheckWithPolicy = %v, want %v", err, errOneBotUnavailable)
+	}
+	if elapsed := time.Since(started); elapsed >= policy.totalTimeout {
+		t.Fatalf("dependency timeout took %s, total policy %s", elapsed, policy.totalTimeout)
+	}
+	for _, forbidden := range []string{healthcheckOneBotToken, fmt.Sprint(healthcheckQQID), "Bearer", "401"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("readiness timeout leaked %q: %v", forbidden, err)
+		}
 	}
 }
 
@@ -126,6 +178,26 @@ func newOneBotReadinessServer(t *testing.T, status int, body string) *httptest.S
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		fmt.Fprint(w, body)
+	}))
+}
+
+func newDelayedOneBotReadinessServer(t *testing.T, delay time.Duration) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/get_login_info" || request.Method != http.MethodPost ||
+			request.Header.Get("Authorization") != "Bearer "+healthcheckOneBotToken || request.Header.Get("Content-Type") != "application/json" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-request.Context().Done():
+			return
+		case <-timer.C:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"ok","retcode":0,"data":{"user_id":%d}}`, healthcheckQQID)
 	}))
 }
 
