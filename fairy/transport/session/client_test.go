@@ -160,6 +160,57 @@ func TestReportExpressionDeliveryUsesCorrelatedSessionFrame(t *testing.T) {
 	}
 }
 
+func TestOpenEventsReportsDeliveryOnWatchedSocket(t *testing.T) {
+	server := newSessionWSServer(t, func(conn *websocket.Conn) {
+		var watch sessionClientFrame
+		if err := conn.ReadJSON(&watch); err != nil {
+			t.Error(err)
+			return
+		}
+		if watch.Type != "session.watch" || watch.ConversationID != "conversation-1" {
+			t.Errorf("watch frame = %#v", watch)
+			return
+		}
+		if err := conn.WriteJSON(sessionServerFrame{Type: "ack", RequestID: watch.RequestID}); err != nil {
+			return
+		}
+
+		var delivery sessionClientFrame
+		if err := conn.ReadJSON(&delivery); err != nil {
+			t.Error(err)
+			return
+		}
+		if delivery.Type != "expression.delivery" || delivery.ConversationID != "conversation-1" || delivery.DeliveryResult == nil ||
+			delivery.DeliveryResult.TurnID != "turn-1" || delivery.DeliveryResult.BeatID != "final-0" ||
+			delivery.DeliveryResult.Status != ExpressionDeliverySucceeded {
+			t.Errorf("delivery frame = %#v", delivery)
+			return
+		}
+		_ = conn.WriteJSON(sessionServerFrame{Type: "ack", RequestID: delivery.RequestID})
+	})
+	defer server.Close()
+	client, err := New(Options{Endpoint: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := client.OpenEvents(t.Context(), "conversation-1", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	reporter, ok := stream.(interface {
+		ReportExpressionDelivery(context.Context, ExpressionDeliveryResult) error
+	})
+	if !ok {
+		t.Fatalf("event stream %T does not expose delivery reporting", stream)
+	}
+	if err := reporter.ReportExpressionDelivery(t.Context(), ExpressionDeliveryResult{
+		ConversationID: "conversation-1", TurnID: "turn-1", BeatID: "final-0", Status: ExpressionDeliverySucceeded,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTraceObservabilityClientUsesBearerAndExactCorrelation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer exact-token" {

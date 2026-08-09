@@ -795,6 +795,15 @@ func (s *wsEventStream) Next() (SSEEvent, error) {
 	}
 }
 
+// ReportExpressionDelivery reports delivery through the same Session socket
+// that owns this stream's watch lease.
+func (s *wsEventStream) ReportExpressionDelivery(ctx context.Context, result ExpressionDeliveryResult) error {
+	if s == nil || s.socket == nil {
+		return errors.New("stream is not open")
+	}
+	return s.socket.ReportExpressionDelivery(ctx, result)
+}
+
 func (s *wsEventStream) Close() error {
 	if s == nil || s.socket == nil {
 		return nil

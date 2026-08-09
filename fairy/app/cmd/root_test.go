@@ -273,6 +273,98 @@ func TestTurnSendWritesJSONLAndReturnsTerminalError(t *testing.T) {
 	}
 }
 
+func TestTurnSendAcknowledgesFinalUtteranceAfterWritingIt(t *testing.T) {
+	output := new(bytes.Buffer)
+	stream := &fakeStream{events: []coreclient.SSEEvent{
+		{Event: "responding", Data: mustJSON(coreclient.TurnEvent{
+			ConversationID: "c1", TurnID: "t1", Sequence: 1, State: "responding",
+			Payload: json.RawMessage(`{"type":"beat.ready","beatId":"final-0","kind":"final","displayText":"你好"}`),
+		})},
+		{Event: "completed", Data: mustJSON(coreclient.TurnEvent{
+			ConversationID: "c1", TurnID: "t1", Sequence: 2, State: "completed", Payload: json.RawMessage(`{"type":"completed"}`),
+		})},
+	}}
+	stream.onDelivery = func(result coreclient.ExpressionDeliveryResult) error {
+		if !strings.Contains(output.String(), `"beatId":"final-0"`) {
+			return errors.New("delivery was reported before JSONL output")
+		}
+		return nil
+	}
+	client := &fakeClient{
+		stream: stream,
+		turn:   coreclient.SubmitTurnResponse{Outcome: coreclient.TurnOutcome{ConversationID: "c1", TurnID: "t1"}},
+	}
+	root := NewRootCmd(testDependencies(client))
+	root.SetOut(output)
+	root.SetErr(output)
+	root.SetArgs([]string{"turn", "send", "--conversation", "c1", "--input", "hello"})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	deliveries := stream.deliveryResults()
+	if len(deliveries) != 1 || deliveries[0] != (coreclient.ExpressionDeliveryResult{
+		ConversationID: "c1", TurnID: "t1", BeatID: "final-0", Status: coreclient.ExpressionDeliverySucceeded,
+	}) {
+		t.Fatalf("deliveries = %#v", deliveries)
+	}
+}
+
+func TestCLIFinalUtteranceDeliveryRejectsUnprovenDisplay(t *testing.T) {
+	tests := []struct {
+		name    string
+		event   coreclient.TurnEvent
+		wantAck bool
+	}{
+		{name: "display text", event: cliTurnEvent("c1", "t1", `{"type":"beat.ready","beatId":"b1","kind":"final","displayText":"你好"}`), wantAck: true},
+		{name: "utterance part", event: cliTurnEvent("c1", "t1", `{"type":"beat.ready","beatId":"b1","kind":"final","part":{"kind":"utterance","text":"你好"}}`), wantAck: true},
+		{name: "non final", event: cliTurnEvent("c1", "t1", `{"type":"beat.ready","beatId":"b1","kind":"utterance","displayText":"处理中"}`)},
+		{name: "sticker", event: cliTurnEvent("c1", "t1", `{"type":"beat.ready","beatId":"b1","kind":"final","displayText":"[贴纸]","part":{"kind":"sticker"}}`)},
+		{name: "empty text", event: cliTurnEvent("c1", "t1", `{"type":"beat.ready","beatId":"b1","kind":"final","displayText":"  "}`)},
+		{name: "padded beat", event: cliTurnEvent("c1", "t1", `{"type":"beat.ready","beatId":" b1 ","kind":"final","displayText":"你好"}`)},
+		{name: "missing conversation", event: cliTurnEvent(" ", "t1", `{"type":"beat.ready","beatId":"b1","kind":"final","displayText":"你好"}`)},
+		{name: "missing turn", event: cliTurnEvent("c1", " ", `{"type":"beat.ready","beatId":"b1","kind":"final","displayText":"你好"}`)},
+		{name: "malformed payload", event: cliTurnEvent("c1", "t1", `{`)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, got := cliFinalUtteranceDelivery(test.event)
+			if got != test.wantAck {
+				t.Fatalf("ack = %v, want %v", got, test.wantAck)
+			}
+		})
+	}
+}
+
+func TestTurnSendReturnsDeliveryReportErrorAfterWritingBeat(t *testing.T) {
+	reportErr := errors.New("watched socket closed")
+	stream := &fakeStream{
+		events:      []coreclient.SSEEvent{{Event: "responding", Data: mustJSON(cliTurnEvent("c1", "t1", `{"type":"beat.ready","beatId":"b1","kind":"final","displayText":"你好"}`))}},
+		deliveryErr: reportErr,
+	}
+	client := &fakeClient{
+		stream: stream,
+		turn:   coreclient.SubmitTurnResponse{Outcome: coreclient.TurnOutcome{ConversationID: "c1", TurnID: "t1"}},
+	}
+	output := new(bytes.Buffer)
+	root := NewRootCmd(testDependencies(client))
+	root.SetOut(output)
+	root.SetErr(output)
+	root.SetArgs([]string{"turn", "send", "--conversation", "c1", "--input", "hello"})
+	err := root.ExecuteContext(context.Background())
+	if !errors.Is(err, reportErr) || !strings.Contains(err.Error(), "report final expression delivery") {
+		t.Fatalf("error = %v", err)
+	}
+	if !strings.Contains(output.String(), `"beatId":"b1"`) {
+		t.Fatalf("beat was not written before delivery failure: %q", output.String())
+	}
+}
+
+func cliTurnEvent(conversationID, turnID, payload string) coreclient.TurnEvent {
+	return coreclient.TurnEvent{
+		ConversationID: conversationID, TurnID: turnID, Sequence: 1, State: "responding", Payload: json.RawMessage(payload),
+	}
+}
+
 func TestLogsFollowClosesStreamAndReturnsCleanlyOnCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	started := make(chan struct{})
@@ -442,9 +534,12 @@ func (f *fakeClient) BindOwnerIdentity(_ context.Context, namespace, subject str
 func (f *fakeClient) UnbindOwnerIdentity(context.Context, string, string) error { return nil }
 
 type fakeStream struct {
-	mu     sync.Mutex
-	events []coreclient.SSEEvent
-	closed bool
+	mu          sync.Mutex
+	events      []coreclient.SSEEvent
+	closed      bool
+	deliveries  []coreclient.ExpressionDeliveryResult
+	deliveryErr error
+	onDelivery  func(coreclient.ExpressionDeliveryResult) error
 }
 
 type blockingStream struct {
@@ -481,6 +576,26 @@ func (s *fakeStream) Close() error {
 	s.closed = true
 	s.mu.Unlock()
 	return nil
+}
+
+func (s *fakeStream) ReportExpressionDelivery(_ context.Context, result coreclient.ExpressionDeliveryResult) error {
+	s.mu.Lock()
+	s.deliveries = append(s.deliveries, result)
+	hook := s.onDelivery
+	err := s.deliveryErr
+	s.mu.Unlock()
+	if hook != nil {
+		if hookErr := hook(result); hookErr != nil {
+			return hookErr
+		}
+	}
+	return err
+}
+
+func (s *fakeStream) deliveryResults() []coreclient.ExpressionDeliveryResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]coreclient.ExpressionDeliveryResult(nil), s.deliveries...)
 }
 
 func mustJSON(value any) []byte {

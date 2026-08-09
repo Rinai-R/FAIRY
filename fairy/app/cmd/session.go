@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -153,6 +154,21 @@ type turnResult struct {
 	err      error
 }
 
+type expressionDeliveryReporter interface {
+	ReportExpressionDelivery(context.Context, session.ExpressionDeliveryResult) error
+}
+
+type cliBeatReadyPayload struct {
+	Type        string `json:"type"`
+	BeatID      string `json:"beatId"`
+	Kind        string `json:"kind"`
+	DisplayText string `json:"displayText"`
+	Part        *struct {
+		Kind string `json:"kind"`
+		Text string `json:"text"`
+	} `json:"part"`
+}
+
 func sendTurn(command *cobra.Command, client APIClient, config ConnectionConfig, conversationID string, request session.SubmitTurnRequest) error {
 	stream, err := client.OpenEvents(command.Context(), conversationID, config.Timeout)
 	if err != nil {
@@ -201,12 +217,59 @@ func sendTurn(command *cobra.Command, client APIClient, config ConnectionConfig,
 			if err := writeJSONLine(command.OutOrStdout(), result.event); err != nil {
 				return err
 			}
+			if err := acknowledgeCLIFinalUtterance(command.Context(), stream, result.event); err != nil {
+				return err
+			}
 			switch result.event.State {
 			case "completed", "failed", "interrupted":
 				terminal = result.event.State
 			}
 		}
 	}
+}
+
+func acknowledgeCLIFinalUtterance(ctx context.Context, stream session.EventStream, event session.TurnEvent) error {
+	delivery, ok := cliFinalUtteranceDelivery(event)
+	if !ok {
+		return nil
+	}
+	reporter, ok := stream.(expressionDeliveryReporter)
+	if !ok {
+		return errors.New("session event stream cannot report expression delivery")
+	}
+	if err := reporter.ReportExpressionDelivery(ctx, delivery); err != nil {
+		return fmt.Errorf("report final expression delivery: %w", err)
+	}
+	return nil
+}
+
+func cliFinalUtteranceDelivery(event session.TurnEvent) (session.ExpressionDeliveryResult, bool) {
+	if strings.TrimSpace(event.ConversationID) == "" || strings.TrimSpace(event.TurnID) == "" {
+		return session.ExpressionDeliveryResult{}, false
+	}
+	var payload cliBeatReadyPayload
+	if err := json.Unmarshal(event.Payload, &payload); err != nil || payload.Type != "beat.ready" || payload.Kind != "final" {
+		return session.ExpressionDeliveryResult{}, false
+	}
+	if payload.BeatID == "" || strings.TrimSpace(payload.BeatID) != payload.BeatID {
+		return session.ExpressionDeliveryResult{}, false
+	}
+	if payload.Part != nil && payload.Part.Kind != "utterance" {
+		return session.ExpressionDeliveryResult{}, false
+	}
+	text := strings.TrimSpace(payload.DisplayText)
+	if text == "" && payload.Part != nil && payload.Part.Kind == "utterance" {
+		text = strings.TrimSpace(payload.Part.Text)
+	}
+	if text == "" {
+		return session.ExpressionDeliveryResult{}, false
+	}
+	return session.ExpressionDeliveryResult{
+		ConversationID: event.ConversationID,
+		TurnID:         event.TurnID,
+		BeatID:         payload.BeatID,
+		Status:         session.ExpressionDeliverySucceeded,
+	}, true
 }
 
 func readTurnEvents(stream session.EventStream, results chan<- eventResult) {
