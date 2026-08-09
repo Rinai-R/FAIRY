@@ -478,9 +478,48 @@ func testVisualManifest() coreclient.VisualManifest {
 		Scale:         1,
 		Anchor:        coreclient.VisualAnchor{X: 64, Y: 190},
 		States: []coreclient.VisualState{
-			{ID: "idle", ImagePath: "images/idle.png"},
-			{ID: "talk", ImagePath: "images/talk.png"},
+			{ID: "idle", ImagePath: "images/idle.png", Motion: "float"},
+			{ID: "talk", ImagePath: "images/talk.png", Motion: "pulse"},
 		},
+	}
+}
+
+func TestVisualCachePreservesMotionAndRejectsUnknownMotion(t *testing.T) {
+	server := visualAssetServer(t, func() []byte { return testPNG })
+	defer server.Close()
+	client, err := coreclient.New(coreclient.Options{Endpoint: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache, err := newVisualCacheAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cache.Close()
+
+	manifest := testVisualManifest()
+	local, err := cache.Sync(t.Context(), client, manifest)
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if local.States[0].Motion != "float" || local.States[1].Motion != "pulse" {
+		t.Fatalf("local motions = %#v", local.States)
+	}
+
+	manifest.States[0].Motion = "spin"
+	if _, err := cache.Sync(t.Context(), client, manifest); err == nil || !strings.Contains(err.Error(), "motion") {
+		t.Fatalf("unsupported motion error = %v", err)
+	}
+}
+
+func TestVisualCacheUsesStaticFallbackForMissingMotion(t *testing.T) {
+	manifest := testVisualManifest()
+	manifest.States[0].Motion = ""
+	if err := normalizeVisualManifest(&manifest); err != nil {
+		t.Fatalf("normalizeVisualManifest() error = %v", err)
+	}
+	if manifest.States[0].Motion != "still" {
+		t.Fatalf("missing motion = %q, want still", manifest.States[0].Motion)
 	}
 }
 

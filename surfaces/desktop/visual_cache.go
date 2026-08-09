@@ -68,7 +68,7 @@ func (c *visualCache) Sync(ctx context.Context, client *coreclient.Client, visua
 	if client == nil {
 		return coreclient.VisualManifest{}, errors.New("Core client is required")
 	}
-	if err := validateVisualManifest(visual); err != nil {
+	if err := normalizeVisualManifest(&visual); err != nil {
 		return coreclient.VisualManifest{}, err
 	}
 	key, err := visualCacheKey(visual)
@@ -267,7 +267,10 @@ func (c *visualCache) Close() error {
 	return err
 }
 
-func validateVisualManifest(visual coreclient.VisualManifest) error {
+func normalizeVisualManifest(visual *coreclient.VisualManifest) error {
+	if visual == nil {
+		return errors.New("active character visual manifest is required")
+	}
 	if visual.PackID == "" {
 		return errors.New("active character visual pack ID is required")
 	}
@@ -276,7 +279,8 @@ func validateVisualManifest(visual coreclient.VisualManifest) error {
 	}
 	seen := make(map[string]struct{}, len(visual.States))
 	hasIdle := false
-	for _, state := range visual.States {
+	for index := range visual.States {
+		state := &visual.States[index]
 		if state.ID == "" || state.ImagePath == "" || !strings.HasSuffix(state.ImagePath, ".png") {
 			return errors.New("active character visual state is invalid")
 		}
@@ -285,6 +289,16 @@ func validateVisualManifest(visual coreclient.VisualManifest) error {
 		}
 		seen[state.ID] = struct{}{}
 		hasIdle = hasIdle || state.ID == "idle"
+		switch state.Motion {
+		case "":
+			// A newer Desktop can still connect to an older Core during rollback.
+			// Missing motion is a static defensive fallback, not a second copy of
+			// the Core's legacy-pack defaulting policy.
+			state.Motion = "still"
+		case "still", "float", "pulse", "bounce":
+		default:
+			return fmt.Errorf("active character visual state %q motion is unsupported", state.ID)
+		}
 	}
 	if !hasIdle {
 		return errors.New("active character visual pack is missing idle")

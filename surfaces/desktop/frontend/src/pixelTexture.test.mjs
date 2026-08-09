@@ -72,6 +72,8 @@ test("renderable texture keeps the last loaded image during state transitions", 
   const loaded = Object.freeze({
     imageUrl: "http://wails.localhost/fairy-character/fairy.atri/idle.png",
     texture: Object.freeze({ width: 512, height: 768 }),
+    visualState: "idle",
+    motion: "float",
   });
 
   assert.equal(resolveRenderablePixelTexture(null), null);

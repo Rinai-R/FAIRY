@@ -19,7 +19,7 @@
   - [x] 增加真实 PostgreSQL 长会话稳定性门；连续执行 32 个生产 Turn、中点重建 Service/Retention，并验证 64 条完整历史、重复 L3、唯一终态、有界活动窗口与资源收敛
   - [x] 增加只读 QQ operator smoke；以真实入站 message ID 关联持久 Trace/Turn、逐拍 Surface 回执与 OneBot `get_msg`，自动合同不冒充真实环境 PASS
 - [ ] 提升表情包语义质量；当前依赖人工描述与标签，不使用未经设计的 VLM/OCR 自动识别
-- [ ] 丰富角色渲染；当前本地单图状态可用，Live2D 不阻塞聊天主线
+- [ ] 丰富角色渲染；声明式轻量 motion、旧包待机动态、状态入场与 reduced-motion 静态降级已实现并通过自动化验证，待 Desktop 实机视觉验收，Live2D 保持非目标
 - [ ] 评估飞书、Telegram 等其他 IM Surface
 - [ ] skills、MCP、mem0 与多模型路由只作为显式可选能力另行设计，不引入隐藏 fallback
 
