@@ -16,12 +16,11 @@ import (
 	"fairy/agent/reply"
 	"fairy/agent/tool"
 	"fairy/context/character"
+	history "fairy/context/history/transcript"
 	"fairy/context/recall"
 	"fairy/context/social"
 	"fairy/runtime/config"
 	"fairy/runtime/model"
-
-	"fairy/transport/session"
 )
 
 func TestLiveSimulateSREGroupChat(t *testing.T) {
@@ -50,6 +49,23 @@ func TestLiveSimulateGalgameDualPlayChat(t *testing.T) {
 	})
 }
 
+func TestLiveReplyQualityContract(t *testing.T) {
+	valid := `{"chains":[{"kind":"utterance","text":"十天双开两部确实会有点吃不消，先停一条也挺正常。","visualState":"idle"}]}`
+	compiled, err := assertLiveReplyQuality(t, valid, &initiative.ReplyIntent{ReplyMode: "brief"})
+	if err != nil || compiled.DisplayText == "" {
+		t.Fatalf("valid live reply = %#v, %v", compiled, err)
+	}
+	for _, invalid := range []string{
+		`{"chains":[{"kind":"utterance","text":"tool_calls: web_search","visualState":"idle"}]}`,
+		`{"chains":[{"kind":"utterance","text":"","visualState":"idle"}]}`,
+		`{"chains":[{"kind":"utterance","text":"` + strings.Repeat("长", 241) + `","visualState":"idle"}]}`,
+	} {
+		if _, err := assertLiveReplyQuality(t, invalid, &initiative.ReplyIntent{ReplyMode: "brief"}); err == nil {
+			t.Fatalf("invalid live reply passed: %s", truncateRunes(invalid, 80))
+		}
+	}
+}
+
 func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 	persona := loadPersonaLiveConfig(t)
 	modelPort := newLiveModelPort(t, persona)
@@ -61,43 +77,68 @@ func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 		{ID: "ex-gal", Kind: social.SocialMemoryExpression, Situation: "吐槽十天进度难绷", Content: "短句接梗，别说教别列清单", RecallCue: "进度难绷"},
 	}}}
 	service := newSocialLearningTestService(memoryPort, modelPort)
-	service.cfg = livePersonaConfig{model: character.Model}
+	service.cfg = livePersonaConfig{model: persona.Model}
+	service.memory.ambient.activity = liveParticipationActivity()
 	defer service.Close()
 
 	var (
-		mu        sync.Mutex
-		decisions []string
-		replies   []string
+		mu             sync.Mutex
+		decisions      []string
+		replies        []string
+		lastBatch      initiative.LiveEvalAmbientBatch
+		decisionCalls  int
+		activeSubmits  int
+		maximumSubmits int
 	)
-	service.ambient.decideHook = func(ctx context.Context, batch ambientBatch) (initiative.ParticipationResult, error) {
+	firstDecisionStarted := make(chan struct{})
+	host := &liveEvalInboxHost{}
+	host.decide = func(ctx context.Context, request initiative.ParticipationRequest) (initiative.ParticipationResult, error) {
+		mu.Lock()
+		decisionCalls++
+		call := decisionCalls
+		mu.Unlock()
+		if call == 1 {
+			close(firstDecisionStarted)
+			<-ctx.Done()
+			return initiative.ParticipationResult{}, ctx.Err()
+		}
+		return decideParticipation(service, ctx, request)
+	}
+	inbox := initiative.NewInbox(t.Context(), host)
+	defer inbox.Close()
+	inbox.SetLiveEvalMaximumTimerDelay(150 * time.Millisecond)
+	inbox.SetLiveEvalDecisionHook(func(ctx context.Context, batch initiative.LiveEvalAmbientBatch) (initiative.ParticipationResult, error) {
 		started := time.Now()
-		result, err := service.DecideParticipation(ctx, initiative.ParticipationRequest{
-			ConversationID:   batch.conversationID,
-			EvaluationReason: batch.evaluationReason,
-			Messages:         batch.messages,
-			CacheMessages:    batch.cacheMessages,
+		mu.Lock()
+		lastBatch = batch
+		mu.Unlock()
+		result, err := host.decide(ctx, initiative.ParticipationRequest{
+			ConversationID:   batch.ConversationID,
+			EvaluationReason: batch.EvaluationReason,
+			Messages:         batch.Messages,
+			CacheMessages:    batch.CacheMessages,
 		})
 		elapsed := time.Since(started).Milliseconds()
 		if err != nil {
 			mu.Lock()
 			if ctx.Err() != nil {
-				decisions = append(decisions, fmt.Sprintf("gen=%d reason=%s canceled (%dms)", batch.generation, batch.evaluationReason, elapsed))
+				decisions = append(decisions, fmt.Sprintf("gen=%d reason=%s superseded (%dms)", batch.Generation, batch.EvaluationReason, elapsed))
 			} else {
-				decisions = append(decisions, fmt.Sprintf("gen=%d reason=%s failed (%dms): %v", batch.generation, batch.evaluationReason, elapsed, err))
+				decisions = append(decisions, fmt.Sprintf("gen=%d reason=%s failed (%dms): %v", batch.Generation, batch.EvaluationReason, elapsed, err))
 			}
 			mu.Unlock()
 			return initiative.ParticipationResult{}, err
 		}
 		newCount := 0
-		for _, message := range batch.messages {
+		for _, message := range batch.Messages {
 			if message.IsNew {
 				newCount++
 			}
 		}
 		line := fmt.Sprintf("gen=%d reason=%s window=%d new=%d cache=%d action=%s (%dms)",
-			batch.generation, batch.evaluationReason, len(batch.messages), newCount, len(batch.cacheMessages), result.Action, elapsed)
+			batch.Generation, batch.EvaluationReason, len(batch.Messages), newCount, len(batch.CacheMessages), result.Action, elapsed)
 		if result.TargetMessageID != nil {
-			line += fmt.Sprintf(" target=%s %q", *result.TargetMessageID, observationTextByID(batch.messages, *result.TargetMessageID))
+			line += fmt.Sprintf(" target=%s %q", *result.TargetMessageID, observationTextByID(batch.Messages, *result.TargetMessageID))
 		}
 		if result.WaitSeconds != nil {
 			line += fmt.Sprintf(" wait=%ds", *result.WaitSeconds)
@@ -107,103 +148,88 @@ func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 		mu.Unlock()
 		t.Log(line)
 		return result, nil
-	}
-	service.ambient.after = func(delay time.Duration, callback func()) stoppableTimer {
-		if delay > 150*time.Millisecond {
-			delay = 150 * time.Millisecond
-		}
-		return time.AfterFunc(delay, callback)
-	}
-	service.ambient.submitHook = func(request SubmitTurnRequest) (TurnOutcome, error) {
+	})
+	inbox.SetLiveEvalSubmitHook(func(request initiative.TurnRequest) (initiative.TurnOutcome, error) {
 		if request.ReplyIntent == nil {
-			return TurnOutcome{}, errors.New("reply intent missing")
-		}
-		service.ambient.mu.Lock()
-		state := service.ambient.states[request.ConversationID]
-		cache := make([]initiative.AmbientObservation, 0)
-		if state != nil {
-			for _, entry := range state.cacheMessages {
-				cache = append(cache, entry.observation)
-			}
-		}
-		service.ambient.mu.Unlock()
-		if len(cache) == 0 {
-			cache = all
-		}
-		started := time.Now()
-		draft, tools, _, err := livePublicRespondWithTools(context.Background(), service, modelPort, character.Model, cache, request.ReplyIntent)
-		if err != nil {
-			return TurnOutcome{}, err
-		}
-		display := draft
-		if compiled, compileErr := reply.CompileReply(draft, []reply.VisualState{{ID: "idle", Description: "待机"}}); compileErr == nil {
-			display = compiled.DisplayText
+			return initiative.TurnOutcome{}, errors.New("reply intent missing")
 		}
 		mu.Lock()
-		replies = append(replies, display)
+		activeSubmits++
+		if activeSubmits > maximumSubmits {
+			maximumSubmits = activeSubmits
+		}
+		cache := append([]initiative.AmbientObservation(nil), lastBatch.CacheMessages...)
 		mu.Unlock()
-		t.Logf("submit reply (%dms, tools=%v): %q", time.Since(started).Milliseconds(), tools, display)
-		return TurnOutcome{ResponseText: display}, nil
-	}
+		started := time.Now()
+		draft, tools, _, err := livePublicRespondWithTools(context.Background(), service, modelPort, persona.Model, cache, request.ReplyIntent)
+		if err != nil {
+			mu.Lock()
+			activeSubmits--
+			mu.Unlock()
+			return initiative.TurnOutcome{}, err
+		}
+		compiled, compileErr := assertLiveReplyQuality(t, draft, request.ReplyIntent)
+		if compileErr != nil {
+			mu.Lock()
+			activeSubmits--
+			mu.Unlock()
+			return initiative.TurnOutcome{}, compileErr
+		}
+		mu.Lock()
+		activeSubmits--
+		replies = append(replies, compiled.DisplayText)
+		mu.Unlock()
+		t.Logf("submit reply (%dms, tools=%v): %q", time.Since(started).Milliseconds(), tools, compiled.DisplayText)
+		return initiative.TurnOutcome{ResponseText: compiled.DisplayText}, nil
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	totalStarted := time.Now()
-	t.Logf("ambient inbox client sim model=%s messages=%d", character.Model, len(all))
+	t.Logf("ambient inbox client sim model=%s messages=%d", persona.Model, len(all))
 
 	for index, incoming := range all {
 		if err := ctx.Err(); err != nil {
 			t.Fatalf("feed aborted: %v", err)
 		}
-		obs := incoming
-		session.IsNew = false
-		if err := service.ObserveAmbient("conversation-1", obs); err != nil {
-			t.Fatalf("ObserveAmbient #%d: %v", index+1, err)
+		if err := inbox.Observe("conversation-1", incoming); err != nil {
+			t.Fatalf("Inbox.Observe #%d: %v", index+1, err)
 		}
 		t.Logf("feed #%02d %s: %s", index+1, incoming.SenderName, truncateRunes(incoming.Text, 36))
-		if index+1 >= len(all) {
-			break
-		}
-		gap := time.Duration(all[index+1].TimestampUnixMS-incoming.TimestampUnixMS) * time.Millisecond
-		if gap < 0 {
-			gap = 0
-		}
-		// Long real-world pauses: let the current single-flight decision settle (true ambient quiet).
-		if gap >= 5*time.Minute {
-			t.Logf("quiet gap=%s → wait idle", gap)
-			quietDeadline := time.Now().Add(2 * time.Minute)
-			for time.Now().Before(quietDeadline) {
-				if ambientInboxIdle(service, "conversation-1") {
-					break
-				}
-				time.Sleep(50 * time.Millisecond)
+		if index == 0 {
+			select {
+			case <-firstDecisionStarted:
+			case <-time.After(time.Second):
+				t.Fatal("first participation decision did not start")
 			}
-			continue
 		}
-		// Short bursts: compress arrival spacing; do NOT wait for decide/reply.
-		sleepFor := gap / 50
-		if sleepFor > 300*time.Millisecond {
-			sleepFor = 300 * time.Millisecond
-		}
-		if sleepFor < 30*time.Millisecond {
-			sleepFor = 30 * time.Millisecond
-		}
-		time.Sleep(sleepFor)
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	deadline := time.Now().Add(3 * time.Minute)
 	for time.Now().Before(deadline) {
-		if ambientInboxIdle(service, "conversation-1") {
+		if inbox.LiveEvalIdle("conversation-1") {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if !ambientInboxIdle(service, "conversation-1") {
+	if !inbox.LiveEvalIdle("conversation-1") {
 		t.Fatal("ambient inbox did not become idle after feed")
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
+	if maximumSubmits > 1 {
+		t.Fatalf("concurrent submits=%d", maximumSubmits)
+	}
+	for _, event := range host.snapshotEvents() {
+		if event.Action == "failed" {
+			t.Fatalf("superseded decision published failed event: %#v", event)
+		}
+	}
+	if len(lastBatch.Messages) != initiative.MaxAmbientObservations || lastBatch.Messages[len(lastBatch.Messages)-1].MessageID != all[len(all)-1].MessageID {
+		t.Fatalf("latest batch is incomplete: window=%d last=%q", len(lastBatch.Messages), lastBatch.Messages[len(lastBatch.Messages)-1].MessageID)
+	}
 	t.Logf("done decisions=%d replies=%d end_to_end_ms=%d", len(decisions), len(replies), time.Since(totalStarted).Milliseconds())
 	for i, decision := range decisions {
 		t.Logf("decision[%d]=%s", i+1, decision)
@@ -213,17 +239,70 @@ func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 	}
 }
 
-func ambientInboxIdle(service *Service, conversationID string) bool {
-	if service == nil || service.ambient == nil {
-		return true
+type liveEvalInboxHost struct {
+	mu     sync.Mutex
+	decide func(context.Context, initiative.ParticipationRequest) (initiative.ParticipationResult, error)
+	events []initiative.Event
+}
+
+func (*liveEvalInboxHost) BeginMessageTrace(_, _, messageID, traceID string) string {
+	if traceID != "" {
+		return traceID
 	}
-	service.ambient.mu.Lock()
-	defer service.ambient.mu.Unlock()
-	state := service.ambient.states[conversationID]
-	if state == nil {
-		return true
+	return "live-" + messageID
+}
+
+func (*liveEvalInboxHost) ObserveSocialFeedback(string, initiative.AmbientObservation)   {}
+func (*liveEvalInboxHost) EnqueueSocialLearning(string, []initiative.AmbientObservation) {}
+func (*liveEvalInboxHost) CancelTurnBeforeDelivery(string)                               {}
+func (*liveEvalInboxHost) SubmitTurn(initiative.TurnRequest) (initiative.TurnOutcome, error) {
+	return initiative.TurnOutcome{}, errors.New("live submit hook is not configured")
+}
+func (*liveEvalInboxHost) EndMessageTrace(string, string)               {}
+func (*liveEvalInboxHost) RecordParticipation([]string, string, string) {}
+func (*liveEvalInboxHost) WarnAmbient(string, string, uint64, error)    {}
+func (h *liveEvalInboxHost) DecideParticipation(ctx context.Context, request initiative.ParticipationRequest) (initiative.ParticipationResult, error) {
+	return h.decide(ctx, request)
+}
+func (h *liveEvalInboxHost) EmitParticipation(event initiative.Event) {
+	h.mu.Lock()
+	h.events = append(h.events, event)
+	h.mu.Unlock()
+}
+
+func (h *liveEvalInboxHost) snapshotEvents() []initiative.Event {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]initiative.Event(nil), h.events...)
+}
+
+func assertLiveReplyQuality(_ *testing.T, draft string, intent *initiative.ReplyIntent) (reply.CompiledReply, error) {
+	compiled, err := compileReplyForInteraction(
+		draft,
+		[]reply.VisualState{{ID: "idle", Description: "待机"}},
+		publicAmbientResolved(),
+		liveConversationReplyIntent(intent),
+	)
+	if err != nil {
+		return reply.CompiledReply{}, err
 	}
-	return !state.running && state.timer == nil
+	visible := strings.TrimSpace(compiled.DisplayText)
+	if visible == "" {
+		return reply.CompiledReply{}, errors.New("compiled reply is empty")
+	}
+	if length := len([]rune(visible)); length > 240 {
+		return reply.CompiledReply{}, fmt.Errorf("compiled reply has %d runes, maximum is 240", length)
+	}
+	lower := strings.ToLower(visible)
+	for _, leaked := range []string{
+		"system prompt", "developer message", "function_call", "tool_calls", "memoryquery",
+		"replycandidatemessageids", "newmessageids", "<tool", "系统提示词", "工具调用协议",
+	} {
+		if strings.Contains(lower, strings.ToLower(leaked)) {
+			return reply.CompiledReply{}, fmt.Errorf("compiled reply leaks internal marker %q", leaked)
+		}
+	}
+	return compiled, nil
 }
 
 func truncateRunes(text string, limit int) string {
@@ -251,7 +330,7 @@ func runLiveGroupChatSimulation(t *testing.T, scenario liveGroupChatScenario) {
 		t.Fatal("empty scenario")
 	}
 	if len(all) > initiative.MaxAmbientCacheObservations {
-		t.Fatalf("scenario has %d messages, cache max is %d", len(all), initiative.MaxAmbientCacheObservations)
+		all = all[len(all)-initiative.MaxAmbientCacheObservations:]
 	}
 	window := all
 	if len(window) > initiative.MaxAmbientObservations {
@@ -267,17 +346,18 @@ func runLiveGroupChatSimulation(t *testing.T, scenario liveGroupChatScenario) {
 	for i := range window {
 		window[i].IsNew = i >= len(window)-newTail
 	}
-	t.Logf("scenario=%s total=%d window=%d newTail=%d model=%s", scenario.name, len(all), len(window), newTail, character.Model)
+	t.Logf("scenario=%s total=%d window=%d newTail=%d model=%s", scenario.name, len(all), len(window), newTail, persona.Model)
 
 	memoryPort := &socialLearningMemory{retrieved: social.SocialMemoryContext{Entries: scenario.seed}}
 	service := newSocialLearningTestService(memoryPort, modelPort)
-	service.cfg = livePersonaConfig{model: character.Model}
+	service.cfg = livePersonaConfig{model: persona.Model}
+	service.memory.ambient.activity = liveParticipationActivity()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	participateStarted := time.Now()
-	result, err := service.DecideParticipation(ctx, initiative.ParticipationRequest{
+	result, err := decideParticipation(service, ctx, initiative.ParticipationRequest{
 		ConversationID:   "conversation-1",
 		EvaluationReason: initiative.ParticipationReasonMessage,
 		Messages:         window,
@@ -289,8 +369,14 @@ func runLiveGroupChatSimulation(t *testing.T, scenario liveGroupChatScenario) {
 	}
 	t.Logf("latency participate_ms=%d", participateMS)
 	t.Logf("participate action=%s wait=%v", result.Action, result.WaitSeconds)
+	for _, usage := range formatLiveUsage(result.Usage) {
+		t.Logf("participate %s", usage)
+	}
 	if result.TargetMessageID != nil {
 		t.Logf("target=%s text=%q", *result.TargetMessageID, observationTextByID(all, *result.TargetMessageID))
+		if result.Action == initiative.ParticipationReply && !isNewLiveObservation(window, *result.TargetMessageID) {
+			t.Fatalf("reply target %q is not a new observation", *result.TargetMessageID)
+		}
 	}
 	if result.Intent != nil {
 		t.Logf("intent act=%q focus=%q mode=%q memoryQuery=%q expressionQuery=%q drift=%q",
@@ -303,7 +389,7 @@ func runLiveGroupChatSimulation(t *testing.T, scenario liveGroupChatScenario) {
 	}
 
 	respondStarted := time.Now()
-	reply, tools, phases, err := livePublicRespondWithTools(ctx, service, modelPort, character.Model, all, result.Intent)
+	draft, tools, phases, err := livePublicRespondWithTools(ctx, service, modelPort, persona.Model, all, result.Intent)
 	respondMS := time.Since(respondStarted).Milliseconds()
 	if err != nil {
 		t.Fatalf("respond: %v", err)
@@ -313,12 +399,11 @@ func runLiveGroupChatSimulation(t *testing.T, scenario liveGroupChatScenario) {
 		t.Logf("latency respond_phase=%s", phase)
 	}
 	t.Logf("respond tools=%v", tools)
-	t.Logf("respond draft=%s", reply)
-	if compiled, compileErr := reply.CompileReply(reply, []reply.VisualState{{ID: "idle", Description: "待机"}}); compileErr != nil {
-		t.Logf("compile note: %v", compileErr)
-	} else {
-		t.Logf("respond display=%q", compiled.DisplayText)
+	compiled, compileErr := assertLiveReplyQuality(t, draft, result.Intent)
+	if compileErr != nil {
+		t.Fatalf("reply quality: %v", compileErr)
 	}
+	t.Logf("respond display=%q", compiled.DisplayText)
 }
 
 func observationTextByID(messages []initiative.AmbientObservation, id string) string {
@@ -328,6 +413,21 @@ func observationTextByID(messages []initiative.AmbientObservation, id string) st
 		}
 	}
 	return ""
+}
+
+func isNewLiveObservation(messages []initiative.AmbientObservation, id string) bool {
+	for _, message := range messages {
+		if message.MessageID == id {
+			return message.IsNew
+		}
+	}
+	return false
+}
+
+func liveParticipationActivity() *participationMemory {
+	return &participationMemory{bootstrap: history.ConversationBootstrap{
+		Conversation: history.ConversationRecord{ID: "conversation-1", CharacterID: "character-1"},
+	}}
 }
 
 func sreGroupChatObservations() []initiative.AmbientObservation {
@@ -474,11 +574,12 @@ func livePublicRespondWithTools(
 	intent *initiative.ReplyIntent,
 ) (string, []string, []string, error) {
 	resolved := publicAmbientResolved()
+	respondIntent := liveConversationReplyIntent(intent)
 	toolsUsed := make([]string, 0, 3)
 	phases := make([]string, 0, 6)
 	retrieval := recall.Context{}
 	socialStarted := time.Now()
-	social, err := service.retrieveSocialRespondContext(ctx, "character-1", "conversation-1", resolved, intent, initiative.SenderIDs(messages))
+	social, err := service.retrieveSocialRespondContext(ctx, "character-1", "conversation-1", resolved, respondIntent, initiative.SenderIDs(messages))
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -510,6 +611,7 @@ func livePublicRespondWithTools(
 		if step < budget {
 			tools = tool.SpecsForInteraction(false, resolved)
 		}
+		instructions := tool.InstructionsForInteraction(len(tools) > 0, resolved)
 		input := []model.PromptItem{
 			{Type: model.PromptItemContextData, Content: `{"contextType":"character","name":"Fairy","description":"群友","textLanguage":"zh","speakingLanguage":"zh"}`},
 			{Type: model.PromptItemContextData, Content: `{"contextType":"interaction","presenceProjection":"public_peer","audience":"multi","initiation":"ambient"}`},
@@ -534,18 +636,21 @@ func livePublicRespondWithTools(
 			input = append(input, model.PromptItem{Type: model.PromptItemContextData, Content: string(payload)})
 		}
 		modelStarted := time.Now()
+		cacheInput := model.NewCacheKeyInput(model.PromptLaneRespond, modelName, "conversation-1", instructions)
+		cacheInput.CharacterRevision = 1
 		events, execErr := modelPort.ExecuteRequestContext(ctx, model.CompiledPromptRequest{
 			Shape: model.ModelRequestShape{
 				Lane: model.PromptLaneRespond, Model: modelName,
-				Instructions: tool.InstructionsForInteraction(len(tools) > 0, resolved), MaxOutputTokens: 640,
+				Instructions: instructions, MaxOutputTokens: 640,
 			},
-			Input: input, Tools: tools,
+			Input: input, Tools: tools, CacheInput: &cacheInput,
 		})
 		modelMS := time.Since(modelStarted).Milliseconds()
 		if execErr != nil {
 			return "", nil, phases, execErr
 		}
 		calls := model.FunctionCallsFromEvents(events)
+		phases = append(phases, formatLiveUsage(model.LaneUsageFromEvents(model.PromptLaneRespond, events, 0))...)
 		if len(calls) == 0 {
 			phases = append(phases, fmt.Sprintf("model_final_ms=%d tools=%d", modelMS, len(tools)))
 			return model.CollectTextFromEvents(events), toolsUsed, phases, nil
@@ -580,6 +685,47 @@ func livePublicRespondWithTools(
 		phases = append(phases, fmt.Sprintf("local_tools_ms=%d", time.Since(toolStarted).Milliseconds()))
 	}
 	return "", toolsUsed, phases, fmt.Errorf("exhausted tool budget without final reply")
+}
+
+func formatLiveUsage(usages []model.LaneModelUsage) []string {
+	if len(usages) == 0 {
+		return []string{"usage lane=unobserved input=unobserved output=unobserved cache_read=unobserved cache_write=unobserved"}
+	}
+	formatted := make([]string, 0, len(usages))
+	for _, usage := range usages {
+		formatted = append(formatted, fmt.Sprintf(
+			"usage lane=%s input=%s output=%s cache_read=%s cache_write=%s",
+			usage.Lane, liveTokenValue(usage.Usage.InputTokens), liveTokenValue(usage.Usage.OutputTokens),
+			liveCacheValue(usage.Usage.CachedInputTokens), liveCacheValue(usage.Usage.CacheWriteTokens),
+		))
+	}
+	return formatted
+}
+
+func liveTokenValue(tokens *uint64) string {
+	if tokens == nil {
+		return "unobserved"
+	}
+	return fmt.Sprint(*tokens)
+}
+
+func liveCacheValue(observation model.CachedTokenObservation) string {
+	if observation.Status != "observed" || observation.Tokens == nil {
+		return "unobserved"
+	}
+	return fmt.Sprint(*observation.Tokens)
+}
+
+func liveConversationReplyIntent(intent *initiative.ReplyIntent) *ReplyIntent {
+	if intent == nil {
+		return nil
+	}
+	return &ReplyIntent{
+		ReplyAct: intent.ReplyAct, Tone: intent.Tone, RelationshipSignal: intent.RelationshipSignal,
+		ReplyMode: intent.ReplyMode, Focus: intent.Focus, Avoid: append([]string(nil), intent.Avoid...),
+		ReferenceInfo: intent.ReferenceInfo, MemoryQuery: intent.MemoryQuery, ExpressionQuery: intent.ExpressionQuery,
+		DriftLevel: intent.DriftLevel, AnchorPolicy: intent.AnchorPolicy,
+	}
 }
 
 type livePersonaConfig struct {

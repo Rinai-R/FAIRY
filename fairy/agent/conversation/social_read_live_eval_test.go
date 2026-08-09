@@ -59,8 +59,11 @@ func TestLivePublicSocialMultiStepToolUse(t *testing.T) {
 		t.Fatalf("ExecuteRequestContext: %v", err)
 	}
 	calls := model.FunctionCallsFromEvents(events)
-	t.Logf("live tool calls: %#v", calls)
-	t.Logf("live text: %q", model.CollectTextFromEvents(events))
+	toolNames := make([]string, 0, len(calls))
+	for _, call := range calls {
+		toolNames = append(toolNames, call.Name)
+	}
+	t.Logf("live tool names: %v", toolNames)
 
 	sawSocialTool := false
 	for _, call := range calls {
@@ -106,6 +109,20 @@ type personaLiveConfig struct {
 	APIKey   string
 }
 
+func TestLivePersonaConfigRequiresCompleteExplicitProvider(t *testing.T) {
+	t.Setenv("FAIRY_PERSONA_TEST_PROTOCOL", "chat_completions")
+	t.Setenv("FAIRY_PERSONA_TEST_BASE_URL", "https://provider.invalid")
+	t.Setenv("FAIRY_PERSONA_TEST_MODEL", "live-model")
+	t.Setenv("FAIRY_PERSONA_TEST_API_KEY", strings.Repeat("x", 20))
+	if config, ok := personaConfigFromEnv(); !ok || config.Model != "live-model" {
+		t.Fatalf("complete explicit provider = %#v, %v", config, ok)
+	}
+	t.Setenv("FAIRY_PERSONA_TEST_API_KEY", "")
+	if _, ok := personaConfigFromEnv(); ok {
+		t.Fatal("incomplete explicit provider was accepted")
+	}
+}
+
 func newLiveModelPort(t *testing.T, persona personaLiveConfig) *model.ModelService {
 	t.Helper()
 	root := t.TempDir()
@@ -123,13 +140,15 @@ func newLiveModelPort(t *testing.T, persona personaLiveConfig) *model.ModelServi
 func loadPersonaLiveConfig(t *testing.T) personaLiveConfig {
 	t.Helper()
 	loadRepoDotEnv(t)
-	// Prefer the local harness credential (the working shipping key) over stale PERSONA_TEST keys.
-	if cfg, ok := personaConfigFromHarness(t); ok {
-		t.Logf("live model source=harness model=%s endpoint=%s", cfg.Model, cfg.BaseURL)
-		return cfg
-	}
+	// Explicit live-evaluation configuration wins over the local harness. This
+	// keeps a stale desktop credential from shadowing an intentionally supplied
+	// provider and makes the quality gate reproducible in CI.
 	if cfg, ok := personaConfigFromEnv(); ok {
 		t.Logf("live model source=env model=%s endpoint=%s", cfg.Model, cfg.BaseURL)
+		return cfg
+	}
+	if cfg, ok := personaConfigFromHarness(t); ok {
+		t.Logf("live model source=harness model=%s endpoint=%s", cfg.Model, cfg.BaseURL)
 		return cfg
 	}
 	t.Skip("no live model credential: set FAIRY_PERSONA_TEST_* or provide harness model/connection.json + secrets.sqlite3")
@@ -164,13 +183,13 @@ func personaConfigFromHarness(t *testing.T) (personaLiveConfig, bool) {
 	}
 	connection, err := config.ReadModelConnection(root)
 	if err != nil {
-		t.Logf("harness connection unavailable: %v", err)
+		t.Log("harness connection unavailable")
 		return personaLiveConfig{}, false
 	}
 	dbPath := filepath.Join(root, "model", "secrets.sqlite3")
 	key, err := readLegacySQLiteModelSecret(dbPath, connection.ConnectionID)
 	if err != nil {
-		t.Logf("harness secret unavailable: %v", err)
+		t.Log("harness credential unavailable")
 		return personaLiveConfig{}, false
 	}
 	modelName := strings.TrimSpace(os.Getenv("FAIRY_LIVE_MODEL"))
