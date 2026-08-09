@@ -109,6 +109,8 @@ func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 	service.cfg = livePersonaConfig{model: persona.Model}
 	service.memory.ambient.activity = liveParticipationActivity()
 	defer service.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
 
 	var (
 		mu             sync.Mutex
@@ -133,7 +135,7 @@ func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 		}
 		return decideParticipation(service, ctx, request)
 	}
-	inbox := initiative.NewInbox(t.Context(), host)
+	inbox := initiative.NewInbox(ctx, host)
 	defer inbox.Close()
 	inbox.SetLiveEvalMaximumTimerDelay(150 * time.Millisecond)
 	inbox.SetLiveEvalDecisionHook(func(ctx context.Context, batch initiative.LiveEvalAmbientBatch) (initiative.ParticipationResult, error) {
@@ -196,7 +198,7 @@ func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 		cache := append([]initiative.AmbientObservation(nil), lastBatch.CacheMessages...)
 		mu.Unlock()
 		started := time.Now()
-		draft, tools, phases, err := livePublicRespondWithTools(context.Background(), service, modelPort, persona.Model, cache, request.ReplyIntent)
+		draft, tools, phases, err := livePublicRespondWithTools(ctx, service, modelPort, persona.Model, cache, request.ReplyIntent)
 		if err != nil {
 			mu.Lock()
 			activeSubmits--
@@ -221,8 +223,6 @@ func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 		return initiative.TurnOutcome{ResponseText: compiled.DisplayText}, nil
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
-	defer cancel()
 	totalStarted := time.Now()
 	t.Logf("ambient inbox client sim model=%s messages=%d", persona.Model, len(all))
 
