@@ -73,7 +73,15 @@ func liveEvalBatch(batch ambientBatch) LiveEvalAmbientBatch {
 		ConversationID:   batch.conversationID,
 		Generation:       batch.generation,
 		EvaluationReason: batch.evaluationReason,
-		Messages:         append([]AmbientObservation(nil), batch.messages...),
-		CacheMessages:    append([]AmbientObservation(nil), batch.cacheMessages...),
+		Messages:         cloneLiveEvalObservations(batch.messages),
+		CacheMessages:    cloneLiveEvalObservations(batch.cacheMessages),
 	}
+}
+
+func cloneLiveEvalObservations(observations []AmbientObservation) []AmbientObservation {
+	cloned := append([]AmbientObservation(nil), observations...)
+	for index := range cloned {
+		cloned[index].Mentions = append(cloned[index].Mentions[:0:0], cloned[index].Mentions...)
+	}
+	return cloned
 }

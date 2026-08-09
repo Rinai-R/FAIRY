@@ -6,6 +6,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"fairy/transport/session"
 )
 
 func TestLiveEvalInboxBatchDoesNotLeakMutableState(t *testing.T) {
@@ -18,11 +20,15 @@ func TestLiveEvalInboxBatchDoesNotLeakMutableState(t *testing.T) {
 		if calls == 1 {
 			batch.Messages[0].Text = "mutated"
 			batch.CacheMessages[0].Text = "mutated"
+			batch.Messages[0].Mentions[0].DisplayName = "mutated"
+			batch.CacheMessages[0].Mentions[0].DisplayName = "mutated"
 		}
 		seen <- batch
 		return ParticipationResult{Action: ParticipationSilent}, nil
 	})
-	if err := inbox.Observe("c1", testObservation(1)); err != nil {
+	first := testObservation(1)
+	first.Mentions = []session.MessageMention{{UserID: "u2", DisplayName: "群友"}}
+	if err := inbox.Observe("c1", first); err != nil {
 		t.Fatal(err)
 	}
 	<-seen
@@ -31,7 +37,8 @@ func TestLiveEvalInboxBatchDoesNotLeakMutableState(t *testing.T) {
 		t.Fatal(err)
 	}
 	batch := <-seen
-	if batch.Messages[0].Text == "mutated" || batch.CacheMessages[0].Text == "mutated" {
+	if batch.Messages[0].Text == "mutated" || batch.CacheMessages[0].Text == "mutated" ||
+		batch.Messages[0].Mentions[0].DisplayName == "mutated" || batch.CacheMessages[0].Mentions[0].DisplayName == "mutated" {
 		t.Fatalf("live projection mutated inbox state: %#v", batch)
 	}
 }
