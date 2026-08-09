@@ -244,8 +244,11 @@ describe("ObservabilityPage lifecycle", () => {
     const tooltip = chart.parentElement?.querySelector<HTMLElement>(".metric-chart-tooltip");
     const readout = chart.closest(".metric-trend-chart")?.querySelector<HTMLElement>(".metric-trend-readout");
 
+    expect(tooltip?.hidden).toBe(true);
+    expect(tooltip?.getAttribute("aria-hidden")).toBe("true");
     fireEvent.pointerMove(chart, { clientX: 50 });
     expect(tooltip?.hidden).toBe(false);
+    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
     expect(tooltip?.textContent).toContain("10");
     expect(tooltip?.textContent).toContain("1");
     expect(tooltip?.textContent).toContain("历史 Core");
@@ -253,10 +256,12 @@ describe("ObservabilityPage lifecycle", () => {
     expect(readout?.textContent).toContain("1");
     fireEvent.pointerLeave(chart);
     expect(tooltip?.hidden).toBe(true);
+    expect(tooltip?.getAttribute("aria-hidden")).toBe("true");
     expect(readout?.textContent).toContain("最新样本");
 
     fireEvent.focus(chart);
     expect(tooltip?.hidden).toBe(false);
+    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
     expect(tooltip?.textContent).toContain("20");
     expect(tooltip?.textContent).toContain("2");
     expect(tooltip?.textContent).toContain("当前 Core");
@@ -275,9 +280,16 @@ describe("ObservabilityPage lifecycle", () => {
 
     fireEvent.pointerLeave(chart);
     expect(tooltip?.hidden).toBe(true);
+    expect(tooltip?.getAttribute("aria-hidden")).toBe("true");
     expect(readout?.textContent).toContain("20");
     expect(readout?.textContent).toContain("2");
     expect(readout?.textContent).toContain("最新样本");
+
+    fireEvent.focus(chart);
+    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
+    fireEvent.blur(chart);
+    expect(tooltip?.hidden).toBe(true);
+    expect(tooltip?.getAttribute("aria-hidden")).toBe("true");
 
     const feedbackChart = screen.getByRole("img", { name: /回复效果反馈/ });
     vi.spyOn(feedbackChart, "getBoundingClientRect").mockReturnValue({

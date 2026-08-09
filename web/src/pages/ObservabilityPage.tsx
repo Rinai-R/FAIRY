@@ -337,6 +337,13 @@ function MetricTrendChart({
   const tooltipValueRefs = useRef(new Map<MetricTrendKey, HTMLElement>());
   const readoutValueRefs = useRef(new Map<MetricTrendKey, HTMLElement>());
 
+  function setTooltipVisibility(visible: boolean) {
+    const tooltip = tooltipRef.current;
+    if (!tooltip) return;
+    tooltip.hidden = !visible;
+    tooltip.setAttribute("aria-hidden", String(!visible));
+  }
+
   function showSample(index: number, canvasWidth: number) {
     if (index < 0 || index >= history.length) return;
     hoverIndexRef.current = index;
@@ -378,7 +385,7 @@ function MetricTrendChart({
     const tooltip = tooltipRef.current;
     if (tooltip) {
       const x = reference.x / width * canvasWidth;
-      tooltip.hidden = false;
+      setTooltipVisibility(true);
       tooltip.style.left = `${x}px`;
       tooltip.dataset.side = x > canvasWidth * 0.62 ? "left" : "right";
     }
@@ -387,7 +394,7 @@ function MetricTrendChart({
   function hideSample() {
     hoverIndexRef.current = -1;
     if (crosshairRef.current) crosshairRef.current.style.display = "none";
-    if (tooltipRef.current) tooltipRef.current.hidden = true;
+    setTooltipVisibility(false);
     for (const dot of dotRefs.current.values()) dot.style.display = "none";
     if (liveRef.current) liveRef.current.textContent = "";
     if (latest) {
