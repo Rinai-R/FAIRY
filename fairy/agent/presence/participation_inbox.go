@@ -79,6 +79,8 @@ type sequencedObservation struct {
 type ambientState struct {
 	messages              []sequencedObservation
 	cacheMessages         []sequencedObservation
+	recentMessageIDs      map[string]struct{}
+	recentMessageIDOrder  []string
 	generation            uint64
 	acceptedGeneration    uint64
 	running               bool
@@ -105,6 +107,7 @@ type ambientBatch struct {
 const (
 	socialLearningObservationThreshold = 20
 	maxAmbientConversationStates       = 256
+	maxAmbientRecentMessageIDs         = 128
 	maxAmbientRecentReplies            = MaxAmbientObservations
 	participationTraceSilentError      = "silent_error"
 )
@@ -141,10 +144,14 @@ func (a *Inbox) Observe(conversationID string, observation AmbientObservation) e
 	if a.closed {
 		return context.Canceled
 	}
+	if state := a.states[conversationID]; state != nil && state.hasRecentMessageID(observation.MessageID) {
+		return nil
+	}
 	state, err := a.observeStateLocked(conversationID)
 	if err != nil {
 		return err
 	}
+	state.rememberMessageID(observation.MessageID)
 	if a.host != nil {
 		observation.TraceID = a.host.BeginMessageTrace("ambient", conversationID, observation.MessageID, observation.TraceID)
 		a.host.ObserveSocialFeedback(conversationID, observation)
@@ -215,6 +222,31 @@ func (a *Inbox) observeStateLocked(conversationID string) (*ambientState, error)
 func (a *Inbox) touchStateLocked(state *ambientState) {
 	a.accessSequence++
 	state.lastObservedSequence = a.accessSequence
+}
+
+func (state *ambientState) hasRecentMessageID(messageID string) bool {
+	if state == nil || state.recentMessageIDs == nil {
+		return false
+	}
+	_, found := state.recentMessageIDs[messageID]
+	return found
+}
+
+func (state *ambientState) rememberMessageID(messageID string) {
+	if state == nil || messageID == "" || state.hasRecentMessageID(messageID) {
+		return
+	}
+	if state.recentMessageIDs == nil {
+		state.recentMessageIDs = make(map[string]struct{}, maxAmbientRecentMessageIDs)
+	}
+	state.recentMessageIDs[messageID] = struct{}{}
+	state.recentMessageIDOrder = append(state.recentMessageIDOrder, messageID)
+	if len(state.recentMessageIDOrder) <= maxAmbientRecentMessageIDs {
+		return
+	}
+	oldest := state.recentMessageIDOrder[0]
+	delete(state.recentMessageIDs, oldest)
+	state.recentMessageIDOrder = append([]string(nil), state.recentMessageIDOrder[1:]...)
 }
 
 func (a *Inbox) Close() {

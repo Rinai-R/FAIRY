@@ -104,6 +104,72 @@ func TestInboxCancelsStaleDecision(t *testing.T) {
 	}
 }
 
+func TestInboxDuplicateObservationIsNoOpWhileDecisionActive(t *testing.T) {
+	host := &countingInboxHost{}
+	inbox := NewInbox(t.Context(), host)
+	defer inbox.Close()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	canceled := make(chan struct{}, 1)
+	var calls atomic.Int32
+	inbox.decideHook = func(ctx context.Context, _ ambientBatch) (ParticipationResult, error) {
+		calls.Add(1)
+		close(started)
+		select {
+		case <-release:
+			return ParticipationResult{Action: ParticipationSilent}, nil
+		case <-ctx.Done():
+			canceled <- struct{}{}
+			return ParticipationResult{}, ctx.Err()
+		}
+	}
+
+	observation := testObservation(1)
+	if err := inbox.Observe("conversation-1", observation); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if err := inbox.Observe("conversation-1", observation); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-canceled:
+		t.Fatal("duplicate observation canceled the active participation decision")
+	default:
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("participation decisions = %d, want 1", got)
+	}
+	if got := host.begins.Load(); got != 1 {
+		t.Fatalf("BeginMessageTrace calls = %d, want 1", got)
+	}
+	if got := host.feedback.Load(); got != 1 {
+		t.Fatalf("ObserveSocialFeedback calls = %d, want 1", got)
+	}
+	if got := host.cancels.Load(); got != 1 {
+		t.Fatalf("CancelTurnBeforeDelivery calls = %d, want 1", got)
+	}
+	if got := host.learning.Load(); got != 0 {
+		t.Fatalf("EnqueueSocialLearning calls = %d, want 0", got)
+	}
+	inbox.mu.Lock()
+	state := inbox.states["conversation-1"]
+	generation := state.generation
+	messages := len(state.messages)
+	cacheMessages := len(state.cacheMessages)
+	inbox.mu.Unlock()
+	if generation != 1 || messages != 1 || cacheMessages != 1 {
+		t.Fatalf("duplicate changed state: generation=%d messages=%d cache=%d", generation, messages, cacheMessages)
+	}
+	close(release)
+	waitUntil(t, func() bool {
+		inbox.mu.Lock()
+		defer inbox.mu.Unlock()
+		return !inbox.states["conversation-1"].running
+	})
+}
+
 func TestInboxCancellationRefreshKeepsAllMessageTracesSilent(t *testing.T) {
 	metrics := observability.NewMessageMetrics()
 	t.Cleanup(metrics.Close)
@@ -348,6 +414,60 @@ func TestAmbientStateBoundsRecentRepliesBySenderAndRefreshesHotSender(t *testing
 	}
 }
 
+func TestAmbientStateBoundsRecentMessageIDsWithFIFOEviction(t *testing.T) {
+	state := &ambientState{}
+	for index := 0; index <= maxAmbientRecentMessageIDs; index++ {
+		state.rememberMessageID(fmt.Sprintf("message-%03d", index))
+	}
+
+	if got := len(state.recentMessageIDs); got != maxAmbientRecentMessageIDs {
+		t.Fatalf("recent message ID count = %d, want %d", got, maxAmbientRecentMessageIDs)
+	}
+	if got := len(state.recentMessageIDOrder); got != maxAmbientRecentMessageIDs {
+		t.Fatalf("recent message ID order count = %d, want %d", got, maxAmbientRecentMessageIDs)
+	}
+	if state.hasRecentMessageID("message-000") {
+		t.Fatal("oldest message ID was retained")
+	}
+	if !state.hasRecentMessageID("message-001") || !state.hasRecentMessageID(fmt.Sprintf("message-%03d", maxAmbientRecentMessageIDs)) {
+		t.Fatal("recent message IDs were not retained")
+	}
+}
+
+func TestInboxDeduplicationIsConversationScopedAndReleasedWithState(t *testing.T) {
+	host := &countingInboxHost{}
+	inbox := NewInbox(t.Context(), host)
+	defer inbox.Close()
+	inbox.stateCapacity = 1
+	inbox.decideHook = func(context.Context, ambientBatch) (ParticipationResult, error) {
+		return ParticipationResult{Action: ParticipationSilent}, nil
+	}
+	observation := testObservation(1)
+
+	observeAndWaitForIdle(t, inbox, "conversation-1", observation)
+	if err := inbox.Observe("conversation-1", observation); err != nil {
+		t.Fatal(err)
+	}
+	observeAndWaitForIdle(t, inbox, "conversation-2", observation)
+	observeAndWaitForIdle(t, inbox, "conversation-1", observation)
+
+	if got := host.begins.Load(); got != 3 {
+		t.Fatalf("accepted message traces = %d, want 3", got)
+	}
+	if got := host.feedback.Load(); got != 3 {
+		t.Fatalf("accepted feedback observations = %d, want 3", got)
+	}
+	if got := host.cancels.Load(); got != 3 {
+		t.Fatalf("accepted turn cancellations = %d, want 3", got)
+	}
+	inbox.mu.Lock()
+	recreated := inbox.states["conversation-1"]
+	inbox.mu.Unlock()
+	if recreated == nil || recreated.generation != 1 || !recreated.hasRecentMessageID(observation.MessageID) {
+		t.Fatalf("recreated state = %#v", recreated)
+	}
+}
+
 func TestInboxCloseClearsConversationStates(t *testing.T) {
 	inbox := NewInbox(t.Context(), fakeInboxHost{})
 	inbox.decideHook = func(context.Context, ambientBatch) (ParticipationResult, error) {
@@ -371,7 +491,11 @@ func TestInboxEnqueuesLearningEveryObservationThresholdOnce(t *testing.T) {
 		return ParticipationResult{Action: ParticipationSilent}, nil
 	}
 	for index := 1; index <= 40; index++ {
-		if err := inbox.Observe("conversation-1", testObservation(index)); err != nil {
+		observation := testObservation(index)
+		if err := inbox.Observe("conversation-1", observation); err != nil {
+			t.Fatal(err)
+		}
+		if err := inbox.Observe("conversation-1", observation); err != nil {
 			t.Fatal(err)
 		}
 		waitUntil(t, func() bool {
@@ -441,6 +565,7 @@ type countingInboxHost struct {
 	begins   atomic.Int32
 	feedback atomic.Int32
 	cancels  atomic.Int32
+	learning atomic.Int32
 }
 
 func (h *countingInboxHost) BeginMessageTrace(_, _, _, traceID string) string {
@@ -454,6 +579,10 @@ func (h *countingInboxHost) ObserveSocialFeedback(string, AmbientObservation) {
 
 func (h *countingInboxHost) CancelTurnBeforeDelivery(string) {
 	h.cancels.Add(1)
+}
+
+func (h *countingInboxHost) EnqueueSocialLearning(string, []AmbientObservation) {
+	h.learning.Add(1)
 }
 
 func observeAndWaitForIdle(t *testing.T, inbox *Inbox, conversationID string, observation AmbientObservation) {
