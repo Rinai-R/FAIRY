@@ -44,6 +44,142 @@ func (r testTurnRuntime) BindInteraction(conversationID string, binding session.
 func (r testTurnRuntime) ActiveBackgroundJobs() int64        { return r.service.ActiveBackgroundJobs() }
 func (r testTurnRuntime) AgentLoopMetrics() AgentLoopMetrics { return AgentLoopMetrics{} }
 
+type recordingTurnRuntime struct {
+	testTurnRuntime
+	mu        sync.Mutex
+	reported  []session.ExpressionDeliveryResult
+	reportErr error
+}
+
+func (r *recordingTurnRuntime) ReportExpressionDelivery(result session.ExpressionDeliveryResult) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reported = append(r.reported, result)
+	return r.reportErr
+}
+
+func (r *recordingTurnRuntime) reportedResults() []session.ExpressionDeliveryResult {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]session.ExpressionDeliveryResult(nil), r.reported...)
+}
+
+func newDeliveryTestConnection(t *testing.T, runtime TurnRuntime, watched ...string) (*sessionConn, *websocket.Conn) {
+	t.Helper()
+	accepted := make(chan *sessionConn, 1)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := sessionUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		connection := newSessionConn(&Server{rt: &Dependencies{Turns: runtime}}, conn)
+		for _, conversationID := range watched {
+			connection.watches[conversationID] = func() {}
+		}
+		accepted <- connection
+	}))
+	url := "ws" + strings.TrimPrefix(httpServer.URL, "http")
+	client, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		httpServer.Close()
+		t.Fatal(err)
+	}
+	connection := <-accepted
+	t.Cleanup(func() {
+		connection.shutdown(nil)
+		_ = client.Close()
+		httpServer.Close()
+	})
+	return connection, client
+}
+
+func TestSessionExpressionDeliveryUsesWatchOwnershipNotStickerCapability(t *testing.T) {
+	runtime := &recordingTurnRuntime{}
+	connection, client := newDeliveryTestConnection(t, runtime, "conversation-1")
+	result := session.ExpressionDeliveryResult{
+		ConversationID: "conversation-1",
+		TurnID:         "turn-1",
+		BeatID:         "final-0",
+		Status:         session.ExpressionDeliverySucceeded,
+	}
+	connection.handleExpressionDelivery(wsClientFrame{RequestID: "request-1", DeliveryResult: &result})
+	var response wsServerFrame
+	if err := client.ReadJSON(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Type != "ack" || response.ConversationID != result.ConversationID {
+		t.Fatalf("response = %#v", response)
+	}
+	if got := runtime.reportedResults(); len(got) != 1 || got[0] != result {
+		t.Fatalf("reported = %#v", got)
+	}
+}
+
+func TestSessionExpressionDeliveryRejectsUnwatchedConversation(t *testing.T) {
+	runtime := &recordingTurnRuntime{}
+	connection, client := newDeliveryTestConnection(t, runtime)
+	result := session.ExpressionDeliveryResult{
+		ConversationID: "conversation-1",
+		TurnID:         "turn-1",
+		BeatID:         "final-0",
+		Status:         session.ExpressionDeliverySucceeded,
+	}
+	connection.handleExpressionDelivery(wsClientFrame{RequestID: "request-1", DeliveryResult: &result})
+	var response wsServerFrame
+	if err := client.ReadJSON(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Type != "error" || response.Error != "delivery report is unavailable for this session" {
+		t.Fatalf("response = %#v", response)
+	}
+	if got := runtime.reportedResults(); len(got) != 0 {
+		t.Fatalf("unwatched delivery reached registry: %#v", got)
+	}
+}
+
+func TestSessionExpressionDeliveryRejectsInvalidOrUnknownIdentity(t *testing.T) {
+	t.Run("invalid frame identity", func(t *testing.T) {
+		runtime := &recordingTurnRuntime{}
+		connection, client := newDeliveryTestConnection(t, runtime, "conversation-1")
+		result := session.ExpressionDeliveryResult{
+			ConversationID: "conversation-1",
+			TurnID:         "turn-1",
+			Status:         session.ExpressionDeliverySucceeded,
+		}
+		connection.handleExpressionDelivery(wsClientFrame{RequestID: "request-1", DeliveryResult: &result})
+		var response wsServerFrame
+		if err := client.ReadJSON(&response); err != nil {
+			t.Fatal(err)
+		}
+		if response.Type != "error" || response.Error != "expression delivery identity is required" {
+			t.Fatalf("response = %#v", response)
+		}
+		if got := runtime.reportedResults(); len(got) != 0 {
+			t.Fatalf("invalid delivery reached registry: %#v", got)
+		}
+	})
+
+	t.Run("registry identity mismatch", func(t *testing.T) {
+		runtime := &recordingTurnRuntime{reportErr: errors.New("expression delivery is not pending")}
+		connection, client := newDeliveryTestConnection(t, runtime, "conversation-1")
+		result := session.ExpressionDeliveryResult{
+			ConversationID: "conversation-1",
+			TurnID:         "unknown-turn",
+			BeatID:         "unknown-beat",
+			Status:         session.ExpressionDeliverySucceeded,
+		}
+		connection.handleExpressionDelivery(wsClientFrame{RequestID: "request-1", DeliveryResult: &result})
+		var response wsServerFrame
+		if err := client.ReadJSON(&response); err != nil {
+			t.Fatal(err)
+		}
+		if response.Type != "error" || response.Error != runtime.reportErr.Error() {
+			t.Fatalf("response = %#v", response)
+		}
+	})
+}
+
 func TestSessionPlaneDocumentsWebSocketOnly(t *testing.T) {
 	removed := []string{
 		"POST /v1/sessions",

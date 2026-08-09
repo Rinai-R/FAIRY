@@ -283,8 +283,8 @@ func (c *sessionConn) handleExpressionDelivery(frame wsClientFrame) {
 	c.watchMu.Lock()
 	_, watched := c.watches[result.ConversationID]
 	c.watchMu.Unlock()
-	if !watched || !c.server.rt.Turns.OutputCapabilities(result.ConversationID).Sticker {
-		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "sticker delivery report is unavailable for this session"})
+	if !watched {
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "delivery report is unavailable for this session"})
 		return
 	}
 	if err := c.server.rt.Turns.ReportExpressionDelivery(result); err != nil {
