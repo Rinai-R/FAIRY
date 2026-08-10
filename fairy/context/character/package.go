@@ -56,7 +56,6 @@ type packageState struct {
 	ID          string `json:"id"`
 	Description string `json:"description"`
 	File        string `json:"file"`
-	Motion      string `json:"motion,omitempty"`
 }
 
 func (s *Store) ImportPackage(packagePath string) (Record, error) {
@@ -108,7 +107,7 @@ func (s *Store) ExportPackage(characterID string, outputPath string) error {
 		if err != nil {
 			return err
 		}
-		states = append(states, packageState{ID: state.ID, Description: state.Description, File: relative, Motion: state.Motion})
+		states = append(states, packageState{ID: state.ID, Description: state.Description, File: relative})
 		files[relative] = filepath.Join(s.root, "visual-packs", pack.PackID, filepath.FromSlash(relative))
 	}
 	manifest := packageManifest{
@@ -263,11 +262,6 @@ func validatePackageManifest(manifest packageManifest) error {
 	if len(manifest.Visual.States) > maxPackageStates {
 		return fmt.Errorf("%w: character package declares more than %d states", ErrPackageCapacity, maxPackageStates)
 	}
-	for _, state := range manifest.Visual.States {
-		if _, err := NormalizeMotion(state.ID, state.Motion); err != nil {
-			return fmt.Errorf("package visual state %q motion invalid: %w", state.ID, err)
-		}
-	}
 	return nil
 }
 
@@ -287,11 +281,7 @@ func (s *Store) installVisualPackage(manifest packageManifest, files map[string]
 		if err != nil {
 			return err
 		}
-		motion, err := NormalizeMotion(state.ID, state.Motion)
-		if err != nil {
-			return err
-		}
-		runtime.States = append(runtime.States, State{ID: state.ID, Description: state.Description, ImagePath: "fairy-character://localhost/" + manifest.PackageID + "/" + relative, Motion: motion})
+		runtime.States = append(runtime.States, State{ID: state.ID, Description: state.Description, ImagePath: "fairy-character://localhost/" + manifest.PackageID + "/" + relative})
 	}
 	manifestBytes, err := json.MarshalIndent(runtime, "", "  ")
 	if err != nil {

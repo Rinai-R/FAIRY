@@ -13,10 +13,6 @@ import (
 const (
 	schemaVersion = 2
 	renderer      = "state_images"
-	MotionStill   = "still"
-	MotionFloat   = "float"
-	MotionPulse   = "pulse"
-	MotionBounce  = "bounce"
 )
 
 type Manifest struct {
@@ -44,7 +40,6 @@ type State struct {
 	ID          string `json:"id"`
 	Description string `json:"description"`
 	ImagePath   string `json:"imagePath"`
-	Motion      string `json:"motion"`
 }
 
 func LoadManifestFromFile(filename string) (Manifest, error) {
@@ -63,16 +58,13 @@ func ParseManifest(data []byte) (Manifest, error) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return Manifest{}, fmt.Errorf("parsing visual manifest: %w", err)
 	}
-	if err := normalizeManifest(&manifest); err != nil {
+	if err := validateManifest(manifest); err != nil {
 		return Manifest{}, err
 	}
 	return manifest, nil
 }
 
-func normalizeManifest(manifest *Manifest) error {
-	if manifest == nil {
-		return errors.New("visual manifest is required")
-	}
+func validateManifest(manifest Manifest) error {
 	if manifest.SchemaVersion != schemaVersion {
 		return fmt.Errorf("visual manifest schemaVersion = %d, want %d", manifest.SchemaVersion, schemaVersion)
 	}
@@ -98,8 +90,7 @@ func normalizeManifest(manifest *Manifest) error {
 	stateIDs := make(map[string]struct{}, len(manifest.States))
 	imagePaths := make(map[string]struct{}, len(manifest.States))
 	hasIdle := false
-	for index := range manifest.States {
-		state := &manifest.States[index]
+	for _, state := range manifest.States {
 		if state.ID == "" {
 			return errors.New("visual state id is required")
 		}
@@ -117,35 +108,11 @@ func normalizeManifest(manifest *Manifest) error {
 			return fmt.Errorf("visual image path %q is duplicated", state.ImagePath)
 		}
 		imagePaths[state.ImagePath] = struct{}{}
-		motion, err := NormalizeMotion(state.ID, state.Motion)
-		if err != nil {
-			return fmt.Errorf("visual state %q motion invalid: %w", state.ID, err)
-		}
-		state.Motion = motion
 	}
 	if !hasIdle {
 		return errors.New("visual manifest must declare idle state")
 	}
 	return nil
-}
-
-// NormalizeMotion returns the effective declarative motion for a visual state.
-// Empty motion preserves legacy packages through a state-ID-only compatibility
-// rule; descriptions and image contents never participate in the decision.
-func NormalizeMotion(stateID, motion string) (string, error) {
-	motion = strings.TrimSpace(motion)
-	if motion == "" {
-		if stateID == "idle" {
-			return MotionFloat, nil
-		}
-		return MotionStill, nil
-	}
-	switch motion {
-	case MotionStill, MotionFloat, MotionPulse, MotionBounce:
-		return motion, nil
-	default:
-		return "", fmt.Errorf("motion = %q is unsupported", motion)
-	}
 }
 
 func ValidateImageURI(packID string, raw string) error {

@@ -104,12 +104,9 @@ export function resolveRenderablePixelTexture(loaded) {
     typeof loaded !== "object" ||
     typeof loaded.imageUrl !== "string" ||
     loaded.imageUrl.length === 0 ||
-    loaded.texture === undefined ||
-    typeof loaded.visualState !== "string" ||
-    loaded.visualState.length === 0 ||
-    !["still", "float", "pulse", "bounce"].includes(loaded.motion)
+    loaded.texture === undefined
   ) {
-    throw new TypeError("loaded pixel texture must include imageUrl, texture, state, and motion");
+    throw new TypeError("loaded pixel texture must include imageUrl and texture");
   }
   return loaded;
 }

@@ -33,23 +33,6 @@ func TestParseManifestAcceptsStateImagesV2(t *testing.T) {
 	if _, ok := manifest.State("happy"); !ok {
 		t.Fatal("State(happy) missing")
 	}
-	idle, _ := manifest.State("idle")
-	happy, _ := manifest.State("happy")
-	if idle.Motion != MotionFloat || happy.Motion != MotionStill {
-		t.Fatalf("legacy motion defaults = idle %q, happy %q", idle.Motion, happy.Motion)
-	}
-}
-
-func TestParseManifestPreservesSupportedMotion(t *testing.T) {
-	source := strings.Replace(validManifest(), `"id": "happy"`, `"id": "happy", "motion": "bounce"`, 1)
-	manifest, err := ParseManifest([]byte(source))
-	if err != nil {
-		t.Fatalf("ParseManifest() error = %v", err)
-	}
-	happy, _ := manifest.State("happy")
-	if happy.Motion != MotionBounce {
-		t.Fatalf("happy motion = %q, want %q", happy.Motion, MotionBounce)
-	}
 }
 
 func TestParseManifestRejectsInvalidManifests(t *testing.T) {
@@ -58,13 +41,6 @@ func TestParseManifestRejectsInvalidManifests(t *testing.T) {
 		edit    func(string) string
 		wantErr string
 	}{
-		{
-			name: "unsupported motion",
-			edit: func(source string) string {
-				return strings.Replace(source, `"id": "happy"`, `"id": "happy", "motion": "spin"`, 1)
-			},
-			wantErr: "motion",
-		},
 		{
 			name: "wrong renderer",
 			edit: func(source string) string {

@@ -120,7 +120,6 @@ type VisualState struct {
 	ID          string `json:"id"`
 	Description string `json:"description"`
 	ImagePath   string `json:"imagePath"`
-	Motion      string `json:"motion"`
 }
 
 type CharacterCatalog struct {

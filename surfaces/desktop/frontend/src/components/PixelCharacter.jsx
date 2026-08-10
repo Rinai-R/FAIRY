@@ -1,6 +1,6 @@
 import "pixi.js/unsafe-eval";
-import { Application, extend, useTick } from "@pixi/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Application, extend } from "@pixi/react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Assets,
   Sprite,
@@ -13,7 +13,6 @@ import {
   resolveCharacterImageUrl,
   selectVisualStateImage,
 } from "../pixelTexture.mjs";
-import { projectCharacterMotion, STATIC_CHARACTER_MOTION } from "../characterMotion.mjs";
 
 extend({ Sprite });
 
@@ -56,88 +55,29 @@ function releaseTexture(imageUrl) {
 function StaticStateImage({
   visual,
   texture,
-  motion,
   direction,
   displayScale,
-  reducedMotion,
 }) {
-  const spriteRef = useRef(null);
-  const elapsedRef = useRef(0);
-  const projectionFailedRef = useRef(false);
   const renderScale = pixelTextureScale(visual, texture, displayScale);
   const coordinateScale = visual.scale * displayScale;
   const anchor = {
     x: visual.anchor.x / visual.frame.width,
     y: visual.anchor.y / visual.frame.height,
   };
-  const originX = visual.anchor.x * coordinateScale;
-  const originY = visual.anchor.y * coordinateScale;
-  const directionScale = direction === "left" ? -1 : 1;
-
-  const applyFrame = useCallback((frame) => {
-    const sprite = spriteRef.current;
-    if (sprite === null) return;
-    sprite.x = originX + frame.offsetXRatio * visual.frame.width * coordinateScale;
-    sprite.y = originY + frame.offsetYRatio * visual.frame.height * coordinateScale;
-    sprite.scale.set(
-      directionScale * renderScale.x * frame.scaleX,
-      renderScale.y * frame.scaleY,
-    );
-  }, [coordinateScale, directionScale, originX, originY, renderScale.x, renderScale.y, visual.frame.height, visual.frame.width]);
-
-  useTick(useCallback((ticker) => {
-    if (projectionFailedRef.current) {
-      applyFrame(STATIC_CHARACTER_MOTION);
-      return;
-    }
-    elapsedRef.current += Math.max(0, ticker.deltaMS);
-    try {
-      applyFrame(projectCharacterMotion(motion, elapsedRef.current, reducedMotion));
-    } catch (error) {
-      projectionFailedRef.current = true;
-      console.error("FAIRY_CHARACTER_MOTION_FAILURE", error);
-      applyFrame(STATIC_CHARACTER_MOTION);
-    }
-  }, [applyFrame, motion, reducedMotion]));
 
   return (
     <pixiSprite
-      ref={spriteRef}
       texture={texture}
       anchor={anchor}
-      x={originX}
-      y={originY}
+      x={visual.anchor.x * coordinateScale}
+      y={visual.anchor.y * coordinateScale}
       scale={{
-        x: directionScale * renderScale.x,
+        x: direction === "left" ? -renderScale.x : renderScale.x,
         y: renderScale.y,
       }}
       eventMode="none"
     />
   );
-}
-
-function reducedMotionQuery() {
-  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-    return null;
-  }
-  return window.matchMedia("(prefers-reduced-motion: reduce)");
-}
-
-function useReducedMotion() {
-  const [reduced, setReduced] = useState(() => reducedMotionQuery()?.matches === true);
-  useEffect(() => {
-    const query = reducedMotionQuery();
-    if (!query) return undefined;
-    const update = (event) => setReduced(event.matches);
-    setReduced(query.matches);
-    if (query.addEventListener) {
-      query.addEventListener("change", update);
-      return () => query.removeEventListener("change", update);
-    }
-    query.addListener?.(update);
-    return () => query.removeListener?.(update);
-  }, []);
-  return reduced;
 }
 
 export function PixelCharacter({
@@ -161,7 +101,6 @@ export function PixelCharacter({
     () => resolveCharacterImageUrl(stateImage.imagePath, window.location.origin),
     [stateImage],
   );
-  const reducedMotion = useReducedMotion();
 
   useEffect(() => {
     onReadyRef.current = onReady;
@@ -177,12 +116,7 @@ export function PixelCharacter({
       .then((loadedTexture) => {
         if (disposed) return;
         loadedTexture.source.scaleMode = "linear";
-        const nextLoaded = Object.freeze({
-          imageUrl,
-          texture: loadedTexture,
-          visualState: stateImage.id,
-          motion: stateImage.motion || "still",
-        });
+        const nextLoaded = Object.freeze({ imageUrl, texture: loadedTexture });
         const previous = loadedRef.current;
         retainTexture(imageUrl);
         loadedRef.current = nextLoaded;
@@ -209,7 +143,7 @@ export function PixelCharacter({
         pendingRetained = false;
       }
     };
-  }, [imageUrl, stateImage.id, stateImage.motion]);
+  }, [imageUrl]);
 
   useEffect(() => () => {
     const current = loadedRef.current;
@@ -231,13 +165,11 @@ export function PixelCharacter({
       preference="webgl"
     >
       <StaticStateImage
-        key={`${visual.packId}:${renderable.visualState}:${renderable.imageUrl}`}
+        key={`${visual.packId}:${visualState}`}
         visual={visual}
         texture={renderable.texture}
-        motion={renderable.motion}
         direction={direction}
         displayScale={displayScale}
-        reducedMotion={reducedMotion}
       />
     </Application>
   );

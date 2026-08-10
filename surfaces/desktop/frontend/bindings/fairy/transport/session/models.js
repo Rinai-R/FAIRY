@@ -474,13 +474,6 @@ export class VisualState {
              */
             this["imagePath"] = "";
         }
-        if (!("motion" in $$source)) {
-            /**
-             * @member
-             * @type {string}
-             */
-            this["motion"] = "";
-        }
 
         Object.assign(this, $$source);
     }

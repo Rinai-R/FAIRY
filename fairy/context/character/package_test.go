@@ -104,55 +104,6 @@ func TestExportPackageRoundTrips(t *testing.T) {
 	}
 }
 
-func TestPackageMotionRoundTripsAndRejectsUnsupportedValues(t *testing.T) {
-	packageDir := t.TempDir()
-	writeFile(t, filepath.Join(packageDir, "images", "idle.png"), pngSignature)
-	writeFile(t, filepath.Join(packageDir, "images", "happy.png"), pngSignature)
-	manifest := string(packageManifestFixture("fairy.motion", `{"id":"idle","description":"Idle.","file":"images/idle.png","motion":"pulse"},{"id":"happy","description":"Happy.","file":"images/happy.png","motion":"bounce"}`))
-	writeFile(t, filepath.Join(packageDir, "manifest.json"), manifest)
-
-	root := t.TempDir()
-	record, err := NewStore(root).ImportPackage(packageDir)
-	if err != nil {
-		t.Fatalf("ImportPackage() error = %v", err)
-	}
-	if got := record.Appearance.Visual.States[0].Motion; got != MotionPulse {
-		t.Fatalf("imported idle motion = %q", got)
-	}
-	exportPath := filepath.Join(t.TempDir(), "motion.pack")
-	if err := NewStore(root).ExportPackage(record.CharacterID, exportPath); err != nil {
-		t.Fatalf("ExportPackage() error = %v", err)
-	}
-	archive, err := zip.OpenReader(exportPath)
-	if err != nil {
-		t.Fatalf("OpenReader() error = %v", err)
-	}
-	defer archive.Close()
-	exported, err := archiveFileBytes(archive.File, "manifest.json")
-	if err != nil {
-		t.Fatalf("manifest missing: %v", err)
-	}
-	for _, want := range []string{`"motion": "pulse"`, `"motion": "bounce"`} {
-		if !strings.Contains(string(exported), want) {
-			t.Fatalf("exported manifest missing %s: %s", want, exported)
-		}
-	}
-
-	badDir := t.TempDir()
-	writePackageFixture(t, badDir, "fairy.bad-motion")
-	data, err := os.ReadFile(filepath.Join(badDir, "manifest.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	bad := strings.Replace(string(data), `"file":"images/idle.png"`, `"file":"images/idle.png","motion":"spin"`, 1)
-	if err := os.WriteFile(filepath.Join(badDir, "manifest.json"), []byte(bad), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewStore(t.TempDir()).ImportPackage(badDir); err == nil || !strings.Contains(err.Error(), "motion") {
-		t.Fatalf("unsupported motion error = %v", err)
-	}
-}
-
 func TestLegacyPackageWithoutSpeakingLanguageExportsJapanese(t *testing.T) {
 	root := t.TempDir()
 	packageDir := t.TempDir()
