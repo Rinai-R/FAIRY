@@ -66,7 +66,8 @@ func main() {
 	bubble.SetIgnoreMouseEvents(true)
 	core.attachWindows(companion, settings, history, bubble)
 	companion.OnWindowEvent(events.Common.WindowDidMove, func(*application.WindowEvent) {
-		core.repositionAuxiliaryWindows()
+		core.RepositionSpeechBubble()
+		core.RepositionHistory()
 	})
 	settings.OnWindowEvent(events.Common.WindowDidResize, func(*application.WindowEvent) {
 		core.refreshControlPanelWidth()

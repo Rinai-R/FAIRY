@@ -42,9 +42,9 @@ type CoreService struct {
 	controlPanel application.Window
 	history      application.Window
 	speechBubble application.Window
+	windowLink   windowRelation
 	controlOpen  bool
 	historyOpen  bool
-	speechOpen   bool
 	controlWidth int
 	client       *session.Client
 	socket       *session.SessionSocket
@@ -65,6 +65,7 @@ func NewCoreService() *CoreService {
 		newCache:     newVisualCache,
 		privacy:      session.DesktopPrivacyProtected,
 		controlWidth: controlPanelWidth,
+		windowLink:   newPlatformWindowRelation(),
 	}
 	service.capture, _ = newDesktopCaptureRuntime(newPlatformDesktopCapturer(), func() session.DesktopPrivacyState {
 		service.mu.Lock()
@@ -81,7 +82,7 @@ func (s *CoreService) attachWindows(companion, controlPanel, history, speechBubb
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.companion, s.controlPanel, s.history, s.speechBubble = companion, controlPanel, history, speechBubble
-	s.controlOpen, s.historyOpen, s.speechOpen = false, false, false
+	s.controlOpen, s.historyOpen = false, false
 	s.controlWidth = controlPanelWidth
 }
 
@@ -208,8 +209,8 @@ func (s *CoreService) DisableDesktopObservation() {
 
 func (s *CoreService) OpenControlPanel() error {
 	s.mu.Lock()
-	panel, history := s.controlPanel, s.history
-	if panel == nil {
+	companion, panel, history, windowLink := s.companion, s.controlPanel, s.history, s.windowLink
+	if companion == nil || panel == nil {
 		s.mu.Unlock()
 		return errors.New("Core settings window is unavailable")
 	}
@@ -222,6 +223,9 @@ func (s *CoreService) OpenControlPanel() error {
 	s.mu.Unlock()
 	if controlOpen {
 		panel.Hide()
+		if err := windowLink.Detach(companion, panel); err != nil {
+			return fmt.Errorf("detach Core settings window: %w", err)
+		}
 		s.emitControlPanelState(false)
 		return nil
 	}
@@ -231,8 +235,16 @@ func (s *CoreService) OpenControlPanel() error {
 	}
 	s.refreshControlPanelWidth()
 	s.repositionControlPanel()
+	if err := windowLink.Attach(companion, panel); err != nil {
+		s.mu.Lock()
+		if panel == s.controlPanel {
+			s.controlOpen = false
+		}
+		s.mu.Unlock()
+		return fmt.Errorf("attach Core settings window: %w", err)
+	}
 	panel.Show()
-	panel.Focus()
+	companion.Focus()
 	s.emitControlPanelState(true)
 	return nil
 }
@@ -257,8 +269,8 @@ func (s *CoreService) refreshControlPanelWidth() {
 	s.mu.Unlock()
 }
 
-// repositionControlPanel keeps an open settings window attached to the
-// companion while using the width captured at the panel lifecycle boundary.
+// repositionControlPanel places the settings window beside the companion at
+// settings lifecycle boundaries such as open and resize, not during pet drag.
 func (s *CoreService) repositionControlPanel() {
 	s.mu.Lock()
 	companion, panel, open, width := s.companion, s.controlPanel, s.controlOpen, s.controlWidth
@@ -270,58 +282,18 @@ func (s *CoreService) repositionControlPanel() {
 	panel.SetPosition(x-width-8, y+47)
 }
 
-type auxiliaryWindowLayout struct {
-	companion    application.Window
-	controlPanel application.Window
-	history      application.Window
-	speechBubble application.Window
-	controlOpen  bool
-	historyOpen  bool
-	speechOpen   bool
-	controlWidth int
-}
-
-// repositionAuxiliaryWindows is the only companion move hot path. It takes one
-// consistent state snapshot, crosses the native boundary for Position once,
-// then moves only windows that are currently visible.
-func (s *CoreService) repositionAuxiliaryWindows() {
-	s.mu.Lock()
-	layout := auxiliaryWindowLayout{
-		companion:    s.companion,
-		controlPanel: s.controlPanel,
-		history:      s.history,
-		speechBubble: s.speechBubble,
-		controlOpen:  s.controlOpen,
-		historyOpen:  s.historyOpen,
-		speechOpen:   s.speechOpen,
-		controlWidth: s.controlWidth,
-	}
-	s.mu.Unlock()
-	if layout.companion == nil || (!layout.controlOpen && !layout.historyOpen && !layout.speechOpen) {
-		return
-	}
-
-	x, y := layout.companion.Position()
-	if layout.controlOpen && layout.controlPanel != nil {
-		layout.controlPanel.SetPosition(x-layout.controlWidth-8, y+47)
-	}
-	if layout.historyOpen && layout.history != nil {
-		layout.history.SetPosition(x-340, y-24)
-	}
-	if layout.speechOpen && layout.speechBubble != nil {
-		layout.speechBubble.SetPosition(x-14, y-170)
-	}
-}
-
 func (s *CoreService) CloseControlPanel() error {
 	s.mu.Lock()
-	panel := s.controlPanel
+	companion, panel, windowLink := s.companion, s.controlPanel, s.windowLink
 	s.controlOpen = false
 	s.mu.Unlock()
 	if panel != nil {
 		panel.Hide()
 	}
 	s.emitControlPanelState(false)
+	if err := windowLink.Detach(companion, panel); err != nil {
+		return fmt.Errorf("detach Core settings window: %w", err)
+	}
 	return nil
 }
 
@@ -329,12 +301,13 @@ func (s *CoreService) CloseControlPanel() error {
 // covering the companion window with the retired chat surface.
 func (s *CoreService) OpenHistory() error {
 	s.mu.Lock()
-	companion, panel, history := s.companion, s.controlPanel, s.history
+	companion, panel, history, windowLink := s.companion, s.controlPanel, s.history, s.windowLink
 	if companion == nil || history == nil {
 		s.mu.Unlock()
 		return errors.New("history window is unavailable")
 	}
 	historyOpen := s.historyOpen
+	controlOpen := s.controlOpen
 	if historyOpen {
 		s.historyOpen = false
 	} else {
@@ -348,6 +321,11 @@ func (s *CoreService) OpenHistory() error {
 	}
 	if panel != nil {
 		panel.Hide()
+		if controlOpen {
+			if err := windowLink.Detach(companion, panel); err != nil {
+				return fmt.Errorf("detach Core settings window: %w", err)
+			}
+		}
 		s.emitControlPanelState(false)
 	}
 	s.RepositionHistory()
@@ -388,9 +366,9 @@ func (s *CoreService) emitControlPanelState(open bool) {
 
 func (s *CoreService) RepositionHistory() {
 	s.mu.Lock()
-	companion, history, open := s.companion, s.history, s.historyOpen
+	companion, history := s.companion, s.history
 	s.mu.Unlock()
-	if !open || companion == nil || history == nil {
+	if companion == nil || history == nil {
 		return
 	}
 	x, y := companion.Position()
@@ -415,9 +393,9 @@ func (s *CoreService) RecentMessages() ([]session.MessageRecord, error) {
 
 func (s *CoreService) RepositionSpeechBubble() {
 	s.mu.Lock()
-	companion, bubble, open := s.companion, s.speechBubble, s.speechOpen
+	companion, bubble := s.companion, s.speechBubble
 	s.mu.Unlock()
-	if !open || companion == nil || bubble == nil {
+	if companion == nil || bubble == nil {
 		return
 	}
 	x, y := companion.Position()
@@ -428,7 +406,6 @@ func (s *CoreService) RepositionSpeechBubble() {
 func (s *CoreService) HideSpeechBubble() {
 	s.mu.Lock()
 	bubble := s.speechBubble
-	s.speechOpen = false
 	s.mu.Unlock()
 	if bubble != nil {
 		bubble.Hide()
@@ -436,14 +413,13 @@ func (s *CoreService) HideSpeechBubble() {
 }
 
 func (s *CoreService) showSpeechBubble() {
+	s.RepositionSpeechBubble()
 	s.mu.Lock()
 	bubble := s.speechBubble
-	s.speechOpen = bubble != nil
 	s.mu.Unlock()
 	if bubble == nil {
 		return
 	}
-	s.RepositionSpeechBubble()
 	bubble.Show()
 }
 

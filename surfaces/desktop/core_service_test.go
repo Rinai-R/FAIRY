@@ -28,6 +28,41 @@ type fakeWindow struct {
 	moveCalls     int
 }
 
+type fakeWindowRelation struct {
+	attachCount int
+	detachCount int
+	attached    bool
+	attachX     int
+	attachY     int
+	attachErr   error
+	detachErr   error
+}
+
+func (r *fakeWindowRelation) Attach(_ application.Window, child application.Window) error {
+	r.attachCount++
+	if r.attachErr != nil {
+		return r.attachErr
+	}
+	r.attached = true
+	r.attachX, r.attachY = child.Position()
+	return nil
+}
+
+func (r *fakeWindowRelation) Detach(application.Window, application.Window) error {
+	r.detachCount++
+	if r.detachErr != nil {
+		return r.detachErr
+	}
+	r.attached = false
+	return nil
+}
+
+func useFakeWindowRelation(service *CoreService) *fakeWindowRelation {
+	relation := &fakeWindowRelation{}
+	service.windowLink = relation
+	return relation
+}
+
 type memoryConnectionStore struct {
 	connection desktopConnection
 	loadErr    error
@@ -119,6 +154,7 @@ func TestOpenControlPanelPlacesWindowBesideCompanion(t *testing.T) {
 	panel := &fakeWindow{width: controlPanelWidth, height: controlPanelHeight}
 	history := &fakeWindow{}
 	service := NewCoreService()
+	relation := useFakeWindowRelation(service)
 	service.attachWindows(companion, panel, history, nil)
 
 	if err := service.OpenControlPanel(); err != nil {
@@ -127,8 +163,8 @@ func TestOpenControlPanelPlacesWindowBesideCompanion(t *testing.T) {
 	if companion.hidden {
 		t.Fatal("companion window was hidden")
 	}
-	if !panel.shown || !panel.focused {
-		t.Fatalf("settings shown=%t focused=%t, want both true", panel.shown, panel.focused)
+	if !panel.shown || !companion.focused {
+		t.Fatalf("settings shown=%t companion focused=%t, want both true", panel.shown, companion.focused)
 	}
 	if !history.hidden {
 		t.Fatal("history window was not hidden before opening settings")
@@ -136,12 +172,16 @@ func TestOpenControlPanelPlacesWindowBesideCompanion(t *testing.T) {
 	if panel.x != 272 || panel.y != 397 {
 		t.Fatalf("settings window position = (%d, %d), want (272, 397)", panel.x, panel.y)
 	}
+	if !relation.attached || relation.attachCount != 1 || relation.attachX != 272 || relation.attachY != 397 {
+		t.Fatalf("settings relation = %#v, want one attach after initial positioning", relation)
+	}
 }
 
-func TestRepositionControlPanelFollowsCompanionOnlyWhileOpen(t *testing.T) {
+func TestRepositionControlPanelUsesLatestCompanionPositionOnlyWhenRequested(t *testing.T) {
 	companion := &fakeWindow{x: 700, y: 350}
 	panel := &fakeWindow{width: 460, height: controlPanelHeight}
 	service := NewCoreService()
+	relation := useFakeWindowRelation(service)
 	service.attachWindows(companion, panel, nil, nil)
 
 	if err := service.OpenControlPanel(); err != nil {
@@ -165,51 +205,56 @@ func TestRepositionControlPanelFollowsCompanionOnlyWhileOpen(t *testing.T) {
 	if panel.x != 452 || panel.y != 527 {
 		t.Fatalf("closed settings moved to (%d, %d), want unchanged (452, 527)", panel.x, panel.y)
 	}
+	if relation.attached || relation.attachCount != 1 || relation.detachCount != 1 {
+		t.Fatalf("settings relation = %#v, want one attach and one detach", relation)
+	}
 }
 
-func TestCompanionMoveUsesOnePositionSnapshotAndSkipsHiddenWindows(t *testing.T) {
+func TestOriginalCompanionMovePathRepositionsOnlyLightweightWindows(t *testing.T) {
 	companion := &fakeWindow{x: 700, y: 350}
 	panel := &fakeWindow{width: 460, height: controlPanelHeight}
 	history := &fakeWindow{}
 	bubble := &fakeWindow{}
 	service := NewCoreService()
+	relation := useFakeWindowRelation(service)
 	service.attachWindows(companion, panel, history, bubble)
-
-	service.repositionAuxiliaryWindows()
-	if companion.positionCalls != 0 {
-		t.Fatalf("closed auxiliary windows read companion position %d times, want 0", companion.positionCalls)
-	}
-
 	if err := service.OpenControlPanel(); err != nil {
 		t.Fatalf("OpenControlPanel() error = %v", err)
 	}
-	if panel.sizeCalls != 1 {
-		t.Fatalf("opening settings read its size %d times, want 1", panel.sizeCalls)
-	}
-	companion.positionCalls, panel.sizeCalls = 0, 0
+	companion.positionCalls = 0
 	panel.moveCalls, history.moveCalls, bubble.moveCalls = 0, 0, 0
 	companion.x, companion.y = 920, 480
 
-	service.repositionAuxiliaryWindows()
+	// The heavyweight settings WebView follows through its native parent-child
+	// relationship and is intentionally absent from the WindowDidMove hot path.
+	service.RepositionSpeechBubble()
+	service.RepositionHistory()
 
-	if companion.positionCalls != 1 {
-		t.Fatalf("one move event read companion position %d times, want 1", companion.positionCalls)
+	if companion.positionCalls != 2 {
+		t.Fatalf("original move path read companion position %d times, want 2", companion.positionCalls)
 	}
-	if panel.sizeCalls != 0 {
-		t.Fatalf("move hot path read settings size %d times, want 0", panel.sizeCalls)
+	if panel.moveCalls != 0 || history.moveCalls != 1 || bubble.moveCalls != 1 {
+		t.Fatalf("move calls panel=%d history=%d bubble=%d, want 0, 1, 1", panel.moveCalls, history.moveCalls, bubble.moveCalls)
 	}
-	if panel.moveCalls != 1 || history.moveCalls != 0 || bubble.moveCalls != 0 {
-		t.Fatalf("move calls panel=%d history=%d bubble=%d, want 1, 0, 0", panel.moveCalls, history.moveCalls, bubble.moveCalls)
+	if panel.x != 232 || panel.y != 397 {
+		t.Fatalf("settings moved with companion to (%d, %d), want original (232, 397)", panel.x, panel.y)
 	}
-	if panel.x != 452 || panel.y != 527 {
-		t.Fatalf("followed settings position = (%d, %d), want (452, 527)", panel.x, panel.y)
+	if history.x != 580 || history.y != 456 {
+		t.Fatalf("history position = (%d, %d), want (580, 456)", history.x, history.y)
+	}
+	if bubble.x != 906 || bubble.y != 310 {
+		t.Fatalf("bubble position = (%d, %d), want (906, 310)", bubble.x, bubble.y)
+	}
+	if !relation.attached || relation.attachCount != 1 || relation.detachCount != 0 {
+		t.Fatalf("movement changed native settings relation: %#v", relation)
 	}
 }
 
-func TestControlPanelResizeRefreshesCachedFollowWidth(t *testing.T) {
+func TestControlPanelResizeRefreshesCachedWidth(t *testing.T) {
 	companion := &fakeWindow{x: 900, y: 420}
 	panel := &fakeWindow{width: controlPanelWidth, height: controlPanelHeight}
 	service := NewCoreService()
+	relation := useFakeWindowRelation(service)
 	service.attachWindows(companion, panel, nil, nil)
 	if err := service.OpenControlPanel(); err != nil {
 		t.Fatalf("OpenControlPanel() error = %v", err)
@@ -219,46 +264,25 @@ func TestControlPanelResizeRefreshesCachedFollowWidth(t *testing.T) {
 	service.refreshControlPanelWidth()
 	companion.positionCalls, panel.sizeCalls, panel.moveCalls = 0, 0, 0
 	companion.x, companion.y = 1040, 510
-	service.repositionAuxiliaryWindows()
+	service.repositionControlPanel()
 
 	if companion.positionCalls != 1 || panel.sizeCalls != 0 || panel.moveCalls != 1 {
-		t.Fatalf("resize follow calls position=%d size=%d move=%d, want 1, 0, 1", companion.positionCalls, panel.sizeCalls, panel.moveCalls)
+		t.Fatalf("resize reposition calls position=%d size=%d move=%d, want 1, 0, 1", companion.positionCalls, panel.sizeCalls, panel.moveCalls)
 	}
 	if panel.x != 512 || panel.y != 557 {
 		t.Fatalf("resized settings position = (%d, %d), want (512, 557)", panel.x, panel.y)
 	}
-}
-
-func TestSpeechBubbleFollowsOnlyWhileVisible(t *testing.T) {
-	companion := &fakeWindow{x: 700, y: 350}
-	bubble := &fakeWindow{}
-	service := NewCoreService()
-	service.attachWindows(companion, nil, nil, bubble)
-	service.showSpeechBubble()
-	companion.positionCalls, bubble.moveCalls = 0, 0
-	companion.x, companion.y = 760, 410
-
-	service.repositionAuxiliaryWindows()
-	if companion.positionCalls != 1 || bubble.moveCalls != 1 {
-		t.Fatalf("visible bubble calls position=%d move=%d, want 1, 1", companion.positionCalls, bubble.moveCalls)
-	}
-	if bubble.x != 746 || bubble.y != 240 {
-		t.Fatalf("visible bubble position = (%d, %d), want (746, 240)", bubble.x, bubble.y)
-	}
-
-	service.HideSpeechBubble()
-	companion.positionCalls, bubble.moveCalls = 0, 0
-	companion.x, companion.y = 820, 470
-	service.repositionAuxiliaryWindows()
-	if companion.positionCalls != 0 || bubble.moveCalls != 0 {
-		t.Fatalf("hidden bubble calls position=%d move=%d, want 0, 0", companion.positionCalls, bubble.moveCalls)
+	if relation.attachCount != 1 || relation.detachCount != 0 || !relation.attached {
+		t.Fatalf("resize changed native settings relation: %#v", relation)
 	}
 }
 
 func TestOpenControlPanelClosesVisiblePanel(t *testing.T) {
+	companion := &fakeWindow{x: 700, y: 350}
 	panel := &fakeWindow{}
 	service := NewCoreService()
-	service.attachWindows(nil, panel, nil, nil)
+	relation := useFakeWindowRelation(service)
+	service.attachWindows(companion, panel, nil, nil)
 	var controlPanelOpen bool
 	service.attachEmitter(func(name string, payload any) {
 		if name == "desktop:control-panel" {
@@ -281,6 +305,9 @@ func TestOpenControlPanelClosesVisiblePanel(t *testing.T) {
 	if controlPanelOpen {
 		t.Fatal("control panel close event was not emitted")
 	}
+	if relation.attached || relation.attachCount != 1 || relation.detachCount != 1 {
+		t.Fatalf("settings relation = %#v, want attach then detach", relation)
+	}
 }
 
 func TestOpenHistoryHidesSettingsPanel(t *testing.T) {
@@ -288,6 +315,7 @@ func TestOpenHistoryHidesSettingsPanel(t *testing.T) {
 	panel := &fakeWindow{}
 	history := &fakeWindow{}
 	service := NewCoreService()
+	relation := useFakeWindowRelation(service)
 	service.attachWindows(companion, panel, history, nil)
 
 	if err := service.OpenControlPanel(); err != nil {
@@ -311,6 +339,26 @@ func TestOpenHistoryHidesSettingsPanel(t *testing.T) {
 	}
 	if !panel.visible {
 		t.Fatal("settings window was not shown after opening it from history")
+	}
+	if !relation.attached || relation.attachCount != 2 || relation.detachCount != 1 {
+		t.Fatalf("settings relation = %#v, want attach, detach, reattach", relation)
+	}
+}
+
+func TestOpenControlPanelFailsClosedWhenNativeAttachFails(t *testing.T) {
+	companion := &fakeWindow{x: 700, y: 350}
+	panel := &fakeWindow{width: controlPanelWidth, height: controlPanelHeight}
+	service := NewCoreService()
+	relation := useFakeWindowRelation(service)
+	relation.attachErr = errors.New("native relation unavailable")
+	service.attachWindows(companion, panel, nil, nil)
+
+	err := service.OpenControlPanel()
+	if err == nil || !strings.Contains(err.Error(), "native relation unavailable") {
+		t.Fatalf("OpenControlPanel() error = %v, want native relation diagnostic", err)
+	}
+	if service.controlOpen || panel.shown || relation.attached {
+		t.Fatalf("failed attach left settings active: controlOpen=%t shown=%t relation=%#v", service.controlOpen, panel.shown, relation)
 	}
 }
 
