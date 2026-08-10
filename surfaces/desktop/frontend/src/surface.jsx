@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ClockIcon, Cross2Icon, GearIcon, PaperPlaneIcon, StopIcon } from "@radix-ui/react-icons";
-import { Card, Flex, IconButton, Text, TextArea, TextField } from "@radix-ui/themes";
+import { Card, Flex, IconButton, Text, TextArea } from "@radix-ui/themes";
 import { Events } from "@wailsio/runtime";
 import { Cancel, CloseControlPanel, CloseHistory, Connect, ConnectionSettings, DisableDesktopObservation, EnableDesktopObservation, HideSpeechBubble, OpenControlPanel, OpenHistory, RecentMessages, ReportStickerDelivery, SaveConnection, Send, SetDesktopObservationPrivacy } from "../bindings/fairy-desktop/coreservice.js";
 import { CharacterExpressionBubble, CharacterSpeechBubble } from "./components/CharacterSpeechBubble.jsx";
@@ -234,7 +234,8 @@ function SettingsSurface() {
   const [endpoint, setEndpoint] = useState(defaultEndpoint);
   const [endpointKey, setEndpointKey] = useState("");
   const [token, setToken] = useState("");
-  const [status, setStatus] = useState("");
+  const [connectionStatus, setConnectionStatus] = useState("");
+  const [observationStatus, setObservationStatus] = useState("");
   const [observationEnabled, setObservationEnabled] = useState(() => localStorage.getItem("fairy.observation.enabled") === "true");
   const [privacy, setPrivacy] = useState(() => localStorage.getItem("fairy.observation.privacy") || "normal");
   const [observationInterval, setObservationInterval] = useState(() => Number(localStorage.getItem("fairy.observation.interval") || 5));
@@ -247,7 +248,7 @@ function SettingsSurface() {
       setEndpoint(settings.endpoint || defaultEndpoint);
       setEndpointKey(settings.endpointKey || "");
     }).catch((cause) => {
-      if (!cancelled) setStatus(cause?.message || "无法读取 Core 连接配置");
+      if (!cancelled) setConnectionStatus(cause?.message || "无法读取 Core 连接配置");
     });
     return () => { cancelled = true; };
   }, []);
@@ -256,8 +257,13 @@ function SettingsSurface() {
     event.preventDefault();
     try {
       const settings = await SaveConnection(endpoint, token, endpointKey);
-      setEndpoint(settings.endpoint); setEndpointKey(settings.endpointKey); setToken(""); setStatus("已保存到当前用户的本地连接文件，重启后将自动连接。");
-    } catch (cause) { setStatus(cause?.message || "保存失败"); }
+      setEndpoint(settings.endpoint);
+      setEndpointKey(settings.endpointKey);
+      setToken("");
+      setConnectionStatus("已保存到当前用户的本地连接文件，重启后将自动连接。");
+    } catch (cause) {
+      setConnectionStatus(cause?.message || "保存失败");
+    }
   }
   async function applyObservation() {
     try {
@@ -268,10 +274,109 @@ function SettingsSurface() {
       localStorage.setItem("fairy.observation.privacy", privacy);
       localStorage.setItem("fairy.observation.interval", String(observationInterval));
       localStorage.setItem("fairy.observation.idle", String(idleThreshold));
-      setStatus(observationEnabled ? "桌面观察已启用。" : "桌面观察已关闭。");
-    } catch (cause) { setStatus(cause?.message || "观察设置失败"); }
+      setObservationStatus(observationEnabled ? "桌面观察已启用。" : "桌面观察已关闭。");
+    } catch (cause) {
+      setObservationStatus(cause?.message || "观察设置失败");
+    }
   }
-  return <main className="cp-stage"><Card className="cp-shell"><div className="cp-drag-region" /><header className="cp-header"><Text as="h1" size="3" weight="medium">Core 设置</Text><IconButton type="button" size="1" variant="ghost" color="gray" aria-label="关闭设置" onClick={() => CloseControlPanel()}><Cross2Icon /></IconButton></header><section className="cp-page"><form className="cp-form" onSubmit={save}><label className="cp-field"><Text size="1" weight="medium">Core 地址</Text><TextField.Root size="1" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} /></label><label className="cp-field"><Text size="1" weight="medium">访问令牌</Text><TextField.Root size="1" type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="留空则保留已有令牌" /></label><button className="cp-save" type="submit">保存连接配置</button></form><div className="cp-form"><label className="cp-field cp-field--inline"><input type="checkbox" checked={observationEnabled} onChange={(event) => setObservationEnabled(event.target.checked)} /><Text size="1" weight="medium">定期观察</Text></label><label className="cp-field"><Text size="1" weight="medium">隐私状态</Text><select value={privacy} onChange={(event) => setPrivacy(event.target.value)}><option value="normal">正常</option><option value="locked">已锁屏</option><option value="meeting">会议中</option><option value="do_not_disturb">勿扰</option><option value="protected">受保护</option></select></label><label className="cp-field"><Text size="1" weight="medium">采样间隔（分钟）</Text><input type="number" min="1" max="60" value={observationInterval} onChange={(event) => setObservationInterval(Number(event.target.value))} /></label><label className="cp-field"><Text size="1" weight="medium">离开阈值（分钟）</Text><input type="number" min="1" max="240" value={idleThreshold} onChange={(event) => setIdleThreshold(Number(event.target.value))} /></label><button className="cp-save" type="button" onClick={applyObservation}>应用观察设置</button>{status ? <Text size="1" color="gray">{status}</Text> : null}</div></section></Card></main>;
+  return (
+    <main className="cp-stage">
+      <Card className="cp-shell">
+        <div className="cp-drag-region" />
+        <header className="cp-header">
+          <div className="cp-header-copy">
+            <span className="cp-eyebrow">桌面设置</span>
+            <h1>Core 设置</h1>
+          </div>
+          <IconButton className="cp-close" type="button" size="2" variant="ghost" color="gray" aria-label="关闭设置" onClick={() => CloseControlPanel()}>
+            <Cross2Icon />
+          </IconButton>
+        </header>
+
+        <div className="cp-settings-scroll" data-testid="settings-scroll-region">
+          <div className="cp-settings-content">
+            <section className="cp-settings-section" aria-labelledby="core-connection-title">
+              <div className="cp-settings-section__head">
+                <div>
+                  <p className="cp-settings-kicker">连接</p>
+                  <h2 id="core-connection-title">Core 连接</h2>
+                </div>
+                <span className="cp-section-index" aria-hidden="true">01</span>
+              </div>
+              <p className="cp-settings-description">配置本机 Desktop 访问 Core 的地址和令牌。保存后将在下次启动时自动连接。</p>
+
+              <form className="cp-settings-form" onSubmit={save}>
+                <label className="cp-settings-field">
+                  <span>Core 地址</span>
+                  <input type="url" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} autoComplete="url" spellCheck="false" />
+                </label>
+                <label className="cp-settings-field">
+                  <span>访问令牌</span>
+                  <input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="留空则保留已有令牌" autoComplete="off" />
+                  <small>令牌只保存到当前用户的本地连接文件，不会在界面中回显。</small>
+                </label>
+                <button className="cp-primary-action" type="submit">保存连接配置</button>
+                {connectionStatus ? <p className="cp-settings-status" role="status">{connectionStatus}</p> : null}
+              </form>
+            </section>
+
+            <section className="cp-settings-section" aria-labelledby="desktop-observation-title">
+              <div className="cp-settings-section__head">
+                <div>
+                  <p className="cp-settings-kicker">观察</p>
+                  <h2 id="desktop-observation-title">桌面观察</h2>
+                </div>
+                <span className="cp-section-index" aria-hidden="true">02</span>
+              </div>
+              <p className="cp-settings-description">定期采样桌面状态，为主动互动提供有限环境信号。隐私状态会约束采样范围。</p>
+
+              <div className="cp-settings-form">
+                <label className="cp-toggle-row">
+                  <span className="cp-toggle-copy">
+                    <strong>定期观察</strong>
+                    <small>{observationEnabled ? "已启用，将按下方间隔采样" : "已关闭，不会采样桌面状态"}</small>
+                  </span>
+                  <input className="cp-switch-input" type="checkbox" checked={observationEnabled} onChange={(event) => setObservationEnabled(event.target.checked)} />
+                  <span className="cp-switch" aria-hidden="true" />
+                </label>
+
+                <label className="cp-settings-field">
+                  <span>隐私状态</span>
+                  <select value={privacy} onChange={(event) => setPrivacy(event.target.value)}>
+                    <option value="normal">正常</option>
+                    <option value="locked">已锁屏</option>
+                    <option value="meeting">会议中</option>
+                    <option value="do_not_disturb">勿扰</option>
+                    <option value="protected">受保护</option>
+                  </select>
+                </label>
+
+                <div className="cp-settings-grid">
+                  <label className="cp-settings-field">
+                    <span>采样间隔</span>
+                    <span className="cp-number-control">
+                      <input type="number" min="1" max="60" value={observationInterval} onChange={(event) => setObservationInterval(Number(event.target.value))} />
+                      <span>分钟</span>
+                    </span>
+                  </label>
+                  <label className="cp-settings-field">
+                    <span>离开阈值</span>
+                    <span className="cp-number-control">
+                      <input type="number" min="1" max="240" value={idleThreshold} onChange={(event) => setIdleThreshold(Number(event.target.value))} />
+                      <span>分钟</span>
+                    </span>
+                  </label>
+                </div>
+
+                <button className="cp-primary-action" type="button" onClick={applyObservation}>应用观察设置</button>
+                {observationStatus ? <p className="cp-settings-status" role="status">{observationStatus}</p> : null}
+              </div>
+            </section>
+          </div>
+        </div>
+      </Card>
+    </main>
+  );
 }
 
 function SpeechSurface() {

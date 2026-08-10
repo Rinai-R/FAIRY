@@ -12,7 +12,13 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
-const surfaceRevision = "20260722-core-surface-2"
+const (
+	surfaceRevision       = "20260810-settings-webui-1"
+	controlPanelWidth     = 420
+	controlPanelHeight    = 560
+	controlPanelMinWidth  = 360
+	controlPanelMinHeight = 360
+)
 
 func main() {
 	frontend, err := fs.Sub(assets, "frontend/dist")
@@ -39,8 +45,9 @@ func main() {
 		Mac:              companionWindowOptions(),
 	})
 	settings := app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title: "FAIRY Core 设置", Name: "control-panel", URL: "/?surface=control-panel&revision=" + surfaceRevision, Width: 340, Height: 250,
-		Hidden: true, DisableResize: true, Frameless: true, AlwaysOnTop: true,
+		Title: "FAIRY Core 设置", Name: "control-panel", URL: "/?surface=control-panel&revision=" + surfaceRevision,
+		Width: controlPanelWidth, Height: controlPanelHeight, MinWidth: controlPanelMinWidth, MinHeight: controlPanelMinHeight,
+		Hidden: true, Frameless: true, AlwaysOnTop: true,
 		BackgroundType: application.BackgroundTypeTransparent, BackgroundColour: application.NewRGBA(0, 0, 0, 0),
 		Mac: controlPanelWindowOptions(),
 	})
@@ -58,7 +65,13 @@ func main() {
 	})
 	bubble.SetIgnoreMouseEvents(true)
 	core.attachWindows(companion, settings, history, bubble)
-	companion.OnWindowEvent(events.Common.WindowDidMove, func(*application.WindowEvent) { core.RepositionSpeechBubble(); core.RepositionHistory() })
+	companion.OnWindowEvent(events.Common.WindowDidMove, func(*application.WindowEvent) {
+		core.repositionAuxiliaryWindows()
+	})
+	settings.OnWindowEvent(events.Common.WindowDidResize, func(*application.WindowEvent) {
+		core.refreshControlPanelWidth()
+		core.repositionControlPanel()
+	})
 	settings.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) { event.Cancel(); core.CloseControlPanel() })
 	history.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) { event.Cancel(); core.CloseHistory() })
 	if err := app.Run(); err != nil {

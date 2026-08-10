@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 
 const mainSource = readFileSync(new URL("./main.jsx", import.meta.url), "utf8");
 const surfaceSource = readFileSync(new URL("./surface.jsx", import.meta.url), "utf8");
+const controlPanelStyles = readFileSync(new URL("./styles/control-panel.css", import.meta.url), "utf8");
+const desktopMainSource = readFileSync(new URL("../../main.go", import.meta.url), "utf8");
 
 test("production entry uses the standalone CoreService surface router", () => {
   assert.match(mainSource, /import \{ SurfaceApp \} from "\.\/surface\.jsx"/);
@@ -53,4 +55,27 @@ test("Core connection settings stay in the Go backend rather than WebView storag
   assert.doesNotMatch(surfaceSource, /Keychain|keychain/);
   assert.doesNotMatch(surfaceSource, /fairy\.endpoint(?:Key)?/);
   assert.doesNotMatch(surfaceSource, /localStorage\.(?:getItem|setItem)\([^)]*(?:endpoint|token)/);
+});
+
+test("Core settings keep every field accessible in a resizable scrolling WebUI panel", () => {
+  assert.match(surfaceSource, /className="cp-settings-scroll" data-testid="settings-scroll-region"/);
+  assert.match(surfaceSource, /className="cp-settings-section" aria-labelledby="core-connection-title"/);
+  assert.match(surfaceSource, /className="cp-settings-section" aria-labelledby="desktop-observation-title"/);
+  assert.match(surfaceSource, /className="cp-settings-status" role="status"/);
+  assert.match(controlPanelStyles, /--cp-bg:\s*#f4f8fc/);
+  assert.match(controlPanelStyles, /--cp-blue:\s*#2878d0/);
+  assert.match(controlPanelStyles, /\.cp-settings-scroll\s*\{[^}]*overflow-y:\s*scroll[^}]*scrollbar-gutter:\s*stable/s);
+  assert.match(controlPanelStyles, /\.cp-settings-scroll::-webkit-scrollbar/);
+  assert.match(controlPanelStyles, /\.cp-settings-status\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*white-space:\s*normal/s);
+
+  const settingsWindowStart = desktopMainSource.indexOf("settings := app.Window.NewWithOptions");
+  const historyWindowStart = desktopMainSource.indexOf("history := app.Window.NewWithOptions", settingsWindowStart);
+  assert.ok(settingsWindowStart >= 0 && historyWindowStart > settingsWindowStart);
+  const settingsWindow = desktopMainSource.slice(settingsWindowStart, historyWindowStart);
+  assert.match(desktopMainSource, /controlPanelWidth\s*=\s*420/);
+  assert.match(desktopMainSource, /controlPanelHeight\s*=\s*560/);
+  assert.match(settingsWindow, /MinWidth:\s*controlPanelMinWidth/);
+  assert.match(settingsWindow, /MinHeight:\s*controlPanelMinHeight/);
+  assert.doesNotMatch(settingsWindow, /DisableResize:\s*true/);
+  assert.match(desktopMainSource, /WindowDidMove[\s\S]*core\.repositionControlPanel\(\)/);
 });

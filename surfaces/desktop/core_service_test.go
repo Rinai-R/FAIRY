@@ -18,10 +18,14 @@ import (
 type fakeWindow struct {
 	application.Window
 	x, y          int
+	width, height int
 	shown, hidden bool
 	visible       bool
 	focused       bool
 	showCount     int
+	positionCalls int
+	sizeCalls     int
+	moveCalls     int
 }
 
 type memoryConnectionStore struct {
@@ -48,8 +52,18 @@ func (s *memoryConnectionStore) Save(connection desktopConnection) error {
 	return nil
 }
 
-func (w *fakeWindow) Position() (int, int) { return w.x, w.y }
-func (w *fakeWindow) SetPosition(x, y int) { w.x, w.y = x, y }
+func (w *fakeWindow) Position() (int, int) {
+	w.positionCalls++
+	return w.x, w.y
+}
+func (w *fakeWindow) Size() (int, int) {
+	w.sizeCalls++
+	return w.width, w.height
+}
+func (w *fakeWindow) SetPosition(x, y int) {
+	w.moveCalls++
+	w.x, w.y = x, y
+}
 func (w *fakeWindow) Show() application.Window {
 	w.shown, w.visible = true, true
 	w.showCount++
@@ -102,7 +116,7 @@ func TestOpenHistoryPlacesWindowToCompanionLeft(t *testing.T) {
 
 func TestOpenControlPanelPlacesWindowBesideCompanion(t *testing.T) {
 	companion := &fakeWindow{x: 700, y: 350}
-	panel := &fakeWindow{}
+	panel := &fakeWindow{width: controlPanelWidth, height: controlPanelHeight}
 	history := &fakeWindow{}
 	service := NewCoreService()
 	service.attachWindows(companion, panel, history, nil)
@@ -113,14 +127,131 @@ func TestOpenControlPanelPlacesWindowBesideCompanion(t *testing.T) {
 	if companion.hidden {
 		t.Fatal("companion window was hidden")
 	}
-	if !panel.shown || !companion.focused {
-		t.Fatalf("settings shown=%t companion focused=%t, want both true", panel.shown, companion.focused)
+	if !panel.shown || !panel.focused {
+		t.Fatalf("settings shown=%t focused=%t, want both true", panel.shown, panel.focused)
 	}
 	if !history.hidden {
 		t.Fatal("history window was not hidden before opening settings")
 	}
-	if panel.x != 352 || panel.y != 397 {
-		t.Fatalf("settings window position = (%d, %d), want (352, 397)", panel.x, panel.y)
+	if panel.x != 272 || panel.y != 397 {
+		t.Fatalf("settings window position = (%d, %d), want (272, 397)", panel.x, panel.y)
+	}
+}
+
+func TestRepositionControlPanelFollowsCompanionOnlyWhileOpen(t *testing.T) {
+	companion := &fakeWindow{x: 700, y: 350}
+	panel := &fakeWindow{width: 460, height: controlPanelHeight}
+	service := NewCoreService()
+	service.attachWindows(companion, panel, nil, nil)
+
+	if err := service.OpenControlPanel(); err != nil {
+		t.Fatalf("OpenControlPanel() error = %v", err)
+	}
+	if panel.x != 232 || panel.y != 397 {
+		t.Fatalf("initial settings position = (%d, %d), want (232, 397)", panel.x, panel.y)
+	}
+
+	companion.x, companion.y = 920, 480
+	service.repositionControlPanel()
+	if panel.x != 452 || panel.y != 527 {
+		t.Fatalf("followed settings position = (%d, %d), want (452, 527)", panel.x, panel.y)
+	}
+
+	if err := service.CloseControlPanel(); err != nil {
+		t.Fatalf("CloseControlPanel() error = %v", err)
+	}
+	companion.x, companion.y = 1100, 600
+	service.repositionControlPanel()
+	if panel.x != 452 || panel.y != 527 {
+		t.Fatalf("closed settings moved to (%d, %d), want unchanged (452, 527)", panel.x, panel.y)
+	}
+}
+
+func TestCompanionMoveUsesOnePositionSnapshotAndSkipsHiddenWindows(t *testing.T) {
+	companion := &fakeWindow{x: 700, y: 350}
+	panel := &fakeWindow{width: 460, height: controlPanelHeight}
+	history := &fakeWindow{}
+	bubble := &fakeWindow{}
+	service := NewCoreService()
+	service.attachWindows(companion, panel, history, bubble)
+
+	service.repositionAuxiliaryWindows()
+	if companion.positionCalls != 0 {
+		t.Fatalf("closed auxiliary windows read companion position %d times, want 0", companion.positionCalls)
+	}
+
+	if err := service.OpenControlPanel(); err != nil {
+		t.Fatalf("OpenControlPanel() error = %v", err)
+	}
+	if panel.sizeCalls != 1 {
+		t.Fatalf("opening settings read its size %d times, want 1", panel.sizeCalls)
+	}
+	companion.positionCalls, panel.sizeCalls = 0, 0
+	panel.moveCalls, history.moveCalls, bubble.moveCalls = 0, 0, 0
+	companion.x, companion.y = 920, 480
+
+	service.repositionAuxiliaryWindows()
+
+	if companion.positionCalls != 1 {
+		t.Fatalf("one move event read companion position %d times, want 1", companion.positionCalls)
+	}
+	if panel.sizeCalls != 0 {
+		t.Fatalf("move hot path read settings size %d times, want 0", panel.sizeCalls)
+	}
+	if panel.moveCalls != 1 || history.moveCalls != 0 || bubble.moveCalls != 0 {
+		t.Fatalf("move calls panel=%d history=%d bubble=%d, want 1, 0, 0", panel.moveCalls, history.moveCalls, bubble.moveCalls)
+	}
+	if panel.x != 452 || panel.y != 527 {
+		t.Fatalf("followed settings position = (%d, %d), want (452, 527)", panel.x, panel.y)
+	}
+}
+
+func TestControlPanelResizeRefreshesCachedFollowWidth(t *testing.T) {
+	companion := &fakeWindow{x: 900, y: 420}
+	panel := &fakeWindow{width: controlPanelWidth, height: controlPanelHeight}
+	service := NewCoreService()
+	service.attachWindows(companion, panel, nil, nil)
+	if err := service.OpenControlPanel(); err != nil {
+		t.Fatalf("OpenControlPanel() error = %v", err)
+	}
+
+	panel.width = 520
+	service.refreshControlPanelWidth()
+	companion.positionCalls, panel.sizeCalls, panel.moveCalls = 0, 0, 0
+	companion.x, companion.y = 1040, 510
+	service.repositionAuxiliaryWindows()
+
+	if companion.positionCalls != 1 || panel.sizeCalls != 0 || panel.moveCalls != 1 {
+		t.Fatalf("resize follow calls position=%d size=%d move=%d, want 1, 0, 1", companion.positionCalls, panel.sizeCalls, panel.moveCalls)
+	}
+	if panel.x != 512 || panel.y != 557 {
+		t.Fatalf("resized settings position = (%d, %d), want (512, 557)", panel.x, panel.y)
+	}
+}
+
+func TestSpeechBubbleFollowsOnlyWhileVisible(t *testing.T) {
+	companion := &fakeWindow{x: 700, y: 350}
+	bubble := &fakeWindow{}
+	service := NewCoreService()
+	service.attachWindows(companion, nil, nil, bubble)
+	service.showSpeechBubble()
+	companion.positionCalls, bubble.moveCalls = 0, 0
+	companion.x, companion.y = 760, 410
+
+	service.repositionAuxiliaryWindows()
+	if companion.positionCalls != 1 || bubble.moveCalls != 1 {
+		t.Fatalf("visible bubble calls position=%d move=%d, want 1, 1", companion.positionCalls, bubble.moveCalls)
+	}
+	if bubble.x != 746 || bubble.y != 240 {
+		t.Fatalf("visible bubble position = (%d, %d), want (746, 240)", bubble.x, bubble.y)
+	}
+
+	service.HideSpeechBubble()
+	companion.positionCalls, bubble.moveCalls = 0, 0
+	companion.x, companion.y = 820, 470
+	service.repositionAuxiliaryWindows()
+	if companion.positionCalls != 0 || bubble.moveCalls != 0 {
+		t.Fatalf("hidden bubble calls position=%d move=%d, want 0, 0", companion.positionCalls, bubble.moveCalls)
 	}
 }
 

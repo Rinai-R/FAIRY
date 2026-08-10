@@ -44,6 +44,8 @@ type CoreService struct {
 	speechBubble application.Window
 	controlOpen  bool
 	historyOpen  bool
+	speechOpen   bool
+	controlWidth int
 	client       *session.Client
 	socket       *session.SessionSocket
 	visualCache  *visualCache
@@ -58,7 +60,12 @@ type CoreService struct {
 }
 
 func NewCoreService() *CoreService {
-	service := &CoreService{connections: newSystemConnectionStore(), newCache: newVisualCache, privacy: session.DesktopPrivacyProtected}
+	service := &CoreService{
+		connections:  newSystemConnectionStore(),
+		newCache:     newVisualCache,
+		privacy:      session.DesktopPrivacyProtected,
+		controlWidth: controlPanelWidth,
+	}
 	service.capture, _ = newDesktopCaptureRuntime(newPlatformDesktopCapturer(), func() session.DesktopPrivacyState {
 		service.mu.Lock()
 		defer service.mu.Unlock()
@@ -74,7 +81,8 @@ func (s *CoreService) attachWindows(companion, controlPanel, history, speechBubb
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.companion, s.controlPanel, s.history, s.speechBubble = companion, controlPanel, history, speechBubble
-	s.controlOpen, s.historyOpen = false, false
+	s.controlOpen, s.historyOpen, s.speechOpen = false, false, false
+	s.controlWidth = controlPanelWidth
 }
 
 func (s *CoreService) attachEmitter(emit func(string, any)) {
@@ -200,7 +208,7 @@ func (s *CoreService) DisableDesktopObservation() {
 
 func (s *CoreService) OpenControlPanel() error {
 	s.mu.Lock()
-	companion, panel, history := s.companion, s.controlPanel, s.history
+	panel, history := s.controlPanel, s.history
 	if panel == nil {
 		s.mu.Unlock()
 		return errors.New("Core settings window is unavailable")
@@ -221,16 +229,88 @@ func (s *CoreService) OpenControlPanel() error {
 		history.Hide()
 		s.emitHistoryState(false)
 	}
-	if companion != nil {
-		x, y := companion.Position()
-		panel.SetPosition(x-348, y+47)
-	}
+	s.refreshControlPanelWidth()
+	s.repositionControlPanel()
 	panel.Show()
-	if companion != nil {
-		companion.Focus()
-	}
+	panel.Focus()
 	s.emitControlPanelState(true)
 	return nil
+}
+
+// refreshControlPanelWidth keeps the resizable settings window out of the
+// companion move hot path. It is called only when the panel opens or resizes.
+func (s *CoreService) refreshControlPanelWidth() {
+	s.mu.Lock()
+	panel := s.controlPanel
+	s.mu.Unlock()
+	if panel == nil {
+		return
+	}
+	width, _ := panel.Size()
+	if width <= 0 {
+		return
+	}
+	s.mu.Lock()
+	if panel == s.controlPanel {
+		s.controlWidth = width
+	}
+	s.mu.Unlock()
+}
+
+// repositionControlPanel keeps an open settings window attached to the
+// companion while using the width captured at the panel lifecycle boundary.
+func (s *CoreService) repositionControlPanel() {
+	s.mu.Lock()
+	companion, panel, open, width := s.companion, s.controlPanel, s.controlOpen, s.controlWidth
+	s.mu.Unlock()
+	if !open || companion == nil || panel == nil {
+		return
+	}
+	x, y := companion.Position()
+	panel.SetPosition(x-width-8, y+47)
+}
+
+type auxiliaryWindowLayout struct {
+	companion    application.Window
+	controlPanel application.Window
+	history      application.Window
+	speechBubble application.Window
+	controlOpen  bool
+	historyOpen  bool
+	speechOpen   bool
+	controlWidth int
+}
+
+// repositionAuxiliaryWindows is the only companion move hot path. It takes one
+// consistent state snapshot, crosses the native boundary for Position once,
+// then moves only windows that are currently visible.
+func (s *CoreService) repositionAuxiliaryWindows() {
+	s.mu.Lock()
+	layout := auxiliaryWindowLayout{
+		companion:    s.companion,
+		controlPanel: s.controlPanel,
+		history:      s.history,
+		speechBubble: s.speechBubble,
+		controlOpen:  s.controlOpen,
+		historyOpen:  s.historyOpen,
+		speechOpen:   s.speechOpen,
+		controlWidth: s.controlWidth,
+	}
+	s.mu.Unlock()
+	if layout.companion == nil || (!layout.controlOpen && !layout.historyOpen && !layout.speechOpen) {
+		return
+	}
+
+	x, y := layout.companion.Position()
+	if layout.controlOpen && layout.controlPanel != nil {
+		layout.controlPanel.SetPosition(x-layout.controlWidth-8, y+47)
+	}
+	if layout.historyOpen && layout.history != nil {
+		layout.history.SetPosition(x-340, y-24)
+	}
+	if layout.speechOpen && layout.speechBubble != nil {
+		layout.speechBubble.SetPosition(x-14, y-170)
+	}
 }
 
 func (s *CoreService) CloseControlPanel() error {
@@ -308,9 +388,9 @@ func (s *CoreService) emitControlPanelState(open bool) {
 
 func (s *CoreService) RepositionHistory() {
 	s.mu.Lock()
-	companion, history := s.companion, s.history
+	companion, history, open := s.companion, s.history, s.historyOpen
 	s.mu.Unlock()
-	if companion == nil || history == nil {
+	if !open || companion == nil || history == nil {
 		return
 	}
 	x, y := companion.Position()
@@ -335,9 +415,9 @@ func (s *CoreService) RecentMessages() ([]session.MessageRecord, error) {
 
 func (s *CoreService) RepositionSpeechBubble() {
 	s.mu.Lock()
-	companion, bubble := s.companion, s.speechBubble
+	companion, bubble, open := s.companion, s.speechBubble, s.speechOpen
 	s.mu.Unlock()
-	if companion == nil || bubble == nil {
+	if !open || companion == nil || bubble == nil {
 		return
 	}
 	x, y := companion.Position()
@@ -348,6 +428,7 @@ func (s *CoreService) RepositionSpeechBubble() {
 func (s *CoreService) HideSpeechBubble() {
 	s.mu.Lock()
 	bubble := s.speechBubble
+	s.speechOpen = false
 	s.mu.Unlock()
 	if bubble != nil {
 		bubble.Hide()
@@ -355,13 +436,14 @@ func (s *CoreService) HideSpeechBubble() {
 }
 
 func (s *CoreService) showSpeechBubble() {
-	s.RepositionSpeechBubble()
 	s.mu.Lock()
 	bubble := s.speechBubble
+	s.speechOpen = bubble != nil
 	s.mu.Unlock()
 	if bubble == nil {
 		return
 	}
+	s.RepositionSpeechBubble()
 	bubble.Show()
 }
 
