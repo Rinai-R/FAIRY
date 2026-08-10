@@ -21,6 +21,8 @@ func TestValidateSubmitTurnRequestRejectsInvalidInput(t *testing.T) {
 		{name: "controlled message id", request: SubmitTurnRequest{ConversationID: "conversation-1", Input: "你好", MessageID: "message\n1"}},
 		{name: "invalid utf8 message id", request: SubmitTurnRequest{ConversationID: "conversation-1", Input: "你好", MessageID: string([]byte{0xff})}},
 		{name: "long unicode message id", request: SubmitTurnRequest{ConversationID: "conversation-1", Input: "你好", MessageID: strings.Repeat("界", 129)}},
+		{name: "padded reply target", request: SubmitTurnRequest{ConversationID: "conversation-1", Input: "你好", ReplyTargetMessageID: " message-1 "}},
+		{name: "controlled reply target", request: SubmitTurnRequest{ConversationID: "conversation-1", Input: "你好", ReplyTargetMessageID: "message\n1"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -32,7 +34,7 @@ func TestValidateSubmitTurnRequestRejectsInvalidInput(t *testing.T) {
 }
 
 func TestValidateSubmitTurnRequestAcceptsValidInput(t *testing.T) {
-	if err := ValidateSubmitTurnRequest(SubmitTurnRequest{ConversationID: "conversation-1", Input: "你好", MessageID: strings.Repeat("界", 128)}); err != nil {
+	if err := ValidateSubmitTurnRequest(SubmitTurnRequest{ConversationID: "conversation-1", Input: "你好", MessageID: strings.Repeat("界", 128), ReplyTargetMessageID: "qq-message-1"}); err != nil {
 		t.Fatalf("ValidateSubmitTurnRequest() error = %v", err)
 	}
 }
@@ -73,6 +75,16 @@ func TestValidateSubmitCompiledTurnRequestRejectsInvalidMessageID(t *testing.T) 
 	})
 	if err == nil {
 		t.Fatal("ValidateSubmitCompiledTurnRequest() error = nil, want message id error")
+	}
+}
+
+func TestValidateSubmitCompiledTurnRequestRejectsInvalidReplyTargetMessageID(t *testing.T) {
+	err := ValidateSubmitCompiledTurnRequest(SubmitCompiledTurnRequest{
+		ConversationID: "conversation-1", Input: "你好", ReplyTargetMessageID: " target ",
+		MaxOutputTokens: 160, AvailableVisualStates: visualStates("idle"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "reply_target_message_id") {
+		t.Fatalf("ValidateSubmitCompiledTurnRequest() error = %v, want reply target error", err)
 	}
 }
 

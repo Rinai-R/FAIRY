@@ -139,7 +139,10 @@ func TestInboxPreservesAcceptedTurnAndProcessesLatestGenerationAfterTerminal(t *
 	if firstBatch.generation != 1 {
 		t.Fatalf("first generation = %d, want 1", firstBatch.generation)
 	}
-	<-submitStarted
+	firstRequest := <-submitStarted
+	if firstRequest.ReplyTargetMessageID != "m1" {
+		t.Fatalf("reply target message ID = %q, want m1", firstRequest.ReplyTargetMessageID)
+	}
 
 	if err := inbox.Observe("conversation-1", testObservation(2)); err != nil {
 		t.Fatal(err)

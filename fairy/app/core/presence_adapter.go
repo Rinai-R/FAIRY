@@ -148,7 +148,8 @@ func (a initiativeAdapter) SubmitTurn(request initiative.TurnRequest) (initiativ
 	outcome, err := a.turns.SubmitTurn(turn.SubmitTurnRequest{
 		ConversationID: request.ConversationID, Input: request.Input,
 		TraceID: request.TraceID, MessageSource: request.MessageSource,
-		ReplyIntent: intent, RecentTargetReply: request.RecentTargetReply,
+		ReplyTargetMessageID: request.ReplyTargetMessageID,
+		ReplyIntent:          intent, RecentTargetReply: request.RecentTargetReply,
 		PersonNoteSenderIDs: append([]string(nil), request.PersonNoteSenderIDs...),
 	})
 	return initiative.TurnOutcome{ResponseText: outcome.ResponseText}, err

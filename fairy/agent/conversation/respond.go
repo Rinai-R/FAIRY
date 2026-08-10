@@ -12,15 +12,16 @@ import (
 var ErrTurnRuntimeUnavailable = errors.New("companion turn runtime is unavailable")
 
 type SubmitTurnRequest struct {
-	ConversationID      string                     `json:"conversationId"`
-	Input               string                     `json:"input"`
-	TraceID             string                     `json:"-"`
-	MessageID           string                     `json:"-"`
-	MessageSource       string                     `json:"-"`
-	ReplyIntent         *ReplyIntent               `json:"-"`
-	RecentTargetReply   string                     `json:"-"`
-	PersonNoteSenderIDs []string                   `json:"-"`
-	OutputCapabilities  session.OutputCapabilities `json:"-"`
+	ConversationID       string                     `json:"conversationId"`
+	Input                string                     `json:"input"`
+	TraceID              string                     `json:"-"`
+	MessageID            string                     `json:"-"`
+	MessageSource        string                     `json:"-"`
+	ReplyTargetMessageID string                     `json:"-"`
+	ReplyIntent          *ReplyIntent               `json:"-"`
+	RecentTargetReply    string                     `json:"-"`
+	PersonNoteSenderIDs  []string                   `json:"-"`
+	OutputCapabilities   session.OutputCapabilities `json:"-"`
 }
 
 type SubmitCompiledTurnRequest struct {
@@ -31,6 +32,7 @@ type SubmitCompiledTurnRequest struct {
 	TraceID               string                     `json:"-"`
 	MessageID             string                     `json:"-"`
 	MessageSource         string                     `json:"-"`
+	ReplyTargetMessageID  string                     `json:"-"`
 	ReplyIntent           *ReplyIntent               `json:"-"`
 	RecentTargetReply     string                     `json:"-"`
 	PersonNoteSenderIDs   []string                   `json:"-"`
@@ -90,15 +92,22 @@ func ValidateSubmitTurnRequest(request SubmitTurnRequest) error {
 	if strings.TrimSpace(request.Input) == "" {
 		return errors.New("companion input is required")
 	}
-	return validateOptionalMessageID(request.MessageID)
+	if err := validateOptionalCorrelationID("message_id", request.MessageID); err != nil {
+		return err
+	}
+	return validateOptionalCorrelationID("reply_target_message_id", request.ReplyTargetMessageID)
 }
 
 func validateOptionalMessageID(value string) error {
+	return validateOptionalCorrelationID("message_id", value)
+}
+
+func validateOptionalCorrelationID(name, value string) error {
 	if value == "" {
 		return nil
 	}
 	if !observability.ValidCorrelationID(value) {
-		return errors.New("message_id is invalid")
+		return errors.New(name + " is invalid")
 	}
 	return nil
 }
@@ -136,6 +145,9 @@ func ValidateSubmitCompiledTurnRequest(request SubmitCompiledTurnRequest) error 
 		return errors.New("max_output_tokens is required")
 	}
 	if err := validateOptionalMessageID(request.MessageID); err != nil {
+		return err
+	}
+	if err := validateOptionalCorrelationID("reply_target_message_id", request.ReplyTargetMessageID); err != nil {
 		return err
 	}
 	return reply.ValidateAvailableVisualStates(request.AvailableVisualStates)

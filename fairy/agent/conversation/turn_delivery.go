@@ -44,6 +44,7 @@ func (x *turnExecution) deliverReply(ctx context.Context, gathered *turnContext,
 		ctx,
 		len(compiled.Chains),
 		func(completion reply.BeatReadyCompletion) error {
+			completion.ReplyTargetMessageID = request.ReplyTargetMessageID
 			publish := func() error {
 				_, err := s.publishLife(x.life, func() (session.Event, error) {
 					return x.life.BeatReady(completion)

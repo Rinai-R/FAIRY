@@ -23,10 +23,11 @@ type bot struct {
 	socket     sessionSocket
 	stickers   stickerContentReader
 
-	mu            sync.Mutex
-	ensureMu      sync.Mutex
-	conversations map[string]string
-	senders       map[string]expressionSender
+	mu             sync.Mutex
+	ensureMu       sync.Mutex
+	conversations  map[string]string
+	senders        map[string]expressionSender
+	replyPositions map[string]*replyDistanceTracker
 }
 
 type sessionSocket interface {
@@ -46,8 +47,10 @@ type groupAuthorizer interface {
 }
 
 type expressionSender struct {
-	text  func(string) (string, error)
-	image func([]byte) (string, error)
+	text       func(string) (string, error)
+	image      func([]byte) (string, error)
+	replyText  func(string, string) (string, error)
+	replyImage func(string, []byte) (string, error)
 }
 
 func newBot(ctx context.Context, socket sessionSocket, stickers stickerContentReader, authorizer groupAuthorizer) (*bot, error) {
@@ -56,8 +59,9 @@ func newBot(ctx context.Context, socket sessionSocket, stickers stickerContentRe
 	}
 	return &bot{
 		ctx: ctx, authorizer: authorizer, socket: socket, stickers: stickers,
-		conversations: make(map[string]string),
-		senders:       make(map[string]expressionSender),
+		conversations:  make(map[string]string),
+		senders:        make(map[string]expressionSender),
+		replyPositions: make(map[string]*replyDistanceTracker),
 	}, nil
 }
 
@@ -93,12 +97,19 @@ func (b *bot) handle(ctx *zero.Ctx) {
 		image: func(content []byte) (string, error) {
 			return sendChain(ctx, message.ImageBytes(content))
 		},
+		replyText: func(targetMessageID, text string) (string, error) {
+			return sendChain(ctx, message.Reply(targetMessageID), message.Text(text))
+		},
+		replyImage: func(targetMessageID string, content []byte) (string, error) {
+			return sendChain(ctx, message.Reply(targetMessageID), message.ImageBytes(content))
+		},
 	}
 	conversationID, err := b.ensureConversation(groupID, send)
 	if err != nil {
 		log.Printf("group message %d open session failed: %v", groupID, err)
 		return
 	}
+	b.observeReplyPosition(conversationID, observation.MessageID, time.Now())
 	if err := b.socket.ObserveAmbient(b.ctx, conversationID, observation); err != nil {
 		log.Printf("group message %d observe failed: %v", groupID, err)
 	}
@@ -138,8 +149,8 @@ func (b *bot) handlePrivate(ctx *zero.Ctx) {
 	}
 }
 
-func sendChain(ctx *zero.Ctx, segment message.Segment) (string, error) {
-	id := ctx.SendChain(segment)
+func sendChain(ctx *zero.Ctx, segments ...message.Segment) (string, error) {
+	id := ctx.SendChain(segments...)
 	if id.ID() == 0 {
 		return "", errors.New("OneBot send action returned empty message ID")
 	}
@@ -206,6 +217,7 @@ func privateTurnFromEvent(ctx *zero.Ctx) (input, messageID, userID string, err e
 }
 
 func (b *bot) consumeTurnEvents(conversationID string, stream <-chan session.TurnEvent) {
+	claims := newTurnReplyClaims()
 	for {
 		var event session.TurnEvent
 		select {
@@ -220,30 +232,46 @@ func (b *bot) consumeTurnEvents(conversationID string, stream <-chan session.Tur
 			}
 			event = received
 		}
+		if terminalTurnState(event.State) {
+			claims.Release(event.TurnID)
+		}
 		beat, ok := finalExpressionBeat(event)
 		if !ok {
 			continue
+		}
+		replyTargetMessageID := ""
+		messageGap, firstFinalBeat := claims.Claim(event.TurnID)
+		if firstFinalBeat && b.shouldQuoteReply(conversationID, beat.ReplyTargetMessageID, time.Now(), messageGap) {
+			replyTargetMessageID = beat.ReplyTargetMessageID
 		}
 		b.mu.Lock()
 		send := b.senders[conversationID]
 		b.mu.Unlock()
 		switch beat.Part.Kind {
 		case session.ExpressionUtterance:
-			b.deliverUtterance(conversationID, event, beat, send)
+			b.deliverUtterance(conversationID, event, beat, send, replyTargetMessageID)
 		case session.ExpressionSticker:
-			b.deliverSticker(conversationID, event, beat, send)
+			b.deliverSticker(conversationID, event, beat, send, replyTargetMessageID)
 		}
 	}
 }
 
-func (b *bot) deliverUtterance(conversationID string, event session.TurnEvent, beat expressionBeat, send expressionSender) {
+func (b *bot) deliverUtterance(conversationID string, event session.TurnEvent, beat expressionBeat, send expressionSender, replyTargetMessageID string) {
 	result := session.ExpressionDeliveryResult{
 		ConversationID: conversationID,
 		TurnID:         event.TurnID,
 		BeatID:         beat.BeatID,
 		Status:         session.ExpressionDeliveryFailed,
 	}
-	if send.text == nil {
+	if replyTargetMessageID != "" && send.replyText != nil {
+		if externalMessageID, err := send.replyText(replyTargetMessageID, beat.Part.Text); err != nil {
+			result.ErrorMessage = "QQ 引用文字发送失败"
+			log.Printf("QQ 引用文字投递失败")
+		} else {
+			result.Status = session.ExpressionDeliverySucceeded
+			result.ExternalMessageID = externalMessageID
+		}
+	} else if send.text == nil {
 		result.ErrorMessage = "QQ 文字发送器不可用"
 		log.Printf("QQ 文字投递失败")
 	} else if externalMessageID, err := send.text(beat.Part.Text); err != nil {
@@ -263,11 +291,12 @@ func (b *bot) reportExpressionDelivery(result session.ExpressionDeliveryResult) 
 }
 
 type expressionBeat struct {
-	BeatID string
-	Part   session.ExpressionPart
+	BeatID               string
+	ReplyTargetMessageID string
+	Part                 session.ExpressionPart
 }
 
-func (b *bot) deliverSticker(conversationID string, event session.TurnEvent, beat expressionBeat, send expressionSender) {
+func (b *bot) deliverSticker(conversationID string, event session.TurnEvent, beat expressionBeat, send expressionSender, replyTargetMessageID string) {
 	result := session.ExpressionDeliveryResult{
 		ConversationID: conversationID,
 		TurnID:         event.TurnID,
@@ -283,7 +312,11 @@ func (b *bot) deliverSticker(conversationID string, event session.TurnEvent, bea
 		fail("QQ 表情包引用缺失")
 		return
 	}
-	if send.image == nil {
+	if replyTargetMessageID != "" && send.replyImage == nil && send.image == nil {
+		fail("QQ 图片发送器不可用")
+		return
+	}
+	if replyTargetMessageID == "" && send.image == nil {
 		fail("QQ 图片发送器不可用")
 		return
 	}
@@ -296,7 +329,12 @@ func (b *bot) deliverSticker(conversationID string, event session.TurnEvent, bea
 		fail("Core 表情包 MIME 与回复快照不一致")
 		return
 	}
-	externalMessageID, err := send.image(content.Bytes)
+	var externalMessageID string
+	if replyTargetMessageID != "" && send.replyImage != nil {
+		externalMessageID, err = send.replyImage(replyTargetMessageID, content.Bytes)
+	} else {
+		externalMessageID, err = send.image(content.Bytes)
+	}
 	if err != nil {
 		fail("QQ 图片发送失败")
 		return
@@ -386,11 +424,12 @@ func projectOneBotMessage(elements message.Message) (string, []session.MessageMe
 
 func finalExpressionBeat(event session.TurnEvent) (expressionBeat, bool) {
 	var envelope struct {
-		Type        string                 `json:"type"`
-		BeatID      string                 `json:"beatId"`
-		Kind        string                 `json:"kind"`
-		DisplayText string                 `json:"displayText"`
-		Part        session.ExpressionPart `json:"part"`
+		Type                 string                 `json:"type"`
+		BeatID               string                 `json:"beatId"`
+		Kind                 string                 `json:"kind"`
+		DisplayText          string                 `json:"displayText"`
+		ReplyTargetMessageID string                 `json:"replyTargetMessageId"`
+		Part                 session.ExpressionPart `json:"part"`
 	}
 	if err := json.Unmarshal(event.Payload, &envelope); err != nil {
 		return expressionBeat{}, false
@@ -422,7 +461,10 @@ func finalExpressionBeat(event session.TurnEvent) (expressionBeat, bool) {
 	default:
 		return expressionBeat{}, false
 	}
-	return expressionBeat{BeatID: envelope.BeatID, Part: envelope.Part}, true
+	if !validReplyMessageID(envelope.ReplyTargetMessageID) {
+		envelope.ReplyTargetMessageID = ""
+	}
+	return expressionBeat{BeatID: envelope.BeatID, ReplyTargetMessageID: envelope.ReplyTargetMessageID, Part: envelope.Part}, true
 }
 
 func runBot(ctx context.Context, cfg Config) error {

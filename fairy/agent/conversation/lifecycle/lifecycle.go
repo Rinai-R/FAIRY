@@ -100,6 +100,7 @@ type BeatReadyPayload struct {
 	PaceWaitMS           int64                   `json:"paceWaitMs"`
 	PublishedPrefixCount int                     `json:"publishedPrefixCount"`
 	Reason               string                  `json:"reason,omitempty"`
+	ReplyTargetMessageID string                  `json:"replyTargetMessageId,omitempty"`
 	Part                 *session.ExpressionPart `json:"part,omitempty"`
 }
 
@@ -315,6 +316,7 @@ func (l *Lifecycle) BeatReady(completion reply.BeatReadyCompletion) (session.Eve
 		PaceWaitMS:           completion.PaceWaitMS,
 		PublishedPrefixCount: completion.PublishedPrefixCount,
 		Reason:               completion.Reason,
+		ReplyTargetMessageID: completion.ReplyTargetMessageID,
 	}
 	if completion.Chain != nil {
 		part := sessionExpressionPart(*completion.Chain)

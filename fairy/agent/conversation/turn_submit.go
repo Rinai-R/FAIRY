@@ -106,16 +106,17 @@ func (e *TurnEngine) SubmitTurn(request SubmitTurnRequest) (TurnOutcome, error) 
 		request.MessageSource = "direct"
 	}
 	return e.submitRuntimeTurn(SubmitCompiledTurnRequest{
-		ConversationID:      request.ConversationID,
-		Input:               request.Input,
-		MaxOutputTokens:     RespondMaxOutputTokens,
-		TraceID:             request.TraceID,
-		MessageID:           request.MessageID,
-		MessageSource:       request.MessageSource,
-		ReplyIntent:         request.ReplyIntent,
-		RecentTargetReply:   request.RecentTargetReply,
-		PersonNoteSenderIDs: append([]string(nil), request.PersonNoteSenderIDs...),
-		OutputCapabilities:  s.OutputCapabilities(request.ConversationID),
+		ConversationID:       request.ConversationID,
+		Input:                request.Input,
+		MaxOutputTokens:      RespondMaxOutputTokens,
+		TraceID:              request.TraceID,
+		MessageID:            request.MessageID,
+		MessageSource:        request.MessageSource,
+		ReplyTargetMessageID: request.ReplyTargetMessageID,
+		ReplyIntent:          request.ReplyIntent,
+		RecentTargetReply:    request.RecentTargetReply,
+		PersonNoteSenderIDs:  append([]string(nil), request.PersonNoteSenderIDs...),
+		OutputCapabilities:   s.OutputCapabilities(request.ConversationID),
 	}, resolved)
 }
 

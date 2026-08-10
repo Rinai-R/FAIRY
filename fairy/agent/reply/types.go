@@ -43,6 +43,7 @@ type BeatReadyCompletion struct {
 	PaceWaitMS           int64
 	PublishedPrefixCount int
 	Reason               string
+	ReplyTargetMessageID string
 	Chain                *ReplyChain
 }
 

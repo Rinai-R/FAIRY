@@ -129,19 +129,20 @@ func TestBeatReadyIncludesPacingFields(t *testing.T) {
 		TargetIntervalMS:     920,
 		PaceWaitMS:           370,
 		PublishedPrefixCount: 2,
+		ReplyTargetMessageID: "qq-message-42",
 	})
 	if err != nil {
 		t.Fatalf("BeatReady() error = %v", err)
 	}
 	payload := decodeEventPayload[lifecycle.BeatReadyPayload](t, event.Payload)
-	if payload.TargetIntervalMS != 920 || payload.PaceWaitMS != 370 || payload.PublishedPrefixCount != 2 {
+	if payload.TargetIntervalMS != 920 || payload.PaceWaitMS != 370 || payload.PublishedPrefixCount != 2 || payload.ReplyTargetMessageID != "qq-message-42" {
 		t.Fatalf("pacing payload = %#v", payload)
 	}
 	raw, err := json.Marshal(event)
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
-	for _, field := range []string{`"targetIntervalMs":920`, `"paceWaitMs":370`, `"publishedPrefixCount":2`} {
+	for _, field := range []string{`"targetIntervalMs":920`, `"paceWaitMs":370`, `"publishedPrefixCount":2`, `"replyTargetMessageId":"qq-message-42"`} {
 		if !bytes.Contains(raw, []byte(field)) {
 			t.Fatalf("wire event missing %s: %s", field, raw)
 		}

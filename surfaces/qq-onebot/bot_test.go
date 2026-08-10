@@ -143,14 +143,158 @@ func TestConsumeTurnEventsDeliversConversationStreamInOrder(t *testing.T) {
 	wg.Wait()
 }
 
+func TestConsumeTurnEventsQuotesOnlyFirstDistantBeat(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	quoted := make(chan string, 1)
+	plain := make(chan string, 1)
+	socket := &fakeSessionSocket{reports: make(chan session.ExpressionDeliveryResult, 2)}
+	bot := &bot{
+		ctx: ctx, socket: socket, conversations: make(map[string]string),
+		senders: map[string]expressionSender{"c1": {
+			text: func(text string) (string, error) {
+				plain <- text
+				return "50002", nil
+			},
+			replyText: func(target, text string) (string, error) {
+				quoted <- target + ":" + text
+				return "50001", nil
+			},
+		}},
+	}
+	bot.observeReplyPosition("c1", "target-1", time.Now().Add(-replyElapsedThreshold))
+	stream := make(chan session.TurnEvent, 2)
+	done := make(chan struct{})
+	go func() {
+		bot.consumeTurnEvents("c1", stream)
+		close(done)
+	}()
+	for index, text := range []string{"第一拍", "第二拍"} {
+		payload, _ := json.Marshal(map[string]any{
+			"type": "beat.ready", "beatId": "b" + strconv.Itoa(index+1), "kind": "final",
+			"displayText": text, "replyTargetMessageId": "target-1",
+		})
+		stream <- session.TurnEvent{ConversationID: "c1", TurnID: "t1", Payload: payload}
+	}
+	select {
+	case got := <-quoted:
+		if got != "target-1:第一拍" {
+			t.Fatalf("quoted delivery = %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for quoted delivery")
+	}
+	select {
+	case got := <-plain:
+		if got != "第二拍" {
+			t.Fatalf("plain delivery = %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for following plain delivery")
+	}
+	for range 2 {
+		select {
+		case report := <-socket.reports:
+			if report.Status != session.ExpressionDeliverySucceeded {
+				t.Fatalf("report = %#v", report)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for delivery report")
+		}
+	}
+	cancel()
+	<-done
+}
+
+func TestConsumeTurnEventsFallsBackToPlainWhenAnchorIsUnavailable(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	delivered := make(chan string, 1)
+	socket := &fakeSessionSocket{reports: make(chan session.ExpressionDeliveryResult, 1)}
+	bot := &bot{
+		ctx: ctx, socket: socket, conversations: make(map[string]string),
+		senders: map[string]expressionSender{"c1": {
+			text: func(text string) (string, error) {
+				delivered <- text
+				return "51001", nil
+			},
+			replyText: func(string, string) (string, error) {
+				t.Fatal("reply sender called for unavailable anchor")
+				return "", nil
+			},
+		}},
+	}
+	stream := make(chan session.TurnEvent, 1)
+	done := make(chan struct{})
+	go func() { bot.consumeTurnEvents("c1", stream); close(done) }()
+	payload, _ := json.Marshal(map[string]any{
+		"type": "beat.ready", "beatId": "b1", "kind": "final", "displayText": "普通发送", "replyTargetMessageId": "missing",
+	})
+	stream <- session.TurnEvent{ConversationID: "c1", TurnID: "t1", Payload: payload}
+	select {
+	case got := <-delivered:
+		if got != "普通发送" {
+			t.Fatalf("delivery = %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for plain delivery")
+	}
+	select {
+	case report := <-socket.reports:
+		if report.Status != session.ExpressionDeliverySucceeded {
+			t.Fatalf("report = %#v", report)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for report")
+	}
+	cancel()
+	<-done
+}
+
+func TestConsumeTurnEventsDoesNotRetryFailedQuoteAsPlain(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	socket := &fakeSessionSocket{reports: make(chan session.ExpressionDeliveryResult, 1)}
+	bot := &bot{
+		ctx: ctx, socket: socket, conversations: make(map[string]string),
+		senders: map[string]expressionSender{"c1": {
+			text: func(string) (string, error) {
+				t.Fatal("failed quote retried as plain")
+				return "", nil
+			},
+			replyText: func(string, string) (string, error) {
+				return "", errors.New("quote rejected")
+			},
+		}},
+	}
+	bot.observeReplyPosition("c1", "target-1", time.Now().Add(-replyElapsedThreshold))
+	stream := make(chan session.TurnEvent, 1)
+	done := make(chan struct{})
+	go func() { bot.consumeTurnEvents("c1", stream); close(done) }()
+	payload, _ := json.Marshal(map[string]any{
+		"type": "beat.ready", "beatId": "b1", "kind": "final", "displayText": "引用发送", "replyTargetMessageId": "target-1",
+	})
+	stream <- session.TurnEvent{ConversationID: "c1", TurnID: "t1", Payload: payload}
+	select {
+	case report := <-socket.reports:
+		if report.Status != session.ExpressionDeliveryFailed || report.ErrorMessage != "QQ 引用文字发送失败" || report.ExternalMessageID != "" {
+			t.Fatalf("report = %#v", report)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for failed quote report")
+	}
+	cancel()
+	<-done
+}
+
 func TestFinalExpressionBeatRequiresFinalKind(t *testing.T) {
 	payload, _ := json.Marshal(map[string]any{"type": "beat.ready", "kind": "utterance", "displayText": "skip"})
 	if _, ok := finalExpressionBeat(session.TurnEvent{Payload: payload}); ok {
 		t.Fatal("utterance accepted as final")
 	}
-	payload, _ = json.Marshal(map[string]any{"type": "beat.ready", "beatId": "b1", "kind": "final", "displayText": "你好"})
+	payload, _ = json.Marshal(map[string]any{"type": "beat.ready", "beatId": "b1", "kind": "final", "displayText": "你好", "replyTargetMessageId": "message-7"})
 	beat, ok := finalExpressionBeat(session.TurnEvent{Payload: payload})
-	if !ok || beat.Part.Kind != session.ExpressionUtterance || beat.Part.Text != "你好" {
+	if !ok || beat.Part.Kind != session.ExpressionUtterance || beat.Part.Text != "你好" || beat.ReplyTargetMessageID != "message-7" {
 		t.Fatalf("beat=%#v ok=%v", beat, ok)
 	}
 }
@@ -200,6 +344,56 @@ func TestConsumeTurnEventsDeliversStickerAndReportsSuccess(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for delivery report")
+	}
+	cancel()
+	<-done
+}
+
+func TestConsumeTurnEventsQuotesDistantSticker(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	socket := &fakeSessionSocket{reports: make(chan session.ExpressionDeliveryResult, 1)}
+	reader := fakeStickerReader{content: session.StickerContent{MIMEType: "image/gif", Bytes: []byte("GIF89a-quoted")}}
+	delivered := make(chan string, 1)
+	bot := &bot{
+		ctx: ctx, socket: socket, stickers: reader, conversations: make(map[string]string),
+		senders: map[string]expressionSender{"c1": {
+			image: func([]byte) (string, error) {
+				t.Fatal("quoted sticker retried as plain")
+				return "", nil
+			},
+			replyImage: func(target string, content []byte) (string, error) {
+				delivered <- target + ":" + string(content)
+				return "55234", nil
+			},
+		}},
+	}
+	bot.observeReplyPosition("c1", "target-sticker", time.Now().Add(-replyElapsedThreshold))
+	stream := make(chan session.TurnEvent, 1)
+	done := make(chan struct{})
+	go func() { bot.consumeTurnEvents("c1", stream); close(done) }()
+	payload, _ := json.Marshal(map[string]any{
+		"type": "beat.ready", "beatId": "b1", "kind": "final", "replyTargetMessageId": "target-sticker",
+		"part": map[string]any{"kind": "sticker", "visualState": "happy", "sticker": map[string]any{
+			"id": "sticker-1", "description": "开心", "mimeType": "image/gif",
+		}},
+	})
+	stream <- session.TurnEvent{ConversationID: "c1", TurnID: "t1", Payload: payload}
+	select {
+	case got := <-delivered:
+		if got != "target-sticker:GIF89a-quoted" {
+			t.Fatalf("quoted sticker = %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for quoted sticker")
+	}
+	select {
+	case report := <-socket.reports:
+		if report.Status != session.ExpressionDeliverySucceeded || report.ExternalMessageID != "55234" {
+			t.Fatalf("report = %#v", report)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for sticker report")
 	}
 	cancel()
 	<-done

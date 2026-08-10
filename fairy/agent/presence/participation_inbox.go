@@ -24,13 +24,14 @@ type Host interface {
 }
 
 type TurnRequest struct {
-	ConversationID      string
-	Input               string
-	TraceID             string
-	MessageSource       string
-	ReplyIntent         *ReplyIntent
-	RecentTargetReply   string
-	PersonNoteSenderIDs []string
+	ConversationID       string
+	Input                string
+	TraceID              string
+	MessageSource        string
+	ReplyTargetMessageID string
+	ReplyIntent          *ReplyIntent
+	RecentTargetReply    string
+	PersonNoteSenderIDs  []string
 }
 
 type TurnOutcome struct {
@@ -402,13 +403,14 @@ func (a *Inbox) run(batch ambientBatch, decisionCtx context.Context, decisionOwn
 			if err == nil {
 				var outcome TurnOutcome
 				outcome, err = a.submit(TurnRequest{
-					ConversationID:      conversationID,
-					Input:               input,
-					TraceID:             targetTraceID,
-					MessageSource:       "ambient",
-					ReplyIntent:         decision.Intent,
-					RecentTargetReply:   recentTargetReply,
-					PersonNoteSenderIDs: SenderIDs(messages),
+					ConversationID:       conversationID,
+					Input:                input,
+					TraceID:              targetTraceID,
+					MessageSource:        "ambient",
+					ReplyTargetMessageID: target,
+					ReplyIntent:          decision.Intent,
+					RecentTargetReply:    recentTargetReply,
+					PersonNoteSenderIDs:  SenderIDs(messages),
 				})
 				if err == nil && targetSenderID != "" && strings.TrimSpace(outcome.ResponseText) != "" {
 					a.mu.Lock()
