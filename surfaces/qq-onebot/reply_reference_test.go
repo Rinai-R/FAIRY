@@ -10,7 +10,7 @@ func TestReplyDistanceTrackerUsesBoundedPositionAndTimePolicy(t *testing.T) {
 	base := time.Unix(100, 0)
 	tracker := &replyDistanceTracker{}
 	tracker.Observe("target", base)
-	if tracker.ShouldQuote("target", base.Add(14*time.Second), 2) {
+	if tracker.ShouldQuote("target", base.Add(replyElapsedThreshold-time.Second), 2) {
 		t.Fatal("near target was quoted before threshold")
 	}
 	tracker.Observe("later-1", base.Add(time.Second))

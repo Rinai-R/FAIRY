@@ -12,7 +12,7 @@ const (
 	replyPositionLimit    = 64
 	replyMessageGapMin    = uint64(2)
 	replyMessageGapMax    = uint64(5)
-	replyElapsedThreshold = 15 * time.Second
+	replyElapsedThreshold = 15 * time.Minute
 )
 
 type replyPosition struct {
