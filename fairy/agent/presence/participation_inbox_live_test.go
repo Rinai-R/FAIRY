@@ -13,6 +13,7 @@ import (
 func TestLiveEvalInboxBatchDoesNotLeakMutableState(t *testing.T) {
 	inbox := NewInbox(t.Context(), fakeInboxHost{})
 	defer inbox.Close()
+	inbox.SetLiveEvalMaximumTimerDelay(10 * time.Millisecond)
 	seen := make(chan LiveEvalAmbientBatch, 2)
 	calls := 0
 	inbox.SetLiveEvalDecisionHook(func(_ context.Context, batch LiveEvalAmbientBatch) (ParticipationResult, error) {

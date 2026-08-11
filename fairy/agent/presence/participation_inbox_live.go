@@ -5,6 +5,8 @@ package presence
 import (
 	"context"
 	"time"
+
+	history "fairy/context/history/transcript"
 )
 
 // LiveEvalAmbientBatch is an immutable projection of an Inbox decision batch.
@@ -41,8 +43,9 @@ func (a *Inbox) SetLiveEvalSubmitHook(hook func(TurnRequest) (TurnOutcome, error
 	a.submitHook = hook
 }
 
-// SetLiveEvalMaximumTimerDelay caps wait decisions without changing production
-// timing. It must be configured before observations are submitted.
+// SetLiveEvalMaximumTimerDelay caps live-evaluation timers and makes the first
+// capped schedule tick eligible to evaluate. Production scheduling remains
+// unchanged. It must be configured before observations are submitted.
 func (a *Inbox) SetLiveEvalMaximumTimerDelay(maximum time.Duration) {
 	if a == nil || maximum <= 0 {
 		return
@@ -53,6 +56,11 @@ func (a *Inbox) SetLiveEvalMaximumTimerDelay(maximum time.Duration) {
 			delay = maximum
 		}
 		return original(delay, callback)
+	}
+	a.scheduleHook = func(pending int, since, now time.Time, activity history.ConversationActivity) participationSchedule {
+		result := deriveParticipationSchedule(pending, since, now, activity)
+		result.Ready = true
+		return result
 	}
 }
 

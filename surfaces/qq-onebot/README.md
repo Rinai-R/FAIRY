@@ -44,8 +44,9 @@ docker compose -f docker-compose.yml -f docker-compose.qq.yml up -d --build
    ./fairy-qq-onebot serve
    ```
 
-5. Surface 通过 ZeroBot `OnlyGroup` 接收群事件，并在每条事件进入 Core Session 前读取 Core 当前 allowlist。保存后的下一条事件使用新列表，无需重启；空列表或 Core 配置不可用时 fail closed。授权群的每群窗口滚动保留最新 20 条，新消息立即驱动 participation；同群最多一个 participation/turn 在途，运行中到达的新消息会使旧 decision 失效并用最新 snapshot 重判。
-6. Core 对 snapshot 返回严格的 `reply`、`wait` 或 `silent`。`reply` 指定窗口内目标消息，Surface 提交带发送者标签和唯一 `[reply-target]` 标记的有序上下文；`wait` 使用 Core 选择的 1–300 秒，期间新消息会提前唤醒；`silent` 不创建 timer、turn 或 OneBot action。@/回复只是强信号，不保证回复，普通消息也可以因自然相关而回复。
+5. Surface 通过 ZeroBot `OnlyGroup` 接收群事件，并在每条事件进入 Core Session 前读取 Core 当前 allowlist。保存后的下一条事件使用新列表，无需重启；空列表或 Core 配置不可用时 fail closed。授权群消息只作为普通 observation 进入 Core Ambient Inbox；Core 先用 1 秒静默窗合并连续消息，再结合待处理消息量、最长等待时间和近期角色发言频次决定何时形成 participation batch。Surface 不判断关键词、@ 或语义，也不维护参与频次规则。
+6. 同群最多一个 participation/turn 在途。运行中到达的新消息只追加到下一批，不取消当前判断或回复。Core 对不可变 batch 返回严格的 `reply`、`wait` 或 `silent`：`reply` 指定窗口内目标消息，Surface 提交带发送者标签和唯一 `[reply-target]` 标记的有序上下文；`wait` 使用 Core 选择的 1–300 秒，期间只积累 observation，计时到期后再以完整窗口判断；`silent` 不创建 Turn 或 OneBot action。@/回复只是随普通消息一起提供给模型的上下文，不保证回复。
+7. QQ 私聊不进入 Ambient Inbox。每条合法私聊消息直接提交一个 Turn，因此继续保持逐句回复；Desktop 用户输入同样走 direct Turn，不受群聊参与调度影响。
 
 ### 真实投递 smoke
 

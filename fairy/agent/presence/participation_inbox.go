@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	history "fairy/context/history/transcript"
 	"fairy/runtime/model"
 )
 
@@ -15,9 +17,12 @@ type Host interface {
 	BeginMessageTrace(source, conversationID, messageID, traceID string) string
 	ObserveSocialFeedback(conversationID string, observation AmbientObservation)
 	EnqueueSocialLearning(conversationID string, messages []AmbientObservation)
+	LoadConversationActivity(conversationID string, nowUnixMS int64) (history.ConversationActivity, error)
 	DecideParticipation(context.Context, ParticipationRequest) (ParticipationResult, error)
 	SubmitTurn(TurnRequest) (TurnOutcome, error)
 	EndMessageTrace(traceID, status string)
+	StartParticipationSpan(traceID, operation, category string, attributes map[string]string) string
+	FinishParticipationSpan(spanID, status string, attributes map[string]string)
 	EmitParticipation(Event)
 	RecordParticipation(traceIDs []string, targetTraceID, action string)
 	WarnAmbient(message, conversationID string, generation uint64, err error)
@@ -52,12 +57,15 @@ type Event struct {
 // AmbientInbox owns per-conversation rolling observations, wait timers, and
 // single-flight participation for public ambient groups.
 type Inbox struct {
-	host       Host
-	ctx        context.Context
-	cancel     context.CancelFunc
-	after      func(time.Duration, func()) stoppableTimer
-	decideHook func(context.Context, ambientBatch) (ParticipationResult, error)
-	submitHook func(TurnRequest) (TurnOutcome, error)
+	host             Host
+	ctx              context.Context
+	cancel           context.CancelFunc
+	after            func(time.Duration, func()) stoppableTimer
+	now              func() time.Time
+	decideHook       func(context.Context, ambientBatch) (ParticipationResult, error)
+	submitHook       func(TurnRequest) (TurnOutcome, error)
+	scheduleHook     func(int, time.Time, time.Time, history.ConversationActivity) participationSchedule
+	messageDelayHook func(time.Time, time.Time, time.Time, time.Time) time.Duration
 
 	mu             sync.Mutex
 	states         map[string]*ambientState
@@ -74,7 +82,16 @@ type stoppableTimer interface {
 type sequencedObservation struct {
 	sequence    uint64
 	observation AmbientObservation
+	receivedAt  time.Time
 }
+
+type ambientTimerKind string
+
+const (
+	ambientTimerNone        ambientTimerKind = ""
+	ambientTimerSchedule    ambientTimerKind = "schedule"
+	ambientTimerPlannerWait ambientTimerKind = "planner_wait"
+)
 
 type ambientState struct {
 	messages              []sequencedObservation
@@ -85,6 +102,7 @@ type ambientState struct {
 	acceptedGeneration    uint64
 	running               bool
 	timer                 stoppableTimer
+	timerKind             ambientTimerKind
 	timerOwner            uint64
 	decisionOwner         uint64
 	decisionCancel        context.CancelFunc
@@ -122,6 +140,7 @@ func NewInbox(parent context.Context, host Host) *Inbox {
 		ctx:           ctx,
 		cancel:        cancel,
 		after:         func(delay time.Duration, callback func()) stoppableTimer { return time.AfterFunc(delay, callback) },
+		now:           time.Now,
 		states:        make(map[string]*ambientState),
 		stateCapacity: maxAmbientConversationStates,
 	}
@@ -157,7 +176,8 @@ func (a *Inbox) Observe(conversationID string, observation AmbientObservation) e
 		a.host.ObserveSocialFeedback(conversationID, observation)
 	}
 	state.generation++
-	entry := sequencedObservation{sequence: state.generation, observation: observation}
+	receivedAt := a.now()
+	entry := sequencedObservation{sequence: state.generation, observation: observation, receivedAt: receivedAt}
 	state.messages = append(state.messages, entry)
 	if len(state.messages) > MaxAmbientObservations {
 		state.messages = state.messages[len(state.messages)-MaxAmbientObservations:]
@@ -170,14 +190,8 @@ func (a *Inbox) Observe(conversationID string, observation AmbientObservation) e
 		a.host.EnqueueSocialLearning(conversationID, learningMessagesFromState(state))
 		state.lastLearnedGeneration = state.generation
 	}
-	a.cancelTimerLocked(state)
-	if state.decisionCancel != nil {
-		state.decisionCancel()
-	}
-	state.consecutiveSilent = 0
-	state.backoffUntil = time.Time{}
-	if !state.running {
-		a.startLocked(conversationID, state, ParticipationReasonMessage)
+	if !state.running && state.timerKind != ambientTimerPlannerWait {
+		a.scheduleMessageLocked(conversationID, state, receivedAt)
 	}
 	return nil
 }
@@ -276,12 +290,8 @@ func (a *Inbox) startLocked(conversationID string, state *ambientState, reason P
 	if a.closed || state.running || len(state.messages) == 0 {
 		return
 	}
-	if reason != ParticipationReasonMessage && !state.backoffUntil.IsZero() {
-		now := time.Now()
-		if now.Before(state.backoffUntil) {
-			a.scheduleWaitLocked(conversationID, state, state.backoffUntil.Sub(now))
-			return
-		}
+	if reason == ParticipationReasonMessage && state.pendingCount() == 0 {
+		return
 	}
 	state.running = true
 	batch := snapshotAmbient(conversationID, state, reason)
@@ -318,135 +328,128 @@ func snapshotAmbient(conversationID string, state *ambientState, reason Particip
 
 func (a *Inbox) run(batch ambientBatch, decisionCtx context.Context, decisionOwner uint64) {
 	defer a.wg.Done()
-	for {
-		decision, err := a.decide(decisionCtx, batch)
+	decision, err := a.decide(decisionCtx, batch)
+	a.mu.Lock()
+	state := a.states[batch.conversationID]
+	if state == nil || a.closed {
+		a.mu.Unlock()
+		return
+	}
+	if state.decisionOwner == decisionOwner {
+		if state.decisionCancel != nil {
+			state.decisionCancel()
+		}
+		state.decisionCancel = nil
+	}
+	if err != nil {
+		a.warn("ambient participation failed", batch, err)
+		a.recordParticipation(batch, "", participationTraceSilentError)
+		a.publishParticipation(batch, "failed", "", 0, nil)
+		state.accept(batch.generation)
+		state.consecutiveSilent++
+		if delay := idleBackoffDelay(state.consecutiveSilent); delay > 0 {
+			state.backoffUntil = a.now().Add(delay)
+		}
+		state.running = false
+		a.schedulePendingLocked(batch.conversationID, state)
+		a.mu.Unlock()
+		return
+	}
+	state.accept(batch.generation)
+	switch decision.Action {
+	case ParticipationSilent:
+		a.recordParticipation(batch, "", "silent")
+		a.publishParticipation(batch, "silent", "", 0, decision.Usage)
+		state.consecutiveSilent++
+		if delay := idleBackoffDelay(state.consecutiveSilent); delay > 0 {
+			state.backoffUntil = a.now().Add(delay)
+		}
+		state.running = false
+		a.schedulePendingLocked(batch.conversationID, state)
+		a.mu.Unlock()
+		return
+	case ParticipationWait:
+		state.consecutiveSilent = 0
+		state.backoffUntil = time.Time{}
+		if decision.WaitSeconds == nil || *decision.WaitSeconds < 1 || *decision.WaitSeconds > 300 {
+			a.warn("ambient wait decision invalid", batch, nil)
+			a.recordParticipation(batch, "", participationTraceSilentError)
+			a.publishParticipation(batch, "failed", "", 0, nil)
+			state.running = false
+			a.schedulePendingLocked(batch.conversationID, state)
+			a.mu.Unlock()
+			return
+		}
+		a.recordParticipation(batch, "", "wait")
+		a.publishParticipation(batch, "wait", "", *decision.WaitSeconds, decision.Usage)
+		state.running = false
+		a.schedulePlannerWaitLocked(batch.conversationID, state, time.Duration(*decision.WaitSeconds)*time.Second)
+		a.mu.Unlock()
+		return
+	case ParticipationReply:
+		state.consecutiveSilent = 0
+		state.backoffUntil = time.Time{}
+		if decision.TargetMessageID == nil || !ambientBatchContains(batch, *decision.TargetMessageID) {
+			a.warn("ambient reply target invalid", batch, nil)
+			a.recordParticipation(batch, "", participationTraceSilentError)
+			a.publishParticipation(batch, "failed", "", 0, nil)
+			state.running = false
+			a.schedulePendingLocked(batch.conversationID, state)
+			a.mu.Unlock()
+			return
+		}
+		target := *decision.TargetMessageID
+		targetSenderID := ambientSenderID(batch, target)
+		recentTargetReply := ""
+		if state.recentRepliesBySender != nil {
+			recentTargetReply = state.recentRepliesBySender[targetSenderID]
+		}
+		targetTraceID := ambientTraceID(batch, target)
+		a.recordParticipation(batch, targetTraceID, "reply")
+		a.publishParticipation(batch, "reply", target, 0, decision.Usage)
+		messages := append([]AmbientObservation(nil), batch.messages...)
+		conversationID := batch.conversationID
+		a.mu.Unlock()
+		input, err := FormatAmbientTurnInput(messages, target)
+		if err == nil {
+			var outcome TurnOutcome
+			outcome, err = a.submit(TurnRequest{
+				ConversationID:       conversationID,
+				Input:                input,
+				TraceID:              targetTraceID,
+				MessageSource:        "ambient",
+				ReplyTargetMessageID: target,
+				ReplyIntent:          decision.Intent,
+				RecentTargetReply:    recentTargetReply,
+				PersonNoteSenderIDs:  SenderIDs(messages),
+			})
+			if err == nil && targetSenderID != "" && strings.TrimSpace(outcome.ResponseText) != "" {
+				a.mu.Lock()
+				current := a.states[conversationID]
+				if current != nil {
+					current.rememberRecentReply(targetSenderID, outcome.ResponseText)
+				}
+				a.mu.Unlock()
+			}
+		} else if a.host != nil {
+			a.host.EndMessageTrace(targetTraceID, "failed")
+		}
 		a.mu.Lock()
-		state := a.states[batch.conversationID]
-		if state == nil || a.closed {
-			a.mu.Unlock()
-			return
-		}
-		if state.decisionOwner == decisionOwner {
-			if state.decisionCancel != nil {
-				state.decisionCancel()
-			}
-			state.decisionCancel = nil
-		}
-		if state.generation != batch.generation {
-			batch = snapshotAmbient(batch.conversationID, state, ParticipationReasonMessage)
-			decisionCtx, decisionOwner = a.beginDecisionLocked(state)
-			a.mu.Unlock()
-			continue
-		}
-		if err != nil {
-			a.warn("ambient participation failed", batch, err)
-			a.recordParticipation(batch, "", participationTraceSilentError)
-			a.publishParticipation(batch, "failed", "", 0, nil)
+		state = a.states[conversationID]
+		if state != nil {
 			state.running = false
-			a.mu.Unlock()
-			return
+			a.schedulePendingLocked(conversationID, state)
 		}
-		state.acceptedGeneration = batch.generation
-		switch decision.Action {
-		case ParticipationSilent:
-			a.recordParticipation(batch, "", "silent")
-			a.publishParticipation(batch, "silent", "", 0, decision.Usage)
-			state.consecutiveSilent++
-			if delay := idleBackoffDelay(state.consecutiveSilent); delay > 0 {
-				state.backoffUntil = time.Now().Add(delay)
-			}
-			state.running = false
-			a.mu.Unlock()
-			return
-		case ParticipationWait:
-			state.consecutiveSilent = 0
-			state.backoffUntil = time.Time{}
-			if decision.WaitSeconds == nil || *decision.WaitSeconds < 1 || *decision.WaitSeconds > 300 {
-				a.warn("ambient wait decision invalid", batch, nil)
-				a.recordParticipation(batch, "", participationTraceSilentError)
-				a.publishParticipation(batch, "failed", "", 0, nil)
-				state.running = false
-				a.mu.Unlock()
-				return
-			}
-			a.recordParticipation(batch, "", "wait")
-			a.publishParticipation(batch, "wait", "", *decision.WaitSeconds, decision.Usage)
-			state.running = false
-			a.scheduleWaitLocked(batch.conversationID, state, time.Duration(*decision.WaitSeconds)*time.Second)
-			a.mu.Unlock()
-			return
-		case ParticipationReply:
-			state.consecutiveSilent = 0
-			state.backoffUntil = time.Time{}
-			if decision.TargetMessageID == nil || !ambientBatchContains(batch, *decision.TargetMessageID) {
-				a.warn("ambient reply target invalid", batch, nil)
-				a.recordParticipation(batch, "", participationTraceSilentError)
-				a.publishParticipation(batch, "failed", "", 0, nil)
-				state.running = false
-				a.mu.Unlock()
-				return
-			}
-			target := *decision.TargetMessageID
-			targetSenderID := ambientSenderID(batch, target)
-			recentTargetReply := ""
-			if state.recentRepliesBySender != nil {
-				recentTargetReply = state.recentRepliesBySender[targetSenderID]
-			}
-			targetTraceID := ambientTraceID(batch, target)
-			a.recordParticipation(batch, targetTraceID, "reply")
-			a.publishParticipation(batch, "reply", target, 0, decision.Usage)
-			messages := append([]AmbientObservation(nil), batch.messages...)
-			conversationID := batch.conversationID
-			generation := batch.generation
-			a.mu.Unlock()
-			input, err := FormatAmbientTurnInput(messages, target)
-			if err == nil {
-				var outcome TurnOutcome
-				outcome, err = a.submit(TurnRequest{
-					ConversationID:       conversationID,
-					Input:                input,
-					TraceID:              targetTraceID,
-					MessageSource:        "ambient",
-					ReplyTargetMessageID: target,
-					ReplyIntent:          decision.Intent,
-					RecentTargetReply:    recentTargetReply,
-					PersonNoteSenderIDs:  SenderIDs(messages),
-				})
-				if err == nil && targetSenderID != "" && strings.TrimSpace(outcome.ResponseText) != "" {
-					a.mu.Lock()
-					current := a.states[conversationID]
-					if current != nil {
-						current.rememberRecentReply(targetSenderID, outcome.ResponseText)
-					}
-					a.mu.Unlock()
-				}
-			} else if a.host != nil {
-				a.host.EndMessageTrace(targetTraceID, "failed")
-			}
-			a.mu.Lock()
-			state = a.states[conversationID]
-			if state != nil && !a.closed && state.generation != generation {
-				batch = snapshotAmbient(conversationID, state, ParticipationReasonMessage)
-				decisionCtx, decisionOwner = a.beginDecisionLocked(state)
-				a.mu.Unlock()
-				if err != nil {
-					a.warn("ambient reply failed before refresh", batch, err)
-				}
-				continue
-			}
-			if state != nil {
-				state.running = false
-			}
-			a.mu.Unlock()
-			return
-		default:
-			a.warn("ambient participation action invalid", batch, nil)
-			a.recordParticipation(batch, "", participationTraceSilentError)
-			a.publishParticipation(batch, "failed", "", 0, nil)
-			state.running = false
-			a.mu.Unlock()
-			return
-		}
+		a.mu.Unlock()
+		return
+	default:
+		a.warn("ambient participation action invalid", batch, nil)
+		a.recordParticipation(batch, "", participationTraceSilentError)
+		a.publishParticipation(batch, "failed", "", 0, nil)
+		state.running = false
+		a.schedulePendingLocked(batch.conversationID, state)
+		a.mu.Unlock()
+		return
 	}
 }
 
@@ -590,9 +593,186 @@ func (a *Inbox) submit(request TurnRequest) (TurnOutcome, error) {
 	return a.host.SubmitTurn(request)
 }
 
-func (a *Inbox) scheduleWaitLocked(conversationID string, state *ambientState, delay time.Duration) {
+func (state *ambientState) accept(generation uint64) {
+	if state != nil && generation > state.acceptedGeneration {
+		state.acceptedGeneration = generation
+	}
+}
+
+func (state *ambientState) pendingCount() int {
+	if state == nil {
+		return 0
+	}
+	count := 0
+	for _, entry := range state.messages {
+		if entry.sequence > state.acceptedGeneration {
+			count++
+		}
+	}
+	return count
+}
+
+func (state *ambientState) pendingTiming() (time.Time, time.Time) {
+	if state == nil {
+		return time.Time{}, time.Time{}
+	}
+	var first, last time.Time
+	for _, entry := range state.messages {
+		if entry.sequence <= state.acceptedGeneration {
+			continue
+		}
+		if first.IsZero() || entry.receivedAt.Before(first) {
+			first = entry.receivedAt
+		}
+		if last.IsZero() || entry.receivedAt.After(last) {
+			last = entry.receivedAt
+		}
+	}
+	return first, last
+}
+
+func (state *ambientState) pendingTraceID() string {
+	if state == nil {
+		return ""
+	}
+	for index := len(state.messages) - 1; index >= 0; index-- {
+		entry := state.messages[index]
+		if entry.sequence > state.acceptedGeneration && entry.observation.TraceID != "" {
+			return entry.observation.TraceID
+		}
+	}
+	return ""
+}
+
+func (a *Inbox) schedulePendingLocked(conversationID string, state *ambientState) {
+	if a == nil || state == nil || a.closed || state.running || state.pendingCount() == 0 || state.timerKind == ambientTimerPlannerWait {
+		return
+	}
+	a.scheduleMessageLocked(conversationID, state, a.now())
+}
+
+func (a *Inbox) scheduleMessageLocked(conversationID string, state *ambientState, now time.Time) {
+	first, last := state.pendingTiming()
+	if first.IsZero() || last.IsZero() {
+		return
+	}
+	delay := participationScheduleDelay(now, first, last, state.backoffUntil)
+	if a.messageDelayHook != nil {
+		delay = a.messageDelayHook(now, first, last, state.backoffUntil)
+	}
+	a.setScheduleTimerLocked(conversationID, state, delay)
+}
+
+func (a *Inbox) setScheduleTimerLocked(conversationID string, state *ambientState, delay time.Duration) {
+	a.cancelTimerLocked(state)
 	state.timerOwner++
 	owner := state.timerOwner
+	state.timerKind = ambientTimerSchedule
+	state.timer = a.after(max(delay, time.Duration(0)), func() {
+		a.evaluateSchedule(conversationID, owner)
+	})
+}
+
+func (a *Inbox) evaluateSchedule(conversationID string, owner uint64) {
+	a.mu.Lock()
+	state := a.states[conversationID]
+	if a.closed || state == nil || state.timerOwner != owner || state.timerKind != ambientTimerSchedule || state.running {
+		a.mu.Unlock()
+		return
+	}
+	state.timer = nil
+	state.timerKind = ambientTimerNone
+	state.running = true
+	scheduledGeneration := state.generation
+	traceID := state.pendingTraceID()
+	a.mu.Unlock()
+
+	spanID := ""
+	if a.host != nil {
+		spanID = a.host.StartParticipationSpan(traceID, "参与调度", "schedule", nil)
+	}
+	now := a.now()
+	activity, err := a.loadActivity(conversationID, now)
+
+	a.mu.Lock()
+	state = a.states[conversationID]
+	if a.closed || state == nil || state.timerOwner != owner {
+		a.mu.Unlock()
+		a.finishScheduleSpan(spanID, "interrupted", map[string]string{"errorCode": "stale_schedule"})
+		return
+	}
+	first, _ := state.pendingTiming()
+	schedule := deriveParticipationSchedule(state.pendingCount(), first, now, activity)
+	if a.scheduleHook != nil {
+		schedule = a.scheduleHook(state.pendingCount(), first, now, activity)
+	}
+	attributes := scheduleTraceAttributes(schedule)
+	if err != nil {
+		batch := snapshotAmbient(conversationID, state, ParticipationReasonMessage)
+		state.accept(batch.generation)
+		state.running = false
+		attributes["errorCode"] = "activity_unavailable"
+		a.finishScheduleSpan(spanID, "failed", attributes)
+		a.warn("ambient participation schedule failed", batch, err)
+		a.recordParticipation(batch, "", participationTraceSilentError)
+		a.publishParticipation(batch, "failed", "", 0, nil)
+		a.mu.Unlock()
+		return
+	}
+	if state.generation != scheduledGeneration {
+		state.running = false
+		attributes["rescheduled"] = "new_observation"
+		a.scheduleMessageLocked(conversationID, state, a.now())
+		a.mu.Unlock()
+		a.finishScheduleSpan(spanID, "completed", attributes)
+		return
+	}
+	if !schedule.Ready {
+		state.running = false
+		deadline := first.Add(participationMaximumWait)
+		if state.backoffUntil.After(deadline) {
+			deadline = state.backoffUntil
+		}
+		a.setScheduleTimerLocked(conversationID, state, max(deadline.Sub(a.now()), time.Duration(0)))
+		a.mu.Unlock()
+		a.finishScheduleSpan(spanID, "completed", attributes)
+		return
+	}
+	state.running = false
+	a.finishScheduleSpan(spanID, "completed", attributes)
+	a.startLocked(conversationID, state, ParticipationReasonMessage)
+	a.mu.Unlock()
+}
+
+func (a *Inbox) loadActivity(conversationID string, now time.Time) (history.ConversationActivity, error) {
+	if a == nil || a.host == nil {
+		return history.ConversationActivity{}, errors.New("ambient inbox host is not configured")
+	}
+	return a.host.LoadConversationActivity(conversationID, now.UnixMilli())
+}
+
+func scheduleTraceAttributes(schedule participationSchedule) map[string]string {
+	return map[string]string{
+		"pendingCount":        strconv.Itoa(schedule.PendingCount),
+		"pressureThreshold":   strconv.Itoa(schedule.PressureThreshold),
+		"pendingMilliseconds": strconv.FormatInt(schedule.PendingFor.Milliseconds(), 10),
+		"assistantReplies5m":  strconv.FormatUint(schedule.AssistantReplies5m, 10),
+		"assistantReplies30m": strconv.FormatUint(schedule.AssistantReplies30m, 10),
+		"userMessages30m":     strconv.FormatUint(schedule.UserMessages30m, 10),
+	}
+}
+
+func (a *Inbox) finishScheduleSpan(spanID, status string, attributes map[string]string) {
+	if a != nil && a.host != nil && spanID != "" {
+		a.host.FinishParticipationSpan(spanID, status, attributes)
+	}
+}
+
+func (a *Inbox) schedulePlannerWaitLocked(conversationID string, state *ambientState, delay time.Duration) {
+	a.cancelTimerLocked(state)
+	state.timerOwner++
+	owner := state.timerOwner
+	state.timerKind = ambientTimerPlannerWait
 	state.timer = a.after(delay, func() {
 		a.mu.Lock()
 		defer a.mu.Unlock()
@@ -600,10 +780,11 @@ func (a *Inbox) scheduleWaitLocked(conversationID string, state *ambientState, d
 			return
 		}
 		current := a.states[conversationID]
-		if current == nil || current.timerOwner != owner || current.running || current.generation != current.acceptedGeneration {
+		if current == nil || current.timerOwner != owner || current.timerKind != ambientTimerPlannerWait || current.running {
 			return
 		}
 		current.timer = nil
+		current.timerKind = ambientTimerNone
 		a.startLocked(conversationID, current, ParticipationReasonWaitElapsed)
 	})
 }
@@ -614,6 +795,7 @@ func (a *Inbox) cancelTimerLocked(state *ambientState) {
 		state.timer.Stop()
 		state.timer = nil
 	}
+	state.timerKind = ambientTimerNone
 }
 
 func ambientBatchContains(batch ambientBatch, target string) bool {

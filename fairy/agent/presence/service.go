@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	history "fairy/context/history/transcript"
 	"fairy/runtime/model"
 	"fairy/transport/session"
 )
@@ -19,6 +20,10 @@ type TurnStarter interface {
 
 type InteractionResolver interface {
 	ResolveInteraction(conversationID string) (session.Resolved, error)
+}
+
+type ConversationActivityReader interface {
+	LoadConversationActivity(conversationID string, nowUnixMS int64) (history.ConversationActivity, error)
 }
 
 type Observer interface {
@@ -46,6 +51,7 @@ type Service struct {
 	turns        TurnStarter
 	interactions InteractionResolver
 	observer     Observer
+	activity     ConversationActivityReader
 	inbox        *Inbox
 	decisions    *Engine
 	experience   *ExperienceLoop
@@ -58,6 +64,7 @@ func NewService(parent context.Context, options ServiceOptions) *Service {
 		turns:        options.Turns,
 		interactions: options.Interactions,
 		observer:     options.Observer,
+		activity:     options.Decisions,
 		decisions:    NewEngine(options.Decisions, options.Observer),
 		experience:   NewExperienceLoop(options.Learning, options.Feedback),
 		attention:    NewAttentionEvaluator(),
@@ -65,6 +72,13 @@ func NewService(parent context.Context, options ServiceOptions) *Service {
 	}
 	service.inbox = NewInbox(parent, service)
 	return service
+}
+
+func (s *Service) LoadConversationActivity(conversationID string, nowUnixMS int64) (history.ConversationActivity, error) {
+	if s == nil || s.activity == nil {
+		return history.ConversationActivity{}, errors.New("initiative activity reader is not configured")
+	}
+	return s.activity.LoadConversationActivity(conversationID, nowUnixMS)
 }
 
 func (s *Service) Close() {
@@ -249,6 +263,19 @@ func (s *Service) SubmitTurn(request TurnRequest) (TurnOutcome, error) {
 func (s *Service) EndMessageTrace(traceID, status string) {
 	if s != nil && s.observer != nil {
 		s.observer.EndMessageTrace(traceID, status)
+	}
+}
+
+func (s *Service) StartParticipationSpan(traceID, operation, category string, attributes map[string]string) string {
+	if s == nil || s.observer == nil {
+		return ""
+	}
+	return s.observer.StartParticipationSpan(traceID, operation, category, attributes)
+}
+
+func (s *Service) FinishParticipationSpan(spanID, status string, attributes map[string]string) {
+	if s != nil && s.observer != nil {
+		s.observer.FinishParticipationSpan(spanID, status, attributes)
 	}
 }
 

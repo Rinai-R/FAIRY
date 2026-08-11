@@ -121,18 +121,11 @@ func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 		activeSubmits  int
 		maximumSubmits int
 	)
-	firstDecisionStarted := make(chan struct{})
 	host := &liveEvalInboxHost{}
 	host.decide = func(ctx context.Context, request initiative.ParticipationRequest) (initiative.ParticipationResult, error) {
 		mu.Lock()
 		decisionCalls++
-		call := decisionCalls
 		mu.Unlock()
-		if call == 1 {
-			close(firstDecisionStarted)
-			<-ctx.Done()
-			return initiative.ParticipationResult{}, ctx.Err()
-		}
 		return decideParticipation(service, ctx, request)
 	}
 	inbox := initiative.NewInbox(ctx, host)
@@ -234,13 +227,6 @@ func TestLiveSimulateGalgameAmbientInboxClient(t *testing.T) {
 			t.Fatalf("Inbox.Observe #%d: %v", index+1, err)
 		}
 		t.Logf("feed #%02d %s: %s", index+1, incoming.SenderName, truncateRunes(incoming.Text, 36))
-		if index == 0 {
-			select {
-			case <-firstDecisionStarted:
-			case <-time.After(time.Second):
-				t.Fatal("first participation decision did not start")
-			}
-		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
@@ -292,12 +278,19 @@ func (*liveEvalInboxHost) BeginMessageTrace(_, _, messageID, traceID string) str
 
 func (*liveEvalInboxHost) ObserveSocialFeedback(string, initiative.AmbientObservation)   {}
 func (*liveEvalInboxHost) EnqueueSocialLearning(string, []initiative.AmbientObservation) {}
+func (*liveEvalInboxHost) LoadConversationActivity(string, int64) (history.ConversationActivity, error) {
+	return history.ConversationActivity{}, nil
+}
 func (*liveEvalInboxHost) SubmitTurn(initiative.TurnRequest) (initiative.TurnOutcome, error) {
 	return initiative.TurnOutcome{}, errors.New("live submit hook is not configured")
 }
-func (*liveEvalInboxHost) EndMessageTrace(string, string)               {}
-func (*liveEvalInboxHost) RecordParticipation([]string, string, string) {}
-func (*liveEvalInboxHost) WarnAmbient(string, string, uint64, error)    {}
+func (*liveEvalInboxHost) EndMessageTrace(string, string) {}
+func (*liveEvalInboxHost) StartParticipationSpan(string, string, string, map[string]string) string {
+	return ""
+}
+func (*liveEvalInboxHost) FinishParticipationSpan(string, string, map[string]string) {}
+func (*liveEvalInboxHost) RecordParticipation([]string, string, string)              {}
+func (*liveEvalInboxHost) WarnAmbient(string, string, uint64, error)                 {}
 func (h *liveEvalInboxHost) DecideParticipation(ctx context.Context, request initiative.ParticipationRequest) (initiative.ParticipationResult, error) {
 	return h.decide(ctx, request)
 }
