@@ -12,6 +12,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"fairy/context/character"
+	discoveryctx "fairy/context/learning/discovery"
 	"fairy/context/social"
 	"fairy/runtime/model"
 	"fairy/transport/session"
@@ -94,6 +96,11 @@ type socialLearnObservationPayload struct {
 	SenderName      string `json:"senderName"`
 	Text            string `json:"text"`
 	TimestampUnixMS int64  `json:"timestampUnixMs"`
+}
+
+type socialLearnCandidatePayload struct {
+	ContextType string                   `json:"contextType"`
+	Candidates  []discoveryctx.Candidate `json:"candidates"`
 }
 
 func NewLearningEngine(host LearningHost, capacity int) *LearningEngine {
@@ -192,11 +199,56 @@ func (e *LearningEngine) process(ctx context.Context, snapshot LearningSnapshot)
 	if err != nil {
 		return err
 	}
-	input, err := buildSocialLearningInput(stablePrefix, snapshot.Messages)
+	connection, err := e.host.ModelConnection()
 	if err != nil {
 		return err
 	}
-	connection, err := e.host.ModelConnection()
+	discoveryEvidence := make([]discoveryctx.Evidence, 0, len(snapshot.Messages))
+	for _, message := range snapshot.Messages {
+		discoveryEvidence = append(discoveryEvidence, discoveryctx.Evidence{
+			Ref: message.MessageID, Role: "external_public", Content: message.Text,
+		})
+	}
+	discoveryEnvelope := discoveryctx.Envelope{
+		Type: "public_episode", ConversationID: snapshot.ConversationID, CharacterID: conversation.CharacterID,
+		AllowedSpaces: []discoveryctx.Space{discoveryctx.Social, discoveryctx.Ignore}, Evidence: discoveryEvidence,
+	}
+	discoveryInput, err := discoveryctx.BuildInput(discoveryEnvelope)
+	if err != nil {
+		return err
+	}
+	discoveryCacheKey := ""
+	if connection.Capabilities.PromptCacheKey {
+		discoveryCacheKey = model.LaneCacheKey(snapshot.ConversationID, model.PromptLaneLearningDiscovery)
+	}
+	discoveryCacheInput := model.NewCacheKeyInput(model.PromptLaneLearningDiscovery, connection.Model, snapshot.ConversationID, character.LearningDiscoveryInstructions)
+	discoveryCacheInput.CharacterRevision = record.Revision
+	discoveryEvents, err := e.host.ExecuteRequest(ctx, model.CompiledPromptRequest{
+		Shape: model.ModelRequestShape{
+			Lane: model.PromptLaneLearningDiscovery, Model: connection.Model,
+			Instructions: character.LearningDiscoveryInstructions, MaxOutputTokens: character.LearningDiscoveryMaxOutputTokens,
+			PromptCacheKey: discoveryCacheKey,
+		},
+		Input: discoveryInput, CacheInput: &discoveryCacheInput,
+	})
+	if err != nil {
+		return fmt.Errorf("executing social learning discovery request: %w", err)
+	}
+	e.observeModelUsage(model.PromptLaneLearningDiscovery, discoveryEvents)
+	discovery, err := discoveryctx.ParseOutput(model.CollectTextFromEvents(discoveryEvents), discoveryEnvelope)
+	if err != nil {
+		return err
+	}
+	candidates := make([]discoveryctx.Candidate, 0, len(discovery.Candidates))
+	for _, candidate := range discovery.Candidates {
+		if candidate.Space == discoveryctx.Social {
+			candidates = append(candidates, candidate)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	input, err := buildSocialLearningInput(stablePrefix, snapshot.Messages, candidates)
 	if err != nil {
 		return err
 	}
@@ -224,7 +276,7 @@ func (e *LearningEngine) process(ctx context.Context, snapshot LearningSnapshot)
 	if err != nil {
 		return fmt.Errorf("executing social learning request: %w", err)
 	}
-	e.observeModelUsage(events)
+	e.observeModelUsage(model.PromptLaneSocialLearn, events)
 	draft := model.CollectTextFromEvents(events)
 	if strings.TrimSpace(draft) == "" {
 		return emptySocialLearningResultError(events)
@@ -256,23 +308,23 @@ func (e *LearningEngine) process(ctx context.Context, snapshot LearningSnapshot)
 	return nil
 }
 
-func (e *LearningEngine) observeModelUsage(events []model.StreamEvent) {
+func (e *LearningEngine) observeModelUsage(lane model.PromptLane, events []model.StreamEvent) {
 	e.modelCalls.Add(1)
-	for _, lane := range model.LaneUsageFromEvents(model.PromptLaneSocialLearn, events, 0) {
-		if lane.Usage.InputTokens != nil {
-			e.inputTokens.Add(int64(*lane.Usage.InputTokens))
-			if lane.Usage.CachedInputTokens.Status == "observed" {
-				e.cachedObservedInputTokens.Add(int64(*lane.Usage.InputTokens))
+	for _, usage := range model.LaneUsageFromEvents(lane, events, 0) {
+		if usage.Usage.InputTokens != nil {
+			e.inputTokens.Add(int64(*usage.Usage.InputTokens))
+			if usage.Usage.CachedInputTokens.Status == "observed" {
+				e.cachedObservedInputTokens.Add(int64(*usage.Usage.InputTokens))
 			}
 		}
-		if lane.Usage.CachedInputTokens.Status == "observed" && lane.Usage.CachedInputTokens.Tokens != nil {
-			e.cachedInputTokens.Add(int64(*lane.Usage.CachedInputTokens.Tokens))
+		if usage.Usage.CachedInputTokens.Status == "observed" && usage.Usage.CachedInputTokens.Tokens != nil {
+			e.cachedInputTokens.Add(int64(*usage.Usage.CachedInputTokens.Tokens))
 		}
-		if lane.Usage.CacheWriteTokens.Status == "observed" && lane.Usage.CacheWriteTokens.Tokens != nil {
-			e.cacheWriteTokens.Add(int64(*lane.Usage.CacheWriteTokens.Tokens))
+		if usage.Usage.CacheWriteTokens.Status == "observed" && usage.Usage.CacheWriteTokens.Tokens != nil {
+			e.cacheWriteTokens.Add(int64(*usage.Usage.CacheWriteTokens.Tokens))
 		}
-		if lane.Usage.OutputTokens != nil {
-			e.outputTokens.Add(int64(*lane.Usage.OutputTokens))
+		if usage.Usage.OutputTokens != nil {
+			e.outputTokens.Add(int64(*usage.Usage.OutputTokens))
 		}
 	}
 }
@@ -291,9 +343,14 @@ func emptySocialLearningResultError(events []model.StreamEvent) error {
 	return fmt.Errorf("social learning result is empty: finishReason=%q completionTokens=%s", finishReason, completionTokens)
 }
 
-func buildSocialLearningInput(stablePrefix []model.PromptItem, messages []AmbientObservation) ([]model.PromptItem, error) {
-	items := make([]model.PromptItem, 0, len(messages)+len(stablePrefix))
+func buildSocialLearningInput(stablePrefix []model.PromptItem, messages []AmbientObservation, candidates []discoveryctx.Candidate) ([]model.PromptItem, error) {
+	items := make([]model.PromptItem, 0, len(messages)+len(stablePrefix)+1)
 	items = append(items, stablePrefix...)
+	candidatePayload, err := json.Marshal(socialLearnCandidatePayload{ContextType: "social_learning_candidates", Candidates: candidates})
+	if err != nil {
+		return nil, fmt.Errorf("serializing social learning candidates: %w", err)
+	}
+	items = append(items, model.PromptItem{Type: model.PromptItemContextData, Content: string(candidatePayload)})
 	for _, message := range messages {
 		payload, err := json.Marshal(socialLearnObservationPayload{
 			ContextType: "external_group_observation", MessageID: message.MessageID,

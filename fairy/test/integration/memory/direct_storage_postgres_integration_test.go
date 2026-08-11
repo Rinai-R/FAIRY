@@ -70,7 +70,7 @@ WHERE status = 'verified'`).Scan(
 	second.EvidenceID = "direct-evidence-update"
 	second.FetchedAtUnixMS = 200
 	changed, err = store.CommitKnowledgeDocumentActionsContext(ctx, updateTask, second, []string{knowledgeID}, []knowledge.DocumentAction{{
-		Operation: knowledge.MutationUpdate, MemoryID: knowledgeID,
+		Operation: knowledge.MutationReplace, MemoryID: knowledgeID,
 		Content:               "FAIRY 只使用 PostgreSQL 保存知识文档和向量。",
 		ConfidenceBasisPoints: 9300, Evidence: "只用 PostgreSQL 保存完整知识文档",
 	}})

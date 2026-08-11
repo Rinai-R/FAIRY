@@ -39,6 +39,7 @@ var targetPackages = []string{
 	"fairy/context/history/transcript",
 	"fairy/context/identity",
 	"fairy/context/knowledge",
+	"fairy/context/learning/discovery",
 	"fairy/agent/learning",
 	"fairy/context/memory/admin",
 	"fairy/context/memory/extraction",

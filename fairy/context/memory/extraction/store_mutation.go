@@ -33,11 +33,14 @@ func (s *Store) commitMemoryMutationsPostgres(ctx context.Context, batchID, char
 	embeddingPrepared := make([]bool, len(mutations))
 	byContent := make(map[string]embedding.EmbeddingValue, len(mutations))
 	for index, mutation := range mutations {
+		if mutation.Operation != OperationAdd && mutation.Operation != OperationReplace {
+			continue
+		}
 		existingID, err := personal.FindActiveDuplicate(queryCtx, s.pool.Raw(), mutation.Kind, mutation.Scope, mutation.Content)
 		if err != nil {
 			return nil, err
 		}
-		if existingID != "" && (mutation.Operation == "create" || existingID != mutation.MemoryID) {
+		if existingID != "" && (mutation.Operation == OperationAdd || existingID != mutation.MemoryID) {
 			continue
 		}
 		embedding, ok := byContent[mutation.Content]
@@ -74,7 +77,7 @@ func (s *Store) commitMemoryMutationsPostgres(ctx context.Context, batchID, char
 			return nil, errors.New("memory mutation source turn is not provided to the batch")
 		}
 		switch mutation.Operation {
-		case "create":
+		case OperationAdd:
 			existingID, err := personal.FindActiveDuplicate(queryCtx, tx, mutation.Kind, mutation.Scope, mutation.Content)
 			if err != nil {
 				return nil, err
@@ -99,9 +102,9 @@ func (s *Store) commitMemoryMutationsPostgres(ctx context.Context, batchID, char
 				return nil, err
 			}
 			results = append(results, MutationResult{Status: "applied", MemoryID: record.ID})
-		case "supersede":
+		case OperationReplace:
 			if _, ok := allowed[mutation.MemoryID]; !ok {
-				return nil, errors.New("supersede references a memory id not provided to the batch")
+				return nil, errors.New("REPLACE references a memory id not provided to the batch")
 			}
 			if err := personal.RequireActiveScope(queryCtx, tx, mutation.MemoryID, mutation.Kind, mutation.Scope); err != nil {
 				return nil, err
@@ -134,6 +137,25 @@ func (s *Store) commitMemoryMutationsPostgres(ctx context.Context, batchID, char
 				return nil, err
 			}
 			results = append(results, MutationResult{Status: "applied", MemoryID: record.ID})
+		case OperationDelete:
+			if _, ok := allowed[mutation.MemoryID]; !ok {
+				return nil, errors.New("DELETE references a memory id not provided to the batch")
+			}
+			if err := personal.RequireActive(queryCtx, tx, mutation.MemoryID); err != nil {
+				return nil, err
+			}
+			if err := personal.Tombstone(queryCtx, tx, mutation.MemoryID, now); err != nil {
+				return nil, err
+			}
+			results = append(results, MutationResult{Status: "applied", ExistingMemoryID: mutation.MemoryID})
+		case OperationNone:
+			if _, ok := allowed[mutation.MemoryID]; !ok {
+				return nil, errors.New("NONE references a memory id not provided to the batch")
+			}
+			if err := personal.RequireActive(queryCtx, tx, mutation.MemoryID); err != nil {
+				return nil, fmt.Errorf("reading NONE target personal memory: %w", err)
+			}
+			results = append(results, MutationResult{Status: "no_change", ExistingMemoryID: mutation.MemoryID})
 		default:
 			return nil, fmt.Errorf("unsupported memory mutation operation %q", mutation.Operation)
 		}

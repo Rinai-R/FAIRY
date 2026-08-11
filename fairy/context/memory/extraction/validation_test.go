@@ -9,7 +9,7 @@ import (
 
 func TestMutationContentLimitMatchesDirectWrite(t *testing.T) {
 	mutation := Mutation{
-		Operation: "create", SourceTurnID: "turn-1", Kind: "experience",
+		Operation: OperationAdd, SourceTurnID: "turn-1", Kind: "experience",
 		Scope: personal.Scope{Type: "global"}, Content: strings.Repeat("事", personal.MaxContentRunes+1),
 		ConfidenceBasisPoints: 9000,
 	}

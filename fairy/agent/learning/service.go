@@ -337,16 +337,16 @@ func (e *Service) executeExtractionBatch(ctx context.Context, store ExtractionSt
 	if batch == nil {
 		return errors.New("extraction batch is required")
 	}
-	input, err := buildExtractInput(*batch)
-	if err != nil {
-		return err
-	}
 	if e.options.Character == nil {
 		return ErrRuntimeUnavailable
 	}
 	record, err := e.options.Character(batch.CharacterID)
 	if err != nil {
 		return err
+	}
+	modelPort := e.options.Model
+	if modelPort == nil {
+		return ErrRuntimeUnavailable
 	}
 	configSource := e.options.Config
 	if configSource == nil {
@@ -356,16 +356,47 @@ func (e *Service) executeExtractionBatch(ctx context.Context, store ExtractionSt
 	if err != nil {
 		return err
 	}
+	envelope := privateDiscoveryEnvelope(*batch)
+	discoveryInput, err := buildDiscoveryInput(envelope)
+	if err != nil {
+		return err
+	}
+	discoveryCacheKey := ""
+	if connection.Capabilities.PromptCacheKey {
+		discoveryCacheKey = model.LaneCacheKey(batch.ConversationID, model.PromptLaneLearningDiscovery)
+	}
+	discoveryCacheInput := model.NewCacheKeyInput(model.PromptLaneLearningDiscovery, connection.Model, batch.ConversationID, character.LearningDiscoveryInstructions)
+	discoveryCacheInput.CharacterRevision = record.Revision
+	discoveryEvents, err := modelPort.ExecuteRequestContext(ctx, model.CompiledPromptRequest{
+		Shape: model.ModelRequestShape{
+			Lane: model.PromptLaneLearningDiscovery, Model: connection.Model, Instructions: character.LearningDiscoveryInstructions,
+			MaxOutputTokens: character.LearningDiscoveryMaxOutputTokens, PromptCacheKey: discoveryCacheKey,
+		},
+		Input: discoveryInput, CacheInput: &discoveryCacheInput,
+	})
+	if err != nil {
+		return err
+	}
+	discovery, err := parseDiscoveryOutput(model.CollectTextFromEvents(discoveryEvents), envelope)
+	if err != nil {
+		return err
+	}
+	candidates := personalDiscoveryCandidates(discovery)
+	if len(candidates) == 0 {
+		return e.commitExtractionMutations(ctx, batch.ConversationID, func() ([]extraction.MutationResult, error) {
+			return store.CommitMemoryMutations(batch.BatchID, batch.CharacterID, nil, nil)
+		})
+	}
+	input, aliases, err := buildExtractInput(*batch, candidates)
+	if err != nil {
+		return err
+	}
 	cacheKey := ""
 	if connection.Capabilities.PromptCacheKey {
 		cacheKey = model.LaneCacheKey(batch.ConversationID, model.PromptLaneExtract)
 	}
 	cacheInput := model.NewCacheKeyInput(model.PromptLaneExtract, connection.Model, batch.ConversationID, character.ExtractInstructions)
 	cacheInput.CharacterRevision = record.Revision
-	modelPort := e.options.Model
-	if modelPort == nil {
-		return ErrRuntimeUnavailable
-	}
 	events, err := modelPort.ExecuteRequestContext(ctx, model.CompiledPromptRequest{
 		Shape: model.ModelRequestShape{
 			Lane: model.PromptLaneExtract, Model: connection.Model, Instructions: character.ExtractInstructions,
@@ -379,7 +410,11 @@ func (e *Service) executeExtractionBatch(ctx context.Context, store ExtractionSt
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	output, err := parseMemoryMutationOutput(model.CollectTextFromEvents(events))
+	allowedTurnIDs := make(map[string]struct{}, len(batch.Turns))
+	for _, turn := range batch.Turns {
+		allowedTurnIDs[turn.TurnID] = struct{}{}
+	}
+	output, err := parseMemoryMutationOutput(model.CollectTextFromEvents(events), aliases, allowedTurnIDs)
 	if err != nil {
 		return err
 	}
@@ -452,6 +487,39 @@ func (e *Service) executeKnowledgeIngestTaskContext(ctx context.Context, store K
 	if err != nil {
 		return err
 	}
+	modelPort := e.options.Model
+	if modelPort == nil {
+		return ErrRuntimeUnavailable
+	}
+	discoveryEnvelope := knowledgeDiscoveryEnvelope(task, document)
+	discoveryInput, err := buildDiscoveryInput(discoveryEnvelope)
+	if err != nil {
+		return err
+	}
+	discoveryCacheKey := ""
+	if connection.Capabilities.PromptCacheKey {
+		discoveryCacheKey = model.LaneCacheKey(task.ConversationID, model.PromptLaneLearningDiscovery)
+	}
+	discoveryCacheInput := model.NewCacheKeyInput(model.PromptLaneLearningDiscovery, connection.Model, task.ConversationID, character.LearningDiscoveryInstructions)
+	discoveryEvents, err := modelPort.ExecuteRequestContext(ctx, model.CompiledPromptRequest{
+		Shape: model.ModelRequestShape{
+			Lane: model.PromptLaneLearningDiscovery, Model: connection.Model, Instructions: character.LearningDiscoveryInstructions,
+			MaxOutputTokens: character.LearningDiscoveryMaxOutputTokens, PromptCacheKey: discoveryCacheKey,
+		},
+		Input: discoveryInput, CacheInput: &discoveryCacheInput,
+	})
+	if err != nil {
+		return err
+	}
+	discovery, err := parseDiscoveryOutput(model.CollectTextFromEvents(discoveryEvents), discoveryEnvelope)
+	if err != nil {
+		return err
+	}
+	candidates := knowledgeDiscoveryCandidates(discovery)
+	if len(candidates) == 0 {
+		_, err := store.CommitKnowledgeDocumentActionsContext(ctx, task, document, nil, nil)
+		return err
+	}
 	if err := knowledge.ValidateInitialAgentBudget(
 		document,
 		connection.ContextWindowTokens,
@@ -459,7 +527,7 @@ func (e *Service) executeKnowledgeIngestTaskContext(ctx context.Context, store K
 	); err != nil {
 		return err
 	}
-	input, err := knowledge.BuildAgentInput(task, document)
+	input, err := knowledge.BuildAgentInput(task, document, candidates)
 	if err != nil {
 		return err
 	}
@@ -473,10 +541,6 @@ func (e *Service) executeKnowledgeIngestTaskContext(ctx context.Context, store K
 		task.ConversationID,
 		character.KnowledgeReconcileInstructions,
 	)
-	modelPort := e.options.Model
-	if modelPort == nil {
-		return ErrRuntimeUnavailable
-	}
 	aliases := knowledge.NewAliasSet()
 	seenCallIDs := make(map[string]struct{})
 	toolCalls := 0

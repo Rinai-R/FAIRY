@@ -33,7 +33,7 @@ func knowledgeAgentCodecDocument(task IngestTask) Document {
 func TestBuildKnowledgeAgentInputContainsCompleteCurrentDocument(t *testing.T) {
 	task := knowledgeAgentCodecTask(t)
 	document := knowledgeAgentCodecDocument(task)
-	items, err := BuildAgentInput(task, document)
+	items, err := BuildAgentInput(task, document, []LearningCandidate{{Statement: "项目发布了稳定版本", Query: "项目当前发布状态"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,8 +54,8 @@ func TestBuildKnowledgeAgentInputContainsCompleteCurrentDocument(t *testing.T) {
 
 func TestKnowledgeReconcilerRevisionTracksOnlyFixedContract(t *testing.T) {
 	const legacyContractRevision = "whole-document-actions-v1"
-	if AgentContractRevision != "whole-document-task-actions-v2" {
-		t.Fatalf("current knowledge agent contract revision = %q, want v2", AgentContractRevision)
+	if AgentContractRevision != "whole-document-task-actions-v3" {
+		t.Fatalf("current knowledge agent contract revision = %q, want v3", AgentContractRevision)
 	}
 	first := ReconcilerRevision("fixed instructions", AgentContractRevision)
 	repeated := ReconcilerRevision("fixed instructions", AgentContractRevision)
@@ -124,7 +124,7 @@ func TestParseKnowledgeAgentOutputAcceptsGroundedActions(t *testing.T) {
 	}
 	raw := `{"actions":[` +
 		`{"operation":"ADD","content":"项目新增了一条由完整来源支持的稳定公开知识。","confidenceBasisPoints":8200,"evidence":"项目现在已经进入公开测试阶段。"},` +
-		`{"operation":"UPDATE","memoryId":"k0","content":"项目现在已经进入公开测试阶段，过去的内部测试状态已经失效。","confidenceBasisPoints":9000,"evidence":"项目现在已经进入公开测试阶段。"},` +
+		`{"operation":"REPLACE","memoryId":"k0","content":"项目现在已经进入公开测试阶段，过去的内部测试状态已经失效。","confidenceBasisPoints":9000,"evidence":"项目现在已经进入公开测试阶段。"},` +
 		`{"operation":"DELETE","memoryId":"k1","evidence":"官方同时明确撤回了旧发布日期。"},` +
 		`{"operation":"NONE","memoryId":"k2","evidence":"项目过去处于内部测试阶段。"}` +
 		`]}`
@@ -149,7 +149,7 @@ func TestKnowledgeAgentCodecRejectsInvalidAuthorityAndEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, raw := range map[string]string{
-		"unknown alias":        `{"actions":[{"operation":"UPDATE","memoryId":"k9","content":"项目现在已经进入公开测试阶段。","confidenceBasisPoints":8000,"evidence":"项目现在已经进入公开测试阶段。"}]}`,
+		"unknown alias":        `{"actions":[{"operation":"REPLACE","memoryId":"k9","content":"项目现在已经进入公开测试阶段。","confidenceBasisPoints":8000,"evidence":"项目现在已经进入公开测试阶段。"}]}`,
 		"fake evidence":        `{"actions":[{"operation":"ADD","content":"项目现在已经进入公开测试阶段。","confidenceBasisPoints":8000,"evidence":"正文里不存在的证据"}]}`,
 		"add with id":          `{"actions":[{"operation":"ADD","memoryId":"k0","content":"项目现在已经进入公开测试阶段。","confidenceBasisPoints":8000,"evidence":"项目现在已经进入公开测试阶段。"}]}`,
 		"add with empty id":    `{"actions":[{"operation":"ADD","memoryId":"","content":"项目现在已经进入公开测试阶段。","confidenceBasisPoints":8000,"evidence":"项目现在已经进入公开测试阶段。"}]}`,

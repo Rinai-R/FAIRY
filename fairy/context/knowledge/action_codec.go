@@ -27,7 +27,7 @@ const (
 	knowledgeAgentPromptReserveTokens    = 1024
 	knowledgeAgentMinimumContextTokens   = 4096
 	knowledgeAgentMaximumCandidateResult = MaxSearchCandidates
-	AgentContractRevision                = "whole-document-task-actions-v2"
+	AgentContractRevision                = "whole-document-task-actions-v3"
 )
 
 var knowledgeSearchToolParameters = json.RawMessage(`{
@@ -45,7 +45,7 @@ func ReconcilerRevision(instructions, contractRevision string) string {
 func SearchToolSpec() model.ToolSpec {
 	return model.ToolSpec{
 		Name:        SearchToolName,
-		Description: "Search only existing verified public knowledge before deciding whether the current complete document should ADD, UPDATE, DELETE, or keep it unchanged. Use a self-contained query describing the knowledge to compare.",
+		Description: "Search only existing verified public knowledge before deciding whether the current complete document should ADD, REPLACE, DELETE, or keep it unchanged. Use a self-contained query describing the knowledge to compare.",
 		Parameters:  append(json.RawMessage(nil), knowledgeSearchToolParameters...),
 	}
 }
@@ -58,21 +58,31 @@ type knowledgeAgentPromptDocument struct {
 }
 
 type knowledgeAgentPromptPayload struct {
-	TaskID   string                       `json:"taskId"`
-	Document knowledgeAgentPromptDocument `json:"document"`
+	TaskID     string                       `json:"taskId"`
+	Candidates []LearningCandidate          `json:"candidates"`
+	Document   knowledgeAgentPromptDocument `json:"document"`
 }
 
-func BuildAgentInput(task IngestTask, document Document) ([]model.PromptItem, error) {
+func BuildAgentInput(task IngestTask, document Document, candidates []LearningCandidate) ([]model.PromptItem, error) {
 	if task.ID == "" || document.SourceID != task.Source.ID ||
 		document.CanonicalURL != task.Source.URL || strings.TrimSpace(document.Content) != document.Content ||
 		document.Content == "" || ContainsDisallowedControl(document.Content) {
 		return nil, errors.New("knowledge agent document input is invalid")
 	}
+	if len(candidates) == 0 || len(candidates) > maxKnowledgeAgentActions {
+		return nil, errors.New("knowledge agent candidates are invalid")
+	}
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate.Statement) != candidate.Statement || candidate.Statement == "" ||
+			strings.TrimSpace(candidate.Query) != candidate.Query || candidate.Query == "" {
+			return nil, errors.New("knowledge agent candidate is invalid")
+		}
+	}
 	payload, err := json.Marshal(struct {
 		FairyContextData knowledgeAgentPromptPayload `json:"fairy_context_data"`
 	}{
 		FairyContextData: knowledgeAgentPromptPayload{
-			TaskID: task.ID,
+			TaskID: task.ID, Candidates: candidates,
 			Document: knowledgeAgentPromptDocument{
 				SourceID: document.SourceID, CanonicalURL: document.CanonicalURL,
 				Title: document.Title, Content: document.Content,
@@ -291,13 +301,13 @@ func ParseAgentOutput(raw string, document Document, aliases *AliasSet) ([]Docum
 			if action.MemoryID != nil || action.Content == nil || action.ConfidenceBasisPoints == nil {
 				return nil, fmt.Errorf("knowledge action[%d] ADD fields are invalid", index)
 			}
-		case MutationUpdate:
+		case MutationReplace:
 			if action.MemoryID == nil || action.Content == nil || action.ConfidenceBasisPoints == nil {
-				return nil, fmt.Errorf("knowledge action[%d] UPDATE fields are invalid", index)
+				return nil, fmt.Errorf("knowledge action[%d] REPLACE fields are invalid", index)
 			}
 			realID, ok := aliases.realID(*action.MemoryID)
 			if !ok {
-				return nil, fmt.Errorf("knowledge action[%d] UPDATE fields are invalid", index)
+				return nil, fmt.Errorf("knowledge action[%d] REPLACE fields are invalid", index)
 			}
 			item.MemoryID = realID
 		case MutationDelete, MutationNone:
@@ -318,7 +328,7 @@ func ParseAgentOutput(raw string, document Document, aliases *AliasSet) ([]Docum
 			}
 			seenTargets[item.MemoryID] = struct{}{}
 		}
-		if operation == MutationAdd || operation == MutationUpdate {
+		if operation == MutationAdd || operation == MutationReplace {
 			content := *action.Content
 			if strings.TrimSpace(content) != content ||
 				utf8.RuneCountInString(content) < minKnowledgeActionContentRunes ||

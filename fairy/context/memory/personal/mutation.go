@@ -53,6 +53,17 @@ func RequireActiveScope(ctx context.Context, tx coredb.Transaction, memoryID, ki
 	return nil
 }
 
+func RequireActive(ctx context.Context, tx coredb.Transaction, memoryID string) error {
+	record, err := ByID(ctx, tx, memoryID, true)
+	if err != nil {
+		return fmt.Errorf("reading personal memory: %w", err)
+	}
+	if record.Status != "active" {
+		return errors.New("target personal memory is not active")
+	}
+	return nil
+}
+
 func Supersede(ctx context.Context, tx coredb.Transaction, memoryID string, now int64) error {
 	changed, err := tx.Exec(ctx, "UPDATE personal_memories SET status = 'superseded', updated_at_ms = $2 WHERE id = $1 AND status = 'active'", memoryID, now)
 	if err != nil {
@@ -60,6 +71,17 @@ func Supersede(ctx context.Context, tx coredb.Transaction, memoryID string, now 
 	}
 	if changed.RowsAffected() != 1 {
 		return errors.New("supersede target memory is not active")
+	}
+	return nil
+}
+
+func Tombstone(ctx context.Context, tx coredb.Transaction, memoryID string, now int64) error {
+	changed, err := tx.Exec(ctx, "UPDATE personal_memories SET status = 'tombstone', updated_at_ms = $2 WHERE id = $1 AND status = 'active'", memoryID, now)
+	if err != nil {
+		return fmt.Errorf("tombstoning personal memory: %w", err)
+	}
+	if changed.RowsAffected() != 1 {
+		return errors.New("delete target memory is not active")
 	}
 	return nil
 }

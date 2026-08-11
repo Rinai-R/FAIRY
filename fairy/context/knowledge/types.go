@@ -84,13 +84,18 @@ type Document struct {
 	ReconcilerRevision string `json:"reconcilerRevision,omitempty"`
 }
 
+type LearningCandidate struct {
+	Statement string `json:"statement"`
+	Query     string `json:"query"`
+}
+
 type MutationOperation string
 
 const (
-	MutationAdd    MutationOperation = "ADD"
-	MutationUpdate MutationOperation = "UPDATE"
-	MutationDelete MutationOperation = "DELETE"
-	MutationNone   MutationOperation = "NONE"
+	MutationAdd     MutationOperation = "ADD"
+	MutationReplace MutationOperation = "REPLACE"
+	MutationDelete  MutationOperation = "DELETE"
+	MutationNone    MutationOperation = "NONE"
 )
 
 type DocumentAction struct {

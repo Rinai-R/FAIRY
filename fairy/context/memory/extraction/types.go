@@ -7,6 +7,10 @@ import "fairy/context/memory/personal"
 const (
 	DefaultBatchLimit = 12
 	MaxMutations      = 16
+	OperationAdd      = "ADD"
+	OperationReplace  = "REPLACE"
+	OperationDelete   = "DELETE"
+	OperationNone     = "NONE"
 )
 
 type Turn struct {

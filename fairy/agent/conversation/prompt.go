@@ -17,10 +17,12 @@ const (
 	RespondInstructions               = character.RespondInstructions
 	CompactInstructions               = character.CompactInstructions
 	ExtractInstructions               = character.ExtractInstructions
+	LearningDiscoveryInstructions     = character.LearningDiscoveryInstructions
 	KnowledgeReconcileInstructions    = character.KnowledgeReconcileInstructions
 	RespondMaxOutputTokens            = character.RespondMaxOutputTokens
 	CompactMaxOutputTokens            = character.CompactMaxOutputTokens
 	ExtractMaxOutputTokens            = character.ExtractMaxOutputTokens
+	LearningDiscoveryMaxOutputTokens  = character.LearningDiscoveryMaxOutputTokens
 	KnowledgeReconcileMaxOutputTokens = character.KnowledgeReconcileMaxOutputTokens
 )
 
@@ -101,6 +103,8 @@ func InstructionsForLane(lane model.PromptLane) (string, uint32, error) {
 		return CompactInstructions, CompactMaxOutputTokens, nil
 	case model.PromptLaneExtract:
 		return ExtractInstructions, ExtractMaxOutputTokens, nil
+	case model.PromptLaneLearningDiscovery:
+		return LearningDiscoveryInstructions, LearningDiscoveryMaxOutputTokens, nil
 	case model.PromptLaneKnowledgeReconcile:
 		return KnowledgeReconcileInstructions, KnowledgeReconcileMaxOutputTokens, nil
 	default:

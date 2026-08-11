@@ -77,9 +77,9 @@ func (s *Store) commitKnowledgeDocumentActionsPostgres(
 			if action.MemoryID != "" {
 				return 0, fmt.Errorf("knowledge document action[%d] ADD is invalid", index)
 			}
-		case MutationUpdate:
+		case MutationReplace:
 			if _, ok := supplied[action.MemoryID]; !ok {
-				return 0, fmt.Errorf("knowledge document action[%d] UPDATE is invalid", index)
+				return 0, fmt.Errorf("knowledge document action[%d] REPLACE is invalid", index)
 			}
 		case MutationDelete, MutationNone:
 			if _, ok := supplied[action.MemoryID]; !ok || action.Content != "" || action.ConfidenceBasisPoints != 0 {
@@ -95,7 +95,7 @@ func (s *Store) commitKnowledgeDocumentActionsPostgres(
 			seenTargets[action.MemoryID] = struct{}{}
 			targetIDs = append(targetIDs, action.MemoryID)
 		}
-		if action.Operation == MutationAdd || action.Operation == MutationUpdate {
+		if action.Operation == MutationAdd || action.Operation == MutationReplace {
 			statementRunes := utf8.RuneCountInString(action.Content)
 			if strings.TrimSpace(action.Content) != action.Content ||
 				statementRunes < 8 || statementRunes > maxKnowledgeDocumentActionContentRunes ||
@@ -164,19 +164,19 @@ WHERE id = $1 AND status = 'verified'`,
 				return 0, errors.New("knowledge DELETE lost its target")
 			}
 			changed++
-		case MutationUpdate:
+		case MutationReplace:
 			result, err := tx.Exec(queryCtx, "UPDATE knowledge_entries SET status = 'superseded', updated_at_ms = $2 WHERE id = $1 AND status = 'verified'", item.action.MemoryID, now)
 			if err != nil {
 				return 0, fmt.Errorf("superseding recalled knowledge: %w", err)
 			}
 			if result.RowsAffected() != 1 {
-				return 0, errors.New("knowledge UPDATE lost its target")
+				return 0, errors.New("knowledge REPLACE lost its target")
 			}
 			fallthrough
 		case MutationAdd:
 			knowledgeID := newID()
 			var supersedesID any
-			if item.action.Operation == MutationUpdate {
+			if item.action.Operation == MutationReplace {
 				supersedesID = item.action.MemoryID
 			}
 			var modelID, contentHash, vector any

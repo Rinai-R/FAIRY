@@ -11,6 +11,7 @@ import (
 
 	"fairy/context/character"
 	history "fairy/context/history/transcript"
+	discoveryctx "fairy/context/learning/discovery"
 	"fairy/context/social"
 	"fairy/runtime/config"
 	"fairy/runtime/model"
@@ -82,6 +83,9 @@ func (*learningTestHost) ModelConnection() (config.ModelConnection, error) {
 }
 
 func (h *learningTestHost) ExecuteRequest(ctx context.Context, request model.CompiledPromptRequest) ([]model.StreamEvent, error) {
+	if request.Shape.Lane == model.PromptLaneLearningDiscovery {
+		return []model.StreamEvent{{Type: "text_delta", Data: `{"candidates":[{"space":"social","statement":"群友会交流求职准备","query":"群内求职准备交流方式","evidenceRefs":["m1","m2"]}]}`}}, nil
+	}
 	h.mu.Lock()
 	block, started, err := h.block, h.started, h.modelErr
 	events := append([]model.StreamEvent(nil), h.events...)
@@ -151,8 +155,9 @@ func TestLearningInputOnlyContainsExternalObservations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	items, err := buildSocialLearningInput(prefix, learningObservations())
-	if err != nil || len(items) != 4 {
+	candidates := []discoveryctx.Candidate{{Space: discoveryctx.Social, Statement: "群友会交流求职准备", Query: "群内求职准备交流方式", EvidenceRefs: []string{"m1", "m2"}}}
+	items, err := buildSocialLearningInput(prefix, learningObservations(), candidates)
+	if err != nil || len(items) != 5 {
 		t.Fatalf("input = %#v, %v", items, err)
 	}
 	if items[0].Type != model.PromptItemContextData || !strings.Contains(items[0].Content, `"contextType":"character"`) {
@@ -161,7 +166,10 @@ func TestLearningInputOnlyContainsExternalObservations(t *testing.T) {
 	if items[1].Type != model.PromptItemContextData || !strings.Contains(items[1].Content, `"contextType":"interaction"`) {
 		t.Fatalf("stable interaction prefix = %#v", items[1])
 	}
-	for _, item := range items[2:] {
+	if !strings.Contains(items[2].Content, `"contextType":"social_learning_candidates"`) {
+		t.Fatalf("candidate context = %#v", items[2])
+	}
+	for _, item := range items[3:] {
 		var payload map[string]any
 		if err := json.Unmarshal([]byte(item.Content), &payload); err != nil {
 			t.Fatal(err)
@@ -212,7 +220,7 @@ func TestLearningModelUsagePreservesCacheObservationSemantics(t *testing.T) {
 	if err := engine.process(t.Context(), LearningSnapshot{ConversationID: "conversation-1", Messages: learningObservations()}); err != nil {
 		t.Fatal(err)
 	}
-	if got := engine.Stats(); got.ModelCalls != 1 || got.InputTokens != 1024 || got.CachedObservedInputTokens != 1024 || got.CachedInputTokens != 640 || got.CacheWriteTokens != 80 || got.OutputTokens != 96 {
+	if got := engine.Stats(); got.ModelCalls != 2 || got.InputTokens != 1024 || got.CachedObservedInputTokens != 1024 || got.CachedInputTokens != 640 || got.CacheWriteTokens != 80 || got.OutputTokens != 96 {
 		t.Fatalf("observed usage = %#v", got)
 	}
 
@@ -222,7 +230,7 @@ func TestLearningModelUsagePreservesCacheObservationSemantics(t *testing.T) {
 	if err := engine.process(t.Context(), LearningSnapshot{ConversationID: "conversation-1", Messages: learningObservations()}); err != nil {
 		t.Fatal(err)
 	}
-	if got := engine.Stats(); got.ModelCalls != 1 || got.InputTokens != 512 || got.OutputTokens != 48 || got.CachedObservedInputTokens != 0 || got.CachedInputTokens != 0 || got.CacheWriteTokens != 0 {
+	if got := engine.Stats(); got.ModelCalls != 2 || got.InputTokens != 512 || got.OutputTokens != 48 || got.CachedObservedInputTokens != 0 || got.CachedInputTokens != 0 || got.CacheWriteTokens != 0 {
 		t.Fatalf("missing cache observation usage = %#v", got)
 	}
 }
@@ -245,7 +253,7 @@ func TestLearningUsageRecordsProviderCostBeforeCompileOrStoreFailure(t *testing.
 			if err := engine.process(t.Context(), LearningSnapshot{ConversationID: "conversation-1", Messages: learningObservations()}); err == nil {
 				t.Fatal("process unexpectedly succeeded")
 			}
-			if got := engine.Stats(); got.ModelCalls != 1 || got.InputTokens != 400 || got.CachedObservedInputTokens != 400 || got.CachedInputTokens != 300 || got.OutputTokens != 20 {
+			if got := engine.Stats(); got.ModelCalls != 2 || got.InputTokens != 400 || got.CachedObservedInputTokens != 400 || got.CachedInputTokens != 300 || got.OutputTokens != 20 {
 				t.Fatalf("failed path usage = %#v", got)
 			}
 		})
@@ -259,7 +267,7 @@ func TestLearningRequestFailureDoesNotGuessProviderUsage(t *testing.T) {
 	if err := engine.process(t.Context(), LearningSnapshot{ConversationID: "conversation-1", Messages: learningObservations()}); !errors.Is(err, host.modelErr) {
 		t.Fatalf("process error = %v", err)
 	}
-	if got := engine.Stats(); got.ModelCalls != 0 || got.InputTokens != 0 || got.OutputTokens != 0 || got.CachedObservedInputTokens != 0 {
+	if got := engine.Stats(); got.ModelCalls != 1 || got.InputTokens != 0 || got.OutputTokens != 0 || got.CachedObservedInputTokens != 0 {
 		t.Fatalf("request failure guessed usage = %#v", got)
 	}
 }

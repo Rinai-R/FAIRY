@@ -1294,8 +1294,8 @@ func TestPostgresCommitMemoryMutationsPreservesPerMutationSourceTurn(t *testing.
 	}
 	conversationID, turnIDs, batchID := seedPostgresRunningExtractionBatchWithTurns(t, ctx, pool, store, "character-mutation-evidence", 2)
 	results, err := store.CommitMemoryMutationsContext(ctx, batchID, "character-mutation-evidence", nil, []extraction.Mutation{
-		{Operation: "create", SourceTurnID: turnIDs[0], Kind: "preference", Scope: personal.Scope{Type: "global"}, Content: "第一条证据喜欢爵士乐", ConfidenceBasisPoints: 9000},
-		{Operation: "create", SourceTurnID: turnIDs[1], Kind: "experience", Scope: personal.Scope{Type: "global"}, Content: "第二条证据准备搬家", ConfidenceBasisPoints: 8500},
+		{Operation: extraction.OperationAdd, SourceTurnID: turnIDs[0], Kind: "preference", Scope: personal.Scope{Type: "global"}, Content: "第一条证据喜欢爵士乐", ConfidenceBasisPoints: 9000},
+		{Operation: extraction.OperationAdd, SourceTurnID: turnIDs[1], Kind: "experience", Scope: personal.Scope{Type: "global"}, Content: "第二条证据准备搬家", ConfidenceBasisPoints: 8500},
 	})
 	if err != nil {
 		t.Fatalf("CommitMemoryMutationsContext: %v", err)
@@ -1349,7 +1349,7 @@ func TestPostgresCommitMemoryMutationsPreservesNoChangeAndSupersedeSemantics(t *
 		t.Fatal(err)
 	}
 	_, initialTurnID, initialBatchID := seedPostgresRunningExtractionBatch(t, ctx, pool, store, "character-mutation-parity")
-	initialResults, err := store.CommitMemoryMutationsContext(ctx, initialBatchID, "character-mutation-parity", nil, []extraction.Mutation{{Operation: "create", SourceTurnID: initialTurnID, Kind: "preference", Scope: personal.Scope{Type: "global"}, Content: "喜欢安静", ConfidenceBasisPoints: 9000}})
+	initialResults, err := store.CommitMemoryMutationsContext(ctx, initialBatchID, "character-mutation-parity", nil, []extraction.Mutation{{Operation: extraction.OperationAdd, SourceTurnID: initialTurnID, Kind: "preference", Scope: personal.Scope{Type: "global"}, Content: "喜欢安静", ConfidenceBasisPoints: 9000}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1359,8 +1359,8 @@ func TestPostgresCommitMemoryMutationsPreservesNoChangeAndSupersedeSemantics(t *
 	initialID := initialResults[0].MemoryID
 	_, turnID, batchID := seedPostgresRunningExtractionBatch(t, ctx, pool, store, "character-mutation-parity")
 	results, err := store.CommitMemoryMutationsContext(ctx, batchID, "character-mutation-parity", []string{initialID}, []extraction.Mutation{
-		{Operation: "create", SourceTurnID: turnID, Kind: "preference", Scope: personal.Scope{Type: "global"}, Content: "喜欢安静", ConfidenceBasisPoints: 9000},
-		{Operation: "supersede", SourceTurnID: turnID, MemoryID: initialID, Kind: "preference", Scope: personal.Scope{Type: "global"}, Content: "喜欢清晨散步", ConfidenceBasisPoints: 9300},
+		{Operation: extraction.OperationAdd, SourceTurnID: turnID, Kind: "preference", Scope: personal.Scope{Type: "global"}, Content: "喜欢安静", ConfidenceBasisPoints: 9000},
+		{Operation: extraction.OperationReplace, SourceTurnID: turnID, MemoryID: initialID, Kind: "preference", Scope: personal.Scope{Type: "global"}, Content: "喜欢清晨散步", ConfidenceBasisPoints: 9300},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1392,6 +1392,48 @@ WHERE turn_id = $1 AND result_status IN ('applied', 'no_change')`, turnID).Scan(
 	assertPostgresEmbedding(t, ctx, pool, "personal_memories", results[1].MemoryID, "喜欢清晨散步", false)
 }
 
+func TestPostgresCommitMemoryMutationsAppliesDeleteAndNone(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatal(err)
+	}
+	store, err := newMemoryIntegrationStores(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, seedTurnID, seedBatchID := seedPostgresRunningExtractionBatch(t, ctx, pool, store, "character-delete-none")
+	seed, err := store.CommitMemoryMutationsContext(ctx, seedBatchID, "character-delete-none", nil, []extraction.Mutation{
+		{Operation: extraction.OperationAdd, SourceTurnID: seedTurnID, Kind: "preference", Scope: personal.Scope{Type: "global"}, Content: "曾经喜欢爵士乐", ConfidenceBasisPoints: 9000},
+		{Operation: extraction.OperationAdd, SourceTurnID: seedTurnID, Kind: "profile", Scope: personal.Scope{Type: "global"}, Content: "长期从事软件开发", ConfidenceBasisPoints: 9000},
+	})
+	if err != nil || len(seed) != 2 {
+		t.Fatalf("seed results = %#v, %v", seed, err)
+	}
+	_, turnID, batchID := seedPostgresRunningExtractionBatch(t, ctx, pool, store, "character-delete-none")
+	results, err := store.CommitMemoryMutationsContext(ctx, batchID, "character-delete-none", []string{seed[0].MemoryID, seed[1].MemoryID}, []extraction.Mutation{
+		{Operation: extraction.OperationDelete, SourceTurnID: turnID, MemoryID: seed[0].MemoryID},
+		{Operation: extraction.OperationNone, SourceTurnID: turnID, MemoryID: seed[1].MemoryID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || results[0].Status != "applied" || results[1].Status != "no_change" {
+		t.Fatalf("results = %#v", results)
+	}
+	var deletedStatus, retainedStatus string
+	if err := pool.Raw().QueryRow(ctx, "SELECT status FROM personal_memories WHERE id = $1", seed[0].MemoryID).Scan(&deletedStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Raw().QueryRow(ctx, "SELECT status FROM personal_memories WHERE id = $1", seed[1].MemoryID).Scan(&retainedStatus); err != nil {
+		t.Fatal(err)
+	}
+	if deletedStatus != "tombstone" || retainedStatus != "active" {
+		t.Fatalf("statuses = (%q, %q)", deletedStatus, retainedStatus)
+	}
+}
+
 func TestPostgresFailedExtractionMutationCreatesNoContextCoverage(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)
@@ -1407,7 +1449,7 @@ func TestPostgresFailedExtractionMutationCreatesNoContextCoverage(t *testing.T) 
 	}
 	_, turnID, batchID := seedPostgresRunningExtractionBatch(t, ctx, pool, store, "character-coverage-failure")
 	_, err = store.CommitMemoryMutationsContext(ctx, batchID, "character-coverage-failure", nil, []extraction.Mutation{{
-		Operation: "create", SourceTurnID: turnID, Kind: "preference",
+		Operation: extraction.OperationAdd, SourceTurnID: turnID, Kind: "preference",
 		Scope: personal.Scope{Type: "global"}, Content: "喜欢雨天散步",
 		ConfidenceBasisPoints: 9000,
 	}})
@@ -1448,7 +1490,7 @@ FOR EACH ROW EXECUTE FUNCTION reject_memory_coverage()`); err != nil {
 	}
 	content := "必须随覆盖写入一起回滚"
 	_, err = store.CommitMemoryMutationsContext(ctx, batchID, "character-atomic-mutation", nil, []extraction.Mutation{{
-		Operation: "create", SourceTurnID: turnID, Kind: "preference",
+		Operation: extraction.OperationAdd, SourceTurnID: turnID, Kind: "preference",
 		Scope: personal.Scope{Type: "global"}, Content: content,
 		ConfidenceBasisPoints: 9000,
 	}})
