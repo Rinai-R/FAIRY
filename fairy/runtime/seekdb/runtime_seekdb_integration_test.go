@@ -78,6 +78,37 @@ CREATE TABLE IF NOT EXISTS fairy_seekdb_runtime_probe (
 	}
 }
 
+func TestRealSeekDBEmbeddedRuntimeLeaseSurvivesRepeatedSchemaVerification(t *testing.T) {
+	instance, config := openSchemaMigrationRuntime(t)
+	defer closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+	database := instance.SQL()
+	migrations := BuiltinMigrations()
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(embedded client lease) error = %v", err)
+	}
+	current := migrations[len(migrations)-1]
+	deadline := time.Now().Add(16 * time.Second)
+	for iteration := 1; time.Now().Before(deadline); iteration++ {
+		connection, err := database.Conn(t.Context())
+		if err != nil {
+			t.Fatalf("embedded client lease iteration %d acquire connection: %v", iteration, err)
+		}
+		if err := current.Verify(t.Context(), connection); err != nil {
+			connection.Close()
+			t.Fatalf("embedded client lease iteration %d current schema Verify: %v", iteration, err)
+		}
+		connection.Close()
+		if err := database.PingContext(t.Context()); err != nil {
+			t.Fatalf("embedded client lease iteration %d Ping: %v", iteration, err)
+		}
+		select {
+		case <-instance.Done():
+			t.Fatalf("embedded client lease iteration %d runtime exited: %v", iteration, instance.Err())
+		default:
+		}
+	}
+}
+
 func reserveLoopbackAddress(t *testing.T) string {
 	t.Helper()
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")

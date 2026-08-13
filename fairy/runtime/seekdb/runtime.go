@@ -29,24 +29,28 @@ var (
 const seekDBBootstrapDatabase = "oceanbase"
 
 type Runtime struct {
-	config Config
-	cmd    *exec.Cmd
-	db     *sql.DB
-	output *boundedOutput
-	ctx    context.Context
+	config      Config
+	cmd         *exec.Cmd
+	db          *sql.DB
+	output      *boundedOutput
+	ctx         context.Context
+	clientLease io.Closer
 
-	mu       sync.Mutex
-	waitErr  error
-	closing  bool
-	wait     chan struct{}
-	close    sync.Once
-	closeErr error
+	mu         sync.Mutex
+	waitErr    error
+	closing    bool
+	wait       chan struct{}
+	leaseClose sync.Once
+	leaseErr   error
+	close      sync.Once
+	closeErr   error
 }
 
 type runtimePaths struct {
 	Base string
 	Data string
 	Redo string
+	Run  string
 }
 
 type launchOptions struct {
@@ -95,15 +99,27 @@ func open(ctx context.Context, config Config, options launchOptions) (*Runtime, 
 	if err != nil {
 		return nil, redactRuntimeError(config, fmt.Errorf("configure SeekDB SQL connection: %w", err))
 	}
+	clientLease, err := acquireSeekDBClientLease(paths)
+	if err != nil {
+		_ = database.Close()
+		return nil, redactRuntimeError(config, fmt.Errorf("acquire SeekDB embedded client lease: %w", err))
+	}
 	cmd := options.command(ctx, config, paths, output)
 	if cmd == nil {
-		_ = database.Close()
-		return nil, errors.New("SeekDB launch command is nil")
+		return nil, redactRuntimeError(config, errors.Join(
+			errors.New("SeekDB launch command is nil"),
+			database.Close(), clientLease.Close(),
+		))
 	}
-	runtime := &Runtime{config: config, cmd: cmd, db: database, output: output, ctx: ctx, wait: make(chan struct{})}
+	runtime := &Runtime{
+		config: config, cmd: cmd, db: database, output: output, ctx: ctx,
+		clientLease: clientLease, wait: make(chan struct{}),
+	}
 	if err := cmd.Start(); err != nil {
-		_ = database.Close()
-		return nil, redactRuntimeError(config, fmt.Errorf("start SeekDB %s: %w", descriptorText(config), err))
+		return nil, redactRuntimeError(config, errors.Join(
+			fmt.Errorf("start SeekDB %s: %w", descriptorText(config), err),
+			database.Close(), runtime.releaseClientLease(),
+		))
 	}
 	go runtime.collectWait()
 
@@ -251,38 +267,55 @@ func (r *Runtime) closeProcess(ctx context.Context) error {
 	if database != nil {
 		databaseErr = database.Close()
 	}
+	leaseErr := r.releaseClientLease()
 	if process == nil {
-		return databaseErr
+		return errors.Join(databaseErr, leaseErr)
 	}
 	select {
 	case <-r.wait:
-		return databaseErr
+		return errors.Join(databaseErr, leaseErr)
 	default:
 	}
 	if err := interruptProcess(process); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		return errors.Join(databaseErr, redactRuntimeError(r.config, fmt.Errorf("interrupt SeekDB %s: %w", descriptorText(r.config), err)))
+		return errors.Join(databaseErr, leaseErr, redactRuntimeError(r.config, fmt.Errorf("interrupt SeekDB %s: %w", descriptorText(r.config), err)))
 	}
 	select {
 	case <-r.wait:
-		return databaseErr
+		return errors.Join(databaseErr, leaseErr)
 	case <-ctx.Done():
 		if err := process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			return errors.Join(databaseErr, redactRuntimeError(r.config, fmt.Errorf("kill SeekDB %s after shutdown deadline: %w", descriptorText(r.config), err)))
+			return errors.Join(databaseErr, leaseErr, redactRuntimeError(r.config, fmt.Errorf("kill SeekDB %s after shutdown deadline: %w", descriptorText(r.config), err)))
 		}
 		<-r.wait
-		return errors.Join(databaseErr, redactRuntimeError(r.config, fmt.Errorf("SeekDB %s exceeded shutdown deadline: %w", descriptorText(r.config), ctx.Err())))
+		return errors.Join(databaseErr, leaseErr, redactRuntimeError(r.config, fmt.Errorf("SeekDB %s exceeded shutdown deadline: %w", descriptorText(r.config), ctx.Err())))
 	}
 }
 
 func (r *Runtime) collectWait() {
 	err := r.cmd.Wait()
+	leaseErr := r.releaseClientLease()
 	r.mu.Lock()
 	if r.ctx.Err() != nil {
-		err = r.ctx.Err()
+		err = errors.Join(err, r.ctx.Err())
 	}
-	r.waitErr = err
+	if !r.closing && err == nil {
+		err = ErrRuntimeExited
+	}
+	r.waitErr = errors.Join(err, leaseErr)
 	r.mu.Unlock()
 	close(r.wait)
+}
+
+func (r *Runtime) releaseClientLease() error {
+	if r == nil {
+		return nil
+	}
+	r.leaseClose.Do(func() {
+		if r.clientLease != nil {
+			r.leaseErr = r.clientLease.Close()
+		}
+	})
+	return r.leaseErr
 }
 
 func (r *Runtime) startupExitError() error {
@@ -370,8 +403,13 @@ func prepareRuntimePaths(root string) (runtimePaths, error) {
 	if err := ensurePrivateDirectory(root); err != nil {
 		return runtimePaths{}, fmt.Errorf("prepare SeekDB data directory: %w", err)
 	}
-	paths := runtimePaths{Base: root, Data: filepath.Join(root, "store"), Redo: filepath.Join(root, "redo")}
-	for _, path := range []string{paths.Data, paths.Redo} {
+	paths := runtimePaths{
+		Base: root,
+		Data: filepath.Join(root, "store"),
+		Redo: filepath.Join(root, "redo"),
+		Run:  filepath.Join(root, "run"),
+	}
+	for _, path := range []string{paths.Data, paths.Redo, paths.Run} {
 		if err := ensurePrivateDirectory(path); err != nil {
 			return runtimePaths{}, fmt.Errorf("prepare SeekDB runtime directory: %w", err)
 		}

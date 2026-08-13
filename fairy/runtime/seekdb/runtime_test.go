@@ -101,6 +101,23 @@ func TestOpenReportsEarlyProcessExitWithoutPrivatePaths(t *testing.T) {
 	}
 }
 
+func TestRuntimeReportsUnexpectedCleanExit(t *testing.T) {
+	config := testRuntimeConfig(t)
+	options := testLaunchOptions(t, "clean-exit")
+	runtime, err := open(t.Context(), config, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runtime.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("runtime did not report the process exit")
+	}
+	if err := runtime.Err(); !errors.Is(err, ErrRuntimeExited) {
+		t.Fatalf("Err() = %v, want ErrRuntimeExited", err)
+	}
+}
+
 func TestOpenStopsRuntimeOnStartupDeadline(t *testing.T) {
 	config := testRuntimeConfig(t)
 	config.StartLimit = 25 * time.Millisecond
@@ -151,11 +168,34 @@ func TestPrepareRuntimePathsRejectsWidePermissionsAndSymlinks(t *testing.T) {
 	}
 }
 
+func TestPrepareRuntimePathsCreatesEmbeddedClientRunDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "seekdb-private")
+	paths, err := prepareRuntimePaths(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paths.Run != filepath.Join(root, "run") {
+		t.Fatalf("Run = %q", paths.Run)
+	}
+	info, err := os.Stat(paths.Run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("run directory mode = %v", info.Mode())
+	}
+}
+
 func TestSeekDBCommandUsesOnlyLocalNonSecretArguments(t *testing.T) {
 	config := testRuntimeConfig(t)
 	config.Address = "[::1]:3881"
 	config.LibraryDirs = []string{filepath.Join(t.TempDir(), "compat")}
-	paths := runtimePaths{Base: config.DataDir, Data: filepath.Join(config.DataDir, "store"), Redo: filepath.Join(config.DataDir, "redo")}
+	paths := runtimePaths{
+		Base: config.DataDir,
+		Data: filepath.Join(config.DataDir, "store"),
+		Redo: filepath.Join(config.DataDir, "redo"),
+		Run:  filepath.Join(config.DataDir, "run"),
+	}
 	command := seekDBCommand(t.Context(), config, paths, io.Discard)
 	want := []string{
 		config.BinaryPath, "--nodaemon", "--embedded", "--port", "3881",
@@ -206,6 +246,9 @@ func TestSeekDBHelperProcess(t *testing.T) {
 	case "exit":
 		_, _ = os.Stderr.WriteString("seekdb failed under " + os.Getenv("FAIRY_SEEKDB_PRIVATE_PATH") + "\n")
 		os.Exit(7)
+	case "clean-exit":
+		time.Sleep(25 * time.Millisecond)
+		os.Exit(0)
 	case "block":
 		for {
 			time.Sleep(time.Hour)
@@ -237,7 +280,11 @@ func testLaunchOptions(t *testing.T, mode string) launchOptions {
 	return launchOptions{
 		command: func(ctx context.Context, config Config, _ runtimePaths, output io.Writer) *exec.Cmd {
 			command := exec.CommandContext(ctx, os.Args[0], "-test.run=TestSeekDBHelperProcess")
-			command.Env = append(os.Environ(), helperProcessEnvironment+"="+mode, "FAIRY_SEEKDB_PRIVATE_PATH="+config.DataDir)
+			command.Env = append(os.Environ(),
+				helperProcessEnvironment+"="+mode,
+				"FAIRY_SEEKDB_PRIVATE_PATH="+config.DataDir,
+				"GORACE=atexit_sleep_ms=0",
+			)
 			command.Stdout = output
 			command.Stderr = output
 			return command
