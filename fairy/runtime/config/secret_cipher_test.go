@@ -1,8 +1,11 @@
 package config
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -59,6 +62,40 @@ func TestCipherRoundTripUsesAADAndRejectsWrongKey(t *testing.T) {
 	}
 	if _, err := wrong.Open("model", "connection-1", SecretKeyVersion, nonce, ciphertext, aad); !errors.Is(err, ErrSecretDecryptFailed) {
 		t.Fatalf("Open(wrong key) error = %v", err)
+	}
+}
+
+func TestSecretCipherFormattingRedactsKeyMaterial(t *testing.T) {
+	masterKey := bytes.Repeat([]byte{0xa5}, keyBytes)
+	secretCipher, err := newSecretCipher(masterKey, strings.NewReader(strings.Repeat("n", 12)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secretMaterial := []string{
+		hex.EncodeToString(masterKey),
+		hex.EncodeToString(secretCipher.endpointHMACKey),
+		hex.EncodeToString(secretCipher.principalHMACKey),
+		base64.StdEncoding.EncodeToString(masterKey),
+		base64.StdEncoding.EncodeToString(secretCipher.endpointHMACKey),
+		base64.StdEncoding.EncodeToString(secretCipher.principalHMACKey),
+	}
+
+	for _, format := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x"} {
+		rendered := fmt.Sprintf(format, secretCipher)
+		if !strings.Contains(rendered, "<redacted>") {
+			t.Errorf("format %q rendered %q without redaction marker", format, rendered)
+		}
+		for _, material := range secretMaterial {
+			if strings.Contains(rendered, material) {
+				t.Errorf("format %q leaked cipher material in %q", format, rendered)
+			}
+		}
+	}
+	if got := secretCipher.String(); got != secretCipherRedacted {
+		t.Fatalf("String() = %q, want %q", got, secretCipherRedacted)
+	}
+	if got := secretCipher.GoString(); got != secretCipherRedacted {
+		t.Fatalf("GoString() = %q, want %q", got, secretCipherRedacted)
 	}
 }
 

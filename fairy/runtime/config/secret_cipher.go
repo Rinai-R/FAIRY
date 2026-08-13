@@ -40,6 +40,23 @@ type SecretCipher struct {
 	principalHMACKey []byte
 }
 
+const secretCipherRedacted = "config.SecretCipher{<redacted>}"
+
+// String, GoString, and Format deliberately expose no cipher internals. The
+// concrete AEAD and derived HMAC keys contain secret material that otherwise
+// becomes visible through fmt's recursive struct formatting, especially %#v.
+func (*SecretCipher) String() string {
+	return secretCipherRedacted
+}
+
+func (*SecretCipher) GoString() string {
+	return secretCipherRedacted
+}
+
+func (*SecretCipher) Format(state fmt.State, _ rune) {
+	_, _ = io.WriteString(state, secretCipherRedacted)
+}
+
 func SecretCipherFromEnv(getenv func(string) string) (*SecretCipher, error) {
 	if getenv == nil {
 		getenv = os.Getenv
