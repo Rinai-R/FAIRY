@@ -24,10 +24,23 @@ tasks:
       - mkdir -p {{.BIN_DIR}}
       - go build -o {{.BIN_DIR}}/{{.APP_NAME}} .
 
+  seekdb:verify-artifact:
+    desc: 校验随包 SeekDB archive、LICENSE 与 NOTICE；候选或缺失 artifact 明确失败
+    dir: ../../fairy
+    cmds:
+      - >-
+        go run . seekdb-artifact
+        --goos darwin
+        --goarch arm64
+        --archive ../surfaces/desktop/build/seekdb/seekdb-1.3.0.0-100000092026051510-macos15-arm64.tar.gz
+        --license ../surfaces/desktop/build/seekdb/LICENSE
+        --notice ../surfaces/desktop/build/seekdb/NOTICE
+
   package:
     desc: 打包显示在系统 Dock 的 macOS 桌面伴侣
     deps: [build]
     cmds:
+      - task: seekdb:verify-artifact
       - rm -rf {{.BIN_DIR}}/{{.APP_NAME}}.app
       - mkdir -p {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources
       - cp build/darwin/Info.plist {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Info.plist

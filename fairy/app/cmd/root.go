@@ -117,6 +117,7 @@ func NewRootCmd(dependencies Dependencies) *cobra.Command {
 		newCharacterCmd(v, deps),
 		newIdentityCmd(v, deps),
 		newDBCmd(v, deps),
+		newSeekDBArtifactCmd(),
 		newCompletionCmd(root),
 	)
 	return root
