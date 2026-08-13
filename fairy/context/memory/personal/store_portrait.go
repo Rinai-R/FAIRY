@@ -11,9 +11,16 @@ import (
 )
 
 func (s *Store) CompanionPortraitContext(ctx context.Context, characterID string) (Retrieval, error) {
-	if s == nil || s.pool == nil {
-		return Retrieval{}, ErrDatabasePoolEmpty
+	if s.usesSeekDB() {
+		return s.companionPortraitSeekDB(ctx, characterID)
 	}
+	if !s.usesPostgres() {
+		return Retrieval{}, ErrStoreBackendUnavailable
+	}
+	return s.companionPortraitPostgres(ctx, characterID)
+}
+
+func (s *Store) companionPortraitPostgres(ctx context.Context, characterID string) (Retrieval, error) {
 	if err := validateID("character_id", characterID); err != nil {
 		return Retrieval{}, err
 	}

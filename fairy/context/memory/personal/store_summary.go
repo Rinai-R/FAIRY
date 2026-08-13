@@ -10,9 +10,16 @@ func (s *Store) Summary() (Summary, error) {
 }
 
 func (s *Store) SummaryContext(ctx context.Context) (Summary, error) {
-	if s == nil || s.pool == nil || s.pool.Raw() == nil {
-		return Summary{}, ErrDatabasePoolEmpty
+	if s.usesSeekDB() {
+		return s.summarySeekDB(ctx)
 	}
+	if !s.usesPostgres() {
+		return Summary{}, ErrStoreBackendUnavailable
+	}
+	return s.summaryPostgres(ctx)
+}
+
+func (s *Store) summaryPostgres(ctx context.Context) (Summary, error) {
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
 	var result Summary
