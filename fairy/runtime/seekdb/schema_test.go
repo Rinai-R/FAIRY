@@ -9,26 +9,40 @@ import (
 	"testing"
 )
 
-func TestBuiltinMigrationsExposeImmutableFoundationRevision(t *testing.T) {
+func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first := BuiltinMigrations()
 	second := BuiltinMigrations()
-	if len(first) != 1 || len(second) != 1 {
-		t.Fatalf("builtin migration counts = %d and %d, want 1", len(first), len(second))
+	if len(first) != 2 || len(second) != 2 {
+		t.Fatalf("builtin migration counts = %d and %d, want 2", len(first), len(second))
 	}
-	want := CurrentSchemaRevision()
-	if first[0].Revision != want || first[0].Name != "create-foundation-schema" {
-		t.Fatalf("builtin migration = %#v, want revision %#v", first[0], want)
+	foundation := Revision{Number: foundationSchemaRevision, Checksum: foundationSchemaChecksum()}
+	conversation := Revision{Number: conversationSchemaRevision, Checksum: conversationSchemaChecksum()}
+	if current := CurrentSchemaRevision(); current != conversation {
+		t.Fatalf("current schema revision = %#v, want %#v", current, conversation)
 	}
-	if first[0].Apply == nil || first[0].Verify == nil {
-		t.Fatal("builtin migration must provide Apply and Verify")
+	if first[0].Revision != foundation || first[0].Name != "create-foundation-schema" {
+		t.Fatalf("foundation migration = %#v, want revision %#v", first[0], foundation)
+	}
+	if first[1].Revision != conversation || first[1].Name != "create-conversation-schema" {
+		t.Fatalf("conversation migration = %#v, want revision %#v", first[1], conversation)
+	}
+	for index, migration := range first {
+		if migration.Apply == nil || migration.Verify == nil {
+			t.Fatalf("builtin migration %d must provide Apply and Verify", index+1)
+		}
 	}
 	first[0].Name = "mutated-by-caller"
 	first[0].Revision.Number = 99
-	if second[0].Name != "create-foundation-schema" || second[0].Revision != want {
+	first[1].Name = "also-mutated"
+	if second[0].Name != "create-foundation-schema" || second[0].Revision != foundation ||
+		second[1].Name != "create-conversation-schema" || second[1].Revision != conversation {
 		t.Fatalf("caller mutation changed later BuiltinMigrations result: %#v", second[0])
 	}
-	if got := hex.EncodeToString(want.Checksum[:]); got != "e674bec12d0b6895da8b351d082a686c9c2f44990fb68749bbad083c4a6805d3" {
+	if got := hex.EncodeToString(foundation.Checksum[:]); got != "e674bec12d0b6895da8b351d082a686c9c2f44990fb68749bbad083c4a6805d3" {
 		t.Fatalf("foundation checksum = %s, update requires an explicit revision decision", got)
+	}
+	if got := hex.EncodeToString(conversation.Checksum[:]); got != "0ee10d718cb767d6427f2f9fbbfaa69d1c8d0a5b0912b128522d024685c975dc" {
+		t.Fatalf("conversation checksum = %s, update requires an explicit revision decision", got)
 	}
 }
 
@@ -44,9 +58,114 @@ func TestFoundationSchemaContainsOnlyDeclaredTablesAndPortableSeekDBDDL(t *testi
 	if len(foundationSchema) != len(wantTables) {
 		t.Fatalf("foundation table count = %d, want %d", len(foundationSchema), len(wantTables))
 	}
-	for index, table := range foundationSchema {
+	assertPortableSchemaTables(t, foundationSchema[:], wantTables)
+}
+
+func TestConversationSchemaDefinesIsolationOrderingAndCorrelationContracts(t *testing.T) {
+	wantTables := []string{
+		"conversations",
+		"character_conversations",
+		"endpoint_conversations",
+		"conversation_turns",
+		"conversation_messages",
+		"prompt_windows",
+	}
+	assertPortableSchemaTables(t, conversationSchema[:], wantTables)
+	conversations := conversationSchema[0]
+	if !schemaHasIndex(conversations, ascendingBTreeIndex(
+		"conversations_identity_character_kind_key", true, "id", "character_id", "kind",
+	)) {
+		t.Fatal("conversations lack immutable kind-aware mapping identity")
+	}
+
+	character := conversationSchema[1]
+	if !schemaHasIndex(character, ascendingBTreeIndex(
+		"character_conversations_conversation_key", true, "conversation_id",
+	)) {
+		t.Fatal("character conversations lack one-to-one authoritative mapping")
+	}
+	if len(character.foreignKeys) != 1 || len(character.foreignKeys[0].columns) != 3 ||
+		character.foreignKeys[0].columns[0].name != "conversation_id" ||
+		character.foreignKeys[0].columns[1].name != "character_id" ||
+		character.foreignKeys[0].columns[2].name != "kind" {
+		t.Fatalf("character conversation isolation foreign key = %#v", character.foreignKeys)
+	}
+	if kind := schemaColumnNamed(t, character, "kind"); kind.columnType != "varchar(16)" {
+		t.Fatalf("character conversation kind type = %q", kind.columnType)
+	}
+
+	turns := conversationSchema[3]
+	if !schemaHasIndex(turns, ascendingBTreeIndex(
+		"conversation_turns_external_message_idx", false, "conversation_id", "message_id", "sequence",
+	)) {
+		t.Fatal("conversation turns lack ordered conversation-scoped external message lookup")
+	}
+	if !schemaHasIndex(turns, ascendingBTreeIndex(
+		"conversation_turns_conversation_sequence_key", true, "conversation_id", "sequence",
+	)) {
+		t.Fatal("conversation turns lack stable conversation sequence")
+	}
+	if sequence := schemaColumnNamed(t, turns, "sequence"); sequence.columnType != "bigint" {
+		t.Fatalf("conversation turn sequence type = %q, want signed bigint", sequence.columnType)
+	}
+
+	messages := conversationSchema[4]
+	if !schemaHasIndex(messages, ascendingBTreeIndex(
+		"conversation_messages_conversation_sequence_key", true, "conversation_id", "sequence",
+	)) || !schemaHasIndex(messages, ascendingBTreeIndex(
+		"conversation_messages_turn_role_key", true, "turn_id", "role",
+	)) {
+		t.Fatal("conversation messages lack stable sequence or one-role-per-turn identity")
+	}
+	if sequence := schemaColumnNamed(t, messages, "sequence"); sequence.columnType != "bigint" {
+		t.Fatalf("conversation message sequence type = %q, want signed bigint", sequence.columnType)
+	}
+	if len(messages.foreignKeys) != 1 || len(messages.foreignKeys[0].columns) != 2 ||
+		messages.foreignKeys[0].columns[0].name != "conversation_id" ||
+		messages.foreignKeys[0].columns[1].name != "turn_id" {
+		t.Fatalf("message/turn isolation foreign key = %#v", messages.foreignKeys)
+	}
+
+	endpoint := conversationSchema[2]
+	if len(endpoint.foreignKeys) != 1 || len(endpoint.foreignKeys[0].columns) != 3 ||
+		endpoint.foreignKeys[0].columns[0].name != "conversation_id" ||
+		endpoint.foreignKeys[0].columns[1].name != "character_id" ||
+		endpoint.foreignKeys[0].columns[2].name != "kind" {
+		t.Fatalf("endpoint/character isolation foreign key = %#v", endpoint.foreignKeys)
+	}
+	if kind := schemaColumnNamed(t, endpoint, "kind"); kind.columnType != "varchar(16)" {
+		t.Fatalf("endpoint conversation kind type = %q", kind.columnType)
+	}
+}
+
+func schemaColumnNamed(t *testing.T, table schemaTable, name string) schemaColumn {
+	t.Helper()
+	for _, column := range table.columns {
+		if column.name == name {
+			return column
+		}
+	}
+	t.Fatalf("table %s lacks column %s", table.name, name)
+	return schemaColumn{}
+}
+
+func schemaHasIndex(table schemaTable, expected schemaIndex) bool {
+	return slices.ContainsFunc(table.indexes, func(actual schemaIndex) bool {
+		return actual.name == expected.name &&
+			actual.unique == expected.unique &&
+			actual.indexType == expected.indexType &&
+			slices.Equal(actual.columns, expected.columns)
+	})
+}
+
+func assertPortableSchemaTables(t *testing.T, tables []schemaTable, wantTables []string) {
+	t.Helper()
+	if len(tables) != len(wantTables) {
+		t.Fatalf("schema table count = %d, want %d", len(tables), len(wantTables))
+	}
+	for index, table := range tables {
 		if table.name != wantTables[index] {
-			t.Fatalf("foundation table %d = %q, want %q", index, table.name, wantTables[index])
+			t.Fatalf("schema table %d = %q, want %q", index, table.name, wantTables[index])
 		}
 		upperDDL := strings.ToUpper(table.ddl)
 		if !strings.HasPrefix(upperDDL, "CREATE TABLE IF NOT EXISTS "+strings.ToUpper(table.name)+" ") {
@@ -64,7 +183,7 @@ func TestFoundationSchemaContainsOnlyDeclaredTablesAndPortableSeekDBDDL(t *testi
 			t.Errorf("table %s is missing named CHECK %s", table.name, table.checks[0].name)
 		}
 		for _, column := range table.columns {
-			if strings.HasSuffix(column.name, "_id") && column.collation != "ascii_bin" {
+			if strings.HasSuffix(column.name, "_id") && column.name != "message_id" && column.collation != "ascii_bin" {
 				t.Errorf("table %s identifier %s collation = %q, want ascii_bin", table.name, column.name, column.collation)
 			}
 		}

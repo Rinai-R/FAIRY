@@ -11,26 +11,42 @@ import (
 	"strings"
 )
 
-const foundationSchemaRevision int64 = 1
+const (
+	foundationSchemaRevision   int64 = 1
+	conversationSchemaRevision int64 = 2
+)
 
 // BuiltinMigrations returns FAIRY's immutable, ordered SeekDB schema chain.
 // Callers receive a new slice so changing the returned value cannot alter the
 // process-wide schema definition.
 func BuiltinMigrations() []Migration {
-	migration := Migration{
-		Revision: CurrentSchemaRevision(),
-		Name:     "create-foundation-schema",
-		Apply:    applyFoundationSchema,
-		Verify:   verifyFoundationSchema,
+	return []Migration{
+		{
+			Revision: Revision{
+				Number:   foundationSchemaRevision,
+				Checksum: foundationSchemaChecksum(),
+			},
+			Name:   "create-foundation-schema",
+			Apply:  applyFoundationSchema,
+			Verify: verifyFoundationSchema,
+		},
+		{
+			Revision: Revision{
+				Number:   conversationSchemaRevision,
+				Checksum: conversationSchemaChecksum(),
+			},
+			Name:   "create-conversation-schema",
+			Apply:  applyConversationSchema,
+			Verify: verifyConversationSchema,
+		},
 	}
-	return []Migration{migration}
 }
 
 // CurrentSchemaRevision is the exact revision accepted by runtime readiness.
 func CurrentSchemaRevision() Revision {
 	return Revision{
-		Number:   foundationSchemaRevision,
-		Checksum: foundationSchemaChecksum(),
+		Number:   conversationSchemaRevision,
+		Checksum: conversationSchemaChecksum(),
 	}
 }
 
@@ -339,9 +355,385 @@ var foundationSchema = [...]schemaTable{
 	},
 }
 
+// conversationSchema is revision 2. It deliberately preserves the durable
+// conversation identities used by the Session contract while strengthening
+// three isolation boundaries that PostgreSQL previously left to application
+// code: one authoritative default conversation exists per character, an
+// endpoint binding must name a conversation owned by the same character, and
+// a message must name a turn from the same conversation.
+var conversationSchema = [...]schemaTable{
+	{
+		name: "conversations",
+		ddl: `CREATE TABLE IF NOT EXISTS conversations (
+  id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  character_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  kind VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  created_at_ms BIGINT UNSIGNED NOT NULL,
+  updated_at_ms BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY conversations_identity_character_kind_key (id, character_id, kind),
+  KEY conversations_character_updated_idx (character_id, updated_at_ms, id),
+  CONSTRAINT conversations_invariants_check CHECK (
+    CHAR_LENGTH(id) > 0 AND id = TRIM(id) AND
+    CHAR_LENGTH(character_id) > 0 AND character_id = TRIM(character_id) AND
+    kind IN ('character', 'endpoint') AND
+    updated_at_ms >= created_at_ms
+  )
+)`,
+		columns: []schemaColumn{
+			{name: "id", columnType: "varchar(128)", collation: "ascii_bin"},
+			{name: "character_id", columnType: "varchar(128)", collation: "ascii_bin"},
+			{name: "kind", columnType: "varchar(16)", collation: "ascii_bin"},
+			{name: "created_at_ms", columnType: "bigint unsigned"},
+			{name: "updated_at_ms", columnType: "bigint unsigned"},
+		},
+		indexes: []schemaIndex{
+			ascendingBTreeIndex("PRIMARY", true, "id"),
+			ascendingBTreeIndex("conversations_identity_character_kind_key", true, "id", "character_id", "kind"),
+			ascendingBTreeIndex("conversations_character_updated_idx", false, "character_id", "updated_at_ms", "id"),
+		},
+		checks: []schemaCheck{{
+			name:   "conversations_invariants_check",
+			clause: "((CHAR_LENGTH(`id`) > 0) and (`id` = trim(`id`)) and (CHAR_LENGTH(`character_id`) > 0) and (`character_id` = trim(`character_id`)) and (`kind` in ('character','endpoint')) and (`updated_at_ms` >= `created_at_ms`))",
+		}},
+	},
+	{
+		name: "character_conversations",
+		ddl: `CREATE TABLE IF NOT EXISTS character_conversations (
+  character_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  conversation_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  kind VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  PRIMARY KEY (character_id),
+  UNIQUE KEY character_conversations_conversation_key (conversation_id),
+  CONSTRAINT character_conversations_conversation_fk FOREIGN KEY (conversation_id, character_id, kind)
+    REFERENCES conversations (id, character_id, kind) ON UPDATE RESTRICT ON DELETE CASCADE,
+  CONSTRAINT character_conversations_invariants_check CHECK (
+    CHAR_LENGTH(character_id) > 0 AND character_id = TRIM(character_id) AND
+    CHAR_LENGTH(conversation_id) > 0 AND conversation_id = TRIM(conversation_id) AND
+    kind = 'character'
+  )
+)`,
+		columns: []schemaColumn{
+			{name: "character_id", columnType: "varchar(128)", collation: "ascii_bin"},
+			{name: "conversation_id", columnType: "varchar(128)", collation: "ascii_bin"},
+			{name: "kind", columnType: "varchar(16)", collation: "ascii_bin"},
+		},
+		indexes: []schemaIndex{
+			ascendingBTreeIndex("PRIMARY", true, "character_id"),
+			ascendingBTreeIndex("character_conversations_conversation_key", true, "conversation_id"),
+		},
+		checks: []schemaCheck{{
+			name:   "character_conversations_invariants_check",
+			clause: "((CHAR_LENGTH(`character_id`) > 0) and (`character_id` = trim(`character_id`)) and (CHAR_LENGTH(`conversation_id`) > 0) and (`conversation_id` = trim(`conversation_id`)) and (`kind` = 'character'))",
+		}},
+		foreignKeys: []schemaForeignKey{{
+			name:            "character_conversations_conversation_fk",
+			referencedTable: "conversations",
+			updateRule:      "restrict",
+			deleteRule:      "cascade",
+			columns: []schemaForeignKeyColumn{
+				{name: "conversation_id", referencedColumn: "id", sameSchema: true},
+				{name: "character_id", referencedColumn: "character_id", sameSchema: true},
+				{name: "kind", referencedColumn: "kind", sameSchema: true},
+			},
+		}},
+	},
+	{
+		name: "endpoint_conversations",
+		ddl: `CREATE TABLE IF NOT EXISTS endpoint_conversations (
+  character_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  endpoint VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  endpoint_key_digest BINARY(32) NOT NULL,
+  conversation_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  kind VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  audience VARCHAR(8) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  initiation VARCHAR(8) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  presentation VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  evaluation TINYINT UNSIGNED NOT NULL,
+  principal_namespace VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  principal_digest BINARY(32) NULL,
+  created_at_ms BIGINT UNSIGNED NOT NULL,
+  updated_at_ms BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (character_id, endpoint, endpoint_key_digest),
+  UNIQUE KEY endpoint_conversations_conversation_key (conversation_id),
+  CONSTRAINT endpoint_conversations_conversation_fk FOREIGN KEY (conversation_id, character_id, kind)
+    REFERENCES conversations (id, character_id, kind) ON UPDATE RESTRICT ON DELETE CASCADE,
+  CONSTRAINT endpoint_conversations_invariants_check CHECK (
+    endpoint IN ('desktop', 'im') AND
+    audience IN ('single', 'multi') AND
+    initiation IN ('direct', 'ambient') AND
+    presentation IN ('embodied', 'chat') AND
+    kind = 'endpoint' AND
+    evaluation IN (0, 1) AND
+    ((principal_namespace IS NULL) = (principal_digest IS NULL)) AND
+    ((endpoint = 'im' AND audience = 'single') =
+      (principal_namespace IS NOT NULL AND principal_digest IS NOT NULL)) AND
+    (principal_namespace IS NULL OR
+      (CHAR_LENGTH(principal_namespace) > 0 AND principal_namespace = TRIM(principal_namespace))) AND
+    (evaluation = 0 OR
+      (endpoint = 'desktop' AND audience = 'single' AND initiation = 'direct' AND presentation = 'chat')) AND
+    updated_at_ms >= created_at_ms
+  )
+)`,
+		columns: []schemaColumn{
+			{name: "character_id", columnType: "varchar(128)", collation: "ascii_bin"},
+			{name: "endpoint", columnType: "varchar(16)", collation: "ascii_bin"},
+			{name: "endpoint_key_digest", columnType: "binary(32)"},
+			{name: "conversation_id", columnType: "varchar(128)", collation: "ascii_bin"},
+			{name: "kind", columnType: "varchar(16)", collation: "ascii_bin"},
+			{name: "audience", columnType: "varchar(8)", collation: "ascii_bin"},
+			{name: "initiation", columnType: "varchar(8)", collation: "ascii_bin"},
+			{name: "presentation", columnType: "varchar(16)", collation: "ascii_bin"},
+			{name: "evaluation", columnType: "tinyint unsigned"},
+			{name: "principal_namespace", columnType: "varchar(64)", nullable: true, collation: "ascii_bin"},
+			{name: "principal_digest", columnType: "binary(32)", nullable: true},
+			{name: "created_at_ms", columnType: "bigint unsigned"},
+			{name: "updated_at_ms", columnType: "bigint unsigned"},
+		},
+		indexes: []schemaIndex{
+			ascendingBTreeIndex("PRIMARY", true, "character_id", "endpoint", "endpoint_key_digest"),
+			ascendingBTreeIndex("endpoint_conversations_conversation_key", true, "conversation_id"),
+		},
+		checks: []schemaCheck{{
+			name: "endpoint_conversations_invariants_check",
+			clause: "((`endpoint` in ('desktop','im')) and (`audience` in ('single','multi')) and " +
+				"(`initiation` in ('direct','ambient')) and (`presentation` in ('embodied','chat')) and " +
+				"(`kind` = 'endpoint') and " +
+				"(`evaluation` in (0,1)) and ((`principal_namespace` is null) = (`principal_digest` is null)) and " +
+				"(((`endpoint` = 'im') and (`audience` = 'single')) = ((`principal_namespace` is not null) and (`principal_digest` is not null))) and " +
+				"((`principal_namespace` is null) or ((CHAR_LENGTH(`principal_namespace`) > 0) and (`principal_namespace` = trim(`principal_namespace`)))) and " +
+				"((`evaluation` = 0) or ((`endpoint` = 'desktop') and (`audience` = 'single') and (`initiation` = 'direct') and (`presentation` = 'chat'))) and " +
+				"(`updated_at_ms` >= `created_at_ms`))",
+		}},
+		foreignKeys: []schemaForeignKey{{
+			name:            "endpoint_conversations_conversation_fk",
+			referencedTable: "conversations",
+			updateRule:      "restrict",
+			deleteRule:      "cascade",
+			columns: []schemaForeignKeyColumn{
+				{name: "conversation_id", referencedColumn: "id", sameSchema: true},
+				{name: "character_id", referencedColumn: "character_id", sameSchema: true},
+				{name: "kind", referencedColumn: "kind", sameSchema: true},
+			},
+		}},
+	},
+	{
+		name: "conversation_turns",
+		ddl: `CREATE TABLE IF NOT EXISTS conversation_turns (
+  id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  conversation_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  message_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
+  sequence BIGINT NOT NULL,
+  status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  origin VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  error_code VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  error_message LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
+  error_retryable TINYINT UNSIGNED NULL,
+  extraction_state VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  extraction_claim_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  extraction_lease_owner VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  extraction_lease_expires_at_ms BIGINT UNSIGNED NULL,
+  extraction_attempt_count BIGINT UNSIGNED NOT NULL,
+  extraction_next_attempt_at_ms BIGINT UNSIGNED NOT NULL,
+  extraction_error_code VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  extraction_error_message LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
+  created_at_ms BIGINT UNSIGNED NOT NULL,
+  updated_at_ms BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY conversation_turns_conversation_identity_key (conversation_id, id),
+  UNIQUE KEY conversation_turns_conversation_sequence_key (conversation_id, sequence),
+  KEY conversation_turns_external_message_idx (conversation_id, message_id, sequence),
+  KEY conversation_turns_conversation_status_idx (conversation_id, status, sequence),
+  KEY conversation_turns_extraction_claim_idx (extraction_claim_id),
+  KEY conversation_turns_extraction_queue_idx (
+    conversation_id, status, extraction_state, extraction_next_attempt_at_ms, sequence
+  ),
+  CONSTRAINT conversation_turns_conversation_fk FOREIGN KEY (conversation_id)
+    REFERENCES conversations (id) ON UPDATE RESTRICT ON DELETE CASCADE,
+  CONSTRAINT conversation_turns_invariants_check CHECK (
+    CHAR_LENGTH(id) > 0 AND id = TRIM(id) AND
+    sequence > 0 AND
+    (message_id IS NULL OR
+      (CHAR_LENGTH(message_id) BETWEEN 1 AND 128 AND message_id = TRIM(message_id) AND
+        message_id NOT REGEXP '[[:cntrl:]]')) AND
+    status IN ('interpreting', 'planning', 'responding', 'completed', 'interrupted', 'failed') AND
+    origin IN ('user', 'desktop_initiation') AND
+    error_retryable IN (0, 1) AND
+    extraction_state IN ('ineligible', 'pending', 'claimed', 'processed', 'failed') AND
+    ((extraction_state = 'claimed') =
+      (extraction_claim_id IS NOT NULL AND extraction_lease_owner IS NOT NULL AND
+        extraction_lease_expires_at_ms IS NOT NULL)) AND
+    (extraction_state = 'claimed' OR
+      (extraction_claim_id IS NULL AND extraction_lease_owner IS NULL AND
+        extraction_lease_expires_at_ms IS NULL)) AND
+    updated_at_ms >= created_at_ms AND
+    ((status = 'failed') = (error_code IS NOT NULL AND error_message IS NOT NULL))
+  )
+)`,
+		columns: []schemaColumn{
+			{name: "id", columnType: "varchar(128)", collation: "ascii_bin"},
+			{name: "conversation_id", columnType: "varchar(128)", collation: "ascii_bin"},
+			{name: "message_id", columnType: "varchar(128)", nullable: true, collation: "utf8mb4_bin"},
+			{name: "sequence", columnType: "bigint"},
+			{name: "status", columnType: "varchar(16)", collation: "ascii_bin"},
+			{name: "origin", columnType: "varchar(32)", collation: "ascii_bin"},
+			{name: "error_code", columnType: "varchar(128)", nullable: true, collation: "ascii_bin"},
+			{name: "error_message", columnType: "longtext", nullable: true, collation: "utf8mb4_bin"},
+			{name: "error_retryable", columnType: "tinyint unsigned", nullable: true},
+			{name: "extraction_state", columnType: "varchar(16)", collation: "ascii_bin"},
+			{name: "extraction_claim_id", columnType: "varchar(128)", nullable: true, collation: "ascii_bin"},
+			{name: "extraction_lease_owner", columnType: "varchar(128)", nullable: true, collation: "ascii_bin"},
+			{name: "extraction_lease_expires_at_ms", columnType: "bigint unsigned", nullable: true},
+			{name: "extraction_attempt_count", columnType: "bigint unsigned"},
+			{name: "extraction_next_attempt_at_ms", columnType: "bigint unsigned"},
+			{name: "extraction_error_code", columnType: "varchar(128)", nullable: true, collation: "ascii_bin"},
+			{name: "extraction_error_message", columnType: "longtext", nullable: true, collation: "utf8mb4_bin"},
+			{name: "created_at_ms", columnType: "bigint unsigned"},
+			{name: "updated_at_ms", columnType: "bigint unsigned"},
+		},
+		indexes: []schemaIndex{
+			ascendingBTreeIndex("PRIMARY", true, "id"),
+			ascendingBTreeIndex("conversation_turns_conversation_identity_key", true, "conversation_id", "id"),
+			ascendingBTreeIndex("conversation_turns_conversation_sequence_key", true, "conversation_id", "sequence"),
+			ascendingBTreeIndex("conversation_turns_external_message_idx", false, "conversation_id", "message_id", "sequence"),
+			ascendingBTreeIndex("conversation_turns_conversation_status_idx", false, "conversation_id", "status", "sequence"),
+			ascendingBTreeIndex("conversation_turns_extraction_claim_idx", false, "extraction_claim_id"),
+			ascendingBTreeIndex("conversation_turns_extraction_queue_idx", false, "conversation_id", "status", "extraction_state", "extraction_next_attempt_at_ms", "sequence"),
+		},
+		checks: []schemaCheck{{
+			name: "conversation_turns_invariants_check",
+			clause: "((CHAR_LENGTH(`id`) > 0) and (`id` = trim(`id`)) and (`sequence` > 0) and " +
+				"((`message_id` is null) or (((CHAR_LENGTH(`message_id`) >= 1) and (CHAR_LENGTH(`message_id`) <= 128)) and (`message_id` = trim(`message_id`)) and (not((`message_id` regexp '[[:cntrl:]]'))))) and " +
+				"(`status` in ('interpreting','planning','responding','completed','interrupted','failed')) and " +
+				"(`origin` in ('user','desktop_initiation')) and (`error_retryable` in (0,1)) and " +
+				"(`extraction_state` in ('ineligible','pending','claimed','processed','failed')) and " +
+				"((`extraction_state` = 'claimed') = ((`extraction_claim_id` is not null) and (`extraction_lease_owner` is not null) and (`extraction_lease_expires_at_ms` is not null))) and " +
+				"((`extraction_state` = 'claimed') or ((`extraction_claim_id` is null) and (`extraction_lease_owner` is null) and (`extraction_lease_expires_at_ms` is null))) and " +
+				"(`updated_at_ms` >= `created_at_ms`) and ((`status` = 'failed') = ((`error_code` is not null) and (`error_message` is not null))))",
+		}},
+		foreignKeys: []schemaForeignKey{{
+			name:            "conversation_turns_conversation_fk",
+			referencedTable: "conversations",
+			updateRule:      "restrict",
+			deleteRule:      "cascade",
+			columns:         []schemaForeignKeyColumn{{name: "conversation_id", referencedColumn: "id", sameSchema: true}},
+		}},
+	},
+	{
+		name: "conversation_messages",
+		ddl: `CREATE TABLE IF NOT EXISTS conversation_messages (
+  id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  conversation_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  turn_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  sequence BIGINT NOT NULL,
+  role VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  content LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  expression_parts JSON NOT NULL,
+  created_at_ms BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY conversation_messages_conversation_sequence_key (conversation_id, sequence),
+  UNIQUE KEY conversation_messages_turn_role_key (turn_id, role),
+  KEY conversation_messages_conversation_role_created_idx (
+    conversation_id, role, created_at_ms, sequence
+  ),
+  CONSTRAINT conversation_messages_turn_fk FOREIGN KEY (conversation_id, turn_id)
+    REFERENCES conversation_turns (conversation_id, id) ON UPDATE RESTRICT ON DELETE CASCADE,
+  CONSTRAINT conversation_messages_invariants_check CHECK (
+    CHAR_LENGTH(id) > 0 AND id = TRIM(id) AND
+    sequence > 0 AND
+    role IN ('user', 'assistant') AND
+    JSON_TYPE(expression_parts) = 'ARRAY' AND
+    JSON_LENGTH(expression_parts) <= 12 AND
+    (CHAR_LENGTH(content) > 0 OR JSON_LENGTH(expression_parts) > 0)
+  )
+)`,
+		columns: []schemaColumn{
+			{name: "id", columnType: "varchar(128)", collation: "ascii_bin"},
+			{name: "conversation_id", columnType: "varchar(128)", collation: "ascii_bin"},
+			{name: "turn_id", columnType: "varchar(128)", collation: "ascii_bin"},
+			{name: "sequence", columnType: "bigint"},
+			{name: "role", columnType: "varchar(16)", collation: "ascii_bin"},
+			{name: "content", columnType: "longtext", collation: "utf8mb4_bin"},
+			{name: "expression_parts", columnType: "json"},
+			{name: "created_at_ms", columnType: "bigint unsigned"},
+		},
+		indexes: []schemaIndex{
+			ascendingBTreeIndex("PRIMARY", true, "id"),
+			ascendingBTreeIndex("conversation_messages_conversation_sequence_key", true, "conversation_id", "sequence"),
+			ascendingBTreeIndex("conversation_messages_turn_role_key", true, "turn_id", "role"),
+			ascendingBTreeIndex("conversation_messages_conversation_role_created_idx", false, "conversation_id", "role", "created_at_ms", "sequence"),
+		},
+		checks: []schemaCheck{{
+			name: "conversation_messages_invariants_check",
+			clause: "((CHAR_LENGTH(`id`) > 0) and (`id` = trim(`id`)) and (`sequence` > 0) and " +
+				"(`role` in ('user','assistant')) and (JSON_TYPE(`expression_parts`) = 'ARRAY') and " +
+				"(JSON_LENGTH(`expression_parts`) <= 12) and ((CHAR_LENGTH(`content`) > 0) or (JSON_LENGTH(`expression_parts`) > 0)))",
+		}},
+		foreignKeys: []schemaForeignKey{{
+			name:            "conversation_messages_turn_fk",
+			referencedTable: "conversation_turns",
+			updateRule:      "restrict",
+			deleteRule:      "cascade",
+			columns: []schemaForeignKeyColumn{
+				{name: "conversation_id", referencedColumn: "conversation_id", sameSchema: true},
+				{name: "turn_id", referencedColumn: "id", sameSchema: true},
+			},
+		}},
+	},
+	{
+		name: "prompt_windows",
+		ddl: `CREATE TABLE IF NOT EXISTS prompt_windows (
+  conversation_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  revision BIGINT UNSIGNED NOT NULL,
+  summary LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
+  cutoff_message_sequence BIGINT UNSIGNED NOT NULL,
+  projection_revision BIGINT UNSIGNED NOT NULL,
+  projection_state JSON NOT NULL,
+  updated_at_ms BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (conversation_id),
+  CONSTRAINT prompt_windows_conversation_fk FOREIGN KEY (conversation_id)
+    REFERENCES conversations (id) ON UPDATE RESTRICT ON DELETE CASCADE,
+  CONSTRAINT prompt_windows_invariants_check CHECK (
+    revision > 0 AND
+    projection_revision > 0 AND
+    JSON_TYPE(projection_state) = 'OBJECT'
+  )
+)`,
+		columns: []schemaColumn{
+			{name: "conversation_id", columnType: "varchar(128)", collation: "ascii_bin"},
+			{name: "revision", columnType: "bigint unsigned"},
+			{name: "summary", columnType: "longtext", nullable: true, collation: "utf8mb4_bin"},
+			{name: "cutoff_message_sequence", columnType: "bigint unsigned"},
+			{name: "projection_revision", columnType: "bigint unsigned"},
+			{name: "projection_state", columnType: "json"},
+			{name: "updated_at_ms", columnType: "bigint unsigned"},
+		},
+		indexes: []schemaIndex{ascendingBTreeIndex("PRIMARY", true, "conversation_id")},
+		checks: []schemaCheck{{
+			name:   "prompt_windows_invariants_check",
+			clause: "((`revision` > 0) and (`projection_revision` > 0) and (JSON_TYPE(`projection_state`) = 'OBJECT'))",
+		}},
+		foreignKeys: []schemaForeignKey{{
+			name:            "prompt_windows_conversation_fk",
+			referencedTable: "conversations",
+			updateRule:      "restrict",
+			deleteRule:      "cascade",
+			columns:         []schemaForeignKeyColumn{{name: "conversation_id", referencedColumn: "id", sameSchema: true}},
+		}},
+	},
+}
+
 func foundationSchemaChecksum() [sha256.Size]byte {
 	statements := make([]string, 0, len(foundationSchema))
 	for _, table := range foundationSchema {
+		statements = append(statements, table.ddl)
+	}
+	return schemaDDLChecksum(statements)
+}
+
+func conversationSchemaChecksum() [sha256.Size]byte {
+	statements := make([]string, 0, len(conversationSchema))
+	for _, table := range conversationSchema {
 		statements = append(statements, table.ddl)
 	}
 	return schemaDDLChecksum(statements)
@@ -420,6 +812,28 @@ func verifyFoundationSchema(ctx context.Context, connection *sql.Conn) error {
 		return fmt.Errorf("verify SeekDB CHECK enforcement metadata: %w", err)
 	}
 	for _, table := range foundationSchema {
+		if err := verifySchemaTable(ctx, connection, table, enforcedAvailable); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func applyConversationSchema(ctx context.Context, connection *sql.Conn) error {
+	for _, table := range conversationSchema {
+		if _, err := connection.ExecContext(ctx, table.ddl); err != nil {
+			return fmt.Errorf("create SeekDB conversation table %s: %w", table.name, err)
+		}
+	}
+	return nil
+}
+
+func verifyConversationSchema(ctx context.Context, connection *sql.Conn) error {
+	enforcedAvailable, err := schemaCheckEnforcementAvailable(ctx, connection)
+	if err != nil {
+		return fmt.Errorf("verify SeekDB CHECK enforcement metadata: %w", err)
+	}
+	for _, table := range conversationSchema {
 		if err := verifySchemaTable(ctx, connection, table, enforcedAvailable); err != nil {
 			return err
 		}

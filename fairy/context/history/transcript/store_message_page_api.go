@@ -20,5 +20,11 @@ func (s *Store) ListConversationMessagesBeforeContext(ctx context.Context, conve
 	if limit <= 0 || limit > MaxMessagePageLimit {
 		return MessagePage{}, errors.New("message page limit must be between 1 and 200")
 	}
+	if s.usesSeekDB() {
+		return s.listConversationMessagesBeforeSeekDB(ctx, conversationID, beforeSequence, limit)
+	}
+	if !s.usesPostgres() {
+		return MessagePage{}, ErrStoreBackendUnavailable
+	}
 	return s.listConversationMessagesBeforePostgres(ctx, conversationID, beforeSequence, limit)
 }

@@ -12,6 +12,12 @@ func (s *Store) BeginInitiationTurn(conversationID string, evidenceIDs []string)
 }
 
 func (s *Store) BeginInitiationTurnContext(ctx context.Context, conversationID string, evidenceIDs []string) (PersistedTurn, error) {
+	if s.usesSeekDB() {
+		return PersistedTurn{}, ErrSeekDBOperationPending
+	}
+	if !s.usesPostgres() {
+		return PersistedTurn{}, ErrStoreBackendUnavailable
+	}
 	return s.beginInitiationTurnPostgres(ctx, conversationID, evidenceIDs)
 }
 
@@ -23,6 +29,12 @@ func (s *Store) OpenOrCreateEndpointConversationContext(ctx context.Context, cha
 	if err := validateEndpointConversationKey(characterID, binding, endpointKeyDigest); err != nil {
 		return ConversationBootstrap{}, err
 	}
+	if s.usesSeekDB() {
+		return s.openOrCreateEndpointConversationSeekDB(ctx, characterID, binding, endpointKeyDigest)
+	}
+	if !s.usesPostgres() {
+		return ConversationBootstrap{}, ErrStoreBackendUnavailable
+	}
 	return s.openOrCreateEndpointConversationPostgres(ctx, characterID, binding, endpointKeyDigest)
 }
 
@@ -31,6 +43,15 @@ func (s *Store) LookupEndpointForConversation(conversationID string) (session.Bi
 }
 
 func (s *Store) LookupEndpointForConversationContext(ctx context.Context, conversationID string) (session.Binding, bool, error) {
+	if err := ValidateID("conversation_id", conversationID); err != nil {
+		return session.Binding{}, false, err
+	}
+	if s.usesSeekDB() {
+		return s.lookupEndpointForConversationSeekDB(ctx, conversationID)
+	}
+	if !s.usesPostgres() {
+		return session.Binding{}, false, ErrStoreBackendUnavailable
+	}
 	return s.lookupEndpointForConversationPostgres(ctx, conversationID)
 }
 
@@ -39,6 +60,15 @@ func (s *Store) OpenOrCreateCharacterConversation(characterID string) (Conversat
 }
 
 func (s *Store) OpenOrCreateCharacterConversationContext(ctx context.Context, characterID string) (ConversationBootstrap, error) {
+	if err := ValidateID("character_id", characterID); err != nil {
+		return ConversationBootstrap{}, err
+	}
+	if s.usesSeekDB() {
+		return s.openOrCreateCharacterConversationSeekDB(ctx, characterID)
+	}
+	if !s.usesPostgres() {
+		return ConversationBootstrap{}, ErrStoreBackendUnavailable
+	}
 	return s.openOrCreateCharacterConversationPostgres(ctx, characterID)
 }
 
@@ -47,6 +77,15 @@ func (s *Store) LoadConversation(conversationID string) (ConversationBootstrap, 
 }
 
 func (s *Store) LoadConversationContext(ctx context.Context, conversationID string) (ConversationBootstrap, error) {
+	if err := ValidateID("conversation_id", conversationID); err != nil {
+		return ConversationBootstrap{}, err
+	}
+	if s.usesSeekDB() {
+		return s.loadConversationSeekDB(ctx, conversationID)
+	}
+	if !s.usesPostgres() {
+		return ConversationBootstrap{}, ErrStoreBackendUnavailable
+	}
 	return s.loadConversationPostgres(ctx, conversationID)
 }
 
@@ -55,6 +94,12 @@ func (s *Store) LoadConversationRecord(conversationID string) (ConversationRecor
 }
 
 func (s *Store) LoadConversationRecordContext(ctx context.Context, conversationID string) (ConversationRecord, error) {
+	if s.usesSeekDB() {
+		return ConversationRecord{}, ErrSeekDBOperationPending
+	}
+	if !s.usesPostgres() {
+		return ConversationRecord{}, ErrStoreBackendUnavailable
+	}
 	return s.loadConversationRecordPostgres(ctx, conversationID)
 }
 
@@ -63,6 +108,12 @@ func (s *Store) LoadConversationActivity(conversationID string, nowUnixMS int64)
 }
 
 func (s *Store) LoadConversationActivityContext(ctx context.Context, conversationID string, nowUnixMS int64) (ConversationActivity, error) {
+	if s.usesSeekDB() {
+		return ConversationActivity{}, ErrSeekDBOperationPending
+	}
+	if !s.usesPostgres() {
+		return ConversationActivity{}, ErrStoreBackendUnavailable
+	}
 	return s.loadConversationActivityPostgres(ctx, conversationID, nowUnixMS)
 }
 
@@ -71,6 +122,12 @@ func (s *Store) LoadConversationPrompt(conversationID string) (ConversationPromp
 }
 
 func (s *Store) LoadConversationPromptContext(ctx context.Context, conversationID string) (ConversationPromptContext, error) {
+	if s.usesSeekDB() {
+		return ConversationPromptContext{}, ErrSeekDBOperationPending
+	}
+	if !s.usesPostgres() {
+		return ConversationPromptContext{}, ErrStoreBackendUnavailable
+	}
 	return s.loadConversationPromptContextPostgres(ctx, conversationID)
 }
 
@@ -79,6 +136,12 @@ func (s *Store) BeginTurn(conversationID string, userMessage string) (PersistedT
 }
 
 func (s *Store) BeginTurnContext(ctx context.Context, conversationID string, userMessage string) (PersistedTurn, error) {
+	if s.usesSeekDB() {
+		return PersistedTurn{}, ErrSeekDBOperationPending
+	}
+	if !s.usesPostgres() {
+		return PersistedTurn{}, ErrStoreBackendUnavailable
+	}
 	return s.beginTurnPostgres(ctx, conversationID, userMessage, "")
 }
 
@@ -87,6 +150,12 @@ func (s *Store) BeginCorrelatedTurn(conversationID string, userMessage string, m
 }
 
 func (s *Store) BeginCorrelatedTurnContext(ctx context.Context, conversationID string, userMessage string, messageID string) (PersistedTurn, error) {
+	if s.usesSeekDB() {
+		return PersistedTurn{}, ErrSeekDBOperationPending
+	}
+	if !s.usesPostgres() {
+		return PersistedTurn{}, ErrStoreBackendUnavailable
+	}
 	return s.beginTurnPostgres(ctx, conversationID, userMessage, messageID)
 }
 
@@ -95,6 +164,12 @@ func (s *Store) CompleteTurn(conversationID string, turnID string, assistantMess
 }
 
 func (s *Store) CompleteTurnContext(ctx context.Context, conversationID string, turnID string, assistantMessage string) (MessageRecord, error) {
+	if s.usesSeekDB() {
+		return MessageRecord{}, ErrSeekDBOperationPending
+	}
+	if !s.usesPostgres() {
+		return MessageRecord{}, ErrStoreBackendUnavailable
+	}
 	return s.completeTurnPostgres(ctx, conversationID, turnID, assistantMessage)
 }
 
@@ -103,10 +178,22 @@ func (s *Store) CompleteExpressionTurn(conversationID string, turnID string, ass
 }
 
 func (s *Store) CompleteExpressionTurnContext(ctx context.Context, conversationID string, turnID string, assistantMessage string, parts []historyexpr.Part) (MessageRecord, error) {
+	if s.usesSeekDB() {
+		return MessageRecord{}, ErrSeekDBOperationPending
+	}
+	if !s.usesPostgres() {
+		return MessageRecord{}, ErrStoreBackendUnavailable
+	}
 	return s.completeExpressionTurnPostgres(ctx, conversationID, turnID, assistantMessage, parts, true)
 }
 
 func (s *Store) CompleteExpressionTurnForPolicy(conversationID string, turnID string, assistantMessage string, parts []historyexpr.Part, extractionEligible bool) (MessageRecord, error) {
+	if s.usesSeekDB() {
+		return MessageRecord{}, ErrSeekDBOperationPending
+	}
+	if !s.usesPostgres() {
+		return MessageRecord{}, ErrStoreBackendUnavailable
+	}
 	return s.completeExpressionTurnPostgres(context.Background(), conversationID, turnID, assistantMessage, parts, extractionEligible)
 }
 
@@ -115,6 +202,12 @@ func (s *Store) InterruptTurn(conversationID string, turnID string, publishedPre
 }
 
 func (s *Store) InterruptTurnContext(ctx context.Context, conversationID string, turnID string, publishedPrefix string) (*MessageRecord, error) {
+	if s.usesSeekDB() {
+		return nil, ErrSeekDBOperationPending
+	}
+	if !s.usesPostgres() {
+		return nil, ErrStoreBackendUnavailable
+	}
 	return s.interruptTurnPostgres(ctx, conversationID, turnID, publishedPrefix)
 }
 
@@ -123,6 +216,12 @@ func (s *Store) InterruptExpressionTurn(conversationID string, turnID string, pu
 }
 
 func (s *Store) InterruptExpressionTurnContext(ctx context.Context, conversationID string, turnID string, publishedPrefix string, parts []historyexpr.Part) (*MessageRecord, error) {
+	if s.usesSeekDB() {
+		return nil, ErrSeekDBOperationPending
+	}
+	if !s.usesPostgres() {
+		return nil, ErrStoreBackendUnavailable
+	}
 	return s.interruptExpressionTurnPostgres(ctx, conversationID, turnID, publishedPrefix, parts)
 }
 
@@ -131,5 +230,11 @@ func (s *Store) FailTurn(conversationID string, turnID string, code string, mess
 }
 
 func (s *Store) FailTurnContext(ctx context.Context, conversationID string, turnID string, code string, message string, retryable bool) error {
+	if s.usesSeekDB() {
+		return ErrSeekDBOperationPending
+	}
+	if !s.usesPostgres() {
+		return ErrStoreBackendUnavailable
+	}
 	return s.failTurnPostgres(ctx, conversationID, turnID, code, message, retryable)
 }
