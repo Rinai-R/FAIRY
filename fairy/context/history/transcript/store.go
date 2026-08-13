@@ -25,10 +25,11 @@ var (
 // continuation state. It intentionally has no semantic embedder or learning
 // worker because those belong to the memory and knowledge domains.
 type Store struct {
-	pool       *coredb.Pool
-	seekDB     *sql.DB
-	queryLimit time.Duration
-	now        func() time.Time
+	pool           *coredb.Pool
+	seekDB         *sql.DB
+	queryLimit     time.Duration
+	now            func() time.Time
+	seekDBTurnHook func(seekDBTurnWriteStage) error
 }
 
 func NewStoreFromPool(pool *coredb.Pool) (*Store, error) {

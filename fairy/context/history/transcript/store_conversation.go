@@ -201,7 +201,7 @@ func (s *Store) beginInitiationTurnPostgres(ctx context.Context, conversationID 
 	}
 	seenEvidence := make(map[string]struct{}, len(evidenceIDs))
 	for _, evidenceID := range evidenceIDs {
-		if err := ValidateID("evidence_id", evidenceID); err != nil {
+		if err := ValidateEvidenceID(evidenceID); err != nil {
 			return PersistedTurn{}, err
 		}
 		if _, exists := seenEvidence[evidenceID]; exists {

@@ -39,12 +39,16 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	assertCurrentSchema(t, database, CurrentSchemaRevision())
 	assertFoundationSchemaVerified(t, database)
 	assertConversationSchemaVerified(t, database)
+	assertTurnEvidenceSchemaVerified(t, database)
 	assertFoundationTableSet(t, database)
 	if got := integrationJournalRowForRevision(t, database, foundationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("foundation attempt count = %d, want 1", got)
 	}
 	if got := integrationJournalRowForRevision(t, database, conversationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("conversation attempt count = %d, want 1", got)
+	}
+	if got := integrationJournalRowForRevision(t, database, turnEvidenceSchemaRevision).AttemptCount; got != 1 {
+		t.Fatalf("turn evidence attempt count = %d, want 1", got)
 	}
 
 	if err := MigrateSchema(t.Context(), database, BuiltinMigrations()); err != nil {
@@ -55,6 +59,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	}
 	if got := integrationJournalRowForRevision(t, database, conversationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("conversation attempt count after repeat = %d, want 1", got)
+	}
+	if got := integrationJournalRowForRevision(t, database, turnEvidenceSchemaRevision).AttemptCount; got != 1 {
+		t.Fatalf("turn evidence attempt count after repeat = %d, want 1", got)
 	}
 	assertFoundationChecksRejectInvalidData(t, database)
 
@@ -70,11 +77,15 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
 	assertFoundationSchemaVerified(t, restarted.SQL())
 	assertConversationSchemaVerified(t, restarted.SQL())
+	assertTurnEvidenceSchemaVerified(t, restarted.SQL())
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), foundationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("foundation attempt count after restart = %d, want 1", got)
 	}
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), conversationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("conversation attempt count after restart = %d, want 1", got)
+	}
+	if got := integrationJournalRowForRevision(t, restarted.SQL(), turnEvidenceSchemaRevision).AttemptCount; got != 1 {
+		t.Fatalf("turn evidence attempt count after restart = %d, want 1", got)
 	}
 }
 
@@ -144,6 +155,94 @@ func TestRealSeekDBConversationSchemaRecoversPartialAndRemainsIdempotent(t *test
 	}
 	if got := integrationJournalRowForRevision(t, database, conversationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("conversation attempt count after repeat = %d, want 1", got)
+	}
+}
+
+func TestRealSeekDBTurnEvidenceSchemaUpgradesRevisionTwoAndEnforcesEdges(t *testing.T) {
+	instance, config := openSchemaMigrationRuntime(t)
+	defer closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+	database := instance.SQL()
+	migrations := BuiltinMigrations()
+
+	if err := MigrateSchema(t.Context(), database, migrations[:2]); err != nil {
+		t.Fatalf("MigrateSchema(revision two) error = %v", err)
+	}
+	if _, err := database.ExecContext(t.Context(), turnEvidenceSchema[0].ddl); err != nil {
+		t.Fatalf("precreate partial turn evidence schema: %v", err)
+	}
+	insertIntegrationConversation(t, database, "evidence-conversation", "evidence-character", "character")
+	insertIntegrationPromptWindow(t, database, "evidence-conversation")
+	insertIntegrationCharacterConversation(t, database, "evidence-character", "evidence-conversation")
+	insertIntegrationTurn(t, database, "evidence-turn", "evidence-conversation", "", math.MaxInt64)
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(revision three) error = %v", err)
+	}
+	assertCurrentSchema(t, database, CurrentSchemaRevision())
+	assertTurnEvidenceSchemaVerified(t, database)
+
+	if _, err := database.ExecContext(t.Context(), `
+INSERT INTO conversation_turn_evidence(turn_id, evidence_id, created_at_ms)
+VALUES (?, ?, ?)`, "evidence-turn", "观察-一", 1); err != nil {
+		t.Fatalf("insert Unicode turn evidence: %v", err)
+	}
+	expectSeekDBConstraintError(t, database, `
+INSERT INTO conversation_turn_evidence(turn_id, evidence_id, created_at_ms)
+VALUES (?, ?, ?)`, "evidence-turn", "bad\nevidence", 1)
+	expectSeekDBConstraintError(t, database, `
+INSERT INTO conversation_turn_evidence(turn_id, evidence_id, created_at_ms)
+VALUES (?, ?, ?)`, "missing-turn", "orphan", 1)
+	expectSeekDBConstraintError(t, database, `
+INSERT INTO conversation_turn_evidence(turn_id, evidence_id, created_at_ms)
+VALUES (?, ?, ?)`, "evidence-turn", "观察-一", 1)
+
+	if _, err := database.ExecContext(t.Context(), "DELETE FROM conversation_turns WHERE id = ?", "evidence-turn"); err != nil {
+		t.Fatalf("delete turn for evidence cascade: %v", err)
+	}
+	var count int
+	if err := database.QueryRowContext(t.Context(), `
+SELECT COUNT(*) FROM conversation_turn_evidence WHERE turn_id = ?`, "evidence-turn").Scan(&count); err != nil {
+		t.Fatalf("count cascaded turn evidence: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("turn evidence after turn delete = %d, want 0", count)
+	}
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("idempotent revision three: %v", err)
+	}
+	if got := integrationJournalRowForRevision(t, database, turnEvidenceSchemaRevision).AttemptCount; got != 1 {
+		t.Fatalf("turn evidence attempt count after repeat = %d, want 1", got)
+	}
+}
+
+func TestRealSeekDBTurnEvidenceSchemaRejectsShapeDrift(t *testing.T) {
+	instance, config := openSchemaMigrationRuntime(t)
+	defer closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+	database := instance.SQL()
+	migrations := BuiltinMigrations()
+	if err := MigrateSchema(t.Context(), database, migrations[:2]); err != nil {
+		t.Fatalf("MigrateSchema(revision two) error = %v", err)
+	}
+	if _, err := database.ExecContext(t.Context(), `
+CREATE TABLE conversation_turn_evidence (
+  turn_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  evidence_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  created_at_ms BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (turn_id, evidence_id)
+)`); err != nil {
+		t.Fatalf("precreate drifted turn evidence table: %v", err)
+	}
+	err := MigrateSchema(t.Context(), database, migrations)
+	if err == nil || !strings.Contains(err.Error(), "conversation_turn_evidence") {
+		t.Fatalf("MigrateSchema(drifted turn evidence) error = %v", err)
+	}
+	row := integrationJournalRowForRevision(t, database, turnEvidenceSchemaRevision)
+	if row.State != string(MigrationFailed) || row.AttemptCount != 1 {
+		t.Fatalf("drifted turn evidence journal = %#v", row)
+	}
+	status, readinessErr := CheckSchema(t.Context(), database, CurrentSchemaRevision())
+	if !errors.Is(readinessErr, ErrSchemaNotCurrent) || status.State != SchemaNotCurrent ||
+		status.Observed == nil || status.Observed.Revision.Number != turnEvidenceSchemaRevision {
+		t.Fatalf("drifted turn evidence readiness = %#v, %v", status, readinessErr)
 	}
 }
 
@@ -511,6 +610,18 @@ func assertConversationSchemaVerified(t *testing.T, database *sql.DB) {
 	}
 }
 
+func assertTurnEvidenceSchemaVerified(t *testing.T, database *sql.DB) {
+	t.Helper()
+	connection, err := database.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err := BuiltinMigrations()[2].Verify(t.Context(), connection); err != nil {
+		t.Fatalf("verify turn evidence schema: %v", err)
+	}
+}
+
 func assertFoundationTableSet(t *testing.T, database *sql.DB) {
 	t.Helper()
 	for _, table := range foundationSchema {
@@ -523,6 +634,11 @@ func assertFoundationTableSet(t *testing.T, database *sql.DB) {
 			t.Errorf("conversation table %s count = %d, want 1", table.name, got)
 		}
 	}
+	for _, table := range turnEvidenceSchema {
+		if got := integrationTableCount(t, database, table.name); got != 1 {
+			t.Errorf("turn evidence table %s count = %d, want 1", table.name, got)
+		}
+	}
 	var businessTableCount int
 	if err := database.QueryRowContext(t.Context(), `
 SELECT COUNT(*)
@@ -530,7 +646,7 @@ FROM information_schema.tables
 WHERE table_schema = DATABASE() AND table_name <> 'schema_revisions'`).Scan(&businessTableCount); err != nil {
 		t.Fatal(err)
 	}
-	want := len(foundationSchema) + len(conversationSchema)
+	want := len(foundationSchema) + len(conversationSchema) + len(turnEvidenceSchema)
 	if businessTableCount != want {
 		t.Fatalf("business table count = %d, want %d", businessTableCount, want)
 	}
@@ -651,8 +767,12 @@ INSERT INTO endpoint_conversations(
 
 func insertIntegrationTurn(t *testing.T, database *sql.DB, id, conversationID, externalMessageID string, sequence int64) {
 	t.Helper()
+	var storedMessageID any
+	if externalMessageID != "" {
+		storedMessageID = externalMessageID
+	}
 	if _, err := database.ExecContext(t.Context(), integrationTurnInsertSQL,
-		id, conversationID, externalMessageID, sequence,
+		id, conversationID, storedMessageID, sequence,
 		"interpreting", "user", nil, nil, nil, "ineligible", nil, nil, nil, 0, 0, nil, nil, 1, 1,
 	); err != nil {
 		t.Fatalf("insert conversation turn %s: %v", id, err)

@@ -109,7 +109,14 @@ func TestValidateDesktopInitiationRequestRequiresEvidenceWithoutInput(t *testing
 	if err := ValidateDesktopInitiationRequest(DesktopInitiationRequest{ConversationID: "conversation-1", ObservationEvidenceIDs: []string{"obs-1"}}); err != nil {
 		t.Fatalf("valid initiation request: %v", err)
 	}
-	for _, request := range []DesktopInitiationRequest{{}, {ConversationID: "conversation-1"}, {ConversationID: "conversation-1", ObservationEvidenceIDs: []string{" "}}} {
+	for _, request := range []DesktopInitiationRequest{
+		{},
+		{ConversationID: "conversation-1"},
+		{ConversationID: "conversation-1", ObservationEvidenceIDs: []string{" "}},
+		{ConversationID: "conversation-1", ObservationEvidenceIDs: []string{" observation "}},
+		{ConversationID: "conversation-1", ObservationEvidenceIDs: []string{"observation\n1"}},
+		{ConversationID: "conversation-1", ObservationEvidenceIDs: []string{strings.Repeat("界", 129)}},
+	} {
 		if err := ValidateDesktopInitiationRequest(request); err == nil {
 			t.Fatalf("ValidateDesktopInitiationRequest(%#v) error = nil", request)
 		}

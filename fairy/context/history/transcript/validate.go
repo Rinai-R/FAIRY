@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"fairy/transport/session"
 )
 
 func ValidateID(label, value string) error {
@@ -32,6 +34,15 @@ func ValidateOptionalMessageID(value string) error {
 		if unicode.IsControl(character) {
 			return fmt.Errorf("message_id is invalid")
 		}
+	}
+	return nil
+}
+
+// ValidateEvidenceID defines the canonical persisted observation identity
+// boundary shared by desktop initiation inputs and both storage backends.
+func ValidateEvidenceID(value string) error {
+	if err := session.ValidateDesktopObservationID(value); err != nil {
+		return fmt.Errorf("evidence_id is invalid: %w", err)
 	}
 	return nil
 }

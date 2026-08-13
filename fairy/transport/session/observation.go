@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -63,9 +64,22 @@ type DesktopObservation struct {
 	Privacy         DesktopPrivacyState       `json:"privacy"`
 }
 
-func (o DesktopObservation) Validate(now time.Time) error {
-	if strings.TrimSpace(o.ObservationID) == "" || utf8.RuneCountInString(o.ObservationID) > MaxDesktopObservationIDRunes {
+func ValidateDesktopObservationID(value string) error {
+	if value == "" || strings.TrimSpace(value) != value ||
+		!utf8.ValidString(value) || utf8.RuneCountInString(value) > MaxDesktopObservationIDRunes {
 		return errors.New("desktop observation id is invalid")
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return errors.New("desktop observation id is invalid")
+		}
+	}
+	return nil
+}
+
+func (o DesktopObservation) Validate(now time.Time) error {
+	if err := ValidateDesktopObservationID(o.ObservationID); err != nil {
+		return err
 	}
 	if o.TimestampUnixMS <= 0 || now.UnixMilli()-o.TimestampUnixMS > MaxDesktopObservationAge.Milliseconds() {
 		return errors.New("desktop observation is stale or timestamp is invalid")

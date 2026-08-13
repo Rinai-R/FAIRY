@@ -12,19 +12,23 @@ import (
 func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first := BuiltinMigrations()
 	second := BuiltinMigrations()
-	if len(first) != 2 || len(second) != 2 {
-		t.Fatalf("builtin migration counts = %d and %d, want 2", len(first), len(second))
+	if len(first) != 3 || len(second) != 3 {
+		t.Fatalf("builtin migration counts = %d and %d, want 3", len(first), len(second))
 	}
 	foundation := Revision{Number: foundationSchemaRevision, Checksum: foundationSchemaChecksum()}
 	conversation := Revision{Number: conversationSchemaRevision, Checksum: conversationSchemaChecksum()}
-	if current := CurrentSchemaRevision(); current != conversation {
-		t.Fatalf("current schema revision = %#v, want %#v", current, conversation)
+	turnEvidence := Revision{Number: turnEvidenceSchemaRevision, Checksum: turnEvidenceSchemaChecksum()}
+	if current := CurrentSchemaRevision(); current != turnEvidence {
+		t.Fatalf("current schema revision = %#v, want %#v", current, turnEvidence)
 	}
 	if first[0].Revision != foundation || first[0].Name != "create-foundation-schema" {
 		t.Fatalf("foundation migration = %#v, want revision %#v", first[0], foundation)
 	}
 	if first[1].Revision != conversation || first[1].Name != "create-conversation-schema" {
 		t.Fatalf("conversation migration = %#v, want revision %#v", first[1], conversation)
+	}
+	if first[2].Revision != turnEvidence || first[2].Name != "create-turn-evidence-schema" {
+		t.Fatalf("turn evidence migration = %#v, want revision %#v", first[2], turnEvidence)
 	}
 	for index, migration := range first {
 		if migration.Apply == nil || migration.Verify == nil {
@@ -34,8 +38,10 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first[0].Name = "mutated-by-caller"
 	first[0].Revision.Number = 99
 	first[1].Name = "also-mutated"
+	first[2].Revision.Number = 100
 	if second[0].Name != "create-foundation-schema" || second[0].Revision != foundation ||
-		second[1].Name != "create-conversation-schema" || second[1].Revision != conversation {
+		second[1].Name != "create-conversation-schema" || second[1].Revision != conversation ||
+		second[2].Name != "create-turn-evidence-schema" || second[2].Revision != turnEvidence {
 		t.Fatalf("caller mutation changed later BuiltinMigrations result: %#v", second[0])
 	}
 	if got := hex.EncodeToString(foundation.Checksum[:]); got != "e674bec12d0b6895da8b351d082a686c9c2f44990fb68749bbad083c4a6805d3" {
@@ -43,6 +49,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	}
 	if got := hex.EncodeToString(conversation.Checksum[:]); got != "0ee10d718cb767d6427f2f9fbbfaa69d1c8d0a5b0912b128522d024685c975dc" {
 		t.Fatalf("conversation checksum = %s, update requires an explicit revision decision", got)
+	}
+	if got := hex.EncodeToString(turnEvidence.Checksum[:]); got != "7ef1505fd35fc7d5ee059076f349d4c5e910752d52297dfd1e36122b2803531a" {
+		t.Fatalf("turn evidence checksum = %s, update requires an explicit revision decision", got)
 	}
 }
 
@@ -138,6 +147,25 @@ func TestConversationSchemaDefinesIsolationOrderingAndCorrelationContracts(t *te
 	}
 }
 
+func TestTurnEvidenceSchemaDefinesInitiationEvidenceContract(t *testing.T) {
+	wantTables := []string{"conversation_turn_evidence"}
+	assertPortableSchemaTables(t, turnEvidenceSchema[:], wantTables)
+	table := turnEvidenceSchema[0]
+	if !schemaHasIndex(table, ascendingBTreeIndex(
+		"conversation_turn_evidence_evidence_idx", false, "evidence_id", "turn_id",
+	)) {
+		t.Fatal("turn evidence lacks evidence-to-turn lookup")
+	}
+	if len(table.foreignKeys) != 1 || table.foreignKeys[0].referencedTable != "conversation_turns" ||
+		len(table.foreignKeys[0].columns) != 1 || table.foreignKeys[0].columns[0].name != "turn_id" ||
+		table.foreignKeys[0].columns[0].referencedColumn != "id" || table.foreignKeys[0].deleteRule != "cascade" {
+		t.Fatalf("turn evidence foreign key = %#v", table.foreignKeys)
+	}
+	if evidence := schemaColumnNamed(t, table, "evidence_id"); evidence.columnType != "varchar(128)" || evidence.collation != "utf8mb4_bin" {
+		t.Fatalf("turn evidence id = %#v", evidence)
+	}
+}
+
 func schemaColumnNamed(t *testing.T, table schemaTable, name string) schemaColumn {
 	t.Helper()
 	for _, column := range table.columns {
@@ -183,7 +211,7 @@ func assertPortableSchemaTables(t *testing.T, tables []schemaTable, wantTables [
 			t.Errorf("table %s is missing named CHECK %s", table.name, table.checks[0].name)
 		}
 		for _, column := range table.columns {
-			if strings.HasSuffix(column.name, "_id") && column.name != "message_id" && column.collation != "ascii_bin" {
+			if strings.HasSuffix(column.name, "_id") && column.name != "message_id" && column.name != "evidence_id" && column.collation != "ascii_bin" {
 				t.Errorf("table %s identifier %s collation = %q, want ascii_bin", table.name, column.name, column.collation)
 			}
 		}

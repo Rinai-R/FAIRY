@@ -13,7 +13,7 @@ func (s *Store) BeginInitiationTurn(conversationID string, evidenceIDs []string)
 
 func (s *Store) BeginInitiationTurnContext(ctx context.Context, conversationID string, evidenceIDs []string) (PersistedTurn, error) {
 	if s.usesSeekDB() {
-		return PersistedTurn{}, ErrSeekDBOperationPending
+		return s.beginInitiationTurnSeekDB(ctx, conversationID, evidenceIDs)
 	}
 	if !s.usesPostgres() {
 		return PersistedTurn{}, ErrStoreBackendUnavailable
@@ -137,7 +137,7 @@ func (s *Store) BeginTurn(conversationID string, userMessage string) (PersistedT
 
 func (s *Store) BeginTurnContext(ctx context.Context, conversationID string, userMessage string) (PersistedTurn, error) {
 	if s.usesSeekDB() {
-		return PersistedTurn{}, ErrSeekDBOperationPending
+		return s.beginTurnSeekDB(ctx, conversationID, userMessage, "")
 	}
 	if !s.usesPostgres() {
 		return PersistedTurn{}, ErrStoreBackendUnavailable
@@ -151,7 +151,7 @@ func (s *Store) BeginCorrelatedTurn(conversationID string, userMessage string, m
 
 func (s *Store) BeginCorrelatedTurnContext(ctx context.Context, conversationID string, userMessage string, messageID string) (PersistedTurn, error) {
 	if s.usesSeekDB() {
-		return PersistedTurn{}, ErrSeekDBOperationPending
+		return s.beginTurnSeekDB(ctx, conversationID, userMessage, messageID)
 	}
 	if !s.usesPostgres() {
 		return PersistedTurn{}, ErrStoreBackendUnavailable
@@ -165,7 +165,7 @@ func (s *Store) CompleteTurn(conversationID string, turnID string, assistantMess
 
 func (s *Store) CompleteTurnContext(ctx context.Context, conversationID string, turnID string, assistantMessage string) (MessageRecord, error) {
 	if s.usesSeekDB() {
-		return MessageRecord{}, ErrSeekDBOperationPending
+		return s.completeExpressionTurnSeekDB(ctx, conversationID, turnID, assistantMessage, nil, true)
 	}
 	if !s.usesPostgres() {
 		return MessageRecord{}, ErrStoreBackendUnavailable
@@ -179,7 +179,7 @@ func (s *Store) CompleteExpressionTurn(conversationID string, turnID string, ass
 
 func (s *Store) CompleteExpressionTurnContext(ctx context.Context, conversationID string, turnID string, assistantMessage string, parts []historyexpr.Part) (MessageRecord, error) {
 	if s.usesSeekDB() {
-		return MessageRecord{}, ErrSeekDBOperationPending
+		return s.completeExpressionTurnSeekDB(ctx, conversationID, turnID, assistantMessage, parts, true)
 	}
 	if !s.usesPostgres() {
 		return MessageRecord{}, ErrStoreBackendUnavailable
@@ -189,7 +189,7 @@ func (s *Store) CompleteExpressionTurnContext(ctx context.Context, conversationI
 
 func (s *Store) CompleteExpressionTurnForPolicy(conversationID string, turnID string, assistantMessage string, parts []historyexpr.Part, extractionEligible bool) (MessageRecord, error) {
 	if s.usesSeekDB() {
-		return MessageRecord{}, ErrSeekDBOperationPending
+		return s.completeExpressionTurnSeekDB(context.Background(), conversationID, turnID, assistantMessage, parts, extractionEligible)
 	}
 	if !s.usesPostgres() {
 		return MessageRecord{}, ErrStoreBackendUnavailable
@@ -203,7 +203,7 @@ func (s *Store) InterruptTurn(conversationID string, turnID string, publishedPre
 
 func (s *Store) InterruptTurnContext(ctx context.Context, conversationID string, turnID string, publishedPrefix string) (*MessageRecord, error) {
 	if s.usesSeekDB() {
-		return nil, ErrSeekDBOperationPending
+		return s.interruptExpressionTurnSeekDB(ctx, conversationID, turnID, publishedPrefix, nil)
 	}
 	if !s.usesPostgres() {
 		return nil, ErrStoreBackendUnavailable
@@ -217,7 +217,7 @@ func (s *Store) InterruptExpressionTurn(conversationID string, turnID string, pu
 
 func (s *Store) InterruptExpressionTurnContext(ctx context.Context, conversationID string, turnID string, publishedPrefix string, parts []historyexpr.Part) (*MessageRecord, error) {
 	if s.usesSeekDB() {
-		return nil, ErrSeekDBOperationPending
+		return s.interruptExpressionTurnSeekDB(ctx, conversationID, turnID, publishedPrefix, parts)
 	}
 	if !s.usesPostgres() {
 		return nil, ErrStoreBackendUnavailable
@@ -231,7 +231,7 @@ func (s *Store) FailTurn(conversationID string, turnID string, code string, mess
 
 func (s *Store) FailTurnContext(ctx context.Context, conversationID string, turnID string, code string, message string, retryable bool) error {
 	if s.usesSeekDB() {
-		return ErrSeekDBOperationPending
+		return s.failTurnSeekDB(ctx, conversationID, turnID, code, message, retryable)
 	}
 	if !s.usesPostgres() {
 		return ErrStoreBackendUnavailable

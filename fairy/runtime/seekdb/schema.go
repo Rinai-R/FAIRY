@@ -14,6 +14,7 @@ import (
 const (
 	foundationSchemaRevision   int64 = 1
 	conversationSchemaRevision int64 = 2
+	turnEvidenceSchemaRevision int64 = 3
 )
 
 // BuiltinMigrations returns FAIRY's immutable, ordered SeekDB schema chain.
@@ -39,14 +40,23 @@ func BuiltinMigrations() []Migration {
 			Apply:  applyConversationSchema,
 			Verify: verifyConversationSchema,
 		},
+		{
+			Revision: Revision{
+				Number:   turnEvidenceSchemaRevision,
+				Checksum: turnEvidenceSchemaChecksum(),
+			},
+			Name:   "create-turn-evidence-schema",
+			Apply:  applyTurnEvidenceSchema,
+			Verify: verifyTurnEvidenceSchema,
+		},
 	}
 }
 
 // CurrentSchemaRevision is the exact revision accepted by runtime readiness.
 func CurrentSchemaRevision() Revision {
 	return Revision{
-		Number:   conversationSchemaRevision,
-		Checksum: conversationSchemaChecksum(),
+		Number:   turnEvidenceSchemaRevision,
+		Checksum: turnEvidenceSchemaChecksum(),
 	}
 }
 
@@ -723,6 +733,50 @@ var conversationSchema = [...]schemaTable{
 	},
 }
 
+// turnEvidenceSchema is revision 3. Revision 2 is already immutable, so the
+// initiation-only evidence edge is added separately instead of rewriting the
+// committed conversation schema checksum.
+var turnEvidenceSchema = [...]schemaTable{
+	{
+		name: "conversation_turn_evidence",
+		ddl: `CREATE TABLE IF NOT EXISTS conversation_turn_evidence (
+  turn_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  evidence_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  created_at_ms BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (turn_id, evidence_id),
+  KEY conversation_turn_evidence_evidence_idx (evidence_id, turn_id),
+  CONSTRAINT conversation_turn_evidence_turn_fk FOREIGN KEY (turn_id)
+    REFERENCES conversation_turns (id) ON UPDATE RESTRICT ON DELETE CASCADE,
+  CONSTRAINT conversation_turn_evidence_invariants_check CHECK (
+    CHAR_LENGTH(evidence_id) BETWEEN 1 AND 128 AND
+    evidence_id = TRIM(evidence_id) AND
+    evidence_id NOT REGEXP '[[:cntrl:]]'
+  )
+)`,
+		columns: []schemaColumn{
+			{name: "turn_id", columnType: "varchar(128)", collation: "ascii_bin"},
+			{name: "evidence_id", columnType: "varchar(128)", collation: "utf8mb4_bin"},
+			{name: "created_at_ms", columnType: "bigint unsigned"},
+		},
+		indexes: []schemaIndex{
+			ascendingBTreeIndex("PRIMARY", true, "turn_id", "evidence_id"),
+			ascendingBTreeIndex("conversation_turn_evidence_evidence_idx", false, "evidence_id", "turn_id"),
+		},
+		checks: []schemaCheck{{
+			name: "conversation_turn_evidence_invariants_check",
+			clause: "(((CHAR_LENGTH(`evidence_id`) >= 1) and (CHAR_LENGTH(`evidence_id`) <= 128)) and " +
+				"(`evidence_id` = trim(`evidence_id`)) and (not((`evidence_id` regexp '[[:cntrl:]]'))))",
+		}},
+		foreignKeys: []schemaForeignKey{{
+			name:            "conversation_turn_evidence_turn_fk",
+			referencedTable: "conversation_turns",
+			updateRule:      "restrict",
+			deleteRule:      "cascade",
+			columns:         []schemaForeignKeyColumn{{name: "turn_id", referencedColumn: "id", sameSchema: true}},
+		}},
+	},
+}
+
 func foundationSchemaChecksum() [sha256.Size]byte {
 	statements := make([]string, 0, len(foundationSchema))
 	for _, table := range foundationSchema {
@@ -734,6 +788,14 @@ func foundationSchemaChecksum() [sha256.Size]byte {
 func conversationSchemaChecksum() [sha256.Size]byte {
 	statements := make([]string, 0, len(conversationSchema))
 	for _, table := range conversationSchema {
+		statements = append(statements, table.ddl)
+	}
+	return schemaDDLChecksum(statements)
+}
+
+func turnEvidenceSchemaChecksum() [sha256.Size]byte {
+	statements := make([]string, 0, len(turnEvidenceSchema))
+	for _, table := range turnEvidenceSchema {
 		statements = append(statements, table.ddl)
 	}
 	return schemaDDLChecksum(statements)
@@ -834,6 +896,28 @@ func verifyConversationSchema(ctx context.Context, connection *sql.Conn) error {
 		return fmt.Errorf("verify SeekDB CHECK enforcement metadata: %w", err)
 	}
 	for _, table := range conversationSchema {
+		if err := verifySchemaTable(ctx, connection, table, enforcedAvailable); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func applyTurnEvidenceSchema(ctx context.Context, connection *sql.Conn) error {
+	for _, table := range turnEvidenceSchema {
+		if _, err := connection.ExecContext(ctx, table.ddl); err != nil {
+			return fmt.Errorf("create SeekDB turn evidence table %s: %w", table.name, err)
+		}
+	}
+	return nil
+}
+
+func verifyTurnEvidenceSchema(ctx context.Context, connection *sql.Conn) error {
+	enforcedAvailable, err := schemaCheckEnforcementAvailable(ctx, connection)
+	if err != nil {
+		return fmt.Errorf("verify SeekDB CHECK enforcement metadata: %w", err)
+	}
+	for _, table := range turnEvidenceSchema {
 		if err := verifySchemaTable(ctx, connection, table, enforcedAvailable); err != nil {
 			return err
 		}

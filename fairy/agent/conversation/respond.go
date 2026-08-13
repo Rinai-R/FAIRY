@@ -161,7 +161,7 @@ func ValidateDesktopInitiationRequest(request DesktopInitiationRequest) error {
 		return errors.New("desktop initiation evidence count is invalid")
 	}
 	for _, id := range request.ObservationEvidenceIDs {
-		if strings.TrimSpace(id) == "" {
+		if err := session.ValidateDesktopObservationID(id); err != nil {
 			return errors.New("desktop initiation evidence id is invalid")
 		}
 	}
