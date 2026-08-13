@@ -538,6 +538,7 @@ func (s *Service) compactConversation(conversationID string, trigger string) (hi
 		conversationID,
 		bootstrap.PromptWindow.Revision,
 		bootstrap.PromptWindow.ProjectionRevision,
+		bootstrap.TranscriptBoundary,
 		summary,
 		cutoff,
 		projection,

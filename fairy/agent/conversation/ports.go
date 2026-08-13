@@ -85,9 +85,9 @@ type RuntimeStateStore interface {
 }
 
 type ContextRetentionStore interface {
-	CommitCompaction(conversationID string, expectedRevision uint64, summary string, contextWindow historyruntime.ContextWindowRecord, clearLane string) (historycompaction.Result, error)
-	CommitTieredCompaction(conversationID string, expectedWindowRevision uint64, expectedProjectionRevision uint64, summary string, cutoff uint64, projection historyprojection.State, contextWindow historyruntime.ContextWindowRecord, clearLane string) (historycompaction.Result, error)
-	CommitPromptProjection(conversationID string, expectedWindowRevision uint64, expectedProjectionRevision uint64, projection historyprojection.State, contextWindow historyruntime.ContextWindowRecord, clearLane string) (historycompaction.Result, error)
+	CommitCompaction(conversationID string, expectedRevision uint64, expectedTranscript history.TranscriptBoundary, summary string, contextWindow historyruntime.ContextWindowRecord, clearLane string) (historycompaction.Result, error)
+	CommitTieredCompaction(conversationID string, expectedWindowRevision uint64, expectedProjectionRevision uint64, expectedTranscript history.TranscriptBoundary, summary string, cutoff uint64, projection historyprojection.State, contextWindow historyruntime.ContextWindowRecord, clearLane string) (historycompaction.Result, error)
+	CommitPromptProjection(conversationID string, expectedWindowRevision uint64, expectedProjectionRevision uint64, expectedTranscript history.TranscriptBoundary, projection historyprojection.State, contextWindow historyruntime.ContextWindowRecord, clearLane string) (historycompaction.Result, error)
 }
 
 type MemoryCoverageStore interface {

@@ -1196,7 +1196,11 @@ func TestPostgresPromptWindowCommitPreservesRevisionAndCutoff(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	result, err := store.CommitPromptWindowContext(ctx, bootstrap.Conversation.ID, 1, "  已压缩摘要  ")
+	plan, err := store.LoadConversationPromptContext(ctx, bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.CommitPromptWindowContext(ctx, bootstrap.Conversation.ID, 1, plan.TranscriptBoundary, "  已压缩摘要  ")
 	if err != nil {
 		t.Fatalf("CommitPromptWindowContext: %v", err)
 	}
@@ -1210,7 +1214,7 @@ func TestPostgresPromptWindowCommitPreservesRevisionAndCutoff(t *testing.T) {
 	if reloaded.PromptWindow.Revision != 2 || reloaded.PromptWindow.Summary == nil || *reloaded.PromptWindow.Summary != "已压缩摘要" || reloaded.PromptWindow.CutoffMessageSequence != 4 {
 		t.Fatalf("prompt window = %#v", reloaded.PromptWindow)
 	}
-	if _, err := store.CommitPromptWindowContext(ctx, bootstrap.Conversation.ID, 1, "stale summary"); err == nil {
+	if _, err := store.CommitPromptWindowContext(ctx, bootstrap.Conversation.ID, 1, plan.TranscriptBoundary, "stale summary"); err == nil {
 		t.Fatal("stale CommitPromptWindowContext error = nil")
 	}
 	afterStale, err := store.LoadConversationContext(ctx, bootstrap.Conversation.ID)
@@ -1255,8 +1259,12 @@ func TestPostgresCommitCompactionAtomicallySwitchesWindowAndContinuation(t *test
 	}); err != nil {
 		t.Fatal(err)
 	}
+	plan, err := store.LoadConversationPromptContext(ctx, bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	windowID := "window-atomic"
-	result, err := store.CommitCompactionContext(ctx, bootstrap.Conversation.ID, 1, "摘要", ContextWindowRecord{
+	result, err := store.CommitCompactionContext(ctx, bootstrap.Conversation.ID, 1, plan.TranscriptBoundary, "摘要", ContextWindowRecord{
 		ConversationID:       bootstrap.Conversation.ID,
 		Lane:                 PromptLaneRespond,
 		WindowNumber:         1,
@@ -1278,6 +1286,111 @@ func TestPostgresCommitCompactionAtomicallySwitchesWindowAndContinuation(t *test
 	contextWindow, ok, err := store.LoadContextWindowContext(ctx, bootstrap.Conversation.ID, PromptLaneRespond)
 	if err != nil || !ok || contextWindow.PromptWindowRevision != 2 {
 		t.Fatalf("context window after atomic commit = %#v, (%v, %v)", contextWindow, ok, err)
+	}
+}
+
+func TestPostgresCommitCompactionRejectsStaleTranscriptWithoutPartialMutation(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store, err := newMemoryIntegrationStores(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := store.OpenOrCreateCharacterConversationContext(ctx, "character-stale-transcript-compaction")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstTurn, err := store.BeginTurnContext(ctx, bootstrap.Conversation.ID, "第一条用户消息")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteTurnContext(ctx, bootstrap.Conversation.ID, firstTurn.ID, "第一条助手消息"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveLaneContinuationContext(ctx, LaneContinuationRecord{
+		ConversationID:     bootstrap.Conversation.ID,
+		Lane:               PromptLaneRespond,
+		PreviousResponseID: "response-before-stale-plan",
+		RequestShapeHash:   strings.Repeat("1", 64),
+		InputPrefixHash:    strings.Repeat("2", 64),
+		ResponseItemHash:   strings.Repeat("3", 64),
+		WindowRevision:     1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const existingWindowID = "window-before-stale-plan"
+	if _, err := store.SaveContextWindowContext(ctx, ContextWindowRecord{
+		ConversationID:       bootstrap.Conversation.ID,
+		Lane:                 PromptLaneRespond,
+		WindowNumber:         1,
+		FirstWindowID:        existingWindowID,
+		WindowID:             existingWindowID,
+		LastTrigger:          "created",
+		PromptWindowRevision: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := store.LoadConversationPromptContext(ctx, bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.TranscriptBoundary.TurnSequence != 1 || plan.TranscriptBoundary.MessageSequence != 2 {
+		t.Fatalf("planned transcript boundary = %#v, want turn=1 message=2", plan.TranscriptBoundary)
+	}
+
+	secondTurn, err := store.BeginTurnContext(ctx, bootstrap.Conversation.ID, "计划生成后到达的用户消息")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteTurnContext(ctx, bootstrap.Conversation.ID, secondTurn.ID, "计划生成后追加的助手消息"); err != nil {
+		t.Fatal(err)
+	}
+
+	previousWindowID := existingWindowID
+	_, err = store.CommitCompactionContext(
+		ctx,
+		bootstrap.Conversation.ID,
+		1,
+		plan.TranscriptBoundary,
+		"不应写入的摘要",
+		ContextWindowRecord{
+			ConversationID:       bootstrap.Conversation.ID,
+			Lane:                 PromptLaneRespond,
+			WindowNumber:         2,
+			FirstWindowID:        existingWindowID,
+			PreviousWindowID:     &previousWindowID,
+			WindowID:             "window-after-stale-plan",
+			LastTrigger:          "compaction_committed",
+			PromptWindowRevision: 2,
+		},
+		PromptLaneRespond,
+	)
+	if !errors.Is(err, ErrPromptWindowRevisionChanged) {
+		t.Fatalf("CommitCompactionContext() error = %v, want ErrPromptWindowRevisionChanged", err)
+	}
+
+	after, err := store.LoadConversationPromptContext(ctx, bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.TranscriptBoundary.TurnSequence != 2 || after.TranscriptBoundary.MessageSequence != 4 {
+		t.Fatalf("current transcript boundary = %#v, want turn=2 message=4", after.TranscriptBoundary)
+	}
+	if after.PromptWindow.Revision != 1 || after.PromptWindow.Summary != nil || after.PromptWindow.CutoffMessageSequence != 0 {
+		t.Fatalf("prompt window after stale transcript conflict = %#v", after.PromptWindow)
+	}
+	continuation, ok, err := store.LoadLaneContinuationContext(ctx, bootstrap.Conversation.ID, PromptLaneRespond)
+	if err != nil || !ok || continuation.PreviousResponseID != "response-before-stale-plan" || continuation.WindowRevision != 1 {
+		t.Fatalf("continuation after stale transcript conflict = %#v, (%v, %v)", continuation, ok, err)
+	}
+	window, ok, err := store.LoadContextWindowContext(ctx, bootstrap.Conversation.ID, PromptLaneRespond)
+	if err != nil || !ok || window.WindowID != existingWindowID || window.WindowNumber != 1 || window.PromptWindowRevision != 1 {
+		t.Fatalf("context window after stale transcript conflict = %#v, (%v, %v)", window, ok, err)
 	}
 }
 
@@ -1866,10 +1979,14 @@ func TestPostgresPromptProjectionCASPreservesCompleteTranscript(t *testing.T) {
 		WindowNumber: 1, FirstWindowID: "projection-window", WindowID: "projection-window",
 		LastTrigger: "projection_committed", PromptWindowRevision: 2,
 	}
-	if _, err := store.CommitPromptProjectionContext(ctx, bootstrap.Conversation.ID, 1, 1, state, window, PromptLaneRespond); err != nil {
+	plan, err := store.LoadConversationPromptContext(ctx, bootstrap.Conversation.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CommitPromptProjectionContext(ctx, bootstrap.Conversation.ID, 1, 1, state, window, PromptLaneRespond); !errors.Is(err, ErrPromptWindowRevisionChanged) {
+	if _, err := store.CommitPromptProjectionContext(ctx, bootstrap.Conversation.ID, 1, 1, plan.TranscriptBoundary, state, window, PromptLaneRespond); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CommitPromptProjectionContext(ctx, bootstrap.Conversation.ID, 1, 1, plan.TranscriptBoundary, state, window, PromptLaneRespond); !errors.Is(err, ErrPromptWindowRevisionChanged) {
 		t.Fatalf("stale update error = %v", err)
 	}
 
@@ -1919,6 +2036,10 @@ func TestPostgresConcurrentPromptProjectionCommitsAreAtomic(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	plan, err := store.LoadConversationPromptContext(ctx, bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	states := []PromptProjectionState{
 		{
 			Version: PromptProjectionVersion,
@@ -1949,12 +2070,12 @@ func TestPostgresConcurrentPromptProjectionCommitsAreAtomic(t *testing.T) {
 			var commitErr error
 			if index == 0 {
 				_, commitErr = store.CommitPromptProjectionContext(
-					ctx, bootstrap.Conversation.ID, 1, 1, state,
+					ctx, bootstrap.Conversation.ID, 1, 1, plan.TranscriptBoundary, state,
 					contextWindow, PromptLaneRespond,
 				)
 			} else {
 				_, commitErr = store.CommitTieredCompactionContext(
-					ctx, bootstrap.Conversation.ID, 1, 1,
+					ctx, bootstrap.Conversation.ID, 1, 1, plan.TranscriptBoundary,
 					"structured-summary", 2, state,
 					contextWindow, PromptLaneRespond,
 				)
@@ -2024,6 +2145,10 @@ func TestPostgresTieredCompactionAtomicallyKeepsRecentTail(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	plan, err := store.LoadConversationPromptContext(ctx, bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	projection := PromptProjectionState{
 		Version: PromptProjectionVersion,
 		Omissions: []PromptProjectionOmission{{
@@ -2034,7 +2159,7 @@ func TestPostgresTieredCompactionAtomicallyKeepsRecentTail(t *testing.T) {
 	}
 	windowID := "window-tiered"
 	result, err := store.CommitTieredCompactionContext(
-		ctx, bootstrap.Conversation.ID, 1, 1, "structured-summary", 2,
+		ctx, bootstrap.Conversation.ID, 1, 1, plan.TranscriptBoundary, "structured-summary", 2,
 		projection,
 		ContextWindowRecord{
 			ConversationID: bootstrap.Conversation.ID, Lane: PromptLaneRespond,
@@ -2083,7 +2208,7 @@ func TestPostgresTieredCompactionAtomicallyKeepsRecentTail(t *testing.T) {
 		RecentTailStartSequence: 5,
 	}
 	_, err = store.CommitTieredCompactionContext(
-		ctx, bootstrap.Conversation.ID, 1, 1, "stale-summary", 4,
+		ctx, bootstrap.Conversation.ID, 1, 1, plan.TranscriptBoundary, "stale-summary", 4,
 		staleProjection,
 		ContextWindowRecord{
 			ConversationID: bootstrap.Conversation.ID, Lane: PromptLaneRespond,

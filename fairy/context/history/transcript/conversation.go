@@ -194,7 +194,7 @@ WHERE conversation_id = $1`, conversationID).Scan(&endpoint, &audience, &initiat
 }
 
 func LoadConversationBootstrap(ctx context.Context, db ConversationDB, conversationID string) (ConversationBootstrap, error) {
-	conversation, prompt, err := loadConversationMetadata(ctx, db, conversationID)
+	conversation, prompt, boundary, err := loadConversationMetadata(ctx, db, conversationID)
 	if err != nil {
 		return ConversationBootstrap{}, err
 	}
@@ -211,7 +211,10 @@ ORDER BY m.sequence ASC`, conversationID)
 	if err != nil {
 		return ConversationBootstrap{}, err
 	}
-	return ConversationBootstrap{Conversation: conversation, Messages: messages, PromptWindow: prompt}, nil
+	return ConversationBootstrap{
+		Conversation: conversation, Messages: messages, PromptWindow: prompt,
+		TranscriptBoundary: boundary,
+	}, nil
 }
 
 func LoadConversationRecord(ctx context.Context, db ConversationDB, conversationID string) (ConversationRecord, error) {
@@ -255,7 +258,7 @@ func LoadConversationActivity(ctx context.Context, db ConversationDB, conversati
 }
 
 func LoadConversationPromptContext(ctx context.Context, db ConversationDB, conversationID string) (ConversationPromptContext, error) {
-	conversation, prompt, err := loadConversationMetadata(ctx, db, conversationID)
+	conversation, prompt, boundary, err := loadConversationMetadata(ctx, db, conversationID)
 	if err != nil {
 		return ConversationPromptContext{}, err
 	}
@@ -273,34 +276,54 @@ ORDER BY m.sequence ASC`, conversationID, int64(prompt.CutoffMessageSequence))
 		return ConversationPromptContext{}, err
 	}
 	messages = applyPromptProjection(messages, prompt.Projection)
-	return ConversationPromptContext{Conversation: conversation, Messages: messages, PromptWindow: prompt}, nil
+	return ConversationPromptContext{
+		Conversation: conversation, Messages: messages, PromptWindow: prompt,
+		TranscriptBoundary: boundary,
+	}, nil
 }
 
-func loadConversationMetadata(ctx context.Context, db ConversationDB, conversationID string) (ConversationRecord, PromptWindowRecord, error) {
+func loadConversationMetadata(ctx context.Context, db ConversationDB, conversationID string) (ConversationRecord, PromptWindowRecord, TranscriptBoundary, error) {
 	conversation, err := loadConversationRecord(ctx, db, conversationID)
 	if err != nil {
-		return ConversationRecord{}, PromptWindowRecord{}, err
+		return ConversationRecord{}, PromptWindowRecord{}, TranscriptBoundary{}, err
 	}
 	var prompt PromptWindowRecord
+	var boundary TranscriptBoundary
 	var summary pgtype.Text
 	var promptRevision int64
 	var projectionRevision int64
 	var projectionJSON []byte
 	var cutoffSequence int64
-	if err := db.QueryRow(ctx, "SELECT conversation_id, revision, summary, cutoff_message_sequence, projection_revision, projection_state, updated_at_ms FROM prompt_windows WHERE conversation_id = $1", conversationID).Scan(&prompt.ConversationID, &promptRevision, &summary, &cutoffSequence, &projectionRevision, &projectionJSON, &prompt.UpdatedAtUnixMS); err != nil {
-		return ConversationRecord{}, PromptWindowRecord{}, fmt.Errorf("loading prompt window: %w", err)
+	var turnSequence, messageSequence int64
+	if err := db.QueryRow(ctx, `
+SELECT pw.conversation_id, pw.revision, pw.summary, pw.cutoff_message_sequence,
+       pw.projection_revision, pw.projection_state, pw.updated_at_ms,
+       COALESCE((SELECT MAX(t.sequence) FROM conversation_turns t WHERE t.conversation_id = pw.conversation_id), 0),
+       COALESCE((SELECT MAX(m.sequence) FROM conversation_messages m WHERE m.conversation_id = pw.conversation_id), 0)
+FROM prompt_windows pw
+WHERE pw.conversation_id = $1`, conversationID).Scan(
+		&prompt.ConversationID, &promptRevision, &summary, &cutoffSequence,
+		&projectionRevision, &projectionJSON, &prompt.UpdatedAtUnixMS,
+		&turnSequence, &messageSequence,
+	); err != nil {
+		return ConversationRecord{}, PromptWindowRecord{}, TranscriptBoundary{}, fmt.Errorf("loading prompt window: %w", err)
+	}
+	if turnSequence < 0 || messageSequence < 0 {
+		return ConversationRecord{}, PromptWindowRecord{}, TranscriptBoundary{}, errors.New("stored transcript boundary is invalid")
 	}
 	prompt.Revision = uint64(promptRevision)
 	prompt.CutoffMessageSequence = uint64(cutoffSequence)
 	prompt.ProjectionRevision = uint64(projectionRevision)
 	prompt.Projection, err = historyprojection.Decode(projectionJSON)
 	if err != nil {
-		return ConversationRecord{}, PromptWindowRecord{}, err
+		return ConversationRecord{}, PromptWindowRecord{}, TranscriptBoundary{}, err
 	}
 	if summary.Valid {
 		prompt.Summary = &summary.String
 	}
-	return conversation, prompt, nil
+	boundary.TurnSequence = uint64(turnSequence)
+	boundary.MessageSequence = uint64(messageSequence)
+	return conversation, prompt, boundary, nil
 }
 
 func loadConversationRecord(ctx context.Context, db ConversationDB, conversationID string) (ConversationRecord, error) {

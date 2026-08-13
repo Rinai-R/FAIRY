@@ -41,6 +41,7 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	assertFoundationSchemaVerified(t, database)
 	assertTurnEvidenceSchemaVerified(t, database)
 	assertTranscriptRecallSchemaVerified(t, database)
+	assertConversationRuntimeSchemaVerified(t, database)
 	assertFoundationTableSet(t, database)
 	if got := integrationJournalRowForRevision(t, database, foundationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("foundation attempt count = %d, want 1", got)
@@ -53,6 +54,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	}
 	if got := integrationJournalRowForRevision(t, database, transcriptRecallSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("transcript recall attempt count = %d, want 1", got)
+	}
+	if got := integrationJournalRowForRevision(t, database, conversationRuntimeSchemaRevision).AttemptCount; got != 1 {
+		t.Fatalf("conversation runtime attempt count = %d, want 1", got)
 	}
 
 	if err := MigrateSchema(t.Context(), database, BuiltinMigrations()); err != nil {
@@ -70,6 +74,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	if got := integrationJournalRowForRevision(t, database, transcriptRecallSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("transcript recall attempt count after repeat = %d, want 1", got)
 	}
+	if got := integrationJournalRowForRevision(t, database, conversationRuntimeSchemaRevision).AttemptCount; got != 1 {
+		t.Fatalf("conversation runtime attempt count after repeat = %d, want 1", got)
+	}
 	assertFoundationChecksRejectInvalidData(t, database)
 
 	closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
@@ -85,6 +92,7 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	assertFoundationSchemaVerified(t, restarted.SQL())
 	assertTurnEvidenceSchemaVerified(t, restarted.SQL())
 	assertTranscriptRecallSchemaVerified(t, restarted.SQL())
+	assertConversationRuntimeSchemaVerified(t, restarted.SQL())
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), foundationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("foundation attempt count after restart = %d, want 1", got)
 	}
@@ -96,6 +104,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	}
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), transcriptRecallSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("transcript recall attempt count after restart = %d, want 1", got)
+	}
+	if got := integrationJournalRowForRevision(t, restarted.SQL(), conversationRuntimeSchemaRevision).AttemptCount; got != 1 {
+		t.Fatalf("conversation runtime attempt count after restart = %d, want 1", got)
 	}
 }
 
@@ -122,11 +133,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, "runtime", "upgrade-proof", 1, 1, `{"kept":true}`
 	assertCurrentSchema(t, database, CurrentSchemaRevision())
 	assertFoundationSchemaVerified(t, database)
 	assertTranscriptRecallSchemaVerified(t, database)
+	assertConversationRuntimeSchemaVerified(t, database)
 	for _, revision := range []int64{
 		foundationSchemaRevision,
 		conversationSchemaRevision,
 		turnEvidenceSchemaRevision,
 		transcriptRecallSchemaRevision,
+		conversationRuntimeSchemaRevision,
 	} {
 		row := integrationJournalRowForRevision(t, database, revision)
 		if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
@@ -459,6 +472,174 @@ ON conversation_messages(role) WITH PARSER SPACE`,
 			if !errors.Is(readinessErr, ErrSchemaNotCurrent) || status.State != SchemaNotCurrent ||
 				status.Observed == nil || status.Observed.Revision.Number != transcriptRecallSchemaRevision {
 				t.Fatalf("%s transcript recall readiness = %#v, %v", testCase.name, status, readinessErr)
+			}
+		})
+	}
+}
+
+func TestRealSeekDBConversationRuntimeSchemaFreshInstallIsCurrent(t *testing.T) {
+	instance, config := openSchemaMigrationRuntime(t)
+	defer closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+	database := instance.SQL()
+	if err := MigrateSchema(t.Context(), database, BuiltinMigrations()); err != nil {
+		t.Fatalf("MigrateSchema(fresh revision five) error = %v", err)
+	}
+	assertCurrentSchema(t, database, CurrentSchemaRevision())
+	assertConversationRuntimeSchemaVerified(t, database)
+	assertFoundationTableSet(t, database)
+	for _, revision := range []int64{
+		foundationSchemaRevision,
+		conversationSchemaRevision,
+		turnEvidenceSchemaRevision,
+		transcriptRecallSchemaRevision,
+		conversationRuntimeSchemaRevision,
+	} {
+		row := integrationJournalRowForRevision(t, database, revision)
+		if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
+			t.Fatalf("fresh revision %d journal = %#v", revision, row)
+		}
+	}
+}
+
+func TestRealSeekDBConversationRuntimeSchemaUpgradesRevisionFourRecoversPartialAndPersists(t *testing.T) {
+	instance, config := openSchemaMigrationRuntime(t)
+	closed := false
+	defer func() {
+		if !closed {
+			closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+		}
+	}()
+	database := instance.SQL()
+	migrations := BuiltinMigrations()
+	if err := MigrateSchema(t.Context(), database, migrations[:4]); err != nil {
+		t.Fatalf("MigrateSchema(revision four) error = %v", err)
+	}
+	assertCurrentSchema(t, database, migrations[3].Revision)
+	assertTranscriptRecallSchemaVerified(t, database)
+	insertIntegrationConversation(t, database, "runtime-upgrade-conversation", "runtime-upgrade-character", "character")
+	insertIntegrationTurn(t, database, "runtime-upgrade-turn", "runtime-upgrade-conversation", "", 1)
+
+	// SeekDB DDL commits independently. Simulate a process exit after the
+	// runtime-event table exists but before the other two tables and revision
+	// journal entry were committed.
+	if _, err := database.ExecContext(t.Context(), conversationRuntimeSchema[0].ddl); err != nil {
+		t.Fatalf("precreate partial conversation runtime schema: %v", err)
+	}
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(partial revision five) error = %v", err)
+	}
+	assertCurrentSchema(t, database, CurrentSchemaRevision())
+	assertConversationRuntimeSchemaVerified(t, database)
+	assertFoundationTableSet(t, database)
+	row := integrationJournalRowForRevision(t, database, conversationRuntimeSchemaRevision)
+	if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
+		t.Fatalf("conversation runtime journal = %#v", row)
+	}
+	var upgradeTurnCount int
+	if err := database.QueryRowContext(t.Context(), `
+SELECT COUNT(*) FROM conversation_turns WHERE conversation_id = ? AND id = ?`,
+		"runtime-upgrade-conversation", "runtime-upgrade-turn",
+	).Scan(&upgradeTurnCount); err != nil {
+		t.Fatalf("read revision-four Turn after revision-five upgrade: %v", err)
+	}
+	if upgradeTurnCount != 1 {
+		t.Fatalf("revision-four Turn count after revision-five upgrade = %d, want 1", upgradeTurnCount)
+	}
+	assertConversationRuntimeConstraints(t, database)
+
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(repeated revision five) error = %v", err)
+	}
+	if got := integrationJournalRowForRevision(t, database, conversationRuntimeSchemaRevision).AttemptCount; got != 1 {
+		t.Fatalf("conversation runtime attempt count after repeat = %d, want 1", got)
+	}
+
+	closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+	closed = true
+	restarted, err := Open(t.Context(), config)
+	if err != nil {
+		t.Fatalf("restart SeekDB conversation runtime: %v", err)
+	}
+	instance = restarted
+	closed = false
+	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
+	assertConversationRuntimeSchemaVerified(t, restarted.SQL())
+	for _, table := range []string{"turn_runtime_events", "lane_continuations", "context_windows"} {
+		var count int
+		if err := restarted.SQL().QueryRowContext(
+			t.Context(), "SELECT COUNT(*) FROM "+table+" WHERE conversation_id = ?", "runtime-valid-conversation",
+		).Scan(&count); err != nil {
+			t.Fatalf("count persisted %s rows: %v", table, err)
+		}
+		if count != 1 {
+			t.Fatalf("persisted %s rows = %d, want 1", table, count)
+		}
+	}
+}
+
+func TestRealSeekDBConversationRuntimeSchemaRejectsShapeDrift(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		mutateDDL func(string) string
+	}{
+		{
+			name: "nullable column",
+			mutateDDL: func(ddl string) string {
+				return strings.Replace(ddl,
+					"state VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,",
+					"state VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,", 1)
+			},
+		},
+		{
+			name: "wrong index",
+			mutateDDL: func(ddl string) string {
+				return strings.Replace(ddl,
+					"KEY turn_runtime_events_type_created_idx (event_type, created_at_ms, sequence),",
+					"KEY turn_runtime_events_type_created_idx (event_type, sequence, created_at_ms),", 1)
+			},
+		},
+		{
+			name: "same-name weak check",
+			mutateDDL: func(ddl string) string {
+				return strings.Replace(ddl, "    sequence > 0 AND", "    sequence >= 0 AND", 1)
+			},
+		},
+		{
+			name: "missing foreign key",
+			mutateDDL: func(ddl string) string {
+				return strings.Replace(ddl, `  CONSTRAINT turn_runtime_events_turn_fk FOREIGN KEY (conversation_id, turn_id)
+    REFERENCES conversation_turns (conversation_id, id) ON UPDATE RESTRICT ON DELETE CASCADE,
+`, "", 1)
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			instance, config := openSchemaMigrationRuntime(t)
+			defer closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+			database := instance.SQL()
+			migrations := BuiltinMigrations()
+			if err := MigrateSchema(t.Context(), database, migrations[:4]); err != nil {
+				t.Fatalf("MigrateSchema(revision four) error = %v", err)
+			}
+			mutated := testCase.mutateDDL(conversationRuntimeSchema[0].ddl)
+			if mutated == conversationRuntimeSchema[0].ddl {
+				t.Fatal("test setup did not mutate runtime event DDL")
+			}
+			if _, err := database.ExecContext(t.Context(), mutated); err != nil {
+				t.Fatalf("precreate drifted runtime event table: %v", err)
+			}
+			err := MigrateSchema(t.Context(), database, migrations)
+			if err == nil || !strings.Contains(err.Error(), "turn_runtime_events") {
+				t.Fatalf("MigrateSchema(%s) error = %v", testCase.name, err)
+			}
+			row := integrationJournalRowForRevision(t, database, conversationRuntimeSchemaRevision)
+			if row.State != string(MigrationFailed) || row.ErrorCode != "VERIFY_FAILED" || row.AttemptCount != 1 {
+				t.Fatalf("%s conversation runtime journal = %#v", testCase.name, row)
+			}
+			status, readinessErr := CheckSchema(t.Context(), database, CurrentSchemaRevision())
+			if !errors.Is(readinessErr, ErrSchemaNotCurrent) || status.State != SchemaNotCurrent ||
+				status.Observed == nil || status.Observed.Revision.Number != conversationRuntimeSchemaRevision {
+				t.Fatalf("%s conversation runtime readiness = %#v, %v", testCase.name, status, readinessErr)
 			}
 		})
 	}
@@ -852,6 +1033,18 @@ func assertTranscriptRecallSchemaVerified(t *testing.T, database *sql.DB) {
 	}
 }
 
+func assertConversationRuntimeSchemaVerified(t *testing.T, database *sql.DB) {
+	t.Helper()
+	connection, err := database.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err := BuiltinMigrations()[4].Verify(t.Context(), connection); err != nil {
+		t.Fatalf("verify conversation runtime schema: %v", err)
+	}
+}
+
 func assertFoundationTableSet(t *testing.T, database *sql.DB) {
 	t.Helper()
 	for _, table := range foundationSchema {
@@ -869,6 +1062,11 @@ func assertFoundationTableSet(t *testing.T, database *sql.DB) {
 			t.Errorf("turn evidence table %s count = %d, want 1", table.name, got)
 		}
 	}
+	for _, table := range conversationRuntimeSchema {
+		if got := integrationTableCount(t, database, table.name); got != 1 {
+			t.Errorf("conversation runtime table %s count = %d, want 1", table.name, got)
+		}
+	}
 	var businessTableCount int
 	if err := database.QueryRowContext(t.Context(), `
 SELECT COUNT(*)
@@ -876,7 +1074,7 @@ FROM information_schema.tables
 WHERE table_schema = DATABASE() AND table_name <> 'schema_revisions'`).Scan(&businessTableCount); err != nil {
 		t.Fatal(err)
 	}
-	want := len(foundationSchema) + len(conversationSchema) + len(turnEvidenceSchema)
+	want := len(foundationSchema) + len(conversationSchema) + len(turnEvidenceSchema) + len(conversationRuntimeSchema)
 	if businessTableCount != want {
 		t.Fatalf("business table count = %d, want %d", businessTableCount, want)
 	}
@@ -927,6 +1125,171 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, "qq-disabled-enabled", "fairy.test", "1.0.0
 INSERT INTO plugin_instances(instance_id, plugin_id, plugin_version, enabled, lifecycle_state, capability_grants, config_document, created_at_ms, updated_at_ms)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, row.instanceID, "fairy.test", "1.0.0", row.enabled, row.state, `[]`, `{}`, 1, 1); err != nil {
 			t.Fatalf("insert valid plugin instance %s: %v", row.instanceID, err)
+		}
+	}
+}
+
+func assertConversationRuntimeConstraints(t *testing.T, database *sql.DB) {
+	t.Helper()
+	const (
+		validConversationID = "runtime-valid-conversation"
+		validTurnID         = "runtime-valid-turn"
+	)
+	hashA := strings.Repeat("a", 64)
+	hashB := strings.Repeat("b", 64)
+	hashC := strings.Repeat("c", 64)
+	insertIntegrationConversation(t, database, validConversationID, "runtime-valid-character", "character")
+	insertIntegrationTurn(t, database, validTurnID, validConversationID, "", 1)
+	if _, err := database.ExecContext(t.Context(), `
+INSERT INTO turn_runtime_events(
+  id, conversation_id, turn_id, sequence, event_type, state, code, metadata_json, created_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"runtime-valid-event", validConversationID, validTurnID, 1,
+		"模型调用", "completed", nil, `{"usage":{"input":1}}`, 1,
+	); err != nil {
+		t.Fatalf("insert valid runtime event: %v", err)
+	}
+	if _, err := database.ExecContext(t.Context(), `
+INSERT INTO lane_continuations(
+  conversation_id, lane, previous_response_id, request_shape_hash,
+  input_prefix_hash, response_item_hash, window_revision, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		validConversationID, "respond", "响应-一", hashA, hashB, hashC, 1, 1,
+	); err != nil {
+		t.Fatalf("insert valid lane continuation: %v", err)
+	}
+	if _, err := database.ExecContext(t.Context(), `
+INSERT INTO context_windows(
+  conversation_id, lane, window_number, first_window_id, previous_window_id,
+  window_id, observed_prefill_tokens, estimated_prefill_tokens, last_trigger,
+  failure_count, prompt_window_revision, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		validConversationID, "respond", 0, "window-first", nil,
+		"window-current", nil, 1024, "模型完成", 0, 1, 1,
+	); err != nil {
+		t.Fatalf("insert valid context window: %v", err)
+	}
+
+	insertIntegrationConversation(t, database, "runtime-other-conversation", "runtime-other-character", "character")
+	insertIntegrationTurn(t, database, "runtime-other-turn", "runtime-other-conversation", "", 1)
+	expectSeekDBConstraintError(t, database, `
+INSERT INTO turn_runtime_events(
+  id, conversation_id, turn_id, sequence, event_type, state, code, metadata_json, created_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"runtime-crossed-event", validConversationID, "runtime-other-turn", 2,
+		"model", nil, nil, `{}`, 1,
+	)
+	for _, invalid := range []struct {
+		id        string
+		sequence  int
+		eventType string
+		metadata  string
+	}{
+		{id: "runtime-zero-sequence", sequence: 0, eventType: "model", metadata: `{}`},
+		{id: "runtime-control-event", sequence: 2, eventType: "model\ncall", metadata: `{}`},
+		{id: "runtime-array-metadata", sequence: 2, eventType: "model", metadata: `[]`},
+		{id: "runtime-duplicate-sequence", sequence: 1, eventType: "model", metadata: `{}`},
+	} {
+		expectSeekDBConstraintError(t, database, `
+INSERT INTO turn_runtime_events(
+  id, conversation_id, turn_id, sequence, event_type, state, code, metadata_json, created_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			invalid.id, validConversationID, validTurnID, invalid.sequence,
+			invalid.eventType, nil, nil, invalid.metadata, 1,
+		)
+	}
+
+	for _, invalid := range []struct {
+		lane               string
+		previousResponseID string
+		requestHash        string
+		windowRevision     int
+	}{
+		{lane: "unknown", previousResponseID: "response", requestHash: hashA, windowRevision: 1},
+		{lane: "compact", previousResponseID: "response\n", requestHash: hashA, windowRevision: 1},
+		{lane: "compact", previousResponseID: "response", requestHash: strings.Repeat("A", 64), windowRevision: 1},
+		{lane: "compact", previousResponseID: "response", requestHash: hashA, windowRevision: 0},
+	} {
+		expectSeekDBConstraintError(t, database, `
+INSERT INTO lane_continuations(
+  conversation_id, lane, previous_response_id, request_shape_hash,
+  input_prefix_hash, response_item_hash, window_revision, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			validConversationID, invalid.lane, invalid.previousResponseID,
+			invalid.requestHash, hashB, hashC, invalid.windowRevision, 1,
+		)
+	}
+
+	for _, invalid := range []struct {
+		lane           string
+		windowNumber   int
+		previousWindow any
+		observed       any
+		lastTrigger    string
+		promptRevision int
+	}{
+		{lane: "unknown", windowNumber: 0, observed: nil, lastTrigger: "created", promptRevision: 1},
+		{lane: "compact", windowNumber: -1, observed: nil, lastTrigger: "created", promptRevision: 1},
+		{lane: "compact", windowNumber: 0, previousWindow: "bad\nwindow", observed: nil, lastTrigger: "created", promptRevision: 1},
+		{lane: "compact", windowNumber: 0, observed: -1, lastTrigger: "created", promptRevision: 1},
+		{lane: "compact", windowNumber: 0, observed: nil, lastTrigger: "", promptRevision: 1},
+		{lane: "compact", windowNumber: 0, observed: nil, lastTrigger: "created", promptRevision: 0},
+	} {
+		expectSeekDBConstraintError(t, database, `
+INSERT INTO context_windows(
+  conversation_id, lane, window_number, first_window_id, previous_window_id,
+  window_id, observed_prefill_tokens, estimated_prefill_tokens, last_trigger,
+  failure_count, prompt_window_revision, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			validConversationID, invalid.lane, invalid.windowNumber, "first-window", invalid.previousWindow,
+			"current-window", invalid.observed, nil, invalid.lastTrigger, 0, invalid.promptRevision, 1,
+		)
+	}
+
+	const cascadeConversationID = "runtime-cascade-conversation"
+	insertIntegrationConversation(t, database, cascadeConversationID, "runtime-cascade-character", "character")
+	insertIntegrationTurn(t, database, "runtime-cascade-turn", cascadeConversationID, "", 1)
+	if _, err := database.ExecContext(t.Context(), `
+INSERT INTO turn_runtime_events(
+  id, conversation_id, turn_id, sequence, event_type, state, code, metadata_json, created_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"runtime-cascade-event", cascadeConversationID, "runtime-cascade-turn", 1,
+		"model", nil, nil, `{}`, 1,
+	); err != nil {
+		t.Fatalf("insert cascading runtime event: %v", err)
+	}
+	if _, err := database.ExecContext(t.Context(), `
+INSERT INTO lane_continuations(
+  conversation_id, lane, previous_response_id, request_shape_hash,
+  input_prefix_hash, response_item_hash, window_revision, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		cascadeConversationID, "respond", "response", hashA, hashB, hashC, 1, 1,
+	); err != nil {
+		t.Fatalf("insert cascading lane continuation: %v", err)
+	}
+	if _, err := database.ExecContext(t.Context(), `
+INSERT INTO context_windows(
+  conversation_id, lane, window_number, first_window_id, previous_window_id,
+  window_id, observed_prefill_tokens, estimated_prefill_tokens, last_trigger,
+  failure_count, prompt_window_revision, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		cascadeConversationID, "respond", 0, "first-window", nil,
+		"current-window", nil, nil, "created", 0, 1, 1,
+	); err != nil {
+		t.Fatalf("insert cascading context window: %v", err)
+	}
+	if _, err := database.ExecContext(t.Context(), "DELETE FROM conversations WHERE id = ?", cascadeConversationID); err != nil {
+		t.Fatalf("delete conversation runtime cascade root: %v", err)
+	}
+	for _, table := range []string{"turn_runtime_events", "lane_continuations", "context_windows"} {
+		var count int
+		if err := database.QueryRowContext(
+			t.Context(), "SELECT COUNT(*) FROM "+table+" WHERE conversation_id = ?", cascadeConversationID,
+		).Scan(&count); err != nil {
+			t.Fatalf("count cascaded %s rows: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s rows after conversation cascade = %d, want 0", table, count)
 		}
 	}
 }

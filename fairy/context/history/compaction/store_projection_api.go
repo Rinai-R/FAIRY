@@ -5,11 +5,13 @@ import (
 
 	historyprojection "fairy/context/history/projection"
 	historyruntime "fairy/context/history/runtime"
+	"fairy/context/history/transcript"
 )
 
 func (s *Store) CommitPromptProjection(
 	conversationID string,
 	expectedWindowRevision, expectedProjectionRevision uint64,
+	expectedTranscript transcript.TranscriptBoundary,
 	projection historyprojection.State,
 	contextWindow historyruntime.ContextWindowRecord,
 	clearLane string,
@@ -17,6 +19,7 @@ func (s *Store) CommitPromptProjection(
 	return s.CommitPromptProjectionContext(
 		context.Background(), conversationID,
 		expectedWindowRevision, expectedProjectionRevision,
+		expectedTranscript,
 		projection, contextWindow, clearLane,
 	)
 }
@@ -25,13 +28,26 @@ func (s *Store) CommitPromptProjectionContext(
 	ctx context.Context,
 	conversationID string,
 	expectedWindowRevision, expectedProjectionRevision uint64,
+	expectedTranscript transcript.TranscriptBoundary,
 	projection historyprojection.State,
 	contextWindow historyruntime.ContextWindowRecord,
 	clearLane string,
 ) (Result, error) {
+	if s.usesSeekDB() {
+		return s.commitPromptProjectionSeekDB(
+			ctx, conversationID,
+			expectedWindowRevision, expectedProjectionRevision,
+			expectedTranscript,
+			projection, contextWindow, clearLane,
+		)
+	}
+	if !s.usesPostgres() {
+		return Result{}, ErrStoreBackendUnavailable
+	}
 	return s.commitPromptProjectionPostgres(
 		ctx, conversationID,
 		expectedWindowRevision, expectedProjectionRevision,
+		expectedTranscript,
 		projection, contextWindow, clearLane,
 	)
 }

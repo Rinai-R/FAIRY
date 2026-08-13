@@ -93,6 +93,7 @@ func (s *Service) commitAvailableL2Projection(
 			conversationID,
 			bootstrap.PromptWindow.Revision,
 			bootstrap.PromptWindow.ProjectionRevision,
+			bootstrap.TranscriptBoundary,
 			projection,
 			contextWindow,
 			string(model.PromptLaneRespond),

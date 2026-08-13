@@ -13,6 +13,7 @@ func (s *Store) commitPromptProjectionPostgres(
 	ctx context.Context,
 	conversationID string,
 	expectedWindowRevision, expectedProjectionRevision uint64,
+	expectedTranscript transcript.TranscriptBoundary,
 	projection historyprojection.State,
 	contextWindow historyruntime.ContextWindowRecord,
 	clearLane string,
@@ -37,6 +38,12 @@ func (s *Store) commitPromptProjectionPostgres(
 	if err != nil {
 		return Result{}, err
 	}
+	if _, _, err := nextProjectionRevisions(expectedWindow, expectedProjection); err != nil {
+		return Result{}, err
+	}
+	if _, err := validateTranscriptBoundary(expectedTranscript); err != nil {
+		return Result{}, err
+	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
 	tx, err := s.pool.Raw().Begin(queryCtx)
@@ -44,11 +51,8 @@ func (s *Store) commitPromptProjectionPostgres(
 		return Result{}, fmt.Errorf("beginning prompt projection transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
-	if err := validateProjectionAgainstTranscript(queryCtx, tx, conversationID, projection); err != nil {
-		return Result{}, err
-	}
 	result, err := CommitPromptProjection(
-		queryCtx, tx, conversationID, expectedWindow, expectedProjection,
+		queryCtx, tx, conversationID, expectedWindow, expectedProjection, expectedTranscript,
 		projection, contextWindow, clearLane, nowUnixMS(),
 	)
 	if err != nil {

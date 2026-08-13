@@ -12,15 +12,16 @@ import (
 func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first := BuiltinMigrations()
 	second := BuiltinMigrations()
-	if len(first) != 4 || len(second) != 4 {
-		t.Fatalf("builtin migration counts = %d and %d, want 4", len(first), len(second))
+	if len(first) != 5 || len(second) != 5 {
+		t.Fatalf("builtin migration counts = %d and %d, want 5", len(first), len(second))
 	}
 	foundation := Revision{Number: foundationSchemaRevision, Checksum: foundationSchemaChecksum()}
 	conversation := Revision{Number: conversationSchemaRevision, Checksum: conversationSchemaChecksum()}
 	turnEvidence := Revision{Number: turnEvidenceSchemaRevision, Checksum: turnEvidenceSchemaChecksum()}
 	transcriptRecall := Revision{Number: transcriptRecallSchemaRevision, Checksum: transcriptRecallSchemaChecksum()}
-	if current := CurrentSchemaRevision(); current != transcriptRecall {
-		t.Fatalf("current schema revision = %#v, want %#v", current, transcriptRecall)
+	conversationRuntime := Revision{Number: conversationRuntimeSchemaRevision, Checksum: conversationRuntimeSchemaChecksum()}
+	if current := CurrentSchemaRevision(); current != conversationRuntime {
+		t.Fatalf("current schema revision = %#v, want %#v", current, conversationRuntime)
 	}
 	if first[0].Revision != foundation || first[0].Name != "create-foundation-schema" {
 		t.Fatalf("foundation migration = %#v, want revision %#v", first[0], foundation)
@@ -34,6 +35,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	if first[3].Revision != transcriptRecall || first[3].Name != "create-conversation-message-fulltext-index" {
 		t.Fatalf("transcript recall migration = %#v, want revision %#v", first[3], transcriptRecall)
 	}
+	if first[4].Revision != conversationRuntime || first[4].Name != "create-conversation-runtime-schema" {
+		t.Fatalf("conversation runtime migration = %#v, want revision %#v", first[4], conversationRuntime)
+	}
 	for index, migration := range first {
 		if migration.Apply == nil || migration.Verify == nil {
 			t.Fatalf("builtin migration %d must provide Apply and Verify", index+1)
@@ -44,10 +48,12 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first[1].Name = "also-mutated"
 	first[2].Revision.Number = 100
 	first[3].Name = "mutated-transcript-recall"
+	first[4].Revision.Number = 101
 	if second[0].Name != "create-foundation-schema" || second[0].Revision != foundation ||
 		second[1].Name != "create-conversation-schema" || second[1].Revision != conversation ||
 		second[2].Name != "create-turn-evidence-schema" || second[2].Revision != turnEvidence ||
-		second[3].Name != "create-conversation-message-fulltext-index" || second[3].Revision != transcriptRecall {
+		second[3].Name != "create-conversation-message-fulltext-index" || second[3].Revision != transcriptRecall ||
+		second[4].Name != "create-conversation-runtime-schema" || second[4].Revision != conversationRuntime {
 		t.Fatalf("caller mutation changed later BuiltinMigrations result: %#v", second[0])
 	}
 	if got := hex.EncodeToString(foundation.Checksum[:]); got != "e674bec12d0b6895da8b351d082a686c9c2f44990fb68749bbad083c4a6805d3" {
@@ -61,6 +67,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	}
 	if got := hex.EncodeToString(transcriptRecall.Checksum[:]); got != "b40266f72516a16b74e237c8b52366cc0bab99f77749b449e6c4ef3f444a33f6" {
 		t.Fatalf("transcript recall checksum = %s, update requires an explicit revision decision", got)
+	}
+	if got := hex.EncodeToString(conversationRuntime.Checksum[:]); got != "6d93c442f7d95deeb631397da210b818926b9d5cd496d2375d9adc22333c801c" {
+		t.Fatalf("conversation runtime checksum = %s, update requires an explicit revision decision", got)
 	}
 }
 
@@ -178,6 +187,72 @@ func TestTurnEvidenceSchemaDefinesInitiationEvidenceContract(t *testing.T) {
 	}
 	if evidence := schemaColumnNamed(t, table, "evidence_id"); evidence.columnType != "varchar(128)" || evidence.collation != "utf8mb4_bin" {
 		t.Fatalf("turn evidence id = %#v", evidence)
+	}
+}
+
+func TestConversationRuntimeSchemaDefinesLedgerContinuationAndWindowContracts(t *testing.T) {
+	wantTables := []string{"turn_runtime_events", "lane_continuations", "context_windows"}
+	assertPortableSchemaTables(t, conversationRuntimeSchema[:], wantTables)
+
+	events := conversationRuntimeSchema[0]
+	if !schemaHasIndex(events, ascendingBTreeIndex(
+		"turn_runtime_events_conversation_turn_sequence_key", true,
+		"conversation_id", "turn_id", "sequence",
+	)) {
+		t.Fatal("runtime events lack one ordered sequence per conversation Turn")
+	}
+	if !schemaHasIndex(events, ascendingBTreeIndex(
+		"turn_runtime_events_type_created_idx", false, "event_type", "created_at_ms", "sequence",
+	)) {
+		t.Fatal("runtime events lack stable event-type history lookup")
+	}
+	if sequence := schemaColumnNamed(t, events, "sequence"); sequence.columnType != "bigint" {
+		t.Fatalf("runtime event sequence type = %q, want signed bigint", sequence.columnType)
+	}
+	if metadata := schemaColumnNamed(t, events, "metadata_json"); metadata.columnType != "json" || metadata.nullable {
+		t.Fatalf("runtime event metadata = %#v", metadata)
+	}
+	if len(events.foreignKeys) != 1 || events.foreignKeys[0].referencedTable != "conversation_turns" ||
+		len(events.foreignKeys[0].columns) != 2 ||
+		events.foreignKeys[0].columns[0].name != "conversation_id" ||
+		events.foreignKeys[0].columns[0].referencedColumn != "conversation_id" ||
+		events.foreignKeys[0].columns[1].name != "turn_id" ||
+		events.foreignKeys[0].columns[1].referencedColumn != "id" ||
+		events.foreignKeys[0].deleteRule != "cascade" {
+		t.Fatalf("runtime event Turn isolation foreign key = %#v", events.foreignKeys)
+	}
+
+	continuations := conversationRuntimeSchema[1]
+	if !schemaHasIndex(continuations, ascendingBTreeIndex("PRIMARY", true, "conversation_id", "lane")) {
+		t.Fatal("lane continuations lack one authoritative record per conversation lane")
+	}
+	if responseID := schemaColumnNamed(t, continuations, "previous_response_id"); responseID.columnType != "varchar(128)" || responseID.collation != "utf8mb4_bin" {
+		t.Fatalf("previous response id = %#v", responseID)
+	}
+	if revision := schemaColumnNamed(t, continuations, "window_revision"); revision.columnType != "bigint" {
+		t.Fatalf("lane continuation window revision = %q, want signed bigint", revision.columnType)
+	}
+
+	windows := conversationRuntimeSchema[2]
+	if !schemaHasIndex(windows, ascendingBTreeIndex("PRIMARY", true, "conversation_id", "lane")) {
+		t.Fatal("context windows lack one authoritative record per conversation lane")
+	}
+	for _, name := range []string{
+		"window_number", "observed_prefill_tokens", "estimated_prefill_tokens",
+		"failure_count", "prompt_window_revision",
+	} {
+		if column := schemaColumnNamed(t, windows, name); column.columnType != "bigint" {
+			t.Fatalf("context window %s type = %q, want signed bigint", name, column.columnType)
+		}
+	}
+	if previous := schemaColumnNamed(t, windows, "previous_window_id"); !previous.nullable {
+		t.Fatal("context previous window id must remain nullable")
+	}
+	for _, table := range conversationRuntimeSchema {
+		if len(table.foreignKeys) != 1 || table.foreignKeys[0].deleteRule != "cascade" ||
+			table.foreignKeys[0].updateRule != "restrict" {
+			t.Fatalf("table %s conversation-root lifecycle = %#v", table.name, table.foreignKeys)
+		}
 	}
 }
 
@@ -314,7 +389,9 @@ func assertPortableSchemaTables(t *testing.T, tables []schemaTable, wantTables [
 			t.Errorf("table %s is missing named CHECK %s", table.name, table.checks[0].name)
 		}
 		for _, column := range table.columns {
-			if strings.HasSuffix(column.name, "_id") && column.name != "message_id" && column.name != "evidence_id" && column.collation != "ascii_bin" {
+			if strings.HasSuffix(column.name, "_id") &&
+				column.name != "message_id" && column.name != "evidence_id" && column.name != "previous_response_id" &&
+				column.collation != "ascii_bin" {
 				t.Errorf("table %s identifier %s collation = %q, want ascii_bin", table.name, column.name, column.collation)
 			}
 		}

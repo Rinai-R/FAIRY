@@ -16,6 +16,7 @@ func CommitTieredCompaction(
 	tx pgx.Tx,
 	conversationID string,
 	expectedWindowRevision, expectedProjectionRevision int64,
+	expectedTranscript transcript.TranscriptBoundary,
 	summary string,
 	cutoff int64,
 	projection historyprojection.State,
@@ -26,11 +27,29 @@ func CommitTieredCompaction(
 	if cutoff < 0 {
 		return Result{}, errors.New("compaction cutoff cannot be negative")
 	}
+	nextWindowRevision, nextProjectionRevision, err := nextProjectionRevisions(
+		expectedWindowRevision,
+		expectedProjectionRevision,
+	)
+	if err != nil {
+		return Result{}, err
+	}
+	boundary, err := validateTranscriptBoundary(expectedTranscript)
+	if err != nil {
+		return Result{}, err
+	}
 	if err := transcript.RequireConversation(ctx, tx, conversationID); err != nil {
 		return Result{}, err
 	}
-	nextWindowRevision := expectedWindowRevision + 1
-	nextProjectionRevision := expectedProjectionRevision + 1
+	if err := requirePostgresTranscriptBoundary(ctx, tx, conversationID, boundary); err != nil {
+		return Result{}, err
+	}
+	if cutoff > boundary.messageSequence {
+		return Result{}, errors.New("compaction cutoff exceeds transcript")
+	}
+	if err := validateProjectionAgainstTranscriptBoundary(projection, boundary.messageSequence); err != nil {
+		return Result{}, err
+	}
 	if contextWindow.ConversationID != conversationID ||
 		contextWindow.PromptWindowRevision != uint64(nextWindowRevision) {
 		return Result{}, errors.New("context window does not match tiered compaction")

@@ -161,7 +161,7 @@ func runtimeContinuationLedgerMetadata(cacheRetention bool, previous *historyrun
 		"incremental":             continuation.Incremental,
 		"fullReason":              string(continuation.FullReason),
 		"previousStatePresent":    previous != nil,
-		"previousStateSource":     "sqlite_lane_continuations",
+		"previousStateSource":     "lane_continuations",
 		"requestShapeHash":        runtimeHash(fullRequest.Shape),
 		"fullInputHash":           runtimeHash(redactPromptImagesForLedger(fullRequest.Input)),
 		"fullInputItemCount":      len(fullRequest.Input),

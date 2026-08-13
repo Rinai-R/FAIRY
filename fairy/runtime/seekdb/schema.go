@@ -13,10 +13,11 @@ import (
 )
 
 const (
-	foundationSchemaRevision       int64 = 1
-	conversationSchemaRevision     int64 = 2
-	turnEvidenceSchemaRevision     int64 = 3
-	transcriptRecallSchemaRevision int64 = 4
+	foundationSchemaRevision          int64 = 1
+	conversationSchemaRevision        int64 = 2
+	turnEvidenceSchemaRevision        int64 = 3
+	transcriptRecallSchemaRevision    int64 = 4
+	conversationRuntimeSchemaRevision int64 = 5
 
 	transcriptRecallTableName = "conversation_messages"
 	transcriptRecallIndexName = "conversation_messages_content_fts_idx"
@@ -65,14 +66,23 @@ func BuiltinMigrations() []Migration {
 			Apply:  applyTranscriptRecallSchema,
 			Verify: verifyTranscriptRecallSchema,
 		},
+		{
+			Revision: Revision{
+				Number:   conversationRuntimeSchemaRevision,
+				Checksum: conversationRuntimeSchemaChecksum(),
+			},
+			Name:   "create-conversation-runtime-schema",
+			Apply:  applyConversationRuntimeSchema,
+			Verify: verifyConversationRuntimeSchema,
+		},
 	}
 }
 
 // CurrentSchemaRevision is the exact revision accepted by runtime readiness.
 func CurrentSchemaRevision() Revision {
 	return Revision{
-		Number:   transcriptRecallSchemaRevision,
-		Checksum: transcriptRecallSchemaChecksum(),
+		Number:   conversationRuntimeSchemaRevision,
+		Checksum: conversationRuntimeSchemaChecksum(),
 	}
 }
 
@@ -806,6 +816,218 @@ var turnEvidenceSchema = [...]schemaTable{
 	},
 }
 
+// conversationRuntimeSchema is revision 5. It adds the durable runtime state
+// required to continue model lanes, account for every Turn event in order,
+// and coordinate context-window compaction without rewriting the immutable
+// conversation or transcript-recall revisions.
+var conversationRuntimeSchema = [...]schemaTable{
+	{
+		name: "turn_runtime_events",
+		ddl: `CREATE TABLE IF NOT EXISTS turn_runtime_events (
+  id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  conversation_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  turn_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  sequence BIGINT NOT NULL,
+  event_type VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  state VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
+  code VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
+  metadata_json JSON NOT NULL,
+  created_at_ms BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY turn_runtime_events_conversation_turn_sequence_key (conversation_id, turn_id, sequence),
+  KEY turn_runtime_events_type_created_idx (event_type, created_at_ms, sequence),
+  CONSTRAINT turn_runtime_events_turn_fk FOREIGN KEY (conversation_id, turn_id)
+    REFERENCES conversation_turns (conversation_id, id) ON UPDATE RESTRICT ON DELETE CASCADE,
+  CONSTRAINT turn_runtime_events_invariants_check CHECK (
+    CHAR_LENGTH(id) > 0 AND id = TRIM(id) AND
+    sequence > 0 AND
+    CHAR_LENGTH(event_type) BETWEEN 1 AND 128 AND event_type = TRIM(event_type) AND
+      event_type NOT REGEXP '[[:cntrl:]]' AND
+    (state IS NULL OR
+      (CHAR_LENGTH(state) BETWEEN 1 AND 128 AND state = TRIM(state) AND
+        state NOT REGEXP '[[:cntrl:]]')) AND
+    (code IS NULL OR
+      (CHAR_LENGTH(code) BETWEEN 1 AND 128 AND code = TRIM(code) AND
+        code NOT REGEXP '[[:cntrl:]]')) AND
+    JSON_TYPE(metadata_json) = 'OBJECT'
+  )
+)`,
+		columns: []schemaColumn{
+			{name: "id", columnType: "varchar(128)", collation: "ascii_bin"},
+			{name: "conversation_id", columnType: "varchar(128)", collation: "ascii_bin"},
+			{name: "turn_id", columnType: "varchar(128)", collation: "ascii_bin"},
+			{name: "sequence", columnType: "bigint"},
+			{name: "event_type", columnType: "varchar(128)", collation: "utf8mb4_bin"},
+			{name: "state", columnType: "varchar(128)", nullable: true, collation: "utf8mb4_bin"},
+			{name: "code", columnType: "varchar(128)", nullable: true, collation: "utf8mb4_bin"},
+			{name: "metadata_json", columnType: "json"},
+			{name: "created_at_ms", columnType: "bigint unsigned"},
+		},
+		indexes: []schemaIndex{
+			ascendingBTreeIndex("PRIMARY", true, "id"),
+			ascendingBTreeIndex(
+				"turn_runtime_events_conversation_turn_sequence_key", true,
+				"conversation_id", "turn_id", "sequence",
+			),
+			ascendingBTreeIndex(
+				"turn_runtime_events_type_created_idx", false,
+				"event_type", "created_at_ms", "sequence",
+			),
+		},
+		checks: []schemaCheck{{
+			name: "turn_runtime_events_invariants_check",
+			clause: "((CHAR_LENGTH(`id`) > 0) and (`id` = trim(`id`)) and (`sequence` > 0) and " +
+				"((CHAR_LENGTH(`event_type`) >= 1) and (CHAR_LENGTH(`event_type`) <= 128)) and " +
+				"(`event_type` = trim(`event_type`)) and (not((`event_type` regexp '[[:cntrl:]]'))) and " +
+				"((`state` is null) or (((CHAR_LENGTH(`state`) >= 1) and (CHAR_LENGTH(`state`) <= 128)) and " +
+				"(`state` = trim(`state`)) and (not((`state` regexp '[[:cntrl:]]'))))) and " +
+				"((`code` is null) or (((CHAR_LENGTH(`code`) >= 1) and (CHAR_LENGTH(`code`) <= 128)) and " +
+				"(`code` = trim(`code`)) and (not((`code` regexp '[[:cntrl:]]'))))) and " +
+				"(JSON_TYPE(`metadata_json`) = 'OBJECT'))",
+		}},
+		foreignKeys: []schemaForeignKey{{
+			name:            "turn_runtime_events_turn_fk",
+			referencedTable: "conversation_turns",
+			updateRule:      "restrict",
+			deleteRule:      "cascade",
+			columns: []schemaForeignKeyColumn{
+				{name: "conversation_id", referencedColumn: "conversation_id", sameSchema: true},
+				{name: "turn_id", referencedColumn: "id", sameSchema: true},
+			},
+		}},
+	},
+	{
+		name: "lane_continuations",
+		ddl: `CREATE TABLE IF NOT EXISTS lane_continuations (
+  conversation_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  lane VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  previous_response_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  request_shape_hash VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  input_prefix_hash VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  response_item_hash VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  window_revision BIGINT NOT NULL,
+  updated_at_ms BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (conversation_id, lane),
+  CONSTRAINT lane_continuations_conversation_fk FOREIGN KEY (conversation_id)
+    REFERENCES conversations (id) ON UPDATE RESTRICT ON DELETE CASCADE,
+  CONSTRAINT lane_continuations_invariants_check CHECK (
+    lane IN ('respond', 'compact', 'extract') AND
+    CHAR_LENGTH(previous_response_id) BETWEEN 1 AND 128 AND
+      previous_response_id = TRIM(previous_response_id) AND
+      previous_response_id NOT REGEXP '[[:cntrl:]]' AND
+    request_shape_hash REGEXP '^[0-9a-f]{64}$' AND
+    input_prefix_hash REGEXP '^[0-9a-f]{64}$' AND
+    response_item_hash REGEXP '^[0-9a-f]{64}$' AND
+    window_revision > 0
+  )
+)`,
+		columns: []schemaColumn{
+			{name: "conversation_id", columnType: "varchar(128)", collation: "ascii_bin"},
+			{name: "lane", columnType: "varchar(16)", collation: "ascii_bin"},
+			{name: "previous_response_id", columnType: "varchar(128)", collation: "utf8mb4_bin"},
+			{name: "request_shape_hash", columnType: "varchar(64)", collation: "ascii_bin"},
+			{name: "input_prefix_hash", columnType: "varchar(64)", collation: "ascii_bin"},
+			{name: "response_item_hash", columnType: "varchar(64)", collation: "ascii_bin"},
+			{name: "window_revision", columnType: "bigint"},
+			{name: "updated_at_ms", columnType: "bigint unsigned"},
+		},
+		indexes: []schemaIndex{ascendingBTreeIndex("PRIMARY", true, "conversation_id", "lane")},
+		checks: []schemaCheck{{
+			name: "lane_continuations_invariants_check",
+			clause: "((`lane` in ('respond','compact','extract')) and " +
+				"((CHAR_LENGTH(`previous_response_id`) >= 1) and (CHAR_LENGTH(`previous_response_id`) <= 128)) and " +
+				"(`previous_response_id` = trim(`previous_response_id`)) and " +
+				"(not((`previous_response_id` regexp '[[:cntrl:]]'))) and " +
+				"(`request_shape_hash` regexp '^[0-9a-f]{64}$') and " +
+				"(`input_prefix_hash` regexp '^[0-9a-f]{64}$') and " +
+				"(`response_item_hash` regexp '^[0-9a-f]{64}$') and (`window_revision` > 0))",
+		}},
+		foreignKeys: []schemaForeignKey{{
+			name:            "lane_continuations_conversation_fk",
+			referencedTable: "conversations",
+			updateRule:      "restrict",
+			deleteRule:      "cascade",
+			columns:         []schemaForeignKeyColumn{{name: "conversation_id", referencedColumn: "id", sameSchema: true}},
+		}},
+	},
+	{
+		name: "context_windows",
+		ddl: `CREATE TABLE IF NOT EXISTS context_windows (
+  conversation_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  lane VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  window_number BIGINT NOT NULL,
+  first_window_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  previous_window_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  window_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  observed_prefill_tokens BIGINT NULL,
+  estimated_prefill_tokens BIGINT NULL,
+  last_trigger VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  failure_count BIGINT NOT NULL,
+  prompt_window_revision BIGINT NOT NULL,
+  updated_at_ms BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (conversation_id, lane),
+  CONSTRAINT context_windows_conversation_fk FOREIGN KEY (conversation_id)
+    REFERENCES conversations (id) ON UPDATE RESTRICT ON DELETE CASCADE,
+  CONSTRAINT context_windows_invariants_check CHECK (
+    lane IN ('respond', 'compact', 'extract') AND
+    window_number >= 0 AND
+    CHAR_LENGTH(first_window_id) BETWEEN 1 AND 128 AND first_window_id = TRIM(first_window_id) AND
+      first_window_id NOT REGEXP '[[:cntrl:]]' AND
+    (previous_window_id IS NULL OR
+      (CHAR_LENGTH(previous_window_id) BETWEEN 1 AND 128 AND
+        previous_window_id = TRIM(previous_window_id) AND
+        previous_window_id NOT REGEXP '[[:cntrl:]]')) AND
+    CHAR_LENGTH(window_id) BETWEEN 1 AND 128 AND window_id = TRIM(window_id) AND
+      window_id NOT REGEXP '[[:cntrl:]]' AND
+    (observed_prefill_tokens IS NULL OR observed_prefill_tokens >= 0) AND
+    (estimated_prefill_tokens IS NULL OR estimated_prefill_tokens >= 0) AND
+    CHAR_LENGTH(last_trigger) BETWEEN 1 AND 128 AND last_trigger = TRIM(last_trigger) AND
+      last_trigger NOT REGEXP '[[:cntrl:]]' AND
+    failure_count >= 0 AND
+    prompt_window_revision > 0
+  )
+)`,
+		columns: []schemaColumn{
+			{name: "conversation_id", columnType: "varchar(128)", collation: "ascii_bin"},
+			{name: "lane", columnType: "varchar(16)", collation: "ascii_bin"},
+			{name: "window_number", columnType: "bigint"},
+			{name: "first_window_id", columnType: "varchar(128)", collation: "ascii_bin"},
+			{name: "previous_window_id", columnType: "varchar(128)", nullable: true, collation: "ascii_bin"},
+			{name: "window_id", columnType: "varchar(128)", collation: "ascii_bin"},
+			{name: "observed_prefill_tokens", columnType: "bigint", nullable: true},
+			{name: "estimated_prefill_tokens", columnType: "bigint", nullable: true},
+			{name: "last_trigger", columnType: "varchar(128)", collation: "utf8mb4_bin"},
+			{name: "failure_count", columnType: "bigint"},
+			{name: "prompt_window_revision", columnType: "bigint"},
+			{name: "updated_at_ms", columnType: "bigint unsigned"},
+		},
+		indexes: []schemaIndex{ascendingBTreeIndex("PRIMARY", true, "conversation_id", "lane")},
+		checks: []schemaCheck{{
+			name: "context_windows_invariants_check",
+			clause: "((`lane` in ('respond','compact','extract')) and (`window_number` >= 0) and " +
+				"((CHAR_LENGTH(`first_window_id`) >= 1) and (CHAR_LENGTH(`first_window_id`) <= 128)) and " +
+				"(`first_window_id` = trim(`first_window_id`)) and (not((`first_window_id` regexp '[[:cntrl:]]'))) and " +
+				"((`previous_window_id` is null) or (((CHAR_LENGTH(`previous_window_id`) >= 1) and " +
+				"(CHAR_LENGTH(`previous_window_id`) <= 128)) and (`previous_window_id` = trim(`previous_window_id`)) and " +
+				"(not((`previous_window_id` regexp '[[:cntrl:]]'))))) and " +
+				"((CHAR_LENGTH(`window_id`) >= 1) and (CHAR_LENGTH(`window_id`) <= 128)) and " +
+				"(`window_id` = trim(`window_id`)) and (not((`window_id` regexp '[[:cntrl:]]'))) and " +
+				"((`observed_prefill_tokens` is null) or (`observed_prefill_tokens` >= 0)) and " +
+				"((`estimated_prefill_tokens` is null) or (`estimated_prefill_tokens` >= 0)) and " +
+				"((CHAR_LENGTH(`last_trigger`) >= 1) and (CHAR_LENGTH(`last_trigger`) <= 128)) and " +
+				"(`last_trigger` = trim(`last_trigger`)) and (not((`last_trigger` regexp '[[:cntrl:]]'))) and " +
+				"(`failure_count` >= 0) and (`prompt_window_revision` > 0))",
+		}},
+		foreignKeys: []schemaForeignKey{{
+			name:            "context_windows_conversation_fk",
+			referencedTable: "conversations",
+			updateRule:      "restrict",
+			deleteRule:      "cascade",
+			columns:         []schemaForeignKeyColumn{{name: "conversation_id", referencedColumn: "id", sameSchema: true}},
+		}},
+	},
+}
+
 func foundationSchemaChecksum() [sha256.Size]byte {
 	statements := make([]string, 0, len(foundationSchema))
 	for _, table := range foundationSchema {
@@ -832,6 +1054,14 @@ func turnEvidenceSchemaChecksum() [sha256.Size]byte {
 
 func transcriptRecallSchemaChecksum() [sha256.Size]byte {
 	return schemaDDLChecksum([]string{transcriptRecallIndexDDL})
+}
+
+func conversationRuntimeSchemaChecksum() [sha256.Size]byte {
+	statements := make([]string, 0, len(conversationRuntimeSchema))
+	for _, table := range conversationRuntimeSchema {
+		statements = append(statements, table.ddl)
+	}
+	return schemaDDLChecksum(statements)
 }
 
 func schemaDDLChecksum(statements []string) [sha256.Size]byte {
@@ -965,6 +1195,15 @@ func applyTranscriptRecallSchema(ctx context.Context, connection *sql.Conn) erro
 	return nil
 }
 
+func applyConversationRuntimeSchema(ctx context.Context, connection *sql.Conn) error {
+	for _, table := range conversationRuntimeSchema {
+		if _, err := connection.ExecContext(ctx, table.ddl); err != nil {
+			return fmt.Errorf("create SeekDB conversation runtime table %s: %w", table.name, err)
+		}
+	}
+	return nil
+}
+
 // verifyTranscriptRecallSchema verifies the cumulative conversation shape at
 // revision four. Revision two remains exact and therefore continues to reject
 // every extra index when it is verified at its own migration boundary.
@@ -995,6 +1234,25 @@ func verifyTranscriptRecallSchema(ctx context.Context, connection *sql.Conn) err
 	}
 	if err := compareTranscriptRecallCreateTable(tableName, createTable); err != nil {
 		return fmt.Errorf("verify SeekDB transcript recall parser: %w", err)
+	}
+	return nil
+}
+
+// verifyConversationRuntimeSchema is cumulative: revision five remains ready
+// only while the exact revision-four conversation shape, logical FULLTEXT
+// index, and immutable IK parser contract are still present.
+func verifyConversationRuntimeSchema(ctx context.Context, connection *sql.Conn) error {
+	if err := verifyTranscriptRecallSchema(ctx, connection); err != nil {
+		return err
+	}
+	enforcedAvailable, err := schemaCheckEnforcementAvailable(ctx, connection)
+	if err != nil {
+		return fmt.Errorf("verify SeekDB CHECK enforcement metadata: %w", err)
+	}
+	for _, table := range conversationRuntimeSchema {
+		if err := verifySchemaTable(ctx, connection, table, enforcedAvailable); err != nil {
+			return err
+		}
 	}
 	return nil
 }

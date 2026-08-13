@@ -195,7 +195,7 @@ func (s *Store) loadConversationSeekDB(ctx context.Context, conversationID strin
 	}
 	queryCtx, cancel := s.seekDBQueryContext(ctx)
 	defer cancel()
-	conversation, prompt, err := loadConversationMetadataSeekDB(queryCtx, s.seekDB, conversationID)
+	conversation, prompt, boundary, err := loadConversationMetadataSeekDB(queryCtx, s.seekDB, conversationID)
 	if err != nil {
 		return ConversationBootstrap{}, err
 	}
@@ -214,7 +214,10 @@ ORDER BY m.sequence ASC`, conversationID)
 	if err != nil {
 		return ConversationBootstrap{}, err
 	}
-	return ConversationBootstrap{Conversation: conversation, Messages: messages, PromptWindow: prompt}, nil
+	return ConversationBootstrap{
+		Conversation: conversation, Messages: messages, PromptWindow: prompt,
+		TranscriptBoundary: boundary,
+	}, nil
 }
 
 func (s *Store) listConversationMessagesBeforeSeekDB(ctx context.Context, conversationID string, beforeSequence uint64, limit int) (MessagePage, error) {
@@ -358,40 +361,47 @@ WHERE character_id = ? AND endpoint = ? AND endpoint_key_digest = ?`, now, chara
 	return s.loadConversationSeekDB(ctx, stored.ConversationID)
 }
 
-func loadConversationMetadataSeekDB(ctx context.Context, database *sql.DB, conversationID string) (ConversationRecord, PromptWindowRecord, error) {
+func loadConversationMetadataSeekDB(ctx context.Context, database *sql.DB, conversationID string) (ConversationRecord, PromptWindowRecord, TranscriptBoundary, error) {
 	conversation, err := loadConversationRecordSeekDB(ctx, database, conversationID)
 	if err != nil {
-		return ConversationRecord{}, PromptWindowRecord{}, err
+		return ConversationRecord{}, PromptWindowRecord{}, TranscriptBoundary{}, err
 	}
 	var prompt PromptWindowRecord
+	var boundary TranscriptBoundary
 	var summary sql.NullString
-	var revision, cutoff, projectionRevision int64
+	var revision, cutoff, projectionRevision, turnSequence, messageSequence int64
 	var projectionJSON []byte
 	if err := database.QueryRowContext(ctx, `
-SELECT conversation_id, revision, summary, cutoff_message_sequence,
-       projection_revision, projection_state, updated_at_ms
-FROM prompt_windows WHERE conversation_id = ?`, conversationID).Scan(
+
+SELECT pw.conversation_id, pw.revision, pw.summary, pw.cutoff_message_sequence,
+       pw.projection_revision, pw.projection_state, pw.updated_at_ms,
+       COALESCE((SELECT MAX(t.sequence) FROM conversation_turns t WHERE t.conversation_id = pw.conversation_id), 0),
+       COALESCE((SELECT MAX(m.sequence) FROM conversation_messages m WHERE m.conversation_id = pw.conversation_id), 0)
+FROM prompt_windows pw WHERE pw.conversation_id = ?`, conversationID).Scan(
 		&prompt.ConversationID, &revision, &summary, &cutoff,
 		&projectionRevision, &projectionJSON, &prompt.UpdatedAtUnixMS,
+		&turnSequence, &messageSequence,
 	); err != nil {
-		return ConversationRecord{}, PromptWindowRecord{}, fmt.Errorf("loading SeekDB prompt window: %w", err)
+		return ConversationRecord{}, PromptWindowRecord{}, TranscriptBoundary{}, fmt.Errorf("loading SeekDB prompt window: %w", err)
 	}
 	if prompt.ConversationID != conversationID || prompt.UpdatedAtUnixMS < 0 ||
-		revision <= 0 || cutoff < 0 || projectionRevision <= 0 {
-		return ConversationRecord{}, PromptWindowRecord{}, errors.New("stored SeekDB conversation metadata is invalid")
+		revision <= 0 || cutoff < 0 || projectionRevision <= 0 || turnSequence < 0 || messageSequence < 0 {
+		return ConversationRecord{}, PromptWindowRecord{}, TranscriptBoundary{}, errors.New("stored SeekDB conversation metadata is invalid")
 	}
 	prompt.Revision = uint64(revision)
 	prompt.CutoffMessageSequence = uint64(cutoff)
 	prompt.ProjectionRevision = uint64(projectionRevision)
 	projection, err := historyprojection.Decode(projectionJSON)
 	if err != nil {
-		return ConversationRecord{}, PromptWindowRecord{}, err
+		return ConversationRecord{}, PromptWindowRecord{}, TranscriptBoundary{}, err
 	}
 	prompt.Projection = projection
 	if summary.Valid {
 		prompt.Summary = &summary.String
 	}
-	return conversation, prompt, nil
+	boundary.TurnSequence = uint64(turnSequence)
+	boundary.MessageSequence = uint64(messageSequence)
+	return conversation, prompt, boundary, nil
 }
 
 func scanSeekDBMessages(rows *sql.Rows) ([]MessageRecord, error) {

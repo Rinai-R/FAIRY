@@ -15,6 +15,7 @@ func (s *Store) commitTieredCompactionPostgres(
 	ctx context.Context,
 	conversationID string,
 	expectedWindowRevision, expectedProjectionRevision uint64,
+	expectedTranscript transcript.TranscriptBoundary,
 	summary string,
 	cutoff uint64,
 	projection historyprojection.State,
@@ -45,7 +46,14 @@ func (s *Store) commitTieredCompactionPostgres(
 	if err != nil {
 		return Result{}, err
 	}
+	if _, _, err := nextProjectionRevisions(expectedWindow, expectedProjection); err != nil {
+		return Result{}, err
+	}
 	cutoffValue, err := databaseInt64("compaction cutoff", cutoff)
+	if err != nil {
+		return Result{}, err
+	}
+	boundary, err := validateTranscriptBoundary(expectedTranscript)
 	if err != nil {
 		return Result{}, err
 	}
@@ -56,18 +64,11 @@ func (s *Store) commitTieredCompactionPostgres(
 		return Result{}, fmt.Errorf("beginning tiered compaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
-	if err := validateProjectionAgainstTranscript(queryCtx, tx, conversationID, projection); err != nil {
-		return Result{}, err
-	}
-	var maxSequence int64
-	if err := tx.QueryRow(queryCtx, "SELECT COALESCE(MAX(sequence), 0) FROM conversation_messages WHERE conversation_id = $1", conversationID).Scan(&maxSequence); err != nil {
-		return Result{}, err
-	}
-	if cutoffValue > maxSequence {
+	if cutoffValue > boundary.messageSequence {
 		return Result{}, errors.New("compaction cutoff exceeds transcript")
 	}
 	result, err := CommitTieredCompaction(
-		queryCtx, tx, conversationID, expectedWindow, expectedProjection,
+		queryCtx, tx, conversationID, expectedWindow, expectedProjection, expectedTranscript,
 		value, cutoffValue, projection, contextWindow, clearLane, nowUnixMS(),
 	)
 	if err != nil {

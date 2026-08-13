@@ -7,6 +7,7 @@ import (
 
 	historyprojection "fairy/context/history/projection"
 	historyruntime "fairy/context/history/runtime"
+	"fairy/context/history/transcript"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -16,16 +17,32 @@ func CommitPromptProjection(
 	tx pgx.Tx,
 	conversationID string,
 	expectedWindowRevision, expectedProjectionRevision int64,
+	expectedTranscript transcript.TranscriptBoundary,
 	projection historyprojection.State,
 	contextWindow historyruntime.ContextWindowRecord,
 	clearLane string,
 	now int64,
 ) (Result, error) {
-	if expectedWindowRevision < 1 || expectedProjectionRevision < 1 {
-		return Result{}, errors.New("expected prompt projection revisions are required")
+	nextWindowRevision, nextProjectionRevision, err := nextProjectionRevisions(
+		expectedWindowRevision,
+		expectedProjectionRevision,
+	)
+	if err != nil {
+		return Result{}, err
 	}
-	nextWindowRevision := expectedWindowRevision + 1
-	nextProjectionRevision := expectedProjectionRevision + 1
+	boundary, err := validateTranscriptBoundary(expectedTranscript)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := transcript.RequireConversation(ctx, tx, conversationID); err != nil {
+		return Result{}, err
+	}
+	if err := requirePostgresTranscriptBoundary(ctx, tx, conversationID, boundary); err != nil {
+		return Result{}, err
+	}
+	if err := validateProjectionAgainstTranscriptBoundary(projection, boundary.messageSequence); err != nil {
+		return Result{}, err
+	}
 	if contextWindow.ConversationID != conversationID {
 		return Result{}, errors.New("context window conversation does not match projection")
 	}
@@ -53,19 +70,7 @@ func CommitPromptProjection(
 	return Result{WindowRevision: uint64(nextWindowRevision)}, nil
 }
 
-func validateProjectionAgainstTranscript(
-	ctx context.Context,
-	tx pgx.Tx,
-	conversationID string,
-	state historyprojection.State,
-) error {
-	var maxSequence int64
-	if err := tx.QueryRow(ctx, `
-SELECT COALESCE(MAX(sequence), 0)
-FROM conversation_messages
-WHERE conversation_id = $1`, conversationID).Scan(&maxSequence); err != nil {
-		return fmt.Errorf("loading projection transcript boundary: %w", err)
-	}
+func validateProjectionAgainstTranscriptBoundary(state historyprojection.State, maxSequence int64) error {
 	for index, omission := range state.Omissions {
 		if omission.StartMessageSequence == 0 {
 			continue

@@ -34,16 +34,28 @@ type PromptWindowRecord struct {
 	UpdatedAtUnixMS       int64                   `json:"updatedAtUnixMs"`
 }
 
+// TranscriptBoundary is the append-only transcript version observed before a
+// prompt is materialized. Compaction commits compare both sequences after
+// locking the conversation root so a newly-created Turn (including an
+// initiation without a message) and a newly-appended message are both visible
+// to optimistic concurrency control.
+type TranscriptBoundary struct {
+	TurnSequence    uint64 `json:"turnSequence"`
+	MessageSequence uint64 `json:"messageSequence"`
+}
+
 type ConversationBootstrap struct {
-	Conversation ConversationRecord `json:"conversation"`
-	Messages     []MessageRecord    `json:"messages"`
-	PromptWindow PromptWindowRecord `json:"promptWindow"`
+	Conversation       ConversationRecord `json:"conversation"`
+	Messages           []MessageRecord    `json:"messages"`
+	PromptWindow       PromptWindowRecord `json:"promptWindow"`
+	TranscriptBoundary TranscriptBoundary `json:"transcriptBoundary"`
 }
 
 type ConversationPromptContext struct {
-	Conversation ConversationRecord `json:"conversation"`
-	Messages     []MessageRecord    `json:"messages"`
-	PromptWindow PromptWindowRecord `json:"promptWindow"`
+	Conversation       ConversationRecord `json:"conversation"`
+	Messages           []MessageRecord    `json:"messages"`
+	PromptWindow       PromptWindowRecord `json:"promptWindow"`
+	TranscriptBoundary TranscriptBoundary `json:"transcriptBoundary"`
 }
 
 type ConversationActivity struct {

@@ -14,6 +14,7 @@ func (s *Store) commitCompactionPostgres(
 	ctx context.Context,
 	conversationID string,
 	expectedRevision uint64,
+	expectedTranscript transcript.TranscriptBoundary,
 	summary string,
 	contextWindow historyruntime.ContextWindowRecord,
 	clearLane string,
@@ -48,6 +49,9 @@ func (s *Store) commitCompactionPostgres(
 	if err != nil {
 		return Result{}, err
 	}
+	if _, err := validateTranscriptBoundary(expectedTranscript); err != nil {
+		return Result{}, err
+	}
 
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
@@ -56,7 +60,7 @@ func (s *Store) commitCompactionPostgres(
 		return Result{}, fmt.Errorf("beginning compaction transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
-	result, err := CommitCompaction(queryCtx, tx, conversationID, expected, nextRevision, value, contextWindow, clearLane, nowUnixMS())
+	result, err := CommitCompaction(queryCtx, tx, conversationID, expected, nextRevision, expectedTranscript, value, contextWindow, clearLane, nowUnixMS())
 	if err != nil {
 		return Result{}, err
 	}

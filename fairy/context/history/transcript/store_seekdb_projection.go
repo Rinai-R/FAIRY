@@ -122,7 +122,7 @@ func (s *Store) loadConversationPromptContextSeekDB(ctx context.Context, convers
 	}
 	queryCtx, cancel := s.seekDBQueryContext(ctx)
 	defer cancel()
-	conversation, prompt, err := loadConversationMetadataSeekDB(queryCtx, s.seekDB, conversationID)
+	conversation, prompt, boundary, err := loadConversationMetadataSeekDB(queryCtx, s.seekDB, conversationID)
 	if err != nil {
 		return ConversationPromptContext{}, err
 	}
@@ -142,7 +142,10 @@ ORDER BY m.sequence ASC`, conversationID, int64(prompt.CutoffMessageSequence))
 		return ConversationPromptContext{}, err
 	}
 	messages = applyPromptProjection(messages, prompt.Projection)
-	return ConversationPromptContext{Conversation: conversation, Messages: messages, PromptWindow: prompt}, nil
+	return ConversationPromptContext{
+		Conversation: conversation, Messages: messages, PromptWindow: prompt,
+		TranscriptBoundary: boundary,
+	}, nil
 }
 
 func validateSeekDBConversationRecord(conversation ConversationRecord, expectedID string) error {

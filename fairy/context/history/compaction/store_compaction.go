@@ -9,7 +9,7 @@ import (
 	"fairy/context/history/transcript"
 )
 
-func (s *Store) commitPromptWindowPostgres(ctx context.Context, conversationID string, expectedRevision uint64, summary string) (Result, error) {
+func (s *Store) commitPromptWindowPostgres(ctx context.Context, conversationID string, expectedRevision uint64, expectedTranscript transcript.TranscriptBoundary, summary string) (Result, error) {
 	if err := transcript.ValidateID("conversation_id", conversationID); err != nil {
 		return Result{}, err
 	}
@@ -28,6 +28,9 @@ func (s *Store) commitPromptWindowPostgres(ctx context.Context, conversationID s
 	if err != nil {
 		return Result{}, err
 	}
+	if _, err := validateTranscriptBoundary(expectedTranscript); err != nil {
+		return Result{}, err
+	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
 	tx, err := s.pool.Raw().Begin(queryCtx)
@@ -35,7 +38,7 @@ func (s *Store) commitPromptWindowPostgres(ctx context.Context, conversationID s
 		return Result{}, fmt.Errorf("beginning prompt window transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
-	result, err := CommitPromptWindow(queryCtx, tx, conversationID, expected, nextRevision, value, nowUnixMS())
+	result, err := CommitPromptWindow(queryCtx, tx, conversationID, expected, nextRevision, expectedTranscript, value, nowUnixMS())
 	if err != nil {
 		return Result{}, err
 	}
