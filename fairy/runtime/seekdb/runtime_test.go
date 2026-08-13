@@ -66,6 +66,27 @@ func TestOpenBootstrapsConfiguredApplicationDatabase(t *testing.T) {
 	}
 }
 
+func TestOpenReportsApplicationDatabaseBootstrapFailure(t *testing.T) {
+	config := testRuntimeConfig(t)
+	options := testLaunchOptions(t, "block")
+	bootstrapFailure := errors.New("create application database denied")
+	connections := 0
+	options.database = func(_ Config, _ string) (*sql.DB, error) {
+		connections++
+		if connections == 2 {
+			return nil, bootstrapFailure
+		}
+		return sql.OpenDB(testSQLConnector{}), nil
+	}
+	_, err := open(t.Context(), config, options)
+	if !errors.Is(err, bootstrapFailure) && (err == nil || !strings.Contains(err.Error(), bootstrapFailure.Error())) {
+		t.Fatalf("open() error = %v", err)
+	}
+	if connections != 2 {
+		t.Fatalf("database connection attempts = %d", connections)
+	}
+}
+
 func TestOpenReportsEarlyProcessExitWithoutPrivatePaths(t *testing.T) {
 	config := testRuntimeConfig(t)
 	private := config.DataDir

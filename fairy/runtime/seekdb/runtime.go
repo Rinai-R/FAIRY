@@ -119,9 +119,13 @@ func open(ctx context.Context, config Config, options launchOptions) (*Runtime, 
 			if config.Database == bootstrapDatabase {
 				return runtime, nil
 			}
-			if err := runtime.createAndSelectDatabase(readyCtx, options); err == nil {
-				return runtime, nil
+			if err := runtime.createAndSelectDatabase(readyCtx, options); err != nil {
+				closeCtx, closeCancel := context.WithTimeout(context.Background(), config.ShutdownLimit)
+				closeErr := runtime.Close(closeCtx)
+				closeCancel()
+				return nil, redactRuntimeError(config, errors.Join(fmt.Errorf("initialize SeekDB application database: %w", err), closeErr))
 			}
+			return runtime, nil
 		}
 		select {
 		case <-runtime.wait:
