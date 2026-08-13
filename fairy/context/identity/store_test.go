@@ -1,14 +1,67 @@
 package identity
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNewStoreRequiresDatabase(t *testing.T) {
 	if _, err := NewStore(nil); !errors.Is(err, ErrIdentityDatabasePoolRequired) {
 		t.Fatalf("NewStore(nil) error = %v", err)
+	}
+}
+
+func TestNewSeekDBStoreRequiresBoundedDatabase(t *testing.T) {
+	tests := []struct {
+		name       string
+		database   *sql.DB
+		queryLimit time.Duration
+		want       error
+	}{
+		{name: "missing database", queryLimit: time.Second, want: ErrIdentitySeekDBRequired},
+		{name: "zero query limit", database: new(sql.DB), want: ErrIdentityQueryLimitInvalid},
+		{name: "negative query limit", database: new(sql.DB), queryLimit: -time.Second, want: ErrIdentityQueryLimitInvalid},
+		{name: "valid", database: new(sql.DB), queryLimit: time.Second},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store, err := NewSeekDBStore(test.database, test.queryLimit)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("NewSeekDBStore() error = %v, want %v", err, test.want)
+			}
+			if test.want == nil && (store == nil || store.seekDB != test.database || store.pool != nil) {
+				t.Fatalf("NewSeekDBStore() = %#v", store)
+			}
+		})
+	}
+}
+
+func TestSeekDBStoreQueryContextIsBounded(t *testing.T) {
+	store := &Store{queryLimit: time.Second}
+	ctx, cancel := store.seekDBQueryContext(context.Background())
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	if !ok || time.Until(deadline) <= 0 || time.Until(deadline) > time.Second {
+		t.Fatalf("query deadline = %v, ok %v", deadline, ok)
+	}
+}
+
+func TestPrincipalDigestSeekDBCodec(t *testing.T) {
+	want := strings.Repeat("a1", principalDigestBytes)
+	digest, err := validateAndDecodeIdentity("qq.onebot", want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := encodePrincipalDigest(digest)
+	if err != nil || got != want {
+		t.Fatalf("encodePrincipalDigest() = %q, %v, want %q", got, err, want)
+	}
+	if _, err := encodePrincipalDigest(digest[:len(digest)-1]); !errors.Is(err, ErrOwnerIdentityCorrupt) {
+		t.Fatalf("encodePrincipalDigest(short) error = %v", err)
 	}
 }
 

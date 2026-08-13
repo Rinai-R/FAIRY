@@ -1,6 +1,8 @@
 package character
 
 import (
+	"errors"
+
 	"go.uber.org/zap"
 )
 
@@ -11,11 +13,17 @@ type CharacterService struct {
 }
 
 func NewCharacterService(root string) *CharacterService {
-	return &CharacterService{
-		root:   root,
-		store:  NewStore(root),
-		logger: zap.NewNop(),
+	service, _ := NewCharacterServiceWithStore(NewStore(root))
+	return service
+}
+
+// NewCharacterServiceWithStore wires the service to one authoritative Store.
+// The service never receives or exposes database/sql handles.
+func NewCharacterServiceWithStore(store *Store) (*CharacterService, error) {
+	if store == nil {
+		return nil, errors.New("character store is required")
 	}
+	return &CharacterService{root: store.root, store: store, logger: zap.NewNop()}, nil
 }
 
 // CatalogStore returns the process-scoped character catalog store for sharing

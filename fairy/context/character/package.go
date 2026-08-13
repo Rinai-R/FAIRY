@@ -92,7 +92,7 @@ func (s *Store) ExportPackage(characterID string, outputPath string) error {
 	if filepath.Ext(outputPath) != ".pack" {
 		return errors.New("character package export path must end with .pack")
 	}
-	record, ok, _, err := s.latestValid(characterID)
+	record, ok, err := s.Lookup(characterID)
 	if err != nil {
 		return err
 	}

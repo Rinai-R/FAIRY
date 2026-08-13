@@ -1,6 +1,7 @@
 package character
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
@@ -44,7 +45,8 @@ type Diagnostic struct {
 }
 
 type Store struct {
-	root string
+	root   string
+	seekDB *seekDBCharacterStore
 }
 
 type Brief struct {
@@ -69,6 +71,13 @@ func NewStore(root string) *Store {
 }
 
 func (s *Store) List() (Catalog, error) {
+	return s.ListContext(context.Background())
+}
+
+func (s *Store) ListContext(ctx context.Context) (Catalog, error) {
+	if s != nil && s.seekDB != nil {
+		return s.seekDB.list(ctx, s.root)
+	}
 	if s == nil || s.root == "" {
 		return Catalog{}, errors.New("config root is required")
 	}
@@ -109,6 +118,13 @@ func (s *Store) List() (Catalog, error) {
 }
 
 func (s *Store) Lookup(characterID string) (Record, bool, error) {
+	return s.LookupContext(context.Background(), characterID)
+}
+
+func (s *Store) LookupContext(ctx context.Context, characterID string) (Record, bool, error) {
+	if s != nil && s.seekDB != nil {
+		return s.seekDB.lookup(ctx, s.root, characterID)
+	}
 	if s == nil || s.root == "" {
 		return Record{}, false, errors.New("config root is required")
 	}
@@ -120,6 +136,13 @@ func (s *Store) Lookup(characterID string) (Record, bool, error) {
 }
 
 func (s *Store) Create(brief Brief, visualPackID string) (Record, error) {
+	return s.CreateContext(context.Background(), brief, visualPackID)
+}
+
+func (s *Store) CreateContext(ctx context.Context, brief Brief, visualPackID string) (Record, error) {
+	if s != nil && s.seekDB != nil {
+		return s.seekDB.create(ctx, s.root, brief, visualPackID)
+	}
 	if err := validateVisualPackID(visualPackID); err != nil {
 		return Record{}, err
 	}
@@ -140,6 +163,13 @@ func (s *Store) Create(brief Brief, visualPackID string) (Record, error) {
 }
 
 func (s *Store) Update(characterID string, brief Brief) (Record, error) {
+	return s.UpdateContext(context.Background(), characterID, brief)
+}
+
+func (s *Store) UpdateContext(ctx context.Context, characterID string, brief Brief) (Record, error) {
+	if s != nil && s.seekDB != nil {
+		return s.seekDB.update(ctx, s.root, characterID, brief)
+	}
 	if !validID(characterID) {
 		return Record{}, errors.New("character_id is invalid")
 	}
@@ -159,6 +189,13 @@ func (s *Store) Update(characterID string, brief Brief) (Record, error) {
 }
 
 func (s *Store) Delete(characterID string) error {
+	return s.DeleteContext(context.Background(), characterID)
+}
+
+func (s *Store) DeleteContext(ctx context.Context, characterID string) error {
+	if s != nil && s.seekDB != nil {
+		return s.seekDB.delete(ctx, characterID)
+	}
 	if s == nil || s.root == "" {
 		return errors.New("config root is required")
 	}
@@ -237,6 +274,13 @@ func (s *Store) Delete(characterID string) error {
 }
 
 func (s *Store) SetAppearance(characterID string, visualPackID string) (Record, error) {
+	return s.SetAppearanceContext(context.Background(), characterID, visualPackID)
+}
+
+func (s *Store) SetAppearanceContext(ctx context.Context, characterID string, visualPackID string) (Record, error) {
+	if s != nil && s.seekDB != nil {
+		return s.seekDB.setAppearance(ctx, s.root, characterID, visualPackID)
+	}
 	if !validID(characterID) {
 		return Record{}, errors.New("character_id is invalid")
 	}
@@ -260,6 +304,13 @@ func (s *Store) SetAppearance(characterID string, visualPackID string) (Record, 
 }
 
 func (s *Store) Activate(characterID string, revision uint64) (Record, error) {
+	return s.ActivateContext(context.Background(), characterID, revision)
+}
+
+func (s *Store) ActivateContext(ctx context.Context, characterID string, revision uint64) (Record, error) {
+	if s != nil && s.seekDB != nil {
+		return s.seekDB.activate(ctx, s.root, characterID, revision)
+	}
 	if !validID(characterID) || revision == 0 {
 		return Record{}, errors.New("character activation target is invalid")
 	}
