@@ -29,6 +29,7 @@ var targetPackages = []string{
 	"fairy/agent/conversation/turngate",
 	"fairy/app/core",
 	"fairy/runtime/database",
+	"fairy/runtime/seekdb",
 	"fairy/runtime/embedding",
 	"fairy/runtime/ledger",
 	"fairy/transport/desktopcapture",
