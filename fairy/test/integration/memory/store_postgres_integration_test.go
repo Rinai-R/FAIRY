@@ -1505,6 +1505,56 @@ WHERE turn_id = $1 AND result_status IN ('applied', 'no_change')`, turnID).Scan(
 	assertPostgresEmbedding(t, ctx, pool, "personal_memories", results[1].MemoryID, "喜欢清晨散步", false)
 }
 
+func TestPostgresCommitMemoryMutationsMergesRepeatedCoverageWithAppliedPrecedence(t *testing.T) {
+	ctx := context.Background()
+	pool := openIsolatedPostgresStore(t, ctx)
+	defer pool.Close()
+	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
+		t.Fatal(err)
+	}
+	store, err := newMemoryIntegrationStores(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversationID, turnID, batchID := seedPostgresRunningExtractionBatch(
+		t, ctx, pool, store, "character-coverage-merge",
+	)
+	results, err := store.CommitMemoryMutationsContext(
+		ctx, batchID, "character-coverage-merge", nil, []extraction.Mutation{
+			{
+				Operation: extraction.OperationAdd, SourceTurnID: turnID,
+				Kind: "preference", Scope: personal.Scope{Type: "global"},
+				Content: "喜欢清晨散步", ConfidenceBasisPoints: 9000,
+			},
+			{
+				Operation: extraction.OperationAdd, SourceTurnID: turnID,
+				Kind: "preference", Scope: personal.Scope{Type: "global"},
+				Content: "喜欢清晨散步", ConfidenceBasisPoints: 9000,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || results[0].Status != "applied" || results[0].MemoryID == "" ||
+		results[1] != (extraction.MutationResult{Status: "no_change", ExistingMemoryID: results[0].MemoryID}) {
+		t.Fatalf("repeated coverage results = %#v", results)
+	}
+	var count int64
+	var status string
+	if err := pool.Raw().QueryRow(ctx, `
+SELECT COUNT(*), MIN(result_status)
+FROM memory_context_coverages
+WHERE conversation_id = $1 AND turn_id = $2 AND memory_id = $3`,
+		conversationID, turnID, results[0].MemoryID,
+	).Scan(&count, &status); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || status != "applied" {
+		t.Fatalf("repeated coverage = count:%d status:%q, want one applied row", count, status)
+	}
+}
+
 func TestPostgresCommitMemoryMutationsAppliesDeleteAndNone(t *testing.T) {
 	ctx := context.Background()
 	pool := openIsolatedPostgresStore(t, ctx)

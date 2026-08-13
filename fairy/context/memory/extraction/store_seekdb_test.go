@@ -7,6 +7,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"fairy/context/memory/personal"
 )
 
 type seekDBExtractionCoordinator interface {
@@ -55,6 +57,42 @@ func TestNewSeekDBExtractionStoreValidatesConfiguration(t *testing.T) {
 	store, err := NewSeekDBStore(database, 2*time.Second, "worker-valid", time.Minute)
 	if err != nil || store == nil {
 		t.Fatalf("NewSeekDBStore(valid) = (%#v, %v)", store, err)
+	}
+}
+
+func TestNewSeekDBExtractionStoreWithPersonalRequiresOneAuthority(t *testing.T) {
+	t.Parallel()
+
+	database := sql.OpenDB(failingExtractionSeekDBConnector{})
+	otherDatabase := sql.OpenDB(failingExtractionSeekDBConnector{})
+	t.Cleanup(func() {
+		_ = database.Close()
+		_ = otherDatabase.Close()
+	})
+	personalStore, err := personal.NewSeekDBStore(database, time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherPersonalStore, err := personal.NewSeekDBStore(otherDatabase, time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if store, err := NewSeekDBStoreWithPersonal(
+		database, time.Second, "worker-personal", time.Minute, nil,
+	); store != nil || !errors.Is(err, ErrPersonalStoreEmpty) {
+		t.Fatalf("missing personal authority = (%#v, %v)", store, err)
+	}
+	if store, err := NewSeekDBStoreWithPersonal(
+		database, time.Second, "worker-personal", time.Minute, otherPersonalStore,
+	); store != nil || !errors.Is(err, ErrPersonalAuthorityMismatch) {
+		t.Fatalf("mismatched personal authority = (%#v, %v)", store, err)
+	}
+	store, err := NewSeekDBStoreWithPersonal(
+		database, time.Second, "worker-personal", time.Minute, personalStore,
+	)
+	if err != nil || store == nil || store.personal != personalStore {
+		t.Fatalf("shared personal authority = (%#v, %v)", store, err)
 	}
 }
 
@@ -120,6 +158,17 @@ func TestSeekDBExtractionPersonalSettlementAPIsFailClosedBeforeQuery(t *testing.
 		_, err := store.ClaimExtractionBatchContext(t.Context(), "conversation", 1)
 		return err
 	})
+	assertSettlementPending("EnrichClaimedBatchContext", func() error {
+		_, err := store.EnrichClaimedBatchContext(t.Context(), &ClaimedBatch{
+			BatchID: "batch", ConversationID: "conversation", CharacterID: "character",
+			Turns: []Turn{{TurnID: "turn"}},
+		})
+		return err
+	})
+	assertSettlementPending("CommitClaimedMemoryMutationsContext", func() error {
+		_, err := store.CommitClaimedMemoryMutationsContext(t.Context(), &BatchInput{}, nil)
+		return err
+	})
 	assertSettlementPending("CompleteExtractionBatchContext", func() error {
 		return store.CompleteExtractionBatchContext(t.Context(), "batch")
 	})
@@ -129,7 +178,13 @@ func TestSeekDBExtractionPersonalSettlementAPIsFailClosedBeforeQuery(t *testing.
 		)
 		return err
 	})
-	assertSettlementPending("LoadCommittedMemoryCoverageContext", func() error {
+	assertAuthorityFailure := func(name string, call func() error) {
+		t.Helper()
+		if err := call(); !errors.Is(err, errFailingExtractionSeekDBAuthority) {
+			t.Fatalf("%s error = %v, want failing SeekDB authority", name, err)
+		}
+	}
+	assertAuthorityFailure("LoadCommittedMemoryCoverageContext", func() error {
 		_, err := store.LoadCommittedMemoryCoverageContext(t.Context(), "conversation")
 		return err
 	})

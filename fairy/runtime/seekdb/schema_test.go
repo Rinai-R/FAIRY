@@ -12,8 +12,8 @@ import (
 func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first := BuiltinMigrations()
 	second := BuiltinMigrations()
-	if len(first) != 7 || len(second) != 7 {
-		t.Fatalf("builtin migration counts = %d and %d, want 7", len(first), len(second))
+	if len(first) != 8 || len(second) != 8 {
+		t.Fatalf("builtin migration counts = %d and %d, want 8", len(first), len(second))
 	}
 	foundation := Revision{Number: foundationSchemaRevision, Checksum: foundationSchemaChecksum()}
 	conversation := Revision{Number: conversationSchemaRevision, Checksum: conversationSchemaChecksum()}
@@ -22,8 +22,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	conversationRuntime := Revision{Number: conversationRuntimeSchemaRevision, Checksum: conversationRuntimeSchemaChecksum()}
 	extractionCoordination := Revision{Number: extractionCoordinationRevision, Checksum: extractionCoordinationChecksum()}
 	cognitiveRecords := Revision{Number: cognitiveRecordsSchemaRevision, Checksum: cognitiveRecordsSchemaChecksum()}
-	if current := CurrentSchemaRevision(); current != cognitiveRecords {
-		t.Fatalf("current schema revision = %#v, want %#v", current, cognitiveRecords)
+	duplicateRevalidation := Revision{Number: duplicateRevalidationRevision, Checksum: duplicateRevalidationSchemaChecksum()}
+	if current := CurrentSchemaRevision(); current != duplicateRevalidation {
+		t.Fatalf("current schema revision = %#v, want %#v", current, duplicateRevalidation)
 	}
 	if first[0].Revision != foundation || first[0].Name != "create-foundation-schema" {
 		t.Fatalf("foundation migration = %#v, want revision %#v", first[0], foundation)
@@ -46,6 +47,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	if first[6].Revision != cognitiveRecords || first[6].Name != "create-cognitive-records-schema" {
 		t.Fatalf("cognitive records migration = %#v, want revision %#v", first[6], cognitiveRecords)
 	}
+	if first[7].Revision != duplicateRevalidation || first[7].Name != "index-personal-memory-duplicates" {
+		t.Fatalf("duplicate revalidation migration = %#v, want revision %#v", first[7], duplicateRevalidation)
+	}
 	for index, migration := range first {
 		if migration.Apply == nil || migration.Verify == nil {
 			t.Fatalf("builtin migration %d must provide Apply and Verify", index+1)
@@ -59,13 +63,15 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first[4].Revision.Number = 101
 	first[5].Name = "mutated-extraction-coordination"
 	first[6].Revision.Number = 102
+	first[7].Name = "mutated-duplicate-revalidation"
 	if second[0].Name != "create-foundation-schema" || second[0].Revision != foundation ||
 		second[1].Name != "create-conversation-schema" || second[1].Revision != conversation ||
 		second[2].Name != "create-turn-evidence-schema" || second[2].Revision != turnEvidence ||
 		second[3].Name != "create-conversation-message-fulltext-index" || second[3].Revision != transcriptRecall ||
 		second[4].Name != "create-conversation-runtime-schema" || second[4].Revision != conversationRuntime ||
 		second[5].Name != "strengthen-extraction-coordination-schema" || second[5].Revision != extractionCoordination ||
-		second[6].Name != "create-cognitive-records-schema" || second[6].Revision != cognitiveRecords {
+		second[6].Name != "create-cognitive-records-schema" || second[6].Revision != cognitiveRecords ||
+		second[7].Name != "index-personal-memory-duplicates" || second[7].Revision != duplicateRevalidation {
 		t.Fatalf("caller mutation changed later BuiltinMigrations result: %#v", second[0])
 	}
 	if got := hex.EncodeToString(foundation.Checksum[:]); got != "e674bec12d0b6895da8b351d082a686c9c2f44990fb68749bbad083c4a6805d3" {
@@ -88,6 +94,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	}
 	if got := hex.EncodeToString(cognitiveRecords.Checksum[:]); got != "93de00e817d242133b8a9227e5a40e512fde004b262f9dbae013fa1efdcae708" {
 		t.Fatalf("cognitive records checksum = %s, update requires an explicit revision decision", got)
+	}
+	if got := hex.EncodeToString(duplicateRevalidation.Checksum[:]); got != "a6b91fc39ba1e5a46ff80fdbe0c85ba76177b6c9466b5f0f61d8cea6f31c82f6" {
+		t.Fatalf("duplicate revalidation checksum = %s, update requires an explicit revision decision", got)
 	}
 }
 
@@ -167,6 +176,13 @@ func TestCognitiveRecordsSchemaDefinesOnlyDirectRecordsAndCoverage(t *testing.T)
 	)) {
 		t.Fatal("personal memories lack scope-before-status candidate index")
 	}
+	if slices.ContainsFunc(personal.columns, func(column schemaColumn) bool {
+		return column.name == "normalized_content_hash"
+	}) || slices.ContainsFunc(personal.indexes, func(index schemaIndex) bool {
+		return index.name == personalMemoryDuplicateRevalidationIndex
+	}) {
+		t.Fatal("immutable revision-seven personal memory shape contains revision-eight duplicate metadata")
+	}
 	if len(personal.foreignKeys) != 2 || personal.foreignKeys[0].referencedTable != "conversation_turns" ||
 		personal.foreignKeys[0].deleteRule != "restrict" || len(personal.foreignKeys[0].columns) != 2 ||
 		personal.foreignKeys[1].referencedTable != "personal_memories" || personal.foreignKeys[1].deleteRule != "restrict" {
@@ -238,6 +254,118 @@ func TestCognitiveRecordsSchemaDefinesOnlyDirectRecordsAndCoverage(t *testing.T)
 	if len(knowledge.foreignKeys) != 2 || knowledge.foreignKeys[0].deleteRule != "restrict" ||
 		knowledge.foreignKeys[1].deleteRule != "restrict" {
 		t.Fatalf("knowledge lifecycle foreign keys = %#v", knowledge.foreignKeys)
+	}
+}
+
+func TestDuplicateRevalidationSchemaEvolvesOnlyPersonalDuplicateMetadata(t *testing.T) {
+	if personalMemoryDuplicateBackfillBatchSize != 128 {
+		t.Fatalf("personal duplicate backfill batch size = %d, want 128", personalMemoryDuplicateBackfillBatchSize)
+	}
+	if len(duplicateRevalidationSchemaContract) != 7 {
+		t.Fatalf("duplicate revalidation contract statement count = %d, want 7", len(duplicateRevalidationSchemaContract))
+	}
+	for _, token := range []string{
+		"ADD COLUMN normalized_content_hash BINARY(32) NULL",
+		"strings.Join(strings.Fields(content), \" \")",
+		"GO VERIFY EVERY personal_memories.normalized_content_hash",
+		"IN ID-KEYSET BATCHES OF 128",
+		"MODIFY COLUMN normalized_content_hash BINARY(32) NOT NULL",
+		"CREATE INDEX IF NOT EXISTS " + personalMemoryDuplicateRevalidationIndex,
+		"(kind, scope_kind, character_id, review_status, status, normalized_content_hash, id)",
+		"CREATE TABLE IF NOT EXISTS " + personalMemoryWriteGuardTableName,
+		"CONSTRAINT personal_memory_write_guard_singleton_check CHECK (id = 1)",
+		"INSERT INTO " + personalMemoryWriteGuardTableName + " (id) VALUES (1)",
+		"ON DUPLICATE KEY UPDATE id = VALUES(id)",
+	} {
+		if !strings.Contains(strings.Join(duplicateRevalidationSchemaContract[:], "\n"), token) {
+			t.Errorf("duplicate revalidation contract lacks %q", token)
+		}
+	}
+
+	revisionSeven := cognitiveRecordsSchema[0]
+	evolved := duplicateRevalidationPersonalTable()
+	if evolved.name != "personal_memories" || len(evolved.columns) != len(revisionSeven.columns)+1 ||
+		len(evolved.indexes) != len(revisionSeven.indexes)+1 ||
+		len(evolved.checks) != len(revisionSeven.checks) ||
+		len(evolved.foreignKeys) != len(revisionSeven.foreignKeys) {
+		t.Fatalf("revision-eight personal memory shape = %#v", evolved)
+	}
+	hash := schemaColumnNamed(t, evolved, "normalized_content_hash")
+	if hash.columnType != "binary(32)" || hash.nullable || hash.defaultValue.Valid ||
+		hash.extra != "" || hash.generationExpression != "" {
+		t.Fatalf("normalized personal content hash column = %#v", hash)
+	}
+	if !schemaHasIndex(evolved, ascendingBTreeIndex(
+		personalMemoryDuplicateRevalidationIndex, false,
+		"kind", "scope_kind", "character_id", "review_status", "status", "normalized_content_hash", "id",
+	)) {
+		t.Fatal("revision-eight personal memory shape lacks bounded duplicate revalidation index")
+	}
+	if slices.ContainsFunc(revisionSeven.columns, func(column schemaColumn) bool {
+		return column.name == "normalized_content_hash"
+	}) || slices.ContainsFunc(revisionSeven.indexes, func(index schemaIndex) bool {
+		return index.name == personalMemoryDuplicateRevalidationIndex
+	}) {
+		t.Fatal("building revision-eight personal shape mutated immutable revision seven")
+	}
+	guard := personalMemoryWriteGuardSchema
+	if guard.name != personalMemoryWriteGuardTableName || guard.ddl != createPersonalMemoryWriteGuardDDL ||
+		len(guard.columns) != 1 || guard.columns[0] != (schemaColumn{name: "id", columnType: "tinyint unsigned"}) ||
+		!schemaHasIndex(guard, ascendingBTreeIndex("PRIMARY", true, "id")) ||
+		len(guard.checks) != 1 || guard.checks[0] != (schemaCheck{
+		name: "personal_memory_write_guard_singleton_check", clause: "(`id` = 1)",
+	}) || len(guard.foreignKeys) != 0 {
+		t.Fatalf("personal memory write guard schema = %#v", guard)
+	}
+}
+
+func TestNormalizedPersonalMemoryContentHashMatchesGoFieldsContract(t *testing.T) {
+	tests := []struct {
+		name       string
+		content    string
+		normalized string
+	}{
+		{name: "unchanged", content: "alpha beta", normalized: "alpha beta"},
+		{name: "ascii whitespace", content: " \talpha\n\rbeta\v\f ", normalized: "alpha beta"},
+		{name: "unicode whitespace", content: "alpha\u00a0beta\u3000gamma", normalized: "alpha beta gamma"},
+		{name: "zero width space is content", content: "alpha\u200bbeta", normalized: "alpha\u200bbeta"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			want := sha256.Sum256([]byte(test.normalized))
+			if got := normalizedPersonalMemoryContentHash(test.content); got != want {
+				t.Fatalf("normalized content hash = %x, want %x", got, want)
+			}
+		})
+	}
+}
+
+func TestRequiredPersonalMemoryNormalizedHashRejectsSemanticDrift(t *testing.T) {
+	content := "alpha\u00a0beta"
+	want := normalizedPersonalMemoryContentHash(content)
+	if err := comparePersonalMemoryNormalizedHash("memory-1", content, want[:]); err != nil {
+		t.Fatalf("matching required normalized content hash rejected: %v", err)
+	}
+	for _, drifted := range [][]byte{
+		nil,
+		{},
+		make([]byte, sha256.Size),
+		sha256.New().Sum(nil),
+	} {
+		if err := comparePersonalMemoryNormalizedHash("memory-1", content, drifted); err == nil {
+			t.Fatalf("drifted required normalized content hash accepted: %x", drifted)
+		}
+	}
+}
+
+func TestPersonalMemoryWriteGuardRequiresExactSingletonRow(t *testing.T) {
+	if err := comparePersonalMemoryWriteGuardRows([]uint64{1}); err != nil {
+		t.Fatalf("exact personal memory write guard row rejected: %v", err)
+	}
+	for _, rows := range [][]uint64{nil, {}, {0}, {2}, {1, 1}, {1, 2}} {
+		if err := comparePersonalMemoryWriteGuardRows(rows); err == nil {
+			t.Fatalf("invalid personal memory write guard rows accepted: %v", rows)
+		}
 	}
 }
 

@@ -99,7 +99,7 @@ type extractionStore interface {
 	PendingExtractionTurnCount(conversationID string) (uint64, error)
 	ClaimExtractionBatch(conversationID string, limit int) (*extraction.BatchInput, error)
 	FailExtractionBatch(batchID, code, message string, retryable bool) error
-	CommitMemoryMutations(batchID string, characterID string, allowedMemoryIDs []string, mutations []extraction.Mutation) ([]extraction.MutationResult, error)
+	CommitClaimedMemoryMutationsContext(context.Context, *extraction.BatchInput, []extraction.Mutation) ([]extraction.MutationResult, error)
 }
 
 // knowledgeIngestStore owns verified-knowledge retrieval and direct writes.

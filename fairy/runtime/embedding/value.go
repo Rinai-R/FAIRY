@@ -1,6 +1,7 @@
 package embedding
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -50,6 +51,32 @@ func ForContent(embedder SemanticEmbedder, content string) (EmbeddingValue, erro
 }
 
 func ForContents(embedder SemanticEmbedder, contents []string) ([]EmbeddingValue, error) {
+	return forContents(context.Background(), embedder, contents, false)
+}
+
+// ForContentsContext snapshots one provider and prepares a consistent batch.
+// It fails closed before invoking a legacy provider so every background owner
+// can bound cancellation and shutdown.
+func ForContentsContext(
+	ctx context.Context,
+	embedder SemanticEmbedder,
+	contents []string,
+) ([]EmbeddingValue, error) {
+	return forContents(ctx, embedder, contents, true)
+}
+
+func forContents(
+	ctx context.Context,
+	embedder SemanticEmbedder,
+	contents []string,
+	requireContext bool,
+) ([]EmbeddingValue, error) {
+	if ctx == nil {
+		return nil, errors.New("embedding context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if len(contents) == 0 {
 		return nil, nil
 	}
@@ -67,8 +94,18 @@ func ForContents(embedder SemanticEmbedder, contents []string) ([]EmbeddingValue
 	if err != nil {
 		return nil, err
 	}
-	vectors, err := embedder.Embed(contents)
+	var vectors [][]float32
+	if contextual, ok := embedder.(ContextSemanticEmbedder); ok {
+		vectors, err = contextual.EmbedContext(ctx, contents)
+	} else if requireContext {
+		return nil, ErrSemanticCancellationUnsupported
+	} else {
+		vectors, err = embedder.Embed(contents)
+	}
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, fmt.Errorf("embedding content: %w", err)
 	}
 	if len(vectors) != len(contents) {

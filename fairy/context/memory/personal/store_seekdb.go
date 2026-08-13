@@ -2,6 +2,7 @@ package personal
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -17,6 +18,37 @@ const seekDBRecordColumns = `
 id, kind, scope_kind, character_id, review_status, content, status,
 confidence_basis_points, source_conversation_id, source_turn_id,
 supersedes_id, created_at_ms, updated_at_ms`
+
+const seekDBPersonalMemoryWriteGuardID = 1
+
+func normalizedContentHash(content string) [sha256.Size]byte {
+	return sha256.Sum256([]byte(NormalizeContent(content)))
+}
+
+// LockSeekDBMutationGuardTx serializes personal-memory mutations on the
+// singleton revision-eight guard row. Callers must acquire it before locking
+// any personal_memories row so inserts and duplicate revalidation share one
+// provable lock order.
+func (s *Store) LockSeekDBMutationGuardTx(ctx context.Context, tx *sql.Tx) error {
+	if !s.usesSeekDB() {
+		return ErrStoreBackendUnavailable
+	}
+	if tx == nil {
+		return ErrSeekDBTransactionEmpty
+	}
+	var id int
+	if err := tx.QueryRowContext(ctx, `
+SELECT id
+FROM personal_memory_write_guard
+WHERE id = ?
+FOR UPDATE`, seekDBPersonalMemoryWriteGuardID).Scan(&id); err != nil {
+		return fmt.Errorf("locking SeekDB personal memory mutation guard: %w", err)
+	}
+	if id != seekDBPersonalMemoryWriteGuardID {
+		return errors.New("SeekDB personal memory mutation guard is invalid")
+	}
+	return nil
+}
 
 func validateSeekDBID(label, value string) error {
 	if value == "" || strings.TrimSpace(value) != value || !utf8.ValidString(value) || utf8.RuneCountInString(value) > 128 {
@@ -131,27 +163,69 @@ func selectSeekDBRecord(ctx context.Context, database interface {
 
 func latestSourceSeekDB(ctx context.Context, tx *sql.Tx, scope Scope) (string, string, error) {
 	query := `
-SELECT conversation.id, turn.id
+SELECT conversation.id
 FROM conversations AS conversation
-JOIN conversation_turns AS turn ON turn.conversation_id = conversation.id`
+WHERE EXISTS (
+  SELECT 1 FROM conversation_turns AS turn WHERE turn.conversation_id = conversation.id
+)`
 	arguments := make([]any, 0, 1)
 	if scope.Type == "character" {
-		query += " WHERE conversation.character_id = ?"
+		query += " AND conversation.character_id = ?"
 		arguments = append(arguments, scope.CharacterID)
 	}
 	query += `
-ORDER BY conversation.updated_at_ms DESC, turn.sequence DESC, conversation.id ASC, turn.id ASC
+ORDER BY conversation.updated_at_ms DESC, conversation.id ASC
 LIMIT 1
 FOR UPDATE`
-	var conversationID, turnID string
-	err := tx.QueryRowContext(ctx, query, arguments...).Scan(&conversationID, &turnID)
+	var conversationID string
+	err := tx.QueryRowContext(ctx, query, arguments...).Scan(&conversationID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", errors.New("memory write requires an existing conversation turn")
 	}
 	if err != nil {
-		return "", "", fmt.Errorf("reading SeekDB memory source turn: %w", err)
+		return "", "", fmt.Errorf("locking SeekDB memory source conversation: %w", err)
+	}
+	var turnID string
+	if err := tx.QueryRowContext(ctx, `
+SELECT id
+FROM conversation_turns
+WHERE conversation_id = ?
+ORDER BY sequence DESC, id ASC
+LIMIT 1
+FOR UPDATE`, conversationID).Scan(&turnID); err != nil {
+		return "", "", fmt.Errorf("locking SeekDB memory source turn: %w", err)
 	}
 	return conversationID, turnID, nil
+}
+
+func lockSeekDBSourceTurn(
+	ctx context.Context,
+	tx *sql.Tx,
+	conversationID, turnID string,
+) error {
+	if err := validateSeekDBID("source_conversation_id", conversationID); err != nil {
+		return err
+	}
+	if err := validateSeekDBID("source_turn_id", turnID); err != nil {
+		return err
+	}
+	var found int
+	if err := tx.QueryRowContext(ctx, `
+SELECT 1 FROM conversations WHERE id = ? FOR UPDATE`, conversationID).Scan(&found); errors.Is(err, sql.ErrNoRows) {
+		return errors.New("personal memory source conversation does not exist")
+	} else if err != nil {
+		return fmt.Errorf("locking SeekDB personal memory source conversation: %w", err)
+	}
+	if err := tx.QueryRowContext(ctx, `
+SELECT 1
+FROM conversation_turns
+WHERE conversation_id = ? AND id = ?
+FOR UPDATE`, conversationID, turnID).Scan(&found); errors.Is(err, sql.ErrNoRows) {
+		return errors.New("personal memory source turn does not exist")
+	} else if err != nil {
+		return fmt.Errorf("locking SeekDB personal memory source turn: %w", err)
+	}
+	return nil
 }
 
 func seekDBEmbeddingTuple(content string, value embedding.EmbeddingValue) (any, any, any, error) {
@@ -199,6 +273,17 @@ func (s *Store) InsertSeekDBTx(
 	if tx == nil {
 		return Record{}, ErrSeekDBTransactionEmpty
 	}
+	// These locks are intentionally defensive. Composite callers acquire the
+	// same source and guard locks before any personal record; re-locking them is
+	// harmless and keeps direct callers on the single source -> guard -> record
+	// protocol instead of letting the INSERT foreign key acquire source locks
+	// after the guard.
+	if err := lockSeekDBSourceTurn(ctx, tx, sourceConversationID, sourceTurnID); err != nil {
+		return Record{}, err
+	}
+	if err := s.LockSeekDBMutationGuardTx(ctx, tx); err != nil {
+		return Record{}, err
+	}
 	for _, item := range []struct {
 		label string
 		value string
@@ -236,16 +321,17 @@ func (s *Store) InsertSeekDBTx(
 	if now < 1 {
 		return Record{}, errors.New("memory timestamp is invalid")
 	}
+	normalizedHash := normalizedContentHash(content)
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO personal_memories(
   id, kind, scope_kind, character_id, review_status, content, status,
   confidence_basis_points, source_conversation_id, source_turn_id, evidence_ids,
   supersedes_id, embedding_space_id, embedding_content_hash, embedding,
-  created_at_ms, updated_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  created_at_ms, updated_at_ms, normalized_content_hash
+) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, kind, scopeKind, characterID, reviewStatus, content, int(confidence),
 		sourceConversationID, sourceTurnID, `[]`, supersedesID,
-		spaceID, contentHash, vector, now, now,
+		spaceID, contentHash, vector, now, now, normalizedHash[:],
 	)
 	if err != nil {
 		return Record{}, fmt.Errorf("inserting SeekDB personal memory: %w", err)

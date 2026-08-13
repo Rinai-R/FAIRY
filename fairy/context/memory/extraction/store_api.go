@@ -1,6 +1,11 @@
 package extraction
 
-import "context"
+import (
+	"context"
+	"errors"
+
+	"fairy/context/memory/personal"
+)
 
 func (s *Store) ClaimExtractionBatch(conversationID string, limit int) (*BatchInput, error) {
 	return s.ClaimExtractionBatchContext(context.Background(), conversationID, limit)
@@ -8,7 +13,23 @@ func (s *Store) ClaimExtractionBatch(conversationID string, limit int) (*BatchIn
 
 func (s *Store) ClaimExtractionBatchContext(ctx context.Context, conversationID string, limit int) (*BatchInput, error) {
 	if s.usesSeekDB() {
-		return nil, ErrPersonalSettlementPending
+		if s.personal == nil {
+			return nil, ErrPersonalSettlementPending
+		}
+		claim, err := s.ClaimExtractionTurnsContext(ctx, conversationID, limit)
+		if err != nil || claim == nil {
+			return nil, err
+		}
+		input, err := s.EnrichClaimedBatchContext(ctx, claim)
+		if err != nil {
+			// Preserve the durable identity so the caller can fail/retry the
+			// claim. ExistingMemories is not authoritative while err != nil.
+			return &BatchInput{
+				BatchID: claim.BatchID, ConversationID: claim.ConversationID,
+				CharacterID: claim.CharacterID, Turns: append([]Turn(nil), claim.Turns...),
+			}, err
+		}
+		return input, nil
 	}
 	if !s.usesPostgres() {
 		return nil, ErrStoreBackendUnavailable
@@ -27,6 +48,77 @@ func (s *Store) ClaimExtractionTurnsContext(ctx context.Context, conversationID 
 		return nil, ErrStoreBackendUnavailable
 	}
 	return s.claimExtractionTurnsSeekDB(ctx, conversationID, limit)
+}
+
+// EnrichClaimedBatch resolves the authoritative personal-memory projection
+// after a durable SeekDB claim has committed. A successful empty projection
+// is distinct from a coordinator-only Store, which fails closed.
+func (s *Store) EnrichClaimedBatch(batch *ClaimedBatch) (*BatchInput, error) {
+	return s.EnrichClaimedBatchContext(context.Background(), batch)
+}
+
+func (s *Store) EnrichClaimedBatchContext(ctx context.Context, batch *ClaimedBatch) (*BatchInput, error) {
+	if !s.usesSeekDB() {
+		return nil, ErrStoreBackendUnavailable
+	}
+	if s.personal == nil {
+		return nil, ErrPersonalSettlementPending
+	}
+	if err := validateClaimedBatch(batch); err != nil {
+		return nil, err
+	}
+	remaining := personal.MaxContentRunes
+	existing, err := s.personal.RetrieveExtractionProjectionContext(
+		ctx, batch.CharacterID, BuildRetrievalProjection(batch.Turns), &remaining,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &BatchInput{
+		BatchID:          batch.BatchID,
+		ConversationID:   batch.ConversationID,
+		CharacterID:      batch.CharacterID,
+		Turns:            append([]Turn(nil), batch.Turns...),
+		ExistingMemories: append([]personal.Retrieved(nil), existing...),
+	}, nil
+}
+
+// CommitClaimedMemoryMutations settles the exact enriched batch. The complete
+// BatchInput is mandatory: batch id alone cannot prove the original Turn set.
+func (s *Store) CommitClaimedMemoryMutations(
+	batch *BatchInput,
+	mutations []Mutation,
+) ([]MutationResult, error) {
+	return s.CommitClaimedMemoryMutationsContext(context.Background(), batch, mutations)
+}
+
+func (s *Store) CommitClaimedMemoryMutationsContext(
+	ctx context.Context,
+	batch *BatchInput,
+	mutations []Mutation,
+) ([]MutationResult, error) {
+	if s.usesSeekDB() {
+		if s.personal == nil {
+			return nil, ErrPersonalSettlementPending
+		}
+		if batch == nil {
+			return nil, errors.New("extraction batch input is required")
+		}
+		return s.commitClaimedMemoryMutationsSeekDB(ctx, batch, mutations)
+	}
+	if !s.usesPostgres() {
+		return nil, ErrStoreBackendUnavailable
+	}
+	if batch == nil {
+		return nil, errors.New("extraction batch input is required")
+	}
+	allowed := make([]string, 0, len(batch.ExistingMemories))
+	for _, item := range batch.ExistingMemories {
+		allowed = append(allowed, item.ID)
+	}
+	return s.commitMemoryMutationsPostgres(
+		ctx, batch.BatchID, batch.CharacterID, allowed, mutations,
+	)
 }
 
 func (s *Store) PendingExtractionTurnCount(conversationID string) (uint64, error) {

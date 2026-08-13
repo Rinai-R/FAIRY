@@ -84,6 +84,16 @@ func (s *Store) PrepareEmbeddings(contents []string) ([]embedding.EmbeddingValue
 	return embedding.ForContents(s.semanticEmbedderSnapshot(), contents)
 }
 
+func (s *Store) PrepareEmbeddingsContext(
+	ctx context.Context,
+	contents []string,
+) ([]embedding.EmbeddingValue, error) {
+	if s == nil || s.embedder == nil {
+		return nil, ErrStoreBackendUnavailable
+	}
+	return embedding.ForContentsContext(ctx, s.semanticEmbedderSnapshot(), contents)
+}
+
 // OwnsSeekDB reports whether database is the exact authority supplied to this
 // Store. Composition uses it to reject cross-database settlement wiring.
 func (s *Store) OwnsSeekDB(database *sql.DB) bool {

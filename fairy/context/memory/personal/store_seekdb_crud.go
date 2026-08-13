@@ -61,6 +61,9 @@ func (s *Store) createPersonalMemorySeekDB(
 	if err != nil {
 		return Record{}, err
 	}
+	if err := s.LockSeekDBMutationGuardTx(queryCtx, tx); err != nil {
+		return Record{}, err
+	}
 	record, err := s.InsertSeekDBTx(
 		queryCtx, tx, newID(), kind, scope, content, confidence,
 		conversationID, turnID, nil, s.currentUnixMS(), prepared,
@@ -111,6 +114,14 @@ func (s *Store) revisePersonalMemorySeekDB(
 		return Record{}, fmt.Errorf("beginning SeekDB memory revision transaction: %w", err)
 	}
 	defer tx.Rollback()
+	if err := lockSeekDBSourceTurn(
+		queryCtx, tx, snapshot.SourceConversationID, snapshot.SourceTurnID,
+	); err != nil {
+		return Record{}, err
+	}
+	if err := s.LockSeekDBMutationGuardTx(queryCtx, tx); err != nil {
+		return Record{}, err
+	}
 	current, err := selectSeekDBRecord(queryCtx, tx, id, true)
 	if err != nil {
 		return Record{}, err
@@ -119,7 +130,9 @@ func (s *Store) revisePersonalMemorySeekDB(
 		return Record{}, errors.New("memory is not active")
 	}
 	if current.Kind != snapshot.Kind || current.Scope != snapshot.Scope ||
-		current.ReviewStatus != snapshot.ReviewStatus || current.Content != snapshot.Content {
+		current.ReviewStatus != snapshot.ReviewStatus || current.Content != snapshot.Content ||
+		current.SourceConversationID != snapshot.SourceConversationID ||
+		current.SourceTurnID != snapshot.SourceTurnID {
 		return Record{}, errors.New("memory changed during revision")
 	}
 	now := s.currentUnixMS()
@@ -145,7 +158,18 @@ func (s *Store) tombstonePersonalMemorySeekDB(ctx context.Context, id string) er
 	}
 	queryCtx, cancel := s.seekDBQueryContext(ctx)
 	defer cancel()
-	result, err := s.seekDB.ExecContext(queryCtx, `
+	tx, err := s.seekDB.BeginTx(queryCtx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning SeekDB memory tombstone transaction: %w", err)
+	}
+	defer tx.Rollback()
+	if err := s.LockSeekDBMutationGuardTx(queryCtx, tx); err != nil {
+		return err
+	}
+	if _, err := s.lockSeekDBRecordTx(queryCtx, tx, id); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(queryCtx, `
 UPDATE personal_memories
 SET status = 'tombstone', updated_at_ms = ?
 WHERE id = ? AND status = 'active'`, s.currentUnixMS(), id)
@@ -158,6 +182,9 @@ WHERE id = ? AND status = 'active'`, s.currentUnixMS(), id)
 	}
 	if rows != 1 {
 		return errors.New("active memory not found")
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing SeekDB memory tombstone transaction: %w", err)
 	}
 	return nil
 }
@@ -192,6 +219,14 @@ func (s *Store) assignLegacyRelationshipSeekDB(ctx context.Context, id, characte
 		return Record{}, fmt.Errorf("beginning SeekDB legacy assignment transaction: %w", err)
 	}
 	defer tx.Rollback()
+	if err := lockSeekDBSourceTurn(
+		queryCtx, tx, snapshot.SourceConversationID, snapshot.SourceTurnID,
+	); err != nil {
+		return Record{}, err
+	}
+	if err := s.LockSeekDBMutationGuardTx(queryCtx, tx); err != nil {
+		return Record{}, err
+	}
 	current, err := selectSeekDBRecord(queryCtx, tx, id, true)
 	if err != nil {
 		return Record{}, err
@@ -199,7 +234,9 @@ func (s *Store) assignLegacyRelationshipSeekDB(ctx context.Context, id, characte
 	if current.Kind != "relationship" || current.Scope.Type != "unassigned_legacy" || current.Status != "active" {
 		return Record{}, errors.New("memory is not an active legacy relationship")
 	}
-	if current.Content != snapshot.Content {
+	if current.Content != snapshot.Content ||
+		current.SourceConversationID != snapshot.SourceConversationID ||
+		current.SourceTurnID != snapshot.SourceTurnID {
 		return Record{}, errors.New("memory changed during legacy assignment")
 	}
 	now := s.currentUnixMS()

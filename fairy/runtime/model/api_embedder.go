@@ -44,7 +44,10 @@ type APIEmbedder struct {
 	client     openai.Client
 }
 
-var _ embedding.SemanticEmbedder = (*APIEmbedder)(nil)
+var (
+	_ embedding.SemanticEmbedder        = (*APIEmbedder)(nil)
+	_ embedding.ContextSemanticEmbedder = (*APIEmbedder)(nil)
+)
 
 func NewAPIEmbedder(options APIEmbeddingOptions) (*APIEmbedder, error) {
 	provider := strings.TrimSpace(options.Provider)

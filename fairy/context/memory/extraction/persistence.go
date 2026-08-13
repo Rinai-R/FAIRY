@@ -119,7 +119,14 @@ func InsertCoverage(ctx context.Context, tx pgx.Tx, conversationID, turnID, memo
 INSERT INTO memory_context_coverages(conversation_id, turn_id, memory_id, result_status, created_at_ms)
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (conversation_id, turn_id, memory_id)
-DO UPDATE SET result_status = excluded.result_status`, conversationID, turnID, memoryID, resultStatus, now)
+DO UPDATE SET
+  result_status = CASE
+    WHEN memory_context_coverages.result_status = 'applied' OR excluded.result_status = 'applied'
+      THEN 'applied'
+    ELSE 'no_change'
+  END,
+  created_at_ms = LEAST(memory_context_coverages.created_at_ms, excluded.created_at_ms)`,
+		conversationID, turnID, memoryID, resultStatus, now)
 	if err != nil {
 		return fmt.Errorf("inserting memory context coverage: %w", err)
 	}

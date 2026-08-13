@@ -10,6 +10,10 @@ import (
 	memoryretrieval "fairy/context/memory/retrieval"
 )
 
+type seekDBProjectionQuerier interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
 // RetrieveExtractionProjectionContext loads the explicit existing-memory
 // projection used to enrich a durable claim. An empty result means the
 // authority was queried successfully, never that projection was skipped.
@@ -42,6 +46,38 @@ func (s *Store) retrieveExtractionProjectionSeekDB(
 	projection []string,
 	remaining *int,
 ) ([]Retrieved, error) {
+	queryCtx, cancel := s.seekDBQueryContext(ctx)
+	defer cancel()
+	return retrieveExtractionProjectionSeekDB(queryCtx, s.seekDB, characterID, projection, remaining)
+}
+
+// RetrieveExtractionProjectionSeekDBTx recomputes the authoritative personal
+// projection inside the caller's already-open settlement transaction. It uses
+// the caller's context directly and never opens a fallback authority, deadline
+// context, or nested transaction.
+func (s *Store) RetrieveExtractionProjectionSeekDBTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	characterID string,
+	projection []string,
+	remaining *int,
+) ([]Retrieved, error) {
+	if err := s.requireSeekDBTx(tx); err != nil {
+		return nil, err
+	}
+	return retrieveExtractionProjectionSeekDB(ctx, tx, characterID, projection, remaining)
+}
+
+func retrieveExtractionProjectionSeekDB(
+	ctx context.Context,
+	database seekDBProjectionQuerier,
+	characterID string,
+	projection []string,
+	remaining *int,
+) ([]Retrieved, error) {
+	if remaining == nil || *remaining < 0 {
+		return nil, errors.New("extraction retrieval budget is invalid")
+	}
 	if err := validateSeekDBID("character_id", characterID); err != nil {
 		return nil, err
 	}
@@ -68,9 +104,7 @@ func (s *Store) retrieveExtractionProjectionSeekDB(
 		return []Retrieved{}, nil
 	}
 	queryText := strings.Join(queries, " ")
-	queryCtx, cancel := s.seekDBQueryContext(ctx)
-	defer cancel()
-	rows, err := s.seekDB.QueryContext(queryCtx, `
+	rows, err := database.QueryContext(ctx, `
 SELECT id, kind, scope_kind, character_id, content,
        confidence_basis_points, updated_at_ms,
        MATCH(content) AGAINST(? IN NATURAL LANGUAGE MODE) AS text_score

@@ -19,19 +19,24 @@ func (s *Store) requireSeekDBTx(tx *sql.Tx) error {
 	return nil
 }
 
-// ListActiveDuplicateCandidateIDsSeekDBTx discovers exact normalized
-// duplicates without acquiring row locks. It intentionally has no LIMIT:
-// callers merge every returned ID with explicit targets, then acquire the
-// unified set through LockSeekDBRecordsTx.
-func (s *Store) ListActiveDuplicateCandidateIDsSeekDBTx(
+type seekDBDuplicateCandidateQuerier interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+// ListActiveDuplicateCandidateIDsSeekDBContext discovers exact normalized
+// duplicates outside the settlement transaction so a caller can avoid an
+// unnecessary provider call. The indexed hash bounds the candidate set while
+// the original content comparison preserves correctness under hash collision.
+// This snapshot is advisory; write transactions must call
+// LockActiveDuplicateCandidatesSeekDBTx after locking the mutation guard.
+func (s *Store) ListActiveDuplicateCandidateIDsSeekDBContext(
 	ctx context.Context,
-	tx *sql.Tx,
 	kind string,
 	scope Scope,
 	content string,
 ) ([]string, error) {
-	if err := s.requireSeekDBTx(tx); err != nil {
-		return nil, err
+	if !s.usesSeekDB() {
+		return nil, ErrStoreBackendUnavailable
 	}
 	if err := ValidateInput(kind, scope, content, 0); err != nil {
 		return nil, err
@@ -39,24 +44,39 @@ func (s *Store) ListActiveDuplicateCandidateIDsSeekDBTx(
 	if err := validateSeekDBScope(scope); err != nil {
 		return nil, err
 	}
+	queryCtx, cancel := s.seekDBQueryContext(ctx)
+	defer cancel()
+	return listActiveDuplicateCandidateIDsSeekDB(queryCtx, s.seekDB, kind, scope, content)
+}
+
+func listActiveDuplicateCandidateIDsSeekDB(
+	ctx context.Context,
+	database seekDBDuplicateCandidateQuerier,
+	kind string,
+	scope Scope,
+	content string,
+) ([]string, error) {
 	scopeKind, characterID, _ := ScopeColumns(scope)
+	digest := normalizedContentHash(content)
 	query := `
 SELECT id, content
-FROM personal_memories
+FROM personal_memories FORCE INDEX (personal_memories_duplicate_revalidation_idx)
 WHERE kind = ? AND scope_kind = ? AND character_id IS NULL
-  AND status = 'active' AND review_status = 'ready'
-ORDER BY id ASC`
-	arguments := []any{kind, scopeKind}
+  AND review_status = 'ready' AND status = 'active'
+  AND normalized_content_hash = ?
+ORDER BY updated_at_ms DESC, id ASC`
+	arguments := []any{kind, scopeKind, digest[:]}
 	if characterID != nil {
 		query = `
 SELECT id, content
-FROM personal_memories
+FROM personal_memories FORCE INDEX (personal_memories_duplicate_revalidation_idx)
 WHERE kind = ? AND scope_kind = ? AND character_id = ?
-  AND status = 'active' AND review_status = 'ready'
-	ORDER BY id ASC`
-		arguments = []any{kind, scopeKind, *characterID}
+  AND review_status = 'ready' AND status = 'active'
+  AND normalized_content_hash = ?
+ORDER BY updated_at_ms DESC, id ASC`
+		arguments = []any{kind, scopeKind, *characterID, digest[:]}
 	}
-	rows, err := tx.QueryContext(ctx, query, arguments...)
+	rows, err := database.QueryContext(ctx, query, arguments...)
 	if err != nil {
 		return nil, fmt.Errorf("discovering duplicate SeekDB personal memories: %w", err)
 	}
@@ -74,6 +94,64 @@ WHERE kind = ? AND scope_kind = ? AND character_id = ?
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating duplicate SeekDB personal memory candidates: %w", err)
+	}
+	return ids, nil
+}
+
+// ListActiveDuplicateCandidateIDsSeekDBTx performs the authoritative indexed
+// candidate discovery after the caller has locked personal_memory_write_guard.
+// It does not lock personal rows: callers merge these IDs with supplied and
+// explicit targets, then acquire the complete set once through
+// LockSeekDBRecordsTx's primary-ID order.
+func (s *Store) ListActiveDuplicateCandidateIDsSeekDBTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	kind string,
+	scope Scope,
+	content string,
+) ([]string, error) {
+	if err := s.requireSeekDBTx(tx); err != nil {
+		return nil, err
+	}
+	if err := ValidateInput(kind, scope, content, 0); err != nil {
+		return nil, err
+	}
+	if err := validateSeekDBScope(scope); err != nil {
+		return nil, err
+	}
+	scopeKind, characterID, _ := ScopeColumns(scope)
+	digest := normalizedContentHash(content)
+	query := `SELECT id
+FROM personal_memories FORCE INDEX (personal_memories_duplicate_revalidation_idx)
+WHERE kind = ? AND scope_kind = ? AND character_id IS NULL
+  AND review_status = 'ready' AND status = 'active'
+  AND normalized_content_hash = ?
+ORDER BY id ASC`
+	arguments := []any{kind, scopeKind, digest[:]}
+	if characterID != nil {
+		query = `SELECT id
+FROM personal_memories FORCE INDEX (personal_memories_duplicate_revalidation_idx)
+WHERE kind = ? AND scope_kind = ? AND character_id = ?
+  AND review_status = 'ready' AND status = 'active'
+  AND normalized_content_hash = ?
+ORDER BY id ASC`
+		arguments = []any{kind, scopeKind, *characterID, digest[:]}
+	}
+	rows, err := tx.QueryContext(ctx, query, arguments...)
+	if err != nil {
+		return nil, fmt.Errorf("discovering authoritative duplicate SeekDB personal memories: %w", err)
+	}
+	defer rows.Close()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning authoritative duplicate SeekDB personal memory id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating authoritative duplicate SeekDB personal memory ids: %w", err)
 	}
 	return ids, nil
 }
@@ -119,59 +197,6 @@ func (s *Store) LockSeekDBRecordsTx(ctx context.Context, tx *sql.Tx, memoryIDs [
 		records = append(records, record)
 	}
 	return records, nil
-}
-
-// SelectActiveDuplicate revalidates every discovered candidate against the
-// complete records returned by LockSeekDBRecordsTx, then returns the lowest-ID
-// active duplicate. A missing or changed candidate is a conflict, not
-// permission to write a duplicate.
-func SelectActiveDuplicate(
-	candidateIDs []string,
-	lockedRecords []Record,
-	kind string,
-	scope Scope,
-	content string,
-) (Record, bool, error) {
-	if err := ValidateInput(kind, scope, content, 0); err != nil {
-		return Record{}, false, err
-	}
-	if err := validateSeekDBScope(scope); err != nil {
-		return Record{}, false, err
-	}
-	lockedByID := make(map[string]Record, len(lockedRecords))
-	for _, record := range lockedRecords {
-		if err := validateSeekDBID("memory_id", record.ID); err != nil {
-			return Record{}, false, err
-		}
-		if _, exists := lockedByID[record.ID]; exists {
-			return Record{}, false, errors.New("locked personal memory records contain a duplicate id")
-		}
-		lockedByID[record.ID] = record
-	}
-	ids := slices.Clone(candidateIDs)
-	for _, memoryID := range ids {
-		if err := validateSeekDBID("memory_id", memoryID); err != nil {
-			return Record{}, false, err
-		}
-	}
-	slices.Sort(ids)
-	ids = slices.Compact(ids)
-	normalized := NormalizeContent(content)
-	var duplicate Record
-	for index, memoryID := range ids {
-		record, exists := lockedByID[memoryID]
-		if !exists {
-			return Record{}, false, errors.New("personal memory duplicate candidate was not locked")
-		}
-		if record.Status != "active" || record.ReviewStatus != "ready" ||
-			record.Kind != kind || record.Scope != scope || NormalizeContent(record.Content) != normalized {
-			return Record{}, false, errors.New("personal memory duplicate candidate changed while locking")
-		}
-		if index == 0 {
-			duplicate = record
-		}
-	}
-	return duplicate, len(ids) != 0, nil
 }
 
 func (s *Store) RequireActiveScopeSeekDBTx(

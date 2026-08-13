@@ -14,13 +14,20 @@ import (
 type seekDBWriteStage string
 
 const (
-	seekDBStageClaimAfterRecovery seekDBWriteStage = "claim.after_recovery"
-	seekDBStageClaimAfterClaim    seekDBWriteStage = "claim.after_claim"
-	seekDBStageClaimBeforeCommit  seekDBWriteStage = "claim.before_commit"
-	seekDBStageFailAfterUpdate    seekDBWriteStage = "fail.after_update"
-	seekDBStageFailBeforeCommit   seekDBWriteStage = "fail.before_commit"
-	seekDBStageRetryAfterUpdate   seekDBWriteStage = "retry.after_update"
-	seekDBStageRetryBeforeCommit  seekDBWriteStage = "retry.before_commit"
+	seekDBStageClaimAfterRecovery      seekDBWriteStage = "claim.after_recovery"
+	seekDBStageClaimAfterClaim         seekDBWriteStage = "claim.after_claim"
+	seekDBStageClaimBeforeCommit       seekDBWriteStage = "claim.before_commit"
+	seekDBStageFailAfterUpdate         seekDBWriteStage = "fail.after_update"
+	seekDBStageFailBeforeCommit        seekDBWriteStage = "fail.before_commit"
+	seekDBStageRetryAfterUpdate        seekDBWriteStage = "retry.after_update"
+	seekDBStageRetryBeforeCommit       seekDBWriteStage = "retry.before_commit"
+	seekDBStageSettleAfterEvidenceLock seekDBWriteStage = "settlement.after_evidence_lock"
+	seekDBStageSettleAfterSupersede    seekDBWriteStage = "settlement.after_supersede"
+	seekDBStageSettleAfterInsert       seekDBWriteStage = "settlement.after_insert"
+	seekDBStageSettleAfterEvidence     seekDBWriteStage = "settlement.after_evidence"
+	seekDBStageSettleAfterCoverage     seekDBWriteStage = "settlement.after_coverage"
+	seekDBStageSettleAfterProcessed    seekDBWriteStage = "settlement.after_processed"
+	seekDBStageSettleBeforeCommit      seekDBWriteStage = "settlement.before_commit"
 )
 
 type seekDBClaimTurn struct {

@@ -1,6 +1,7 @@
 package embedding
 
 import (
+	"context"
 	"sync"
 )
 
@@ -62,6 +63,17 @@ func (embedder *DynamicSemanticEmbedder) Embed(texts []string) ([][]float32, err
 		return nil, ErrSemanticUnavailable
 	}
 	return current.Embed(texts)
+}
+
+func (embedder *DynamicSemanticEmbedder) EmbedContext(ctx context.Context, texts []string) ([][]float32, error) {
+	current := embedder.Snapshot()
+	if current == nil {
+		return nil, ErrSemanticUnavailable
+	}
+	if contextual, ok := current.(ContextSemanticEmbedder); ok {
+		return contextual.EmbedContext(ctx, texts)
+	}
+	return nil, ErrSemanticCancellationUnsupported
 }
 
 func (embedder *DynamicSemanticEmbedder) Dims() int {

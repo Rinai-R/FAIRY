@@ -12,6 +12,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"fairy/context/memory/personal"
 	coredb "fairy/runtime/database"
 	"fairy/runtime/embedding"
 )
@@ -24,17 +25,22 @@ var (
 	ErrJobLeaseInvalid           = errors.New("extraction job lease duration is invalid")
 	ErrStoreBackendUnavailable   = errors.New("extraction store backend is unavailable")
 	ErrPersonalSettlementPending = errors.New("personal extraction settlement has not been migrated to SeekDB")
+	ErrPersonalStoreEmpty        = errors.New("extraction personal memory store is required")
+	ErrPersonalAuthorityMismatch = errors.New("extraction and personal memory stores must share one SeekDB authority")
+	ErrExtractionClaimConflict   = errors.New("extraction claim changed before settlement")
 )
 
 const defaultJobLeaseDuration = 30 * time.Second
 
 // Store owns exactly one extraction persistence authority. The PostgreSQL
-// authority still includes personal-memory settlement during the migration;
-// the SeekDB authority intentionally exposes coordination only until personal
-// facts and coverage can be committed in the same SeekDB transaction.
+// authority remains available for migration parity; a SeekDB Store becomes a
+// full settlement authority only when composed with a personal Store over the
+// same *sql.DB. The coordinator-only constructor fails closed for personal
+// projection, settlement, and coverage APIs.
 type Store struct {
 	pool             *coredb.Pool
 	seekDB           *sql.DB
+	personal         *personal.Store
 	queryLimit       time.Duration
 	embedder         *embedding.DynamicSemanticEmbedder
 	workerID         string
@@ -66,9 +72,9 @@ func NewStoreFromPoolWithLease(pool *coredb.Pool, embedder embedding.SemanticEmb
 	}, nil
 }
 
-// NewSeekDBStore creates an extraction coordinator whose only authority is
-// SeekDB. Personal-memory projection and mutation settlement are deliberately
-// not available until those facts share the same SeekDB transaction boundary.
+// NewSeekDBStore creates a coordinator whose only authority is SeekDB. Use
+// NewSeekDBStoreWithPersonal when personal facts and coverage must participate
+// in the same transaction.
 func NewSeekDBStore(database *sql.DB, queryLimit time.Duration, workerID string, leaseDuration time.Duration) (*Store, error) {
 	if database == nil {
 		return nil, ErrSeekDBConnectionEmpty
@@ -89,6 +95,30 @@ func NewSeekDBStore(database *sql.DB, queryLimit time.Duration, workerID string,
 		jobLeaseDuration: leaseDuration,
 		now:              time.Now,
 	}, nil
+}
+
+// NewSeekDBStoreWithPersonal creates a full extraction Store whose queue,
+// personal facts, evidence and coverage share one SeekDB authority. The
+// coordinator-only constructor remains available for task 3.5 callers.
+func NewSeekDBStoreWithPersonal(
+	database *sql.DB,
+	queryLimit time.Duration,
+	workerID string,
+	leaseDuration time.Duration,
+	personalStore *personal.Store,
+) (*Store, error) {
+	store, err := NewSeekDBStore(database, queryLimit, workerID, leaseDuration)
+	if err != nil {
+		return nil, err
+	}
+	if personalStore == nil {
+		return nil, ErrPersonalStoreEmpty
+	}
+	if !personalStore.OwnsSeekDB(database) {
+		return nil, ErrPersonalAuthorityMismatch
+	}
+	store.personal = personalStore
+	return store, nil
 }
 
 func (s *Store) ReplaceSemanticEmbedder(embedder embedding.SemanticEmbedder) {

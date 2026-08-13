@@ -44,7 +44,8 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	assertTurnEvidenceSchemaVerified(t, database)
 	assertExtractionCoordinationSchemaVerified(t, database)
 	assertCognitiveRecordsSchemaVerified(t, database)
-	assertSchemaTableSet(t, database, true)
+	assertDuplicateRevalidationSchemaVerified(t, database)
+	assertSchemaTableSet(t, database, CurrentSchemaRevision().Number)
 	if got := integrationJournalRowForRevision(t, database, foundationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("foundation attempt count = %d, want 1", got)
 	}
@@ -65,6 +66,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	}
 	if got := integrationJournalRowForRevision(t, database, cognitiveRecordsSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("cognitive records attempt count = %d, want 1", got)
+	}
+	if got := integrationJournalRowForRevision(t, database, duplicateRevalidationRevision).AttemptCount; got != 1 {
+		t.Fatalf("duplicate revalidation attempt count = %d, want 1", got)
 	}
 
 	if err := MigrateSchema(t.Context(), database, BuiltinMigrations()); err != nil {
@@ -91,6 +95,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	if got := integrationJournalRowForRevision(t, database, cognitiveRecordsSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("cognitive records attempt count after repeat = %d, want 1", got)
 	}
+	if got := integrationJournalRowForRevision(t, database, duplicateRevalidationRevision).AttemptCount; got != 1 {
+		t.Fatalf("duplicate revalidation attempt count after repeat = %d, want 1", got)
+	}
 	assertFoundationChecksRejectInvalidData(t, database)
 
 	closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
@@ -107,6 +114,7 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	assertTurnEvidenceSchemaVerified(t, restarted.SQL())
 	assertExtractionCoordinationSchemaVerified(t, restarted.SQL())
 	assertCognitiveRecordsSchemaVerified(t, restarted.SQL())
+	assertDuplicateRevalidationSchemaVerified(t, restarted.SQL())
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), foundationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("foundation attempt count after restart = %d, want 1", got)
 	}
@@ -127,6 +135,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	}
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), cognitiveRecordsSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("cognitive records attempt count after restart = %d, want 1", got)
+	}
+	if got := integrationJournalRowForRevision(t, restarted.SQL(), duplicateRevalidationRevision).AttemptCount; got != 1 {
+		t.Fatalf("duplicate revalidation attempt count after restart = %d, want 1", got)
 	}
 }
 
@@ -154,6 +165,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, "runtime", "upgrade-proof", 1, 1, `{"kept":true}`
 	assertFoundationSchemaVerified(t, database)
 	assertExtractionCoordinationSchemaVerified(t, database)
 	assertCognitiveRecordsSchemaVerified(t, database)
+	assertDuplicateRevalidationSchemaVerified(t, database)
 	for _, revision := range []int64{
 		foundationSchemaRevision,
 		conversationSchemaRevision,
@@ -162,6 +174,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, "runtime", "upgrade-proof", 1, 1, `{"kept":true}`
 		conversationRuntimeSchemaRevision,
 		extractionCoordinationRevision,
 		cognitiveRecordsSchemaRevision,
+		duplicateRevalidationRevision,
 	} {
 		row := integrationJournalRowForRevision(t, database, revision)
 		if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
@@ -502,7 +515,7 @@ ON conversation_messages(role) WITH PARSER SPACE`,
 	}
 }
 
-func TestRealSeekDBConversationRuntimeSchemaFreshInstallIsCurrent(t *testing.T) {
+func TestRealSeekDBDuplicateRevalidationSchemaFreshInstallIsCurrent(t *testing.T) {
 	instance, config := openSchemaMigrationRuntime(t)
 	closed := false
 	defer func() {
@@ -517,7 +530,8 @@ func TestRealSeekDBConversationRuntimeSchemaFreshInstallIsCurrent(t *testing.T) 
 	assertCurrentSchema(t, database, CurrentSchemaRevision())
 	assertExtractionCoordinationSchemaVerified(t, database)
 	assertCognitiveRecordsSchemaVerified(t, database)
-	assertSchemaTableSet(t, database, true)
+	assertDuplicateRevalidationSchemaVerified(t, database)
+	assertSchemaTableSet(t, database, CurrentSchemaRevision().Number)
 	for _, revision := range []int64{
 		foundationSchemaRevision,
 		conversationSchemaRevision,
@@ -526,6 +540,7 @@ func TestRealSeekDBConversationRuntimeSchemaFreshInstallIsCurrent(t *testing.T) 
 		conversationRuntimeSchemaRevision,
 		extractionCoordinationRevision,
 		cognitiveRecordsSchemaRevision,
+		duplicateRevalidationRevision,
 	} {
 		row := integrationJournalRowForRevision(t, database, revision)
 		if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
@@ -542,9 +557,13 @@ func TestRealSeekDBConversationRuntimeSchemaFreshInstallIsCurrent(t *testing.T) 
 	closed = false
 	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
 	assertCognitiveRecordsSchemaVerified(t, restarted.SQL())
-	assertSchemaTableSet(t, restarted.SQL(), true)
+	assertDuplicateRevalidationSchemaVerified(t, restarted.SQL())
+	assertSchemaTableSet(t, restarted.SQL(), CurrentSchemaRevision().Number)
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), cognitiveRecordsSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("fresh cognitive records attempt count after restart = %d, want 1", got)
+	}
+	if got := integrationJournalRowForRevision(t, restarted.SQL(), duplicateRevalidationRevision).AttemptCount; got != 1 {
+		t.Fatalf("fresh duplicate revalidation attempt count after restart = %d, want 1", got)
 	}
 }
 
@@ -577,7 +596,7 @@ func TestRealSeekDBConversationRuntimeSchemaUpgradesRevisionFourRecoversPartialA
 	}
 	assertCurrentSchema(t, database, migrations[4].Revision)
 	assertConversationRuntimeSchemaVerified(t, database)
-	assertSchemaTableSet(t, database, false)
+	assertSchemaTableSet(t, database, conversationRuntimeSchemaRevision)
 	row := integrationJournalRowForRevision(t, database, conversationRuntimeSchemaRevision)
 	if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
 		t.Fatalf("conversation runtime journal = %#v", row)
@@ -739,7 +758,7 @@ func TestRealSeekDBExtractionCoordinationSchemaUpgradesRevisionFiveRecoversParti
 	}
 	assertCurrentSchema(t, database, migrations[5].Revision)
 	assertExtractionCoordinationSchemaVerified(t, database)
-	assertSchemaTableSet(t, database, false)
+	assertSchemaTableSet(t, database, extractionCoordinationRevision)
 	for _, forbidden := range []string{
 		"personal_memories", "memory_context_coverages", "extraction_batches", "extraction_batch_turns",
 	} {
@@ -886,12 +905,12 @@ func TestRealSeekDBCognitiveRecordsSchemaUpgradesRevisionSixRecoversPartialAndPe
 	if _, err := database.ExecContext(t.Context(), cognitiveRecordsSchema[0].ddl); err != nil {
 		t.Fatalf("precreate partial cognitive table: %v", err)
 	}
-	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+	if err := MigrateSchema(t.Context(), database, migrations[:7]); err != nil {
 		t.Fatalf("MigrateSchema(partial revision seven) error = %v", err)
 	}
-	assertCurrentSchema(t, database, CurrentSchemaRevision())
-	assertCognitiveRecordsSchemaVerified(t, database)
-	assertSchemaTableSet(t, database, true)
+	assertCurrentSchema(t, database, migrations[6].Revision)
+	assertCognitiveRecordsSchemaVerified(t, database, cognitiveRecordsSchemaRevision)
+	assertSchemaTableSet(t, database, cognitiveRecordsSchemaRevision)
 	row := integrationJournalRowForRevision(t, database, cognitiveRecordsSchemaRevision)
 	if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
 		t.Fatalf("cognitive records journal = %#v", row)
@@ -905,7 +924,7 @@ func TestRealSeekDBCognitiveRecordsSchemaUpgradesRevisionSixRecoversPartialAndPe
 	}
 	assertCognitiveRecordsConstraintsAndSearch(t, database)
 
-	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+	if err := MigrateSchema(t.Context(), database, migrations[:7]); err != nil {
 		t.Fatalf("MigrateSchema(repeated revision seven) error = %v", err)
 	}
 	if got := integrationJournalRowForRevision(t, database, cognitiveRecordsSchemaRevision).AttemptCount; got != 1 {
@@ -920,8 +939,9 @@ func TestRealSeekDBCognitiveRecordsSchemaUpgradesRevisionSixRecoversPartialAndPe
 	}
 	instance = restarted
 	closed = false
-	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
-	assertCognitiveRecordsSchemaVerified(t, restarted.SQL())
+	assertCurrentSchema(t, restarted.SQL(), migrations[6].Revision)
+	assertCognitiveRecordsSchemaVerified(t, restarted.SQL(), cognitiveRecordsSchemaRevision)
+	assertSchemaTableSet(t, restarted.SQL(), cognitiveRecordsSchemaRevision)
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), cognitiveRecordsSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("cognitive records attempt count after restart = %d, want 1", got)
 	}
@@ -944,6 +964,255 @@ func TestRealSeekDBCognitiveRecordsSchemaUpgradesRevisionSixRecoversPartialAndPe
 			t.Fatalf("persisted %s row count = %d, want 1", fixture.table, count)
 		}
 	}
+}
+
+func TestRealSeekDBDuplicateRevalidationSchemaUpgradesRevisionSevenBackfillsUnicodeAndPersists(t *testing.T) {
+	instance, config := openSchemaMigrationRuntime(t)
+	closed := false
+	defer func() {
+		if !closed {
+			closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+		}
+	}()
+	database := instance.SQL()
+	migrations := BuiltinMigrations()
+	if err := MigrateSchema(t.Context(), database, migrations[:7]); err != nil {
+		t.Fatalf("MigrateSchema(revision seven) error = %v", err)
+	}
+	assertCurrentSchema(t, database, migrations[6].Revision)
+	assertSchemaTableSet(t, database, cognitiveRecordsSchemaRevision)
+
+	// Three rows model an already-committed partial batch; the remaining 129
+	// force production recovery to cross its 128-row batch boundary.
+	contents := make([]string, personalMemoryDuplicateBackfillBatchSize+4)
+	for index := range contents {
+		switch index % 4 {
+		case 0:
+			contents[index] = fmt.Sprintf("  alpha\t%d\nbeta  ", index)
+		case 1:
+			contents[index] = fmt.Sprintf("alpha\u00a0%d\u3000beta", index)
+		case 2:
+			contents[index] = fmt.Sprintf("alpha\u2000%d\u2029beta", index)
+		default:
+			contents[index] = fmt.Sprintf("alpha\u200bbeta-%d", index)
+		}
+	}
+	ids := insertIntegrationRevisionSevenPersonalMemories(t, database, "duplicate-upgrade", contents)
+	if _, err := database.ExecContext(t.Context(), addPersonalMemoryNormalizedHashDDL); err != nil {
+		t.Fatalf("preapply nullable normalized content hash column: %v", err)
+	}
+	backfillIntegrationPersonalNormalizedHashes(t, database, ids[:3])
+
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(partial revision eight) error = %v", err)
+	}
+	assertCurrentSchema(t, database, migrations[7].Revision)
+	assertDuplicateRevalidationSchemaVerified(t, database)
+	assertSchemaTableSet(t, database, duplicateRevalidationRevision)
+	assertIntegrationPersonalNormalizedHashes(t, database, ids)
+	assertIntegrationPersonalMemoryWriteGuard(t, database)
+	row := integrationJournalRowForRevision(t, database, duplicateRevalidationRevision)
+	if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
+		t.Fatalf("duplicate revalidation journal = %#v", row)
+	}
+
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(repeated revision eight) error = %v", err)
+	}
+	if got := integrationJournalRowForRevision(t, database, duplicateRevalidationRevision).AttemptCount; got != 1 {
+		t.Fatalf("duplicate revalidation attempt count after repeat = %d, want 1", got)
+	}
+
+	closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+	closed = true
+	restarted, err := Open(t.Context(), config)
+	if err != nil {
+		t.Fatalf("restart SeekDB duplicate revalidation runtime: %v", err)
+	}
+	instance = restarted
+	closed = false
+	assertCurrentSchema(t, restarted.SQL(), migrations[7].Revision)
+	assertDuplicateRevalidationSchemaVerified(t, restarted.SQL())
+	assertSchemaTableSet(t, restarted.SQL(), duplicateRevalidationRevision)
+	assertIntegrationPersonalNormalizedHashes(t, restarted.SQL(), ids)
+	assertIntegrationPersonalMemoryWriteGuard(t, restarted.SQL())
+	if got := integrationJournalRowForRevision(t, restarted.SQL(), duplicateRevalidationRevision).AttemptCount; got != 1 {
+		t.Fatalf("duplicate revalidation attempt count after restart = %d, want 1", got)
+	}
+}
+
+func TestRealSeekDBDuplicateRevalidationSchemaRecoversEveryPhysicalBoundary(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		steps int
+	}{
+		{name: "required column before index", steps: 1},
+		{name: "index before guard", steps: 2},
+		{name: "guard table before seed", steps: 3},
+		{name: "all physical state before journal", steps: 4},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			instance, config := openSchemaMigrationRuntime(t)
+			defer closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+			database := instance.SQL()
+			migrations := BuiltinMigrations()
+			if err := MigrateSchema(t.Context(), database, migrations[:7]); err != nil {
+				t.Fatalf("MigrateSchema(revision seven) error = %v", err)
+			}
+			ids := insertIntegrationRevisionSevenPersonalMemories(
+				t, database, "duplicate-boundary", []string{"alpha\u00a0beta\u3000gamma"},
+			)
+			prepareIntegrationRequiredPersonalNormalizedHash(t, database, ids)
+			if testCase.steps >= 2 {
+				if _, err := database.ExecContext(t.Context(), createPersonalMemoryDuplicateRevalidationIndexDDL); err != nil {
+					t.Fatalf("precreate duplicate revalidation index: %v", err)
+				}
+			}
+			if testCase.steps >= 3 {
+				if _, err := database.ExecContext(t.Context(), createPersonalMemoryWriteGuardDDL); err != nil {
+					t.Fatalf("precreate personal memory write guard: %v", err)
+				}
+			}
+			if testCase.steps >= 4 {
+				if _, err := database.ExecContext(t.Context(), seedPersonalMemoryWriteGuardDDL); err != nil {
+					t.Fatalf("preseed personal memory write guard: %v", err)
+				}
+			}
+
+			if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+				t.Fatalf("MigrateSchema(%s) error = %v", testCase.name, err)
+			}
+			assertCurrentSchema(t, database, migrations[7].Revision)
+			assertDuplicateRevalidationSchemaVerified(t, database)
+			assertSchemaTableSet(t, database, duplicateRevalidationRevision)
+			assertIntegrationPersonalNormalizedHashes(t, database, ids)
+			assertIntegrationPersonalMemoryWriteGuard(t, database)
+			row := integrationJournalRowForRevision(t, database, duplicateRevalidationRevision)
+			if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
+				t.Fatalf("%s duplicate revalidation journal = %#v", testCase.name, row)
+			}
+		})
+	}
+}
+
+func TestRealSeekDBDuplicateRevalidationSchemaRejectsHashIndexAndGuardDrift(t *testing.T) {
+	for _, testCase := range []struct {
+		name          string
+		wantErrorCode string
+		wantError     string
+		prepare       func(*testing.T, *sql.DB, []string)
+	}{
+		{
+			name: "wrong required hash", wantErrorCode: "APPLY_FAILED", wantError: "normalized content hash",
+			prepare: func(t *testing.T, database *sql.DB, ids []string) {
+				if _, err := database.ExecContext(t.Context(), addPersonalMemoryNormalizedHashDDL); err != nil {
+					t.Fatalf("add nullable normalized content hash: %v", err)
+				}
+				if _, err := database.ExecContext(t.Context(), `
+UPDATE personal_memories SET normalized_content_hash = ? WHERE id = ?`, make([]byte, sha256.Size), ids[0]); err != nil {
+					t.Fatalf("store wrong required normalized content hash: %v", err)
+				}
+				if _, err := database.ExecContext(t.Context(), makePersonalMemoryNormalizedHashRequiredDDL); err != nil {
+					t.Fatalf("require wrong normalized content hash: %v", err)
+				}
+			},
+		},
+		{
+			name: "wrong duplicate index", wantErrorCode: "APPLY_FAILED", wantError: "duplicate revalidation index drifted",
+			prepare: func(t *testing.T, database *sql.DB, ids []string) {
+				prepareIntegrationRequiredPersonalNormalizedHash(t, database, ids)
+				drifted := strings.Replace(
+					createPersonalMemoryDuplicateRevalidationIndexDDL,
+					"review_status, status, normalized_content_hash",
+					"status, review_status, normalized_content_hash",
+					1,
+				)
+				if drifted == createPersonalMemoryDuplicateRevalidationIndexDDL {
+					t.Fatal("test setup did not mutate duplicate revalidation index")
+				}
+				if _, err := database.ExecContext(t.Context(), drifted); err != nil {
+					t.Fatalf("precreate wrong duplicate revalidation index: %v", err)
+				}
+			},
+		},
+		{
+			name: "weak guard check and extra row", wantErrorCode: "VERIFY_FAILED", wantError: personalMemoryWriteGuardTableName,
+			prepare: func(t *testing.T, database *sql.DB, ids []string) {
+				prepareIntegrationRequiredPersonalNormalizedHash(t, database, ids)
+				if _, err := database.ExecContext(t.Context(), createPersonalMemoryDuplicateRevalidationIndexDDL); err != nil {
+					t.Fatalf("precreate duplicate revalidation index: %v", err)
+				}
+				drifted := strings.Replace(createPersonalMemoryWriteGuardDDL, "CHECK (id = 1)", "CHECK (id IN (1, 2))", 1)
+				if drifted == createPersonalMemoryWriteGuardDDL {
+					t.Fatal("test setup did not weaken personal memory write guard CHECK")
+				}
+				if _, err := database.ExecContext(t.Context(), drifted); err != nil {
+					t.Fatalf("precreate weak personal memory write guard: %v", err)
+				}
+				if _, err := database.ExecContext(t.Context(), "INSERT INTO "+personalMemoryWriteGuardTableName+" (id) VALUES (2)"); err != nil {
+					t.Fatalf("insert extra personal memory write guard row: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			instance, config := openSchemaMigrationRuntime(t)
+			defer closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+			database := instance.SQL()
+			migrations := BuiltinMigrations()
+			if err := MigrateSchema(t.Context(), database, migrations[:7]); err != nil {
+				t.Fatalf("MigrateSchema(revision seven) error = %v", err)
+			}
+			ids := insertIntegrationRevisionSevenPersonalMemories(
+				t, database, "duplicate-drift", []string{"alpha\u00a0beta"},
+			)
+			testCase.prepare(t, database, ids)
+			err := MigrateSchema(t.Context(), database, migrations)
+			if err == nil || !strings.Contains(err.Error(), testCase.wantError) {
+				t.Fatalf("MigrateSchema(%s) error = %v", testCase.name, err)
+			}
+			row := integrationJournalRowForRevision(t, database, duplicateRevalidationRevision)
+			if row.State != string(MigrationFailed) || row.ErrorCode != testCase.wantErrorCode || row.AttemptCount != 1 {
+				t.Fatalf("%s duplicate revalidation journal = %#v (migration error: %v)", testCase.name, row, err)
+			}
+			status, readinessErr := CheckSchema(t.Context(), database, CurrentSchemaRevision())
+			if !errors.Is(readinessErr, ErrSchemaNotCurrent) || status.State != SchemaNotCurrent ||
+				status.Observed == nil || status.Observed.Revision.Number != duplicateRevalidationRevision {
+				t.Fatalf("%s duplicate revalidation readiness = %#v, %v", testCase.name, status, readinessErr)
+			}
+		})
+	}
+}
+
+func TestRealSeekDBDuplicateRevalidationSchemaRequiresExactGuardRow(t *testing.T) {
+	instance, config := openSchemaMigrationRuntime(t)
+	defer closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+	database := instance.SQL()
+	migrations := BuiltinMigrations()
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(revision eight) error = %v", err)
+	}
+	assertIntegrationPersonalMemoryWriteGuard(t, database)
+	expectSeekDBConstraintError(t, database,
+		"INSERT INTO "+personalMemoryWriteGuardTableName+" (id) VALUES (?)", 2,
+	)
+	if _, err := database.ExecContext(t.Context(), "DELETE FROM "+personalMemoryWriteGuardTableName+" WHERE id = 1"); err != nil {
+		t.Fatalf("delete personal memory write guard seed: %v", err)
+	}
+	connection, err := database.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyErr := migrations[7].Verify(t.Context(), connection)
+	connection.Close()
+	if verifyErr == nil || !strings.Contains(verifyErr.Error(), "write guard rows") {
+		t.Fatalf("revision-eight Verify missing guard row error = %v", verifyErr)
+	}
+	if _, err := database.ExecContext(t.Context(), seedPersonalMemoryWriteGuardDDL); err != nil {
+		t.Fatalf("restore personal memory write guard seed: %v", err)
+	}
+	assertDuplicateRevalidationSchemaVerified(t, database)
+	assertIntegrationPersonalMemoryWriteGuard(t, database)
 }
 
 func TestRealSeekDBCognitiveRecordsSchemaRejectsShapeAndSpecialIndexDrift(t *testing.T) {
@@ -1460,17 +1729,152 @@ func assertExtractionCoordinationSchemaVerified(t *testing.T, database *sql.DB) 
 	}
 }
 
-func assertCognitiveRecordsSchemaVerified(t *testing.T, database *sql.DB) {
+func assertCognitiveRecordsSchemaVerified(t *testing.T, database *sql.DB, revisions ...int64) {
+	t.Helper()
+	revision := CurrentSchemaRevision().Number
+	if len(revisions) > 1 {
+		t.Fatalf("verify cognitive records schema: got %d revision arguments, want at most 1", len(revisions))
+	}
+	if len(revisions) == 1 {
+		revision = revisions[0]
+	}
+	var migrationIndex int
+	switch revision {
+	case cognitiveRecordsSchemaRevision:
+		migrationIndex = 6
+	case duplicateRevalidationRevision:
+		migrationIndex = 7
+	default:
+		t.Fatalf("verify cognitive records schema: unsupported revision %d", revision)
+	}
+	connection, err := database.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err := BuiltinMigrations()[migrationIndex].Verify(t.Context(), connection); err != nil {
+		t.Fatalf("verify cognitive records schema: %v", err)
+	}
+	assertSingleAuthoritativeEmbeddingProjection(t, database)
+}
+
+func assertDuplicateRevalidationSchemaVerified(t *testing.T, database *sql.DB) {
 	t.Helper()
 	connection, err := database.Conn(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer connection.Close()
-	if err := BuiltinMigrations()[6].Verify(t.Context(), connection); err != nil {
-		t.Fatalf("verify cognitive records schema: %v", err)
+	if err := BuiltinMigrations()[7].Verify(t.Context(), connection); err != nil {
+		t.Fatalf("verify duplicate revalidation schema: %v", err)
 	}
-	assertSingleAuthoritativeEmbeddingProjection(t, database)
+}
+
+func insertIntegrationRevisionSevenPersonalMemories(
+	t *testing.T,
+	database *sql.DB,
+	prefix string,
+	contents []string,
+) []string {
+	t.Helper()
+	conversationID := prefix + "-conversation"
+	turnID := prefix + "-turn"
+	insertIntegrationConversation(t, database, conversationID, prefix+"-character", "character")
+	insertIntegrationTurn(t, database, turnID, conversationID, "", 1)
+	transaction, err := database.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("begin revision-seven personal memory fixture: %v", err)
+	}
+	defer transaction.Rollback()
+	statement, err := transaction.PrepareContext(t.Context(), `
+INSERT INTO personal_memories(
+  id, kind, scope_kind, character_id, review_status, content, status,
+  confidence_basis_points, source_conversation_id, source_turn_id, evidence_ids,
+  created_at_ms, updated_at_ms
+) VALUES (?, 'preference', 'global', NULL, 'ready', ?, 'active', 8000, ?, ?, '[]', 1, 1)`)
+	if err != nil {
+		t.Fatalf("prepare revision-seven personal memory fixture: %v", err)
+	}
+	defer statement.Close()
+	ids := make([]string, len(contents))
+	for index, content := range contents {
+		id := fmt.Sprintf("%s-memory-%03d", prefix, index)
+		if _, err := statement.ExecContext(t.Context(), id, content, conversationID, turnID); err != nil {
+			t.Fatalf("insert revision-seven personal memory %s: %v", id, err)
+		}
+		ids[index] = id
+	}
+	if err := transaction.Commit(); err != nil {
+		t.Fatalf("commit revision-seven personal memory fixtures: %v", err)
+	}
+	return ids
+}
+
+func prepareIntegrationRequiredPersonalNormalizedHash(t *testing.T, database *sql.DB, ids []string) {
+	t.Helper()
+	if _, err := database.ExecContext(t.Context(), addPersonalMemoryNormalizedHashDDL); err != nil {
+		t.Fatalf("add nullable personal normalized content hash: %v", err)
+	}
+	backfillIntegrationPersonalNormalizedHashes(t, database, ids)
+	if _, err := database.ExecContext(t.Context(), makePersonalMemoryNormalizedHashRequiredDDL); err != nil {
+		t.Fatalf("require personal normalized content hash: %v", err)
+	}
+}
+
+func backfillIntegrationPersonalNormalizedHashes(t *testing.T, database *sql.DB, ids []string) {
+	t.Helper()
+	for _, id := range ids {
+		var content string
+		if err := database.QueryRowContext(t.Context(),
+			"SELECT content FROM personal_memories WHERE id = ?", id,
+		).Scan(&content); err != nil {
+			t.Fatalf("read personal memory %s for hash fixture: %v", id, err)
+		}
+		digest := sha256.Sum256([]byte(strings.Join(strings.Fields(content), " ")))
+		if _, err := database.ExecContext(t.Context(), `
+UPDATE personal_memories SET normalized_content_hash = ? WHERE id = ?`, digest[:], id); err != nil {
+			t.Fatalf("backfill personal memory %s normalized content hash fixture: %v", id, err)
+		}
+	}
+}
+
+func assertIntegrationPersonalNormalizedHashes(t *testing.T, database *sql.DB, ids []string) {
+	t.Helper()
+	for _, id := range ids {
+		var content string
+		var hash []byte
+		if err := database.QueryRowContext(t.Context(), `
+SELECT content, normalized_content_hash FROM personal_memories WHERE id = ?`, id).Scan(&content, &hash); err != nil {
+			t.Fatalf("read personal memory %s normalized content hash: %v", id, err)
+		}
+		expected := sha256.Sum256([]byte(strings.Join(strings.Fields(content), " ")))
+		if !slices.Equal(hash, expected[:]) {
+			t.Fatalf("personal memory %s normalized content hash = %x, want %x", id, hash, expected)
+		}
+	}
+}
+
+func assertIntegrationPersonalMemoryWriteGuard(t *testing.T, database *sql.DB) {
+	t.Helper()
+	rows, err := database.QueryContext(t.Context(), "SELECT id FROM "+personalMemoryWriteGuardTableName+" ORDER BY id")
+	if err != nil {
+		t.Fatalf("read personal memory write guard: %v", err)
+	}
+	defer rows.Close()
+	var ids []uint64
+	for rows.Next() {
+		var id uint64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan personal memory write guard: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate personal memory write guard: %v", err)
+	}
+	if !slices.Equal(ids, []uint64{1}) {
+		t.Fatalf("personal memory write guard rows = %v, want [1]", ids)
+	}
 }
 
 func assertSingleAuthoritativeEmbeddingProjection(t *testing.T, database *sql.DB) {
@@ -1520,33 +1924,41 @@ WHERE table_schema = DATABASE()
 	}
 }
 
-func assertSchemaTableSet(t *testing.T, database *sql.DB, includeCognitiveRecords bool) {
+func assertSchemaTableSet(t *testing.T, database *sql.DB, revision int64) {
 	t.Helper()
+	if revision < foundationSchemaRevision || revision > duplicateRevalidationRevision {
+		t.Fatalf("schema table-set revision = %d, want %d..%d", revision, foundationSchemaRevision, duplicateRevalidationRevision)
+	}
+	expected := make([]string, 0)
 	for _, table := range foundationSchema {
-		if got := integrationTableCount(t, database, table.name); got != 1 {
-			t.Errorf("foundation table %s count = %d, want 1", table.name, got)
+		expected = append(expected, table.name)
+	}
+	if revision >= conversationSchemaRevision {
+		for _, table := range conversationSchema {
+			expected = append(expected, table.name)
 		}
 	}
-	for _, table := range conversationSchema {
-		if got := integrationTableCount(t, database, table.name); got != 1 {
-			t.Errorf("conversation table %s count = %d, want 1", table.name, got)
+	if revision >= turnEvidenceSchemaRevision {
+		for _, table := range turnEvidenceSchema {
+			expected = append(expected, table.name)
 		}
 	}
-	for _, table := range turnEvidenceSchema {
-		if got := integrationTableCount(t, database, table.name); got != 1 {
-			t.Errorf("turn evidence table %s count = %d, want 1", table.name, got)
+	if revision >= conversationRuntimeSchemaRevision {
+		for _, table := range conversationRuntimeSchema {
+			expected = append(expected, table.name)
 		}
 	}
-	for _, table := range conversationRuntimeSchema {
-		if got := integrationTableCount(t, database, table.name); got != 1 {
-			t.Errorf("conversation runtime table %s count = %d, want 1", table.name, got)
-		}
-	}
-	if includeCognitiveRecords {
+	if revision >= cognitiveRecordsSchemaRevision {
 		for _, table := range cognitiveRecordsSchema {
-			if got := integrationTableCount(t, database, table.name); got != 1 {
-				t.Errorf("cognitive records table %s count = %d, want 1", table.name, got)
-			}
+			expected = append(expected, table.name)
+		}
+	}
+	if revision >= duplicateRevalidationRevision {
+		expected = append(expected, personalMemoryWriteGuardTableName)
+	}
+	for _, table := range expected {
+		if got := integrationTableCount(t, database, table); got != 1 {
+			t.Errorf("revision %d table %s count = %d, want 1", revision, table, got)
 		}
 	}
 	var businessTableCount int
@@ -1556,12 +1968,8 @@ FROM information_schema.tables
 WHERE table_schema = DATABASE() AND table_name <> 'schema_revisions'`).Scan(&businessTableCount); err != nil {
 		t.Fatal(err)
 	}
-	want := len(foundationSchema) + len(conversationSchema) + len(turnEvidenceSchema) + len(conversationRuntimeSchema)
-	if includeCognitiveRecords {
-		want += len(cognitiveRecordsSchema)
-	}
-	if businessTableCount != want {
-		t.Fatalf("business table count = %d, want %d", businessTableCount, want)
+	if businessTableCount != len(expected) {
+		t.Fatalf("revision %d business table count = %d, want %d (%v)", revision, businessTableCount, len(expected), expected)
 	}
 }
 

@@ -1,6 +1,7 @@
 package embedding
 
 import (
+	"context"
 	"errors"
 	"math"
 	"strings"
@@ -102,6 +103,51 @@ func TestEmbeddingsForContentsUsesOneProviderBatch(t *testing.T) {
 	}
 	if values[0].ContentHash != ContentHash("first") || values[1].ContentHash != ContentHash("second") {
 		t.Fatalf("values=%#v", values)
+	}
+}
+
+type contextSemanticEmbedder struct {
+	fixedSemanticEmbedder
+	entered chan struct{}
+}
+
+func (embedder *contextSemanticEmbedder) EmbedContext(
+	ctx context.Context,
+	_ []string,
+) ([][]float32, error) {
+	close(embedder.entered)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestEmbeddingsForContentsPropagatesProviderCancellation(t *testing.T) {
+	embedder := &contextSemanticEmbedder{fixedSemanticEmbedder: fixedSemanticEmbedder{
+		ready: true, dims: Dimensions,
+	}, entered: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := ForContentsContext(ctx, embedder, []string{"content"})
+		done <- err
+	}()
+	<-embedder.entered
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("ForContentsContext cancellation error = %v", err)
+	}
+}
+
+func TestEmbeddingsForContentsContextRejectsLegacyProviderBeforeInvocation(t *testing.T) {
+	embedder := &fixedSemanticEmbedder{
+		ready: true, dims: Dimensions,
+		vectors: [][]float32{make([]float32, Dimensions)},
+	}
+	_, err := ForContentsContext(t.Context(), embedder, []string{"content"})
+	if !errors.Is(err, ErrSemanticCancellationUnsupported) {
+		t.Fatalf("ForContentsContext legacy provider error = %v", err)
+	}
+	if len(embedder.inputs) != 0 {
+		t.Fatalf("legacy provider was invoked: %#v", embedder.inputs)
 	}
 }
 

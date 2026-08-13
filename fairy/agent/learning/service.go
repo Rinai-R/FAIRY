@@ -33,7 +33,7 @@ type ExtractionStore interface {
 	PendingExtractionTurnCount(conversationID string) (uint64, error)
 	ClaimExtractionBatch(conversationID string, limit int) (*extraction.BatchInput, error)
 	FailExtractionBatch(batchID, code, message string, retryable bool) error
-	CommitMemoryMutations(batchID, characterID string, allowedMemoryIDs []string, mutations []extraction.Mutation) ([]extraction.MutationResult, error)
+	CommitClaimedMemoryMutationsContext(context.Context, *extraction.BatchInput, []extraction.Mutation) ([]extraction.MutationResult, error)
 }
 
 type KnowledgeStore interface {
@@ -310,6 +310,15 @@ func (e *Service) claimAndRunExtraction(ctx context.Context, conversationID stri
 	}
 	batch, err := store.ClaimExtractionBatch(conversationID, extractionBatchLimit)
 	if err != nil {
+		if batch != nil && batch.BatchID != "" {
+			failErr := store.FailExtractionBatch(
+				batch.BatchID, "EXTRACTION_ENRICHMENT_FAILED", err.Error(), true,
+			)
+			if failErr != nil {
+				e.observeError(errors.Join(err, failErr))
+				return
+			}
+		}
 		e.observeError(err)
 		return
 	}
@@ -317,14 +326,27 @@ func (e *Service) claimAndRunExtraction(ctx context.Context, conversationID stri
 		return
 	}
 	if err := e.executeExtractionBatch(ctx, store, batch); err != nil {
-		if failErr := store.FailExtractionBatch(batch.BatchID, "EXTRACTION_BATCH_FAILED", err.Error(), false); failErr != nil {
-			e.observeError(failErr)
-			return
-		}
-		e.observeError(err)
+		e.handleExtractionExecutionFailure(store, batch, err)
 		return
 	}
 	e.clearError()
+}
+
+func (e *Service) handleExtractionExecutionFailure(
+	store ExtractionStore,
+	batch *extraction.BatchInput,
+	err error,
+) {
+	if e == nil || store == nil || batch == nil || err == nil {
+		return
+	}
+	if failErr := store.FailExtractionBatch(
+		batch.BatchID, "EXTRACTION_BATCH_FAILED", err.Error(), true,
+	); failErr != nil {
+		e.observeError(errors.Join(err, failErr))
+		return
+	}
+	e.observeError(err)
 }
 
 func (e *Service) executeExtractionBatch(ctx context.Context, store ExtractionStore, batch *extraction.BatchInput) error {
@@ -383,8 +405,8 @@ func (e *Service) executeExtractionBatch(ctx context.Context, store ExtractionSt
 	}
 	candidates := personalDiscoveryCandidates(discovery)
 	if len(candidates) == 0 {
-		return e.commitExtractionMutations(ctx, batch.ConversationID, func() ([]extraction.MutationResult, error) {
-			return store.CommitMemoryMutations(batch.BatchID, batch.CharacterID, nil, nil)
+		return e.commitExtractionMutations(ctx, batch.ConversationID, func(commitCtx context.Context) ([]extraction.MutationResult, error) {
+			return store.CommitClaimedMemoryMutationsContext(commitCtx, batch, nil)
 		})
 	}
 	input, aliases, err := buildExtractInput(*batch, candidates)
@@ -418,19 +440,15 @@ func (e *Service) executeExtractionBatch(ctx context.Context, store ExtractionSt
 	if err != nil {
 		return err
 	}
-	allowed := make([]string, 0, len(batch.ExistingMemories))
-	for _, item := range batch.ExistingMemories {
-		allowed = append(allowed, item.ID)
-	}
-	return e.commitExtractionMutations(ctx, batch.ConversationID, func() ([]extraction.MutationResult, error) {
-		return store.CommitMemoryMutations(batch.BatchID, batch.CharacterID, allowed, output.Mutations)
+	return e.commitExtractionMutations(ctx, batch.ConversationID, func(commitCtx context.Context) ([]extraction.MutationResult, error) {
+		return store.CommitClaimedMemoryMutationsContext(commitCtx, batch, output.Mutations)
 	})
 }
 
 func (e *Service) commitExtractionMutations(
 	ctx context.Context,
 	conversationID string,
-	commit func() ([]extraction.MutationResult, error),
+	commit func(context.Context) ([]extraction.MutationResult, error),
 ) error {
 	if e == nil || ctx == nil || commit == nil {
 		return ErrClosed
@@ -443,7 +461,10 @@ func (e *Service) commitExtractionMutations(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	results, err := commit()
+	// Provider preparation remains cancellable. The Store establishes its own
+	// bounded, non-cancellable database barrier only after all external work has
+	// completed and the worker context has passed its final cancellation check.
+	results, err := commit(ctx)
 	if err != nil {
 		return err
 	}
@@ -631,12 +652,14 @@ func (e *Service) Close() {
 		return
 	}
 	e.closeOnce.Do(func() {
-		e.admission.Lock()
 		e.closed.Store(true)
-		e.admission.Unlock()
 		if e.workerCancel != nil {
 			e.workerCancel()
 		}
+		// Synchronize with a commit admission already in progress after making
+		// cancellation observable to any external provider it is waiting on.
+		e.admission.Lock()
+		e.admission.Unlock()
 		e.idleMu.Lock()
 		idle := e.idle
 		e.idle = make(map[string]retentionIdleTimer)

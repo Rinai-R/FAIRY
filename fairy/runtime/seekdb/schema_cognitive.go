@@ -1,6 +1,7 @@
 package seekdb
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -17,6 +18,54 @@ const (
 	knowledgeFullTextIndex      = "knowledge_entries_text_fts_idx"
 	knowledgeVectorIndex        = "knowledge_entries_embedding_vec_idx"
 )
+
+const (
+	personalMemoryDuplicateRevalidationIndex = "personal_memories_duplicate_revalidation_idx"
+	personalMemoryWriteGuardTableName        = "personal_memory_write_guard"
+	personalMemoryDuplicateBackfillBatchSize = 128
+
+	addPersonalMemoryNormalizedHashDDL = `ALTER TABLE personal_memories
+  ADD COLUMN normalized_content_hash BINARY(32) NULL`
+	makePersonalMemoryNormalizedHashRequiredDDL = `ALTER TABLE personal_memories
+  MODIFY COLUMN normalized_content_hash BINARY(32) NOT NULL`
+	createPersonalMemoryDuplicateRevalidationIndexDDL = `CREATE INDEX IF NOT EXISTS personal_memories_duplicate_revalidation_idx
+  ON personal_memories(kind, scope_kind, character_id, review_status, status, normalized_content_hash, id)`
+	personalMemoryNormalizedHashBackfillContract = `GO BACKFILL personal_memories.normalized_content_hash =
+  SHA256_UTF8(strings.Join(strings.Fields(content), " "))`
+	personalMemoryNormalizedHashVerificationContract = `GO VERIFY EVERY personal_memories.normalized_content_hash =
+  SHA256_UTF8(strings.Join(strings.Fields(content), " ")) IN ID-KEYSET BATCHES OF 128`
+	createPersonalMemoryWriteGuardDDL = `CREATE TABLE IF NOT EXISTS personal_memory_write_guard (
+  id TINYINT UNSIGNED NOT NULL,
+  PRIMARY KEY (id),
+  CONSTRAINT personal_memory_write_guard_singleton_check CHECK (id = 1)
+)`
+	seedPersonalMemoryWriteGuardDDL = `INSERT INTO personal_memory_write_guard (id) VALUES (1)
+  ON DUPLICATE KEY UPDATE id = VALUES(id)`
+)
+
+var duplicateRevalidationSchemaContract = [...]string{
+	addPersonalMemoryNormalizedHashDDL,
+	personalMemoryNormalizedHashBackfillContract,
+	personalMemoryNormalizedHashVerificationContract,
+	makePersonalMemoryNormalizedHashRequiredDDL,
+	createPersonalMemoryDuplicateRevalidationIndexDDL,
+	createPersonalMemoryWriteGuardDDL,
+	seedPersonalMemoryWriteGuardDDL,
+}
+
+var personalMemoryWriteGuardSchema = schemaTable{
+	name: personalMemoryWriteGuardTableName,
+	ddl:  createPersonalMemoryWriteGuardDDL,
+	columns: []schemaColumn{
+		{name: "id", columnType: "tinyint unsigned"},
+	},
+	indexes: []schemaIndex{
+		ascendingBTreeIndex("PRIMARY", true, "id"),
+	},
+	checks: []schemaCheck{
+		{name: "personal_memory_write_guard_singleton_check", clause: "(`id` = 1)"},
+	},
+}
 
 // Revision seven creates only the four authoritative cognitive-record tables.
 // Feedback events and retrieval/store behavior belong to later revisions.
@@ -529,6 +578,255 @@ func cognitiveRecordsSchemaChecksum() [sha256.Size]byte {
 	return schemaDDLChecksum(statements)
 }
 
+func duplicateRevalidationSchemaChecksum() [sha256.Size]byte {
+	return schemaDDLChecksum(duplicateRevalidationSchemaContract[:])
+}
+
+func duplicateRevalidationPersonalTable() schemaTable {
+	expected := cognitiveRecordsSchema[0]
+	expected.columns = append(slices.Clone(expected.columns), schemaColumn{
+		name:       "normalized_content_hash",
+		columnType: "binary(32)",
+	})
+	expected.indexes = append(slices.Clone(expected.indexes), ascendingBTreeIndex(
+		personalMemoryDuplicateRevalidationIndex, false,
+		"kind", "scope_kind", "character_id", "review_status", "status", "normalized_content_hash", "id",
+	))
+	return expected
+}
+
+// applyDuplicateRevalidationSchema stages the required column as nullable so
+// revision-seven rows can be backfilled with Go's exact normalization
+// semantics. Every DDL boundary is metadata-guarded because SeekDB commits DDL
+// implicitly and a canceled attempt can therefore leave any prior step done.
+func applyDuplicateRevalidationSchema(ctx context.Context, connection *sql.Conn) error {
+	nullable, err := ensurePersonalMemoryNormalizedHashColumn(ctx, connection)
+	if err != nil {
+		return err
+	}
+	if nullable {
+		if err := backfillPersonalMemoryNormalizedHashes(ctx, connection); err != nil {
+			return err
+		}
+	}
+	if err := verifyPersonalMemoryNormalizedHashes(ctx, connection); err != nil {
+		return err
+	}
+	if nullable {
+		if _, err := connection.ExecContext(ctx, makePersonalMemoryNormalizedHashRequiredDDL); err != nil {
+			return fmt.Errorf("require SeekDB personal memory normalized content hash: %w", err)
+		}
+	}
+	if err := ensurePersonalMemoryDuplicateRevalidationIndex(ctx, connection); err != nil {
+		return err
+	}
+	return ensurePersonalMemoryWriteGuard(ctx, connection)
+}
+
+func ensurePersonalMemoryNormalizedHashColumn(ctx context.Context, connection *sql.Conn) (bool, error) {
+	columns, err := readSchemaColumns(ctx, connection, "personal_memories")
+	if err != nil {
+		return false, fmt.Errorf("read SeekDB personal memory columns for duplicate revalidation: %w", err)
+	}
+	nullable := schemaColumn{name: "normalized_content_hash", columnType: "binary(32)", nullable: true}
+	required := nullable
+	required.nullable = false
+	for _, column := range columns {
+		if column.name != nullable.name {
+			continue
+		}
+		switch column {
+		case nullable:
+			return true, nil
+		case required:
+			return false, nil
+		default:
+			return false, fmt.Errorf("existing SeekDB personal memory normalized content hash column drifted: %#v", column)
+		}
+	}
+	if _, err := connection.ExecContext(ctx, addPersonalMemoryNormalizedHashDDL); err != nil {
+		return false, fmt.Errorf("add SeekDB personal memory normalized content hash: %w", err)
+	}
+	return true, nil
+}
+
+type personalMemoryNormalizedHashBackfill struct {
+	id      string
+	content string
+}
+
+func backfillPersonalMemoryNormalizedHashes(ctx context.Context, connection *sql.Conn) error {
+	// Always restart from the lowest remaining NULL instead of advancing a
+	// keyset cursor. That keeps memory bounded while ensuring a concurrent
+	// revision-seven writer cannot insert a lower ID behind the cursor.
+	for {
+		count, err := backfillPersonalMemoryNormalizedHashBatch(ctx, connection)
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			return nil
+		}
+	}
+}
+
+func backfillPersonalMemoryNormalizedHashBatch(ctx context.Context, connection *sql.Conn) (int, error) {
+	transaction, err := connection.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin SeekDB personal memory normalized content hash backfill: %w", err)
+	}
+	defer transaction.Rollback()
+	records, err := readPersonalMemoryNormalizedHashBackfillBatch(ctx, transaction)
+	if err != nil {
+		return 0, err
+	}
+	for _, record := range records {
+		digest := normalizedPersonalMemoryContentHash(record.content)
+		result, err := transaction.ExecContext(ctx, `
+UPDATE personal_memories
+SET normalized_content_hash = ?
+WHERE id = ? AND normalized_content_hash IS NULL`, digest[:], record.id)
+		if err != nil {
+			return 0, fmt.Errorf("backfill SeekDB personal memory %q normalized content hash: %w", record.id, err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("read SeekDB personal memory %q normalized content hash backfill count: %w", record.id, err)
+		}
+		if affected != 1 {
+			return 0, fmt.Errorf("backfill SeekDB personal memory %q normalized content hash affected %d rows", record.id, affected)
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return 0, fmt.Errorf("commit SeekDB personal memory normalized content hash backfill: %w", err)
+	}
+	return len(records), nil
+}
+
+func readPersonalMemoryNormalizedHashBackfillBatch(
+	ctx context.Context,
+	transaction *sql.Tx,
+) ([]personalMemoryNormalizedHashBackfill, error) {
+	rows, err := transaction.QueryContext(ctx, `
+SELECT id, content
+FROM personal_memories
+WHERE normalized_content_hash IS NULL
+ORDER BY id ASC
+LIMIT ?
+FOR UPDATE`, personalMemoryDuplicateBackfillBatchSize)
+	if err != nil {
+		return nil, fmt.Errorf("read SeekDB personal memories for normalized content hash backfill: %w", err)
+	}
+	defer rows.Close()
+	records := make([]personalMemoryNormalizedHashBackfill, 0, personalMemoryDuplicateBackfillBatchSize)
+	for rows.Next() {
+		var record personalMemoryNormalizedHashBackfill
+		if err := rows.Scan(&record.id, &record.content); err != nil {
+			return nil, fmt.Errorf("scan SeekDB personal memory normalized content hash backfill: %w", err)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate SeekDB personal memory normalized content hash backfill: %w", err)
+	}
+	return records, nil
+}
+
+func normalizedPersonalMemoryContentHash(content string) [sha256.Size]byte {
+	return sha256.Sum256([]byte(strings.Join(strings.Fields(content), " ")))
+}
+
+func verifyPersonalMemoryNormalizedHashes(ctx context.Context, connection *sql.Conn) error {
+	afterID := ""
+	for {
+		nextID, count, err := verifyPersonalMemoryNormalizedHashBatch(ctx, connection, afterID)
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			return nil
+		}
+		afterID = nextID
+	}
+}
+
+func verifyPersonalMemoryNormalizedHashBatch(
+	ctx context.Context,
+	connection *sql.Conn,
+	afterID string,
+) (string, int, error) {
+	rows, err := connection.QueryContext(ctx, `
+SELECT id, content, normalized_content_hash
+FROM personal_memories
+WHERE id > ?
+ORDER BY id ASC
+LIMIT ?`, afterID, personalMemoryDuplicateBackfillBatchSize)
+	if err != nil {
+		return "", 0, fmt.Errorf("read SeekDB personal memories for normalized content hash verification: %w", err)
+	}
+	defer rows.Close()
+	nextID := afterID
+	count := 0
+	for rows.Next() {
+		var id, content string
+		var actual []byte
+		if err := rows.Scan(&id, &content, &actual); err != nil {
+			return "", 0, fmt.Errorf("scan SeekDB personal memory normalized content hash verification: %w", err)
+		}
+		if err := comparePersonalMemoryNormalizedHash(id, content, actual); err != nil {
+			return "", 0, err
+		}
+		nextID = id
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return "", 0, fmt.Errorf("iterate SeekDB personal memory normalized content hash verification: %w", err)
+	}
+	return nextID, count, nil
+}
+
+func comparePersonalMemoryNormalizedHash(id, content string, actual []byte) error {
+	expected := normalizedPersonalMemoryContentHash(content)
+	if !bytes.Equal(actual, expected[:]) {
+		return fmt.Errorf("SeekDB personal memory %q normalized content hash does not match content", id)
+	}
+	return nil
+}
+
+func ensurePersonalMemoryDuplicateRevalidationIndex(ctx context.Context, connection *sql.Conn) error {
+	indexes, err := readSchemaIndexes(ctx, connection, "personal_memories")
+	if err != nil {
+		return fmt.Errorf("read SeekDB personal memory indexes for duplicate revalidation: %w", err)
+	}
+	expected := ascendingBTreeIndex(
+		personalMemoryDuplicateRevalidationIndex, false,
+		"kind", "scope_kind", "character_id", "review_status", "status", "normalized_content_hash", "id",
+	)
+	for _, index := range indexes {
+		if index.name != expected.name {
+			continue
+		}
+		if err := compareSchemaIndexes([]schemaIndex{expected}, []schemaIndex{index}); err != nil {
+			return fmt.Errorf("existing SeekDB personal memory duplicate revalidation index drifted: %w", err)
+		}
+		return nil
+	}
+	if _, err := connection.ExecContext(ctx, createPersonalMemoryDuplicateRevalidationIndexDDL); err != nil {
+		return fmt.Errorf("create SeekDB personal memory duplicate revalidation index: %w", err)
+	}
+	return nil
+}
+
+func ensurePersonalMemoryWriteGuard(ctx context.Context, connection *sql.Conn) error {
+	if _, err := connection.ExecContext(ctx, personalMemoryWriteGuardSchema.ddl); err != nil {
+		return fmt.Errorf("create SeekDB personal memory write guard: %w", err)
+	}
+	if _, err := connection.ExecContext(ctx, seedPersonalMemoryWriteGuardDDL); err != nil {
+		return fmt.Errorf("seed SeekDB personal memory write guard: %w", err)
+	}
+	return nil
+}
+
 func applyCognitiveRecordsSchema(ctx context.Context, connection *sql.Conn) error {
 	for _, table := range cognitiveRecordsSchema {
 		if _, err := connection.ExecContext(ctx, table.ddl); err != nil {
@@ -580,6 +878,76 @@ func verifyCognitiveRegularTables(ctx context.Context, connection *sql.Conn) err
 		if err := verifySchemaTableIgnoringIndexes(ctx, connection, table, enforcedAvailable, ignored); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func verifyDuplicateRevalidationSchema(ctx context.Context, connection *sql.Conn) error {
+	if err := verifyExtractionCoordinationSchema(ctx, connection); err != nil {
+		return err
+	}
+	if err := verifyDuplicateRevalidationRegularTables(ctx, connection); err != nil {
+		return err
+	}
+	if err := verifyPersonalMemoryNormalizedHashes(ctx, connection); err != nil {
+		return err
+	}
+	for _, index := range cognitiveSpecialIndexes {
+		metadata, err := readLogicalIndexMetadata(ctx, connection, index.table, index.name)
+		if err != nil {
+			return fmt.Errorf("verify SeekDB cognitive index %s metadata: %w", index.name, err)
+		}
+		if err := verifyCognitiveSpecialIndex(ctx, connection, index, metadata); err != nil {
+			return fmt.Errorf("verify SeekDB cognitive index %s: %w", index.name, err)
+		}
+	}
+	return nil
+}
+
+func verifyDuplicateRevalidationRegularTables(ctx context.Context, connection *sql.Conn) error {
+	enforcedAvailable, err := schemaCheckEnforcementAvailable(ctx, connection)
+	if err != nil {
+		return fmt.Errorf("verify SeekDB CHECK enforcement metadata: %w", err)
+	}
+	expectedPersonal := duplicateRevalidationPersonalTable()
+	for _, table := range cognitiveRecordsSchema {
+		if table.name == expectedPersonal.name {
+			table = expectedPersonal
+		}
+		ignored := cognitiveIgnoredPhysicalIndexes(table.name)
+		if err := verifySchemaTableIgnoringIndexes(ctx, connection, table, enforcedAvailable, ignored); err != nil {
+			return err
+		}
+	}
+	if err := verifySchemaTable(ctx, connection, personalMemoryWriteGuardSchema, enforcedAvailable); err != nil {
+		return err
+	}
+	return verifyPersonalMemoryWriteGuardRow(ctx, connection)
+}
+
+func verifyPersonalMemoryWriteGuardRow(ctx context.Context, connection *sql.Conn) error {
+	rows, err := connection.QueryContext(ctx, "SELECT id FROM "+personalMemoryWriteGuardTableName+" ORDER BY id")
+	if err != nil {
+		return fmt.Errorf("verify SeekDB personal memory write guard row: %w", err)
+	}
+	defer rows.Close()
+	var ids []uint64
+	for rows.Next() {
+		var id uint64
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("scan SeekDB personal memory write guard row: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate SeekDB personal memory write guard rows: %w", err)
+	}
+	return comparePersonalMemoryWriteGuardRows(ids)
+}
+
+func comparePersonalMemoryWriteGuardRows(ids []uint64) error {
+	if len(ids) != 1 || ids[0] != 1 {
+		return fmt.Errorf("SeekDB personal memory write guard rows = %v, want [1]", ids)
 	}
 	return nil
 }
