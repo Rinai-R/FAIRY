@@ -19,6 +19,7 @@ const (
 	transcriptRecallSchemaRevision    int64 = 4
 	conversationRuntimeSchemaRevision int64 = 5
 	extractionCoordinationRevision    int64 = 6
+	cognitiveRecordsSchemaRevision    int64 = 7
 
 	transcriptRecallTableName = "conversation_messages"
 	transcriptRecallIndexName = "conversation_messages_content_fts_idx"
@@ -126,14 +127,23 @@ func BuiltinMigrations() []Migration {
 			Apply:  applyExtractionCoordinationSchema,
 			Verify: verifyExtractionCoordinationSchema,
 		},
+		{
+			Revision: Revision{
+				Number:   cognitiveRecordsSchemaRevision,
+				Checksum: cognitiveRecordsSchemaChecksum(),
+			},
+			Name:   "create-cognitive-records-schema",
+			Apply:  applyCognitiveRecordsSchema,
+			Verify: verifyCognitiveRecordsSchema,
+		},
 	}
 }
 
 // CurrentSchemaRevision is the exact revision accepted by runtime readiness.
 func CurrentSchemaRevision() Revision {
 	return Revision{
-		Number:   extractionCoordinationRevision,
-		Checksum: extractionCoordinationChecksum(),
+		Number:   cognitiveRecordsSchemaRevision,
+		Checksum: cognitiveRecordsSchemaChecksum(),
 	}
 }
 

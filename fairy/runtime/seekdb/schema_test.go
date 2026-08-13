@@ -12,8 +12,8 @@ import (
 func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first := BuiltinMigrations()
 	second := BuiltinMigrations()
-	if len(first) != 6 || len(second) != 6 {
-		t.Fatalf("builtin migration counts = %d and %d, want 6", len(first), len(second))
+	if len(first) != 7 || len(second) != 7 {
+		t.Fatalf("builtin migration counts = %d and %d, want 7", len(first), len(second))
 	}
 	foundation := Revision{Number: foundationSchemaRevision, Checksum: foundationSchemaChecksum()}
 	conversation := Revision{Number: conversationSchemaRevision, Checksum: conversationSchemaChecksum()}
@@ -21,8 +21,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	transcriptRecall := Revision{Number: transcriptRecallSchemaRevision, Checksum: transcriptRecallSchemaChecksum()}
 	conversationRuntime := Revision{Number: conversationRuntimeSchemaRevision, Checksum: conversationRuntimeSchemaChecksum()}
 	extractionCoordination := Revision{Number: extractionCoordinationRevision, Checksum: extractionCoordinationChecksum()}
-	if current := CurrentSchemaRevision(); current != extractionCoordination {
-		t.Fatalf("current schema revision = %#v, want %#v", current, extractionCoordination)
+	cognitiveRecords := Revision{Number: cognitiveRecordsSchemaRevision, Checksum: cognitiveRecordsSchemaChecksum()}
+	if current := CurrentSchemaRevision(); current != cognitiveRecords {
+		t.Fatalf("current schema revision = %#v, want %#v", current, cognitiveRecords)
 	}
 	if first[0].Revision != foundation || first[0].Name != "create-foundation-schema" {
 		t.Fatalf("foundation migration = %#v, want revision %#v", first[0], foundation)
@@ -42,6 +43,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	if first[5].Revision != extractionCoordination || first[5].Name != "strengthen-extraction-coordination-schema" {
 		t.Fatalf("extraction coordination migration = %#v, want revision %#v", first[5], extractionCoordination)
 	}
+	if first[6].Revision != cognitiveRecords || first[6].Name != "create-cognitive-records-schema" {
+		t.Fatalf("cognitive records migration = %#v, want revision %#v", first[6], cognitiveRecords)
+	}
 	for index, migration := range first {
 		if migration.Apply == nil || migration.Verify == nil {
 			t.Fatalf("builtin migration %d must provide Apply and Verify", index+1)
@@ -54,12 +58,14 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first[3].Name = "mutated-transcript-recall"
 	first[4].Revision.Number = 101
 	first[5].Name = "mutated-extraction-coordination"
+	first[6].Revision.Number = 102
 	if second[0].Name != "create-foundation-schema" || second[0].Revision != foundation ||
 		second[1].Name != "create-conversation-schema" || second[1].Revision != conversation ||
 		second[2].Name != "create-turn-evidence-schema" || second[2].Revision != turnEvidence ||
 		second[3].Name != "create-conversation-message-fulltext-index" || second[3].Revision != transcriptRecall ||
 		second[4].Name != "create-conversation-runtime-schema" || second[4].Revision != conversationRuntime ||
-		second[5].Name != "strengthen-extraction-coordination-schema" || second[5].Revision != extractionCoordination {
+		second[5].Name != "strengthen-extraction-coordination-schema" || second[5].Revision != extractionCoordination ||
+		second[6].Name != "create-cognitive-records-schema" || second[6].Revision != cognitiveRecords {
 		t.Fatalf("caller mutation changed later BuiltinMigrations result: %#v", second[0])
 	}
 	if got := hex.EncodeToString(foundation.Checksum[:]); got != "e674bec12d0b6895da8b351d082a686c9c2f44990fb68749bbad083c4a6805d3" {
@@ -79,6 +85,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	}
 	if got := hex.EncodeToString(extractionCoordination.Checksum[:]); got != "4984285a4efd211d0a0e1dc807237ae4fdb57ae3a7c2eaacd490f56534838935" {
 		t.Fatalf("extraction coordination checksum = %s, update requires an explicit revision decision", got)
+	}
+	if got := hex.EncodeToString(cognitiveRecords.Checksum[:]); got != "93de00e817d242133b8a9227e5a40e512fde004b262f9dbae013fa1efdcae708" {
+		t.Fatalf("cognitive records checksum = %s, update requires an explicit revision decision", got)
 	}
 }
 
@@ -125,6 +134,225 @@ func TestExtractionCoordinationRevisionStrengthensOnlyConversationTurns(t *testi
 	}
 	if len(conversationSchema[3].indexes) != 7 || len(conversationSchema[3].checks) != 1 {
 		t.Fatal("revision six mutated the immutable revision-two Turn contract")
+	}
+}
+
+func TestCognitiveRecordsSchemaDefinesOnlyDirectRecordsAndCoverage(t *testing.T) {
+	wantTables := []string{
+		"personal_memories",
+		"memory_context_coverages",
+		"social_memory_entries",
+		"knowledge_entries",
+	}
+	assertPortableSchemaTables(t, cognitiveRecordsSchema[:], wantTables)
+	for _, table := range cognitiveRecordsSchema {
+		lower := strings.ToLower(table.ddl)
+		for _, forbidden := range []string{
+			"social_memory_feedback_events", "feedback_events", "personal_memory_evidence",
+			"extraction_batches", "vector(512)", "embedding_v2", "embedding_model_id",
+		} {
+			if strings.Contains(lower, forbidden) {
+				t.Errorf("cognitive table %s contains out-of-scope token %q", table.name, forbidden)
+			}
+		}
+	}
+
+	personal := cognitiveRecordsSchema[0]
+	if embedding := schemaColumnNamed(t, personal, "embedding"); embedding.columnType != "vector(1024)" || !embedding.nullable {
+		t.Fatalf("personal embedding = %#v", embedding)
+	}
+	if !schemaHasIndex(personal, ascendingBTreeIndex(
+		"personal_memories_scope_status_idx", false,
+		"scope_kind", "character_id", "review_status", "status", "updated_at_ms", "id",
+	)) {
+		t.Fatal("personal memories lack scope-before-status candidate index")
+	}
+	if len(personal.foreignKeys) != 2 || personal.foreignKeys[0].referencedTable != "conversation_turns" ||
+		personal.foreignKeys[0].deleteRule != "restrict" || len(personal.foreignKeys[0].columns) != 2 ||
+		personal.foreignKeys[1].referencedTable != "personal_memories" || personal.foreignKeys[1].deleteRule != "restrict" {
+		t.Fatalf("personal memory lifecycle foreign keys = %#v", personal.foreignKeys)
+	}
+	personalCheck := schemaCheckNamed(t, personal, "personal_memories_invariants_check")
+	for _, token := range []string{
+		"(`character_id` = trim(`character_id`))",
+		"(`scope_kind` = 'unassigned_legacy') and (`character_id` is null) and (`review_status` = 'needs_review') and (`kind` = 'relationship')",
+		"(`review_status` = 'ready') and (`embedding_space_id` is not null)",
+	} {
+		if !strings.Contains(personalCheck.clause, token) {
+			t.Errorf("personal memory CHECK lacks %q: %s", token, personalCheck.clause)
+		}
+	}
+
+	coverage := cognitiveRecordsSchema[1]
+	if len(coverage.indexes) != 2 || len(coverage.foreignKeys) != 2 ||
+		coverage.foreignKeys[0].deleteRule != "cascade" || coverage.foreignKeys[1].deleteRule != "restrict" {
+		t.Fatalf("memory coverage contract = indexes %#v, foreign keys %#v", coverage.indexes, coverage.foreignKeys)
+	}
+	if ignored := cognitiveIgnoredPhysicalIndexes(coverage.name); len(ignored) != 0 {
+		t.Fatalf("memory coverage special indexes = %#v, want none", ignored)
+	}
+
+	social := cognitiveRecordsSchema[2]
+	for _, obsolete := range []string{"last_feedback_turn_id", "use_count", "positive_count", "negative_count", "unknown_count"} {
+		if slices.ContainsFunc(social.columns, func(column schemaColumn) bool { return column.name == obsolete }) {
+			t.Errorf("social memory retained obsolete column %s", obsolete)
+		}
+	}
+	if hash := schemaColumnNamed(t, social, "content_hash"); hash.columnType != "binary(32)" || hash.nullable {
+		t.Fatalf("social content hash = %#v", hash)
+	}
+	if !schemaHasIndex(social, ascendingBTreeIndex(
+		"social_memory_entries_scope_status_idx", false,
+		"character_id", "conversation_id", "status", "kind", "feedback_quarantined_until_ms", "updated_at_ms", "id",
+	)) {
+		t.Fatal("social memory lacks public-scope status candidate index")
+	}
+	if len(social.foreignKeys) != 1 || social.foreignKeys[0].deleteRule != "cascade" ||
+		len(social.foreignKeys[0].columns) != 2 {
+		t.Fatalf("social memory conversation ownership = %#v", social.foreignKeys)
+	}
+	socialCheck := schemaCheckNamed(t, social, "social_memory_entries_invariants_check")
+	if !strings.Contains(socialCheck.clause,
+		"(`kind` = 'person_note') and (`sender_id` is not null) and (`situation` = `sender_id`) and (CHAR_LENGTH(`content`) <= 240)",
+	) {
+		t.Fatalf("social memory CHECK does not cap person-note content at 240 runes: %s", socialCheck.clause)
+	}
+
+	knowledge := cognitiveRecordsSchema[3]
+	if topic := schemaColumnNamed(t, knowledge, "topic"); topic.columnType != "varchar(512)" {
+		t.Fatalf("knowledge topic = %#v", topic)
+	}
+	if statement := schemaColumnNamed(t, knowledge, "statement"); statement.columnType != "longtext" {
+		t.Fatalf("knowledge statement = %#v", statement)
+	}
+	for _, table := range []schemaTable{personal, social, knowledge} {
+		if space := schemaColumnNamed(t, table, "embedding_space_id"); space.columnType != "varchar(256)" || !space.nullable {
+			t.Errorf("table %s embedding space = %#v", table.name, space)
+		}
+	}
+	if !schemaHasIndex(knowledge, ascendingBTreeIndex(
+		"knowledge_entries_status_updated_idx", false, "status", "updated_at_ms", "id",
+	)) {
+		t.Fatal("knowledge entries lack status-before-ranking candidate index")
+	}
+	if len(knowledge.foreignKeys) != 2 || knowledge.foreignKeys[0].deleteRule != "restrict" ||
+		knowledge.foreignKeys[1].deleteRule != "restrict" {
+		t.Fatalf("knowledge lifecycle foreign keys = %#v", knowledge.foreignKeys)
+	}
+}
+
+func TestCognitiveRecordsSchemaDefinesImmutableIKAndHNSWIndexes(t *testing.T) {
+	if len(cognitiveSpecialIndexes) != 6 {
+		t.Fatalf("cognitive special index count = %d, want 6", len(cognitiveSpecialIndexes))
+	}
+	want := map[string]struct {
+		table     string
+		kind      string
+		columns   []string
+		ddlTokens []string
+	}{
+		personalMemoryFullTextIndex: {"personal_memories", "fulltext", []string{"content"}, []string{"FULLTEXT INDEX", "ik_mode='max_word'"}},
+		personalMemoryVectorIndex:   {"personal_memories", "vector", []string{"embedding"}, []string{"VECTOR INDEX", "DISTANCE=COSINE", "TYPE=HNSW", "LIB=VSAG"}},
+		socialMemoryFullTextIndex:   {"social_memory_entries", "fulltext", []string{"situation", "content", "recall_cue"}, []string{"FULLTEXT INDEX", "ik_mode='max_word'"}},
+		socialMemoryVectorIndex:     {"social_memory_entries", "vector", []string{"embedding"}, []string{"VECTOR INDEX", "DISTANCE=COSINE", "TYPE=HNSW", "LIB=VSAG"}},
+		knowledgeFullTextIndex:      {"knowledge_entries", "fulltext", []string{"topic", "statement"}, []string{"FULLTEXT INDEX", "ik_mode='max_word'"}},
+		knowledgeVectorIndex:        {"knowledge_entries", "vector", []string{"embedding"}, []string{"VECTOR INDEX", "DISTANCE=COSINE", "TYPE=HNSW", "LIB=VSAG"}},
+	}
+	for _, index := range cognitiveSpecialIndexes {
+		expected, exists := want[index.name]
+		if !exists {
+			t.Errorf("unexpected cognitive special index %q", index.name)
+			continue
+		}
+		delete(want, index.name)
+		if index.table != expected.table || index.indexType != expected.kind || !slices.Equal(index.columns, expected.columns) {
+			t.Errorf("special index %s = %#v", index.name, index)
+		}
+		table := slices.IndexFunc(cognitiveRecordsSchema[:], func(table schemaTable) bool { return table.name == index.table })
+		if table < 0 {
+			t.Errorf("special index %s has no owner table", index.name)
+			continue
+		}
+		for _, token := range expected.ddlTokens {
+			if !strings.Contains(cognitiveRecordsSchema[table].ddl, token) {
+				t.Errorf("special index %s table DDL lacks %q", index.name, token)
+			}
+		}
+		if index.indexType == "vector" {
+			if !strings.Contains(strings.ToUpper(cognitiveRecordsSchema[table].ddl), "ORGANIZATION = HEAP") {
+				t.Errorf("vector table %s is not declared as a heap", index.table)
+			}
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing cognitive special indexes = %#v", want)
+	}
+}
+
+func TestCognitiveSpecialIndexComparisonRejectsLogicalAndPhysicalDrift(t *testing.T) {
+	fullText, ok := cognitiveSpecialIndexNamed(knowledgeFullTextIndex)
+	if !ok {
+		t.Fatal("knowledge full-text index contract is missing")
+	}
+	metadata := make([]transcriptRecallIndexMetadata, len(fullText.columns))
+	for ordinal, column := range fullText.columns {
+		metadata[ordinal] = transcriptRecallIndexMetadata{
+			table: fullText.table, name: fullText.name, nonUnique: 1, sequence: ordinal + 1,
+			column: column, collation: sql.NullString{String: "a", Valid: true},
+			indexType: fullText.indexType, comment: "available", visible: "yes",
+		}
+	}
+	if err := compareCognitiveSpecialIndexMetadata(fullText, metadata); err != nil {
+		t.Fatalf("compareCognitiveSpecialIndexMetadata(equal) error = %v", err)
+	}
+	for _, mutate := range []func([]transcriptRecallIndexMetadata){
+		func(rows []transcriptRecallIndexMetadata) { rows[0].column = "content" },
+		func(rows []transcriptRecallIndexMetadata) { rows[0].indexType = "btree" },
+		func(rows []transcriptRecallIndexMetadata) { rows[0].visible = "no" },
+		func(rows []transcriptRecallIndexMetadata) { rows[0].comment = "building" },
+		func(rows []transcriptRecallIndexMetadata) { rows[0].sequence = 2 },
+	} {
+		drifted := slices.Clone(metadata)
+		mutate(drifted)
+		if err := compareCognitiveSpecialIndexMetadata(fullText, drifted); err == nil {
+			t.Fatalf("drifted logical index was accepted: %#v", drifted)
+		}
+	}
+	if err := compareCognitiveSpecialIndexMetadata(fullText, nil); err == nil {
+		t.Fatal("missing logical full-text index was accepted")
+	}
+
+	vector, ok := cognitiveSpecialIndexNamed(personalMemoryVectorIndex)
+	if !ok {
+		t.Fatal("personal vector index contract is missing")
+	}
+	validVectorCreate := "CREATE TABLE `personal_memories` (`embedding` VECTOR(1024) DEFAULT NULL, " +
+		"VECTOR KEY `personal_memories_embedding_vec_idx` (`embedding`) " +
+		"WITH (DISTANCE=COSINE, TYPE=HNSW, LIB=VSAG, M=16, EF_CONSTRUCTION=200, EF_SEARCH=64, SYNC_MODE=ASYNC)) " +
+		"ORGANIZATION HEAP"
+	if err := compareCognitiveSpecialIndexCreateTable(vector, vector.table, validVectorCreate); err != nil {
+		t.Fatalf("compareCognitiveSpecialIndexCreateTable(equal vector) error = %v", err)
+	}
+	for _, drifted := range []string{
+		strings.Replace(validVectorCreate, "TYPE=HNSW", "TYPE=IVF_FLAT", 1),
+		strings.Replace(validVectorCreate, "DISTANCE=COSINE", "DISTANCE=L2", 1),
+		strings.Replace(validVectorCreate, "SYNC_MODE=ASYNC", "SYNC_MODE=SYNC", 1),
+		strings.Replace(validVectorCreate, "ORGANIZATION HEAP", "ORGANIZATION INDEX", 1),
+	} {
+		if err := compareCognitiveSpecialIndexCreateTable(vector, vector.table, drifted); err == nil {
+			t.Fatalf("drifted vector SHOW CREATE TABLE was accepted: %s", drifted)
+		}
+	}
+	validFullTextCreate := "CREATE TABLE `knowledge_entries` (`topic` varchar(512), `statement` longtext, " +
+		"FULLTEXT KEY `knowledge_entries_text_fts_idx` (`topic`, `statement`) " +
+		"WITH PARSER ik PARSER_PROPERTIES=(ik_mode=\"max_word\"))"
+	if err := compareCognitiveSpecialIndexCreateTable(fullText, fullText.table, validFullTextCreate); err != nil {
+		t.Fatalf("compareCognitiveSpecialIndexCreateTable(equal fulltext) error = %v", err)
+	}
+	if err := compareCognitiveSpecialIndexCreateTable(
+		fullText, fullText.table, strings.Replace(validFullTextCreate, "max_word", "smart", 1),
+	); err == nil {
+		t.Fatal("drifted IK parser was accepted")
 	}
 }
 
@@ -410,6 +638,17 @@ func schemaColumnNamed(t *testing.T, table schemaTable, name string) schemaColum
 	return schemaColumn{}
 }
 
+func schemaCheckNamed(t *testing.T, table schemaTable, name string) schemaCheck {
+	t.Helper()
+	for _, check := range table.checks {
+		if check.name == name {
+			return check
+		}
+	}
+	t.Fatalf("table %s lacks CHECK %s", table.name, name)
+	return schemaCheck{}
+}
+
 func schemaHasIndex(table schemaTable, expected schemaIndex) bool {
 	return slices.ContainsFunc(table.indexes, func(actual schemaIndex) bool {
 		return actual.name == expected.name &&
@@ -437,11 +676,13 @@ func assertPortableSchemaTables(t *testing.T, tables []schemaTable, wantTables [
 				t.Errorf("table %s DDL contains forbidden token %q", table.name, forbidden)
 			}
 		}
-		if len(table.columns) == 0 || len(table.indexes) == 0 || len(table.checks) != 1 {
+		if len(table.columns) == 0 || len(table.indexes) == 0 || len(table.checks) == 0 {
 			t.Errorf("table %s verification contract is incomplete", table.name)
 		}
-		if !strings.Contains(table.ddl, "CONSTRAINT "+table.checks[0].name+" CHECK") {
-			t.Errorf("table %s is missing named CHECK %s", table.name, table.checks[0].name)
+		for _, check := range table.checks {
+			if !strings.Contains(table.ddl, "CONSTRAINT "+check.name+" CHECK") {
+				t.Errorf("table %s is missing named CHECK %s", table.name, check.name)
+			}
 		}
 		for _, column := range table.columns {
 			if strings.HasSuffix(column.name, "_id") &&

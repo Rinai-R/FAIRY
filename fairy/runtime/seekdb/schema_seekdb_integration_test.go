@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -41,7 +43,8 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	assertFoundationSchemaVerified(t, database)
 	assertTurnEvidenceSchemaVerified(t, database)
 	assertExtractionCoordinationSchemaVerified(t, database)
-	assertFoundationTableSet(t, database)
+	assertCognitiveRecordsSchemaVerified(t, database)
+	assertSchemaTableSet(t, database, true)
 	if got := integrationJournalRowForRevision(t, database, foundationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("foundation attempt count = %d, want 1", got)
 	}
@@ -59,6 +62,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	}
 	if got := integrationJournalRowForRevision(t, database, extractionCoordinationRevision).AttemptCount; got != 1 {
 		t.Fatalf("extraction coordination attempt count = %d, want 1", got)
+	}
+	if got := integrationJournalRowForRevision(t, database, cognitiveRecordsSchemaRevision).AttemptCount; got != 1 {
+		t.Fatalf("cognitive records attempt count = %d, want 1", got)
 	}
 
 	if err := MigrateSchema(t.Context(), database, BuiltinMigrations()); err != nil {
@@ -82,6 +88,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	if got := integrationJournalRowForRevision(t, database, extractionCoordinationRevision).AttemptCount; got != 1 {
 		t.Fatalf("extraction coordination attempt count after repeat = %d, want 1", got)
 	}
+	if got := integrationJournalRowForRevision(t, database, cognitiveRecordsSchemaRevision).AttemptCount; got != 1 {
+		t.Fatalf("cognitive records attempt count after repeat = %d, want 1", got)
+	}
 	assertFoundationChecksRejectInvalidData(t, database)
 
 	closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
@@ -97,6 +106,7 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	assertFoundationSchemaVerified(t, restarted.SQL())
 	assertTurnEvidenceSchemaVerified(t, restarted.SQL())
 	assertExtractionCoordinationSchemaVerified(t, restarted.SQL())
+	assertCognitiveRecordsSchemaVerified(t, restarted.SQL())
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), foundationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("foundation attempt count after restart = %d, want 1", got)
 	}
@@ -114,6 +124,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	}
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), extractionCoordinationRevision).AttemptCount; got != 1 {
 		t.Fatalf("extraction coordination attempt count after restart = %d, want 1", got)
+	}
+	if got := integrationJournalRowForRevision(t, restarted.SQL(), cognitiveRecordsSchemaRevision).AttemptCount; got != 1 {
+		t.Fatalf("cognitive records attempt count after restart = %d, want 1", got)
 	}
 }
 
@@ -140,6 +153,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, "runtime", "upgrade-proof", 1, 1, `{"kept":true}`
 	assertCurrentSchema(t, database, CurrentSchemaRevision())
 	assertFoundationSchemaVerified(t, database)
 	assertExtractionCoordinationSchemaVerified(t, database)
+	assertCognitiveRecordsSchemaVerified(t, database)
 	for _, revision := range []int64{
 		foundationSchemaRevision,
 		conversationSchemaRevision,
@@ -147,6 +161,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, "runtime", "upgrade-proof", 1, 1, `{"kept":true}`
 		transcriptRecallSchemaRevision,
 		conversationRuntimeSchemaRevision,
 		extractionCoordinationRevision,
+		cognitiveRecordsSchemaRevision,
 	} {
 		row := integrationJournalRowForRevision(t, database, revision)
 		if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
@@ -182,6 +197,7 @@ func TestRealSeekDBConversationSchemaRecoversPartialAndRemainsIdempotent(t *test
 	}
 	assertCurrentSchema(t, database, CurrentSchemaRevision())
 	assertExtractionCoordinationSchemaVerified(t, database)
+	assertCognitiveRecordsSchemaVerified(t, database)
 	if got := integrationJournalRowForRevision(t, database, conversationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("conversation attempt count = %d, want 1", got)
 	}
@@ -216,6 +232,7 @@ func TestRealSeekDBTurnEvidenceSchemaUpgradesRevisionTwoAndEnforcesEdges(t *test
 	assertCurrentSchema(t, database, CurrentSchemaRevision())
 	assertTurnEvidenceSchemaVerified(t, database)
 	assertExtractionCoordinationSchemaVerified(t, database)
+	assertCognitiveRecordsSchemaVerified(t, database)
 
 	if _, err := database.ExecContext(t.Context(), `
 INSERT INTO conversation_turn_evidence(turn_id, evidence_id, created_at_ms)
@@ -322,6 +339,7 @@ func TestRealSeekDBTranscriptRecallSchemaRecoversPartialAndRemainsIdempotent(t *
 	}
 	assertCurrentSchema(t, database, CurrentSchemaRevision())
 	assertExtractionCoordinationSchemaVerified(t, database)
+	assertCognitiveRecordsSchemaVerified(t, database)
 	row := integrationJournalRowForRevision(t, database, transcriptRecallSchemaRevision)
 	if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
 		t.Fatalf("transcript recall journal = %#v", row)
@@ -486,14 +504,20 @@ ON conversation_messages(role) WITH PARSER SPACE`,
 
 func TestRealSeekDBConversationRuntimeSchemaFreshInstallIsCurrent(t *testing.T) {
 	instance, config := openSchemaMigrationRuntime(t)
-	defer closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+	closed := false
+	defer func() {
+		if !closed {
+			closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+		}
+	}()
 	database := instance.SQL()
 	if err := MigrateSchema(t.Context(), database, BuiltinMigrations()); err != nil {
 		t.Fatalf("MigrateSchema(fresh current schema) error = %v", err)
 	}
 	assertCurrentSchema(t, database, CurrentSchemaRevision())
 	assertExtractionCoordinationSchemaVerified(t, database)
-	assertFoundationTableSet(t, database)
+	assertCognitiveRecordsSchemaVerified(t, database)
+	assertSchemaTableSet(t, database, true)
 	for _, revision := range []int64{
 		foundationSchemaRevision,
 		conversationSchemaRevision,
@@ -501,11 +525,26 @@ func TestRealSeekDBConversationRuntimeSchemaFreshInstallIsCurrent(t *testing.T) 
 		transcriptRecallSchemaRevision,
 		conversationRuntimeSchemaRevision,
 		extractionCoordinationRevision,
+		cognitiveRecordsSchemaRevision,
 	} {
 		row := integrationJournalRowForRevision(t, database, revision)
 		if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
 			t.Fatalf("fresh revision %d journal = %#v", revision, row)
 		}
+	}
+	closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+	closed = true
+	restarted, err := Open(t.Context(), config)
+	if err != nil {
+		t.Fatalf("restart fresh current schema runtime: %v", err)
+	}
+	instance = restarted
+	closed = false
+	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
+	assertCognitiveRecordsSchemaVerified(t, restarted.SQL())
+	assertSchemaTableSet(t, restarted.SQL(), true)
+	if got := integrationJournalRowForRevision(t, restarted.SQL(), cognitiveRecordsSchemaRevision).AttemptCount; got != 1 {
+		t.Fatalf("fresh cognitive records attempt count after restart = %d, want 1", got)
 	}
 }
 
@@ -538,7 +577,7 @@ func TestRealSeekDBConversationRuntimeSchemaUpgradesRevisionFourRecoversPartialA
 	}
 	assertCurrentSchema(t, database, migrations[4].Revision)
 	assertConversationRuntimeSchemaVerified(t, database)
-	assertFoundationTableSet(t, database)
+	assertSchemaTableSet(t, database, false)
 	row := integrationJournalRowForRevision(t, database, conversationRuntimeSchemaRevision)
 	if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
 		t.Fatalf("conversation runtime journal = %#v", row)
@@ -695,12 +734,12 @@ func TestRealSeekDBExtractionCoordinationSchemaUpgradesRevisionFiveRecoversParti
 			t.Fatalf("precreate partial extraction coordination DDL %d: %v", index+1, err)
 		}
 	}
-	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+	if err := MigrateSchema(t.Context(), database, migrations[:6]); err != nil {
 		t.Fatalf("MigrateSchema(partial revision six) error = %v", err)
 	}
-	assertCurrentSchema(t, database, CurrentSchemaRevision())
+	assertCurrentSchema(t, database, migrations[5].Revision)
 	assertExtractionCoordinationSchemaVerified(t, database)
-	assertFoundationTableSet(t, database)
+	assertSchemaTableSet(t, database, false)
 	for _, forbidden := range []string{
 		"personal_memories", "memory_context_coverages", "extraction_batches", "extraction_batch_turns",
 	} {
@@ -727,7 +766,7 @@ WHERE conversation_id = ?`, conversationID).Scan(&pending, &claimed, &failed); e
 	}
 	assertExtractionCoordinationConstraints(t, database, conversationID, 10)
 
-	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+	if err := MigrateSchema(t.Context(), database, migrations[:6]); err != nil {
 		t.Fatalf("MigrateSchema(repeated revision six) error = %v", err)
 	}
 	if got := integrationJournalRowForRevision(t, database, extractionCoordinationRevision).AttemptCount; got != 1 {
@@ -742,7 +781,7 @@ WHERE conversation_id = ?`, conversationID).Scan(&pending, &claimed, &failed); e
 	}
 	instance = restarted
 	closed = false
-	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
+	assertCurrentSchema(t, restarted.SQL(), migrations[5].Revision)
 	assertExtractionCoordinationSchemaVerified(t, restarted.SQL())
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), extractionCoordinationRevision).AttemptCount; got != 1 {
 		t.Fatalf("extraction coordination attempt count after restart = %d, want 1", got)
@@ -820,6 +859,190 @@ CREATE INDEX conversation_turns_extraction_batch_idx
 			if !errors.Is(readinessErr, ErrSchemaNotCurrent) || status.State != SchemaNotCurrent ||
 				status.Observed == nil || status.Observed.Revision.Number != extractionCoordinationRevision {
 				t.Fatalf("%s extraction readiness = %#v, %v", testCase.name, status, readinessErr)
+			}
+		})
+	}
+}
+
+func TestRealSeekDBCognitiveRecordsSchemaUpgradesRevisionSixRecoversPartialAndPersists(t *testing.T) {
+	instance, config := openSchemaMigrationRuntime(t)
+	closed := false
+	defer func() {
+		if !closed {
+			closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+		}
+	}()
+	database := instance.SQL()
+	migrations := BuiltinMigrations()
+	if err := MigrateSchema(t.Context(), database, migrations[:6]); err != nil {
+		t.Fatalf("MigrateSchema(revision six) error = %v", err)
+	}
+	assertCurrentSchema(t, database, migrations[5].Revision)
+	assertExtractionCoordinationSchemaVerified(t, database)
+
+	// SeekDB DDL commits one statement at a time. Leave one complete table,
+	// including its inline FTS and VECTOR indexes, behind to model a process
+	// exit before the revision-seven journal transition.
+	if _, err := database.ExecContext(t.Context(), cognitiveRecordsSchema[0].ddl); err != nil {
+		t.Fatalf("precreate partial cognitive table: %v", err)
+	}
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(partial revision seven) error = %v", err)
+	}
+	assertCurrentSchema(t, database, CurrentSchemaRevision())
+	assertCognitiveRecordsSchemaVerified(t, database)
+	assertSchemaTableSet(t, database, true)
+	row := integrationJournalRowForRevision(t, database, cognitiveRecordsSchemaRevision)
+	if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
+		t.Fatalf("cognitive records journal = %#v", row)
+	}
+	for _, forbidden := range []string{
+		"social_memory_feedback_events", "extraction_batches", "extraction_batch_turns",
+	} {
+		if got := integrationTableCount(t, database, forbidden); got != 0 {
+			t.Fatalf("revision seven created forbidden table %s", forbidden)
+		}
+	}
+	assertCognitiveRecordsConstraintsAndSearch(t, database)
+
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(repeated revision seven) error = %v", err)
+	}
+	if got := integrationJournalRowForRevision(t, database, cognitiveRecordsSchemaRevision).AttemptCount; got != 1 {
+		t.Fatalf("cognitive records attempt count after repeat = %d, want 1", got)
+	}
+
+	closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+	closed = true
+	restarted, err := Open(t.Context(), config)
+	if err != nil {
+		t.Fatalf("restart SeekDB cognitive records runtime: %v", err)
+	}
+	instance = restarted
+	closed = false
+	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
+	assertCognitiveRecordsSchemaVerified(t, restarted.SQL())
+	if got := integrationJournalRowForRevision(t, restarted.SQL(), cognitiveRecordsSchemaRevision).AttemptCount; got != 1 {
+		t.Fatalf("cognitive records attempt count after restart = %d, want 1", got)
+	}
+	for _, fixture := range []struct {
+		table string
+		id    string
+	}{
+		{table: "personal_memories", id: "cognitive-personal"},
+		{table: "social_memory_entries", id: "cognitive-social"},
+		{table: "knowledge_entries", id: "cognitive-knowledge"},
+		{table: "knowledge_entries", id: "cognitive-knowledge-retrieval"},
+	} {
+		var count int
+		if err := restarted.SQL().QueryRowContext(
+			t.Context(), "SELECT COUNT(*) FROM "+fixture.table+" WHERE id = ?", fixture.id,
+		).Scan(&count); err != nil {
+			t.Fatalf("count persisted %s: %v", fixture.table, err)
+		}
+		if count != 1 {
+			t.Fatalf("persisted %s row count = %d, want 1", fixture.table, count)
+		}
+	}
+}
+
+func TestRealSeekDBCognitiveRecordsSchemaRejectsShapeAndSpecialIndexDrift(t *testing.T) {
+	for _, testCase := range []struct {
+		name          string
+		wantErrorCode string
+		preapply      func(*testing.T, *sql.DB)
+	}{
+		{
+			name: "wrong vector dimension", wantErrorCode: "VERIFY_FAILED",
+			preapply: func(t *testing.T, database *sql.DB) {
+				mutated := strings.Replace(cognitiveRecordsSchema[0].ddl, "embedding VECTOR(1024) NULL", "embedding VECTOR(3) NULL", 1)
+				if mutated == cognitiveRecordsSchema[0].ddl {
+					t.Fatal("test setup did not mutate personal vector dimension")
+				}
+				if _, err := database.ExecContext(t.Context(), mutated); err != nil {
+					t.Fatalf("precreate wrong-dimension personal table: %v", err)
+				}
+			},
+		},
+		{
+			name: "wrong scalar index order", wantErrorCode: "VERIFY_FAILED",
+			preapply: func(t *testing.T, database *sql.DB) {
+				mutated := strings.Replace(
+					cognitiveRecordsSchema[0].ddl,
+					"scope_kind, character_id, review_status, status, updated_at_ms, id",
+					"scope_kind, character_id, status, review_status, updated_at_ms, id",
+					1,
+				)
+				if mutated == cognitiveRecordsSchema[0].ddl {
+					t.Fatal("test setup did not mutate personal scalar index")
+				}
+				if _, err := database.ExecContext(t.Context(), mutated); err != nil {
+					t.Fatalf("precreate wrong-index personal table: %v", err)
+				}
+			},
+		},
+		{
+			name: "wrong fulltext parser", wantErrorCode: "APPLY_FAILED",
+			preapply: func(t *testing.T, database *sql.DB) {
+				mutated := strings.Replace(cognitiveRecordsSchema[0].ddl, "ik_mode='max_word'", "ik_mode='smart'", 1)
+				if mutated == cognitiveRecordsSchema[0].ddl {
+					t.Fatal("test setup did not mutate personal FTS parser")
+				}
+				if _, err := database.ExecContext(t.Context(), mutated); err != nil {
+					t.Fatalf("precreate wrong-parser personal index: %v", err)
+				}
+			},
+		},
+		{
+			name: "missing special index", wantErrorCode: "APPLY_FAILED",
+			preapply: func(t *testing.T, database *sql.DB) {
+				mutated := strings.Replace(cognitiveRecordsSchema[0].ddl, `  FULLTEXT INDEX personal_memories_content_fts_idx (content)
+    WITH PARSER IK PARSER_PROPERTIES=(ik_mode='max_word'),
+`, "", 1)
+				if mutated == cognitiveRecordsSchema[0].ddl {
+					t.Fatal("test setup did not remove personal FTS index")
+				}
+				if _, err := database.ExecContext(t.Context(), mutated); err != nil {
+					t.Fatalf("precreate personal table without FTS index: %v", err)
+				}
+			},
+		},
+		{
+			name: "wrong special index type", wantErrorCode: "APPLY_FAILED",
+			preapply: func(t *testing.T, database *sql.DB) {
+				mutated := strings.Replace(cognitiveRecordsSchema[0].ddl, `  VECTOR INDEX personal_memories_embedding_vec_idx (embedding)
+    WITH (DISTANCE=COSINE, TYPE=HNSW, LIB=VSAG),`, `  FULLTEXT INDEX personal_memories_embedding_vec_idx (content)
+    WITH PARSER IK PARSER_PROPERTIES=(ik_mode='max_word'),`, 1)
+				if mutated == cognitiveRecordsSchema[0].ddl {
+					t.Fatal("test setup did not mutate personal vector index type")
+				}
+				if _, err := database.ExecContext(t.Context(), mutated); err != nil {
+					t.Fatalf("precreate wrong-type vector index: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			instance, config := openSchemaMigrationRuntime(t)
+			defer closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+			database := instance.SQL()
+			migrations := BuiltinMigrations()
+			if err := MigrateSchema(t.Context(), database, migrations[:6]); err != nil {
+				t.Fatalf("MigrateSchema(revision six) error = %v", err)
+			}
+			testCase.preapply(t, database)
+			err := MigrateSchema(t.Context(), database, migrations)
+			if err == nil {
+				t.Fatalf("MigrateSchema(%s) accepted drift", testCase.name)
+			}
+			row := integrationJournalRowForRevision(t, database, cognitiveRecordsSchemaRevision)
+			if row.State != string(MigrationFailed) || row.ErrorCode != testCase.wantErrorCode || row.AttemptCount != 1 {
+				t.Fatalf("%s cognitive records journal = %#v (migration error: %v)", testCase.name, row, err)
+			}
+			status, readinessErr := CheckSchema(t.Context(), database, CurrentSchemaRevision())
+			if !errors.Is(readinessErr, ErrSchemaNotCurrent) || status.State != SchemaNotCurrent ||
+				status.Observed == nil || status.Observed.Revision.Number != cognitiveRecordsSchemaRevision {
+				t.Fatalf("%s cognitive readiness = %#v, %v", testCase.name, status, readinessErr)
 			}
 		})
 	}
@@ -1237,7 +1460,67 @@ func assertExtractionCoordinationSchemaVerified(t *testing.T, database *sql.DB) 
 	}
 }
 
-func assertFoundationTableSet(t *testing.T, database *sql.DB) {
+func assertCognitiveRecordsSchemaVerified(t *testing.T, database *sql.DB) {
+	t.Helper()
+	connection, err := database.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err := BuiltinMigrations()[6].Verify(t.Context(), connection); err != nil {
+		t.Fatalf("verify cognitive records schema: %v", err)
+	}
+	assertSingleAuthoritativeEmbeddingProjection(t, database)
+}
+
+func assertSingleAuthoritativeEmbeddingProjection(t *testing.T, database *sql.DB) {
+	t.Helper()
+	for _, table := range []string{"personal_memories", "social_memory_entries", "knowledge_entries"} {
+		rows, err := database.QueryContext(t.Context(), `
+SELECT column_name, LOWER(column_type)
+FROM information_schema.columns
+WHERE table_schema = DATABASE()
+  AND table_name = ?
+  AND LOWER(column_type) LIKE 'vector(%'
+ORDER BY ordinal_position`, table)
+		if err != nil {
+			t.Fatalf("list %s vector columns: %v", table, err)
+		}
+		var vectorColumns []string
+		for rows.Next() {
+			var name, columnType string
+			if err := rows.Scan(&name, &columnType); err != nil {
+				rows.Close()
+				t.Fatalf("scan %s vector column: %v", table, err)
+			}
+			vectorColumns = append(vectorColumns, name+":"+columnType)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			t.Fatalf("iterate %s vector columns: %v", table, err)
+		}
+		rows.Close()
+		if !slices.Equal(vectorColumns, []string{"embedding:vector(1024)"}) {
+			t.Fatalf("%s vector columns = %v, want only embedding:vector(1024)", table, vectorColumns)
+		}
+
+		var legacyColumnCount int
+		if err := database.QueryRowContext(t.Context(), `
+SELECT COUNT(*)
+FROM information_schema.columns
+WHERE table_schema = DATABASE()
+  AND table_name = ?
+  AND column_name IN ('embedding_model_id', 'embedding_model_id_v2',
+                      'embedding_content_hash_v2', 'embedding_v2')`, table).Scan(&legacyColumnCount); err != nil {
+			t.Fatalf("count %s legacy embedding columns: %v", table, err)
+		}
+		if legacyColumnCount != 0 {
+			t.Fatalf("%s legacy embedding column count = %d, want 0", table, legacyColumnCount)
+		}
+	}
+}
+
+func assertSchemaTableSet(t *testing.T, database *sql.DB, includeCognitiveRecords bool) {
 	t.Helper()
 	for _, table := range foundationSchema {
 		if got := integrationTableCount(t, database, table.name); got != 1 {
@@ -1259,6 +1542,13 @@ func assertFoundationTableSet(t *testing.T, database *sql.DB) {
 			t.Errorf("conversation runtime table %s count = %d, want 1", table.name, got)
 		}
 	}
+	if includeCognitiveRecords {
+		for _, table := range cognitiveRecordsSchema {
+			if got := integrationTableCount(t, database, table.name); got != 1 {
+				t.Errorf("cognitive records table %s count = %d, want 1", table.name, got)
+			}
+		}
+	}
 	var businessTableCount int
 	if err := database.QueryRowContext(t.Context(), `
 SELECT COUNT(*)
@@ -1267,6 +1557,9 @@ WHERE table_schema = DATABASE() AND table_name <> 'schema_revisions'`).Scan(&bus
 		t.Fatal(err)
 	}
 	want := len(foundationSchema) + len(conversationSchema) + len(turnEvidenceSchema) + len(conversationRuntimeSchema)
+	if includeCognitiveRecords {
+		want += len(cognitiveRecordsSchema)
+	}
 	if businessTableCount != want {
 		t.Fatalf("business table count = %d, want %d", businessTableCount, want)
 	}
@@ -1319,6 +1612,294 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, row.instanceID, "fairy.test", "1.0.0", row.
 			t.Fatalf("insert valid plugin instance %s: %v", row.instanceID, err)
 		}
 	}
+}
+
+func assertCognitiveRecordsConstraintsAndSearch(t *testing.T, database *sql.DB) {
+	t.Helper()
+	const (
+		conversationID = "cognitive-conversation"
+		characterID    = "cognitive-character"
+		turnID         = "cognitive-turn"
+	)
+	insertIntegrationConversation(t, database, conversationID, characterID, "character")
+	insertIntegrationTurn(t, database, turnID, conversationID, "cognitive-message", 1)
+	vector := integrationVectorLiteral(1024, 1, 0)
+	hash := sha256.Sum256([]byte("cognitive embedding content"))
+
+	if _, err := database.ExecContext(t.Context(), `
+INSERT INTO personal_memories(
+  id, kind, scope_kind, character_id, review_status, content, status,
+  confidence_basis_points, source_conversation_id, source_turn_id, evidence_ids,
+  embedding_space_id, embedding_content_hash, embedding, created_at_ms, updated_at_ms
+) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"cognitive-personal", "preference", "global", "ready", "喜欢苍之彼方的四重奏",
+		"active", 9000, conversationID, turnID, `["cognitive-turn"]`,
+		"BAAI/bge-m3", hash[:], vector, 10, 10,
+	); err != nil {
+		t.Fatalf("insert personal cognitive record: %v", err)
+	}
+	if _, err := database.ExecContext(t.Context(), `
+INSERT INTO memory_context_coverages(conversation_id, turn_id, memory_id, result_status, created_at_ms)
+VALUES (?, ?, ?, ?, ?)`, conversationID, turnID, "cognitive-personal", "applied", 10); err != nil {
+		t.Fatalf("insert personal extraction coverage: %v", err)
+	}
+	if _, err := database.ExecContext(t.Context(), `
+INSERT INTO social_memory_entries(
+  id, character_id, conversation_id, kind, situation, content, recall_cue, content_hash,
+  sender_id, sender_name, status, source_start_ms, source_end_ms, feedback_evaluation_count,
+  feedback_adopted_count, feedback_positive_count, feedback_partial_count,
+  feedback_negative_count, feedback_score_basis_points, feedback_quarantined_until_ms,
+  embedding_space_id, embedding_content_hash, embedding, created_at_ms, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, '', ?, ?, ?, 0, 0, 0, 0, 0, 0, NULL, ?, ?, ?, ?, ?)`,
+		"cognitive-social", characterID, conversationID, "episode", "星空巡礼限定情境",
+		"我们约定下次一起玩游戏", "普通话题线索", hash[:], "active", 1, 2,
+		"BAAI/bge-m3", hash[:], vector, 10, 10,
+	); err != nil {
+		t.Fatalf("insert social cognitive record: %v", err)
+	}
+	if _, err := database.ExecContext(t.Context(), `
+INSERT INTO social_memory_entries(
+  id, character_id, conversation_id, kind, situation, content, recall_cue, content_hash,
+  sender_id, sender_name, status, source_start_ms, source_end_ms,
+  feedback_evaluation_count, feedback_adopted_count, feedback_positive_count,
+  feedback_partial_count, feedback_negative_count, feedback_score_basis_points,
+  feedback_quarantined_until_ms, created_at_ms, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, NULL, ?, ?)`,
+		"cognitive-person-note", characterID, conversationID, "person_note", "sender-1",
+		"群友喜欢视觉小说", "群友偏好", hash[:], "sender-1", "群友一", "active", 3, 3, 10, 10,
+	); err != nil {
+		t.Fatalf("insert person-note cognitive record without vector: %v", err)
+	}
+	if _, err := database.ExecContext(t.Context(), `
+INSERT INTO knowledge_entries(
+  id, topic, statement, status, verification_basis, confidence_basis_points,
+  source_conversation_id, source_turn_id, source_url, source_title, source_content_hash,
+  source_content_type, source_fetched_at_ms, source_etag, source_last_modified,
+  reconciler_revision, evidence_text, supersedes_id, embedding_space_id,
+  embedding_content_hash, embedding, created_at_ms, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?)`,
+		"cognitive-knowledge", "云海航线专题", "这是一部视觉小说的已核验知识", "verified",
+		"user_confirmed", 9500, conversationID, turnID, "BAAI/bge-m3", hash[:], vector, 10, 10,
+	); err != nil {
+		t.Fatalf("insert knowledge cognitive record: %v", err)
+	}
+	if _, err := database.ExecContext(t.Context(), `
+INSERT INTO knowledge_entries(
+  id, topic, statement, status, verification_basis, confidence_basis_points,
+  source_conversation_id, source_turn_id, source_url, source_title, source_content_hash,
+  source_content_type, source_fetched_at_ms, source_etag, source_last_modified,
+  reconciler_revision, evidence_text, supersedes_id, embedding_space_id,
+  embedding_content_hash, embedding, created_at_ms, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+          NULL, NULL, NULL, ?, ?)`,
+		"cognitive-knowledge-retrieval", "无来源检索知识", "检索入库允许先写直接事实再补来源",
+		"verified", "retrieval_ingest", 8000, conversationID, turnID, 10, 10,
+	); err != nil {
+		t.Fatalf("insert source-free retrieval-ingest knowledge record: %v", err)
+	}
+
+	for _, search := range []struct {
+		table     string
+		predicate string
+		query     string
+	}{
+		{table: "personal_memories", predicate: "MATCH(content) AGAINST(? IN NATURAL LANGUAGE MODE)", query: "苍之彼方"},
+		{table: "social_memory_entries", predicate: "MATCH(situation, content, recall_cue) AGAINST(? IN NATURAL LANGUAGE MODE)", query: "星空巡礼"},
+		{table: "knowledge_entries", predicate: "MATCH(topic, statement) AGAINST(? IN NATURAL LANGUAGE MODE)", query: "云海航线"},
+	} {
+		var count int
+		if err := database.QueryRowContext(t.Context(),
+			"SELECT COUNT(*) FROM "+search.table+" WHERE "+search.predicate, search.query,
+		).Scan(&count); err != nil {
+			t.Fatalf("fulltext query %s: %v", search.table, err)
+		}
+		if count != 1 {
+			t.Fatalf("fulltext query %s count = %d, want 1", search.table, count)
+		}
+	}
+
+	for _, search := range []struct {
+		table       string
+		where       string
+		arguments   []any
+		scalarIndex string
+		expectedID  string
+	}{
+		{
+			table:     "personal_memories",
+			where:     "scope_kind = ? AND character_id IS NULL AND review_status = ? AND status = ? AND embedding IS NOT NULL",
+			arguments: []any{"global", "ready", "active"}, scalarIndex: "personal_memories_scope_status_idx",
+			expectedID: "cognitive-personal",
+		},
+		{
+			table:     "social_memory_entries",
+			where:     "character_id = ? AND conversation_id = ? AND status = ? AND kind = ? AND embedding IS NOT NULL",
+			arguments: []any{characterID, conversationID, "active", "episode"}, scalarIndex: "social_memory_entries_scope_status_idx",
+			expectedID: "cognitive-social",
+		},
+		{
+			table: "knowledge_entries", where: "status = ? AND embedding IS NOT NULL",
+			arguments: []any{"verified"}, scalarIndex: "knowledge_entries_status_updated_idx",
+			expectedID: "cognitive-knowledge",
+		},
+	} {
+		query := "SELECT id FROM " + search.table + " WHERE " + search.where +
+			" ORDER BY cosine_distance(embedding, ?) LIMIT 1"
+		arguments := append(slices.Clone(search.arguments), vector)
+		var id string
+		if err := database.QueryRowContext(t.Context(), query, arguments...).Scan(&id); err != nil {
+			t.Fatalf("exact vector query %s: %v", search.table, err)
+		}
+		if id != search.expectedID {
+			t.Fatalf("exact vector query %s id = %q, want %q", search.table, id, search.expectedID)
+		}
+
+		annQuery := "SELECT id FROM " + search.table + " FORCE INDEX (" + search.scalarIndex + ") WHERE " + search.where +
+			" ORDER BY cosine_distance(embedding, ?) APPROXIMATE LIMIT 5"
+		assertIntegrationANNConverges(t, database, annQuery, arguments, search.expectedID)
+		plan := integrationExplainText(t, database, "EXPLAIN "+annQuery, arguments...)
+		for _, fragment := range []string{
+			"VECTOR INDEX ADAPTIVE SCAN (PRE-FILTER)", search.scalarIndex, "range_key",
+		} {
+			if !strings.Contains(plan, fragment) {
+				t.Fatalf("ANN plan for %s lacks %q:\n%s", search.table, fragment, plan)
+			}
+		}
+	}
+
+	// A VECTOR(1024) column rejects shorter values before any retrieval logic
+	// can accidentally interpret them as a valid semantic record.
+	shortVector := integrationVectorLiteral(3, 1, 0)
+	expectSeekDBConstraintError(t, database, `
+UPDATE personal_memories
+SET embedding_space_id = ?, embedding_content_hash = ?, embedding = ?
+WHERE id = ?`, "BAAI/bge-m3", hash[:], shortVector, "cognitive-personal")
+	invalidPersonalInsert := `
+INSERT INTO personal_memories(
+  id, kind, scope_kind, character_id, review_status, content, status,
+  confidence_basis_points, source_conversation_id, source_turn_id, evidence_ids,
+  embedding_space_id, embedding_content_hash, embedding, created_at_ms, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	expectSeekDBConstraintError(t, database, invalidPersonalInsert,
+		"invalid-legacy-kind", "preference", "unassigned_legacy", nil, "needs_review",
+		"待归属的关系记忆", "active", 5000, conversationID, turnID, `[]`, nil, nil, nil, 10, 10,
+	)
+	for index, invalidCharacterID := range []string{"", " character-with-space "} {
+		expectSeekDBConstraintError(t, database, invalidPersonalInsert,
+			fmt.Sprintf("invalid-character-%d", index), "relationship", "character", invalidCharacterID, "ready",
+			"非法角色域关系记忆", "active", 5000, conversationID, turnID, `[]`, nil, nil, nil, 10, 10,
+		)
+	}
+	expectSeekDBConstraintError(t, database, invalidPersonalInsert,
+		"invalid-unreviewed-vector", "relationship", "unassigned_legacy", nil, "needs_review",
+		"尚未审核的关系记忆", "active", 5000, conversationID, turnID, `[]`,
+		"BAAI/bge-m3", hash[:], vector, 10, 10,
+	)
+	expectSeekDBConstraintError(t, database, `
+UPDATE social_memory_entries
+SET embedding_space_id = ?, embedding_content_hash = ?, embedding = ?
+WHERE id = ?`, "BAAI/bge-m3", hash[:], vector, "cognitive-person-note")
+	longPersonNoteHash := sha256.Sum256([]byte("person note over 240 runes"))
+	expectSeekDBConstraintError(t, database, `
+INSERT INTO social_memory_entries(
+  id, character_id, conversation_id, kind, situation, content, recall_cue, content_hash,
+  sender_id, sender_name, status, source_start_ms, source_end_ms,
+  feedback_evaluation_count, feedback_adopted_count, feedback_positive_count,
+  feedback_partial_count, feedback_negative_count, feedback_score_basis_points,
+  feedback_quarantined_until_ms, created_at_ms, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, NULL, ?, ?)`,
+		"invalid-long-person-note", characterID, conversationID, "person_note", "sender-long",
+		strings.Repeat("界", 241), "群友信息", longPersonNoteHash[:], "sender-long", "群友长文本",
+		"active", 3, 3, 10, 10,
+	)
+	expectSeekDBConstraintError(t, database, `
+INSERT INTO memory_context_coverages(conversation_id, turn_id, memory_id, result_status, created_at_ms)
+VALUES (?, ?, ?, ?, ?)`, conversationID, turnID, "missing-memory", "applied", 10)
+	expectSeekDBConstraintError(t, database, `
+INSERT INTO memory_context_coverages(conversation_id, turn_id, memory_id, result_status, created_at_ms)
+VALUES (?, ?, ?, ?, ?)`, conversationID, turnID, "cognitive-personal", "ignored", 10)
+	expectSeekDBConstraintError(t, database, `
+INSERT INTO personal_memories(
+  id, kind, scope_kind, character_id, review_status, content, status,
+  confidence_basis_points, source_conversation_id, source_turn_id, evidence_ids,
+  created_at_ms, updated_at_ms
+) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"orphan-personal", "preference", "global", "ready", "orphan", "active", 1,
+		conversationID, "missing-turn", `[]`, 10, 10,
+	)
+}
+
+func integrationVectorLiteral(dimensions int, first, rest float32) string {
+	values := make([]string, dimensions)
+	for index := range values {
+		value := rest
+		if index == 0 {
+			value = first
+		}
+		values[index] = strconv.FormatFloat(float64(value), 'f', -1, 32)
+	}
+	return "[" + strings.Join(values, ",") + "]"
+}
+
+func assertIntegrationANNConverges(
+	t *testing.T,
+	database *sql.DB,
+	query string,
+	arguments []any,
+	expectedID string,
+) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var id string
+		err := database.QueryRowContext(t.Context(), query, arguments...).Scan(&id)
+		if err == nil {
+			if id != expectedID {
+				t.Fatalf("ANN query id = %q, want %q", id, expectedID)
+			}
+			return
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("ANN query: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("ANN query did not converge within 5s")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func integrationExplainText(t *testing.T, database *sql.DB, query string, arguments ...any) string {
+	t.Helper()
+	rows, err := database.QueryContext(t.Context(), query, arguments...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	columns, err := rows.Columns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := make([]sql.RawBytes, len(columns))
+	destinations := make([]any, len(columns))
+	for index := range values {
+		destinations[index] = &values[index]
+	}
+	var lines []string
+	for rows.Next() {
+		if err := rows.Scan(destinations...); err != nil {
+			t.Fatal(err)
+		}
+		for _, value := range values {
+			if value != nil {
+				lines = append(lines, string(value))
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func assertConversationRuntimeConstraints(t *testing.T, database *sql.DB) {
