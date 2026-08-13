@@ -263,7 +263,10 @@ func TestProductionBuildHasNoSQLite(t *testing.T) {
 	}
 
 	binaryPath := filepath.Join(t.TempDir(), "fairy")
-	cmd = exec.Command("go", "build", "-o", binaryPath, ".")
+	// Raw binary scans must exclude compressed DWARF. A short marker such as
+	// "vec0" can otherwise occur by chance in debug data even when neither the
+	// dependency graph nor the compiled program contains SQLite.
+	cmd = exec.Command("go", "build", "-trimpath", "-ldflags=-w", "-o", binaryPath, ".")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, output)
 	}
