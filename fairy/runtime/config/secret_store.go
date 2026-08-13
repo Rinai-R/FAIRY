@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,10 +18,12 @@ import (
 
 var (
 	ErrConnectionIDRequired       = errors.New("model connection_id is required")
-	ErrInvalidConnectionID        = errors.New("model connection_id must not contain leading or trailing whitespace")
+	ErrInvalidConnectionID        = errors.New("model connection_id must be 1-128 ASCII characters from [A-Za-z0-9._:-]")
 	ErrSecretRequired             = errors.New("model credential is required")
 	ErrInvalidSecret              = errors.New("model credential must not contain leading or trailing whitespace")
 	ErrSecretDatabasePoolRequired = errors.New("secret database pool is required")
+	ErrSecretSeekDBRequired       = errors.New("secret SeekDB connection is required")
+	ErrSecretQueryLimitInvalid    = errors.New("secret query limit must be greater than zero")
 )
 
 // SecretValue stores an exact secret value in memory. It deliberately redacts fmt and
@@ -59,14 +62,33 @@ func (v SecretValue) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("secret value cannot be JSON encoded")
 }
 
-// SecretStore persists encrypted production secrets in PostgreSQL. Unit tests may
-// opt into the explicit in-memory store returned by NewTestSecretStore.
+// SecretStore persists authenticated ciphertext. SeekDB is the target local
+// authority; the PostgreSQL field exists only while the legacy composition is
+// removed. Unit tests may opt into the explicit in-memory store.
 type SecretStore struct {
 	pool       *coredb.Pool
+	seekDB     *sql.DB
 	cipher     *SecretCipher
+	queryLimit time.Duration
 	now        func() time.Time
 	testMu     sync.RWMutex
 	testValues map[string]SecretValue
+}
+
+// NewSeekDBSecretStore persists only authenticated ciphertext in the local
+// SeekDB authority. The PostgreSQL constructor remains temporarily available
+// to the legacy import/runtime path while domain composition is migrated.
+func NewSeekDBSecretStore(database *sql.DB, cipher *SecretCipher, queryLimit time.Duration) (*SecretStore, error) {
+	if database == nil {
+		return nil, ErrSecretSeekDBRequired
+	}
+	if cipher == nil || cipher.aead == nil {
+		return nil, ErrSecretCipherRequired
+	}
+	if queryLimit <= 0 {
+		return nil, ErrSecretQueryLimitInvalid
+	}
+	return &SecretStore{seekDB: database, cipher: cipher, queryLimit: queryLimit, now: time.Now}, nil
 }
 
 func NewPostgresSecretStore(pool *coredb.Pool, cipher *SecretCipher) (*SecretStore, error) {
@@ -79,16 +101,15 @@ func NewPostgresSecretStore(pool *coredb.Pool, cipher *SecretCipher) (*SecretSto
 	return &SecretStore{pool: pool, cipher: cipher, now: time.Now}, nil
 }
 
-// NewTestSecretStore returns an explicit in-memory store for unit tests. Production
-// composition must use NewPostgresSecretStore.
+// NewTestSecretStore returns an explicit in-memory store for unit tests.
 func NewTestSecretStore() *SecretStore {
 	return &SecretStore{now: time.Now, testValues: make(map[string]SecretValue)}
 }
 
-// Encrypted reports whether the store is backed by PostgreSQL and has an
-// initialized AEAD cipher. It never exposes key material.
+// Encrypted reports whether the store has a durable database and initialized
+// AEAD cipher. It never exposes key material.
 func (s *SecretStore) Encrypted() bool {
-	return s != nil && s.pool != nil && s.pool.Raw() != nil && s.cipher != nil && s.cipher.aead != nil
+	return s != nil && ((s.seekDB != nil) || (s.pool != nil && s.pool.Raw() != nil)) && s.cipher != nil && s.cipher.aead != nil
 }
 
 func (s *SecretStore) DigestEndpointKey(endpoint session.EndpointKind, rawKey string) (string, error) {
@@ -122,6 +143,9 @@ func (s *SecretStore) SaveContext(ctx context.Context, connectionID string, valu
 		s.testMu.Unlock()
 		return nil
 	}
+	if s != nil && s.seekDB != nil {
+		return s.saveSeekDB(ctx, connectionID, value)
+	}
 	if s == nil || s.pool == nil {
 		return ErrSecretDatabasePoolRequired
 	}
@@ -141,6 +165,9 @@ func (s *SecretStore) LoadContext(ctx context.Context, connectionID string) (Sec
 		value, ok := s.testValues[connectionID]
 		s.testMu.RUnlock()
 		return value, ok, nil
+	}
+	if s != nil && s.seekDB != nil {
+		return s.loadSeekDB(ctx, connectionID)
 	}
 	if s == nil || s.pool == nil {
 		return SecretValue{}, false, ErrSecretDatabasePoolRequired
@@ -162,10 +189,114 @@ func (s *SecretStore) DeleteContext(ctx context.Context, connectionID string) er
 		s.testMu.Unlock()
 		return nil
 	}
+	if s != nil && s.seekDB != nil {
+		return s.deleteSeekDB(ctx, connectionID)
+	}
 	if s == nil || s.pool == nil {
 		return ErrSecretDatabasePoolRequired
 	}
 	return s.deletePostgres(ctx, connectionID)
+}
+
+func (s *SecretStore) saveSeekDB(ctx context.Context, name string, value SecretValue) error {
+	if s.cipher == nil {
+		return ErrSecretCipherRequired
+	}
+	if err := canceledContextError(ctx); err != nil {
+		return err
+	}
+	namespace := secretNamespace(name)
+	plaintext := []byte(value.raw)
+	nonce, ciphertext, aad, err := s.cipher.Seal(namespace, name, plaintext)
+	clear(plaintext)
+	if err != nil {
+		return err
+	}
+	defer clear(ciphertext)
+	queryCtx, cancel := s.seekDBQueryContext(ctx)
+	defer cancel()
+	now := s.currentUnixMillis()
+	_, err = s.seekDB.ExecContext(queryCtx, `
+INSERT INTO secret_values(namespace, name, key_version, nonce, ciphertext, aad, created_at_ms, updated_at_ms)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE
+  key_version = VALUES(key_version),
+  nonce = VALUES(nonce),
+  ciphertext = VALUES(ciphertext),
+  aad = VALUES(aad),
+  updated_at_ms = GREATEST(updated_at_ms, VALUES(updated_at_ms))`, namespace, name, SecretKeyVersion, nonce, ciphertext, aad, now, now)
+	if err != nil {
+		return fmt.Errorf("saving encrypted secret in SeekDB: %w", err)
+	}
+	return nil
+}
+
+func (s *SecretStore) loadSeekDB(ctx context.Context, name string) (SecretValue, bool, error) {
+	if s.cipher == nil {
+		return SecretValue{}, false, ErrSecretCipherRequired
+	}
+	if err := canceledContextError(ctx); err != nil {
+		return SecretValue{}, false, err
+	}
+	namespace := secretNamespace(name)
+	queryCtx, cancel := s.seekDBQueryContext(ctx)
+	defer cancel()
+	var keyVersion int
+	var nonce, ciphertext []byte
+	var aad string
+	err := s.seekDB.QueryRowContext(queryCtx, `
+SELECT key_version, nonce, ciphertext, aad
+FROM secret_values
+WHERE namespace = ? AND name = ?`, namespace, name).Scan(&keyVersion, &nonce, &ciphertext, &aad)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SecretValue{}, false, nil
+	}
+	if err != nil {
+		return SecretValue{}, false, fmt.Errorf("loading encrypted secret from SeekDB: %w", err)
+	}
+	plaintext, err := s.cipher.Open(namespace, name, keyVersion, nonce, ciphertext, aad)
+	clear(ciphertext)
+	if err != nil {
+		return SecretValue{}, false, err
+	}
+	raw := string(plaintext)
+	clear(plaintext)
+	value, err := NewSecretValue(raw)
+	if err != nil {
+		return SecretValue{}, false, errors.New("decrypted secret value is invalid")
+	}
+	return value, true, nil
+}
+
+func (s *SecretStore) deleteSeekDB(ctx context.Context, name string) error {
+	if err := canceledContextError(ctx); err != nil {
+		return err
+	}
+	queryCtx, cancel := s.seekDBQueryContext(ctx)
+	defer cancel()
+	if _, err := s.seekDB.ExecContext(queryCtx, "DELETE FROM secret_values WHERE namespace = ? AND name = ?", secretNamespace(name), name); err != nil {
+		return fmt.Errorf("deleting encrypted secret from SeekDB: %w", err)
+	}
+	return nil
+}
+
+func (s *SecretStore) seekDBQueryContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(parent, s.queryLimit)
+}
+
+func canceledContextError(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	default:
+		return nil
+	}
 }
 
 func (s *SecretStore) savePostgres(ctx context.Context, name string, value SecretValue) error {
@@ -259,7 +390,17 @@ func validateConnectionID(connectionID string) error {
 	if connectionID == "" {
 		return ErrConnectionIDRequired
 	}
-	if strings.TrimSpace(connectionID) != connectionID {
+	if len(connectionID) > 128 {
+		return ErrInvalidConnectionID
+	}
+	for index := range len(connectionID) {
+		character := connectionID[index]
+		if (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			strings.ContainsRune("._:-", rune(character)) {
+			continue
+		}
 		return ErrInvalidConnectionID
 	}
 	return nil
