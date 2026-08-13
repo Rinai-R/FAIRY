@@ -67,7 +67,7 @@ func (s *Store) commitTieredCompactionPostgres(
 	if cutoffValue > boundary.messageSequence {
 		return Result{}, errors.New("compaction cutoff exceeds transcript")
 	}
-	result, err := CommitTieredCompaction(
+	result, err := commitTieredCompaction(
 		queryCtx, tx, conversationID, expectedWindow, expectedProjection, expectedTranscript,
 		value, cutoffValue, projection, contextWindow, clearLane, nowUnixMS(),
 	)

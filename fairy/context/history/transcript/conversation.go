@@ -48,12 +48,12 @@ LEFT JOIN LATERAL (
 ) latest_assistant ON true
 WHERE c.id = $1`
 
-type ConversationDB interface {
+type conversationDB interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 
-func RecentConversationID(ctx context.Context, tx pgx.Tx, characterID string) (string, error) {
+func recentConversationID(ctx context.Context, tx pgx.Tx, characterID string) (string, error) {
 	var id string
 	err := tx.QueryRow(ctx, `
 SELECT c.id
@@ -73,7 +73,7 @@ LIMIT 1`, characterID).Scan(&id)
 	return id, nil
 }
 
-func InsertConversationWithPromptWindow(ctx context.Context, tx pgx.Tx, conversationID, characterID string, now int64) error {
+func insertConversationWithPromptWindow(ctx context.Context, tx pgx.Tx, conversationID, characterID string, now int64) error {
 	if _, err := tx.Exec(ctx, "INSERT INTO conversations(id, character_id, created_at_ms, updated_at_ms) VALUES ($1, $2, $3, $3)", conversationID, characterID, now); err != nil {
 		return fmt.Errorf("creating conversation: %w", err)
 	}
@@ -107,7 +107,7 @@ func (row EndpointConversationRow) Binding(endpoint session.EndpointKind) sessio
 	}
 }
 
-func SelectEndpointConversation(ctx context.Context, tx pgx.Tx, characterID string, endpoint session.EndpointKind, digest string) (EndpointConversationRow, bool, error) {
+func selectEndpointConversation(ctx context.Context, tx pgx.Tx, characterID string, endpoint session.EndpointKind, digest string) (EndpointConversationRow, bool, error) {
 	var row EndpointConversationRow
 	var namespace, principalDigest pgtype.Text
 	err := tx.QueryRow(ctx, `
@@ -127,7 +127,7 @@ WHERE character_id = $1 AND endpoint = $2 AND endpoint_key_digest = $3`,
 	return row, true, nil
 }
 
-func InsertEndpointConversation(
+func insertEndpointConversation(
 	ctx context.Context,
 	tx pgx.Tx,
 	characterID string,
@@ -152,7 +152,7 @@ INSERT INTO endpoint_conversations(
 	return nil
 }
 
-func TouchEndpointConversation(ctx context.Context, tx pgx.Tx, characterID string, endpoint session.EndpointKind, digest string, now int64) error {
+func touchEndpointConversation(ctx context.Context, tx pgx.Tx, characterID string, endpoint session.EndpointKind, digest string, now int64) error {
 	if _, err := tx.Exec(ctx, `
 UPDATE endpoint_conversations
 SET updated_at_ms = $4
@@ -162,7 +162,7 @@ WHERE character_id = $1 AND endpoint = $2 AND endpoint_key_digest = $3`, charact
 	return nil
 }
 
-func LookupEndpointBinding(ctx context.Context, db RowQuerier, conversationID string) (session.Binding, bool, error) {
+func lookupEndpointBinding(ctx context.Context, db rowQuerier, conversationID string) (session.Binding, bool, error) {
 	var endpoint, audience, initiation, presentation string
 	var evaluation bool
 	var namespace, digest pgtype.Text
@@ -193,7 +193,7 @@ WHERE conversation_id = $1`, conversationID).Scan(&endpoint, &audience, &initiat
 	return binding, true, nil
 }
 
-func LoadConversationBootstrap(ctx context.Context, db ConversationDB, conversationID string) (ConversationBootstrap, error) {
+func loadConversationBootstrap(ctx context.Context, db conversationDB, conversationID string) (ConversationBootstrap, error) {
 	conversation, prompt, boundary, err := loadConversationMetadata(ctx, db, conversationID)
 	if err != nil {
 		return ConversationBootstrap{}, err
@@ -217,11 +217,11 @@ ORDER BY m.sequence ASC`, conversationID)
 	}, nil
 }
 
-func LoadConversationRecord(ctx context.Context, db ConversationDB, conversationID string) (ConversationRecord, error) {
+func loadConversationRecordPostgresRow(ctx context.Context, db conversationDB, conversationID string) (ConversationRecord, error) {
 	return loadConversationRecord(ctx, db, conversationID)
 }
 
-func LoadConversationActivity(ctx context.Context, db ConversationDB, conversationID string, nowUnixMS int64) (ConversationActivity, error) {
+func loadConversationActivityPostgresRow(ctx context.Context, db conversationDB, conversationID string, nowUnixMS int64) (ConversationActivity, error) {
 	if nowUnixMS <= 0 {
 		return ConversationActivity{}, errors.New("activity evaluation time must be positive")
 	}
@@ -257,7 +257,7 @@ func LoadConversationActivity(ctx context.Context, db ConversationDB, conversati
 	return activity, nil
 }
 
-func LoadConversationPromptContext(ctx context.Context, db ConversationDB, conversationID string) (ConversationPromptContext, error) {
+func loadConversationPromptContextPostgresRows(ctx context.Context, db conversationDB, conversationID string) (ConversationPromptContext, error) {
 	conversation, prompt, boundary, err := loadConversationMetadata(ctx, db, conversationID)
 	if err != nil {
 		return ConversationPromptContext{}, err
@@ -282,7 +282,7 @@ ORDER BY m.sequence ASC`, conversationID, int64(prompt.CutoffMessageSequence))
 	}, nil
 }
 
-func loadConversationMetadata(ctx context.Context, db ConversationDB, conversationID string) (ConversationRecord, PromptWindowRecord, TranscriptBoundary, error) {
+func loadConversationMetadata(ctx context.Context, db conversationDB, conversationID string) (ConversationRecord, PromptWindowRecord, TranscriptBoundary, error) {
 	conversation, err := loadConversationRecord(ctx, db, conversationID)
 	if err != nil {
 		return ConversationRecord{}, PromptWindowRecord{}, TranscriptBoundary{}, err
@@ -326,7 +326,7 @@ WHERE pw.conversation_id = $1`, conversationID).Scan(
 	return conversation, prompt, boundary, nil
 }
 
-func loadConversationRecord(ctx context.Context, db ConversationDB, conversationID string) (ConversationRecord, error) {
+func loadConversationRecord(ctx context.Context, db conversationDB, conversationID string) (ConversationRecord, error) {
 	var conversation ConversationRecord
 	if err := db.QueryRow(ctx, "SELECT id, character_id, created_at_ms, updated_at_ms FROM conversations WHERE id = $1", conversationID).Scan(&conversation.ID, &conversation.CharacterID, &conversation.CreatedAtUnixMS, &conversation.UpdatedAtUnixMS); err != nil {
 		return ConversationRecord{}, fmt.Errorf("loading conversation: %w", err)
@@ -338,7 +338,7 @@ func scanConversationMessages(rows pgx.Rows) ([]MessageRecord, error) {
 	defer rows.Close()
 	messages := make([]MessageRecord, 0)
 	for rows.Next() {
-		message, err := ScanMessageRecord(rows)
+		message, err := scanMessageRecord(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -350,7 +350,7 @@ func scanConversationMessages(rows pgx.Rows) ([]MessageRecord, error) {
 	return messages, nil
 }
 
-func RequireConversation(ctx context.Context, tx pgx.Tx, conversationID string) error {
+func requireConversationPostgres(ctx context.Context, tx pgx.Tx, conversationID string) error {
 	var exists int
 	err := tx.QueryRow(ctx, "SELECT 1 FROM conversations WHERE id = $1 FOR UPDATE", conversationID).Scan(&exists)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -362,7 +362,7 @@ func RequireConversation(ctx context.Context, tx pgx.Tx, conversationID string) 
 	return nil
 }
 
-func NextSequence(ctx context.Context, tx pgx.Tx, table string, conversationID string) (int64, error) {
+func nextSequencePostgres(ctx context.Context, tx pgx.Tx, table string, conversationID string) (int64, error) {
 	if table != "conversation_turns" && table != "conversation_messages" {
 		return 0, fmt.Errorf("reading next sequence from unsupported table %q", table)
 	}
@@ -374,14 +374,14 @@ func NextSequence(ctx context.Context, tx pgx.Tx, table string, conversationID s
 	return maxSequence + 1, nil
 }
 
-func TouchConversation(ctx context.Context, tx pgx.Tx, conversationID string, now int64) error {
+func touchConversationPostgres(ctx context.Context, tx pgx.Tx, conversationID string, now int64) error {
 	if _, err := tx.Exec(ctx, "UPDATE conversations SET updated_at_ms = $2 WHERE id = $1", conversationID, now); err != nil {
 		return fmt.Errorf("touching conversation: %w", err)
 	}
 	return nil
 }
 
-func InsertUserTurn(
+func insertUserTurnPostgres(
 	ctx context.Context,
 	tx pgx.Tx,
 	turnID, conversationID, correlationMessageID, messageID, userMessage string,
@@ -396,7 +396,7 @@ func InsertUserTurn(
 	return nil
 }
 
-func InsertInitiationTurn(ctx context.Context, tx pgx.Tx, turnID, conversationID string, turnSequence, now int64, evidenceIDs []string) error {
+func insertInitiationTurnPostgres(ctx context.Context, tx pgx.Tx, turnID, conversationID string, turnSequence, now int64, evidenceIDs []string) error {
 	if _, err := tx.Exec(ctx, "INSERT INTO conversation_turns(id, conversation_id, sequence, status, origin, extraction_state, created_at_ms, updated_at_ms) VALUES ($1, $2, $3, 'interpreting', 'desktop_initiation', 'ineligible', $4, $4)", turnID, conversationID, turnSequence, now); err != nil {
 		return fmt.Errorf("creating initiation turn: %w", err)
 	}
@@ -408,7 +408,7 @@ func InsertInitiationTurn(ctx context.Context, tx pgx.Tx, turnID, conversationID
 	return nil
 }
 
-func CompleteTurn(
+func completeTurnPostgresTx(
 	ctx context.Context,
 	tx pgx.Tx,
 	turnID, conversationID, messageID, assistantMessage string,
@@ -429,7 +429,7 @@ func CompleteTurn(
 	return nil
 }
 
-func InterruptTurn(ctx context.Context, tx pgx.Tx, turnID, conversationID string, now int64) error {
+func interruptTurnPostgresTx(ctx context.Context, tx pgx.Tx, turnID, conversationID string, now int64) error {
 	changed, err := tx.Exec(ctx, `
 UPDATE conversation_turns
 SET status = 'interrupted',
@@ -450,14 +450,14 @@ WHERE id = $1
 	return nil
 }
 
-func InsertAssistantMessage(ctx context.Context, tx pgx.Tx, messageID, conversationID, turnID, content string, expressionPartsJSON []byte, messageSequence, now int64) error {
+func insertAssistantMessagePostgres(ctx context.Context, tx pgx.Tx, messageID, conversationID, turnID, content string, expressionPartsJSON []byte, messageSequence, now int64) error {
 	if _, err := tx.Exec(ctx, "INSERT INTO conversation_messages(id, conversation_id, turn_id, sequence, role, content, expression_parts, created_at_ms) VALUES ($1, $2, $3, $4, 'assistant', $5, $6, $7)", messageID, conversationID, turnID, messageSequence, content, expressionPartsJSON, now); err != nil {
 		return fmt.Errorf("writing interrupted assistant prefix: %w", err)
 	}
 	return nil
 }
 
-func FailTurn(ctx context.Context, db interface {
+func failTurnPostgresExec(ctx context.Context, db interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 }, turnID, conversationID, code, message string, retryable bool, now int64) error {
 	changed, err := db.Exec(ctx, "UPDATE conversation_turns SET status = 'failed', extraction_state = 'ineligible', error_code = $3, error_message = $4, error_retryable = $5, updated_at_ms = $6 WHERE id = $1 AND conversation_id = $2 AND status IN ('interpreting', 'planning', 'responding')", turnID, conversationID, code, message, retryable, now)
@@ -470,7 +470,7 @@ func FailTurn(ctx context.Context, db interface {
 	return nil
 }
 
-func ScanMessageRecord(row scanner) (MessageRecord, error) {
+func scanMessageRecord(row scanner) (MessageRecord, error) {
 	var message MessageRecord
 	var sequence int64
 	var expressionPartsJSON []byte

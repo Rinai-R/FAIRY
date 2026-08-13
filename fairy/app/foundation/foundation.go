@@ -16,6 +16,9 @@ import (
 	"time"
 
 	"fairy/context/character"
+	historycompaction "fairy/context/history/compaction"
+	historyruntime "fairy/context/history/runtime"
+	historytranscript "fairy/context/history/transcript"
 	"fairy/context/identity"
 	"fairy/runtime/config"
 	"fairy/runtime/seekdb"
@@ -49,15 +52,25 @@ type Status struct {
 	SecretsReady bool                `json:"secretsReady"`
 }
 
+// ConversationStores groups the conversation repositories that share the
+// Foundation's single local SeekDB authority. The aggregate deliberately does
+// not expose that authority; callers depend on the domain Stores instead.
+type ConversationStores struct {
+	Transcript *historytranscript.Store
+	Runtime    *historyruntime.Store
+	Compaction *historycompaction.Store
+}
+
 // Foundation owns the local SeekDB runtime and the stores whose schemas have
 // already migrated. SQL is exposed only as the concrete database/sql boundary
 // needed by later domain migration tasks.
 type Foundation struct {
-	Documents  *config.DocumentStore
-	Secrets    *config.SecretStore
-	Profile    *config.ProfileStore
-	Identity   *identity.Store
-	Characters *character.Store
+	Documents     *config.DocumentStore
+	Secrets       *config.SecretStore
+	Profile       *config.ProfileStore
+	Identity      *identity.Store
+	Characters    *character.Store
+	Conversations ConversationStores
 
 	runtime       runtimeBoundary
 	database      *sql.DB
@@ -79,11 +92,24 @@ type runtimeBoundary interface {
 }
 
 type foundationOperations struct {
-	configFromEnv func(func(string) string) (seekdb.Config, error)
-	openRuntime   func(context.Context, seekdb.Config) (runtimeBoundary, error)
-	migrate       func(context.Context, *sql.DB, []seekdb.Migration) error
-	checkSchema   func(context.Context, *sql.DB, seekdb.Revision) (seekdb.SchemaStatus, error)
-	openCipher    func(string) (*config.SecretCipher, error)
+	configFromEnv      func(func(string) string) (seekdb.Config, error)
+	openRuntime        func(context.Context, seekdb.Config) (runtimeBoundary, error)
+	migrate            func(context.Context, *sql.DB, []seekdb.Migration) error
+	checkSchema        func(context.Context, *sql.DB, seekdb.Revision) (seekdb.SchemaStatus, error)
+	openCipher         func(string) (*config.SecretCipher, error)
+	conversationStores conversationStoreOperations
+}
+
+type conversationStoreOperations struct {
+	newTranscript func(*sql.DB, time.Duration) (*historytranscript.Store, error)
+	newRuntime    func(*sql.DB, time.Duration) (*historyruntime.Store, error)
+	newCompaction func(*sql.DB, time.Duration) (*historycompaction.Store, error)
+}
+
+var productionConversationStoreOperations = conversationStoreOperations{
+	newTranscript: historytranscript.NewSeekDBStore,
+	newRuntime:    historyruntime.NewSeekDBStore,
+	newCompaction: historycompaction.NewSeekDBStore,
 }
 
 var productionOperations = foundationOperations{
@@ -91,9 +117,10 @@ var productionOperations = foundationOperations{
 	openRuntime: func(ctx context.Context, runtimeConfig seekdb.Config) (runtimeBoundary, error) {
 		return seekdb.Open(ctx, runtimeConfig)
 	},
-	migrate:     seekdb.MigrateSchema,
-	checkSchema: seekdb.CheckSchema,
-	openCipher:  config.SecretCipherFromDataDir,
+	migrate:            seekdb.MigrateSchema,
+	checkSchema:        seekdb.CheckSchema,
+	openCipher:         config.SecretCipherFromDataDir,
+	conversationStores: productionConversationStoreOperations,
 }
 
 // Open starts local SeekDB, applies the immutable migration chain, performs a
@@ -193,6 +220,10 @@ func open(lifetime context.Context, options Options, operations foundationOperat
 	if err != nil {
 		return nil, fmt.Errorf("constructing foundation character store: %w", err)
 	}
+	conversationStores, err := newConversationStores(database, runtimeConfig.QueryLimit, operations.conversationStores)
+	if err != nil {
+		return nil, err
+	}
 
 	foundation := &Foundation{
 		Documents:     documentStore,
@@ -200,6 +231,7 @@ func open(lifetime context.Context, options Options, operations foundationOperat
 		Profile:       profileStore,
 		Identity:      identityStore,
 		Characters:    characterStore,
+		Conversations: conversationStores,
 		runtime:       localRuntime,
 		database:      database,
 		queryLimit:    runtimeConfig.QueryLimit,
@@ -216,8 +248,38 @@ func open(lifetime context.Context, options Options, operations foundationOperat
 	return foundation, nil
 }
 
+func newConversationStores(database *sql.DB, queryLimit time.Duration, operations conversationStoreOperations) (ConversationStores, error) {
+	transcriptStore, err := operations.newTranscript(database, queryLimit)
+	if err != nil {
+		return ConversationStores{}, fmt.Errorf("constructing foundation transcript store: %w", err)
+	}
+	if transcriptStore == nil {
+		return ConversationStores{}, errors.New("constructing foundation transcript store: constructor returned nil")
+	}
+	runtimeStore, err := operations.newRuntime(database, queryLimit)
+	if err != nil {
+		return ConversationStores{}, fmt.Errorf("constructing foundation runtime store: %w", err)
+	}
+	if runtimeStore == nil {
+		return ConversationStores{}, errors.New("constructing foundation runtime store: constructor returned nil")
+	}
+	compactionStore, err := operations.newCompaction(database, queryLimit)
+	if err != nil {
+		return ConversationStores{}, fmt.Errorf("constructing foundation compaction store: %w", err)
+	}
+	if compactionStore == nil {
+		return ConversationStores{}, errors.New("constructing foundation compaction store: constructor returned nil")
+	}
+	return ConversationStores{
+		Transcript: transcriptStore,
+		Runtime:    runtimeStore,
+		Compaction: compactionStore,
+	}, nil
+}
+
 func validateOperations(operations foundationOperations) error {
-	if operations.configFromEnv == nil || operations.openRuntime == nil || operations.migrate == nil || operations.checkSchema == nil || operations.openCipher == nil {
+	if operations.configFromEnv == nil || operations.openRuntime == nil || operations.migrate == nil || operations.checkSchema == nil || operations.openCipher == nil ||
+		operations.conversationStores.newTranscript == nil || operations.conversationStores.newRuntime == nil || operations.conversationStores.newCompaction == nil {
 		return errors.New("foundation operations are incomplete")
 	}
 	return nil

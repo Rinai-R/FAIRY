@@ -60,7 +60,7 @@ func (s *Store) commitCompactionPostgres(
 		return Result{}, fmt.Errorf("beginning compaction transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
-	result, err := CommitCompaction(queryCtx, tx, conversationID, expected, nextRevision, expectedTranscript, value, contextWindow, clearLane, nowUnixMS())
+	result, err := commitCompaction(queryCtx, tx, conversationID, expected, nextRevision, expectedTranscript, value, contextWindow, clearLane, nowUnixMS())
 	if err != nil {
 		return Result{}, err
 	}

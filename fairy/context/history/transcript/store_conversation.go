@@ -37,14 +37,14 @@ func (s *Store) openOrCreateCharacterConversationPostgres(ctx context.Context, c
 	if _, err := tx.Exec(queryCtx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", characterID); err != nil {
 		return ConversationBootstrap{}, fmt.Errorf("locking character conversation: %w", err)
 	}
-	conversationID, err := RecentConversationID(queryCtx, tx, characterID)
+	conversationID, err := recentConversationID(queryCtx, tx, characterID)
 	if err != nil {
 		return ConversationBootstrap{}, err
 	}
 	if conversationID == "" {
 		conversationID = newID()
 		now := nowUnixMS()
-		if err := InsertConversationWithPromptWindow(queryCtx, tx, conversationID, characterID, now); err != nil {
+		if err := insertConversationWithPromptWindow(queryCtx, tx, conversationID, characterID, now); err != nil {
 			return ConversationBootstrap{}, err
 		}
 	}
@@ -67,17 +67,17 @@ func (s *Store) openOrCreateEndpointConversationPostgres(ctx context.Context, ch
 		return ConversationBootstrap{}, fmt.Errorf("locking endpoint conversation: %w", err)
 	}
 
-	stored, found, err := SelectEndpointConversation(queryCtx, tx, characterID, binding.Endpoint, digest)
+	stored, found, err := selectEndpointConversation(queryCtx, tx, characterID, binding.Endpoint, digest)
 	if err != nil {
 		return ConversationBootstrap{}, err
 	}
 	now := nowUnixMS()
 	if !found {
 		conversationID := newID()
-		if err := InsertConversationWithPromptWindow(queryCtx, tx, conversationID, characterID, now); err != nil {
+		if err := insertConversationWithPromptWindow(queryCtx, tx, conversationID, characterID, now); err != nil {
 			return ConversationBootstrap{}, err
 		}
-		if err := InsertEndpointConversation(
+		if err := insertEndpointConversation(
 			queryCtx, tx, characterID, binding.Endpoint, digest, conversationID,
 			string(binding.Facts.Audience), string(binding.Facts.Initiation), string(binding.Facts.Presentation),
 			binding.Facts.PrincipalNamespace, binding.Facts.PrincipalDigest, binding.Facts.Evaluation, now,
@@ -92,7 +92,7 @@ func (s *Store) openOrCreateEndpointConversationPostgres(ctx context.Context, ch
 	if stored.Binding(binding.Endpoint) != binding {
 		return ConversationBootstrap{}, ErrEndpointBindingMismatch
 	}
-	if err := TouchEndpointConversation(queryCtx, tx, characterID, binding.Endpoint, digest, now); err != nil {
+	if err := touchEndpointConversation(queryCtx, tx, characterID, binding.Endpoint, digest, now); err != nil {
 		return ConversationBootstrap{}, err
 	}
 	if err := tx.Commit(queryCtx); err != nil {
@@ -107,7 +107,7 @@ func (s *Store) lookupEndpointForConversationPostgres(ctx context.Context, conve
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
-	return LookupEndpointBinding(queryCtx, s.pool.Raw(), conversationID)
+	return lookupEndpointBinding(queryCtx, s.pool.Raw(), conversationID)
 }
 
 func (s *Store) loadConversationPostgres(ctx context.Context, conversationID string) (ConversationBootstrap, error) {
@@ -116,7 +116,7 @@ func (s *Store) loadConversationPostgres(ctx context.Context, conversationID str
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
-	return LoadConversationBootstrap(queryCtx, s.pool.Raw(), conversationID)
+	return loadConversationBootstrap(queryCtx, s.pool.Raw(), conversationID)
 }
 
 func (s *Store) loadConversationRecordPostgres(ctx context.Context, conversationID string) (ConversationRecord, error) {
@@ -125,7 +125,7 @@ func (s *Store) loadConversationRecordPostgres(ctx context.Context, conversation
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
-	return LoadConversationRecord(queryCtx, s.pool.Raw(), conversationID)
+	return loadConversationRecordPostgresRow(queryCtx, s.pool.Raw(), conversationID)
 }
 
 func (s *Store) loadConversationActivityPostgres(ctx context.Context, conversationID string, nowUnixMS int64) (ConversationActivity, error) {
@@ -134,7 +134,7 @@ func (s *Store) loadConversationActivityPostgres(ctx context.Context, conversati
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
-	return LoadConversationActivity(queryCtx, s.pool.Raw(), conversationID, nowUnixMS)
+	return loadConversationActivityPostgresRow(queryCtx, s.pool.Raw(), conversationID, nowUnixMS)
 }
 
 func (s *Store) loadConversationPromptContextPostgres(ctx context.Context, conversationID string) (ConversationPromptContext, error) {
@@ -143,7 +143,7 @@ func (s *Store) loadConversationPromptContextPostgres(ctx context.Context, conve
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
-	return LoadConversationPromptContext(queryCtx, s.pool.Raw(), conversationID)
+	return loadConversationPromptContextPostgresRows(queryCtx, s.pool.Raw(), conversationID)
 }
 
 func (s *Store) beginTurnPostgres(ctx context.Context, conversationID string, userMessage string, correlationMessageID string) (PersistedTurn, error) {
@@ -163,24 +163,24 @@ func (s *Store) beginTurnPostgres(ctx context.Context, conversationID string, us
 		return PersistedTurn{}, fmt.Errorf("beginning user message transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
-	if err := RequireConversation(queryCtx, tx, conversationID); err != nil {
+	if err := requireConversationPostgres(queryCtx, tx, conversationID); err != nil {
 		return PersistedTurn{}, err
 	}
-	turnSequence, err := NextSequence(queryCtx, tx, "conversation_turns", conversationID)
+	turnSequence, err := nextSequencePostgres(queryCtx, tx, "conversation_turns", conversationID)
 	if err != nil {
 		return PersistedTurn{}, err
 	}
-	messageSequence, err := NextSequence(queryCtx, tx, "conversation_messages", conversationID)
+	messageSequence, err := nextSequencePostgres(queryCtx, tx, "conversation_messages", conversationID)
 	if err != nil {
 		return PersistedTurn{}, err
 	}
 	now := nowUnixMS()
 	turnID := newID()
 	messageID := newID()
-	if err := InsertUserTurn(queryCtx, tx, turnID, conversationID, correlationMessageID, messageID, userMessage, turnSequence, messageSequence, now); err != nil {
+	if err := insertUserTurnPostgres(queryCtx, tx, turnID, conversationID, correlationMessageID, messageID, userMessage, turnSequence, messageSequence, now); err != nil {
 		return PersistedTurn{}, err
 	}
-	if err := TouchConversation(queryCtx, tx, conversationID, now); err != nil {
+	if err := touchConversationPostgres(queryCtx, tx, conversationID, now); err != nil {
 		return PersistedTurn{}, err
 	}
 	if err := tx.Commit(queryCtx); err != nil {
@@ -216,19 +216,19 @@ func (s *Store) beginInitiationTurnPostgres(ctx context.Context, conversationID 
 		return PersistedTurn{}, fmt.Errorf("beginning initiation transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
-	if err := RequireConversation(queryCtx, tx, conversationID); err != nil {
+	if err := requireConversationPostgres(queryCtx, tx, conversationID); err != nil {
 		return PersistedTurn{}, err
 	}
-	turnSequence, err := NextSequence(queryCtx, tx, "conversation_turns", conversationID)
+	turnSequence, err := nextSequencePostgres(queryCtx, tx, "conversation_turns", conversationID)
 	if err != nil {
 		return PersistedTurn{}, err
 	}
 	now := nowUnixMS()
 	turnID := newID()
-	if err := InsertInitiationTurn(queryCtx, tx, turnID, conversationID, turnSequence, now, evidenceIDs); err != nil {
+	if err := insertInitiationTurnPostgres(queryCtx, tx, turnID, conversationID, turnSequence, now, evidenceIDs); err != nil {
 		return PersistedTurn{}, err
 	}
-	if err := TouchConversation(queryCtx, tx, conversationID, now); err != nil {
+	if err := touchConversationPostgres(queryCtx, tx, conversationID, now); err != nil {
 		return PersistedTurn{}, err
 	}
 	if err := tx.Commit(queryCtx); err != nil {
@@ -263,19 +263,19 @@ func (s *Store) completeExpressionTurnPostgres(ctx context.Context, conversation
 		return MessageRecord{}, fmt.Errorf("beginning assistant message transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
-	if err := RequireConversation(queryCtx, tx, conversationID); err != nil {
+	if err := requireConversationPostgres(queryCtx, tx, conversationID); err != nil {
 		return MessageRecord{}, err
 	}
 	now := nowUnixMS()
-	messageSequence, err := NextSequence(queryCtx, tx, "conversation_messages", conversationID)
+	messageSequence, err := nextSequencePostgres(queryCtx, tx, "conversation_messages", conversationID)
 	if err != nil {
 		return MessageRecord{}, err
 	}
 	messageID := newID()
-	if err := CompleteTurn(queryCtx, tx, turnID, conversationID, messageID, assistantMessage, partsJSON, messageSequence, now, extractionEligible); err != nil {
+	if err := completeTurnPostgresTx(queryCtx, tx, turnID, conversationID, messageID, assistantMessage, partsJSON, messageSequence, now, extractionEligible); err != nil {
 		return MessageRecord{}, err
 	}
-	if err := TouchConversation(queryCtx, tx, conversationID, now); err != nil {
+	if err := touchConversationPostgres(queryCtx, tx, conversationID, now); err != nil {
 		return MessageRecord{}, err
 	}
 	if err := tx.Commit(queryCtx); err != nil {
@@ -315,22 +315,22 @@ func (s *Store) interruptExpressionTurnPostgres(ctx context.Context, conversatio
 		return nil, fmt.Errorf("beginning interrupted turn transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
-	if err := RequireConversation(queryCtx, tx, conversationID); err != nil {
+	if err := requireConversationPostgres(queryCtx, tx, conversationID); err != nil {
 		return nil, err
 	}
 	now := nowUnixMS()
-	if err := InterruptTurn(queryCtx, tx, turnID, conversationID, now); err != nil {
+	if err := interruptTurnPostgresTx(queryCtx, tx, turnID, conversationID, now); err != nil {
 		return nil, err
 	}
 
 	var assistant *MessageRecord
 	if publishedPrefix != "" || len(parts) > 0 {
-		messageSequence, err := NextSequence(queryCtx, tx, "conversation_messages", conversationID)
+		messageSequence, err := nextSequencePostgres(queryCtx, tx, "conversation_messages", conversationID)
 		if err != nil {
 			return nil, err
 		}
 		messageID := newID()
-		if err := InsertAssistantMessage(queryCtx, tx, messageID, conversationID, turnID, publishedPrefix, partsJSON, messageSequence, now); err != nil {
+		if err := insertAssistantMessagePostgres(queryCtx, tx, messageID, conversationID, turnID, publishedPrefix, partsJSON, messageSequence, now); err != nil {
 			return nil, err
 		}
 		assistant = &MessageRecord{
@@ -344,7 +344,7 @@ func (s *Store) interruptExpressionTurnPostgres(ctx context.Context, conversatio
 			CreatedAtUnixMS: now,
 		}
 	}
-	if err := TouchConversation(queryCtx, tx, conversationID, now); err != nil {
+	if err := touchConversationPostgres(queryCtx, tx, conversationID, now); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(queryCtx); err != nil {
@@ -368,5 +368,5 @@ func (s *Store) failTurnPostgres(ctx context.Context, conversationID string, tur
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
-	return FailTurn(queryCtx, s.pool.Raw(), turnID, conversationID, code, message, retryable, nowUnixMS())
+	return failTurnPostgresExec(queryCtx, s.pool.Raw(), turnID, conversationID, code, message, retryable, nowUnixMS())
 }

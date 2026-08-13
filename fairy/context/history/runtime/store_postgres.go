@@ -20,14 +20,14 @@ func (s *Store) appendTurnRuntimeEventPostgres(ctx context.Context, input TurnRu
 		return TurnRuntimeEventRecord{}, fmt.Errorf("beginning runtime event transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
-	if err := RequireTurn(queryCtx, tx, input.ConversationID, input.TurnID); err != nil {
+	if err := requireTurn(queryCtx, tx, input.ConversationID, input.TurnID); err != nil {
 		return TurnRuntimeEventRecord{}, err
 	}
-	sequence, err := NextTurnRuntimeEventSequence(queryCtx, tx, input.ConversationID, input.TurnID)
+	sequence, err := nextTurnRuntimeEventSequence(queryCtx, tx, input.ConversationID, input.TurnID)
 	if err != nil {
 		return TurnRuntimeEventRecord{}, err
 	}
-	record, err := InsertTurnRuntimeEvent(queryCtx, tx, newID(), metadataJSON, nowUnixMS(), input, sequence)
+	record, err := insertTurnRuntimeEvent(queryCtx, tx, newID(), metadataJSON, nowUnixMS(), input, sequence)
 	if err != nil {
 		return TurnRuntimeEventRecord{}, err
 	}
@@ -46,7 +46,7 @@ func (s *Store) listTurnRuntimeEventsPostgres(ctx context.Context, conversationI
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
-	records, err := ListTurnRuntimeEvents(queryCtx, s.pool.Raw(), conversationID, turnID)
+	records, err := listTurnRuntimeEvents(queryCtx, s.pool.Raw(), conversationID, turnID)
 	if err != nil {
 		return nil, err
 	}
@@ -70,10 +70,10 @@ func (s *Store) saveLaneContinuationPostgres(ctx context.Context, record LaneCon
 		return LaneContinuationRecord{}, fmt.Errorf("beginning lane continuation transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
-	if err := RequireConversation(queryCtx, tx, record.ConversationID); err != nil {
+	if err := requireConversation(queryCtx, tx, record.ConversationID); err != nil {
 		return LaneContinuationRecord{}, err
 	}
-	record, err = SaveLaneContinuation(queryCtx, tx, record, nowUnixMS())
+	record, err = saveLaneContinuation(queryCtx, tx, record, nowUnixMS())
 	if err != nil {
 		return LaneContinuationRecord{}, err
 	}
@@ -92,7 +92,7 @@ func (s *Store) loadLaneContinuationPostgres(ctx context.Context, conversationID
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
-	return LoadLaneContinuation(queryCtx, s.pool.Raw(), conversationID, lane)
+	return loadLaneContinuation(queryCtx, s.pool.Raw(), conversationID, lane)
 }
 
 func (s *Store) clearLaneContinuationPostgres(ctx context.Context, conversationID string, lane string) error {
@@ -109,10 +109,10 @@ func (s *Store) clearLaneContinuationPostgres(ctx context.Context, conversationI
 		return fmt.Errorf("beginning lane continuation clear transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
-	if err := RequireConversation(queryCtx, tx, conversationID); err != nil {
+	if err := requireConversation(queryCtx, tx, conversationID); err != nil {
 		return err
 	}
-	if err := DeleteLaneContinuation(queryCtx, tx, conversationID, lane); err != nil {
+	if err := deleteLaneContinuation(queryCtx, tx, conversationID, lane); err != nil {
 		return err
 	}
 	if err := tx.Commit(queryCtx); err != nil {
@@ -132,7 +132,7 @@ func (s *Store) saveContextWindowPostgres(ctx context.Context, record ContextWin
 		return ContextWindowRecord{}, fmt.Errorf("beginning context window transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
-	record, err = SaveContextWindow(queryCtx, tx, record, nowUnixMS())
+	record, err = saveContextWindow(queryCtx, tx, record, nowUnixMS())
 	if err != nil {
 		return ContextWindowRecord{}, err
 	}
@@ -151,5 +151,5 @@ func (s *Store) loadContextWindowPostgres(ctx context.Context, conversationID st
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
-	return LoadContextWindow(queryCtx, s.pool.Raw(), conversationID, lane)
+	return loadContextWindow(queryCtx, s.pool.Raw(), conversationID, lane)
 }

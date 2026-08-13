@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func CommitTieredCompaction(
+func commitTieredCompaction(
 	ctx context.Context,
 	tx pgx.Tx,
 	conversationID string,
@@ -38,7 +38,7 @@ func CommitTieredCompaction(
 	if err != nil {
 		return Result{}, err
 	}
-	if err := transcript.RequireConversation(ctx, tx, conversationID); err != nil {
+	if err := requirePostgresConversation(ctx, tx, conversationID); err != nil {
 		return Result{}, err
 	}
 	if err := requirePostgresTranscriptBoundary(ctx, tx, conversationID, boundary); err != nil {
@@ -77,10 +77,10 @@ WHERE conversation_id = $1
 	if changed.RowsAffected() != 1 {
 		return Result{}, ErrPromptWindowRevisionChanged
 	}
-	if err := historyruntime.UpsertContextWindow(ctx, tx, contextWindow, now); err != nil {
+	if err := upsertPostgresContextWindow(ctx, tx, contextWindow, now); err != nil {
 		return Result{}, err
 	}
-	if err := historyruntime.DeleteLaneContinuation(ctx, tx, conversationID, clearLane); err != nil {
+	if err := deletePostgresLaneContinuation(ctx, tx, conversationID, clearLane); err != nil {
 		return Result{}, err
 	}
 	return Result{WindowRevision: uint64(nextWindowRevision)}, nil

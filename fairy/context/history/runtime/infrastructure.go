@@ -55,11 +55,11 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-type RowQuerier interface {
+type rowQuerier interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
-type Querier interface {
+type querier interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 

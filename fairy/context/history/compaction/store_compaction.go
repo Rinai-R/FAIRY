@@ -38,7 +38,7 @@ func (s *Store) commitPromptWindowPostgres(ctx context.Context, conversationID s
 		return Result{}, fmt.Errorf("beginning prompt window transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
-	result, err := CommitPromptWindow(queryCtx, tx, conversationID, expected, nextRevision, expectedTranscript, value, nowUnixMS())
+	result, err := commitPromptWindow(queryCtx, tx, conversationID, expected, nextRevision, expectedTranscript, value, nowUnixMS())
 	if err != nil {
 		return Result{}, err
 	}

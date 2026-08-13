@@ -55,12 +55,8 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-type RowQuerier interface {
+type rowQuerier interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
-}
-
-type Querier interface {
-	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 
 func nowUnixMS() int64 { return time.Now().UnixMilli() }

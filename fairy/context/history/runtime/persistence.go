@@ -11,7 +11,7 @@ import (
 
 var ErrTurnNotFound = errors.New("turn does not belong to conversation")
 
-func RequireConversation(ctx context.Context, tx pgx.Tx, conversationID string) error {
+func requireConversation(ctx context.Context, tx pgx.Tx, conversationID string) error {
 	var exists int
 	err := tx.QueryRow(ctx, "SELECT 1 FROM conversations WHERE id = $1 FOR UPDATE", conversationID).Scan(&exists)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -23,7 +23,7 @@ func RequireConversation(ctx context.Context, tx pgx.Tx, conversationID string) 
 	return nil
 }
 
-func RequireTurn(ctx context.Context, tx pgx.Tx, conversationID, turnID string) error {
+func requireTurn(ctx context.Context, tx pgx.Tx, conversationID, turnID string) error {
 	var exists int
 	err := tx.QueryRow(ctx, "SELECT 1 FROM conversation_turns WHERE conversation_id = $1 AND id = $2 FOR UPDATE", conversationID, turnID).Scan(&exists)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -35,7 +35,7 @@ func RequireTurn(ctx context.Context, tx pgx.Tx, conversationID, turnID string) 
 	return nil
 }
 
-func NextTurnRuntimeEventSequence(ctx context.Context, tx pgx.Tx, conversationID, turnID string) (int64, error) {
+func nextTurnRuntimeEventSequence(ctx context.Context, tx pgx.Tx, conversationID, turnID string) (int64, error) {
 	var maxSequence int64
 	if err := tx.QueryRow(ctx, "SELECT COALESCE(MAX(sequence), 0) FROM turn_runtime_events WHERE conversation_id = $1 AND turn_id = $2", conversationID, turnID).Scan(&maxSequence); err != nil {
 		return 0, fmt.Errorf("reading next runtime event sequence: %w", err)
@@ -43,7 +43,7 @@ func NextTurnRuntimeEventSequence(ctx context.Context, tx pgx.Tx, conversationID
 	return maxSequence + 1, nil
 }
 
-func InsertTurnRuntimeEvent(
+func insertTurnRuntimeEvent(
 	ctx context.Context,
 	tx pgx.Tx,
 	id, metadataJSON string,
@@ -70,11 +70,11 @@ func InsertTurnRuntimeEvent(
 }
 
 type runtimeStateQuerier interface {
-	Querier
-	RowQuerier
+	querier
+	rowQuerier
 }
 
-func ListTurnRuntimeEvents(ctx context.Context, db runtimeStateQuerier, conversationID, turnID string) ([]TurnRuntimeEventRecord, error) {
+func listTurnRuntimeEvents(ctx context.Context, db runtimeStateQuerier, conversationID, turnID string) ([]TurnRuntimeEventRecord, error) {
 	var exists bool
 	if err := db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM conversation_turns WHERE conversation_id = $1 AND id = $2)", conversationID, turnID).Scan(&exists); err != nil {
 		return nil, fmt.Errorf("checking runtime event turn: %w", err)
@@ -115,7 +115,7 @@ func scanTurnRuntimeEvent(row scanner) (TurnRuntimeEventRecord, error) {
 	return record, nil
 }
 
-func SaveLaneContinuation(ctx context.Context, tx pgx.Tx, record LaneContinuationRecord, now int64) (LaneContinuationRecord, error) {
+func saveLaneContinuation(ctx context.Context, tx pgx.Tx, record LaneContinuationRecord, now int64) (LaneContinuationRecord, error) {
 	windowRevision := int64(record.WindowRevision)
 	if _, err := tx.Exec(ctx, "INSERT INTO lane_continuations(conversation_id, lane, previous_response_id, request_shape_hash, input_prefix_hash, response_item_hash, window_revision, updated_at_ms) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT(conversation_id, lane) DO UPDATE SET previous_response_id = excluded.previous_response_id, request_shape_hash = excluded.request_shape_hash, input_prefix_hash = excluded.input_prefix_hash, response_item_hash = excluded.response_item_hash, window_revision = excluded.window_revision, updated_at_ms = excluded.updated_at_ms", record.ConversationID, record.Lane, record.PreviousResponseID, record.RequestShapeHash, record.InputPrefixHash, record.ResponseItemHash, windowRevision, now); err != nil {
 		return LaneContinuationRecord{}, fmt.Errorf("saving lane continuation: %w", err)
@@ -124,7 +124,7 @@ func SaveLaneContinuation(ctx context.Context, tx pgx.Tx, record LaneContinuatio
 	return record, nil
 }
 
-func LoadLaneContinuation(ctx context.Context, db RowQuerier, conversationID, lane string) (LaneContinuationRecord, bool, error) {
+func loadLaneContinuation(ctx context.Context, db rowQuerier, conversationID, lane string) (LaneContinuationRecord, bool, error) {
 	var record LaneContinuationRecord
 	var windowRevision int64
 	err := db.QueryRow(ctx, "SELECT conversation_id, lane, previous_response_id, request_shape_hash, input_prefix_hash, response_item_hash, window_revision, updated_at_ms FROM lane_continuations WHERE conversation_id = $1 AND lane = $2", conversationID, lane).Scan(&record.ConversationID, &record.Lane, &record.PreviousResponseID, &record.RequestShapeHash, &record.InputPrefixHash, &record.ResponseItemHash, &windowRevision, &record.UpdatedAtUnixMS)
@@ -138,14 +138,14 @@ func LoadLaneContinuation(ctx context.Context, db RowQuerier, conversationID, la
 	return record, true, nil
 }
 
-func DeleteLaneContinuation(ctx context.Context, tx pgx.Tx, conversationID, lane string) error {
+func deleteLaneContinuation(ctx context.Context, tx pgx.Tx, conversationID, lane string) error {
 	if _, err := tx.Exec(ctx, "DELETE FROM lane_continuations WHERE conversation_id = $1 AND lane = $2", conversationID, lane); err != nil {
 		return fmt.Errorf("clearing lane continuation: %w", err)
 	}
 	return nil
 }
 
-func UpsertContextWindow(ctx context.Context, tx pgx.Tx, record ContextWindowRecord, now int64) error {
+func upsertContextWindow(ctx context.Context, tx pgx.Tx, record ContextWindowRecord, now int64) error {
 	windowNumber := int64(record.WindowNumber)
 	failureCount := int64(record.FailureCount)
 	promptWindowRevision := int64(record.PromptWindowRevision)
@@ -163,18 +163,18 @@ func UpsertContextWindow(ctx context.Context, tx pgx.Tx, record ContextWindowRec
 	return nil
 }
 
-func SaveContextWindow(ctx context.Context, tx pgx.Tx, record ContextWindowRecord, now int64) (ContextWindowRecord, error) {
-	if err := RequireConversation(ctx, tx, record.ConversationID); err != nil {
+func saveContextWindow(ctx context.Context, tx pgx.Tx, record ContextWindowRecord, now int64) (ContextWindowRecord, error) {
+	if err := requireConversation(ctx, tx, record.ConversationID); err != nil {
 		return ContextWindowRecord{}, err
 	}
-	if err := UpsertContextWindow(ctx, tx, record, now); err != nil {
+	if err := upsertContextWindow(ctx, tx, record, now); err != nil {
 		return ContextWindowRecord{}, err
 	}
 	record.UpdatedAtUnixMS = now
 	return record, nil
 }
 
-func LoadContextWindow(ctx context.Context, db RowQuerier, conversationID, lane string) (ContextWindowRecord, bool, error) {
+func loadContextWindow(ctx context.Context, db rowQuerier, conversationID, lane string) (ContextWindowRecord, bool, error) {
 	var record ContextWindowRecord
 	var windowNumber int64
 	var previousWindowID pgtype.Text

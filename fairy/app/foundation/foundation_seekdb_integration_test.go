@@ -16,8 +16,13 @@ import (
 	"testing"
 
 	"fairy/context/character"
+	historycompaction "fairy/context/history/compaction"
+	historyexpr "fairy/context/history/expression"
+	historyruntime "fairy/context/history/runtime"
 	"fairy/runtime/config"
+	"fairy/runtime/model"
 	"fairy/runtime/seekdb"
+	"fairy/transport/session"
 )
 
 func TestRealSeekDBFoundationStoresPersistAcrossRestartWithoutLegacyFallback(t *testing.T) {
@@ -127,6 +132,127 @@ func TestRealSeekDBFoundationStoresPersistAcrossRestartWithoutLegacyFallback(t *
 		t.Fatalf("read restarted active character = (%#v, %v)", restartedCatalog, err)
 	}
 
+	environment.assertNoLegacyReads(t)
+}
+
+func TestRealSeekDBFoundationConversationStoresShareAuthorityAndPersistAcrossRestart(t *testing.T) {
+	environment := newFoundationIntegrationEnvironment(t)
+	characterRoot := filepath.Join(t.TempDir(), "characters")
+	first := openFoundationIntegration(t, environment, characterRoot)
+	defer closeFoundationIntegration(t, first)
+
+	binding := session.Binding{
+		Endpoint: session.EndpointDesktop,
+		Facts: session.Facts{
+			Audience:     session.AudienceSingle,
+			Initiation:   session.InitiationDirect,
+			Presentation: session.PresentationChat,
+			Evaluation:   true,
+		},
+	}
+	bootstrap, err := first.Conversations.Transcript.OpenOrCreateEndpointConversationContext(
+		t.Context(), "character-foundation-conversation", binding,
+		"abababababababababababababababababababababababababababababababab",
+	)
+	if err != nil {
+		t.Fatalf("open endpoint conversation: %v", err)
+	}
+	turn, err := first.Conversations.Transcript.BeginCorrelatedTurnContext(
+		t.Context(), bootstrap.Conversation.ID, "记住这段跨 Store 对话。", "foundation-message-1",
+	)
+	if err != nil {
+		t.Fatalf("begin correlated turn: %v", err)
+	}
+	assistant, err := first.Conversations.Transcript.CompleteExpressionTurnContext(
+		t.Context(), bootstrap.Conversation.ID, turn.ID, "我会记住。",
+		[]historyexpr.Part{{Kind: historyexpr.Utterance, Text: "我会记住。", VisualState: "idle"}},
+	)
+	if err != nil {
+		t.Fatalf("complete expression turn: %v", err)
+	}
+	completedState := "completed"
+	if _, err := first.Conversations.Runtime.AppendTurnRuntimeEventContext(t.Context(), historyruntime.TurnRuntimeEventInput{
+		ConversationID: bootstrap.Conversation.ID,
+		TurnID:         turn.ID,
+		EventType:      "foundation.integration",
+		State:          &completedState,
+		MetadataJSON:   `{"authority":"seekdb"}`,
+	}); err != nil {
+		t.Fatalf("append runtime event: %v", err)
+	}
+	plan, err := first.Conversations.Transcript.LoadConversationPromptContext(t.Context(), bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatalf("load prompt plan: %v", err)
+	}
+	continuation := historyruntime.LaneContinuationRecord{
+		ConversationID:     bootstrap.Conversation.ID,
+		Lane:               string(model.PromptLaneCompact),
+		PreviousResponseID: "foundation-response-1",
+		RequestShapeHash:   strings.Repeat("a", 64),
+		InputPrefixHash:    strings.Repeat("b", 64),
+		ResponseItemHash:   strings.Repeat("c", 64),
+		WindowRevision:     plan.PromptWindow.Revision,
+	}
+	if _, err := first.Conversations.Runtime.SaveLaneContinuationContext(t.Context(), continuation); err != nil {
+		t.Fatalf("save continuation: %v", err)
+	}
+	window := historyruntime.ContextWindowRecord{
+		ConversationID:       bootstrap.Conversation.ID,
+		Lane:                 string(model.PromptLaneCompact),
+		WindowNumber:         1,
+		FirstWindowID:        "foundation-window-1",
+		WindowID:             "foundation-window-1",
+		LastTrigger:          "foundation-integration",
+		PromptWindowRevision: plan.PromptWindow.Revision + 1,
+	}
+	if _, err := first.Conversations.Compaction.CommitCompactionContext(
+		t.Context(), bootstrap.Conversation.ID, plan.PromptWindow.Revision, plan.TranscriptBoundary,
+		"首轮对话已压缩。", window, string(model.PromptLaneCompact),
+	); err != nil {
+		t.Fatalf("commit prompt projection: %v", err)
+	}
+	if _, found, err := first.Conversations.Runtime.LoadLaneContinuationContext(t.Context(), bootstrap.Conversation.ID, string(model.PromptLaneCompact)); err != nil || found {
+		t.Fatalf("continuation after compaction = (found %v, %v), want cleared", found, err)
+	}
+	stalePlan, err := first.Conversations.Transcript.LoadConversationPromptContext(t.Context(), bootstrap.Conversation.ID)
+	if err != nil {
+		t.Fatalf("load stale compaction plan: %v", err)
+	}
+	newTurn, err := first.Conversations.Transcript.BeginTurnContext(t.Context(), bootstrap.Conversation.ID, "这是压缩计划后的新消息。")
+	if err != nil {
+		t.Fatalf("begin turn after compaction plan: %v", err)
+	}
+	if _, err := first.Conversations.Compaction.CommitPromptWindowContext(
+		t.Context(), bootstrap.Conversation.ID, stalePlan.PromptWindow.Revision, stalePlan.TranscriptBoundary, "过期摘要",
+	); !errors.Is(err, historycompaction.ErrPromptWindowRevisionChanged) {
+		t.Fatalf("stale compaction error = %v", err)
+	}
+	if loaded, err := first.Conversations.Transcript.LoadConversationContext(t.Context(), bootstrap.Conversation.ID); err != nil || len(loaded.Messages) != 3 {
+		t.Fatalf("full transcript before restart = (%#v, %v)", loaded.Messages, err)
+	}
+	if active, err := first.Conversations.Transcript.LoadConversationPromptContext(t.Context(), bootstrap.Conversation.ID); err != nil || len(active.Messages) != 1 || active.Messages[0].TurnID != newTurn.ID {
+		t.Fatalf("active prompt before restart = (%#v, %v)", active.Messages, err)
+	}
+
+	closeFoundationIntegration(t, first)
+	second := openFoundationIntegration(t, environment, characterRoot)
+	defer closeFoundationIntegration(t, second)
+	loaded, err := second.Conversations.Transcript.LoadConversationContext(t.Context(), bootstrap.Conversation.ID)
+	if err != nil || len(loaded.Messages) != 3 || loaded.Messages[1].ID != assistant.ID || loaded.Messages[2].TurnID != newTurn.ID {
+		t.Fatalf("restarted transcript = (%#v, %v)", loaded.Messages, err)
+	}
+	active, err := second.Conversations.Transcript.LoadConversationPromptContext(t.Context(), bootstrap.Conversation.ID)
+	if err != nil || len(active.Messages) != 1 || active.Messages[0].TurnID != newTurn.ID {
+		t.Fatalf("restarted active prompt = (%#v, %v)", active.Messages, err)
+	}
+	events, err := second.Conversations.Runtime.ListTurnRuntimeEventsContext(t.Context(), bootstrap.Conversation.ID, turn.ID)
+	if err != nil || len(events) != 1 || events[0].EventType != "foundation.integration" {
+		t.Fatalf("restarted runtime events = (%#v, %v)", events, err)
+	}
+	restoredWindow, found, err := second.Conversations.Runtime.LoadContextWindowContext(t.Context(), bootstrap.Conversation.ID, string(model.PromptLaneCompact))
+	if err != nil || !found || restoredWindow.WindowID != window.WindowID {
+		t.Fatalf("restarted context window = (%#v, found %v, %v)", restoredWindow, found, err)
+	}
 	environment.assertNoLegacyReads(t)
 }
 

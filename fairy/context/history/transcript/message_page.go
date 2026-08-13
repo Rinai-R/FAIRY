@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func ListConversationMessagesBefore(ctx context.Context, db ConversationDB, conversationID string, beforeSequence uint64, limit int) (MessagePage, error) {
+func listConversationMessagesBeforePostgresRows(ctx context.Context, db conversationDB, conversationID string, beforeSequence uint64, limit int) (MessagePage, error) {
 	var exists int
 	if err := db.QueryRow(ctx, "SELECT 1 FROM conversations WHERE id = $1", conversationID).Scan(&exists); errors.Is(err, pgx.ErrNoRows) {
 		return MessagePage{}, errors.New("conversation does not exist")
@@ -34,7 +34,7 @@ LIMIT $3`, conversationID, before, limit+1)
 	defer rows.Close()
 	messages := make([]MessageRecord, 0, limit+1)
 	for rows.Next() {
-		message, err := ScanMessageRecord(rows)
+		message, err := scanMessageRecord(rows)
 		if err != nil {
 			return MessagePage{}, err
 		}

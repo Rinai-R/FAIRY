@@ -51,7 +51,7 @@ func (s *Store) commitPromptProjectionPostgres(
 		return Result{}, fmt.Errorf("beginning prompt projection transaction: %w", err)
 	}
 	defer tx.Rollback(queryCtx)
-	result, err := CommitPromptProjection(
+	result, err := commitPromptProjection(
 		queryCtx, tx, conversationID, expectedWindow, expectedProjection, expectedTranscript,
 		projection, contextWindow, clearLane, nowUnixMS(),
 	)
