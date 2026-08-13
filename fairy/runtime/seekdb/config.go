@@ -14,6 +14,7 @@ import (
 
 const (
 	EnvBinaryPath    = "FAIRY_SEEKDB_BINARY"
+	EnvLibraryPath   = "FAIRY_SEEKDB_LIBRARY_PATH"
 	EnvDataDir       = "FAIRY_SEEKDB_DATA_DIR"
 	EnvAddress       = "FAIRY_SEEKDB_ADDRESS"
 	EnvDatabase      = "FAIRY_SEEKDB_DATABASE"
@@ -46,6 +47,7 @@ var (
 
 type Config struct {
 	BinaryPath    string
+	LibraryDirs   []string
 	DataDir       string
 	Address       string
 	Database      string
@@ -83,6 +85,12 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		MaxIdleConns:  DefaultMaxIdleConns,
 	}
 	var err error
+	if raw := getenv(EnvLibraryPath); raw != "" {
+		if raw != strings.TrimSpace(raw) || strings.ContainsRune(raw, 0) {
+			return Config{}, fmt.Errorf("%s: %w", EnvLibraryPath, ErrUncleanValue)
+		}
+		config.LibraryDirs = filepath.SplitList(raw)
+	}
 	if raw := getenv(EnvConnectLimit); raw != "" {
 		config.ConnectLimit, err = parsePositiveDuration(EnvConnectLimit, raw)
 		if err != nil {
@@ -149,6 +157,14 @@ func (c Config) Validate() error {
 	}
 	if err := validateAbsoluteCleanPath(EnvBinaryPath, c.BinaryPath, false); err != nil {
 		return err
+	}
+	for _, directory := range c.LibraryDirs {
+		if directory == "" || directory != strings.TrimSpace(directory) || strings.ContainsRune(directory, 0) {
+			return fmt.Errorf("%s entries must be non-empty and clean", EnvLibraryPath)
+		}
+		if err := validateAbsoluteCleanPath(EnvLibraryPath, directory, true); err != nil {
+			return err
+		}
 	}
 	if c.DataDir == "" {
 		return ErrDataDirRequired

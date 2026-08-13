@@ -7,6 +7,15 @@ tasks:
     cmds:
       - go test ./...
 
+  seekdb:test-integration:
+    desc: Run the real local SeekDB startup, transaction, and restart-persistence test.
+    dir: fairy
+    preconditions:
+      - sh: test -n "${FAIRY_SEEKDB_BINARY:-}"
+        msg: FAIRY_SEEKDB_BINARY must point to a real SeekDB executable.
+    cmds:
+      - go test -count=1 -tags=integration -run TestRealSeekDBPersistsCommittedTransactionAcrossRestart -v ./runtime/seekdb
+
   build:
     desc: Build the fairy Session Core binary.
     deps:

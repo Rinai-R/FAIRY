@@ -16,7 +16,11 @@ const (
 )
 
 func openSQLDatabase(config Config) (*sql.DB, error) {
-	connector, err := mysqlConnector(config)
+	return openSQLDatabaseForName(config, config.Database)
+}
+
+func openSQLDatabaseForName(config Config, databaseName string) (*sql.DB, error) {
+	connector, err := mysqlConnectorForName(config, databaseName)
 	if err != nil {
 		return nil, redactRuntimeError(config, err)
 	}
@@ -29,7 +33,11 @@ func openSQLDatabase(config Config) (*sql.DB, error) {
 }
 
 func mysqlConnector(config Config) (driver.Connector, error) {
-	driverConfig, err := mysqlDriverConfig(config)
+	return mysqlConnectorForName(config, config.Database)
+}
+
+func mysqlConnectorForName(config Config, databaseName string) (driver.Connector, error) {
+	driverConfig, err := mysqlDriverConfigForName(config, databaseName)
 	if err != nil {
 		return nil, err
 	}
@@ -41,15 +49,22 @@ func mysqlConnector(config Config) (driver.Connector, error) {
 }
 
 func mysqlDriverConfig(config Config) (*mysql.Config, error) {
+	return mysqlDriverConfigForName(config, config.Database)
+}
+
+func mysqlDriverConfigForName(config Config, databaseName string) (*mysql.Config, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
+	}
+	if databaseName != "" && !identifierPattern.MatchString(databaseName) {
+		return nil, errors.New("SeekDB SQL database name must be a portable identifier")
 	}
 	driverConfig := mysql.NewConfig()
 	driverConfig.User = config.User
 	driverConfig.Passwd = config.Password
 	driverConfig.Net = "tcp"
 	driverConfig.Addr = config.Address
-	driverConfig.DBName = config.Database
+	driverConfig.DBName = databaseName
 	driverConfig.Loc = time.UTC
 	driverConfig.Timeout = config.ConnectLimit
 	driverConfig.ReadTimeout = config.QueryLimit

@@ -42,6 +42,30 @@ func TestOpenAndCloseRuntime(t *testing.T) {
 	}
 }
 
+func TestOpenBootstrapsConfiguredApplicationDatabase(t *testing.T) {
+	config := testRuntimeConfig(t)
+	var databases []string
+	options := testLaunchOptions(t, "block")
+	options.database = func(_ Config, databaseName string) (*sql.DB, error) {
+		databases = append(databases, databaseName)
+		return sql.OpenDB(testSQLConnector{}), nil
+	}
+	runtime, err := open(t.Context(), config, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	if !slices.Equal(databases, []string{seekDBBootstrapDatabase, config.Database}) {
+		t.Fatalf("database sequence = %#v", databases)
+	}
+}
+
 func TestOpenReportsEarlyProcessExitWithoutPrivatePaths(t *testing.T) {
 	config := testRuntimeConfig(t)
 	private := config.DataDir
@@ -109,6 +133,7 @@ func TestPrepareRuntimePathsRejectsWidePermissionsAndSymlinks(t *testing.T) {
 func TestSeekDBCommandUsesOnlyLocalNonSecretArguments(t *testing.T) {
 	config := testRuntimeConfig(t)
 	config.Address = "[::1]:3881"
+	config.LibraryDirs = []string{filepath.Join(t.TempDir(), "compat")}
 	paths := runtimePaths{Base: config.DataDir, Data: filepath.Join(config.DataDir, "store"), Redo: filepath.Join(config.DataDir, "redo")}
 	command := seekDBCommand(t.Context(), config, paths, io.Discard)
 	want := []string{
@@ -126,6 +151,15 @@ func TestSeekDBCommandUsesOnlyLocalNonSecretArguments(t *testing.T) {
 				t.Fatalf("command args contain credential flag %q", argument)
 			}
 		}
+	}
+	libraryEnvironment := false
+	for _, variable := range command.Env {
+		if strings.Contains(variable, config.LibraryDirs[0]) {
+			libraryEnvironment = true
+		}
+	}
+	if !libraryEnvironment {
+		t.Fatalf("command environment does not contain the configured library directory")
 	}
 }
 
@@ -187,7 +221,7 @@ func testLaunchOptions(t *testing.T, mode string) launchOptions {
 			command.Stderr = output
 			return command
 		},
-		database:          func(Config) (*sql.DB, error) { return sql.OpenDB(testSQLConnector{}), nil },
+		database:          func(Config, string) (*sql.DB, error) { return sql.OpenDB(testSQLConnector{}), nil },
 		probe:             probeSQL,
 		readinessInterval: 5 * time.Millisecond,
 	}
@@ -218,3 +252,7 @@ func (testSQLConnection) Begin() (driver.Tx, error) {
 }
 
 func (testSQLConnection) Ping(context.Context) error { return nil }
+
+func (testSQLConnection) ExecContext(context.Context, string, []driver.NamedValue) (driver.Result, error) {
+	return driver.RowsAffected(0), nil
+}

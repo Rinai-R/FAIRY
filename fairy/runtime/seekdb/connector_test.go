@@ -72,8 +72,9 @@ func TestRuntimeExposesSQLAndBoundedQueryContext(t *testing.T) {
 func TestRuntimeErrorRedactsCredential(t *testing.T) {
 	config := testRuntimeConfig(t)
 	config.Password = "must-not-appear"
-	err := redactRuntimeError(config, errors.New("dial failed with must-not-appear"))
-	if strings.Contains(err.Error(), config.Password) || !strings.Contains(err.Error(), "[seekdb-credential]") {
+	config.LibraryDirs = []string{"/private/seekdb-library"}
+	err := redactRuntimeError(config, errors.New("dial failed with must-not-appear from /private/seekdb-library"))
+	if strings.Contains(err.Error(), config.Password) || strings.Contains(err.Error(), config.LibraryDirs[0]) || !strings.Contains(err.Error(), "[seekdb-credential]") || !strings.Contains(err.Error(), "[seekdb-library]") {
 		t.Fatalf("redactRuntimeError() = %v", err)
 	}
 }

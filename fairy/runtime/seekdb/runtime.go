@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,8 @@ var (
 	ErrRuntimeClosed = errors.New("SeekDB runtime is closed")
 	ErrRuntimeExited = errors.New("SeekDB runtime exited before readiness")
 )
+
+const seekDBBootstrapDatabase = "oceanbase"
 
 type Runtime struct {
 	config Config
@@ -48,7 +51,7 @@ type runtimePaths struct {
 
 type launchOptions struct {
 	command           func(context.Context, Config, runtimePaths, io.Writer) *exec.Cmd
-	database          func(Config) (*sql.DB, error)
+	database          func(Config, string) (*sql.DB, error)
 	probe             func(context.Context, *sql.DB) error
 	readinessInterval time.Duration
 }
@@ -56,7 +59,7 @@ type launchOptions struct {
 func Open(ctx context.Context, config Config) (*Runtime, error) {
 	return open(ctx, config, launchOptions{
 		command:           seekDBCommand,
-		database:          openSQLDatabase,
+		database:          openSQLDatabaseForName,
 		probe:             probeSQL,
 		readinessInterval: defaultReadinessInterval,
 	})
@@ -84,7 +87,11 @@ func open(ctx context.Context, config Config, options launchOptions) (*Runtime, 
 	}
 
 	output := newBoundedOutput(maxProcessOutputBytes)
-	database, err := options.database(config)
+	bootstrapDatabase := config.Database
+	if config.Database != seekDBBootstrapDatabase {
+		bootstrapDatabase = seekDBBootstrapDatabase
+	}
+	database, err := options.database(config, bootstrapDatabase)
 	if err != nil {
 		return nil, redactRuntimeError(config, fmt.Errorf("configure SeekDB SQL connection: %w", err))
 	}
@@ -109,7 +116,12 @@ func open(ctx context.Context, config Config, options launchOptions) (*Runtime, 
 		probeErr := options.probe(probeCtx, database)
 		probeCancel()
 		if probeErr == nil {
-			return runtime, nil
+			if config.Database == bootstrapDatabase {
+				return runtime, nil
+			}
+			if err := runtime.createAndSelectDatabase(readyCtx, options); err == nil {
+				return runtime, nil
+			}
 		}
 		select {
 		case <-runtime.wait:
@@ -127,6 +139,33 @@ func open(ctx context.Context, config Config, options launchOptions) (*Runtime, 
 		case <-ticker.C:
 		}
 	}
+}
+
+func (r *Runtime) createAndSelectDatabase(ctx context.Context, options launchOptions) error {
+	queryCtx, cancel := context.WithTimeout(ctx, r.config.QueryLimit)
+	_, err := r.db.ExecContext(queryCtx, "CREATE DATABASE IF NOT EXISTS `"+r.config.Database+"`")
+	cancel()
+	if err != nil {
+		return err
+	}
+	database, err := options.database(r.config, r.config.Database)
+	if err != nil {
+		return err
+	}
+	probeCtx, probeCancel := context.WithTimeout(ctx, r.config.QueryLimit)
+	err = options.probe(probeCtx, database)
+	probeCancel()
+	if err != nil {
+		_ = database.Close()
+		return err
+	}
+	old := r.db
+	if err := old.Close(); err != nil {
+		_ = database.Close()
+		return err
+	}
+	r.db = database
+	return nil
 }
 
 func (r *Runtime) Done() <-chan struct{} {
@@ -275,7 +314,34 @@ func seekDBCommand(ctx context.Context, config Config, paths runtimePaths, outpu
 	cmd.Dir = paths.Base
 	cmd.Stdout = output
 	cmd.Stderr = output
+	if len(config.LibraryDirs) > 0 {
+		cmd.Env = withDynamicLibraryPath(os.Environ(), config.LibraryDirs)
+	}
 	return cmd
+}
+
+func withDynamicLibraryPath(environment, directories []string) []string {
+	name := "LD_LIBRARY_PATH"
+	if goruntime.GOOS == "darwin" {
+		name = "DYLD_FALLBACK_LIBRARY_PATH"
+	} else if goruntime.GOOS == "windows" {
+		name = "PATH"
+	}
+	prefix := name + "="
+	cleaned := make([]string, 0, len(environment)+1)
+	existing := ""
+	for _, variable := range environment {
+		if strings.HasPrefix(variable, prefix) {
+			existing = strings.TrimPrefix(variable, prefix)
+			continue
+		}
+		cleaned = append(cleaned, variable)
+	}
+	search := append([]string(nil), directories...)
+	if existing != "" {
+		search = append(search, existing)
+	}
+	return append(cleaned, prefix+strings.Join(search, string(os.PathListSeparator)))
 }
 
 func validateExecutable(path string) error {
@@ -341,6 +407,9 @@ func redactRuntimeError(config Config, err error) error {
 	message := err.Error()
 	message = strings.ReplaceAll(message, config.BinaryPath, "[seekdb-binary]")
 	message = strings.ReplaceAll(message, config.DataDir, "[seekdb-data]")
+	for _, directory := range config.LibraryDirs {
+		message = strings.ReplaceAll(message, directory, "[seekdb-library]")
+	}
 	if config.Password != "" {
 		message = strings.ReplaceAll(message, config.Password, "[seekdb-credential]")
 	}
@@ -351,6 +420,9 @@ func redactProcessOutput(config Config, output string) string {
 	output = strings.TrimSpace(output)
 	output = strings.ReplaceAll(output, config.BinaryPath, "[seekdb-binary]")
 	output = strings.ReplaceAll(output, config.DataDir, "[seekdb-data]")
+	for _, directory := range config.LibraryDirs {
+		output = strings.ReplaceAll(output, directory, "[seekdb-library]")
+	}
 	if config.Password != "" {
 		output = strings.ReplaceAll(output, config.Password, "[seekdb-credential]")
 	}

@@ -9,8 +9,11 @@ import (
 )
 
 func TestConfigFromEnv(t *testing.T) {
+	libraryOne := filepath.Join(t.TempDir(), "lib-one")
+	libraryTwo := filepath.Join(t.TempDir(), "lib-two")
 	values := map[string]string{
 		EnvBinaryPath:    filepath.Join(t.TempDir(), "seekdb"),
+		EnvLibraryPath:   strings.Join([]string{libraryOne, libraryTwo}, string(filepath.ListSeparator)),
 		EnvDataDir:       filepath.Join(t.TempDir(), "data"),
 		EnvAddress:       "[::1]:3881",
 		EnvDatabase:      "fairy_test",
@@ -34,6 +37,9 @@ func TestConfigFromEnv(t *testing.T) {
 	}
 	if config.MaxOpenConns != 12 || config.MaxIdleConns != 6 {
 		t.Fatalf("ConfigFromEnv() pool = %+v", config)
+	}
+	if len(config.LibraryDirs) != 2 || config.LibraryDirs[0] != libraryOne || config.LibraryDirs[1] != libraryTwo {
+		t.Fatalf("ConfigFromEnv() library dirs = %#v", config.LibraryDirs)
 	}
 }
 
@@ -72,6 +78,9 @@ func TestConfigValidationRejectsUnsafeValues(t *testing.T) {
 	}{
 		{name: "missing binary", mutate: func(c *Config) { c.BinaryPath = "" }, want: ErrBinaryPathRequired.Error()},
 		{name: "relative binary", mutate: func(c *Config) { c.BinaryPath = "seekdb" }, want: "must be absolute"},
+		{name: "relative library", mutate: func(c *Config) { c.LibraryDirs = []string{"lib"} }, want: "must be absolute"},
+		{name: "empty library", mutate: func(c *Config) { c.LibraryDirs = []string{""} }, want: "non-empty and clean"},
+		{name: "root library", mutate: func(c *Config) { c.LibraryDirs = []string{string(filepath.Separator)} }, want: "filesystem root"},
 		{name: "unclean data", mutate: func(c *Config) { c.DataDir += string(filepath.Separator) + ".." }, want: "must be clean"},
 		{name: "root data", mutate: func(c *Config) { c.DataDir = string(filepath.Separator) }, want: "filesystem root"},
 		{name: "remote address", mutate: func(c *Config) { c.Address = "192.0.2.1:2881" }, want: "loopback"},
