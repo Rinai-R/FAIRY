@@ -12,16 +12,17 @@ import (
 func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first := BuiltinMigrations()
 	second := BuiltinMigrations()
-	if len(first) != 5 || len(second) != 5 {
-		t.Fatalf("builtin migration counts = %d and %d, want 5", len(first), len(second))
+	if len(first) != 6 || len(second) != 6 {
+		t.Fatalf("builtin migration counts = %d and %d, want 6", len(first), len(second))
 	}
 	foundation := Revision{Number: foundationSchemaRevision, Checksum: foundationSchemaChecksum()}
 	conversation := Revision{Number: conversationSchemaRevision, Checksum: conversationSchemaChecksum()}
 	turnEvidence := Revision{Number: turnEvidenceSchemaRevision, Checksum: turnEvidenceSchemaChecksum()}
 	transcriptRecall := Revision{Number: transcriptRecallSchemaRevision, Checksum: transcriptRecallSchemaChecksum()}
 	conversationRuntime := Revision{Number: conversationRuntimeSchemaRevision, Checksum: conversationRuntimeSchemaChecksum()}
-	if current := CurrentSchemaRevision(); current != conversationRuntime {
-		t.Fatalf("current schema revision = %#v, want %#v", current, conversationRuntime)
+	extractionCoordination := Revision{Number: extractionCoordinationRevision, Checksum: extractionCoordinationChecksum()}
+	if current := CurrentSchemaRevision(); current != extractionCoordination {
+		t.Fatalf("current schema revision = %#v, want %#v", current, extractionCoordination)
 	}
 	if first[0].Revision != foundation || first[0].Name != "create-foundation-schema" {
 		t.Fatalf("foundation migration = %#v, want revision %#v", first[0], foundation)
@@ -38,6 +39,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	if first[4].Revision != conversationRuntime || first[4].Name != "create-conversation-runtime-schema" {
 		t.Fatalf("conversation runtime migration = %#v, want revision %#v", first[4], conversationRuntime)
 	}
+	if first[5].Revision != extractionCoordination || first[5].Name != "strengthen-extraction-coordination-schema" {
+		t.Fatalf("extraction coordination migration = %#v, want revision %#v", first[5], extractionCoordination)
+	}
 	for index, migration := range first {
 		if migration.Apply == nil || migration.Verify == nil {
 			t.Fatalf("builtin migration %d must provide Apply and Verify", index+1)
@@ -49,11 +53,13 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first[2].Revision.Number = 100
 	first[3].Name = "mutated-transcript-recall"
 	first[4].Revision.Number = 101
+	first[5].Name = "mutated-extraction-coordination"
 	if second[0].Name != "create-foundation-schema" || second[0].Revision != foundation ||
 		second[1].Name != "create-conversation-schema" || second[1].Revision != conversation ||
 		second[2].Name != "create-turn-evidence-schema" || second[2].Revision != turnEvidence ||
 		second[3].Name != "create-conversation-message-fulltext-index" || second[3].Revision != transcriptRecall ||
-		second[4].Name != "create-conversation-runtime-schema" || second[4].Revision != conversationRuntime {
+		second[4].Name != "create-conversation-runtime-schema" || second[4].Revision != conversationRuntime ||
+		second[5].Name != "strengthen-extraction-coordination-schema" || second[5].Revision != extractionCoordination {
 		t.Fatalf("caller mutation changed later BuiltinMigrations result: %#v", second[0])
 	}
 	if got := hex.EncodeToString(foundation.Checksum[:]); got != "e674bec12d0b6895da8b351d082a686c9c2f44990fb68749bbad083c4a6805d3" {
@@ -70,6 +76,55 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	}
 	if got := hex.EncodeToString(conversationRuntime.Checksum[:]); got != "6d93c442f7d95deeb631397da210b818926b9d5cd496d2375d9adc22333c801c" {
 		t.Fatalf("conversation runtime checksum = %s, update requires an explicit revision decision", got)
+	}
+	if got := hex.EncodeToString(extractionCoordination.Checksum[:]); got != "4984285a4efd211d0a0e1dc807237ae4fdb57ae3a7c2eaacd490f56534838935" {
+		t.Fatalf("extraction coordination checksum = %s, update requires an explicit revision decision", got)
+	}
+}
+
+func TestExtractionCoordinationRevisionStrengthensOnlyConversationTurns(t *testing.T) {
+	if len(extractionCoordinationDDL) != 3 {
+		t.Fatalf("extraction coordination DDL count = %d, want 3", len(extractionCoordinationDDL))
+	}
+	forbidden := []string{
+		"personal_memories", "memory_context_coverages", "extraction_batches",
+		"extraction_batch_turns", "feedback_events",
+	}
+	for index, statement := range extractionCoordinationDDL {
+		lower := strings.ToLower(statement)
+		if !strings.Contains(lower, "conversation_turns") {
+			t.Errorf("extraction coordination DDL %d does not target conversation_turns", index+1)
+		}
+		for _, token := range forbidden {
+			if strings.Contains(lower, token) {
+				t.Errorf("extraction coordination DDL %d contains forbidden table %q", index+1, token)
+			}
+		}
+	}
+
+	turns := extractionCoordinationTurnTable()
+	if turns.name != "conversation_turns" || len(turns.columns) != len(conversationSchema[3].columns) ||
+		len(turns.foreignKeys) != len(conversationSchema[3].foreignKeys) {
+		t.Fatalf("revision-six Turn shape changed columns or foreign keys: %#v", turns)
+	}
+	if !schemaHasIndex(turns, ascendingBTreeIndex(
+		extractionLeaseIndexName, false,
+		"conversation_id", "status", "extraction_state", "extraction_lease_expires_at_ms", "sequence",
+	)) {
+		t.Fatal("revision-six Turn shape lacks conversation-scoped extraction lease index")
+	}
+	if !schemaHasIndex(turns, ascendingBTreeIndex(
+		extractionBatchIndexName, false,
+		"extraction_claim_id", "extraction_lease_owner", "extraction_state", "sequence", "conversation_id",
+	)) {
+		t.Fatal("revision-six Turn shape lacks worker-owned batch index")
+	}
+	if len(turns.checks) != len(conversationSchema[3].checks)+1 ||
+		turns.checks[len(turns.checks)-1].name != extractionStateMachineCheckName {
+		t.Fatalf("revision-six Turn CHECKs = %#v", turns.checks)
+	}
+	if len(conversationSchema[3].indexes) != 7 || len(conversationSchema[3].checks) != 1 {
+		t.Fatal("revision six mutated the immutable revision-two Turn contract")
 	}
 }
 

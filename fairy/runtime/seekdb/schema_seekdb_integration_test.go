@@ -40,8 +40,7 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	assertCurrentSchema(t, database, CurrentSchemaRevision())
 	assertFoundationSchemaVerified(t, database)
 	assertTurnEvidenceSchemaVerified(t, database)
-	assertTranscriptRecallSchemaVerified(t, database)
-	assertConversationRuntimeSchemaVerified(t, database)
+	assertExtractionCoordinationSchemaVerified(t, database)
 	assertFoundationTableSet(t, database)
 	if got := integrationJournalRowForRevision(t, database, foundationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("foundation attempt count = %d, want 1", got)
@@ -57,6 +56,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	}
 	if got := integrationJournalRowForRevision(t, database, conversationRuntimeSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("conversation runtime attempt count = %d, want 1", got)
+	}
+	if got := integrationJournalRowForRevision(t, database, extractionCoordinationRevision).AttemptCount; got != 1 {
+		t.Fatalf("extraction coordination attempt count = %d, want 1", got)
 	}
 
 	if err := MigrateSchema(t.Context(), database, BuiltinMigrations()); err != nil {
@@ -77,6 +79,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	if got := integrationJournalRowForRevision(t, database, conversationRuntimeSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("conversation runtime attempt count after repeat = %d, want 1", got)
 	}
+	if got := integrationJournalRowForRevision(t, database, extractionCoordinationRevision).AttemptCount; got != 1 {
+		t.Fatalf("extraction coordination attempt count after repeat = %d, want 1", got)
+	}
 	assertFoundationChecksRejectInvalidData(t, database)
 
 	closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
@@ -91,8 +96,7 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
 	assertFoundationSchemaVerified(t, restarted.SQL())
 	assertTurnEvidenceSchemaVerified(t, restarted.SQL())
-	assertTranscriptRecallSchemaVerified(t, restarted.SQL())
-	assertConversationRuntimeSchemaVerified(t, restarted.SQL())
+	assertExtractionCoordinationSchemaVerified(t, restarted.SQL())
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), foundationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("foundation attempt count after restart = %d, want 1", got)
 	}
@@ -107,6 +111,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	}
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), conversationRuntimeSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("conversation runtime attempt count after restart = %d, want 1", got)
+	}
+	if got := integrationJournalRowForRevision(t, restarted.SQL(), extractionCoordinationRevision).AttemptCount; got != 1 {
+		t.Fatalf("extraction coordination attempt count after restart = %d, want 1", got)
 	}
 }
 
@@ -132,14 +139,14 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, "runtime", "upgrade-proof", 1, 1, `{"kept":true}`
 	}
 	assertCurrentSchema(t, database, CurrentSchemaRevision())
 	assertFoundationSchemaVerified(t, database)
-	assertTranscriptRecallSchemaVerified(t, database)
-	assertConversationRuntimeSchemaVerified(t, database)
+	assertExtractionCoordinationSchemaVerified(t, database)
 	for _, revision := range []int64{
 		foundationSchemaRevision,
 		conversationSchemaRevision,
 		turnEvidenceSchemaRevision,
 		transcriptRecallSchemaRevision,
 		conversationRuntimeSchemaRevision,
+		extractionCoordinationRevision,
 	} {
 		row := integrationJournalRowForRevision(t, database, revision)
 		if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
@@ -174,7 +181,7 @@ func TestRealSeekDBConversationSchemaRecoversPartialAndRemainsIdempotent(t *test
 		t.Fatalf("MigrateSchema(partial revision two) error = %v", err)
 	}
 	assertCurrentSchema(t, database, CurrentSchemaRevision())
-	assertTranscriptRecallSchemaVerified(t, database)
+	assertExtractionCoordinationSchemaVerified(t, database)
 	if got := integrationJournalRowForRevision(t, database, conversationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("conversation attempt count = %d, want 1", got)
 	}
@@ -208,7 +215,7 @@ func TestRealSeekDBTurnEvidenceSchemaUpgradesRevisionTwoAndEnforcesEdges(t *test
 	}
 	assertCurrentSchema(t, database, CurrentSchemaRevision())
 	assertTurnEvidenceSchemaVerified(t, database)
-	assertTranscriptRecallSchemaVerified(t, database)
+	assertExtractionCoordinationSchemaVerified(t, database)
 
 	if _, err := database.ExecContext(t.Context(), `
 INSERT INTO conversation_turn_evidence(turn_id, evidence_id, created_at_ms)
@@ -314,7 +321,7 @@ func TestRealSeekDBTranscriptRecallSchemaRecoversPartialAndRemainsIdempotent(t *
 		t.Fatalf("MigrateSchema(partial revision four) error = %v", err)
 	}
 	assertCurrentSchema(t, database, CurrentSchemaRevision())
-	assertTranscriptRecallSchemaVerified(t, database)
+	assertExtractionCoordinationSchemaVerified(t, database)
 	row := integrationJournalRowForRevision(t, database, transcriptRecallSchemaRevision)
 	if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
 		t.Fatalf("transcript recall journal = %#v", row)
@@ -401,7 +408,7 @@ SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = ?`, conversat
 		)
 	}
 	assertCurrentSchema(t, database, CurrentSchemaRevision())
-	assertTranscriptRecallSchemaVerified(t, database)
+	assertExtractionCoordinationSchemaVerified(t, database)
 	row := integrationJournalRowForRevision(t, database, transcriptRecallSchemaRevision)
 	if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
 		t.Fatalf("transcript backfill journal = %#v", row)
@@ -422,7 +429,7 @@ SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = ?`, conversat
 		t.Fatalf("transcript backfill restart elapsed = %s, want less than start limit %s", restartElapsed, config.StartLimit)
 	}
 	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
-	assertTranscriptRecallSchemaVerified(t, restarted.SQL())
+	assertExtractionCoordinationSchemaVerified(t, restarted.SQL())
 	assertTranscriptBackfillMatchCount(t, restarted.SQL(), conversationID, searchQuery, messageCount)
 	t.Logf(
 		"revision-four FULLTEXT backfilled %d messages in %s (query limit %s, migration limit %s); restart ready in %s (start limit %s)",
@@ -482,10 +489,10 @@ func TestRealSeekDBConversationRuntimeSchemaFreshInstallIsCurrent(t *testing.T) 
 	defer closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
 	database := instance.SQL()
 	if err := MigrateSchema(t.Context(), database, BuiltinMigrations()); err != nil {
-		t.Fatalf("MigrateSchema(fresh revision five) error = %v", err)
+		t.Fatalf("MigrateSchema(fresh current schema) error = %v", err)
 	}
 	assertCurrentSchema(t, database, CurrentSchemaRevision())
-	assertConversationRuntimeSchemaVerified(t, database)
+	assertExtractionCoordinationSchemaVerified(t, database)
 	assertFoundationTableSet(t, database)
 	for _, revision := range []int64{
 		foundationSchemaRevision,
@@ -493,6 +500,7 @@ func TestRealSeekDBConversationRuntimeSchemaFreshInstallIsCurrent(t *testing.T) 
 		turnEvidenceSchemaRevision,
 		transcriptRecallSchemaRevision,
 		conversationRuntimeSchemaRevision,
+		extractionCoordinationRevision,
 	} {
 		row := integrationJournalRowForRevision(t, database, revision)
 		if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
@@ -525,10 +533,10 @@ func TestRealSeekDBConversationRuntimeSchemaUpgradesRevisionFourRecoversPartialA
 	if _, err := database.ExecContext(t.Context(), conversationRuntimeSchema[0].ddl); err != nil {
 		t.Fatalf("precreate partial conversation runtime schema: %v", err)
 	}
-	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+	if err := MigrateSchema(t.Context(), database, migrations[:5]); err != nil {
 		t.Fatalf("MigrateSchema(partial revision five) error = %v", err)
 	}
-	assertCurrentSchema(t, database, CurrentSchemaRevision())
+	assertCurrentSchema(t, database, migrations[4].Revision)
 	assertConversationRuntimeSchemaVerified(t, database)
 	assertFoundationTableSet(t, database)
 	row := integrationJournalRowForRevision(t, database, conversationRuntimeSchemaRevision)
@@ -547,7 +555,7 @@ SELECT COUNT(*) FROM conversation_turns WHERE conversation_id = ? AND id = ?`,
 	}
 	assertConversationRuntimeConstraints(t, database)
 
-	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+	if err := MigrateSchema(t.Context(), database, migrations[:5]); err != nil {
 		t.Fatalf("MigrateSchema(repeated revision five) error = %v", err)
 	}
 	if got := integrationJournalRowForRevision(t, database, conversationRuntimeSchemaRevision).AttemptCount; got != 1 {
@@ -562,7 +570,7 @@ SELECT COUNT(*) FROM conversation_turns WHERE conversation_id = ? AND id = ?`,
 	}
 	instance = restarted
 	closed = false
-	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
+	assertCurrentSchema(t, restarted.SQL(), migrations[4].Revision)
 	assertConversationRuntimeSchemaVerified(t, restarted.SQL())
 	for _, table := range []string{"turn_runtime_events", "lane_continuations", "context_windows"} {
 		var count int
@@ -640,6 +648,178 @@ func TestRealSeekDBConversationRuntimeSchemaRejectsShapeDrift(t *testing.T) {
 			if !errors.Is(readinessErr, ErrSchemaNotCurrent) || status.State != SchemaNotCurrent ||
 				status.Observed == nil || status.Observed.Revision.Number != conversationRuntimeSchemaRevision {
 				t.Fatalf("%s conversation runtime readiness = %#v, %v", testCase.name, status, readinessErr)
+			}
+		})
+	}
+}
+
+func TestRealSeekDBExtractionCoordinationSchemaUpgradesRevisionFiveRecoversPartialAndPersists(t *testing.T) {
+	instance, config := openSchemaMigrationRuntime(t)
+	closed := false
+	defer func() {
+		if !closed {
+			closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+		}
+	}()
+	database := instance.SQL()
+	migrations := BuiltinMigrations()
+	if err := MigrateSchema(t.Context(), database, migrations[:5]); err != nil {
+		t.Fatalf("MigrateSchema(revision five) error = %v", err)
+	}
+	assertCurrentSchema(t, database, migrations[4].Revision)
+	assertConversationRuntimeSchemaVerified(t, database)
+
+	const conversationID = "extraction-upgrade-conversation"
+	insertIntegrationConversation(t, database, conversationID, "extraction-upgrade-character", "character")
+	insertIntegrationExtractionTurn(t, database, extractionTurnFixture{
+		id: "extraction-upgrade-pending", conversationID: conversationID, sequence: 1,
+		status: "completed", origin: "user", state: "pending",
+	})
+	insertIntegrationExtractionTurn(t, database, extractionTurnFixture{
+		id: "extraction-upgrade-claimed", conversationID: conversationID, sequence: 2,
+		status: "completed", origin: "user", state: "claimed",
+		claimID: "claim-upgrade", leaseOwner: "worker-upgrade", leaseExpiresAtMS: 100,
+		attemptCount: 1, updatedAtMS: 200,
+	})
+	insertIntegrationExtractionTurn(t, database, extractionTurnFixture{
+		id: "extraction-upgrade-failed", conversationID: conversationID, sequence: 3,
+		status: "completed", origin: "user", state: "failed", attemptCount: 3,
+		errorCode: "lease_expired", errorMessage: "extraction lease expired after maximum attempts",
+	})
+
+	// Revision-six DDL is implicitly committed one statement at a time. Leave
+	// the exact CHECK and first index behind as if the process exited before the
+	// second index and journal transition were committed.
+	for index, statement := range extractionCoordinationDDL[:2] {
+		if _, err := database.ExecContext(t.Context(), statement); err != nil {
+			t.Fatalf("precreate partial extraction coordination DDL %d: %v", index+1, err)
+		}
+	}
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(partial revision six) error = %v", err)
+	}
+	assertCurrentSchema(t, database, CurrentSchemaRevision())
+	assertExtractionCoordinationSchemaVerified(t, database)
+	assertFoundationTableSet(t, database)
+	for _, forbidden := range []string{
+		"personal_memories", "memory_context_coverages", "extraction_batches", "extraction_batch_turns",
+	} {
+		if got := integrationTableCount(t, database, forbidden); got != 0 {
+			t.Fatalf("revision six created forbidden table %s", forbidden)
+		}
+	}
+	row := integrationJournalRowForRevision(t, database, extractionCoordinationRevision)
+	if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
+		t.Fatalf("extraction coordination journal = %#v", row)
+	}
+	var pending, claimed, failed int
+	if err := database.QueryRowContext(t.Context(), `
+SELECT
+  SUM(extraction_state = 'pending'),
+  SUM(extraction_state = 'claimed'),
+  SUM(extraction_state = 'failed')
+FROM conversation_turns
+WHERE conversation_id = ?`, conversationID).Scan(&pending, &claimed, &failed); err != nil {
+		t.Fatalf("read revision-five extraction rows after upgrade: %v", err)
+	}
+	if pending != 1 || claimed != 1 || failed != 1 {
+		t.Fatalf("preserved extraction states = pending:%d claimed:%d failed:%d", pending, claimed, failed)
+	}
+	assertExtractionCoordinationConstraints(t, database, conversationID, 10)
+
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(repeated revision six) error = %v", err)
+	}
+	if got := integrationJournalRowForRevision(t, database, extractionCoordinationRevision).AttemptCount; got != 1 {
+		t.Fatalf("extraction coordination attempt count after repeat = %d, want 1", got)
+	}
+
+	closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+	closed = true
+	restarted, err := Open(t.Context(), config)
+	if err != nil {
+		t.Fatalf("restart SeekDB extraction coordination runtime: %v", err)
+	}
+	instance = restarted
+	closed = false
+	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
+	assertExtractionCoordinationSchemaVerified(t, restarted.SQL())
+	if got := integrationJournalRowForRevision(t, restarted.SQL(), extractionCoordinationRevision).AttemptCount; got != 1 {
+		t.Fatalf("extraction coordination attempt count after restart = %d, want 1", got)
+	}
+	if err := restarted.SQL().QueryRowContext(t.Context(), `
+SELECT COUNT(*) FROM conversation_turns WHERE conversation_id = ?`, conversationID).Scan(&pending); err != nil {
+		t.Fatalf("count persisted extraction rows: %v", err)
+	}
+	if pending != 3 {
+		t.Fatalf("persisted extraction row count = %d, want 3", pending)
+	}
+}
+
+func TestRealSeekDBExtractionCoordinationSchemaRejectsWeakCheckAndWrongIndex(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		preapply func(*testing.T, *sql.DB)
+	}{
+		{
+			name: "same-name weak check",
+			preapply: func(t *testing.T, database *sql.DB) {
+				weak := strings.Replace(
+					extractionCoordinationDDL[0],
+					"extraction_attempt_count < 3",
+					"extraction_attempt_count <= 3",
+					1,
+				)
+				if weak == extractionCoordinationDDL[0] {
+					t.Fatal("test setup did not weaken extraction CHECK")
+				}
+				if _, err := database.ExecContext(t.Context(), weak); err != nil {
+					t.Fatalf("precreate weak extraction CHECK: %v", err)
+				}
+			},
+		},
+		{
+			name: "wrong lease index",
+			preapply: func(t *testing.T, database *sql.DB) {
+				if _, err := database.ExecContext(t.Context(), `
+CREATE INDEX conversation_turns_extraction_lease_idx
+  ON conversation_turns(conversation_id, extraction_state, status, extraction_lease_expires_at_ms, sequence)`); err != nil {
+					t.Fatalf("precreate wrong extraction lease index: %v", err)
+				}
+			},
+		},
+		{
+			name: "wrong batch index",
+			preapply: func(t *testing.T, database *sql.DB) {
+				if _, err := database.ExecContext(t.Context(), `
+CREATE INDEX conversation_turns_extraction_batch_idx
+  ON conversation_turns(extraction_claim_id, extraction_state, extraction_lease_owner, sequence, conversation_id)`); err != nil {
+					t.Fatalf("precreate wrong extraction batch index: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			instance, config := openSchemaMigrationRuntime(t)
+			defer closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+			database := instance.SQL()
+			migrations := BuiltinMigrations()
+			if err := MigrateSchema(t.Context(), database, migrations[:5]); err != nil {
+				t.Fatalf("MigrateSchema(revision five) error = %v", err)
+			}
+			testCase.preapply(t, database)
+			err := MigrateSchema(t.Context(), database, migrations)
+			if err == nil || !strings.Contains(err.Error(), "conversation_turns") {
+				t.Fatalf("MigrateSchema(%s) error = %v", testCase.name, err)
+			}
+			row := integrationJournalRowForRevision(t, database, extractionCoordinationRevision)
+			if row.State != string(MigrationFailed) || row.ErrorCode != "VERIFY_FAILED" || row.AttemptCount != 1 {
+				t.Fatalf("%s extraction coordination journal = %#v", testCase.name, row)
+			}
+			status, readinessErr := CheckSchema(t.Context(), database, CurrentSchemaRevision())
+			if !errors.Is(readinessErr, ErrSchemaNotCurrent) || status.State != SchemaNotCurrent ||
+				status.Observed == nil || status.Observed.Revision.Number != extractionCoordinationRevision {
+				t.Fatalf("%s extraction readiness = %#v, %v", testCase.name, status, readinessErr)
 			}
 		})
 	}
@@ -1045,6 +1225,18 @@ func assertConversationRuntimeSchemaVerified(t *testing.T, database *sql.DB) {
 	}
 }
 
+func assertExtractionCoordinationSchemaVerified(t *testing.T, database *sql.DB) {
+	t.Helper()
+	connection, err := database.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err := BuiltinMigrations()[5].Verify(t.Context(), connection); err != nil {
+		t.Fatalf("verify extraction coordination schema: %v", err)
+	}
+}
+
 func assertFoundationTableSet(t *testing.T, database *sql.DB) {
 	t.Helper()
 	for _, table := range foundationSchema {
@@ -1306,6 +1498,131 @@ INSERT INTO conversation_turns(
 const integrationTurnInsertValues = `(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 const integrationTurnInsertSQL = integrationTurnInsertPrefix + integrationTurnInsertValues
+
+type extractionTurnFixture struct {
+	id               string
+	conversationID   string
+	sequence         int64
+	status           string
+	origin           string
+	state            string
+	claimID          string
+	leaseOwner       string
+	leaseExpiresAtMS int64
+	attemptCount     int64
+	nextAttemptAtMS  int64
+	errorCode        string
+	errorMessage     string
+	updatedAtMS      int64
+}
+
+func extractionTurnArguments(fixture extractionTurnFixture) []any {
+	nullable := func(value string) any {
+		if value == "" {
+			return nil
+		}
+		return value
+	}
+	var leaseExpiresAt any
+	if fixture.leaseExpiresAtMS > 0 {
+		leaseExpiresAt = fixture.leaseExpiresAtMS
+	}
+	updatedAtMS := fixture.updatedAtMS
+	if updatedAtMS == 0 {
+		updatedAtMS = 1
+	}
+	return []any{
+		fixture.id, fixture.conversationID, nil, fixture.sequence,
+		fixture.status, fixture.origin, nil, nil, nil,
+		fixture.state, nullable(fixture.claimID), nullable(fixture.leaseOwner), leaseExpiresAt,
+		fixture.attemptCount, fixture.nextAttemptAtMS,
+		nullable(fixture.errorCode), nullable(fixture.errorMessage),
+		int64(1), updatedAtMS,
+	}
+}
+
+func insertIntegrationExtractionTurn(t *testing.T, database *sql.DB, fixture extractionTurnFixture) {
+	t.Helper()
+	if _, err := database.ExecContext(t.Context(), integrationTurnInsertSQL, extractionTurnArguments(fixture)...); err != nil {
+		t.Fatalf("insert extraction Turn %s: %v", fixture.id, err)
+	}
+}
+
+func assertExtractionCoordinationConstraints(
+	t *testing.T,
+	database *sql.DB,
+	conversationID string,
+	firstSequence int64,
+) {
+	t.Helper()
+	testCases := []struct {
+		name    string
+		fixture extractionTurnFixture
+	}{
+		{
+			name: "pending requires completed user Turn",
+			fixture: extractionTurnFixture{
+				status: "planning", origin: "user", state: "pending",
+			},
+		},
+		{
+			name: "ineligible has no attempts",
+			fixture: extractionTurnFixture{
+				status: "completed", origin: "user", state: "ineligible", attemptCount: 1,
+			},
+		},
+		{
+			name: "pending remains below maximum attempts",
+			fixture: extractionTurnFixture{
+				status: "completed", origin: "user", state: "pending", attemptCount: 3,
+			},
+		},
+		{
+			name: "claimed has at least one attempt",
+			fixture: extractionTurnFixture{
+				status: "completed", origin: "user", state: "claimed",
+				claimID: "claim-zero-attempt", leaseOwner: "worker", leaseExpiresAtMS: 100,
+			},
+		},
+		{
+			name: "claimed has no pending retry time",
+			fixture: extractionTurnFixture{
+				status: "completed", origin: "user", state: "claimed",
+				claimID: "claim-next-attempt", leaseOwner: "worker", leaseExpiresAtMS: 100,
+				attemptCount: 1, nextAttemptAtMS: 10,
+			},
+		},
+		{
+			name: "processed has no extraction error",
+			fixture: extractionTurnFixture{
+				status: "completed", origin: "user", state: "processed", attemptCount: 1,
+				errorCode: "unexpected", errorMessage: "unexpected",
+			},
+		},
+		{
+			name: "failed has a paired error",
+			fixture: extractionTurnFixture{
+				status: "completed", origin: "user", state: "failed", attemptCount: 1,
+			},
+		},
+		{
+			name: "claim identity is clean",
+			fixture: extractionTurnFixture{
+				status: "completed", origin: "user", state: "claimed",
+				claimID: " ", leaseOwner: "worker", leaseExpiresAtMS: 100, attemptCount: 1,
+			},
+		},
+	}
+	for index, testCase := range testCases {
+		fixture := testCase.fixture
+		fixture.id = fmt.Sprintf("invalid-extraction-%02d", index+1)
+		fixture.conversationID = conversationID
+		fixture.sequence = firstSequence + int64(index)
+		t.Run(testCase.name, func(t *testing.T) {
+			expectSeekDBConstraintError(t, database, integrationTurnInsertSQL, extractionTurnArguments(fixture)...)
+		})
+	}
+}
 
 const integrationMessageInsertPrefix = `
 INSERT INTO conversation_messages(

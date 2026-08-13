@@ -27,6 +27,16 @@ type BatchInput struct {
 	ExistingMemories []personal.Retrieved `json:"existingMemories"`
 }
 
+// ClaimedBatch is the durable queue claim produced by the SeekDB coordinator.
+// Existing memories are deliberately absent: 4.2 enriches this claim from the
+// SeekDB personal-memory authority before atomically settling the batch.
+type ClaimedBatch struct {
+	BatchID        string `json:"batchId"`
+	ConversationID string `json:"conversationId"`
+	CharacterID    string `json:"characterId"`
+	Turns          []Turn `json:"turns"`
+}
+
 type Mutation struct {
 	Operation             string         `json:"operation"`
 	SourceTurnID          string         `json:"sourceTurnId"`

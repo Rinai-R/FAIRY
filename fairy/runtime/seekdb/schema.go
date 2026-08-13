@@ -18,12 +18,54 @@ const (
 	turnEvidenceSchemaRevision        int64 = 3
 	transcriptRecallSchemaRevision    int64 = 4
 	conversationRuntimeSchemaRevision int64 = 5
+	extractionCoordinationRevision    int64 = 6
 
 	transcriptRecallTableName = "conversation_messages"
 	transcriptRecallIndexName = "conversation_messages_content_fts_idx"
 	transcriptRecallIndexDDL  = "CREATE FULLTEXT INDEX IF NOT EXISTS conversation_messages_content_fts_idx " +
 		"ON conversation_messages(content) WITH PARSER IK PARSER_PROPERTIES=(ik_mode='max_word')"
+
+	extractionStateMachineCheckName = "conversation_turns_extraction_state_machine_check"
+	extractionLeaseIndexName        = "conversation_turns_extraction_lease_idx"
+	extractionBatchIndexName        = "conversation_turns_extraction_batch_idx"
 )
+
+var extractionCoordinationDDL = [...]string{
+	`ALTER TABLE conversation_turns
+  ADD CONSTRAINT conversation_turns_extraction_state_machine_check CHECK (
+    ((extraction_error_code IS NULL) = (extraction_error_message IS NULL)) AND
+    (extraction_error_code IS NULL OR
+      (CHAR_LENGTH(extraction_error_code) BETWEEN 1 AND 128 AND
+        extraction_error_code NOT REGEXP '^[[:space:]]|[[:space:]]$' AND
+        extraction_error_code NOT REGEXP '[[:cntrl:]]')) AND
+    (extraction_error_message IS NULL OR
+      (CHAR_LENGTH(extraction_error_message) > 0 AND
+        extraction_error_message NOT REGEXP '^[[:space:]]|[[:space:]]$' AND
+        extraction_error_message NOT REGEXP '[[:cntrl:]]')) AND
+    (extraction_state = 'ineligible' OR (status = 'completed' AND origin = 'user')) AND
+    (extraction_state <> 'ineligible' OR
+      (extraction_attempt_count = 0 AND extraction_next_attempt_at_ms = 0 AND
+        extraction_error_code IS NULL)) AND
+    (extraction_state <> 'pending' OR extraction_attempt_count < 3) AND
+    (extraction_state NOT IN ('claimed', 'processed', 'failed') OR
+      extraction_attempt_count BETWEEN 1 AND 3) AND
+    (extraction_state = 'pending' OR extraction_next_attempt_at_ms = 0) AND
+    (extraction_state IN ('pending', 'failed') OR extraction_error_code IS NULL) AND
+    (extraction_state <> 'failed' OR extraction_error_code IS NOT NULL) AND
+    (extraction_claim_id IS NULL OR
+      (CHAR_LENGTH(extraction_claim_id) BETWEEN 1 AND 128 AND
+        extraction_claim_id NOT REGEXP '^[[:space:]]|[[:space:]]$' AND
+        extraction_claim_id NOT REGEXP '[[:cntrl:]]')) AND
+    (extraction_lease_owner IS NULL OR
+      (CHAR_LENGTH(extraction_lease_owner) BETWEEN 1 AND 128 AND
+        extraction_lease_owner NOT REGEXP '^[[:space:]]|[[:space:]]$' AND
+        extraction_lease_owner NOT REGEXP '[[:cntrl:]]'))
+  )`,
+	`CREATE INDEX IF NOT EXISTS conversation_turns_extraction_lease_idx
+  ON conversation_turns(conversation_id, status, extraction_state, extraction_lease_expires_at_ms, sequence)`,
+	`CREATE INDEX IF NOT EXISTS conversation_turns_extraction_batch_idx
+  ON conversation_turns(extraction_claim_id, extraction_lease_owner, extraction_state, sequence, conversation_id)`,
+}
 
 // BuiltinMigrations returns FAIRY's immutable, ordered SeekDB schema chain.
 // Callers receive a new slice so changing the returned value cannot alter the
@@ -75,14 +117,23 @@ func BuiltinMigrations() []Migration {
 			Apply:  applyConversationRuntimeSchema,
 			Verify: verifyConversationRuntimeSchema,
 		},
+		{
+			Revision: Revision{
+				Number:   extractionCoordinationRevision,
+				Checksum: extractionCoordinationChecksum(),
+			},
+			Name:   "strengthen-extraction-coordination-schema",
+			Apply:  applyExtractionCoordinationSchema,
+			Verify: verifyExtractionCoordinationSchema,
+		},
 	}
 }
 
 // CurrentSchemaRevision is the exact revision accepted by runtime readiness.
 func CurrentSchemaRevision() Revision {
 	return Revision{
-		Number:   conversationRuntimeSchemaRevision,
-		Checksum: conversationRuntimeSchemaChecksum(),
+		Number:   extractionCoordinationRevision,
+		Checksum: extractionCoordinationChecksum(),
 	}
 }
 
@@ -1064,6 +1115,10 @@ func conversationRuntimeSchemaChecksum() [sha256.Size]byte {
 	return schemaDDLChecksum(statements)
 }
 
+func extractionCoordinationChecksum() [sha256.Size]byte {
+	return schemaDDLChecksum(extractionCoordinationDDL[:])
+}
+
 func schemaDDLChecksum(statements []string) [sha256.Size]byte {
 	normalized := make([]string, len(statements))
 	for index, statement := range statements {
@@ -1204,20 +1259,56 @@ func applyConversationRuntimeSchema(ctx context.Context, connection *sql.Conn) e
 	return nil
 }
 
+func applyExtractionCoordinationSchema(ctx context.Context, connection *sql.Conn) error {
+	enforcedAvailable, err := schemaCheckEnforcementAvailable(ctx, connection)
+	if err != nil {
+		return fmt.Errorf("read SeekDB extraction CHECK enforcement metadata: %w", err)
+	}
+	checks, err := readSchemaChecks(ctx, connection, "conversation_turns", enforcedAvailable)
+	if err != nil {
+		return fmt.Errorf("read SeekDB extraction CHECK metadata: %w", err)
+	}
+	checkExists := slices.ContainsFunc(checks, func(check schemaCheck) bool {
+		return strings.EqualFold(check.name, extractionStateMachineCheckName)
+	})
+	start := 0
+	if checkExists {
+		start = 1
+	}
+	for index := start; index < len(extractionCoordinationDDL); index++ {
+		if _, err := connection.ExecContext(ctx, extractionCoordinationDDL[index]); err != nil {
+			return fmt.Errorf("apply SeekDB extraction coordination DDL %d: %w", index+1, err)
+		}
+	}
+	return nil
+}
+
 // verifyTranscriptRecallSchema verifies the cumulative conversation shape at
 // revision four. Revision two remains exact and therefore continues to reject
 // every extra index when it is verified at its own migration boundary.
 func verifyTranscriptRecallSchema(ctx context.Context, connection *sql.Conn) error {
+	return verifyTranscriptRecallSchemaWithTurnTable(ctx, connection, nil)
+}
+
+func verifyTranscriptRecallSchemaWithTurnTable(
+	ctx context.Context,
+	connection *sql.Conn,
+	expectedTurnTable *schemaTable,
+) error {
 	enforcedAvailable, err := schemaCheckEnforcementAvailable(ctx, connection)
 	if err != nil {
 		return fmt.Errorf("verify SeekDB CHECK enforcement metadata: %w", err)
 	}
 	for _, table := range conversationSchema {
+		expected := table
+		if table.name == "conversation_turns" && expectedTurnTable != nil {
+			expected = *expectedTurnTable
+		}
 		ignoredIndexes := []string(nil)
 		if table.name == transcriptRecallTableName {
 			ignoredIndexes = []string{transcriptRecallIndexName}
 		}
-		if err := verifySchemaTableIgnoringIndexes(ctx, connection, table, enforcedAvailable, ignoredIndexes); err != nil {
+		if err := verifySchemaTableIgnoringIndexes(ctx, connection, expected, enforcedAvailable, ignoredIndexes); err != nil {
 			return err
 		}
 	}
@@ -1255,6 +1346,65 @@ func verifyConversationRuntimeSchema(ctx context.Context, connection *sql.Conn) 
 		}
 	}
 	return nil
+}
+
+func verifyExtractionCoordinationSchema(ctx context.Context, connection *sql.Conn) error {
+	expectedTurnTable := extractionCoordinationTurnTable()
+	if err := verifyTranscriptRecallSchemaWithTurnTable(ctx, connection, &expectedTurnTable); err != nil {
+		return err
+	}
+	enforcedAvailable, err := schemaCheckEnforcementAvailable(ctx, connection)
+	if err != nil {
+		return fmt.Errorf("verify SeekDB CHECK enforcement metadata: %w", err)
+	}
+	for _, table := range conversationRuntimeSchema {
+		if err := verifySchemaTable(ctx, connection, table, enforcedAvailable); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func extractionCoordinationTurnTable() schemaTable {
+	var expected schemaTable
+	for _, table := range conversationSchema {
+		if table.name == "conversation_turns" {
+			expected = table
+			break
+		}
+	}
+	expected.indexes = append(slices.Clone(expected.indexes),
+		ascendingBTreeIndex(extractionLeaseIndexName, false,
+			"conversation_id", "status", "extraction_state", "extraction_lease_expires_at_ms", "sequence",
+		),
+		ascendingBTreeIndex(extractionBatchIndexName, false,
+			"extraction_claim_id", "extraction_lease_owner", "extraction_state", "sequence", "conversation_id",
+		),
+	)
+	checkClause := "(((extraction_error_code is null) = (extraction_error_message is null)) and " +
+		"((extraction_error_code is null) or (((CHAR_LENGTH(extraction_error_code) >= 1) and (CHAR_LENGTH(extraction_error_code) <= 128)) and (not((extraction_error_code regexp '^[[:space:]]|[[:space:]]$'))) and (not((extraction_error_code regexp '[[:cntrl:]]'))))) and " +
+		"((extraction_error_message is null) or ((CHAR_LENGTH(extraction_error_message) > 0) and (not((extraction_error_message regexp '^[[:space:]]|[[:space:]]$'))) and (not((extraction_error_message regexp '[[:cntrl:]]'))))) and " +
+		"((extraction_state = 'ineligible') or ((status = 'completed') and (origin = 'user'))) and " +
+		"((extraction_state <> 'ineligible') or ((extraction_attempt_count = 0) and (extraction_next_attempt_at_ms = 0) and (extraction_error_code is null))) and " +
+		"((extraction_state <> 'pending') or (extraction_attempt_count < 3)) and " +
+		"((extraction_state not in ('claimed','processed','failed')) or ((extraction_attempt_count >= 1) and (extraction_attempt_count <= 3))) and " +
+		"((extraction_state = 'pending') or (extraction_next_attempt_at_ms = 0)) and " +
+		"((extraction_state in ('pending','failed')) or (extraction_error_code is null)) and " +
+		"((extraction_state <> 'failed') or (extraction_error_code is not null)) and " +
+		"((extraction_claim_id is null) or (((CHAR_LENGTH(extraction_claim_id) >= 1) and (CHAR_LENGTH(extraction_claim_id) <= 128)) and (not((extraction_claim_id regexp '^[[:space:]]|[[:space:]]$'))) and (not((extraction_claim_id regexp '[[:cntrl:]]'))))) and " +
+		"((extraction_lease_owner is null) or (((CHAR_LENGTH(extraction_lease_owner) >= 1) and (CHAR_LENGTH(extraction_lease_owner) <= 128)) and (not((extraction_lease_owner regexp '^[[:space:]]|[[:space:]]$'))) and (not((extraction_lease_owner regexp '[[:cntrl:]]'))))))"
+	for _, column := range []string{
+		"extraction_error_code", "extraction_error_message", "extraction_state",
+		"extraction_attempt_count", "extraction_next_attempt_at_ms", "extraction_claim_id",
+		"extraction_lease_owner", "status", "origin",
+	} {
+		checkClause = strings.ReplaceAll(checkClause, column, "`"+column+"`")
+	}
+	expected.checks = append(slices.Clone(expected.checks), schemaCheck{
+		name:   extractionStateMachineCheckName,
+		clause: checkClause,
+	})
+	return expected
 }
 
 func verifySchemaTable(ctx context.Context, connection *sql.Conn, expected schemaTable, checkEnforcementAvailable bool) error {
