@@ -8,13 +8,20 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
 const (
-	foundationSchemaRevision   int64 = 1
-	conversationSchemaRevision int64 = 2
-	turnEvidenceSchemaRevision int64 = 3
+	foundationSchemaRevision       int64 = 1
+	conversationSchemaRevision     int64 = 2
+	turnEvidenceSchemaRevision     int64 = 3
+	transcriptRecallSchemaRevision int64 = 4
+
+	transcriptRecallTableName = "conversation_messages"
+	transcriptRecallIndexName = "conversation_messages_content_fts_idx"
+	transcriptRecallIndexDDL  = "CREATE FULLTEXT INDEX IF NOT EXISTS conversation_messages_content_fts_idx " +
+		"ON conversation_messages(content) WITH PARSER IK PARSER_PROPERTIES=(ik_mode='max_word')"
 )
 
 // BuiltinMigrations returns FAIRY's immutable, ordered SeekDB schema chain.
@@ -49,14 +56,23 @@ func BuiltinMigrations() []Migration {
 			Apply:  applyTurnEvidenceSchema,
 			Verify: verifyTurnEvidenceSchema,
 		},
+		{
+			Revision: Revision{
+				Number:   transcriptRecallSchemaRevision,
+				Checksum: transcriptRecallSchemaChecksum(),
+			},
+			Name:   "create-conversation-message-fulltext-index",
+			Apply:  applyTranscriptRecallSchema,
+			Verify: verifyTranscriptRecallSchema,
+		},
 	}
 }
 
 // CurrentSchemaRevision is the exact revision accepted by runtime readiness.
 func CurrentSchemaRevision() Revision {
 	return Revision{
-		Number:   turnEvidenceSchemaRevision,
-		Checksum: turnEvidenceSchemaChecksum(),
+		Number:   transcriptRecallSchemaRevision,
+		Checksum: transcriptRecallSchemaChecksum(),
 	}
 }
 
@@ -90,6 +106,19 @@ type schemaIndexColumn struct {
 	name      string
 	subPart   sql.NullInt64
 	collation sql.NullString
+}
+
+type transcriptRecallIndexMetadata struct {
+	table     string
+	name      string
+	nonUnique int
+	sequence  int
+	column    string
+	collation sql.NullString
+	subPart   sql.NullInt64
+	indexType string
+	comment   string
+	visible   string
 }
 
 type schemaCheck struct {
@@ -801,6 +830,10 @@ func turnEvidenceSchemaChecksum() [sha256.Size]byte {
 	return schemaDDLChecksum(statements)
 }
 
+func transcriptRecallSchemaChecksum() [sha256.Size]byte {
+	return schemaDDLChecksum([]string{transcriptRecallIndexDDL})
+}
+
 func schemaDDLChecksum(statements []string) [sha256.Size]byte {
 	normalized := make([]string, len(statements))
 	for index, statement := range statements {
@@ -925,7 +958,58 @@ func verifyTurnEvidenceSchema(ctx context.Context, connection *sql.Conn) error {
 	return nil
 }
 
+func applyTranscriptRecallSchema(ctx context.Context, connection *sql.Conn) error {
+	if _, err := connection.ExecContext(ctx, transcriptRecallIndexDDL); err != nil {
+		return fmt.Errorf("create SeekDB transcript recall index %s: %w", transcriptRecallIndexName, err)
+	}
+	return nil
+}
+
+// verifyTranscriptRecallSchema verifies the cumulative conversation shape at
+// revision four. Revision two remains exact and therefore continues to reject
+// every extra index when it is verified at its own migration boundary.
+func verifyTranscriptRecallSchema(ctx context.Context, connection *sql.Conn) error {
+	enforcedAvailable, err := schemaCheckEnforcementAvailable(ctx, connection)
+	if err != nil {
+		return fmt.Errorf("verify SeekDB CHECK enforcement metadata: %w", err)
+	}
+	for _, table := range conversationSchema {
+		ignoredIndexes := []string(nil)
+		if table.name == transcriptRecallTableName {
+			ignoredIndexes = []string{transcriptRecallIndexName}
+		}
+		if err := verifySchemaTableIgnoringIndexes(ctx, connection, table, enforcedAvailable, ignoredIndexes); err != nil {
+			return err
+		}
+	}
+	metadata, err := readTranscriptRecallIndexMetadata(ctx, connection)
+	if err != nil {
+		return fmt.Errorf("verify SeekDB transcript recall index metadata: %w", err)
+	}
+	if err := compareTranscriptRecallIndexMetadata(metadata); err != nil {
+		return fmt.Errorf("verify SeekDB transcript recall index metadata: %w", err)
+	}
+	tableName, createTable, err := readTranscriptRecallCreateTable(ctx, connection)
+	if err != nil {
+		return fmt.Errorf("verify SeekDB transcript recall parser: %w", err)
+	}
+	if err := compareTranscriptRecallCreateTable(tableName, createTable); err != nil {
+		return fmt.Errorf("verify SeekDB transcript recall parser: %w", err)
+	}
+	return nil
+}
+
 func verifySchemaTable(ctx context.Context, connection *sql.Conn, expected schemaTable, checkEnforcementAvailable bool) error {
+	return verifySchemaTableIgnoringIndexes(ctx, connection, expected, checkEnforcementAvailable, nil)
+}
+
+func verifySchemaTableIgnoringIndexes(
+	ctx context.Context,
+	connection *sql.Conn,
+	expected schemaTable,
+	checkEnforcementAvailable bool,
+	ignoredIndexNames []string,
+) error {
 	columns, err := readSchemaColumns(ctx, connection, expected.name)
 	if err != nil {
 		return fmt.Errorf("verify SeekDB table %s columns: %w", expected.name, err)
@@ -936,6 +1020,11 @@ func verifySchemaTable(ctx context.Context, connection *sql.Conn, expected schem
 	indexes, err := readSchemaIndexes(ctx, connection, expected.name)
 	if err != nil {
 		return fmt.Errorf("verify SeekDB table %s indexes: %w", expected.name, err)
+	}
+	if len(ignoredIndexNames) > 0 {
+		indexes = slices.DeleteFunc(indexes, func(index schemaIndex) bool {
+			return slices.Contains(ignoredIndexNames, index.name)
+		})
 	}
 	if err := compareSchemaIndexes(expected.indexes, indexes); err != nil {
 		return fmt.Errorf("verify SeekDB table %s indexes: %w", expected.name, err)
@@ -953,6 +1042,143 @@ func verifySchemaTable(ctx context.Context, connection *sql.Conn, expected schem
 	}
 	if err := compareSchemaForeignKeys(expected.foreignKeys, foreignKeys); err != nil {
 		return fmt.Errorf("verify SeekDB table %s foreign keys: %w", expected.name, err)
+	}
+	return nil
+}
+
+func readTranscriptRecallIndexMetadata(ctx context.Context, connection *sql.Conn) ([]transcriptRecallIndexMetadata, error) {
+	rows, err := connection.QueryContext(ctx, "SHOW INDEX FROM "+transcriptRecallTableName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	positions := make(map[string]int, len(columns))
+	for index, column := range columns {
+		positions[strings.ToLower(column)] = index
+	}
+	for _, required := range []string{
+		"table", "non_unique", "key_name", "seq_in_index", "column_name",
+		"collation", "sub_part", "index_type", "comment", "visible",
+	} {
+		if _, ok := positions[required]; !ok {
+			return nil, fmt.Errorf("SHOW INDEX lacks %s column", required)
+		}
+	}
+	values := make([]sql.RawBytes, len(columns))
+	destinations := make([]any, len(columns))
+	for index := range values {
+		destinations[index] = &values[index]
+	}
+	metadata := make([]transcriptRecallIndexMetadata, 0, 1)
+	for rows.Next() {
+		if err := rows.Scan(destinations...); err != nil {
+			return nil, err
+		}
+		if string(values[positions["key_name"]]) != transcriptRecallIndexName {
+			continue
+		}
+		nonUnique, err := parseShowIndexInteger(values[positions["non_unique"]], "non_unique")
+		if err != nil {
+			return nil, err
+		}
+		sequence, err := parseShowIndexInteger(values[positions["seq_in_index"]], "seq_in_index")
+		if err != nil {
+			return nil, err
+		}
+		subPart, err := parseShowIndexOptionalInt64(values[positions["sub_part"]], "sub_part")
+		if err != nil {
+			return nil, err
+		}
+		metadata = append(metadata, transcriptRecallIndexMetadata{
+			table:     string(values[positions["table"]]),
+			name:      string(values[positions["key_name"]]),
+			nonUnique: nonUnique,
+			sequence:  sequence,
+			column:    string(values[positions["column_name"]]),
+			collation: showIndexNullString(values[positions["collation"]]),
+			subPart:   subPart,
+			indexType: strings.ToLower(string(values[positions["index_type"]])),
+			comment:   strings.ToLower(string(values[positions["comment"]])),
+			visible:   strings.ToLower(string(values[positions["visible"]])),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return metadata, nil
+}
+
+func parseShowIndexInteger(raw sql.RawBytes, column string) (int, error) {
+	if raw == nil {
+		return 0, fmt.Errorf("SHOW INDEX %s is NULL", column)
+	}
+	value, err := strconv.Atoi(string(raw))
+	if err != nil {
+		return 0, fmt.Errorf("SHOW INDEX %s %q is not an integer: %w", column, raw, err)
+	}
+	return value, nil
+}
+
+func showIndexNullString(raw sql.RawBytes) sql.NullString {
+	if raw == nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: strings.ToLower(string(raw)), Valid: true}
+}
+
+func parseShowIndexOptionalInt64(raw sql.RawBytes, column string) (sql.NullInt64, error) {
+	if raw == nil {
+		return sql.NullInt64{}, nil
+	}
+	value, err := strconv.ParseInt(string(raw), 10, 64)
+	if err != nil {
+		return sql.NullInt64{}, fmt.Errorf("SHOW INDEX %s %q is not an integer: %w", column, raw, err)
+	}
+	return sql.NullInt64{Int64: value, Valid: true}, nil
+}
+
+func compareTranscriptRecallIndexMetadata(metadata []transcriptRecallIndexMetadata) error {
+	if len(metadata) != 1 {
+		return fmt.Errorf("logical index row count = %d, want 1", len(metadata))
+	}
+	want := transcriptRecallIndexMetadata{
+		table:     transcriptRecallTableName,
+		name:      transcriptRecallIndexName,
+		nonUnique: 1,
+		sequence:  1,
+		column:    "content",
+		collation: sql.NullString{String: "a", Valid: true},
+		indexType: "fulltext",
+		comment:   "available",
+		visible:   "yes",
+	}
+	if metadata[0] != want {
+		return fmt.Errorf("logical index = %#v, want %#v", metadata[0], want)
+	}
+	return nil
+}
+
+func readTranscriptRecallCreateTable(ctx context.Context, connection *sql.Conn) (string, string, error) {
+	var tableName, createTable string
+	if err := connection.QueryRowContext(ctx, "SHOW CREATE TABLE "+transcriptRecallTableName).Scan(&tableName, &createTable); err != nil {
+		return "", "", err
+	}
+	return tableName, createTable, nil
+}
+
+func compareTranscriptRecallCreateTable(tableName, createTable string) error {
+	if tableName != transcriptRecallTableName {
+		return fmt.Errorf("SHOW CREATE TABLE name = %q, want %q", tableName, transcriptRecallTableName)
+	}
+	normalized := strings.ToLower(normalizeDDL(createTable))
+	want := "fulltext key `conversation_messages_content_fts_idx` (`content`) " +
+		"with parser ik parser_properties=(ik_mode=\"max_word\")"
+	if !strings.Contains(normalized, want) {
+		return fmt.Errorf("SHOW CREATE TABLE lacks immutable parser clause %q", want)
 	}
 	return nil
 }

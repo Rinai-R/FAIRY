@@ -2,6 +2,7 @@ package transcript
 
 import (
 	"context"
+	"errors"
 
 	historyexpr "fairy/context/history/expression"
 	"fairy/transport/session"
@@ -94,8 +95,11 @@ func (s *Store) LoadConversationRecord(conversationID string) (ConversationRecor
 }
 
 func (s *Store) LoadConversationRecordContext(ctx context.Context, conversationID string) (ConversationRecord, error) {
+	if err := ValidateID("conversation_id", conversationID); err != nil {
+		return ConversationRecord{}, err
+	}
 	if s.usesSeekDB() {
-		return ConversationRecord{}, ErrSeekDBOperationPending
+		return s.loadConversationRecordSeekDB(ctx, conversationID)
 	}
 	if !s.usesPostgres() {
 		return ConversationRecord{}, ErrStoreBackendUnavailable
@@ -108,8 +112,14 @@ func (s *Store) LoadConversationActivity(conversationID string, nowUnixMS int64)
 }
 
 func (s *Store) LoadConversationActivityContext(ctx context.Context, conversationID string, nowUnixMS int64) (ConversationActivity, error) {
+	if err := ValidateID("conversation_id", conversationID); err != nil {
+		return ConversationActivity{}, err
+	}
+	if nowUnixMS <= 0 {
+		return ConversationActivity{}, errors.New("activity evaluation time must be positive")
+	}
 	if s.usesSeekDB() {
-		return ConversationActivity{}, ErrSeekDBOperationPending
+		return s.loadConversationActivitySeekDB(ctx, conversationID, nowUnixMS)
 	}
 	if !s.usesPostgres() {
 		return ConversationActivity{}, ErrStoreBackendUnavailable
@@ -122,8 +132,11 @@ func (s *Store) LoadConversationPrompt(conversationID string) (ConversationPromp
 }
 
 func (s *Store) LoadConversationPromptContext(ctx context.Context, conversationID string) (ConversationPromptContext, error) {
+	if err := ValidateID("conversation_id", conversationID); err != nil {
+		return ConversationPromptContext{}, err
+	}
 	if s.usesSeekDB() {
-		return ConversationPromptContext{}, ErrSeekDBOperationPending
+		return s.loadConversationPromptContextSeekDB(ctx, conversationID)
 	}
 	if !s.usesPostgres() {
 		return ConversationPromptContext{}, ErrStoreBackendUnavailable

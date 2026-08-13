@@ -19,6 +19,7 @@ func TestValidateCompactedTranscriptRecall(t *testing.T) {
 	}{
 		{name: "trimmed", conversationID: "conversation", cutoff: 4, query: "  海边约定  ", limit: 5, want: "海边约定"},
 		{name: "missing conversation", cutoff: 4, query: "海边", limit: 5, wantErr: true},
+		{name: "untrimmed conversation", conversationID: " conversation ", cutoff: 4, query: "海边", limit: 5, wantErr: true},
 		{name: "missing query", conversationID: "conversation", cutoff: 4, limit: 5, wantErr: true},
 		{name: "control character", conversationID: "conversation", cutoff: 4, query: "海\n边", limit: 5, wantErr: true},
 		{name: "long query", conversationID: "conversation", cutoff: 4, query: strings.Repeat("海", MaxTranscriptRecallQueryRunes+1), limit: 5, wantErr: true},
@@ -45,5 +46,12 @@ func TestSearchCompactedTranscriptZeroCutoffDoesNotRequireDatabase(t *testing.T)
 	}
 	if result.Turns == nil || len(result.Turns) != 0 || result.Truncated {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestSearchCompactedTranscriptRequiresContextAfterZeroCutoff(t *testing.T) {
+	_, err := (&Store{}).SearchCompactedTranscript(nil, "conversation", 1, "海边", 5)
+	if err == nil || err.Error() != "context is required" {
+		t.Fatalf("SearchCompactedTranscript(nil context) error = %v, want context is required", err)
 	}
 }

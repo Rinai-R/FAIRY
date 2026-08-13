@@ -12,14 +12,15 @@ import (
 func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first := BuiltinMigrations()
 	second := BuiltinMigrations()
-	if len(first) != 3 || len(second) != 3 {
-		t.Fatalf("builtin migration counts = %d and %d, want 3", len(first), len(second))
+	if len(first) != 4 || len(second) != 4 {
+		t.Fatalf("builtin migration counts = %d and %d, want 4", len(first), len(second))
 	}
 	foundation := Revision{Number: foundationSchemaRevision, Checksum: foundationSchemaChecksum()}
 	conversation := Revision{Number: conversationSchemaRevision, Checksum: conversationSchemaChecksum()}
 	turnEvidence := Revision{Number: turnEvidenceSchemaRevision, Checksum: turnEvidenceSchemaChecksum()}
-	if current := CurrentSchemaRevision(); current != turnEvidence {
-		t.Fatalf("current schema revision = %#v, want %#v", current, turnEvidence)
+	transcriptRecall := Revision{Number: transcriptRecallSchemaRevision, Checksum: transcriptRecallSchemaChecksum()}
+	if current := CurrentSchemaRevision(); current != transcriptRecall {
+		t.Fatalf("current schema revision = %#v, want %#v", current, transcriptRecall)
 	}
 	if first[0].Revision != foundation || first[0].Name != "create-foundation-schema" {
 		t.Fatalf("foundation migration = %#v, want revision %#v", first[0], foundation)
@@ -30,6 +31,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	if first[2].Revision != turnEvidence || first[2].Name != "create-turn-evidence-schema" {
 		t.Fatalf("turn evidence migration = %#v, want revision %#v", first[2], turnEvidence)
 	}
+	if first[3].Revision != transcriptRecall || first[3].Name != "create-conversation-message-fulltext-index" {
+		t.Fatalf("transcript recall migration = %#v, want revision %#v", first[3], transcriptRecall)
+	}
 	for index, migration := range first {
 		if migration.Apply == nil || migration.Verify == nil {
 			t.Fatalf("builtin migration %d must provide Apply and Verify", index+1)
@@ -39,9 +43,11 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first[0].Revision.Number = 99
 	first[1].Name = "also-mutated"
 	first[2].Revision.Number = 100
+	first[3].Name = "mutated-transcript-recall"
 	if second[0].Name != "create-foundation-schema" || second[0].Revision != foundation ||
 		second[1].Name != "create-conversation-schema" || second[1].Revision != conversation ||
-		second[2].Name != "create-turn-evidence-schema" || second[2].Revision != turnEvidence {
+		second[2].Name != "create-turn-evidence-schema" || second[2].Revision != turnEvidence ||
+		second[3].Name != "create-conversation-message-fulltext-index" || second[3].Revision != transcriptRecall {
 		t.Fatalf("caller mutation changed later BuiltinMigrations result: %#v", second[0])
 	}
 	if got := hex.EncodeToString(foundation.Checksum[:]); got != "e674bec12d0b6895da8b351d082a686c9c2f44990fb68749bbad083c4a6805d3" {
@@ -52,6 +58,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	}
 	if got := hex.EncodeToString(turnEvidence.Checksum[:]); got != "7ef1505fd35fc7d5ee059076f349d4c5e910752d52297dfd1e36122b2803531a" {
 		t.Fatalf("turn evidence checksum = %s, update requires an explicit revision decision", got)
+	}
+	if got := hex.EncodeToString(transcriptRecall.Checksum[:]); got != "b40266f72516a16b74e237c8b52366cc0bab99f77749b449e6c4ef3f444a33f6" {
+		t.Fatalf("transcript recall checksum = %s, update requires an explicit revision decision", got)
 	}
 }
 
@@ -126,6 +135,12 @@ func TestConversationSchemaDefinesIsolationOrderingAndCorrelationContracts(t *te
 	)) {
 		t.Fatal("conversation messages lack stable sequence or one-role-per-turn identity")
 	}
+	if !schemaHasIndex(messages, ascendingBTreeIndex(
+		"conversation_messages_conversation_role_created_idx", false,
+		"conversation_id", "role", "created_at_ms", "sequence",
+	)) {
+		t.Fatal("conversation messages lack the bounded activity projection index")
+	}
 	if sequence := schemaColumnNamed(t, messages, "sequence"); sequence.columnType != "bigint" {
 		t.Fatalf("conversation message sequence type = %q, want signed bigint", sequence.columnType)
 	}
@@ -163,6 +178,94 @@ func TestTurnEvidenceSchemaDefinesInitiationEvidenceContract(t *testing.T) {
 	}
 	if evidence := schemaColumnNamed(t, table, "evidence_id"); evidence.columnType != "varchar(128)" || evidence.collation != "utf8mb4_bin" {
 		t.Fatalf("turn evidence id = %#v", evidence)
+	}
+}
+
+func TestTranscriptRecallSchemaDefinesImmutableIKFullTextIndex(t *testing.T) {
+	const wantDDL = "CREATE FULLTEXT INDEX IF NOT EXISTS conversation_messages_content_fts_idx " +
+		"ON conversation_messages(content) WITH PARSER IK PARSER_PROPERTIES=(ik_mode='max_word')"
+	if transcriptRecallIndexDDL != wantDDL {
+		t.Fatalf("transcript recall DDL = %q, want %q", transcriptRecallIndexDDL, wantDDL)
+	}
+	if transcriptRecallTableName != "conversation_messages" ||
+		transcriptRecallIndexName != "conversation_messages_content_fts_idx" {
+		t.Fatalf("transcript recall target = %s.%s", transcriptRecallTableName, transcriptRecallIndexName)
+	}
+}
+
+func TestTranscriptRecallSchemaComparisonRejectsLogicalAndParserDrift(t *testing.T) {
+	wantMetadata := transcriptRecallIndexMetadata{
+		table:     transcriptRecallTableName,
+		name:      transcriptRecallIndexName,
+		nonUnique: 1,
+		sequence:  1,
+		column:    "content",
+		collation: sql.NullString{String: "a", Valid: true},
+		indexType: "fulltext",
+		comment:   "available",
+		visible:   "yes",
+	}
+	if err := compareTranscriptRecallIndexMetadata([]transcriptRecallIndexMetadata{wantMetadata}); err != nil {
+		t.Fatalf("compareTranscriptRecallIndexMetadata(equal) error = %v", err)
+	}
+	for _, testCase := range []struct {
+		name   string
+		mutate func(*transcriptRecallIndexMetadata)
+	}{
+		{name: "missing", mutate: nil},
+		{name: "logical column", mutate: func(metadata *transcriptRecallIndexMetadata) { metadata.column = "role" }},
+		{name: "prefix", mutate: func(metadata *transcriptRecallIndexMetadata) {
+			metadata.subPart = sql.NullInt64{Int64: 8, Valid: true}
+		}},
+		{name: "not available", mutate: func(metadata *transcriptRecallIndexMetadata) { metadata.comment = "building" }},
+		{name: "hidden", mutate: func(metadata *transcriptRecallIndexMetadata) { metadata.visible = "no" }},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if testCase.mutate == nil {
+				if err := compareTranscriptRecallIndexMetadata(nil); err == nil {
+					t.Fatal("missing transcript recall index was accepted")
+				}
+				return
+			}
+			drifted := wantMetadata
+			testCase.mutate(&drifted)
+			if err := compareTranscriptRecallIndexMetadata([]transcriptRecallIndexMetadata{drifted}); err == nil {
+				t.Fatalf("%s transcript recall drift was accepted", testCase.name)
+			}
+		})
+	}
+	validCreateTable := `CREATE TABLE ` + "`conversation_messages`" + ` (
+  ` + "`content`" + ` longtext NOT NULL,
+  FULLTEXT KEY ` + "`conversation_messages_content_fts_idx`" + ` (` + "`content`" + `)
+    WITH PARSER ik PARSER_PROPERTIES=(ik_mode="max_word") BLOCK_SIZE 16384
+)`
+	if err := compareTranscriptRecallCreateTable(transcriptRecallTableName, validCreateTable); err != nil {
+		t.Fatalf("compareTranscriptRecallCreateTable(equal) error = %v", err)
+	}
+	for _, drifted := range []string{
+		strings.Replace(validCreateTable, `ik_mode="max_word"`, `ik_mode="smart"`, 1),
+		strings.Replace(validCreateTable, "WITH PARSER ik", "WITH PARSER ngram2", 1),
+		strings.Replace(validCreateTable, "(`content`)", "(`role`)", 1),
+	} {
+		if err := compareTranscriptRecallCreateTable(transcriptRecallTableName, drifted); err == nil {
+			t.Fatalf("drifted SHOW CREATE TABLE was accepted: %s", drifted)
+		}
+	}
+	if err := compareTranscriptRecallCreateTable("wrong_table", validCreateTable); err == nil {
+		t.Fatal("wrong SHOW CREATE TABLE identity was accepted")
+	}
+}
+
+func TestParseShowIndexOptionalInt64RejectsCorruptMetadata(t *testing.T) {
+	if value, err := parseShowIndexOptionalInt64(nil, "sub_part"); err != nil || value.Valid {
+		t.Fatalf("NULL SHOW INDEX value = %#v, %v", value, err)
+	}
+	if value, err := parseShowIndexOptionalInt64(sql.RawBytes("8"), "sub_part"); err != nil ||
+		!value.Valid || value.Int64 != 8 {
+		t.Fatalf("numeric SHOW INDEX value = %#v, %v", value, err)
+	}
+	if _, err := parseShowIndexOptionalInt64(sql.RawBytes("not-a-number"), "sub_part"); err == nil {
+		t.Fatal("corrupt SHOW INDEX integer was accepted")
 	}
 }
 

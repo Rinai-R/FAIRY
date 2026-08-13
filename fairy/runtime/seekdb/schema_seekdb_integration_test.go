@@ -11,6 +11,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
@@ -38,8 +39,8 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	}
 	assertCurrentSchema(t, database, CurrentSchemaRevision())
 	assertFoundationSchemaVerified(t, database)
-	assertConversationSchemaVerified(t, database)
 	assertTurnEvidenceSchemaVerified(t, database)
+	assertTranscriptRecallSchemaVerified(t, database)
 	assertFoundationTableSet(t, database)
 	if got := integrationJournalRowForRevision(t, database, foundationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("foundation attempt count = %d, want 1", got)
@@ -49,6 +50,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	}
 	if got := integrationJournalRowForRevision(t, database, turnEvidenceSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("turn evidence attempt count = %d, want 1", got)
+	}
+	if got := integrationJournalRowForRevision(t, database, transcriptRecallSchemaRevision).AttemptCount; got != 1 {
+		t.Fatalf("transcript recall attempt count = %d, want 1", got)
 	}
 
 	if err := MigrateSchema(t.Context(), database, BuiltinMigrations()); err != nil {
@@ -63,6 +67,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	if got := integrationJournalRowForRevision(t, database, turnEvidenceSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("turn evidence attempt count after repeat = %d, want 1", got)
 	}
+	if got := integrationJournalRowForRevision(t, database, transcriptRecallSchemaRevision).AttemptCount; got != 1 {
+		t.Fatalf("transcript recall attempt count after repeat = %d, want 1", got)
+	}
 	assertFoundationChecksRejectInvalidData(t, database)
 
 	closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
@@ -76,8 +83,8 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	closed = false
 	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
 	assertFoundationSchemaVerified(t, restarted.SQL())
-	assertConversationSchemaVerified(t, restarted.SQL())
 	assertTurnEvidenceSchemaVerified(t, restarted.SQL())
+	assertTranscriptRecallSchemaVerified(t, restarted.SQL())
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), foundationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("foundation attempt count after restart = %d, want 1", got)
 	}
@@ -86,6 +93,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	}
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), turnEvidenceSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("turn evidence attempt count after restart = %d, want 1", got)
+	}
+	if got := integrationJournalRowForRevision(t, restarted.SQL(), transcriptRecallSchemaRevision).AttemptCount; got != 1 {
+		t.Fatalf("transcript recall attempt count after restart = %d, want 1", got)
 	}
 }
 
@@ -111,8 +121,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, "runtime", "upgrade-proof", 1, 1, `{"kept":true}`
 	}
 	assertCurrentSchema(t, database, CurrentSchemaRevision())
 	assertFoundationSchemaVerified(t, database)
-	assertConversationSchemaVerified(t, database)
-	for _, revision := range []int64{foundationSchemaRevision, conversationSchemaRevision} {
+	assertTranscriptRecallSchemaVerified(t, database)
+	for _, revision := range []int64{
+		foundationSchemaRevision,
+		conversationSchemaRevision,
+		turnEvidenceSchemaRevision,
+		transcriptRecallSchemaRevision,
+	} {
 		row := integrationJournalRowForRevision(t, database, revision)
 		if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
 			t.Fatalf("revision %d journal = %#v", revision, row)
@@ -146,7 +161,7 @@ func TestRealSeekDBConversationSchemaRecoversPartialAndRemainsIdempotent(t *test
 		t.Fatalf("MigrateSchema(partial revision two) error = %v", err)
 	}
 	assertCurrentSchema(t, database, CurrentSchemaRevision())
-	assertConversationSchemaVerified(t, database)
+	assertTranscriptRecallSchemaVerified(t, database)
 	if got := integrationJournalRowForRevision(t, database, conversationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("conversation attempt count = %d, want 1", got)
 	}
@@ -167,6 +182,7 @@ func TestRealSeekDBTurnEvidenceSchemaUpgradesRevisionTwoAndEnforcesEdges(t *test
 	if err := MigrateSchema(t.Context(), database, migrations[:2]); err != nil {
 		t.Fatalf("MigrateSchema(revision two) error = %v", err)
 	}
+	assertConversationSchemaVerified(t, database)
 	if _, err := database.ExecContext(t.Context(), turnEvidenceSchema[0].ddl); err != nil {
 		t.Fatalf("precreate partial turn evidence schema: %v", err)
 	}
@@ -179,6 +195,7 @@ func TestRealSeekDBTurnEvidenceSchemaUpgradesRevisionTwoAndEnforcesEdges(t *test
 	}
 	assertCurrentSchema(t, database, CurrentSchemaRevision())
 	assertTurnEvidenceSchemaVerified(t, database)
+	assertTranscriptRecallSchemaVerified(t, database)
 
 	if _, err := database.ExecContext(t.Context(), `
 INSERT INTO conversation_turn_evidence(turn_id, evidence_id, created_at_ms)
@@ -222,6 +239,7 @@ func TestRealSeekDBTurnEvidenceSchemaRejectsShapeDrift(t *testing.T) {
 	if err := MigrateSchema(t.Context(), database, migrations[:2]); err != nil {
 		t.Fatalf("MigrateSchema(revision two) error = %v", err)
 	}
+	assertConversationSchemaVerified(t, database)
 	if _, err := database.ExecContext(t.Context(), `
 CREATE TABLE conversation_turn_evidence (
   turn_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -243,6 +261,206 @@ CREATE TABLE conversation_turn_evidence (
 	if !errors.Is(readinessErr, ErrSchemaNotCurrent) || status.State != SchemaNotCurrent ||
 		status.Observed == nil || status.Observed.Revision.Number != turnEvidenceSchemaRevision {
 		t.Fatalf("drifted turn evidence readiness = %#v, %v", status, readinessErr)
+	}
+}
+
+func TestRealSeekDBTranscriptRecallSchemaRecoversPartialAndRemainsIdempotent(t *testing.T) {
+	instance, config := openSchemaMigrationRuntime(t)
+	defer closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+	database := instance.SQL()
+	migrations := BuiltinMigrations()
+	if err := MigrateSchema(t.Context(), database, migrations[:3]); err != nil {
+		t.Fatalf("MigrateSchema(revision three) error = %v", err)
+	}
+	insertIntegrationConversation(t, database, "transcript-recall-conversation", "transcript-recall-character", "character")
+	insertIntegrationPromptWindow(t, database, "transcript-recall-conversation")
+	insertIntegrationTurn(t, database, "transcript-recall-turn", "transcript-recall-conversation", "external-recall", 1)
+	insertIntegrationMessage(
+		t, database,
+		"transcript-recall-message", "transcript-recall-conversation", "transcript-recall-turn",
+		1, "user", "苍之彼方的四重奏与海边约定",
+	)
+
+	// SeekDB DDL commits independently. Simulate a process exit after the
+	// physical index exists but before revision four was journaled current.
+	if _, err := database.ExecContext(t.Context(), transcriptRecallIndexDDL); err != nil {
+		t.Fatalf("precreate partial transcript recall index: %v", err)
+	}
+	connection, err := database.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyVerifyErr := migrations[1].Verify(t.Context(), connection)
+	if closeErr := connection.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if legacyVerifyErr == nil {
+		t.Fatal("revision-two verifier accepted the revision-four index")
+	}
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(partial revision four) error = %v", err)
+	}
+	assertCurrentSchema(t, database, CurrentSchemaRevision())
+	assertTranscriptRecallSchemaVerified(t, database)
+	row := integrationJournalRowForRevision(t, database, transcriptRecallSchemaRevision)
+	if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
+		t.Fatalf("transcript recall journal = %#v", row)
+	}
+	var matchCount int
+	if err := database.QueryRowContext(t.Context(), `
+SELECT COUNT(*) FROM conversation_messages
+WHERE conversation_id = ? AND sequence <= ?
+  AND MATCH(content) AGAINST(? IN NATURAL LANGUAGE MODE)`,
+		"transcript-recall-conversation", 1, "苍之彼方",
+	).Scan(&matchCount); err != nil {
+		t.Fatalf("query partial transcript recall index: %v", err)
+	}
+	if matchCount != 1 {
+		t.Fatalf("transcript recall match count = %d, want 1", matchCount)
+	}
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(repeated revision four) error = %v", err)
+	}
+	if got := integrationJournalRowForRevision(t, database, transcriptRecallSchemaRevision).AttemptCount; got != 1 {
+		t.Fatalf("transcript recall attempt count after repeat = %d, want 1", got)
+	}
+}
+
+func TestRealSeekDBTranscriptRecallSchemaBackfillsRevisionThreeMessagesAndPersists(t *testing.T) {
+	const (
+		conversationID = "transcript-backfill-conversation"
+		messageCount   = 4000
+		batchSize      = 200
+		searchQuery    = "苍之彼方"
+		queryLimit     = 15 * time.Second
+	)
+	instance, config := openSchemaMigrationRuntime(t)
+	closed := false
+	defer func() {
+		if !closed {
+			closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+		}
+	}()
+	database := instance.SQL()
+	migrations := BuiltinMigrations()
+	if config.QueryLimit != queryLimit {
+		t.Fatalf("schema integration query limit = %s, want immutable backfill limit %s", config.QueryLimit, queryLimit)
+	}
+	if err := MigrateSchema(t.Context(), database, migrations[:3]); err != nil {
+		t.Fatalf("MigrateSchema(revision three) error = %v", err)
+	}
+	assertCurrentSchema(t, database, migrations[2].Revision)
+	assertConversationSchemaVerified(t, database)
+	assertTurnEvidenceSchemaVerified(t, database)
+	insertIntegrationConversation(t, database, conversationID, "transcript-backfill-character", "character")
+	insertIntegrationPromptWindow(t, database, conversationID)
+	insertIntegrationTranscriptBackfillMessages(t, database, conversationID, messageCount, batchSize)
+	var storedCount int
+	if err := database.QueryRowContext(t.Context(), `
+SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = ?`, conversationID).Scan(&storedCount); err != nil {
+		t.Fatalf("count revision-three transcript backfill fixture: %v", err)
+	}
+	if storedCount != messageCount {
+		t.Fatalf("revision-three transcript backfill fixture count = %d, want %d", storedCount, messageCount)
+	}
+
+	// Production foundation startup gives the whole migration the larger of
+	// StartLimit and QueryLimit, while the SQL driver still bounds each DDL and
+	// metadata query by QueryLimit. Exercise that exact outer context and keep
+	// the observed backfill below the stricter per-query bound as well.
+	migrationLimit := max(config.StartLimit, config.QueryLimit)
+	migrationContext, cancelMigration := context.WithTimeout(t.Context(), migrationLimit)
+	migrationStarted := time.Now()
+	migrationErr := MigrateSchema(migrationContext, database, migrations)
+	migrationElapsed := time.Since(migrationStarted)
+	migrationContextErr := migrationContext.Err()
+	cancelMigration()
+	if migrationErr != nil {
+		t.Fatalf("MigrateSchema(revision four backfill) after %s: %v", migrationElapsed, migrationErr)
+	}
+	if migrationContextErr != nil {
+		t.Fatalf("revision-four backfill exhausted migration context after %s: %v", migrationElapsed, migrationContextErr)
+	}
+	if migrationElapsed >= queryLimit || migrationElapsed >= migrationLimit {
+		t.Fatalf(
+			"revision-four backfill elapsed = %s, want less than query limit %s and migration limit %s",
+			migrationElapsed, queryLimit, migrationLimit,
+		)
+	}
+	assertCurrentSchema(t, database, CurrentSchemaRevision())
+	assertTranscriptRecallSchemaVerified(t, database)
+	row := integrationJournalRowForRevision(t, database, transcriptRecallSchemaRevision)
+	if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
+		t.Fatalf("transcript backfill journal = %#v", row)
+	}
+	assertTranscriptBackfillMatchCount(t, database, conversationID, searchQuery, messageCount)
+
+	closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+	closed = true
+	restartStarted := time.Now()
+	restarted, err := Open(t.Context(), config)
+	restartElapsed := time.Since(restartStarted)
+	if err != nil {
+		t.Fatalf("restart SeekDB transcript backfill runtime after %s: %v", restartElapsed, err)
+	}
+	instance = restarted
+	closed = false
+	if restartElapsed >= config.StartLimit {
+		t.Fatalf("transcript backfill restart elapsed = %s, want less than start limit %s", restartElapsed, config.StartLimit)
+	}
+	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
+	assertTranscriptRecallSchemaVerified(t, restarted.SQL())
+	assertTranscriptBackfillMatchCount(t, restarted.SQL(), conversationID, searchQuery, messageCount)
+	t.Logf(
+		"revision-four FULLTEXT backfilled %d messages in %s (query limit %s, migration limit %s); restart ready in %s (start limit %s)",
+		messageCount, migrationElapsed, queryLimit, migrationLimit, restartElapsed, config.StartLimit,
+	)
+}
+
+func TestRealSeekDBTranscriptRecallSchemaRejectsParserAndLogicalColumnDrift(t *testing.T) {
+	for _, testCase := range []struct {
+		name              string
+		preexistingIndex  string
+		wantErrorFragment string
+	}{
+		{
+			name: "wrong parser",
+			preexistingIndex: `CREATE FULLTEXT INDEX conversation_messages_content_fts_idx
+ON conversation_messages(content) WITH PARSER IK PARSER_PROPERTIES=(ik_mode='smart')`,
+			wantErrorFragment: "immutable parser clause",
+		},
+		{
+			name: "wrong logical column",
+			preexistingIndex: `CREATE FULLTEXT INDEX conversation_messages_content_fts_idx
+ON conversation_messages(role) WITH PARSER SPACE`,
+			wantErrorFragment: "logical index",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			instance, config := openSchemaMigrationRuntime(t)
+			defer closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+			database := instance.SQL()
+			migrations := BuiltinMigrations()
+			if err := MigrateSchema(t.Context(), database, migrations[:3]); err != nil {
+				t.Fatalf("MigrateSchema(revision three) error = %v", err)
+			}
+			if _, err := database.ExecContext(t.Context(), testCase.preexistingIndex); err != nil {
+				t.Fatalf("precreate drifted transcript recall index: %v", err)
+			}
+			err := MigrateSchema(t.Context(), database, migrations)
+			if err == nil || !strings.Contains(err.Error(), testCase.wantErrorFragment) {
+				t.Fatalf("MigrateSchema(%s) error = %v", testCase.name, err)
+			}
+			row := integrationJournalRowForRevision(t, database, transcriptRecallSchemaRevision)
+			if row.State != string(MigrationFailed) || row.ErrorCode != "VERIFY_FAILED" || row.AttemptCount != 1 {
+				t.Fatalf("%s transcript recall journal = %#v", testCase.name, row)
+			}
+			status, readinessErr := CheckSchema(t.Context(), database, CurrentSchemaRevision())
+			if !errors.Is(readinessErr, ErrSchemaNotCurrent) || status.State != SchemaNotCurrent ||
+				status.Observed == nil || status.Observed.Revision.Number != transcriptRecallSchemaRevision {
+				t.Fatalf("%s transcript recall readiness = %#v, %v", testCase.name, status, readinessErr)
+			}
+		})
 	}
 }
 
@@ -622,6 +840,18 @@ func assertTurnEvidenceSchemaVerified(t *testing.T, database *sql.DB) {
 	}
 }
 
+func assertTranscriptRecallSchemaVerified(t *testing.T, database *sql.DB) {
+	t.Helper()
+	connection, err := database.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err := BuiltinMigrations()[3].Verify(t.Context(), connection); err != nil {
+		t.Fatalf("verify transcript recall schema: %v", err)
+	}
+}
+
 func assertFoundationTableSet(t *testing.T, database *sql.DB) {
 	t.Helper()
 	for _, table := range foundationSchema {
@@ -701,19 +931,101 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, row.instanceID, "fairy.test", "1.0.0", row.
 	}
 }
 
-const integrationTurnInsertSQL = `
+const integrationTurnInsertPrefix = `
 INSERT INTO conversation_turns(
   id, conversation_id, message_id, sequence, status, origin,
   error_code, error_message, error_retryable,
   extraction_state, extraction_claim_id, extraction_lease_owner, extraction_lease_expires_at_ms,
   extraction_attempt_count, extraction_next_attempt_at_ms, extraction_error_code, extraction_error_message,
   created_at_ms, updated_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+) VALUES `
 
-const integrationMessageInsertSQL = `
+const integrationTurnInsertValues = `(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+const integrationTurnInsertSQL = integrationTurnInsertPrefix + integrationTurnInsertValues
+
+const integrationMessageInsertPrefix = `
 INSERT INTO conversation_messages(
   id, conversation_id, turn_id, sequence, role, content, expression_parts, created_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+) VALUES `
+
+const integrationMessageInsertValues = `(?, ?, ?, ?, ?, ?, ?, ?)`
+
+const integrationMessageInsertSQL = integrationMessageInsertPrefix + integrationMessageInsertValues
+
+func insertIntegrationTranscriptBackfillMessages(
+	t *testing.T,
+	database *sql.DB,
+	conversationID string,
+	messageCount, batchSize int,
+) {
+	t.Helper()
+	if messageCount <= 0 || batchSize <= 0 {
+		t.Fatalf("invalid transcript backfill fixture bounds: messages=%d batch=%d", messageCount, batchSize)
+	}
+	for batchStart := 0; batchStart < messageCount; batchStart += batchSize {
+		batchEnd := min(batchStart+batchSize, messageCount)
+		rows := batchEnd - batchStart
+		turnArguments := make([]any, 0, rows*19)
+		messageArguments := make([]any, 0, rows*8)
+		for offset := batchStart; offset < batchEnd; offset++ {
+			sequence := int64(offset + 1)
+			turnID := fmt.Sprintf("transcript-backfill-turn-%04d", sequence)
+			messageID := fmt.Sprintf("transcript-backfill-message-%04d", sequence)
+			turnArguments = append(turnArguments,
+				turnID, conversationID, nil, sequence,
+				"completed", "user", nil, nil, nil,
+				"ineligible", nil, nil, nil, 0, 0, nil, nil,
+				sequence, sequence,
+			)
+			messageArguments = append(messageArguments,
+				messageID, conversationID, turnID, sequence, "user",
+				fmt.Sprintf("第 %d 条既有对话记录：苍之彼方的四重奏与海边约定", sequence),
+				`[]`, sequence,
+			)
+		}
+		transaction, err := database.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatalf("begin transcript backfill fixture batch %d: %v", batchStart/batchSize, err)
+		}
+		turnStatement := integrationTurnInsertPrefix + strings.TrimSuffix(
+			strings.Repeat(integrationTurnInsertValues+",", rows), ",",
+		)
+		if _, err := transaction.ExecContext(t.Context(), turnStatement, turnArguments...); err != nil {
+			_ = transaction.Rollback()
+			t.Fatalf("insert transcript backfill turns batch %d: %v", batchStart/batchSize, err)
+		}
+		messageStatement := integrationMessageInsertPrefix + strings.TrimSuffix(
+			strings.Repeat(integrationMessageInsertValues+",", rows), ",",
+		)
+		if _, err := transaction.ExecContext(t.Context(), messageStatement, messageArguments...); err != nil {
+			_ = transaction.Rollback()
+			t.Fatalf("insert transcript backfill messages batch %d: %v", batchStart/batchSize, err)
+		}
+		if err := transaction.Commit(); err != nil {
+			t.Fatalf("commit transcript backfill fixture batch %d: %v", batchStart/batchSize, err)
+		}
+	}
+}
+
+func assertTranscriptBackfillMatchCount(
+	t *testing.T,
+	database *sql.DB,
+	conversationID, query string,
+	want int,
+) {
+	t.Helper()
+	var count int
+	if err := database.QueryRowContext(t.Context(), `
+SELECT COUNT(*) FROM conversation_messages
+WHERE conversation_id = ?
+  AND MATCH(content) AGAINST(? IN NATURAL LANGUAGE MODE)`, conversationID, query).Scan(&count); err != nil {
+		t.Fatalf("query transcript backfill FULLTEXT index: %v", err)
+	}
+	if count != want {
+		t.Fatalf("transcript backfill FULLTEXT match count = %d, want %d", count, want)
+	}
+}
 
 func insertIntegrationConversation(t *testing.T, database *sql.DB, id, characterID, kind string) {
 	t.Helper()

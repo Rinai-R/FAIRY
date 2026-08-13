@@ -359,19 +359,8 @@ WHERE character_id = ? AND endpoint = ? AND endpoint_key_digest = ?`, now, chara
 }
 
 func loadConversationMetadataSeekDB(ctx context.Context, database *sql.DB, conversationID string) (ConversationRecord, PromptWindowRecord, error) {
-	var conversation ConversationRecord
-	if err := database.QueryRowContext(ctx, `
-SELECT id, character_id, created_at_ms, updated_at_ms
-FROM conversations WHERE id = ?`, conversationID).Scan(
-		&conversation.ID, &conversation.CharacterID,
-		&conversation.CreatedAtUnixMS, &conversation.UpdatedAtUnixMS,
-	); err != nil {
-		return ConversationRecord{}, PromptWindowRecord{}, fmt.Errorf("loading SeekDB conversation: %w", err)
-	}
-	if err := validateSeekDBIdentifier("stored conversation_id", conversation.ID); err != nil {
-		return ConversationRecord{}, PromptWindowRecord{}, err
-	}
-	if err := validateSeekDBIdentifier("stored character_id", conversation.CharacterID); err != nil {
+	conversation, err := loadConversationRecordSeekDB(ctx, database, conversationID)
+	if err != nil {
 		return ConversationRecord{}, PromptWindowRecord{}, err
 	}
 	var prompt PromptWindowRecord
@@ -387,8 +376,8 @@ FROM prompt_windows WHERE conversation_id = ?`, conversationID).Scan(
 	); err != nil {
 		return ConversationRecord{}, PromptWindowRecord{}, fmt.Errorf("loading SeekDB prompt window: %w", err)
 	}
-	if conversation.CreatedAtUnixMS < 0 || conversation.UpdatedAtUnixMS < conversation.CreatedAtUnixMS ||
-		prompt.UpdatedAtUnixMS < 0 || revision <= 0 || cutoff < 0 || projectionRevision <= 0 {
+	if prompt.ConversationID != conversationID || prompt.UpdatedAtUnixMS < 0 ||
+		revision <= 0 || cutoff < 0 || projectionRevision <= 0 {
 		return ConversationRecord{}, PromptWindowRecord{}, errors.New("stored SeekDB conversation metadata is invalid")
 	}
 	prompt.Revision = uint64(revision)

@@ -29,13 +29,15 @@ func (s *Store) SearchCompactedTranscript(
 	if cutoff == 0 {
 		return CompactedTranscriptRecall{Turns: []CompactedTranscriptTurn{}}, nil
 	}
-	if s == nil || s.pool == nil || s.pool.Raw() == nil {
-		return CompactedTranscriptRecall{}, ErrDatabasePoolEmpty
-	}
 	if ctx == nil {
 		return CompactedTranscriptRecall{}, errors.New("context is required")
 	}
-
+	if s != nil && s.usesSeekDB() {
+		return s.searchCompactedTranscriptSeekDB(ctx, conversationID, cutoff, query, limit)
+	}
+	if s == nil || s.pool == nil || s.pool.Raw() == nil {
+		return CompactedTranscriptRecall{}, ErrDatabasePoolEmpty
+	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
 	rows, err := s.pool.Raw().Query(queryCtx, compactedTranscriptRecallSQL, conversationID, int64(cutoff), query, limit+1)
@@ -85,8 +87,8 @@ func (s *Store) SearchCompactedTranscript(
 }
 
 func validateCompactedTranscriptRecall(conversationID string, cutoff uint64, query string, limit int) (string, error) {
-	if strings.TrimSpace(conversationID) == "" {
-		return "", errors.New("conversation id is required")
+	if err := ValidateID("conversation_id", conversationID); err != nil {
+		return "", err
 	}
 	query = strings.TrimSpace(query)
 	if query == "" {
@@ -104,7 +106,7 @@ func validateCompactedTranscriptRecall(conversationID string, cutoff uint64, que
 		return "", fmt.Errorf("transcript recall limit must be between 1 and %d", MaxCompactedTranscriptTurns)
 	}
 	if cutoff > math.MaxInt64 {
-		return "", errors.New("transcript recall cutoff exceeds PostgreSQL bigint")
+		return "", errors.New("transcript recall cutoff exceeds signed bigint")
 	}
 	return query, nil
 }
