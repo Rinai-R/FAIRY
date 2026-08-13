@@ -54,8 +54,8 @@ func NewSeekDBStore(database *sql.DB, root string, queryLimit time.Duration) (*S
 	if queryLimit <= 0 {
 		return nil, ErrCharacterQueryLimitInvalid
 	}
-	root = filepath.Clean(strings.TrimSpace(root))
-	if !filepath.IsAbs(root) || root == string(filepath.Separator) || root == "." {
+	root, err := ValidateVisualRoot(root)
+	if err != nil {
 		return nil, ErrCharacterVisualRootInvalid
 	}
 	return &Store{
@@ -66,6 +66,17 @@ func NewSeekDBStore(database *sql.DB, root string, queryLimit time.Duration) (*S
 			now:        time.Now,
 		},
 	}, nil
+}
+
+// ValidateVisualRoot validates the immutable visual-asset boundary without
+// requiring a database. Composition roots use it before starting owned
+// processes so an invalid path cannot leave durable startup side effects.
+func ValidateVisualRoot(root string) (string, error) {
+	root = filepath.Clean(strings.TrimSpace(root))
+	if !filepath.IsAbs(root) || root == string(filepath.Separator) || root == "." {
+		return "", ErrCharacterVisualRootInvalid
+	}
+	return root, nil
 }
 
 func (s *seekDBCharacterStore) list(parent context.Context, root string) (Catalog, error) {

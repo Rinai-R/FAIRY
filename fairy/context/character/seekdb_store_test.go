@@ -43,6 +43,21 @@ func TestNewCharacterServiceWithStoreRejectsNil(t *testing.T) {
 	}
 }
 
+func TestValidateVisualRootNormalizesWithoutFilesystemSideEffects(t *testing.T) {
+	base := t.TempDir()
+	raw := filepath.Join(base, "visuals") + string(filepath.Separator) + "."
+	root, err := ValidateVisualRoot(raw)
+	if err != nil || root != filepath.Join(base, "visuals") {
+		t.Fatalf("ValidateVisualRoot(%q) = (%q, %v)", raw, root, err)
+	}
+	if _, err := ValidateVisualRoot("visuals"); !errors.Is(err, ErrCharacterVisualRootInvalid) {
+		t.Fatalf("ValidateVisualRoot(relative) error = %v", err)
+	}
+	if _, err := ValidateVisualRoot(string(filepath.Separator)); !errors.Is(err, ErrCharacterVisualRootInvalid) {
+		t.Fatalf("ValidateVisualRoot(root) error = %v", err)
+	}
+}
+
 func TestDecodeStoredCharacterIsolatesMismatchedSnapshot(t *testing.T) {
 	row := storedCharacter{
 		characterID: "character-1",
