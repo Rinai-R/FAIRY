@@ -91,6 +91,13 @@ export class CoreSettings {
              */
             this["ready"] = false;
         }
+        if (!("characterName" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["characterName"] = "";
+        }
 
         Object.assign(this, $$source);
     }

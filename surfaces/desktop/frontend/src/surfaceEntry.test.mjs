@@ -46,10 +46,11 @@ test("companion surface projects direct and proactive Turn events into one activ
 test("settings surface shows local runtime status instead of Core connection fields", () => {
   assert.match(surfaceSource, /RuntimeInfo\(\)/);
   assert.match(surfaceSource, /Connect\(\)/);
-  assert.match(surfaceSource, /id="local-runtime-title"/);
-  assert.match(surfaceSource, /无需单独启动 Core，也不需要填写连接地址或令牌/);
+  assert.match(surfaceSource, /id="quick-panel-status-title"/);
+  assert.match(surfaceSource, /打开管理工作区/);
+  assert.match(surfaceSource, /OpenManagement\(\)/);
   assert.doesNotMatch(surfaceSource, /ConnectionSettings|SaveConnection|保存连接配置|defaultEndpoint/);
-  assert.doesNotMatch(surfaceSource, /127\.0\.0\.1:8787|FAIRY_API_TOKEN|Core 地址/);
+  assert.doesNotMatch(surfaceSource, /127\.0\.0\.1:8787|FAIRY_API_TOKEN|Core 地址|采样间隔|离开阈值/);
   assert.doesNotMatch(surfaceSource, /Keychain|keychain/);
   assert.doesNotMatch(surfaceSource, /fairy\.endpoint(?:Key)?/);
   assert.doesNotMatch(surfaceSource, /localStorage\.(?:getItem|setItem)\([^)]*(?:endpoint|token)/);
@@ -57,8 +58,8 @@ test("settings surface shows local runtime status instead of Core connection fie
 
 test("Core settings keep every field accessible in a resizable scrolling WebUI panel", () => {
   assert.match(surfaceSource, /className="cp-settings-scroll" data-testid="settings-scroll-region"/);
-  assert.match(surfaceSource, /className="cp-settings-section" aria-labelledby="local-runtime-title"/);
-  assert.match(surfaceSource, /className="cp-settings-section" aria-labelledby="desktop-observation-title"/);
+  assert.match(surfaceSource, /className="cp-settings-section" aria-labelledby="quick-panel-status-title"/);
+  assert.match(surfaceSource, /className="cp-settings-section" aria-labelledby="quick-panel-switches-title"/);
   assert.match(surfaceSource, /className="cp-settings-status" role="status"/);
   assert.match(controlPanelStyles, /--cp-bg:\s*#f4f8fc/);
   assert.match(controlPanelStyles, /--cp-blue:\s*#2878d0/);

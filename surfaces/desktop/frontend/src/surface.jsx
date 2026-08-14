@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ClockIcon, Cross2Icon, GearIcon, PaperPlaneIcon, StopIcon } from "@radix-ui/react-icons";
 import { Card, Flex, IconButton, Text, TextArea } from "@radix-ui/themes";
 import { Events } from "@wailsio/runtime";
-import { Cancel, CloseControlPanel, CloseHistory, Connect, DisableDesktopObservation, EnableDesktopObservation, HideSpeechBubble, OpenControlPanel, OpenHistory, RecentMessages, ReportStickerDelivery, RuntimeInfo, Send, SetDesktopObservationPrivacy } from "../bindings/fairy-desktop/coreservice.js";
+import { Cancel, CloseControlPanel, CloseHistory, Connect, DisableDesktopObservation, EnableDesktopObservation, HideSpeechBubble, OpenControlPanel, OpenHistory, OpenManagement, RecentMessages, ReportStickerDelivery, RuntimeInfo, Send, SetDesktopObservationPrivacy } from "../bindings/fairy-desktop/coreservice.js";
 import { CharacterExpressionBubble, CharacterSpeechBubble } from "./components/CharacterSpeechBubble.jsx";
 import { PixelCharacter } from "./components/PixelCharacter.jsx";
 import { ManagementSurface } from "./management.jsx";
@@ -235,8 +235,6 @@ function SettingsSurface() {
   const [observationStatus, setObservationStatus] = useState("");
   const [observationEnabled, setObservationEnabled] = useState(() => localStorage.getItem("fairy.observation.enabled") === "true");
   const [privacy, setPrivacy] = useState(() => localStorage.getItem("fairy.observation.privacy") || "normal");
-  const [observationInterval, setObservationInterval] = useState(() => Number(localStorage.getItem("fairy.observation.interval") || 5));
-  const [idleThreshold, setIdleThreshold] = useState(() => Number(localStorage.getItem("fairy.observation.idle") || 10));
 
   useEffect(() => {
     let cancelled = false;
@@ -249,28 +247,29 @@ function SettingsSurface() {
     return () => { cancelled = true; };
   }, []);
 
-  async function applyObservation() {
+  async function applyObservation(nextEnabled, nextPrivacy) {
+    const interval = Number(localStorage.getItem("fairy.observation.interval") || 5);
+    const idle = Number(localStorage.getItem("fairy.observation.idle") || 10);
     try {
-      await SetDesktopObservationPrivacy(privacy);
-      if (observationEnabled) await EnableDesktopObservation(observationInterval, idleThreshold);
+      await SetDesktopObservationPrivacy(nextPrivacy);
+      if (nextEnabled) await EnableDesktopObservation(interval, idle);
       else await DisableDesktopObservation();
-      localStorage.setItem("fairy.observation.enabled", String(observationEnabled));
-      localStorage.setItem("fairy.observation.privacy", privacy);
-      localStorage.setItem("fairy.observation.interval", String(observationInterval));
-      localStorage.setItem("fairy.observation.idle", String(idleThreshold));
-      setObservationStatus(observationEnabled ? "桌面观察已启用。" : "桌面观察已关闭。");
+      localStorage.setItem("fairy.observation.enabled", String(nextEnabled));
+      localStorage.setItem("fairy.observation.privacy", nextPrivacy);
+      setObservationStatus(nextEnabled ? "桌面观察已启用。" : "桌面观察已关闭。");
     } catch (cause) {
       setObservationStatus(cause?.message || "观察设置失败");
     }
   }
+
   return (
     <main className="cp-stage">
       <Card className="cp-shell">
         <div className="cp-drag-region" />
         <header className="cp-header">
           <div className="cp-header-copy">
-            <span className="cp-eyebrow">桌面设置</span>
-            <h1>本地运行时</h1>
+            <span className="cp-eyebrow">快捷面板</span>
+            <h1>状态与开关</h1>
           </div>
           <IconButton className="cp-close" type="button" size="2" variant="ghost" color="gray" aria-label="关闭设置" onClick={() => CloseControlPanel()}>
             <Cross2Icon />
@@ -279,52 +278,54 @@ function SettingsSurface() {
 
         <div className="cp-settings-scroll" data-testid="settings-scroll-region">
           <div className="cp-settings-content">
-            <section className="cp-settings-section" aria-labelledby="local-runtime-title">
+            <section className="cp-settings-section" aria-labelledby="quick-panel-status-title">
               <div className="cp-settings-section__head">
                 <div>
-                  <p className="cp-settings-kicker">运行时</p>
-                  <h2 id="local-runtime-title">本地运行时</h2>
+                  <p className="cp-settings-kicker">状态</p>
+                  <h2 id="quick-panel-status-title">运行状态</h2>
                 </div>
-                <span className="cp-section-index" aria-hidden="true">01</span>
               </div>
-              <p className="cp-settings-description">桌面伴侣在同一进程内启动本地 runtime。无需单独启动 Core，也不需要填写连接地址或令牌。</p>
               <div className="cp-settings-form">
                 <label className="cp-settings-field">
-                  <span>运行状态</span>
+                  <span>本地运行时</span>
                   <input type="text" value={runtime == null ? "" : (runtime.ready ? "已就绪" : "未就绪")} readOnly />
                 </label>
                 <label className="cp-settings-field">
-                  <span>数据目录</span>
-                  <input type="text" value={runtime == null ? "" : runtime.profileDir} readOnly spellCheck="false" />
-                  <small>诊断信息仅显示本机路径，不包含凭据。</small>
+                  <span>当前角色</span>
+                  <input type="text" value={runtime == null ? "" : (runtime.characterName || "未连接")} readOnly />
                 </label>
                 {runtimeStatus ? <p className="cp-settings-status" role="status">{runtimeStatus}</p> : null}
               </div>
             </section>
 
-            <section className="cp-settings-section" aria-labelledby="desktop-observation-title">
+            <section className="cp-settings-section" aria-labelledby="quick-panel-switches-title">
               <div className="cp-settings-section__head">
                 <div>
-                  <p className="cp-settings-kicker">观察</p>
-                  <h2 id="desktop-observation-title">桌面观察</h2>
+                  <p className="cp-settings-kicker">开关</p>
+                  <h2 id="quick-panel-switches-title">常用开关</h2>
                 </div>
-                <span className="cp-section-index" aria-hidden="true">02</span>
               </div>
-              <p className="cp-settings-description">定期采样桌面状态，为主动互动提供有限环境信号。隐私状态会约束采样范围。</p>
-
               <div className="cp-settings-form">
                 <label className="cp-toggle-row">
                   <span className="cp-toggle-copy">
                     <strong>定期观察</strong>
-                    <small>{observationEnabled ? "已启用，将按下方间隔采样" : "已关闭，不会采样桌面状态"}</small>
+                    <small>{observationEnabled ? "已启用" : "已关闭"}</small>
                   </span>
-                  <input className="cp-switch-input" type="checkbox" checked={observationEnabled} onChange={(event) => setObservationEnabled(event.target.checked)} />
+                  <input className="cp-switch-input" type="checkbox" checked={observationEnabled} onChange={(event) => {
+                    const next = event.target.checked;
+                    setObservationEnabled(next);
+                    applyObservation(next, privacy);
+                  }} />
                   <span className="cp-switch" aria-hidden="true" />
                 </label>
-
                 <label className="cp-settings-field">
                   <span>隐私状态</span>
-                  <select value={privacy} onChange={(event) => setPrivacy(event.target.value)}>
+                  <select value={privacy} onChange={(event) => {
+                    const next = event.target.value;
+                    setPrivacy(next);
+                    if (observationEnabled) applyObservation(true, next);
+                    else localStorage.setItem("fairy.observation.privacy", next);
+                  }}>
                     <option value="normal">正常</option>
                     <option value="locked">已锁屏</option>
                     <option value="meeting">会议中</option>
@@ -332,26 +333,8 @@ function SettingsSurface() {
                     <option value="protected">受保护</option>
                   </select>
                 </label>
-
-                <div className="cp-settings-grid">
-                  <label className="cp-settings-field">
-                    <span>采样间隔</span>
-                    <span className="cp-number-control">
-                      <input type="number" min="1" max="60" value={observationInterval} onChange={(event) => setObservationInterval(Number(event.target.value))} />
-                      <span>分钟</span>
-                    </span>
-                  </label>
-                  <label className="cp-settings-field">
-                    <span>离开阈值</span>
-                    <span className="cp-number-control">
-                      <input type="number" min="1" max="240" value={idleThreshold} onChange={(event) => setIdleThreshold(Number(event.target.value))} />
-                      <span>分钟</span>
-                    </span>
-                  </label>
-                </div>
-
-                <button className="cp-primary-action" type="button" onClick={applyObservation}>应用观察设置</button>
                 {observationStatus ? <p className="cp-settings-status" role="status">{observationStatus}</p> : null}
+                <button className="cp-primary-action" type="button" onClick={() => OpenManagement().catch((cause) => setRuntimeStatus(cause?.message || "无法打开管理工作区"))}>打开管理工作区</button>
               </div>
             </section>
           </div>

@@ -15,8 +15,9 @@ import (
 )
 
 type CoreSettings struct {
-	ProfileDir string `json:"profileDir"`
-	Ready      bool   `json:"ready"`
+	ProfileDir    string `json:"profileDir"`
+	Ready         bool   `json:"ready"`
+	CharacterName string `json:"characterName"`
 }
 
 type CoreSession struct {
@@ -60,6 +61,7 @@ type CoreService struct {
 	profileDir           func() (string, error)
 	requestFocus         func(string) error
 	shutdownBudget       shutdownBudget
+	characterName        string
 }
 
 func NewCoreService() *CoreService {
@@ -420,8 +422,9 @@ func (s *CoreService) RuntimeInfo() (CoreSettings, error) {
 	}
 	s.mu.Lock()
 	ready := s.edge != nil
+	name := s.characterName
 	s.mu.Unlock()
-	return CoreSettings{ProfileDir: dir, Ready: ready}, nil
+	return CoreSettings{ProfileDir: dir, Ready: ready, CharacterName: name}, nil
 }
 
 func (s *CoreService) resolveProfileDir() (string, error) {
@@ -517,6 +520,7 @@ func (s *CoreService) Connect() (CoreSession, error) {
 	s.assets, s.socket, s.conversation = assets, socket, opened.ConversationID
 	s.visualCache = cache
 	s.active, s.activeTurnID = false, ""
+	s.characterName = catalog.Active.Name
 	s.mu.Unlock()
 	if previous != nil {
 		_ = previous.Close()
@@ -529,6 +533,7 @@ func (s *CoreService) Connect() (CoreSession, error) {
 	s.emitDesktopSession(messages.Messages)
 	character := *catalog.Active
 	character.Appearance.Visual = &localVisual
+	info.CharacterName = character.Name
 	return CoreSession{Settings: info, ConversationID: opened.ConversationID, Character: character, Messages: messages.Messages}, nil
 }
 

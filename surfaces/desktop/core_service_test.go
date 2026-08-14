@@ -455,7 +455,7 @@ func TestConnectUsesInProcessFacadeWithoutHTTP(t *testing.T) {
 	if sessionState.ConversationID != "c1" || sessionState.Character.CharacterID != character.CharacterID {
 		t.Fatalf("Connect() session = %#v", sessionState)
 	}
-	if !sessionState.Settings.Ready || sessionState.Settings.ProfileDir == "" {
+	if !sessionState.Settings.Ready || sessionState.Settings.ProfileDir == "" || sessionState.Settings.CharacterName != character.Name {
 		t.Fatalf("Connect() settings = %#v", sessionState.Settings)
 	}
 	encoded, err := json.Marshal(sessionState.Settings)
