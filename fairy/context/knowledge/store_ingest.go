@@ -8,7 +8,12 @@ import (
 	"strings"
 )
 
-func (s *Store) insertVerifiedKnowledgePostgres(ctx context.Context, topic, statement, conversationID, turnID string, confidenceBasisPoints uint16, sources []AssistantSource) (Record, error) {
+func (s *Store) insertVerifiedKnowledgePostgres(
+	ctx context.Context,
+	topic, statement, conversationID, turnID string,
+	confidenceBasisPoints uint16,
+	sources []AssistantSource,
+) (Record, error) {
 	topic = strings.TrimSpace(topic)
 	statement = strings.TrimSpace(statement)
 	if topic == "" || statement == "" {
@@ -58,7 +63,7 @@ func (s *Store) insertVerifiedKnowledgePostgres(ctx context.Context, topic, stat
 		if current {
 			return existing, nil
 		}
-		embedding, err := embedding.ForContent(embedder, content)
+		value, err := embedding.ForContent(embedder, content)
 		if err != nil {
 			return Record{}, err
 		}
@@ -81,12 +86,12 @@ WHERE id = $1
     embedding_model_id_v2 IS DISTINCT FROM $2
     OR embedding_content_hash_v2 IS DISTINCT FROM $3
     OR embedding_v2 IS NULL
-  )`, existingID, embedding.ModelID, embedding.ContentHash, embedding.Vector.String(), nowUnixMS(), existing.Topic, existing.Statement)
+		)`, existingID, value.ModelID, value.ContentHash, value.Vector.String(), nowUnixMS(), existing.Topic, existing.Statement)
 		if err != nil {
 			return Record{}, fmt.Errorf("backfilling knowledge embedding: %w", err)
 		}
 		if changed.RowsAffected() != 1 {
-			current, checkErr := knowledgeEmbeddingCurrent(queryCtx, tx, existingID, embedding.ModelID, embedding.ContentHash)
+			current, checkErr := knowledgeEmbeddingCurrent(queryCtx, tx, existingID, value.ModelID, value.ContentHash)
 			if checkErr != nil {
 				return Record{}, checkErr
 			}
@@ -99,7 +104,7 @@ WHERE id = $1
 		}
 		return KnowledgeByID(ctx, s.pool.Raw(), existingID)
 	}
-	embedding, err := embedding.ForContent(embedder, topic+"\n"+statement)
+	prepared, err := embedding.ForContent(embedder, topic+"\n"+statement)
 	if err != nil {
 		return Record{}, err
 	}
@@ -120,7 +125,7 @@ WHERE id = $1
 	}
 	now := nowUnixMS()
 	id := newID()
-	if err := InsertVerifiedKnowledgeEntry(queryCtx, tx, id, topic, statement, conversationID, turnID, confidenceBasisPoints, now, embedding); err != nil {
+	if err := InsertVerifiedKnowledgeEntry(queryCtx, tx, id, topic, statement, conversationID, turnID, confidenceBasisPoints, now, prepared); err != nil {
 		return Record{}, err
 	}
 	if len(sources) > 0 {

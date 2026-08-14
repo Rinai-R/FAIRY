@@ -13,6 +13,12 @@ func (s *Store) Catalog() (Catalog, error) {
 }
 
 func (s *Store) CatalogContext(ctx context.Context) (Catalog, error) {
+	if s.usesSeekDB() {
+		return s.catalogSeekDB(ctx)
+	}
+	if !s.usesPostgres() {
+		return Catalog{}, ErrStoreBackendUnavailable
+	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
 	candidates, err := ListKnowledge(queryCtx, s.pool.Raw(), "candidate")
@@ -27,10 +33,21 @@ func (s *Store) CatalogContext(ctx context.Context) (Catalog, error) {
 }
 
 func (s *Store) ConfirmCandidate(id string) (Record, error) {
-	return s.ConfirmCandidateContext(context.Background(), id)
+	return s.confirmCandidate(context.Background(), id, false)
 }
 
 func (s *Store) ConfirmCandidateContext(ctx context.Context, id string) (Record, error) {
+	return s.confirmCandidate(ctx, id, true)
+}
+
+func (s *Store) confirmCandidate(ctx context.Context, id string, requireContext bool) (Record, error) {
+	if s.usesSeekDB() {
+		return s.confirmCandidateSeekDB(ctx, id, requireContext)
+	}
+	if !s.usesPostgres() {
+		return Record{}, ErrStoreBackendUnavailable
+	}
+	_ = requireContext
 	if err := ValidateID("knowledge_id", id); err != nil {
 		return Record{}, err
 	}
@@ -70,6 +87,12 @@ func (s *Store) Tombstone(id string) error {
 }
 
 func (s *Store) TombstoneContext(ctx context.Context, id string) error {
+	if s.usesSeekDB() {
+		return s.tombstoneSeekDB(ctx, id)
+	}
+	if !s.usesPostgres() {
+		return ErrStoreBackendUnavailable
+	}
 	if err := ValidateID("knowledge_id", id); err != nil {
 		return err
 	}

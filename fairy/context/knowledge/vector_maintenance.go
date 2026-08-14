@@ -21,14 +21,19 @@ type VectorRebuildResult struct {
 }
 
 type vectorItem struct {
-	ID      string
-	Content string
-	Current bool
+	ID        string
+	Topic     string
+	Statement string
+	Content   string
+	Current   bool
 }
 
 func (s *Store) RebuildVectors(ctx context.Context, pageSize int) (VectorRebuildResult, error) {
-	if s == nil || s.pool == nil {
-		return VectorRebuildResult{}, errors.New("knowledge vector rebuild requires PostgreSQL store")
+	if s.usesSeekDB() {
+		return s.rebuildSeekDBVectors(ctx, pageSize)
+	}
+	if !s.usesPostgres() {
+		return VectorRebuildResult{}, ErrStoreBackendUnavailable
 	}
 	embedder := s.embedder.Snapshot()
 	if embedder == nil || !embedder.Ready() {

@@ -10,7 +10,7 @@ import (
 )
 
 func (s *Store) KnowledgeIngestReady() bool {
-	return s != nil && s.pool != nil && s.pool.Raw() != nil
+	return s.usesSeekDB() || s.usesPostgres()
 }
 
 func (s *Store) InsertVerifiedKnowledge(
@@ -21,7 +21,10 @@ func (s *Store) InsertVerifiedKnowledge(
 	confidenceBasisPoints uint16,
 	sources []AssistantSource,
 ) (Record, error) {
-	return s.InsertVerifiedKnowledgeContext(context.Background(), topic, statement, conversationID, turnID, confidenceBasisPoints, sources)
+	return s.insertVerifiedKnowledge(
+		context.Background(), topic, statement, conversationID, turnID,
+		confidenceBasisPoints, sources, false,
+	)
 }
 
 func (s *Store) InsertVerifiedKnowledgeContext(
@@ -33,20 +36,67 @@ func (s *Store) InsertVerifiedKnowledgeContext(
 	confidenceBasisPoints uint16,
 	sources []AssistantSource,
 ) (Record, error) {
-	return s.insertVerifiedKnowledgePostgres(ctx, topic, statement, conversationID, turnID, confidenceBasisPoints, sources)
+	return s.insertVerifiedKnowledge(
+		ctx, topic, statement, conversationID, turnID,
+		confidenceBasisPoints, sources, true,
+	)
+}
+
+func (s *Store) insertVerifiedKnowledge(
+	ctx context.Context,
+	topic string,
+	statement string,
+	conversationID string,
+	turnID string,
+	confidenceBasisPoints uint16,
+	sources []AssistantSource,
+	requireContext bool,
+) (Record, error) {
+	if err := validateDirectKnowledgeSources(sources); err != nil {
+		return Record{}, err
+	}
+	if s.usesSeekDB() {
+		return s.insertVerifiedKnowledgeSeekDB(
+			ctx, topic, statement, conversationID, turnID,
+			confidenceBasisPoints, sources, requireContext,
+		)
+	}
+	if !s.usesPostgres() {
+		return Record{}, ErrStoreBackendUnavailable
+	}
+	return s.insertVerifiedKnowledgePostgres(
+		ctx, topic, statement, conversationID, turnID,
+		confidenceBasisPoints, sources,
+	)
 }
 
 func (s *Store) SearchKnowledgeForIngest(query string, limit int) ([]Retrieved, error) {
-	return s.SearchKnowledgeForIngestContext(context.Background(), query, limit)
+	return s.searchKnowledgeForIngest(context.Background(), query, limit, false)
 }
 
 func (s *Store) SearchKnowledgeForIngestContext(ctx context.Context, query string, limit int) ([]Retrieved, error) {
+	return s.searchKnowledgeForIngest(ctx, query, limit, true)
+}
+
+func (s *Store) searchKnowledgeForIngest(
+	ctx context.Context,
+	query string,
+	limit int,
+	requireContext bool,
+) ([]Retrieved, error) {
+	_ = requireContext
 	if limit < 1 || limit > MaxSearchCandidates {
 		return nil, errors.New("knowledge ingest search limit is invalid")
 	}
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, errors.New("knowledge ingest search query is required")
+	}
+	if s.usesSeekDB() {
+		return s.searchForIngestSeekDB(ctx, query, limit)
+	}
+	if !s.usesPostgres() {
+		return nil, ErrStoreBackendUnavailable
 	}
 	return s.searchForIngestPostgres(ctx, query, limit)
 }
@@ -57,7 +107,9 @@ func (s *Store) CommitKnowledgeDocumentActions(
 	suppliedKnowledgeIDs []string,
 	actions []DocumentAction,
 ) (int, error) {
-	return s.CommitKnowledgeDocumentActionsContext(context.Background(), task, document, suppliedKnowledgeIDs, actions)
+	return s.commitKnowledgeDocumentActions(
+		context.Background(), task, document, suppliedKnowledgeIDs, actions, false,
+	)
 }
 
 func (s *Store) CommitKnowledgeDocumentActionsContext(
@@ -67,7 +119,28 @@ func (s *Store) CommitKnowledgeDocumentActionsContext(
 	suppliedKnowledgeIDs []string,
 	actions []DocumentAction,
 ) (int, error) {
-	return s.commitKnowledgeDocumentActionsPostgres(ctx, task, document, suppliedKnowledgeIDs, actions)
+	return s.commitKnowledgeDocumentActions(ctx, task, document, suppliedKnowledgeIDs, actions, true)
+}
+
+func (s *Store) commitKnowledgeDocumentActions(
+	ctx context.Context,
+	task IngestTask,
+	document Document,
+	suppliedKnowledgeIDs []string,
+	actions []DocumentAction,
+	requireContext bool,
+) (int, error) {
+	if s.usesSeekDB() {
+		return s.commitKnowledgeDocumentActionsSeekDB(
+			ctx, task, document, suppliedKnowledgeIDs, actions, requireContext,
+		)
+	}
+	if !s.usesPostgres() {
+		return 0, ErrStoreBackendUnavailable
+	}
+	return s.commitKnowledgeDocumentActionsPostgres(
+		ctx, task, document, suppliedKnowledgeIDs, actions,
+	)
 }
 
 func validateKnowledgeIngestTask(task IngestTask) ([]byte, error) {

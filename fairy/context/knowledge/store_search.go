@@ -11,16 +11,35 @@ import (
 	"github.com/pgvector/pgvector-go"
 )
 
-func (s *Store) searchForIngestPostgres(ctx context.Context, query string, limit int) ([]Retrieved, error) {
+func embeddingVectorString(vector []float32) string {
+	return pgvector.NewVector(vector).String()
+}
+
+func (s *Store) searchForIngestPostgres(
+	ctx context.Context,
+	query string,
+	limit int,
+) ([]Retrieved, error) {
 	retrieval, err := s.searchPostgres(ctx, query, limit, true)
 	return retrieval.Entries, err
 }
 
 func (s *Store) RetrieveContext(ctx context.Context, query string) (Retrieval, error) {
+	if s.usesSeekDB() {
+		return Retrieval{}, ErrSeekDBRetrievalUnavailable
+	}
+	if !s.usesPostgres() {
+		return Retrieval{}, ErrStoreBackendUnavailable
+	}
 	return s.searchPostgres(ctx, query, MaxSearchCandidates, false)
 }
 
-func (s *Store) searchPostgres(ctx context.Context, query string, limit int, failOnEmbeddingError bool) (Retrieval, error) {
+func (s *Store) searchPostgres(
+	ctx context.Context,
+	query string,
+	limit int,
+	failOnEmbeddingError bool,
+) (Retrieval, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return Retrieval{}, errors.New("knowledge search query is required")
@@ -31,7 +50,8 @@ func (s *Store) searchPostgres(ctx context.Context, query string, limit int, fai
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
 
-	var vector *pgvector.Vector
+	var vectorValue string
+	hasVector := false
 	modelID := ""
 	semanticStatus := string(embedding.SemanticStatusUnavailable)
 	if embedder := s.embedder.Snapshot(); embedder != nil && embedder.Ready() {
@@ -57,18 +77,18 @@ func (s *Store) searchPostgres(ctx context.Context, query string, limit int, fai
 			if err := embedding.ValidateVector(vectors[0]); err != nil {
 				return Retrieval{}, err
 			}
-			value := pgvector.NewVector(vectors[0])
-			vector = &value
+			vectorValue = embeddingVectorString(vectors[0])
+			hasVector = true
 			semanticStatus = string(embedding.SemanticStatusUsed)
 		}
 	}
 
 	var rows QuerierRows
 	var err error
-	if vector == nil {
+	if !hasVector {
 		rows, err = s.pool.Raw().Query(queryCtx, knowledgeTextSearchSQL, query, limit)
 	} else {
-		rows, err = s.pool.Raw().Query(queryCtx, knowledgeHybridSearchSQL, query, vector.String(), modelID, limit)
+		rows, err = s.pool.Raw().Query(queryCtx, knowledgeHybridSearchSQL, query, vectorValue, modelID, limit)
 	}
 	if err != nil {
 		return Retrieval{}, fmt.Errorf("searching knowledge: %w", err)
