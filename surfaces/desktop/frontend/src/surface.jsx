@@ -5,6 +5,7 @@ import { Events } from "@wailsio/runtime";
 import { Cancel, CloseControlPanel, CloseHistory, Connect, DisableDesktopObservation, EnableDesktopObservation, HideSpeechBubble, OpenControlPanel, OpenHistory, RecentMessages, ReportStickerDelivery, RuntimeInfo, Send, SetDesktopObservationPrivacy } from "../bindings/fairy-desktop/coreservice.js";
 import { CharacterExpressionBubble, CharacterSpeechBubble } from "./components/CharacterSpeechBubble.jsx";
 import { PixelCharacter } from "./components/PixelCharacter.jsx";
+import { ManagementSurface } from "./management.jsx";
 import { resolveChatKeyboardAction } from "./companionViewState.mjs";
 import {
   appendExpressionPart,
@@ -476,5 +477,6 @@ export function SurfaceApp() {
   if (surface === "control-panel") return <SettingsSurface />;
   if (surface === "history") return <HistorySurface />;
   if (surface === "speech") return <SpeechSurface />;
+  if (surface === "management") return <ManagementSurface />;
   return <CompanionSurface />;
 }

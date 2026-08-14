@@ -13,6 +13,7 @@ test("production entry uses the standalone CoreService surface router", () => {
   assert.match(surfaceSource, /if \(surface === "control-panel"\)/);
   assert.match(surfaceSource, /if \(surface === "history"\)/);
   assert.match(surfaceSource, /if \(surface === "speech"\)/);
+  assert.match(surfaceSource, /if \(surface === "management"\)/);
   assert.doesNotMatch(mainSource + surfaceSource, /fairy\/frontend\/bindings\/fairy\/desktop/);
   assert.doesNotMatch(mainSource + surfaceSource, /GetDesktopState|OpenCompanionChat/);
 });
@@ -75,4 +76,22 @@ test("Core settings keep every field accessible in a resizable scrolling WebUI p
   assert.match(settingsWindow, /MinHeight:\s*controlPanelMinHeight/);
   assert.doesNotMatch(settingsWindow, /DisableResize:\s*true/);
   assert.match(desktopMainSource, /WindowDidMove[\s\S]*core\.repositionControlPanel\(\)/);
+});
+
+test("management workspace is a resizable local shell with sibling observability tasks", () => {
+  const managementSource = readFileSync(new URL("./management.jsx", import.meta.url), "utf8");
+  assert.match(desktopMainSource, /Name: "management"/);
+  assert.match(desktopMainSource, /MinWidth: managementMinWidth/);
+  assert.match(desktopMainSource, /MinHeight: managementMinHeight/);
+  const managementWindowStart = desktopMainSource.indexOf("management := app.Window.NewWithOptions");
+  const managementWindow = desktopMainSource.slice(managementWindowStart, desktopMainSource.indexOf("bubble.SetIgnoreMouseEvents"));
+  assert.doesNotMatch(managementWindow, /DisableResize:\s*true/);
+  assert.doesNotMatch(managementWindow, /AlwaysOnTop:\s*true/);
+  assert.match(desktopMainSource, /installApplicationMenu\(app, core\)/);
+  assert.match(managementSource, /aria-label="控制台导航"/);
+  assert.match(managementSource, /label: "指标"/);
+  assert.match(managementSource, /label: "链路跟踪"/);
+  assert.match(managementSource, /label: "日志"/);
+  assert.doesNotMatch(managementSource, /observability-tabs|nav-subtasks|ConnectionGate|Bearer|127\.0\.0\.1:8787|FAIRY_API_TOKEN/);
+  assert.match(managementSource, /不要求 Core endpoint 或 bearer/);
 });

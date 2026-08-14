@@ -5,6 +5,7 @@ import "@radix-ui/themes/styles.css";
 import "./styles/shared.css";
 import "./styles/companion.css";
 import "./styles/control-panel.css";
+import "./styles/management.css";
 import { SurfaceApp } from "./surface.jsx";
 
 createRoot(document.querySelector("#root")).render(

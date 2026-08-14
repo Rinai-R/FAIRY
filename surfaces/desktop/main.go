@@ -63,8 +63,16 @@ func main() {
 		BackgroundType: application.BackgroundTypeTransparent, BackgroundColour: application.NewRGBA(0, 0, 0, 0),
 		Mac: speechBubbleWindowOptions(),
 	})
+	management := app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Title: "FAIRY 管理工作区", Name: "management", URL: "/?surface=management&revision=" + surfaceRevision,
+		Width: managementWidth, Height: managementHeight, MinWidth: managementMinWidth, MinHeight: managementMinHeight,
+		Hidden: true, BackgroundType: application.BackgroundTypeSolid, BackgroundColour: application.NewRGB(244, 248, 252),
+		Mac: managementWindowOptions(),
+	})
 	bubble.SetIgnoreMouseEvents(true)
 	core.attachWindows(companion, settings, history, bubble)
+	core.attachManagement(management)
+	installApplicationMenu(app, core)
 	companion.OnWindowEvent(events.Common.WindowDidMove, func(*application.WindowEvent) {
 		core.RepositionSpeechBubble()
 		core.RepositionHistory()
@@ -75,6 +83,7 @@ func main() {
 	})
 	settings.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) { event.Cancel(); core.CloseControlPanel() })
 	history.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) { event.Cancel(); core.CloseHistory() })
+	management.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) { event.Cancel(); _ = core.CloseManagement() })
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
 	}
@@ -99,3 +108,7 @@ func historyWindowOptions() application.MacWindow {
 }
 
 func speechBubbleWindowOptions() application.MacWindow { return companionWindowOptions() }
+
+func managementWindowOptions() application.MacWindow {
+	return application.MacWindow{TabbingMode: application.MacWindowTabbingModeDisallowed}
+}

@@ -33,9 +33,11 @@ type CoreService struct {
 	controlPanel         application.Window
 	history              application.Window
 	speechBubble         application.Window
+	management           application.Window
 	windowLink           windowRelation
 	controlOpen          bool
 	historyOpen          bool
+	managementOpen       bool
 	controlWidth         int
 	assets               sessionAssets
 	socket               sessionPlane

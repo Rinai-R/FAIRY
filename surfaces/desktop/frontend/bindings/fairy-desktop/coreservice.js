@@ -76,12 +76,24 @@ export function OpenControlPanel() {
 }
 
 /**
- * OpenHistory keeps recent messages beside the pet rather than expanding or
- * covering the companion window with the retired chat surface.
  * @returns {$CancellablePromise<void>}
  */
 export function OpenHistory() {
     return $Call.ByID(3735711446);
+}
+
+/**
+ * @returns {$CancellablePromise<void>}
+ */
+export function OpenManagement() {
+    return $Call.ByID(2057278069);
+}
+
+/**
+ * @returns {$CancellablePromise<void>}
+ */
+export function CloseManagement() {
+    return $Call.ByID(2333417441);
 }
 
 /**
