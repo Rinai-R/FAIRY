@@ -230,6 +230,13 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	observabilityHistory.SetSinkDiagnostics(func(component string, recovered bool, err error) {
+		if recovered {
+			logger.Info("observability " + component + " recovered")
+			return
+		}
+		logger.Warn("observability "+component+" failed", zap.Error(err))
+	})
 	keepHistory := false
 	defer func() {
 		if !keepHistory {

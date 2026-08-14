@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,6 +38,19 @@ func TestNewSeekDBStoreRejectsInvalidInputs(t *testing.T) {
 				t.Fatalf("NewSeekDBStore() = %#v", store)
 			}
 		})
+	}
+}
+
+func TestSeekDBHistorySourceDoesNotUsePostgresOrRetry(t *testing.T) {
+	source, err := os.ReadFile("store_seekdb.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, forbidden := range []string{"pool", "pgx", "$1", "postgres", "Retry", "time.Sleep"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("SeekDB history source contains PostgreSQL or retry marker %q", forbidden)
+		}
 	}
 }
 

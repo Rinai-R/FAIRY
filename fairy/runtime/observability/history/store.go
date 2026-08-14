@@ -25,6 +25,8 @@ const (
 	DefaultHistoryMaxAge        = 7 * 24 * time.Hour
 	historyCleanupInterval      = time.Minute
 	historyCleanupWrites        = 100
+	sinkComponentPersist        = "history persist"
+	sinkComponentCleanup        = "history cleanup"
 )
 
 var (
@@ -42,23 +44,37 @@ type historyRecord struct {
 }
 
 type Store struct {
-	pool          *coredb.Pool
-	seekDB        *sql.DB
-	queryLimit    time.Duration
-	records       chan historyRecord
-	stop          chan struct{}
-	done          chan struct{}
-	enqueueMu     sync.RWMutex
-	closeOnce     sync.Once
-	stopped       atomic.Bool
-	queued        atomic.Uint64
-	queueDropped  atomic.Uint64
-	writeFailed   atomic.Uint64
-	cleanupFailed atomic.Uint64
-	keySequence   atomic.Uint64
-	limits        map[string]int
-	maxAge        time.Duration
-	writeRecord   func(historyRecord) error
+	pool               *coredb.Pool
+	seekDB             *sql.DB
+	queryLimit         time.Duration
+	records            chan historyRecord
+	stop               chan struct{}
+	done               chan struct{}
+	enqueueMu          sync.RWMutex
+	closeOnce          sync.Once
+	stopped            atomic.Bool
+	queued             atomic.Uint64
+	queueDropped       atomic.Uint64
+	writeFailed        atomic.Uint64
+	cleanupFailed      atomic.Uint64
+	keySequence        atomic.Uint64
+	limits             map[string]int
+	maxAge             time.Duration
+	writeRecord        func(historyRecord) error
+	cleanupRecords     func(context.Context) error
+	cleanupAfterWrites int
+	cleanupEvery       time.Duration
+	sinkReport         atomic.Pointer[sinkReporter]
+}
+
+type sinkReporter struct {
+	report func(component string, recovered bool, err error)
+}
+
+type failureWindow struct {
+	component string
+	emit      func(component string, recovered bool, err error)
+	failed    bool
 }
 
 func New(pool *coredb.Pool) (*Store, error) {
@@ -112,6 +128,42 @@ func (s *Store) seekDBQueryContext(parent context.Context) (context.Context, con
 		parent = context.Background()
 	}
 	return context.WithTimeout(parent, s.queryLimit)
+}
+
+// SetSinkDiagnostics registers a bounded reporter for persist and cleanup
+// failure windows. Producers never call it; only the write-queue worker does.
+func (s *Store) SetSinkDiagnostics(report func(component string, recovered bool, err error)) {
+	if s == nil {
+		return
+	}
+	if report == nil {
+		s.sinkReport.Store(nil)
+		return
+	}
+	s.sinkReport.Store(&sinkReporter{report: report})
+}
+
+func (s *Store) emitSinkDiagnostic(component string, recovered bool, err error) {
+	reporter := s.sinkReport.Load()
+	if reporter == nil {
+		return
+	}
+	reporter.report(component, recovered, err)
+}
+
+func (w *failureWindow) report(err error) {
+	if err == nil {
+		if w.failed {
+			w.emit(w.component, true, nil)
+			w.failed = false
+		}
+		return
+	}
+	if w.failed {
+		return
+	}
+	w.failed = true
+	w.emit(w.component, false, err)
 }
 
 func (s *Store) EnqueueLog(entry observability.LogEntry) bool {
@@ -335,16 +387,31 @@ func (s *Store) run() {
 	defer close(s.done)
 	lastCleanup := time.Now()
 	writes := 0
+	persistWindow := failureWindow{component: sinkComponentPersist, emit: s.emitSinkDiagnostic}
+	cleanupWindow := failureWindow{component: sinkComponentCleanup, emit: s.emitSinkDiagnostic}
+	cleanupAfter := historyCleanupWrites
+	if s.cleanupAfterWrites > 0 {
+		cleanupAfter = s.cleanupAfterWrites
+	}
+	cleanupEvery := historyCleanupInterval
+	if s.cleanupEvery > 0 {
+		cleanupEvery = s.cleanupEvery
+	}
 	write := func(record historyRecord) {
 		err := s.persistRecord(record)
 		if err != nil {
 			s.writeFailed.Add(1)
+			persistWindow.report(err)
 			return
 		}
+		persistWindow.report(nil)
 		writes++
-		if writes >= historyCleanupWrites || time.Since(lastCleanup) >= historyCleanupInterval {
+		if writes >= cleanupAfter || time.Since(lastCleanup) >= cleanupEvery {
 			if err := s.cleanup(context.Background()); err != nil {
 				s.cleanupFailed.Add(1)
+				cleanupWindow.report(err)
+			} else {
+				cleanupWindow.report(nil)
 			}
 			writes = 0
 			lastCleanup = time.Now()
@@ -394,6 +461,9 @@ WHERE observability_records.kind <> 'trace'`,
 }
 
 func (s *Store) cleanup(ctx context.Context) error {
+	if s.cleanupRecords != nil {
+		return s.cleanupRecords(ctx)
+	}
 	if s.usesSeekDB() {
 		return s.cleanupSeekDB(ctx)
 	}

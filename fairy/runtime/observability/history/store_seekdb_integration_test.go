@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -196,6 +197,78 @@ func TestRealSeekDBHistoryStorePersistsLogsTracesMetricsRetentionAndRestart(t *t
 	}
 	if expiredCount != 0 {
 		t.Fatalf("expired observability record survived retention: %d", expiredCount)
+	}
+}
+
+func TestRealSeekDBHistoryEnqueueStaysIsolatedWhenPersistFails(t *testing.T) {
+	instance, database, runtimeConfig := openHistorySeekDB(t)
+	closed := false
+	t.Cleanup(func() {
+		if !closed {
+			closeHistorySeekDB(t, instance, runtimeConfig.ShutdownLimit)
+		}
+	})
+	if err := seekdb.MigrateSchema(t.Context(), database, seekdb.BuiltinMigrations()); err != nil {
+		t.Fatalf("migrate SeekDB observability history schema: %v", err)
+	}
+	store, err := NewSeekDBStore(database, runtimeConfig.QueryLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if store.usesPostgres() || !store.usesSeekDB() {
+		t.Fatal("SeekDB history store reported a PostgreSQL fallback")
+	}
+	var (
+		failures   atomic.Int64
+		recoveries atomic.Int64
+	)
+	store.SetSinkDiagnostics(func(component string, recovered bool, err error) {
+		if recovered {
+			recoveries.Add(1)
+			return
+		}
+		if component == sinkComponentPersist && err != nil {
+			failures.Add(1)
+		}
+	})
+
+	now := time.Now().UnixMilli()
+	if !store.EnqueueLog(observability.LogEntry{
+		Sequence: 1, TimestampUnixMS: now, Level: "info", Logger: "core", Message: "before-close",
+	}) {
+		t.Fatal("enqueue before SeekDB close")
+	}
+	waitHistoryCondition(t, "first SeekDB persist", func() bool {
+		logs, err := store.RecentLogs(t.Context(), 1)
+		return err == nil && len(logs) == 1 && logs[0].Message == "before-close"
+	})
+
+	closeHistorySeekDB(t, instance, runtimeConfig.ShutdownLimit)
+	closed = true
+
+	started := time.Now()
+	if !store.EnqueueLog(observability.LogEntry{
+		Sequence: 2, TimestampUnixMS: now + 1, Level: "info", Logger: "core", Message: "after-close-one",
+	}) || !store.EnqueueLog(observability.LogEntry{
+		Sequence: 3, TimestampUnixMS: now + 2, Level: "info", Logger: "core", Message: "after-close-two",
+	}) {
+		t.Fatal("enqueue after SeekDB close was rejected")
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("enqueue waited %s for a failed SeekDB persist", elapsed)
+	}
+	waitHistoryCondition(t, "persist failure window", func() bool {
+		return store.Stats().WriteFailed >= 2
+	})
+	if got := failures.Load(); got != 1 {
+		t.Fatalf("persist failure diagnostics = %d, want 1", got)
+	}
+	if got := recoveries.Load(); got != 0 {
+		t.Fatalf("unexpected persist recovery diagnostics = %d", got)
+	}
+	if _, err := store.RecentLogs(t.Context(), 1); err == nil {
+		t.Fatal("RecentLogs succeeded after SeekDB close")
 	}
 }
 
