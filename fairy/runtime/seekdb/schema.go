@@ -24,6 +24,7 @@ const (
 	socialFeedbackEventsRevision      int64 = 9
 	stickerCatalogSchemaRevision      int64 = 10
 	toolExecutionLedgerRevision       int64 = 11
+	observabilityHistoryRevision      int64 = 12
 
 	transcriptRecallTableName = "conversation_messages"
 	transcriptRecallIndexName = "conversation_messages_content_fts_idx"
@@ -176,14 +177,23 @@ func BuiltinMigrations() []Migration {
 			Apply:  applyToolExecutionLedgerSchema,
 			Verify: verifyToolExecutionLedgerSchema,
 		},
+		{
+			Revision: Revision{
+				Number:   observabilityHistoryRevision,
+				Checksum: observabilityHistorySchemaChecksum(),
+			},
+			Name:   "create-observability-history-schema",
+			Apply:  applyObservabilityHistorySchema,
+			Verify: verifyObservabilityHistorySchema,
+		},
 	}
 }
 
 // CurrentSchemaRevision is the exact revision accepted by runtime readiness.
 func CurrentSchemaRevision() Revision {
 	return Revision{
-		Number:   toolExecutionLedgerRevision,
-		Checksum: toolExecutionLedgerSchemaChecksum(),
+		Number:   observabilityHistoryRevision,
+		Checksum: observabilityHistorySchemaChecksum(),
 	}
 }
 

@@ -48,6 +48,7 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	assertSocialFeedbackEventsSchemaVerified(t, database)
 	assertStickerCatalogSchemaVerified(t, database)
 	assertToolExecutionLedgerSchemaVerified(t, database)
+	assertObservabilityHistorySchemaVerified(t, database)
 	assertSchemaTableSet(t, database, CurrentSchemaRevision().Number)
 	if got := integrationJournalRowForRevision(t, database, foundationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("foundation attempt count = %d, want 1", got)
@@ -81,6 +82,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	}
 	if got := integrationJournalRowForRevision(t, database, toolExecutionLedgerRevision).AttemptCount; got != 1 {
 		t.Fatalf("tool execution ledger attempt count = %d, want 1", got)
+	}
+	if got := integrationJournalRowForRevision(t, database, observabilityHistoryRevision).AttemptCount; got != 1 {
+		t.Fatalf("observability history attempt count = %d, want 1", got)
 	}
 
 	if err := MigrateSchema(t.Context(), database, BuiltinMigrations()); err != nil {
@@ -119,6 +123,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	if got := integrationJournalRowForRevision(t, database, toolExecutionLedgerRevision).AttemptCount; got != 1 {
 		t.Fatalf("tool execution ledger attempt count after repeat = %d, want 1", got)
 	}
+	if got := integrationJournalRowForRevision(t, database, observabilityHistoryRevision).AttemptCount; got != 1 {
+		t.Fatalf("observability history attempt count after repeat = %d, want 1", got)
+	}
 	assertFoundationChecksRejectInvalidData(t, database)
 
 	closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
@@ -139,6 +146,7 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	assertSocialFeedbackEventsSchemaVerified(t, restarted.SQL())
 	assertStickerCatalogSchemaVerified(t, restarted.SQL())
 	assertToolExecutionLedgerSchemaVerified(t, restarted.SQL())
+	assertObservabilityHistorySchemaVerified(t, restarted.SQL())
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), foundationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("foundation attempt count after restart = %d, want 1", got)
 	}
@@ -172,6 +180,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), toolExecutionLedgerRevision).AttemptCount; got != 1 {
 		t.Fatalf("tool execution ledger attempt count after restart = %d, want 1", got)
 	}
+	if got := integrationJournalRowForRevision(t, restarted.SQL(), observabilityHistoryRevision).AttemptCount; got != 1 {
+		t.Fatalf("observability history attempt count after restart = %d, want 1", got)
+	}
 }
 
 func TestRealSeekDBConversationSchemaUpgradesRevisionOneWithoutRewritingIt(t *testing.T) {
@@ -202,6 +213,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, "runtime", "upgrade-proof", 1, 1, `{"kept":true}`
 	assertSocialFeedbackEventsSchemaVerified(t, database)
 	assertStickerCatalogSchemaVerified(t, database)
 	assertToolExecutionLedgerSchemaVerified(t, database)
+	assertObservabilityHistorySchemaVerified(t, database)
 	for _, revision := range []int64{
 		foundationSchemaRevision,
 		conversationSchemaRevision,
@@ -214,6 +226,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, "runtime", "upgrade-proof", 1, 1, `{"kept":true}`
 		socialFeedbackEventsRevision,
 		stickerCatalogSchemaRevision,
 		toolExecutionLedgerRevision,
+		observabilityHistoryRevision,
 	} {
 		row := integrationJournalRowForRevision(t, database, revision)
 		if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
@@ -573,6 +586,7 @@ func TestRealSeekDBDuplicateRevalidationSchemaFreshInstallIsCurrent(t *testing.T
 	assertSocialFeedbackEventsSchemaVerified(t, database)
 	assertStickerCatalogSchemaVerified(t, database)
 	assertToolExecutionLedgerSchemaVerified(t, database)
+	assertObservabilityHistorySchemaVerified(t, database)
 	assertSchemaTableSet(t, database, CurrentSchemaRevision().Number)
 	for _, revision := range []int64{
 		foundationSchemaRevision,
@@ -586,6 +600,7 @@ func TestRealSeekDBDuplicateRevalidationSchemaFreshInstallIsCurrent(t *testing.T
 		socialFeedbackEventsRevision,
 		stickerCatalogSchemaRevision,
 		toolExecutionLedgerRevision,
+		observabilityHistoryRevision,
 	} {
 		row := integrationJournalRowForRevision(t, database, revision)
 		if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
@@ -606,6 +621,7 @@ func TestRealSeekDBDuplicateRevalidationSchemaFreshInstallIsCurrent(t *testing.T
 	assertSocialFeedbackEventsSchemaVerified(t, restarted.SQL())
 	assertStickerCatalogSchemaVerified(t, restarted.SQL())
 	assertToolExecutionLedgerSchemaVerified(t, restarted.SQL())
+	assertObservabilityHistorySchemaVerified(t, restarted.SQL())
 	assertSchemaTableSet(t, restarted.SQL(), CurrentSchemaRevision().Number)
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), cognitiveRecordsSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("fresh cognitive records attempt count after restart = %d, want 1", got)
@@ -965,7 +981,7 @@ func TestRealSeekDBCognitiveRecordsSchemaUpgradesRevisionSixRecoversPartialAndPe
 	}
 	for _, forbidden := range []string{
 		"social_memory_feedback_events", "extraction_batches", "extraction_batch_turns",
-		"stickers", "expression_deliveries", "tool_executions",
+		"stickers", "expression_deliveries", "tool_executions", "observability_records",
 	} {
 		if got := integrationTableCount(t, database, forbidden); got != 0 {
 			t.Fatalf("revision seven created forbidden table %s", forbidden)
@@ -1405,10 +1421,10 @@ func TestRealSeekDBToolExecutionLedgerSchemaUpgradesRevisionTenAndPersists(t *te
 	if _, err := database.ExecContext(t.Context(), toolExecutionLedgerSchema[0].ddl); err != nil {
 		t.Fatalf("precreate tool_executions table: %v", err)
 	}
-	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+	if err := MigrateSchema(t.Context(), database, migrations[:11]); err != nil {
 		t.Fatalf("MigrateSchema(partial revision eleven) error = %v", err)
 	}
-	assertCurrentSchema(t, database, CurrentSchemaRevision())
+	assertCurrentSchema(t, database, migrations[10].Revision)
 	assertToolExecutionLedgerSchemaVerified(t, database)
 	assertSchemaTableSet(t, database, toolExecutionLedgerRevision)
 	row := integrationJournalRowForRevision(t, database, toolExecutionLedgerRevision)
@@ -1416,8 +1432,11 @@ func TestRealSeekDBToolExecutionLedgerSchemaUpgradesRevisionTenAndPersists(t *te
 		t.Fatalf("tool execution ledger journal = %#v", row)
 	}
 	assertToolExecutionLedgerConstraints(t, database)
+	if got := integrationTableCount(t, database, observabilityRecordsTableName); got != 0 {
+		t.Fatalf("revision eleven created observability_records table")
+	}
 
-	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+	if err := MigrateSchema(t.Context(), database, migrations[:11]); err != nil {
 		t.Fatalf("MigrateSchema(repeated revision eleven) error = %v", err)
 	}
 	if got := integrationJournalRowForRevision(t, database, toolExecutionLedgerRevision).AttemptCount; got != 1 {
@@ -1432,11 +1451,68 @@ func TestRealSeekDBToolExecutionLedgerSchemaUpgradesRevisionTenAndPersists(t *te
 	}
 	instance = restarted
 	closed = false
-	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
+	assertCurrentSchema(t, restarted.SQL(), migrations[10].Revision)
 	assertToolExecutionLedgerSchemaVerified(t, restarted.SQL())
 	assertSchemaTableSet(t, restarted.SQL(), toolExecutionLedgerRevision)
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), toolExecutionLedgerRevision).AttemptCount; got != 1 {
 		t.Fatalf("tool execution ledger attempt count after restart = %d, want 1", got)
+	}
+}
+
+func TestRealSeekDBObservabilityHistorySchemaUpgradesRevisionElevenAndPersists(t *testing.T) {
+	instance, config := openSchemaMigrationRuntime(t)
+	closed := false
+	defer func() {
+		if !closed {
+			closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+		}
+	}()
+	database := instance.SQL()
+	migrations := BuiltinMigrations()
+	if err := MigrateSchema(t.Context(), database, migrations[:11]); err != nil {
+		t.Fatalf("MigrateSchema(revision eleven) error = %v", err)
+	}
+	assertCurrentSchema(t, database, migrations[10].Revision)
+	assertSchemaTableSet(t, database, toolExecutionLedgerRevision)
+	if got := integrationTableCount(t, database, observabilityRecordsTableName); got != 0 {
+		t.Fatalf("revision eleven created observability_records table")
+	}
+
+	if _, err := database.ExecContext(t.Context(), observabilityHistorySchema[0].ddl); err != nil {
+		t.Fatalf("precreate observability_records table: %v", err)
+	}
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(partial revision twelve) error = %v", err)
+	}
+	assertCurrentSchema(t, database, CurrentSchemaRevision())
+	assertObservabilityHistorySchemaVerified(t, database)
+	assertSchemaTableSet(t, database, observabilityHistoryRevision)
+	row := integrationJournalRowForRevision(t, database, observabilityHistoryRevision)
+	if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
+		t.Fatalf("observability history journal = %#v", row)
+	}
+	assertObservabilityHistoryConstraints(t, database)
+
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(repeated revision twelve) error = %v", err)
+	}
+	if got := integrationJournalRowForRevision(t, database, observabilityHistoryRevision).AttemptCount; got != 1 {
+		t.Fatalf("observability history attempt count after repeat = %d, want 1", got)
+	}
+
+	closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+	closed = true
+	restarted, err := Open(t.Context(), config)
+	if err != nil {
+		t.Fatalf("restart SeekDB observability history runtime: %v", err)
+	}
+	instance = restarted
+	closed = false
+	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
+	assertObservabilityHistorySchemaVerified(t, restarted.SQL())
+	assertSchemaTableSet(t, restarted.SQL(), observabilityHistoryRevision)
+	if got := integrationJournalRowForRevision(t, restarted.SQL(), observabilityHistoryRevision).AttemptCount; got != 1 {
+		t.Fatalf("observability history attempt count after restart = %d, want 1", got)
 	}
 }
 
@@ -1975,6 +2051,8 @@ func assertCognitiveRecordsSchemaVerified(t *testing.T, database *sql.DB, revisi
 		migrationIndex = 9
 	case toolExecutionLedgerRevision:
 		migrationIndex = 10
+	case observabilityHistoryRevision:
+		migrationIndex = 11
 	default:
 		t.Fatalf("verify cognitive records schema: unsupported revision %d", revision)
 	}
@@ -2034,6 +2112,18 @@ func assertToolExecutionLedgerSchemaVerified(t *testing.T, database *sql.DB) {
 	defer connection.Close()
 	if err := BuiltinMigrations()[10].Verify(t.Context(), connection); err != nil {
 		t.Fatalf("verify tool execution ledger schema: %v", err)
+	}
+}
+
+func assertObservabilityHistorySchemaVerified(t *testing.T, database *sql.DB) {
+	t.Helper()
+	connection, err := database.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err := BuiltinMigrations()[11].Verify(t.Context(), connection); err != nil {
+		t.Fatalf("verify observability history schema: %v", err)
 	}
 }
 
@@ -2108,6 +2198,27 @@ INSERT INTO tool_executions(
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		"tool-dup-tool", "tool-ledger-conversation", "tool-ledger-turn", "call-4",
 		"desktop_observe", "pending", 2, 0, 1, 1)
+}
+
+func assertObservabilityHistoryConstraints(t *testing.T, database *sql.DB) {
+	t.Helper()
+	expectSeekDBConstraintError(t, database, `
+INSERT INTO observability_records(kind, record_key, recorded_at_ms, payload, created_at_ms)
+VALUES (?, ?, ?, ?, ?)`, "prompt", "record-1", 1, `{"safe":true}`, 1)
+	expectSeekDBConstraintError(t, database, `
+INSERT INTO observability_records(kind, record_key, recorded_at_ms, payload, created_at_ms)
+VALUES (?, ?, ?, ?, ?)`, "log", "record-2", 0, `{"safe":true}`, 1)
+	expectSeekDBConstraintError(t, database, `
+INSERT INTO observability_records(kind, record_key, recorded_at_ms, payload, created_at_ms)
+VALUES (?, ?, ?, ?, ?)`, "log", "record-3", 1, `["not-object"]`, 1)
+	if _, err := database.ExecContext(t.Context(), `
+INSERT INTO observability_records(kind, record_key, recorded_at_ms, payload, created_at_ms)
+VALUES (?, ?, ?, ?, ?)`, "log", "record-valid", 1, `{"sequence":1,"message":"safe"}`, 1); err != nil {
+		t.Fatalf("insert valid observability log: %v", err)
+	}
+	expectSeekDBConstraintError(t, database, `
+INSERT INTO observability_records(kind, record_key, recorded_at_ms, payload, created_at_ms)
+VALUES (?, ?, ?, ?, ?)`, "log", "record-valid", 2, `{"sequence":1,"message":"duplicate"}`, 2)
 }
 
 func insertIntegrationRevisionSevenPersonalMemories(
@@ -2266,8 +2377,8 @@ WHERE table_schema = DATABASE()
 
 func assertSchemaTableSet(t *testing.T, database *sql.DB, revision int64) {
 	t.Helper()
-	if revision < foundationSchemaRevision || revision > toolExecutionLedgerRevision {
-		t.Fatalf("schema table-set revision = %d, want %d..%d", revision, foundationSchemaRevision, toolExecutionLedgerRevision)
+	if revision < foundationSchemaRevision || revision > observabilityHistoryRevision {
+		t.Fatalf("schema table-set revision = %d, want %d..%d", revision, foundationSchemaRevision, observabilityHistoryRevision)
 	}
 	expected := make([]string, 0)
 	for _, table := range foundationSchema {
@@ -2304,6 +2415,9 @@ func assertSchemaTableSet(t *testing.T, database *sql.DB, revision int64) {
 	}
 	if revision >= toolExecutionLedgerRevision {
 		expected = append(expected, toolExecutionsTableName)
+	}
+	if revision >= observabilityHistoryRevision {
+		expected = append(expected, observabilityRecordsTableName)
 	}
 	for _, table := range expected {
 		if got := integrationTableCount(t, database, table); got != 1 {

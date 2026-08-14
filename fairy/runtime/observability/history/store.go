@@ -2,6 +2,7 @@ package history
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,7 +27,12 @@ const (
 	historyCleanupWrites        = 100
 )
 
-var ErrHistoryDatabasePoolEmpty = errors.New("observability history database pool is required")
+var (
+	ErrHistoryDatabasePoolEmpty       = errors.New("observability history database pool is required")
+	ErrHistorySeekDBConnectionEmpty   = errors.New("observability history SeekDB connection is required")
+	ErrHistorySeekDBQueryLimitInvalid = errors.New("observability history SeekDB query limit must be greater than zero")
+	ErrHistoryBackendUnavailable      = errors.New("observability history store backend is unavailable")
+)
 
 type historyRecord struct {
 	kind         string
@@ -37,6 +43,8 @@ type historyRecord struct {
 
 type Store struct {
 	pool          *coredb.Pool
+	seekDB        *sql.DB
+	queryLimit    time.Duration
 	records       chan historyRecord
 	stop          chan struct{}
 	done          chan struct{}
@@ -69,6 +77,41 @@ func New(pool *coredb.Pool) (*Store, error) {
 	}
 	go store.run()
 	return store, nil
+}
+
+// NewSeekDBStore creates an observability history store whose only authority is SeekDB.
+// It never falls back to the legacy PostgreSQL pool.
+func NewSeekDBStore(database *sql.DB, queryLimit time.Duration) (*Store, error) {
+	if database == nil {
+		return nil, ErrHistorySeekDBConnectionEmpty
+	}
+	if queryLimit <= 0 {
+		return nil, ErrHistorySeekDBQueryLimitInvalid
+	}
+	store := &Store{
+		seekDB:     database,
+		queryLimit: queryLimit,
+		records:    make(chan historyRecord, DefaultHistoryQueueCapacity),
+		stop:       make(chan struct{}),
+		done:       make(chan struct{}),
+		limits: map[string]int{
+			"log": DefaultLogHistoryLimit, "trace": DefaultTraceHistoryLimit, "metric": DefaultMetricHistoryLimit,
+		},
+		maxAge: DefaultHistoryMaxAge,
+	}
+	go store.run()
+	return store, nil
+}
+
+func (s *Store) usesSeekDB() bool { return s != nil && s.seekDB != nil }
+
+func (s *Store) usesPostgres() bool { return s != nil && s.pool != nil && s.pool.Raw() != nil }
+
+func (s *Store) seekDBQueryContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(parent, s.queryLimit)
 }
 
 func (s *Store) EnqueueLog(entry observability.LogEntry) bool {
@@ -142,6 +185,16 @@ func (s *Store) Trace(ctx context.Context, traceID string) (observability.Messag
 	if s == nil || traceID == "" {
 		return observability.MessageTraceDetail{}, false, nil
 	}
+	if s.usesSeekDB() {
+		return s.traceSeekDB(ctx, traceID)
+	}
+	if !s.usesPostgres() {
+		return observability.MessageTraceDetail{}, false, ErrHistoryBackendUnavailable
+	}
+	return s.tracePostgres(ctx, traceID)
+}
+
+func (s *Store) tracePostgres(ctx context.Context, traceID string) (observability.MessageTraceDetail, bool, error) {
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
 	var payload []byte
@@ -163,6 +216,16 @@ func (s *Store) TracesByMessageID(ctx context.Context, messageID string, limit i
 	if s == nil || messageID == "" || limit < 1 {
 		return []observability.MessageTraceDetail{}, nil
 	}
+	if s.usesSeekDB() {
+		return s.tracesByMessageIDSeekDB(ctx, messageID, limit)
+	}
+	if !s.usesPostgres() {
+		return nil, ErrHistoryBackendUnavailable
+	}
+	return s.tracesByMessageIDPostgres(ctx, messageID, limit)
+}
+
+func (s *Store) tracesByMessageIDPostgres(ctx context.Context, messageID string, limit int) ([]observability.MessageTraceDetail, error) {
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
 	rows, err := s.pool.Raw().Query(queryCtx, `
@@ -212,6 +275,16 @@ func (s *Store) queryRecent(ctx context.Context, kind string, limit int, decode 
 	if limit < 1 {
 		return nil
 	}
+	if s.usesSeekDB() {
+		return s.queryRecentSeekDB(ctx, kind, limit, decode)
+	}
+	if !s.usesPostgres() {
+		return ErrHistoryBackendUnavailable
+	}
+	return s.queryRecentPostgres(ctx, kind, limit, decode)
+}
+
+func (s *Store) queryRecentPostgres(ctx context.Context, kind string, limit int, decode func([]byte) error) error {
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
 	rows, err := s.pool.Raw().Query(queryCtx, `
@@ -298,6 +371,16 @@ func (s *Store) persistRecord(record historyRecord) error {
 	if s.writeRecord != nil {
 		return s.writeRecord(record)
 	}
+	if s.usesSeekDB() {
+		return s.persistRecordSeekDB(record)
+	}
+	if !s.usesPostgres() {
+		return ErrHistoryBackendUnavailable
+	}
+	return s.persistRecordPostgres(record)
+}
+
+func (s *Store) persistRecordPostgres(record historyRecord) error {
 	ctx, cancel := s.pool.QueryContext(context.Background())
 	defer cancel()
 	_, err := s.pool.Raw().Exec(ctx, `
@@ -311,6 +394,16 @@ WHERE observability_records.kind <> 'trace'`,
 }
 
 func (s *Store) cleanup(ctx context.Context) error {
+	if s.usesSeekDB() {
+		return s.cleanupSeekDB(ctx)
+	}
+	if !s.usesPostgres() {
+		return ErrHistoryBackendUnavailable
+	}
+	return s.cleanupPostgres(ctx)
+}
+
+func (s *Store) cleanupPostgres(ctx context.Context) error {
 	cutoff := time.Now().Add(-s.maxAge).UnixMilli()
 	for kind, limit := range s.limits {
 		queryCtx, cancel := s.pool.QueryContext(ctx)

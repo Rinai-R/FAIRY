@@ -12,8 +12,8 @@ import (
 func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first := BuiltinMigrations()
 	second := BuiltinMigrations()
-	if len(first) != 11 || len(second) != 11 {
-		t.Fatalf("builtin migration counts = %d and %d, want 11", len(first), len(second))
+	if len(first) != 12 || len(second) != 12 {
+		t.Fatalf("builtin migration counts = %d and %d, want 12", len(first), len(second))
 	}
 	foundation := Revision{Number: foundationSchemaRevision, Checksum: foundationSchemaChecksum()}
 	conversation := Revision{Number: conversationSchemaRevision, Checksum: conversationSchemaChecksum()}
@@ -26,8 +26,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	socialFeedback := Revision{Number: socialFeedbackEventsRevision, Checksum: socialFeedbackEventsSchemaChecksum()}
 	stickerCatalog := Revision{Number: stickerCatalogSchemaRevision, Checksum: stickerCatalogSchemaChecksum()}
 	toolExecution := Revision{Number: toolExecutionLedgerRevision, Checksum: toolExecutionLedgerSchemaChecksum()}
-	if current := CurrentSchemaRevision(); current != toolExecution {
-		t.Fatalf("current schema revision = %#v, want %#v", current, toolExecution)
+	observabilityHistory := Revision{Number: observabilityHistoryRevision, Checksum: observabilityHistorySchemaChecksum()}
+	if current := CurrentSchemaRevision(); current != observabilityHistory {
+		t.Fatalf("current schema revision = %#v, want %#v", current, observabilityHistory)
 	}
 	if first[0].Revision != foundation || first[0].Name != "create-foundation-schema" {
 		t.Fatalf("foundation migration = %#v, want revision %#v", first[0], foundation)
@@ -62,6 +63,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	if first[10].Revision != toolExecution || first[10].Name != "create-tool-execution-ledger-schema" {
 		t.Fatalf("tool execution ledger migration = %#v, want revision %#v", first[10], toolExecution)
 	}
+	if first[11].Revision != observabilityHistory || first[11].Name != "create-observability-history-schema" {
+		t.Fatalf("observability history migration = %#v, want revision %#v", first[11], observabilityHistory)
+	}
 	for index, migration := range first {
 		if migration.Apply == nil || migration.Verify == nil {
 			t.Fatalf("builtin migration %d must provide Apply and Verify", index+1)
@@ -79,6 +83,7 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first[8].Name = "mutated-social-feedback-events"
 	first[9].Name = "mutated-sticker-catalog"
 	first[10].Name = "mutated-tool-execution-ledger"
+	first[11].Name = "mutated-observability-history"
 	if second[0].Name != "create-foundation-schema" || second[0].Revision != foundation ||
 		second[1].Name != "create-conversation-schema" || second[1].Revision != conversation ||
 		second[2].Name != "create-turn-evidence-schema" || second[2].Revision != turnEvidence ||
@@ -89,7 +94,8 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 		second[7].Name != "index-personal-memory-duplicates" || second[7].Revision != duplicateRevalidation ||
 		second[8].Name != "create-social-memory-feedback-events" || second[8].Revision != socialFeedback ||
 		second[9].Name != "create-sticker-and-expression-delivery-schema" || second[9].Revision != stickerCatalog ||
-		second[10].Name != "create-tool-execution-ledger-schema" || second[10].Revision != toolExecution {
+		second[10].Name != "create-tool-execution-ledger-schema" || second[10].Revision != toolExecution ||
+		second[11].Name != "create-observability-history-schema" || second[11].Revision != observabilityHistory {
 		t.Fatalf("caller mutation changed later BuiltinMigrations result: %#v", second[0])
 	}
 	if got := hex.EncodeToString(foundation.Checksum[:]); got != "e674bec12d0b6895da8b351d082a686c9c2f44990fb68749bbad083c4a6805d3" {
@@ -124,6 +130,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	}
 	if got := hex.EncodeToString(toolExecution.Checksum[:]); got != "1d26c56f049f7e7335f5f44f4e8395554ad69fba7a579aee257a3258d3b1d843" {
 		t.Fatalf("tool execution ledger checksum = %s, update requires an explicit revision decision", got)
+	}
+	if got := hex.EncodeToString(observabilityHistory.Checksum[:]); got != "78bf83cce13800083ab7cdc442064f0f743809a9ae38431670b4858e96c37f00" {
+		t.Fatalf("observability history checksum = %s, update requires an explicit revision decision", got)
 	}
 }
 
@@ -428,6 +437,33 @@ func TestStickerCatalogSchemaDefinesMetadataAndDeliveryLedger(t *testing.T) {
 	} {
 		if !strings.Contains(deliveryCheck.clause, token) {
 			t.Errorf("expression deliveries CHECK lacks %q: %s", token, deliveryCheck.clause)
+		}
+	}
+}
+
+func TestObservabilityHistorySchemaDefinesTypedJSONProjectionTable(t *testing.T) {
+	assertPortableSchemaTables(t, observabilityHistorySchema[:], []string{observabilityRecordsTableName})
+	table := observabilityHistorySchema[0]
+	lower := strings.ToLower(table.ddl)
+	for _, forbidden := range []string{"bytea", "jsonb", "longblob", "result_data", "content ", "$1"} {
+		if strings.Contains(lower, forbidden) {
+			t.Errorf("observability_records DDL contains forbidden token %q", forbidden)
+		}
+	}
+	if !schemaHasIndex(table, ascendingBTreeIndex("PRIMARY", true, "kind", "record_key")) {
+		t.Fatal("observability records lack (kind, record_key) idempotency key")
+	}
+	if !schemaHasIndex(table, ascendingBTreeIndex("observability_records_kind_recorded_idx", false, "kind", "recorded_at_ms", "record_key")) {
+		t.Fatal("observability records lack kind/recorded lookup index")
+	}
+	check := schemaCheckNamed(t, table, "observability_records_invariants_check")
+	for _, token := range []string{
+		"(`kind` in ('log','trace','metric'))",
+		"(JSON_TYPE(`payload`) = 'OBJECT')",
+		"(`recorded_at_ms` > 0)",
+	} {
+		if !strings.Contains(check.clause, token) {
+			t.Errorf("observability records CHECK lacks %q: %s", token, check.clause)
 		}
 	}
 }
