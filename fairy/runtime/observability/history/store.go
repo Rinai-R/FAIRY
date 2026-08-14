@@ -377,9 +377,13 @@ func (s *Store) Close() {
 	s.closeOnce.Do(func() {
 		s.enqueueMu.Lock()
 		s.stopped.Store(true)
-		close(s.stop)
+		if s.stop != nil {
+			close(s.stop)
+		}
 		s.enqueueMu.Unlock()
-		<-s.done
+		if s.done != nil {
+			<-s.done
+		}
 	})
 }
 

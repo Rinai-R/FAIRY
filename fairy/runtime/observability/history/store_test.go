@@ -93,6 +93,12 @@ func TestHistoryEnqueueTracePersistsExternalMessageID(t *testing.T) {
 	}
 }
 
+func TestHistoryCloseIsSafeForZeroValueStore(t *testing.T) {
+	var store Store
+	store.Close()
+	store.Close()
+}
+
 func TestHistoryEnqueueDoesNotWaitForPersist(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})

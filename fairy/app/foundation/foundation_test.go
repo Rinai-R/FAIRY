@@ -20,6 +20,8 @@ import (
 	historyruntime "fairy/context/history/runtime"
 	historytranscript "fairy/context/history/transcript"
 	"fairy/runtime/config"
+	"fairy/runtime/ledger"
+	observabilityhistory "fairy/runtime/observability/history"
 	"fairy/runtime/seekdb"
 )
 
@@ -93,7 +95,8 @@ func TestOpenFoundationOrdersReadinessAndIgnoresLegacyEnvironment(t *testing.T) 
 			order = append(order, "key")
 			return config.SecretCipherFromDataDir(root)
 		},
-		conversationStores: productionConversationStoreOperations,
+		conversationStores:  productionConversationStoreOperations,
+		observabilityStores: stubObservabilityStoreOperations(),
 	}
 
 	opened, err := open(t.Context(), Options{CharacterRoot: characterRoot, Getenv: getenv}, operations)
@@ -110,7 +113,8 @@ func TestOpenFoundationOrdersReadinessAndIgnoresLegacyEnvironment(t *testing.T) 
 		}
 	}
 	if opened.Documents == nil || opened.Secrets == nil || opened.Profile == nil || opened.Identity == nil || opened.Characters == nil ||
-		opened.Conversations.Transcript == nil || opened.Conversations.Runtime == nil || opened.Conversations.Compaction == nil {
+		opened.Conversations.Transcript == nil || opened.Conversations.Runtime == nil || opened.Conversations.Compaction == nil ||
+		opened.Observability.Ledger == nil || opened.Observability.History == nil {
 		t.Fatalf("foundation stores are incomplete: %#v", opened)
 	}
 	if !slices.Equal(order, []string{"config", "open", "migrate", "check", "key"}) {
@@ -143,7 +147,7 @@ func TestOpenFoundationOrdersReadinessAndIgnoresLegacyEnvironment(t *testing.T) 
 	}
 }
 
-func TestOpenFoundationComposesConversationStoresOnSingleAuthority(t *testing.T) {
+func TestOpenFoundationComposesMigratedStoresOnSingleAuthority(t *testing.T) {
 	runtimeConfig := testRuntimeConfig(filepath.Join(t.TempDir(), "seekdb"))
 	runtimeConfig.QueryLimit = 137 * time.Millisecond
 	authority := new(sql.DB)
@@ -151,6 +155,8 @@ func TestOpenFoundationComposesConversationStoresOnSingleAuthority(t *testing.T)
 	transcriptStore := new(historytranscript.Store)
 	runtimeStore := new(historyruntime.Store)
 	compactionStore := new(historycompaction.Store)
+	ledgerStore := new(ledger.Store)
+	historyStore := new(observabilityhistory.Store)
 	var calls []string
 	assertAuthority := func(name string, database *sql.DB, queryLimit time.Duration) {
 		t.Helper()
@@ -176,7 +182,17 @@ func TestOpenFoundationComposesConversationStoresOnSingleAuthority(t *testing.T)
 			return compactionStore, nil
 		},
 	}
-	operations := successfulFoundationOperations(runtimeConfig, localRuntime, stores)
+	observability := observabilityStoreOperations{
+		newLedger: func(database *sql.DB, queryLimit time.Duration) (*ledger.Store, error) {
+			assertAuthority("ledger", database, queryLimit)
+			return ledgerStore, nil
+		},
+		newHistory: func(database *sql.DB, queryLimit time.Duration) (*observabilityhistory.Store, error) {
+			assertAuthority("history", database, queryLimit)
+			return historyStore, nil
+		},
+	}
+	operations := successfulFoundationOperations(runtimeConfig, localRuntime, stores, observability)
 
 	opened, err := open(t.Context(), Options{CharacterRoot: filepath.Join(t.TempDir(), "characters")}, operations)
 	if err != nil {
@@ -185,8 +201,11 @@ func TestOpenFoundationComposesConversationStoresOnSingleAuthority(t *testing.T)
 	if opened.Conversations.Transcript != transcriptStore || opened.Conversations.Runtime != runtimeStore || opened.Conversations.Compaction != compactionStore {
 		t.Fatalf("conversation stores = %#v, want all injected stores", opened.Conversations)
 	}
-	if !slices.Equal(calls, []string{"transcript", "runtime", "compaction"}) {
-		t.Fatalf("conversation constructor calls = %v", calls)
+	if opened.Observability.Ledger != ledgerStore || opened.Observability.History != historyStore {
+		t.Fatalf("observability stores = %#v, want all injected stores", opened.Observability)
+	}
+	if !slices.Equal(calls, []string{"transcript", "runtime", "compaction", "ledger", "history"}) {
+		t.Fatalf("store constructor calls = %v", calls)
 	}
 	if err := opened.Close(t.Context()); err != nil {
 		t.Fatal(err)
@@ -196,8 +215,8 @@ func TestOpenFoundationComposesConversationStoresOnSingleAuthority(t *testing.T)
 	}
 }
 
-func TestOpenFoundationFailsClosedWhenConversationStoreConstructionFails(t *testing.T) {
-	constructionFailure := errors.New("conversation store construction failed")
+func TestOpenFoundationFailsClosedWhenStoreConstructionFails(t *testing.T) {
+	constructionFailure := errors.New("store construction failed")
 	tests := []struct {
 		name      string
 		failAt    string
@@ -206,6 +225,8 @@ func TestOpenFoundationFailsClosedWhenConversationStoreConstructionFails(t *test
 		{name: "transcript", failAt: "transcript", wantCalls: []string{"transcript"}},
 		{name: "runtime", failAt: "runtime", wantCalls: []string{"transcript", "runtime"}},
 		{name: "compaction", failAt: "compaction", wantCalls: []string{"transcript", "runtime", "compaction"}},
+		{name: "ledger", failAt: "ledger", wantCalls: []string{"transcript", "runtime", "compaction", "ledger"}},
+		{name: "history", failAt: "history", wantCalls: []string{"transcript", "runtime", "compaction", "ledger", "history"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -235,14 +256,30 @@ func TestOpenFoundationFailsClosedWhenConversationStoreConstructionFails(t *test
 					return new(historycompaction.Store), nil
 				},
 			}
-			operations := successfulFoundationOperations(runtimeConfig, localRuntime, stores)
+			observability := observabilityStoreOperations{
+				newLedger: func(*sql.DB, time.Duration) (*ledger.Store, error) {
+					calls = append(calls, "ledger")
+					if test.failAt == "ledger" {
+						return nil, constructionFailure
+					}
+					return new(ledger.Store), nil
+				},
+				newHistory: func(*sql.DB, time.Duration) (*observabilityhistory.Store, error) {
+					calls = append(calls, "history")
+					if test.failAt == "history" {
+						return nil, constructionFailure
+					}
+					return new(observabilityhistory.Store), nil
+				},
+			}
+			operations := successfulFoundationOperations(runtimeConfig, localRuntime, stores, observability)
 
 			opened, err := open(t.Context(), Options{CharacterRoot: filepath.Join(t.TempDir(), "characters")}, operations)
 			if opened != nil || !errors.Is(err, constructionFailure) {
 				t.Fatalf("open() = (%#v, %v), want nil and construction failure", opened, err)
 			}
 			if !slices.Equal(calls, test.wantCalls) {
-				t.Fatalf("conversation constructor calls = %v, want %v", calls, test.wantCalls)
+				t.Fatalf("store constructor calls = %v, want %v", calls, test.wantCalls)
 			}
 			if localRuntime.closes() != 1 {
 				t.Fatalf("runtime Close calls = %d, want 1", localRuntime.closes())
@@ -303,7 +340,8 @@ func TestOpenFoundationFailsClosedAndReleasesRuntime(t *testing.T) {
 					}
 					return config.SecretCipherFromDataDir(root)
 				},
-				conversationStores: productionConversationStoreOperations,
+				conversationStores:  productionConversationStoreOperations,
+				observabilityStores: stubObservabilityStoreOperations(),
 			}
 			opened, err := open(t.Context(), Options{CharacterRoot: root}, operations)
 			if opened != nil || !errors.Is(err, test.want) {
@@ -342,8 +380,9 @@ func TestFoundationStatusRechecksSchemaAndFailsClosed(t *testing.T) {
 			}
 			return seekdb.SchemaStatus{State: seekdb.SchemaNotCurrent, Expected: expected}, seekdb.ErrSchemaChecksumMismatch
 		},
-		openCipher:         config.SecretCipherFromDataDir,
-		conversationStores: productionConversationStoreOperations,
+		openCipher:          config.SecretCipherFromDataDir,
+		conversationStores:  productionConversationStoreOperations,
+		observabilityStores: stubObservabilityStoreOperations(),
 	}
 
 	opened, err := open(t.Context(), Options{CharacterRoot: filepath.Join(t.TempDir(), "characters")}, operations)
@@ -379,8 +418,9 @@ func TestFoundationCloseIsBoundedAndReturnsRuntimeErrorOnce(t *testing.T) {
 		checkSchema: func(_ context.Context, _ *sql.DB, expected seekdb.Revision) (seekdb.SchemaStatus, error) {
 			return seekdb.SchemaStatus{State: seekdb.SchemaCurrent, Expected: expected}, nil
 		},
-		openCipher:         config.SecretCipherFromDataDir,
-		conversationStores: productionConversationStoreOperations,
+		openCipher:          config.SecretCipherFromDataDir,
+		conversationStores:  productionConversationStoreOperations,
+		observabilityStores: stubObservabilityStoreOperations(),
 	}
 	opened, err := open(t.Context(), Options{CharacterRoot: filepath.Join(t.TempDir(), "characters")}, operations)
 	if err != nil {
@@ -454,7 +494,7 @@ func TestFoundationPackageDoesNotImportLegacyStorage(t *testing.T) {
 	}
 }
 
-func successfulFoundationOperations(runtimeConfig seekdb.Config, localRuntime runtimeBoundary, stores conversationStoreOperations) foundationOperations {
+func successfulFoundationOperations(runtimeConfig seekdb.Config, localRuntime runtimeBoundary, stores conversationStoreOperations, observability observabilityStoreOperations) foundationOperations {
 	return foundationOperations{
 		configFromEnv: func(func(string) string) (seekdb.Config, error) {
 			return runtimeConfig, nil
@@ -468,8 +508,20 @@ func successfulFoundationOperations(runtimeConfig seekdb.Config, localRuntime ru
 		checkSchema: func(_ context.Context, _ *sql.DB, expected seekdb.Revision) (seekdb.SchemaStatus, error) {
 			return seekdb.SchemaStatus{State: seekdb.SchemaCurrent, Expected: expected}, nil
 		},
-		openCipher:         config.SecretCipherFromDataDir,
-		conversationStores: stores,
+		openCipher:          config.SecretCipherFromDataDir,
+		conversationStores:  stores,
+		observabilityStores: observability,
+	}
+}
+
+func stubObservabilityStoreOperations() observabilityStoreOperations {
+	return observabilityStoreOperations{
+		newLedger: func(*sql.DB, time.Duration) (*ledger.Store, error) {
+			return new(ledger.Store), nil
+		},
+		newHistory: func(*sql.DB, time.Duration) (*observabilityhistory.Store, error) {
+			return new(observabilityhistory.Store), nil
+		},
 	}
 }
 

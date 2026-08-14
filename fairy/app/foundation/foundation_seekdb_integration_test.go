@@ -14,13 +14,16 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"fairy/context/character"
 	historycompaction "fairy/context/history/compaction"
 	historyexpr "fairy/context/history/expression"
 	historyruntime "fairy/context/history/runtime"
 	"fairy/runtime/config"
+	"fairy/runtime/ledger"
 	"fairy/runtime/model"
+	"fairy/runtime/observability"
 	"fairy/runtime/seekdb"
 	"fairy/transport/session"
 )
@@ -254,6 +257,203 @@ func TestRealSeekDBFoundationConversationStoresShareAuthorityAndPersistAcrossRes
 		t.Fatalf("restarted context window = (%#v, found %v, %v)", restoredWindow, found, err)
 	}
 	environment.assertNoLegacyReads(t)
+}
+
+func TestRealSeekDBFoundationRuntimeChainPersistsConversationToolsAndObservabilityAcrossRestart(t *testing.T) {
+	environment := newFoundationIntegrationEnvironment(t)
+	characterRoot := filepath.Join(t.TempDir(), "characters")
+	first := openFoundationIntegration(t, environment, characterRoot)
+	defer closeFoundationIntegration(t, first)
+	if first.Observability.Ledger == nil || first.Observability.History == nil {
+		t.Fatal("foundation observability stores were not composed")
+	}
+
+	binding := session.Binding{
+		Endpoint: session.EndpointDesktop,
+		Facts: session.Facts{
+			Audience:     session.AudienceSingle,
+			Initiation:   session.InitiationDirect,
+			Presentation: session.PresentationChat,
+			Evaluation:   true,
+		},
+	}
+	bootstrap, err := first.Conversations.Transcript.OpenOrCreateEndpointConversationContext(
+		t.Context(), "character-foundation-runtime-chain", binding,
+		"abababababababababababababababababababababababababababababababab",
+	)
+	if err != nil {
+		t.Fatalf("open endpoint conversation: %v", err)
+	}
+	turn, err := first.Conversations.Transcript.BeginCorrelatedTurnContext(
+		t.Context(), bootstrap.Conversation.ID, "请观察桌面。", "foundation-runtime-message-1",
+	)
+	if err != nil {
+		t.Fatalf("begin correlated turn: %v", err)
+	}
+	if _, err := first.Conversations.Transcript.CompleteExpressionTurnContext(
+		t.Context(), bootstrap.Conversation.ID, turn.ID, "我会看一眼。",
+		[]historyexpr.Part{{Kind: historyexpr.Utterance, Text: "我会看一眼。", VisualState: "idle"}},
+	); err != nil {
+		t.Fatalf("complete expression turn: %v", err)
+	}
+
+	toolTurn, err := first.Conversations.Transcript.BeginTurnContext(t.Context(), bootstrap.Conversation.ID, "继续观察。")
+	if err != nil {
+		t.Fatalf("begin tool turn: %v", err)
+	}
+	created, err := first.Observability.Ledger.CreateToolExecution(t.Context(), ledger.CreateToolExecutionInput{
+		ConversationID: bootstrap.Conversation.ID, TurnID: toolTurn.ID, CallID: "call-foundation-observe",
+		ToolName: ledger.ToolNameDesktopObserve, DeadlineAtUnixMS: time.Now().UnixMilli() + 60_000,
+	})
+	if err != nil {
+		t.Fatalf("create tool execution: %v", err)
+	}
+	completed, changed, err := first.Observability.Ledger.CompleteToolExecution(t.Context(), ledger.CompleteToolExecutionInput{
+		ID: created.ID, ConversationID: created.ConversationID, TurnID: created.TurnID, CallID: created.CallID,
+		ResultMediaType: "image/png", ResultWidth: 1280, ResultHeight: 720,
+		ResultByteCount: 4096, ResultSHA256: strings.Repeat("a", 64),
+	})
+	if err != nil || !changed || completed.Status != ledger.ToolExecutionCompleted {
+		t.Fatalf("complete tool execution = (%#v, %v, %v)", completed, changed, err)
+	}
+
+	logs := observability.NewLogStore(observability.DefaultLogCapacity)
+	logs.SetHistorySink(first.Observability.History.EnqueueLog)
+	logs.Append(observability.EntryInput{
+		Time: time.Now(), Level: "info", Logger: "core", Message: "foundation-runtime-chain-safe",
+		Fields: []observability.FieldInput{{Key: "status", Value: "ok"}},
+	})
+
+	metrics := observability.NewMessageMetrics()
+	metrics.SetTerminalSink(first.Observability.History.EnqueueTrace)
+	traceID := metrics.BeginCorrelated("direct", bootstrap.Conversation.ID, "foundation-runtime-message-1")
+	metrics.Participation([]string{traceID}, traceID, "reply")
+	metrics.TurnStarted(traceID, bootstrap.Conversation.ID, turn.ID)
+	modelSpan := metrics.StartSpan(traceID, "", "模型调用", "model", map[string]string{
+		"attempt": "1", "model": "demo", "query": "must-not-survive",
+	})
+	metrics.FinishSpan(modelSpan, "completed", map[string]string{"status": "ok", "prompt": "must-not-survive"})
+	metrics.End(traceID, "completed")
+	metrics.Close()
+	liveSnapshot := metrics.Snapshot()
+
+	firstStarted := time.Now().UnixMilli() - 5_000
+	if !first.Observability.History.EnqueueMetric(observability.MetricHistoryPoint{
+		TimestampUnixMS: firstStarted + 1_000, ProcessStartedUnixMS: firstStarted,
+		HTTPScope: "conversation", Goroutines: 11, HTTPInFlight: 2, MessagesActive: 1,
+	}) {
+		t.Fatal("enqueue first-process metric")
+	}
+
+	conversationID := bootstrap.Conversation.ID
+	closeFoundationIntegration(t, first)
+
+	second := openFoundationIntegration(t, environment, characterRoot)
+	defer closeFoundationIntegration(t, second)
+	loaded, err := second.Conversations.Transcript.LoadConversationContext(t.Context(), conversationID)
+	if err != nil || len(loaded.Messages) < 3 {
+		t.Fatalf("restarted transcript = (%#v, %v)", loaded, err)
+	}
+	restoredTool, found, err := second.Observability.Ledger.LoadToolExecution(t.Context(), created.ID)
+	if err != nil || !found || restoredTool.Status != ledger.ToolExecutionCompleted || restoredTool.ResultSHA256 == nil || *restoredTool.ResultSHA256 != strings.Repeat("a", 64) {
+		t.Fatalf("restarted tool execution = (%#v, found %v, %v)", restoredTool, found, err)
+	}
+
+	restoredLogs, err := second.Observability.History.RecentLogs(t.Context(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsLogMessage(restoredLogs, "foundation-runtime-chain-safe") {
+		t.Fatalf("restarted logs = %#v", restoredLogs)
+	}
+	for _, entry := range restoredLogs {
+		payload, _ := json.Marshal(entry)
+		assertNoSensitiveObservabilityPayload(t, payload)
+	}
+
+	restoredTrace, found, err := second.Observability.History.Trace(t.Context(), traceID)
+	if err != nil || !found || restoredTrace.Status != "completed" || restoredTrace.ConversationID != conversationID || restoredTrace.TurnID != turn.ID {
+		t.Fatalf("restarted trace = (%#v, found %v, %v)", restoredTrace, found, err)
+	}
+	if restoredTrace.EndedAtUnixMS < restoredTrace.StartedAtUnixMS || restoredTrace.DurationMS != uint64(restoredTrace.EndedAtUnixMS-restoredTrace.StartedAtUnixMS) {
+		t.Fatalf("restarted trace timing = %#v", restoredTrace)
+	}
+	var model observability.TraceSpan
+	for _, span := range restoredTrace.Spans {
+		if span.SpanID == modelSpan {
+			model = span
+			break
+		}
+	}
+	if model.SpanID == "" || model.ParentSpanID == "" || model.Category != "model" || model.Attributes["status"] != "ok" {
+		t.Fatalf("restarted model span = %#v from %#v", model, restoredTrace.Spans)
+	}
+	tracePayload, _ := json.Marshal(restoredTrace)
+	assertNoSensitiveObservabilityPayload(t, tracePayload)
+
+	restoredMetrics, err := second.Observability.History.RecentMetrics(t.Context(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsMetricProcess(restoredMetrics, firstStarted, 11) {
+		t.Fatalf("restarted metrics missing first process sample: %#v", restoredMetrics)
+	}
+
+	fresh := observability.NewMessageMetrics()
+	t.Cleanup(fresh.Close)
+	if snapshot := fresh.Snapshot(); snapshot.Received != 0 || snapshot.Active != 0 || len(snapshot.Recent) != 0 {
+		t.Fatalf("new process inherited live message metrics: %#v", snapshot)
+	}
+	if liveSnapshot.Received == 0 {
+		t.Fatal("first process produced no live message metrics")
+	}
+
+	secondStarted := time.Now().UnixMilli()
+	if !second.Observability.History.EnqueueMetric(observability.MetricHistoryPoint{
+		TimestampUnixMS: secondStarted, ProcessStartedUnixMS: secondStarted,
+		HTTPScope: "conversation", Goroutines: 3, HTTPInFlight: 0, MessagesActive: 0,
+	}) {
+		t.Fatal("enqueue second-process metric")
+	}
+	closeFoundationIntegration(t, second)
+	third := openFoundationIntegration(t, environment, characterRoot)
+	defer closeFoundationIntegration(t, third)
+	trend, err := third.Observability.History.RecentMetrics(t.Context(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsMetricProcess(trend, firstStarted, 11) || !containsMetricProcess(trend, secondStarted, 3) {
+		t.Fatalf("metric trend after second restart = %#v", trend)
+	}
+
+	environment.assertNoLegacyReads(t)
+}
+
+func containsLogMessage(entries []observability.LogEntry, message string) bool {
+	for _, entry := range entries {
+		if entry.Message == message {
+			return true
+		}
+	}
+	return false
+}
+
+func containsMetricProcess(points []observability.MetricHistoryPoint, processStarted int64, goroutines uint64) bool {
+	for _, point := range points {
+		if point.ProcessStartedUnixMS == processStarted && point.Goroutines == goroutines {
+			return true
+		}
+	}
+	return false
+}
+
+func assertNoSensitiveObservabilityPayload(t *testing.T, payload []byte) {
+	t.Helper()
+	for _, forbidden := range [][]byte{[]byte("prompt"), []byte("credential"), []byte("principal"), []byte("must-not-survive")} {
+		if bytes.Contains(bytes.ToLower(payload), forbidden) {
+			t.Fatalf("observability payload contains %q: %s", forbidden, payload)
+		}
+	}
 }
 
 func TestRealSeekDBFoundationStatusFailsClosedAfterSchemaJournalCorruption(t *testing.T) {

@@ -1,9 +1,9 @@
 // Package foundation opens FAIRY's local authoritative storage boundary.
 //
-// It intentionally stops before constructing Session and Turn services or
-// other unmigrated domains. Those domains join this composition only after
-// their stores have moved to SeekDB; until then this package cannot accidentally
-// make a partially migrated Core look ready.
+// It composes the stores that have already moved to SeekDB, including
+// conversation, tool ledger, and observability history. It still does not
+// construct Session, Turn, or a full Core; those join only when production
+// composition switches in a later task.
 package foundation
 
 import (
@@ -21,6 +21,8 @@ import (
 	historytranscript "fairy/context/history/transcript"
 	"fairy/context/identity"
 	"fairy/runtime/config"
+	"fairy/runtime/ledger"
+	observabilityhistory "fairy/runtime/observability/history"
 	"fairy/runtime/seekdb"
 )
 
@@ -61,6 +63,13 @@ type ConversationStores struct {
 	Compaction *historycompaction.Store
 }
 
+// ObservabilityStores groups the tool ledger and durable history repositories
+// that share the Foundation's single local SeekDB authority.
+type ObservabilityStores struct {
+	Ledger  *ledger.Store
+	History *observabilityhistory.Store
+}
+
 // Foundation owns the local SeekDB runtime and the stores whose schemas have
 // already migrated. SQL is exposed only as the concrete database/sql boundary
 // needed by later domain migration tasks.
@@ -71,6 +80,7 @@ type Foundation struct {
 	Identity      *identity.Store
 	Characters    *character.Store
 	Conversations ConversationStores
+	Observability ObservabilityStores
 
 	runtime       runtimeBoundary
 	database      *sql.DB
@@ -92,12 +102,13 @@ type runtimeBoundary interface {
 }
 
 type foundationOperations struct {
-	configFromEnv      func(func(string) string) (seekdb.Config, error)
-	openRuntime        func(context.Context, seekdb.Config) (runtimeBoundary, error)
-	migrate            func(context.Context, *sql.DB, []seekdb.Migration) error
-	checkSchema        func(context.Context, *sql.DB, seekdb.Revision) (seekdb.SchemaStatus, error)
-	openCipher         func(string) (*config.SecretCipher, error)
-	conversationStores conversationStoreOperations
+	configFromEnv       func(func(string) string) (seekdb.Config, error)
+	openRuntime         func(context.Context, seekdb.Config) (runtimeBoundary, error)
+	migrate             func(context.Context, *sql.DB, []seekdb.Migration) error
+	checkSchema         func(context.Context, *sql.DB, seekdb.Revision) (seekdb.SchemaStatus, error)
+	openCipher          func(string) (*config.SecretCipher, error)
+	conversationStores  conversationStoreOperations
+	observabilityStores observabilityStoreOperations
 }
 
 type conversationStoreOperations struct {
@@ -112,15 +123,26 @@ var productionConversationStoreOperations = conversationStoreOperations{
 	newCompaction: historycompaction.NewSeekDBStore,
 }
 
+type observabilityStoreOperations struct {
+	newLedger  func(*sql.DB, time.Duration) (*ledger.Store, error)
+	newHistory func(*sql.DB, time.Duration) (*observabilityhistory.Store, error)
+}
+
+var productionObservabilityStoreOperations = observabilityStoreOperations{
+	newLedger:  ledger.NewSeekDBStore,
+	newHistory: observabilityhistory.NewSeekDBStore,
+}
+
 var productionOperations = foundationOperations{
 	configFromEnv: seekdb.ConfigFromEnv,
 	openRuntime: func(ctx context.Context, runtimeConfig seekdb.Config) (runtimeBoundary, error) {
 		return seekdb.Open(ctx, runtimeConfig)
 	},
-	migrate:            seekdb.MigrateSchema,
-	checkSchema:        seekdb.CheckSchema,
-	openCipher:         config.SecretCipherFromDataDir,
-	conversationStores: productionConversationStoreOperations,
+	migrate:             seekdb.MigrateSchema,
+	checkSchema:         seekdb.CheckSchema,
+	openCipher:          config.SecretCipherFromDataDir,
+	conversationStores:  productionConversationStoreOperations,
+	observabilityStores: productionObservabilityStoreOperations,
 }
 
 // Open starts local SeekDB, applies the immutable migration chain, performs a
@@ -224,6 +246,17 @@ func open(lifetime context.Context, options Options, operations foundationOperat
 	if err != nil {
 		return nil, err
 	}
+	observabilityStores, err := newObservabilityStores(database, runtimeConfig.QueryLimit, operations.observabilityStores)
+	if err != nil {
+		return nil, err
+	}
+	keepHistory := false
+	defer func() {
+		if keepHistory {
+			return
+		}
+		observabilityStores.History.Close()
+	}()
 
 	foundation := &Foundation{
 		Documents:     documentStore,
@@ -232,6 +265,7 @@ func open(lifetime context.Context, options Options, operations foundationOperat
 		Identity:      identityStore,
 		Characters:    characterStore,
 		Conversations: conversationStores,
+		Observability: observabilityStores,
 		runtime:       localRuntime,
 		database:      database,
 		queryLimit:    runtimeConfig.QueryLimit,
@@ -245,6 +279,7 @@ func open(lifetime context.Context, options Options, operations foundationOperat
 		checkSchema: operations.checkSchema,
 	}
 	keepRuntime = true
+	keepHistory = true
 	return foundation, nil
 }
 
@@ -277,9 +312,34 @@ func newConversationStores(database *sql.DB, queryLimit time.Duration, operation
 	}, nil
 }
 
+func newObservabilityStores(database *sql.DB, queryLimit time.Duration, operations observabilityStoreOperations) (ObservabilityStores, error) {
+	ledgerStore, err := operations.newLedger(database, queryLimit)
+	if err != nil {
+		return ObservabilityStores{}, fmt.Errorf("constructing foundation ledger store: %w", err)
+	}
+	if ledgerStore == nil {
+		return ObservabilityStores{}, errors.New("constructing foundation ledger store: constructor returned nil")
+	}
+	historyStore, err := operations.newHistory(database, queryLimit)
+	if err != nil {
+		if historyStore != nil {
+			historyStore.Close()
+		}
+		return ObservabilityStores{}, fmt.Errorf("constructing foundation observability history store: %w", err)
+	}
+	if historyStore == nil {
+		return ObservabilityStores{}, errors.New("constructing foundation observability history store: constructor returned nil")
+	}
+	return ObservabilityStores{
+		Ledger:  ledgerStore,
+		History: historyStore,
+	}, nil
+}
+
 func validateOperations(operations foundationOperations) error {
 	if operations.configFromEnv == nil || operations.openRuntime == nil || operations.migrate == nil || operations.checkSchema == nil || operations.openCipher == nil ||
-		operations.conversationStores.newTranscript == nil || operations.conversationStores.newRuntime == nil || operations.conversationStores.newCompaction == nil {
+		operations.conversationStores.newTranscript == nil || operations.conversationStores.newRuntime == nil || operations.conversationStores.newCompaction == nil ||
+		operations.observabilityStores.newLedger == nil || operations.observabilityStores.newHistory == nil {
 		return errors.New("foundation operations are incomplete")
 	}
 	return nil
@@ -349,7 +409,11 @@ func (f *Foundation) Close(ctx context.Context) error {
 		f.mu.Lock()
 		f.closed = true
 		f.database = nil
+		history := f.Observability.History
 		f.mu.Unlock()
+		if history != nil {
+			history.Close()
+		}
 		if f.runtime != nil {
 			closeCtx, cancel := boundedCloseContext(ctx, f.shutdownLimit)
 			defer cancel()
