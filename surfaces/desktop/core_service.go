@@ -35,28 +35,31 @@ type CoreSession struct {
 }
 
 type CoreService struct {
-	connections  connectionStore
-	mu           sync.Mutex
-	app          *application.App
-	companion    application.Window
-	controlPanel application.Window
-	history      application.Window
-	speechBubble application.Window
-	windowLink   windowRelation
-	controlOpen  bool
-	historyOpen  bool
-	controlWidth int
-	client       *session.Client
-	socket       *session.SessionSocket
-	visualCache  *visualCache
-	newCache     func() (*visualCache, error)
-	conversation string
-	active       bool
-	activeTurnID string
-	emit         func(string, any)
-	observation  *desktopObservationRuntime
-	capture      *desktopCaptureRuntime
-	privacy      session.DesktopPrivacyState
+	connections    connectionStore
+	mu             sync.Mutex
+	app            *application.App
+	companion      application.Window
+	controlPanel   application.Window
+	history        application.Window
+	speechBubble   application.Window
+	windowLink     windowRelation
+	controlOpen    bool
+	historyOpen    bool
+	controlWidth   int
+	client         *session.Client
+	socket         *session.SessionSocket
+	visualCache    *visualCache
+	newCache       func() (*visualCache, error)
+	conversation   string
+	active         bool
+	activeTurnID   string
+	emit           func(string, any)
+	observation    *desktopObservationRuntime
+	capture        *desktopCaptureRuntime
+	privacy        session.DesktopPrivacyState
+	edge           ownedRuntime
+	openEdge       func(context.Context) (ownedRuntime, error)
+	shutdownBudget shutdownBudget
 }
 
 func NewCoreService() *CoreService {
@@ -107,21 +110,6 @@ func (s *CoreService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cache.ServeHTTP(w, r)
-}
-
-func (s *CoreService) ServiceShutdown() error {
-	s.mu.Lock()
-	socket, cache, observation := s.socket, s.visualCache, s.observation
-	s.socket, s.visualCache = nil, nil
-	s.observation = nil
-	s.mu.Unlock()
-	if observation != nil {
-		observation.Stop()
-	}
-	if socket != nil {
-		_ = socket.Close()
-	}
-	return cache.Close()
 }
 
 func (s *CoreService) SetDesktopObservationPrivacy(value string) error {
