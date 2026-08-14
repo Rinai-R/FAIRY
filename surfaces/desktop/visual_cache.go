@@ -64,9 +64,13 @@ func newVisualCacheAt(root string) (*visualCache, error) {
 	}, nil
 }
 
-func (c *visualCache) Sync(ctx context.Context, client *coreclient.Client, visual coreclient.VisualManifest) (coreclient.VisualManifest, error) {
-	if client == nil {
-		return coreclient.VisualManifest{}, errors.New("Core client is required")
+type visualAssetReader interface {
+	VisualAsset(ctx context.Context, packID, assetPath string) ([]byte, error)
+}
+
+func (c *visualCache) Sync(ctx context.Context, reader visualAssetReader, visual coreclient.VisualManifest) (coreclient.VisualManifest, error) {
+	if reader == nil {
+		return coreclient.VisualManifest{}, errors.New("visual asset reader is required")
 	}
 	if err := validateVisualManifest(visual); err != nil {
 		return coreclient.VisualManifest{}, err
@@ -97,7 +101,7 @@ func (c *visualCache) Sync(ctx context.Context, client *coreclient.Client, visua
 		if err != nil {
 			return coreclient.VisualManifest{}, abortSync(fmt.Errorf("normalizing %q state image: %w", state.ID, err))
 		}
-		image, err := client.VisualAsset(ctx, visual.PackID, assetPath)
+		image, err := reader.VisualAsset(ctx, visual.PackID, assetPath)
 		if err != nil {
 			return coreclient.VisualManifest{}, abortSync(fmt.Errorf("downloading %q state image: %w", state.ID, err))
 		}

@@ -35,6 +35,10 @@ func (f *fakeOwnedRuntime) Close(ctx context.Context) error {
 	return err
 }
 
+func (f *fakeOwnedRuntime) OpenSessionTransport() (sessionPlane, sessionAssets, error) {
+	return nil, nil, errors.New("fake runtime has no session transport")
+}
+
 func (f *fakeOwnedRuntime) InterruptTurn(ctx context.Context, conversationID, turnID string) error {
 	f.mu.Lock()
 	f.events = append(f.events, "turn:"+conversationID+":"+turnID)

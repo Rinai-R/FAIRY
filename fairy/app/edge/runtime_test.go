@@ -36,7 +36,7 @@ func TestOpenRequiresLifetimeContext(t *testing.T) {
 
 func TestClosedRuntimeDoesNotExposeSession(t *testing.T) {
 	var rt *Runtime
-	if rt.Session() != nil || rt.Facade() != nil || rt.Core() != nil {
+	if rt.Session() != nil || rt.Facade() != nil || rt.Core() != nil || rt.NewSession() != nil {
 		t.Fatal("nil runtime exposed session composition")
 	}
 	if err := rt.Close(t.Context()); err != nil {

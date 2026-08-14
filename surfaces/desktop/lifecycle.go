@@ -18,6 +18,7 @@ const (
 type ownedRuntime interface {
 	Close(context.Context) error
 	InterruptTurn(context.Context, string, string) error
+	OpenSessionTransport() (sessionPlane, sessionAssets, error)
 }
 
 type edgeAdapter struct {
@@ -29,13 +30,6 @@ func (a edgeAdapter) Close(ctx context.Context) error {
 		return nil
 	}
 	return a.runtime.Close(ctx)
-}
-
-func (a edgeAdapter) InterruptTurn(ctx context.Context, conversationID, turnID string) error {
-	if a.runtime == nil || a.runtime.Facade() == nil {
-		return errors.New("edge session facade is unavailable")
-	}
-	return a.runtime.Facade().CancelTurn(ctx, conversationID, turnID)
 }
 
 type shutdownBudget struct {
@@ -105,7 +99,7 @@ func (s *CoreService) shutdownOwnedRuntime(parent context.Context) error {
 	runtime := s.edge
 	conversation, turnID, active := s.conversation, s.activeTurnID, s.active
 	socket, cache, observation := s.socket, s.visualCache, s.observation
-	s.socket, s.visualCache, s.observation, s.edge = nil, nil, nil, nil
+	s.socket, s.assets, s.visualCache, s.observation, s.edge = nil, nil, nil, nil, nil
 	s.active, s.activeTurnID = false, ""
 	s.mu.Unlock()
 

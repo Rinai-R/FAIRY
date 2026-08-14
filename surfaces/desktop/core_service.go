@@ -35,31 +35,33 @@ type CoreSession struct {
 }
 
 type CoreService struct {
-	connections    connectionStore
-	mu             sync.Mutex
-	app            *application.App
-	companion      application.Window
-	controlPanel   application.Window
-	history        application.Window
-	speechBubble   application.Window
-	windowLink     windowRelation
-	controlOpen    bool
-	historyOpen    bool
-	controlWidth   int
-	client         *session.Client
-	socket         *session.SessionSocket
-	visualCache    *visualCache
-	newCache       func() (*visualCache, error)
-	conversation   string
-	active         bool
-	activeTurnID   string
-	emit           func(string, any)
-	observation    *desktopObservationRuntime
-	capture        *desktopCaptureRuntime
-	privacy        session.DesktopPrivacyState
-	edge           ownedRuntime
-	openEdge       func(context.Context) (ownedRuntime, error)
-	shutdownBudget shutdownBudget
+	connections      connectionStore
+	mu               sync.Mutex
+	app              *application.App
+	companion        application.Window
+	controlPanel     application.Window
+	history          application.Window
+	speechBubble     application.Window
+	windowLink       windowRelation
+	controlOpen      bool
+	historyOpen      bool
+	controlWidth     int
+	assets           sessionAssets
+	socket           sessionPlane
+	visualCache      *visualCache
+	newCache         func() (*visualCache, error)
+	conversation     string
+	active           bool
+	activeTurnID     string
+	emit             func(string, any)
+	observation      *desktopObservationRuntime
+	capture          *desktopCaptureRuntime
+	privacy          session.DesktopPrivacyState
+	edge             ownedRuntime
+	openEdge         func(context.Context) (ownedRuntime, error)
+	openTransport    func(context.Context) (sessionPlane, sessionAssets, CoreSettings, error)
+	localEndpointKey string
+	shutdownBudget   shutdownBudget
 }
 
 func NewCoreService() *CoreService {
@@ -365,14 +367,14 @@ func (s *CoreService) RepositionHistory() {
 
 func (s *CoreService) RecentMessages() ([]session.MessageRecord, error) {
 	s.mu.Lock()
-	client, conversation := s.client, s.conversation
+	assets, conversation := s.assets, s.conversation
 	s.mu.Unlock()
-	if client == nil || conversation == "" {
+	if assets == nil || conversation == "" {
 		return nil, errors.New("Core session is not connected")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	page, err := client.ListMessages(ctx, conversation, 0, 20)
+	page, err := assets.ListMessages(ctx, conversation, 0, 20)
 	if err != nil {
 		return nil, err
 	}
@@ -456,26 +458,17 @@ func (s *CoreService) ConnectionSettings() (CoreSettings, error) {
 }
 
 func (s *CoreService) Connect() (CoreSession, error) {
-	connection, err := s.connections.Load()
-	if errors.Is(err, errConnectionNotFound) {
-		return CoreSession{}, errors.New("Core connection is not configured: open settings and save FAIRY_API_TOKEN")
-	}
-	if err != nil {
-		return CoreSession{}, fmt.Errorf("load Desktop Core connection: %w", err)
-	}
-	settings := settingsForConnection(connection)
-	client, err := session.New(session.Options{Endpoint: connection.Endpoint, Token: connection.Token})
-	if err != nil {
-		return CoreSession{}, err
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := client.Status(ctx); err != nil {
-		return CoreSession{}, err
-	}
-	socket, err := client.DialSession(ctx)
+	socket, assets, settings, err := s.openSessionTransport(ctx)
 	if err != nil {
 		return CoreSession{}, err
+	}
+	if socket == nil || assets == nil {
+		if socket != nil {
+			_ = socket.Close()
+		}
+		return CoreSession{}, errors.New("session transport is unavailable")
 	}
 	if err := socket.SetDesktopCaptureHandler(func(ctx context.Context, request session.DesktopCaptureRequest) session.DesktopCaptureResult {
 		s.mu.Lock()
@@ -486,6 +479,7 @@ func (s *CoreService) Connect() (CoreSession, error) {
 		}
 		return capture.Handle(ctx, request)
 	}); err != nil {
+		_ = socket.Close()
 		return CoreSession{}, err
 	}
 	closeSocket := true
@@ -509,7 +503,7 @@ func (s *CoreService) Connect() (CoreSession, error) {
 	if err != nil {
 		return CoreSession{}, err
 	}
-	catalog, err := client.ListCharacters(ctx)
+	catalog, err := assets.ListCharacters(ctx)
 	if err != nil {
 		return CoreSession{}, err
 	}
@@ -523,19 +517,19 @@ func (s *CoreService) Connect() (CoreSession, error) {
 	if err != nil {
 		return CoreSession{}, err
 	}
-	localVisual, err := cache.Sync(ctx, client, *catalog.Active.Appearance.Visual)
+	localVisual, err := cache.Sync(ctx, assets, *catalog.Active.Appearance.Visual)
 	if err != nil {
 		_ = cache.Close()
 		return CoreSession{}, err
 	}
-	messages, err := client.ListMessages(ctx, opened.ConversationID, 0, 20)
+	messages, err := assets.ListMessages(ctx, opened.ConversationID, 0, 20)
 	if err != nil {
 		_ = cache.Close()
 		return CoreSession{}, err
 	}
 	s.mu.Lock()
 	previous, previousCache := s.socket, s.visualCache
-	s.client, s.socket, s.conversation = client, socket, opened.ConversationID
+	s.assets, s.socket, s.conversation = assets, socket, opened.ConversationID
 	s.visualCache = cache
 	s.active, s.activeTurnID = false, ""
 	s.mu.Unlock()
@@ -551,6 +545,69 @@ func (s *CoreService) Connect() (CoreSession, error) {
 	character := *catalog.Active
 	character.Appearance.Visual = &localVisual
 	return CoreSession{Settings: settings, ConversationID: opened.ConversationID, Character: character, Messages: messages.Messages}, nil
+}
+
+func (s *CoreService) openSessionTransport(ctx context.Context) (sessionPlane, sessionAssets, CoreSettings, error) {
+	s.mu.Lock()
+	open := s.openTransport
+	runtime := s.edge
+	s.mu.Unlock()
+	if open != nil {
+		return open(ctx)
+	}
+	if runtime == nil {
+		return nil, nil, CoreSettings{}, errors.New("edge runtime is not started")
+	}
+	plane, assets, err := runtime.OpenSessionTransport()
+	if err != nil {
+		return nil, nil, CoreSettings{}, err
+	}
+	if plane == nil || assets == nil {
+		if plane != nil {
+			_ = plane.Close()
+		}
+		return nil, nil, CoreSettings{}, errors.New("edge session transport is unavailable")
+	}
+	key, err := s.desktopEndpointKey()
+	if err != nil {
+		_ = plane.Close()
+		return nil, nil, CoreSettings{}, err
+	}
+	return plane, assets, CoreSettings{EndpointKey: key}, nil
+}
+
+func (s *CoreService) desktopEndpointKey() (string, error) {
+	s.mu.Lock()
+	if s.localEndpointKey != "" {
+		key := s.localEndpointKey
+		s.mu.Unlock()
+		return key, nil
+	}
+	connections := s.connections
+	s.mu.Unlock()
+	if connections != nil {
+		if connection, err := connections.Load(); err == nil && connection.EndpointKey != "" {
+			s.mu.Lock()
+			if s.localEndpointKey == "" {
+				s.localEndpointKey = connection.EndpointKey
+			}
+			key := s.localEndpointKey
+			s.mu.Unlock()
+			return key, nil
+		}
+	}
+	key, err := generateInstallationKey()
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	if s.localEndpointKey == "" {
+		s.localEndpointKey = key
+	} else {
+		key = s.localEndpointKey
+	}
+	s.mu.Unlock()
+	return key, nil
 }
 
 func (s *CoreService) Send(input string) error {
@@ -638,7 +695,7 @@ type desktopBeat struct {
 	StickerError       string                  `json:"stickerError,omitempty"`
 }
 
-func (s *CoreService) forwardTurnEvents(socket *session.SessionSocket, conversation string, events <-chan session.TurnEvent) {
+func (s *CoreService) forwardTurnEvents(socket sessionPlane, conversation string, events <-chan session.TurnEvent) {
 	for event := range events {
 		if event.ConversationID != conversation {
 			continue
@@ -697,7 +754,7 @@ func desktopFinalUtterance(event desktopTurnEvent) bool {
 	return event.Beat.Part.Kind == session.ExpressionUtterance && strings.TrimSpace(event.Beat.Part.Text) != ""
 }
 
-func (s *CoreService) reportDesktopUtterance(socket *session.SessionSocket, event session.TurnEvent, beat *desktopBeat) {
+func (s *CoreService) reportDesktopUtterance(socket sessionPlane, event session.TurnEvent, beat *desktopBeat) {
 	if socket == nil || beat == nil || strings.TrimSpace(event.ConversationID) == "" || strings.TrimSpace(event.TurnID) == "" {
 		return
 	}
@@ -717,7 +774,7 @@ func (s *CoreService) reportDesktopUtterance(socket *session.SessionSocket, even
 	})
 }
 
-func (s *CoreService) prepareDesktopSticker(socket *session.SessionSocket, event session.TurnEvent, beat *desktopBeat) {
+func (s *CoreService) prepareDesktopSticker(socket sessionPlane, event session.TurnEvent, beat *desktopBeat) {
 	fail := func(message string) {
 		beat.StickerUnavailable = true
 		beat.StickerError = message
@@ -748,18 +805,18 @@ func (s *CoreService) prepareDesktopSticker(socket *session.SessionSocket, event
 		return
 	}
 	s.mu.Lock()
-	client, cache, current := s.client, s.visualCache, s.socket == socket
+	assets, cache, current := s.assets, s.visualCache, s.socket == socket
 	s.mu.Unlock()
 	if !current {
 		return
 	}
-	if client == nil || cache == nil {
+	if assets == nil || cache == nil {
 		fail("Desktop 表情包读取链路不可用")
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	content, err := client.ReadStickerContent(ctx, beat.Part.Sticker.ID)
+	content, err := assets.ReadStickerContent(ctx, beat.Part.Sticker.ID)
 	if err != nil {
 		fail("无法从 Core 读取表情包")
 		return

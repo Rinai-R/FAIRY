@@ -544,7 +544,7 @@ func TestIndependentSurfacesDoNotImportCoreInternals(t *testing.T) {
 			scanner := bufio.NewScanner(file)
 			for scanner.Scan() {
 				line := scanner.Text()
-				if strings.Contains(line, `"fairy/`) && !strings.Contains(line, `"fairy/transport/session"`) {
+				if strings.Contains(line, `"fairy/`) && !surfaceImportAllowed(surface, line) {
 					t.Errorf("independent Surface source %s imports outside the public session boundary: %s", path, strings.TrimSpace(line))
 				}
 			}
@@ -554,6 +554,13 @@ func TestIndependentSurfacesDoNotImportCoreInternals(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+func surfaceImportAllowed(surface, line string) bool {
+	if strings.Contains(line, `"fairy/transport/session"`) {
+		return true
+	}
+	return surface == "desktop" && strings.Contains(line, `"fairy/app/edge"`)
 }
 
 func TestQQSurfaceDependencyGraphExcludesCoreDatabase(t *testing.T) {

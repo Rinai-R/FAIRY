@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fairy/transport/session"
@@ -373,8 +374,8 @@ func TestConnectionSettingsReturnsExplicitUnconfiguredState(t *testing.T) {
 	if settings.Endpoint != defaultCoreEndpoint || settings.EndpointKey != "" || settings.HasToken {
 		t.Fatalf("ConnectionSettings() = %#v, want default unconfigured state", settings)
 	}
-	if _, err := service.Connect(); err == nil || !strings.Contains(err.Error(), "not configured") {
-		t.Fatalf("Connect() error = %v, want explicit unconfigured error", err)
+	if _, err := service.Connect(); err == nil || !strings.Contains(err.Error(), "edge runtime is not started") {
+		t.Fatalf("Connect() error = %v, want edge runtime missing", err)
 	}
 }
 
@@ -385,8 +386,8 @@ func TestConnectionSettingsRejectsDamagedStore(t *testing.T) {
 	if _, err := service.ConnectionSettings(); err == nil || !strings.Contains(err.Error(), "mode must use 0600") {
 		t.Fatalf("ConnectionSettings() error = %v, want store diagnostic", err)
 	}
-	if _, err := service.Connect(); err == nil || !strings.Contains(err.Error(), "mode must use 0600") {
-		t.Fatalf("Connect() error = %v, want store diagnostic", err)
+	if _, err := service.Connect(); err == nil || !strings.Contains(err.Error(), "edge runtime is not started") {
+		t.Fatalf("Connect() error = %v, want edge runtime missing", err)
 	}
 }
 
@@ -435,6 +436,157 @@ func TestSaveConnectionGeneratesInstallationKey(t *testing.T) {
 	}
 	if !installationKeyPattern.MatchString(settings.EndpointKey) || !strings.HasPrefix(settings.EndpointKey, "macos-") {
 		t.Fatalf("generated endpoint key = %q", settings.EndpointKey)
+	}
+}
+
+func useLoopbackSessionTransport(t *testing.T, service *CoreService) {
+	t.Helper()
+	service.openTransport = func(ctx context.Context) (sessionPlane, sessionAssets, CoreSettings, error) {
+		connection, err := service.connections.Load()
+		if errors.Is(err, errConnectionNotFound) {
+			return nil, nil, CoreSettings{}, errors.New("Core connection is not configured: open settings and save FAIRY_API_TOKEN")
+		}
+		if err != nil {
+			return nil, nil, CoreSettings{}, err
+		}
+		client, err := session.New(session.Options{Endpoint: connection.Endpoint, Token: connection.Token})
+		if err != nil {
+			return nil, nil, CoreSettings{}, err
+		}
+		socket, err := client.DialSession(ctx)
+		if err != nil {
+			return nil, nil, CoreSettings{}, err
+		}
+		return socket, client, settingsForConnection(connection), nil
+	}
+}
+
+type scriptedSessionPlane struct {
+	opened     session.OpenSessionResponse
+	events     chan session.TurnEvent
+	submits    []string
+	deliveries []session.ExpressionDeliveryResult
+}
+
+func (s *scriptedSessionPlane) OpenSession(context.Context, session.OpenSessionRequest) (session.OpenSessionResponse, error) {
+	return s.opened, nil
+}
+func (s *scriptedSessionPlane) Watch(context.Context, string) (<-chan session.TurnEvent, error) {
+	if s.events == nil {
+		s.events = make(chan session.TurnEvent)
+	}
+	return s.events, nil
+}
+func (s *scriptedSessionPlane) SubmitTurn(_ context.Context, _ string, request session.SubmitTurnRequest) (session.SubmitTurnResponse, error) {
+	s.submits = append(s.submits, request.Input)
+	return session.SubmitTurnResponse{}, nil
+}
+func (s *scriptedSessionPlane) CancelTurn(context.Context, string, string) error {
+	return nil
+}
+func (s *scriptedSessionPlane) ReportExpressionDelivery(_ context.Context, result session.ExpressionDeliveryResult) error {
+	s.deliveries = append(s.deliveries, result)
+	return nil
+}
+func (s *scriptedSessionPlane) ObserveDesktop(context.Context, string, session.DesktopObservation) (session.DesktopObservationResponse, error) {
+	return session.DesktopObservationResponse{}, nil
+}
+func (s *scriptedSessionPlane) SetDesktopCaptureHandler(func(context.Context, session.DesktopCaptureRequest) session.DesktopCaptureResult) error {
+	return nil
+}
+func (s *scriptedSessionPlane) Close() error { return nil }
+
+type scriptedSessionAssets struct {
+	catalog  session.CharacterCatalog
+	page     session.MessagePage
+	stickers map[string]session.StickerContent
+	visuals  map[string][]byte
+}
+
+func (s scriptedSessionAssets) ListCharacters(context.Context) (session.CharacterCatalog, error) {
+	return s.catalog, nil
+}
+func (s scriptedSessionAssets) ListMessages(context.Context, string, uint64, int) (session.MessagePage, error) {
+	return s.page, nil
+}
+func (s scriptedSessionAssets) ReadStickerContent(_ context.Context, id string) (session.StickerContent, error) {
+	content, ok := s.stickers[id]
+	if !ok {
+		return session.StickerContent{}, errors.New("sticker was not found")
+	}
+	return content, nil
+}
+func (s scriptedSessionAssets) VisualAsset(_ context.Context, packID, assetPath string) ([]byte, error) {
+	image, ok := s.visuals[packID+"/"+assetPath]
+	if !ok {
+		return nil, errors.New("visual asset was not found")
+	}
+	return image, nil
+}
+
+type scriptedOwnedRuntime struct {
+	fakeOwnedRuntime
+	plane  sessionPlane
+	assets sessionAssets
+}
+
+func (s *scriptedOwnedRuntime) OpenSessionTransport() (sessionPlane, sessionAssets, error) {
+	return s.plane, s.assets, nil
+}
+
+func TestConnectUsesInProcessFacadeWithoutHTTP(t *testing.T) {
+	character := serviceCharacterFixture()
+	plane := &scriptedSessionPlane{opened: session.OpenSessionResponse{ConversationID: "c1", CharacterID: character.CharacterID}}
+	assets := scriptedSessionAssets{
+		catalog: session.CharacterCatalog{Characters: []session.CharacterRecord{character}, Active: ptr(character)},
+		page:    session.MessagePage{Messages: []session.MessageRecord{{ID: "m1"}}},
+		visuals: map[string][]byte{"fairy.test/images/idle.png": testPNG},
+	}
+	runtime := &scriptedOwnedRuntime{plane: plane, assets: assets}
+	service := NewCoreService()
+	service.newCache = func() (*visualCache, error) { return newVisualCacheAt(t.TempDir()) }
+	service.openEdge = func(context.Context) (ownedRuntime, error) { return runtime, nil }
+	if err := service.ServiceStartup(t.Context(), application.ServiceOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	defer service.ServiceShutdown()
+
+	sessionState, err := service.Connect()
+	if err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	if sessionState.ConversationID != "c1" || sessionState.Character.CharacterID != character.CharacterID {
+		t.Fatalf("Connect() session = %#v", sessionState)
+	}
+	if strings.Contains(strings.ToLower(sessionState.Settings.Endpoint), "http") {
+		t.Fatalf("in-process Connect returned HTTP endpoint %q", sessionState.Settings.Endpoint)
+	}
+	if err := service.Send("hello"); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	if len(plane.submits) != 1 || plane.submits[0] != "hello" {
+		t.Fatalf("SubmitTurn inputs = %v", plane.submits)
+	}
+	messages, err := service.RecentMessages()
+	if err != nil {
+		t.Fatalf("RecentMessages() error = %v", err)
+	}
+	if len(messages) != 1 || messages[0].ID != "m1" {
+		t.Fatalf("RecentMessages() = %#v", messages)
+	}
+}
+
+func TestConnectFailsClosedWithoutEdgeAndDoesNotMentionLegacyHTTP(t *testing.T) {
+	service := NewCoreService()
+	_, err := service.Connect()
+	if err == nil || !strings.Contains(err.Error(), "edge runtime is not started") {
+		t.Fatalf("Connect() error = %v, want edge runtime missing", err)
+	}
+	message := strings.ToLower(err.Error())
+	for _, forbidden := range []string{"bearer", "127.0.0.1:8787", "websocket", "http://"} {
+		if strings.Contains(message, forbidden) {
+			t.Fatalf("Connect() error mentioned %q: %v", forbidden, err)
+		}
 	}
 }
 
@@ -519,6 +671,7 @@ func TestCoreServiceUsesOneSocketAndClearsCompletedTurn(t *testing.T) {
 		Token:       "desktop-test-token",
 	}}
 	service.newCache = func() (*visualCache, error) { return newVisualCacheAt(t.TempDir()) }
+	useLoopbackSessionTransport(t, service)
 	turns := make(chan desktopTurnEvent, 4)
 	service.attachEmitter(func(name string, payload any) {
 		if name == "desktop:turn" {
@@ -626,6 +779,7 @@ func TestCoreServiceRejectsSendAndCancelsProactiveTurn(t *testing.T) {
 		Endpoint: server.URL, EndpointKey: "desktop-test", Token: "desktop-test-token",
 	}}
 	service.newCache = func() (*visualCache, error) { return newVisualCacheAt(t.TempDir()) }
+	useLoopbackSessionTransport(t, service)
 	turns := make(chan desktopTurnEvent, 4)
 	service.attachEmitter(func(name string, payload any) {
 		if name == "desktop:turn" {
@@ -734,6 +888,7 @@ func TestCoreServicePreparesControlledStickerAndReportsRenderSuccess(t *testing.
 		Endpoint: server.URL, EndpointKey: "desktop-test", Token: "desktop-test-token",
 	}}
 	service.newCache = func() (*visualCache, error) { return newVisualCacheAt(t.TempDir()) }
+	useLoopbackSessionTransport(t, service)
 	turns := make(chan desktopTurnEvent, 6)
 	service.attachEmitter(func(name string, payload any) {
 		if name == "desktop:turn" {
@@ -837,7 +992,7 @@ func TestCoreServiceReportsStickerFetchFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := NewCoreService()
-	service.client, service.socket, service.conversation, service.visualCache = client, socket, "c1", cache
+	service.assets, service.socket, service.conversation, service.visualCache = client, socket, "c1", cache
 	beat := desktopBeat{
 		BeatID: "b1",
 		Part: &session.ExpressionPart{
@@ -1038,7 +1193,7 @@ func TestForwardTurnEventsDropsStaleSocketBeforeStickerDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := NewCoreService()
-	service.client = client
+	service.assets = client
 	service.socket = &session.SessionSocket{}
 	service.visualCache = cache
 	staleEmission := make(chan struct{}, 1)
