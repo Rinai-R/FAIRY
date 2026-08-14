@@ -75,23 +75,34 @@ func TestSeekDBKnowledgeHybridSQLKeepsVerifiedScopeBeforeRanking(t *testing.T) {
 		"status = 'verified'",
 		"COSINE_DISTANCE(entry.embedding, ?)",
 		"embedding_space_id = ?",
+		"updated_at_ms >= ?",
 		"ORDER BY COSINE_DISTANCE(entry.embedding, ?), entry.id ASC",
 	} {
-		if !strings.Contains(knowledgeSeekDBVectorSearchSQL, fragment) {
-			t.Fatalf("SeekDB knowledge vector SQL is missing %q", fragment)
+		if !strings.Contains(knowledgeSeekDBExactRecentSearchSQL, fragment) {
+			t.Fatalf("SeekDB knowledge exact vector SQL is missing %q", fragment)
 		}
 	}
-	if strings.Contains(knowledgeSeekDBVectorSearchSQL, "APPROXIMATE") {
-		t.Fatal("4.5 knowledge vector SQL must use exact cosine, not ANN")
+	if strings.Contains(knowledgeSeekDBExactRecentSearchSQL, "APPROXIMATE") {
+		t.Fatal("exact recent knowledge vector SQL must not use ANN")
+	}
+	for _, fragment := range []string{
+		"FORCE INDEX (knowledge_entries_status_updated_idx)",
+		"status = 'verified'",
+		"ORDER BY COSINE_DISTANCE(entry.embedding, ?) APPROXIMATE",
+	} {
+		if !strings.Contains(knowledgeSeekDBANNSearchSQL, fragment) {
+			t.Fatalf("SeekDB knowledge ANN SQL is missing %q", fragment)
+		}
 	}
 	for _, table := range []string{"personal_memories", "social_memory_entries"} {
-		if strings.Contains(knowledgeSeekDBVectorSearchSQL, table) ||
+		if strings.Contains(knowledgeSeekDBANNSearchSQL, table) ||
+			strings.Contains(knowledgeSeekDBExactRecentSearchSQL, table) ||
 			strings.Contains(knowledgeIngestSearchSeekDBSQL, table) {
 			t.Fatalf("public retrieval SQL must not read %s", table)
 		}
 	}
-	if got := strings.Count(knowledgeSeekDBVectorSearchSQL, "status = 'verified'"); got != 1 {
-		t.Fatalf("verified status predicates in vector SQL = %d, want 1", got)
+	if got := strings.Count(knowledgeSeekDBANNSearchSQL, "status = 'verified'"); got != 1 {
+		t.Fatalf("verified status predicates in ANN SQL = %d, want 1", got)
 	}
 }
 

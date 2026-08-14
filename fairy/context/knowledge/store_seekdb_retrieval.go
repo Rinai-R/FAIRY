@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
+	"time"
 
 	memoryretrieval "fairy/context/memory/retrieval"
 	"fairy/runtime/embedding"
@@ -13,16 +15,31 @@ import (
 	"github.com/pgvector/pgvector-go"
 )
 
-const knowledgeSeekDBVectorSearchSQL = `
-SELECT entry.id, entry.topic, entry.statement, entry.verification_basis,
-       entry.confidence_basis_points, entry.source_url, entry.source_title,
-       entry.evidence_text, entry.source_fetched_at_ms, entry.updated_at_ms,
-       HEX(entry.embedding_content_hash),
-       GREATEST(0.0, LEAST(1.0, 1.0 - COSINE_DISTANCE(entry.embedding, ?))) AS similarity
+const seekDBRecentVectorWindow = 60 * time.Second
+
+const knowledgeSeekDBVectorColumnsSQL = `
+entry.id, entry.topic, entry.statement, entry.verification_basis,
+entry.confidence_basis_points, entry.source_url, entry.source_title,
+entry.evidence_text, entry.source_fetched_at_ms, entry.updated_at_ms,
+HEX(entry.embedding_content_hash),
+GREATEST(0.0, LEAST(1.0, 1.0 - COSINE_DISTANCE(entry.embedding, ?))) AS similarity`
+
+const knowledgeSeekDBANNSearchSQL = `
+SELECT ` + knowledgeSeekDBVectorColumnsSQL + `
+FROM knowledge_entries entry FORCE INDEX (knowledge_entries_status_updated_idx)
+WHERE entry.status = 'verified'
+  AND entry.embedding_space_id = ?
+  AND entry.embedding IS NOT NULL
+ORDER BY COSINE_DISTANCE(entry.embedding, ?) APPROXIMATE
+LIMIT ?`
+
+const knowledgeSeekDBExactRecentSearchSQL = `
+SELECT ` + knowledgeSeekDBVectorColumnsSQL + `
 FROM knowledge_entries entry
 WHERE entry.status = 'verified'
   AND entry.embedding_space_id = ?
   AND entry.embedding IS NOT NULL
+  AND entry.updated_at_ms >= ?
 ORDER BY COSINE_DISTANCE(entry.embedding, ?), entry.id ASC
 LIMIT ?`
 
@@ -103,14 +120,39 @@ func embedSeekDBQuery(ctx context.Context, embedder embedding.SemanticEmbedder, 
 }
 
 func (s *Store) querySeekDBKnowledgeVectors(ctx context.Context, vectorLiteral, spaceID string) (map[string]Retrieved, error) {
-	queryCtx, cancel := s.seekDBQueryContext(ctx)
-	defer cancel()
-	rows, err := s.seekDB.QueryContext(
-		queryCtx, knowledgeSeekDBVectorSearchSQL,
-		vectorLiteral, spaceID, vectorLiteral, MaxSearchCandidates*2,
+	limit := MaxSearchCandidates * 2
+	matches, err := s.querySeekDBKnowledgeVectorSQL(
+		ctx, knowledgeSeekDBANNSearchSQL,
+		vectorLiteral, spaceID, vectorLiteral, limit,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("querying SeekDB knowledge vectors: %w", err)
+		return nil, fmt.Errorf("querying SeekDB knowledge ANN vectors: %w", err)
+	}
+	recent, err := s.querySeekDBKnowledgeVectorSQL(
+		ctx, knowledgeSeekDBExactRecentSearchSQL,
+		vectorLiteral, spaceID, s.recentVectorCutoffMS(), vectorLiteral, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying SeekDB knowledge exact recent vectors: %w", err)
+	}
+	maps.Copy(matches, recent)
+	return matches, nil
+}
+
+func (s *Store) recentVectorCutoffMS() int64 {
+	cutoff := s.currentUnixMS() - seekDBRecentVectorWindow.Milliseconds()
+	if cutoff < 1 {
+		return 1
+	}
+	return cutoff
+}
+
+func (s *Store) querySeekDBKnowledgeVectorSQL(ctx context.Context, searchSQL string, args ...any) (map[string]Retrieved, error) {
+	queryCtx, cancel := s.seekDBQueryContext(ctx)
+	defer cancel()
+	rows, err := s.seekDB.QueryContext(queryCtx, searchSQL, args...)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 	return scanSeekDBKnowledgeVectorRows(rows)

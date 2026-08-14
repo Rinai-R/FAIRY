@@ -1083,7 +1083,7 @@ INSERT INTO social_memory_entries(
 	}
 }
 
-func seedKnowledgeIntegrationAuthority(t *testing.T, database *sql.DB) {
+func seedKnowledgeIntegrationAuthority(t testing.TB, database *sql.DB) {
 	t.Helper()
 	createdAt := int64(1_786_200_000_000)
 	if _, err := database.ExecContext(t.Context(), `
@@ -1560,7 +1560,7 @@ func knowledgeIntegrationVectorLiteral() string {
 }
 
 func newKnowledgeSeekDBStore(
-	t *testing.T,
+	t testing.TB,
 	database *sql.DB,
 	queryLimit time.Duration,
 	embedder embedding.SemanticEmbedder,
@@ -1573,7 +1573,7 @@ func newKnowledgeSeekDBStore(
 	return store
 }
 
-func openKnowledgeSeekDB(t *testing.T) (*seekdb.Runtime, *sql.DB, seekdb.Config) {
+func openKnowledgeSeekDB(t testing.TB) (*seekdb.Runtime, *sql.DB, seekdb.Config) {
 	t.Helper()
 	binary := os.Getenv(seekdb.EnvBinaryPath)
 	if binary == "" {
@@ -1600,7 +1600,7 @@ func openKnowledgeSeekDB(t *testing.T) (*seekdb.Runtime, *sql.DB, seekdb.Config)
 	return instance, instance.SQL(), config
 }
 
-func reserveKnowledgeLoopbackAddress(t *testing.T) string {
+func reserveKnowledgeLoopbackAddress(t testing.TB) string {
 	t.Helper()
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -1613,7 +1613,7 @@ func reserveKnowledgeLoopbackAddress(t *testing.T) string {
 	return address
 }
 
-func closeKnowledgeSeekDB(t *testing.T, instance *seekdb.Runtime, timeout time.Duration) {
+func closeKnowledgeSeekDB(t testing.TB, instance *seekdb.Runtime, timeout time.Duration) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

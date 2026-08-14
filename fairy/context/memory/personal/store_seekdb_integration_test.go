@@ -539,7 +539,7 @@ WHERE supersedes_id = ? AND status = 'active'`, base.ID).Scan(&activeRevisions);
 	}
 }
 
-func seedPersonalIntegrationAuthority(t *testing.T, database *sql.DB) {
+func seedPersonalIntegrationAuthority(t testing.TB, database *sql.DB) {
 	t.Helper()
 	for _, conversation := range []struct {
 		id, characterID string
@@ -706,7 +706,7 @@ func personalIntegrationVectorLiteral() string {
 }
 
 func newPersonalSeekDBStore(
-	t *testing.T,
+	t testing.TB,
 	database *sql.DB,
 	queryLimit time.Duration,
 	embedder embedding.SemanticEmbedder,
@@ -719,7 +719,7 @@ func newPersonalSeekDBStore(
 	return store
 }
 
-func openPersonalSeekDB(t *testing.T) (*seekdb.Runtime, *sql.DB, seekdb.Config) {
+func openPersonalSeekDB(t testing.TB) (*seekdb.Runtime, *sql.DB, seekdb.Config) {
 	t.Helper()
 	binary := os.Getenv(seekdb.EnvBinaryPath)
 	if binary == "" {
@@ -746,7 +746,7 @@ func openPersonalSeekDB(t *testing.T) (*seekdb.Runtime, *sql.DB, seekdb.Config) 
 	return instance, instance.SQL(), config
 }
 
-func reservePersonalLoopbackAddress(t *testing.T) string {
+func reservePersonalLoopbackAddress(t testing.TB) string {
 	t.Helper()
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -759,7 +759,7 @@ func reservePersonalLoopbackAddress(t *testing.T) string {
 	return address
 }
 
-func closePersonalSeekDB(t *testing.T, instance *seekdb.Runtime, timeout time.Duration) {
+func closePersonalSeekDB(t testing.TB, instance *seekdb.Runtime, timeout time.Duration) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

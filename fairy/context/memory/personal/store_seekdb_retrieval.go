@@ -5,12 +5,16 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
+	"time"
 
 	"fairy/runtime/embedding"
 
 	"github.com/pgvector/pgvector-go"
 )
+
+const seekDBRecentVectorWindow = 60 * time.Second
 
 const personalMemorySeekDBScopeSQL = `status = 'active' AND review_status = 'ready'
   AND (scope_kind = 'global' OR (scope_kind = 'character' AND character_id = ?))`
@@ -57,17 +61,43 @@ ranked_entries AS (
   GROUP BY id
 )` + personalMemorySeekDBRankedSelectSQL
 
-const personalMemorySeekDBVectorSearchSQL = `
-SELECT id, kind, scope_kind, character_id, content,
-       confidence_basis_points, updated_at_ms,
-       GREATEST(0.0, LEAST(1.0, 1.0 - COSINE_DISTANCE(embedding, ?))) AS similarity
+const personalMemorySeekDBVectorColumnsSQL = `
+id, kind, scope_kind, character_id, content,
+confidence_basis_points, updated_at_ms,
+GREATEST(0.0, LEAST(1.0, 1.0 - COSINE_DISTANCE(embedding, ?))) AS similarity`
+
+const personalMemorySeekDBANNGlobalSearchSQL = `
+SELECT ` + personalMemorySeekDBVectorColumnsSQL + `
+FROM personal_memories FORCE INDEX (personal_memories_scope_status_idx)
+WHERE scope_kind = 'global' AND character_id IS NULL
+  AND review_status = 'ready' AND status = 'active'
+  AND embedding IS NOT NULL
+  AND embedding_space_id = ?
+ORDER BY COSINE_DISTANCE(embedding, ?) APPROXIMATE
+LIMIT ?`
+
+const personalMemorySeekDBANNCharacterSearchSQL = `
+SELECT ` + personalMemorySeekDBVectorColumnsSQL + `
+FROM personal_memories FORCE INDEX (personal_memories_scope_status_idx)
+WHERE scope_kind = 'character' AND character_id = ?
+  AND review_status = 'ready' AND status = 'active'
+  AND embedding IS NOT NULL
+  AND embedding_space_id = ?
+ORDER BY COSINE_DISTANCE(embedding, ?) APPROXIMATE
+LIMIT ?`
+
+const personalMemorySeekDBExactRecentSearchSQL = `
+SELECT ` + personalMemorySeekDBVectorColumnsSQL + `
 FROM personal_memories
 WHERE ` + personalMemorySeekDBScopeSQL + `
   AND embedding_space_id = ?
   AND embedding IS NOT NULL
   AND embedding_content_hash = UNHEX(SHA2(content, 256))
+  AND updated_at_ms >= ?
 ORDER BY COSINE_DISTANCE(embedding, ?), id ASC
 LIMIT ?`
+
+const personalMemorySeekDBVectorSearchSQL = personalMemorySeekDBExactRecentSearchSQL
 
 func personalMemorySeekDBSearchUsesLiteralOnly(query string) bool {
 	return strings.ContainsAny(query, "%_")
@@ -137,14 +167,51 @@ func (s *Store) querySeekDBPersonalVectors(
 	ctx context.Context,
 	characterID, vectorLiteral, spaceID string,
 ) (map[string]vectorPersonalTruth, error) {
-	queryCtx, cancel := s.seekDBQueryContext(ctx)
-	defer cancel()
-	rows, err := s.seekDB.QueryContext(
-		queryCtx, personalMemorySeekDBVectorSearchSQL,
-		vectorLiteral, characterID, spaceID, vectorLiteral, MaxResultsPerKind*2,
+	limit := MaxResultsPerKind * 2
+	matches, err := s.querySeekDBPersonalVectorSQL(
+		ctx, personalMemorySeekDBANNGlobalSearchSQL,
+		vectorLiteral, spaceID, vectorLiteral, limit,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("querying SeekDB personal memory vectors: %w", err)
+		return nil, fmt.Errorf("querying SeekDB personal global ANN vectors: %w", err)
+	}
+	character, err := s.querySeekDBPersonalVectorSQL(
+		ctx, personalMemorySeekDBANNCharacterSearchSQL,
+		vectorLiteral, characterID, spaceID, vectorLiteral, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying SeekDB personal character ANN vectors: %w", err)
+	}
+	maps.Copy(matches, character)
+	recent, err := s.querySeekDBPersonalVectorSQL(
+		ctx, personalMemorySeekDBExactRecentSearchSQL,
+		vectorLiteral, characterID, spaceID, s.recentVectorCutoffMS(), vectorLiteral, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying SeekDB personal exact recent vectors: %w", err)
+	}
+	maps.Copy(matches, recent)
+	return matches, nil
+}
+
+func (s *Store) recentVectorCutoffMS() int64 {
+	cutoff := s.currentUnixMS() - seekDBRecentVectorWindow.Milliseconds()
+	if cutoff < 1 {
+		return 1
+	}
+	return cutoff
+}
+
+func (s *Store) querySeekDBPersonalVectorSQL(
+	ctx context.Context,
+	searchSQL string,
+	args ...any,
+) (map[string]vectorPersonalTruth, error) {
+	queryCtx, cancel := s.seekDBQueryContext(ctx)
+	defer cancel()
+	rows, err := s.seekDB.QueryContext(queryCtx, searchSQL, args...)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 	result := make(map[string]vectorPersonalTruth)

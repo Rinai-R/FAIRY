@@ -71,18 +71,45 @@ func TestSeekDBPersonalHybridSQLKeepsScopeAndStatusBeforeRanking(t *testing.T) {
 		"COSINE_DISTANCE(embedding, ?)",
 		"embedding_space_id = ?",
 		"status = 'active' AND review_status = 'ready'",
+		"updated_at_ms >= ?",
 		"ORDER BY COSINE_DISTANCE(embedding, ?), id ASC",
 	} {
-		if !strings.Contains(personalMemorySeekDBVectorSearchSQL, fragment) {
-			t.Fatalf("SeekDB personal vector SQL is missing %q", fragment)
+		if !strings.Contains(personalMemorySeekDBExactRecentSearchSQL, fragment) {
+			t.Fatalf("SeekDB personal exact vector SQL is missing %q", fragment)
 		}
 	}
-	if strings.Contains(personalMemorySeekDBVectorSearchSQL, "APPROXIMATE") ||
+	if strings.Contains(personalMemorySeekDBExactRecentSearchSQL, "APPROXIMATE") ||
 		strings.Contains(personalMemorySeekDBSearchSQL, "APPROXIMATE") {
-		t.Fatal("4.5 personal retrieval must use exact cosine, not ANN")
+		t.Fatal("exact personal retrieval must not use ANN")
+	}
+	for _, fragment := range []string{
+		"FORCE INDEX (personal_memories_scope_status_idx)",
+		"ORDER BY COSINE_DISTANCE(embedding, ?) APPROXIMATE",
+		"review_status = 'ready' AND status = 'active'",
+		"scope_kind = 'global' AND character_id IS NULL",
+	} {
+		if !strings.Contains(personalMemorySeekDBANNGlobalSearchSQL, fragment) {
+			t.Fatalf("SeekDB personal global ANN SQL is missing %q", fragment)
+		}
+	}
+	for _, fragment := range []string{
+		"FORCE INDEX (personal_memories_scope_status_idx)",
+		"ORDER BY COSINE_DISTANCE(embedding, ?) APPROXIMATE",
+		"scope_kind = 'character' AND character_id = ?",
+		"review_status = 'ready' AND status = 'active'",
+	} {
+		if !strings.Contains(personalMemorySeekDBANNCharacterSearchSQL, fragment) {
+			t.Fatalf("SeekDB personal character ANN SQL is missing %q", fragment)
+		}
+	}
+	if strings.Contains(personalMemorySeekDBANNGlobalSearchSQL, " OR ") ||
+		strings.Contains(personalMemorySeekDBANNCharacterSearchSQL, " OR ") {
+		t.Fatal("personal ANN SQL must use index-prefix equality, not OR scope")
 	}
 	if strings.Contains(personalMemorySeekDBSearchSQL, "knowledge_entries") ||
-		strings.Contains(personalMemorySeekDBVectorSearchSQL, "knowledge_entries") {
+		strings.Contains(personalMemorySeekDBANNGlobalSearchSQL, "knowledge_entries") ||
+		strings.Contains(personalMemorySeekDBANNCharacterSearchSQL, "knowledge_entries") ||
+		strings.Contains(personalMemorySeekDBExactRecentSearchSQL, "knowledge_entries") {
 		t.Fatal("personal retrieval SQL must not read knowledge_entries")
 	}
 }
