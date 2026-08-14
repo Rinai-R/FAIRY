@@ -23,6 +23,7 @@ const (
 	duplicateRevalidationRevision     int64 = 8
 	socialFeedbackEventsRevision      int64 = 9
 	stickerCatalogSchemaRevision      int64 = 10
+	toolExecutionLedgerRevision       int64 = 11
 
 	transcriptRecallTableName = "conversation_messages"
 	transcriptRecallIndexName = "conversation_messages_content_fts_idx"
@@ -166,14 +167,23 @@ func BuiltinMigrations() []Migration {
 			Apply:  applyStickerCatalogSchema,
 			Verify: verifyStickerCatalogSchema,
 		},
+		{
+			Revision: Revision{
+				Number:   toolExecutionLedgerRevision,
+				Checksum: toolExecutionLedgerSchemaChecksum(),
+			},
+			Name:   "create-tool-execution-ledger-schema",
+			Apply:  applyToolExecutionLedgerSchema,
+			Verify: verifyToolExecutionLedgerSchema,
+		},
 	}
 }
 
 // CurrentSchemaRevision is the exact revision accepted by runtime readiness.
 func CurrentSchemaRevision() Revision {
 	return Revision{
-		Number:   stickerCatalogSchemaRevision,
-		Checksum: stickerCatalogSchemaChecksum(),
+		Number:   toolExecutionLedgerRevision,
+		Checksum: toolExecutionLedgerSchemaChecksum(),
 	}
 }
 

@@ -12,8 +12,8 @@ import (
 func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first := BuiltinMigrations()
 	second := BuiltinMigrations()
-	if len(first) != 10 || len(second) != 10 {
-		t.Fatalf("builtin migration counts = %d and %d, want 10", len(first), len(second))
+	if len(first) != 11 || len(second) != 11 {
+		t.Fatalf("builtin migration counts = %d and %d, want 11", len(first), len(second))
 	}
 	foundation := Revision{Number: foundationSchemaRevision, Checksum: foundationSchemaChecksum()}
 	conversation := Revision{Number: conversationSchemaRevision, Checksum: conversationSchemaChecksum()}
@@ -25,8 +25,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	duplicateRevalidation := Revision{Number: duplicateRevalidationRevision, Checksum: duplicateRevalidationSchemaChecksum()}
 	socialFeedback := Revision{Number: socialFeedbackEventsRevision, Checksum: socialFeedbackEventsSchemaChecksum()}
 	stickerCatalog := Revision{Number: stickerCatalogSchemaRevision, Checksum: stickerCatalogSchemaChecksum()}
-	if current := CurrentSchemaRevision(); current != stickerCatalog {
-		t.Fatalf("current schema revision = %#v, want %#v", current, stickerCatalog)
+	toolExecution := Revision{Number: toolExecutionLedgerRevision, Checksum: toolExecutionLedgerSchemaChecksum()}
+	if current := CurrentSchemaRevision(); current != toolExecution {
+		t.Fatalf("current schema revision = %#v, want %#v", current, toolExecution)
 	}
 	if first[0].Revision != foundation || first[0].Name != "create-foundation-schema" {
 		t.Fatalf("foundation migration = %#v, want revision %#v", first[0], foundation)
@@ -58,6 +59,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	if first[9].Revision != stickerCatalog || first[9].Name != "create-sticker-and-expression-delivery-schema" {
 		t.Fatalf("sticker catalog migration = %#v, want revision %#v", first[9], stickerCatalog)
 	}
+	if first[10].Revision != toolExecution || first[10].Name != "create-tool-execution-ledger-schema" {
+		t.Fatalf("tool execution ledger migration = %#v, want revision %#v", first[10], toolExecution)
+	}
 	for index, migration := range first {
 		if migration.Apply == nil || migration.Verify == nil {
 			t.Fatalf("builtin migration %d must provide Apply and Verify", index+1)
@@ -74,6 +78,7 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first[7].Name = "mutated-duplicate-revalidation"
 	first[8].Name = "mutated-social-feedback-events"
 	first[9].Name = "mutated-sticker-catalog"
+	first[10].Name = "mutated-tool-execution-ledger"
 	if second[0].Name != "create-foundation-schema" || second[0].Revision != foundation ||
 		second[1].Name != "create-conversation-schema" || second[1].Revision != conversation ||
 		second[2].Name != "create-turn-evidence-schema" || second[2].Revision != turnEvidence ||
@@ -83,7 +88,8 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 		second[6].Name != "create-cognitive-records-schema" || second[6].Revision != cognitiveRecords ||
 		second[7].Name != "index-personal-memory-duplicates" || second[7].Revision != duplicateRevalidation ||
 		second[8].Name != "create-social-memory-feedback-events" || second[8].Revision != socialFeedback ||
-		second[9].Name != "create-sticker-and-expression-delivery-schema" || second[9].Revision != stickerCatalog {
+		second[9].Name != "create-sticker-and-expression-delivery-schema" || second[9].Revision != stickerCatalog ||
+		second[10].Name != "create-tool-execution-ledger-schema" || second[10].Revision != toolExecution {
 		t.Fatalf("caller mutation changed later BuiltinMigrations result: %#v", second[0])
 	}
 	if got := hex.EncodeToString(foundation.Checksum[:]); got != "e674bec12d0b6895da8b351d082a686c9c2f44990fb68749bbad083c4a6805d3" {
@@ -115,6 +121,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	}
 	if got := hex.EncodeToString(stickerCatalog.Checksum[:]); got != "9bd51976b0ebe8993f774fff2d34bfa2773311956c0e50e0c2c0e9ff87a606db" {
 		t.Fatalf("sticker catalog checksum = %s, update requires an explicit revision decision", got)
+	}
+	if got := hex.EncodeToString(toolExecution.Checksum[:]); got != "1d26c56f049f7e7335f5f44f4e8395554ad69fba7a579aee257a3258d3b1d843" {
+		t.Fatalf("tool execution ledger checksum = %s, update requires an explicit revision decision", got)
 	}
 }
 
@@ -419,6 +428,39 @@ func TestStickerCatalogSchemaDefinesMetadataAndDeliveryLedger(t *testing.T) {
 	} {
 		if !strings.Contains(deliveryCheck.clause, token) {
 			t.Errorf("expression deliveries CHECK lacks %q: %s", token, deliveryCheck.clause)
+		}
+	}
+}
+
+func TestToolExecutionLedgerSchemaDefinesIdempotentMetadataOnlyTable(t *testing.T) {
+	assertPortableSchemaTables(t, toolExecutionLedgerSchema[:], []string{toolExecutionsTableName})
+	table := toolExecutionLedgerSchema[0]
+	lower := strings.ToLower(table.ddl)
+	for _, forbidden := range []string{"bytea", "jsonb", "longblob", "payload", "result_data", "content ", "$1"} {
+		if strings.Contains(lower, forbidden) {
+			t.Errorf("tool_executions DDL contains forbidden token %q", forbidden)
+		}
+	}
+	if !schemaHasIndex(table, ascendingBTreeIndex("tool_executions_turn_call_key", true, "conversation_id", "turn_id", "call_id")) {
+		t.Fatal("tool executions lack (conversation, turn, call) idempotency key")
+	}
+	if !schemaHasIndex(table, ascendingBTreeIndex("tool_executions_turn_tool_key", true, "conversation_id", "turn_id", "tool_name")) {
+		t.Fatal("tool executions lack (conversation, turn, tool) uniqueness")
+	}
+	if len(table.foreignKeys) != 1 ||
+		table.foreignKeys[0].referencedTable != "conversation_turns" ||
+		table.foreignKeys[0].deleteRule != "cascade" {
+		t.Fatalf("tool execution foreign keys = %#v", table.foreignKeys)
+	}
+	check := schemaCheckNamed(t, table, "tool_executions_invariants_check")
+	for _, token := range []string{
+		"(`tool_name` = 'desktop_observe')",
+		"(`status` in ('pending','completed','failed','cancelled'))",
+		"((`status` = 'completed') = ((`result_media_type` is not null)",
+		"(`result_sha256` regexp '^[0-9a-f]{64}$')",
+	} {
+		if !strings.Contains(check.clause, token) {
+			t.Errorf("tool executions CHECK lacks %q: %s", token, check.clause)
 		}
 	}
 }

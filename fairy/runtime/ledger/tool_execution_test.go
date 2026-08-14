@@ -55,7 +55,11 @@ func TestRecoveredToolExecutionSettlementRemainsSetBased(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	production := string(implementation) + string(api)
+	seekdb, err := os.ReadFile("store_seekdb.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	production := string(implementation) + string(api) + string(seekdb)
 	for _, forbidden := range []string{
 		"ListRecoverableToolExecutions",
 		"ListPendingToolExecutions",
@@ -74,6 +78,9 @@ func TestRecoveredToolExecutionSettlementRemainsSetBased(t *testing.T) {
 		"SELECT COUNT(*) FROM failed_turns",
 		"desktop capture was interrupted by Core restart",
 		"desktop capture evidence was lost during Core restart",
+		"INNER JOIN tool_executions execution",
+		"error_code = 'core_restarted'",
+		"DESKTOP_CAPTURE_RECOVERY_FAILED",
 	} {
 		if !strings.Contains(production, required) {
 			t.Fatalf("set-based recovery is missing %q", required)

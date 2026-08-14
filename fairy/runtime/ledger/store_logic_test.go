@@ -74,13 +74,15 @@ func TestUsageReportCollectorBoundsRecentAcrossLargeHistory(t *testing.T) {
 }
 
 func TestProductionUsageReportDoesNotLoadFullHistoryCollections(t *testing.T) {
-	source, err := os.ReadFile("store_usage.go")
-	if err != nil {
-		t.Fatalf("ReadFile(store_usage.go) error = %v", err)
-	}
-	for _, forbidden := range []string{"LoadConversationCharacters(", "LoadUsageLedgerEvents(", "usageLedgerRowsFromAdapter("} {
-		if strings.Contains(string(source), forbidden) {
-			t.Fatalf("production usage report still uses full-history loader %q", forbidden)
+	for _, filename := range []string{"store_usage.go", "store_seekdb.go"} {
+		source, err := os.ReadFile(filename)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error = %v", filename, err)
+		}
+		for _, forbidden := range []string{"LoadConversationCharacters(", "LoadUsageLedgerEvents(", "usageLedgerRowsFromAdapter("} {
+			if strings.Contains(string(source), forbidden) {
+				t.Fatalf("production usage report still uses full-history loader %q in %s", forbidden, filename)
+			}
 		}
 	}
 }

@@ -47,6 +47,7 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	assertDuplicateRevalidationSchemaVerified(t, database)
 	assertSocialFeedbackEventsSchemaVerified(t, database)
 	assertStickerCatalogSchemaVerified(t, database)
+	assertToolExecutionLedgerSchemaVerified(t, database)
 	assertSchemaTableSet(t, database, CurrentSchemaRevision().Number)
 	if got := integrationJournalRowForRevision(t, database, foundationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("foundation attempt count = %d, want 1", got)
@@ -77,6 +78,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	}
 	if got := integrationJournalRowForRevision(t, database, stickerCatalogSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("sticker catalog attempt count = %d, want 1", got)
+	}
+	if got := integrationJournalRowForRevision(t, database, toolExecutionLedgerRevision).AttemptCount; got != 1 {
+		t.Fatalf("tool execution ledger attempt count = %d, want 1", got)
 	}
 
 	if err := MigrateSchema(t.Context(), database, BuiltinMigrations()); err != nil {
@@ -112,6 +116,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	if got := integrationJournalRowForRevision(t, database, stickerCatalogSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("sticker catalog attempt count after repeat = %d, want 1", got)
 	}
+	if got := integrationJournalRowForRevision(t, database, toolExecutionLedgerRevision).AttemptCount; got != 1 {
+		t.Fatalf("tool execution ledger attempt count after repeat = %d, want 1", got)
+	}
 	assertFoundationChecksRejectInvalidData(t, database)
 
 	closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
@@ -131,6 +138,7 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	assertDuplicateRevalidationSchemaVerified(t, restarted.SQL())
 	assertSocialFeedbackEventsSchemaVerified(t, restarted.SQL())
 	assertStickerCatalogSchemaVerified(t, restarted.SQL())
+	assertToolExecutionLedgerSchemaVerified(t, restarted.SQL())
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), foundationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("foundation attempt count after restart = %d, want 1", got)
 	}
@@ -161,6 +169,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), stickerCatalogSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("sticker catalog attempt count after restart = %d, want 1", got)
 	}
+	if got := integrationJournalRowForRevision(t, restarted.SQL(), toolExecutionLedgerRevision).AttemptCount; got != 1 {
+		t.Fatalf("tool execution ledger attempt count after restart = %d, want 1", got)
+	}
 }
 
 func TestRealSeekDBConversationSchemaUpgradesRevisionOneWithoutRewritingIt(t *testing.T) {
@@ -190,6 +201,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, "runtime", "upgrade-proof", 1, 1, `{"kept":true}`
 	assertDuplicateRevalidationSchemaVerified(t, database)
 	assertSocialFeedbackEventsSchemaVerified(t, database)
 	assertStickerCatalogSchemaVerified(t, database)
+	assertToolExecutionLedgerSchemaVerified(t, database)
 	for _, revision := range []int64{
 		foundationSchemaRevision,
 		conversationSchemaRevision,
@@ -201,6 +213,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, "runtime", "upgrade-proof", 1, 1, `{"kept":true}`
 		duplicateRevalidationRevision,
 		socialFeedbackEventsRevision,
 		stickerCatalogSchemaRevision,
+		toolExecutionLedgerRevision,
 	} {
 		row := integrationJournalRowForRevision(t, database, revision)
 		if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
@@ -559,6 +572,7 @@ func TestRealSeekDBDuplicateRevalidationSchemaFreshInstallIsCurrent(t *testing.T
 	assertDuplicateRevalidationSchemaVerified(t, database)
 	assertSocialFeedbackEventsSchemaVerified(t, database)
 	assertStickerCatalogSchemaVerified(t, database)
+	assertToolExecutionLedgerSchemaVerified(t, database)
 	assertSchemaTableSet(t, database, CurrentSchemaRevision().Number)
 	for _, revision := range []int64{
 		foundationSchemaRevision,
@@ -571,6 +585,7 @@ func TestRealSeekDBDuplicateRevalidationSchemaFreshInstallIsCurrent(t *testing.T
 		duplicateRevalidationRevision,
 		socialFeedbackEventsRevision,
 		stickerCatalogSchemaRevision,
+		toolExecutionLedgerRevision,
 	} {
 		row := integrationJournalRowForRevision(t, database, revision)
 		if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
@@ -590,6 +605,7 @@ func TestRealSeekDBDuplicateRevalidationSchemaFreshInstallIsCurrent(t *testing.T
 	assertDuplicateRevalidationSchemaVerified(t, restarted.SQL())
 	assertSocialFeedbackEventsSchemaVerified(t, restarted.SQL())
 	assertStickerCatalogSchemaVerified(t, restarted.SQL())
+	assertToolExecutionLedgerSchemaVerified(t, restarted.SQL())
 	assertSchemaTableSet(t, restarted.SQL(), CurrentSchemaRevision().Number)
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), cognitiveRecordsSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("fresh cognitive records attempt count after restart = %d, want 1", got)
@@ -949,7 +965,7 @@ func TestRealSeekDBCognitiveRecordsSchemaUpgradesRevisionSixRecoversPartialAndPe
 	}
 	for _, forbidden := range []string{
 		"social_memory_feedback_events", "extraction_batches", "extraction_batch_turns",
-		"stickers", "expression_deliveries",
+		"stickers", "expression_deliveries", "tool_executions",
 	} {
 		if got := integrationTableCount(t, database, forbidden); got != 0 {
 			t.Fatalf("revision seven created forbidden table %s", forbidden)
@@ -1329,10 +1345,10 @@ func TestRealSeekDBStickerCatalogSchemaUpgradesRevisionNineAndPersists(t *testin
 	if _, err := database.ExecContext(t.Context(), stickerCatalogSchema[0].ddl); err != nil {
 		t.Fatalf("precreate stickers table: %v", err)
 	}
-	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+	if err := MigrateSchema(t.Context(), database, migrations[:10]); err != nil {
 		t.Fatalf("MigrateSchema(partial revision ten) error = %v", err)
 	}
-	assertCurrentSchema(t, database, CurrentSchemaRevision())
+	assertCurrentSchema(t, database, migrations[9].Revision)
 	assertStickerCatalogSchemaVerified(t, database)
 	assertSchemaTableSet(t, database, stickerCatalogSchemaRevision)
 	row := integrationJournalRowForRevision(t, database, stickerCatalogSchemaRevision)
@@ -1340,8 +1356,11 @@ func TestRealSeekDBStickerCatalogSchemaUpgradesRevisionNineAndPersists(t *testin
 		t.Fatalf("sticker catalog journal = %#v", row)
 	}
 	assertStickerCatalogConstraints(t, database)
+	if got := integrationTableCount(t, database, toolExecutionsTableName); got != 0 {
+		t.Fatalf("revision ten created tool_executions table")
+	}
 
-	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+	if err := MigrateSchema(t.Context(), database, migrations[:10]); err != nil {
 		t.Fatalf("MigrateSchema(repeated revision ten) error = %v", err)
 	}
 	if got := integrationJournalRowForRevision(t, database, stickerCatalogSchemaRevision).AttemptCount; got != 1 {
@@ -1356,11 +1375,68 @@ func TestRealSeekDBStickerCatalogSchemaUpgradesRevisionNineAndPersists(t *testin
 	}
 	instance = restarted
 	closed = false
-	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
+	assertCurrentSchema(t, restarted.SQL(), migrations[9].Revision)
 	assertStickerCatalogSchemaVerified(t, restarted.SQL())
 	assertSchemaTableSet(t, restarted.SQL(), stickerCatalogSchemaRevision)
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), stickerCatalogSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("sticker catalog attempt count after restart = %d, want 1", got)
+	}
+}
+
+func TestRealSeekDBToolExecutionLedgerSchemaUpgradesRevisionTenAndPersists(t *testing.T) {
+	instance, config := openSchemaMigrationRuntime(t)
+	closed := false
+	defer func() {
+		if !closed {
+			closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+		}
+	}()
+	database := instance.SQL()
+	migrations := BuiltinMigrations()
+	if err := MigrateSchema(t.Context(), database, migrations[:10]); err != nil {
+		t.Fatalf("MigrateSchema(revision ten) error = %v", err)
+	}
+	assertCurrentSchema(t, database, migrations[9].Revision)
+	assertSchemaTableSet(t, database, stickerCatalogSchemaRevision)
+	if got := integrationTableCount(t, database, toolExecutionsTableName); got != 0 {
+		t.Fatalf("revision ten created tool_executions table")
+	}
+
+	if _, err := database.ExecContext(t.Context(), toolExecutionLedgerSchema[0].ddl); err != nil {
+		t.Fatalf("precreate tool_executions table: %v", err)
+	}
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(partial revision eleven) error = %v", err)
+	}
+	assertCurrentSchema(t, database, CurrentSchemaRevision())
+	assertToolExecutionLedgerSchemaVerified(t, database)
+	assertSchemaTableSet(t, database, toolExecutionLedgerRevision)
+	row := integrationJournalRowForRevision(t, database, toolExecutionLedgerRevision)
+	if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
+		t.Fatalf("tool execution ledger journal = %#v", row)
+	}
+	assertToolExecutionLedgerConstraints(t, database)
+
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(repeated revision eleven) error = %v", err)
+	}
+	if got := integrationJournalRowForRevision(t, database, toolExecutionLedgerRevision).AttemptCount; got != 1 {
+		t.Fatalf("tool execution ledger attempt count after repeat = %d, want 1", got)
+	}
+
+	closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+	closed = true
+	restarted, err := Open(t.Context(), config)
+	if err != nil {
+		t.Fatalf("restart SeekDB tool execution ledger runtime: %v", err)
+	}
+	instance = restarted
+	closed = false
+	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
+	assertToolExecutionLedgerSchemaVerified(t, restarted.SQL())
+	assertSchemaTableSet(t, restarted.SQL(), toolExecutionLedgerRevision)
+	if got := integrationJournalRowForRevision(t, restarted.SQL(), toolExecutionLedgerRevision).AttemptCount; got != 1 {
+		t.Fatalf("tool execution ledger attempt count after restart = %d, want 1", got)
 	}
 }
 
@@ -1897,6 +1973,8 @@ func assertCognitiveRecordsSchemaVerified(t *testing.T, database *sql.DB, revisi
 		migrationIndex = 8
 	case stickerCatalogSchemaRevision:
 		migrationIndex = 9
+	case toolExecutionLedgerRevision:
+		migrationIndex = 10
 	default:
 		t.Fatalf("verify cognitive records schema: unsupported revision %d", revision)
 	}
@@ -1947,6 +2025,18 @@ func assertStickerCatalogSchemaVerified(t *testing.T, database *sql.DB) {
 	}
 }
 
+func assertToolExecutionLedgerSchemaVerified(t *testing.T, database *sql.DB) {
+	t.Helper()
+	connection, err := database.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err := BuiltinMigrations()[10].Verify(t.Context(), connection); err != nil {
+		t.Fatalf("verify tool execution ledger schema: %v", err)
+	}
+}
+
 func assertStickerCatalogConstraints(t *testing.T, database *sql.DB) {
 	t.Helper()
 	hash := sha256.Sum256([]byte("sticker-catalog-valid"))
@@ -1982,6 +2072,42 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		"sticker-delivery-conversation", "sticker-delivery-turn", "final-0", "succeeded", "45123", nil, 1); err != nil {
 		t.Fatalf("insert valid expression delivery: %v", err)
 	}
+}
+
+func assertToolExecutionLedgerConstraints(t *testing.T, database *sql.DB) {
+	t.Helper()
+	insertIntegrationConversation(t, database, "tool-ledger-conversation", "tool-ledger-character", "character")
+	insertIntegrationTurn(t, database, "tool-ledger-turn", "tool-ledger-conversation", "", 1)
+	expectSeekDBConstraintError(t, database, `
+INSERT INTO tool_executions(
+  id, conversation_id, turn_id, call_id, tool_name, status,
+  deadline_at_ms, attempt_count, created_at_ms, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"tool-unsupported", "tool-ledger-conversation", "tool-ledger-turn", "call-1",
+		"memory_search", "pending", 2, 0, 1, 1)
+	expectSeekDBConstraintError(t, database, `
+INSERT INTO tool_executions(
+  id, conversation_id, turn_id, call_id, tool_name, status,
+  deadline_at_ms, attempt_count, created_at_ms, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"tool-completed-empty", "tool-ledger-conversation", "tool-ledger-turn", "call-2",
+		"desktop_observe", "completed", 2, 0, 1, 1)
+	if _, err := database.ExecContext(t.Context(), `
+INSERT INTO tool_executions(
+  id, conversation_id, turn_id, call_id, tool_name, status,
+  deadline_at_ms, attempt_count, created_at_ms, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"tool-valid", "tool-ledger-conversation", "tool-ledger-turn", "call-3",
+		"desktop_observe", "pending", 2, 0, 1, 1); err != nil {
+		t.Fatalf("insert valid tool execution: %v", err)
+	}
+	expectSeekDBConstraintError(t, database, `
+INSERT INTO tool_executions(
+  id, conversation_id, turn_id, call_id, tool_name, status,
+  deadline_at_ms, attempt_count, created_at_ms, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"tool-dup-tool", "tool-ledger-conversation", "tool-ledger-turn", "call-4",
+		"desktop_observe", "pending", 2, 0, 1, 1)
 }
 
 func insertIntegrationRevisionSevenPersonalMemories(
@@ -2140,8 +2266,8 @@ WHERE table_schema = DATABASE()
 
 func assertSchemaTableSet(t *testing.T, database *sql.DB, revision int64) {
 	t.Helper()
-	if revision < foundationSchemaRevision || revision > stickerCatalogSchemaRevision {
-		t.Fatalf("schema table-set revision = %d, want %d..%d", revision, foundationSchemaRevision, stickerCatalogSchemaRevision)
+	if revision < foundationSchemaRevision || revision > toolExecutionLedgerRevision {
+		t.Fatalf("schema table-set revision = %d, want %d..%d", revision, foundationSchemaRevision, toolExecutionLedgerRevision)
 	}
 	expected := make([]string, 0)
 	for _, table := range foundationSchema {
@@ -2175,6 +2301,9 @@ func assertSchemaTableSet(t *testing.T, database *sql.DB, revision int64) {
 	}
 	if revision >= stickerCatalogSchemaRevision {
 		expected = append(expected, stickersTableName, expressionDeliveriesTableName)
+	}
+	if revision >= toolExecutionLedgerRevision {
+		expected = append(expected, toolExecutionsTableName)
 	}
 	for _, table := range expected {
 		if got := integrationTableCount(t, database, table); got != 1 {

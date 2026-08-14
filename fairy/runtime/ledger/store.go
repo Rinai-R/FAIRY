@@ -3,6 +3,7 @@ package ledger
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -15,19 +16,58 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-var ErrDatabasePoolEmpty = errors.New("observability database pool is required")
+var (
+	ErrDatabasePoolEmpty       = errors.New("observability database pool is required")
+	ErrSeekDBConnectionEmpty   = errors.New("observability SeekDB connection is required")
+	ErrSeekDBQueryLimitInvalid = errors.New("observability SeekDB query limit must be greater than zero")
+	ErrStoreBackendUnavailable = errors.New("observability store backend is unavailable")
+)
 
 // Store owns durable execution diagnostics: model usage and tool executions.
 // It does not own conversation content or learned memory.
 type Store struct {
-	pool *coredb.Pool
+	pool       *coredb.Pool
+	seekDB     *sql.DB
+	queryLimit time.Duration
+	now        func() time.Time
 }
 
 func NewStoreFromPool(pool *coredb.Pool) (*Store, error) {
 	if pool == nil || pool.Raw() == nil {
 		return nil, ErrDatabasePoolEmpty
 	}
-	return &Store{pool: pool}, nil
+	return &Store{pool: pool, now: time.Now}, nil
+}
+
+// NewSeekDBStore creates an observability ledger whose only authority is SeekDB.
+// It never falls back to the legacy PostgreSQL pool.
+func NewSeekDBStore(database *sql.DB, queryLimit time.Duration) (*Store, error) {
+	if database == nil {
+		return nil, ErrSeekDBConnectionEmpty
+	}
+	if queryLimit <= 0 {
+		return nil, ErrSeekDBQueryLimitInvalid
+	}
+	return &Store{seekDB: database, queryLimit: queryLimit, now: time.Now}, nil
+}
+
+func (s *Store) usesSeekDB() bool { return s != nil && s.seekDB != nil }
+
+func (s *Store) usesPostgres() bool { return s != nil && s.pool != nil && s.pool.Raw() != nil }
+
+func (s *Store) seekDBQueryContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(parent, s.queryLimit)
+}
+
+func (s *Store) currentUnixMS() int64 {
+	now := time.Now
+	if s != nil && s.now != nil {
+		now = s.now
+	}
+	return max(now().UnixMilli(), int64(1))
 }
 
 type scanner interface{ Scan(dest ...any) error }
