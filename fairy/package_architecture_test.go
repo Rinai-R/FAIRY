@@ -20,6 +20,7 @@ var targetPackages = []string{
 	"fairy",
 	"fairy/context/character",
 	"fairy/app/cmd",
+	"fairy/app/edge",
 	"fairy/app/foundation",
 	"fairy/app/session",
 	"fairy/runtime/config",
@@ -307,11 +308,11 @@ func TestApplicationPackagesDoNotImportInternalLayers(t *testing.T) {
 
 func TestBusinessPackagesDoNotImportComposition(t *testing.T) {
 	for _, pkg := range listPackages(t, "./...") {
-		if slices.Contains([]string{"fairy", "fairy/transport/web", "fairy/app/cmd", "fairy/app/core"}, pkg.ImportPath) {
+		if slices.Contains([]string{"fairy", "fairy/transport/web", "fairy/app/cmd", "fairy/app/core", "fairy/app/edge"}, pkg.ImportPath) {
 			continue
 		}
 		for _, imported := range pkg.Imports {
-			if slices.Contains([]string{"fairy/transport/web", "fairy/app/cmd", "fairy/app/core"}, imported) {
+			if slices.Contains([]string{"fairy/transport/web", "fairy/app/cmd", "fairy/app/core", "fairy/app/edge"}, imported) {
 				t.Errorf("business package %s imports composition package %s", pkg.ImportPath, imported)
 			}
 		}
@@ -441,7 +442,7 @@ func TestCapabilityPackagesDoNotImportExecutionOrComposition(t *testing.T) {
 	}
 	forbidden := []string{
 		"fairy/agent/conversation", "fairy/agent/presence", "fairy/agent/learning",
-		"fairy/app/core", "fairy/transport/web", "fairy/app/cmd",
+		"fairy/app/core", "fairy/app/edge", "fairy/transport/web", "fairy/app/cmd",
 	}
 	for _, pkg := range listPackages(t, capabilities...) {
 		for _, imported := range pkg.Imports {
