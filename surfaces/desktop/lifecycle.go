@@ -54,10 +54,51 @@ func defaultOpenEdge(ctx context.Context) (ownedRuntime, error) {
 	return edgeAdapter{runtime: runtime}, nil
 }
 
+func (s *CoreService) focusExistingInstance() {
+	s.mu.Lock()
+	companion := s.companion
+	s.mu.Unlock()
+	if companion == nil {
+		return
+	}
+	companion.Show()
+	companion.Focus()
+}
+
 func (s *CoreService) ServiceStartup(ctx context.Context, _ application.ServiceOptions) error {
 	if s == nil {
 		return errors.New("desktop core service is unavailable")
 	}
+	resolve := s.profileDir
+	if resolve == nil {
+		resolve = desktopProfileDir
+	}
+	dir, err := resolve()
+	if err != nil {
+		return err
+	}
+	acquire := s.acquireLock
+	if acquire == nil {
+		acquire = acquireInstanceLock
+	}
+	guard, err := acquire(dir, s.focusExistingInstance)
+	if err != nil {
+		if errors.Is(err, ErrInstanceHeld) {
+			notify := s.requestFocus
+			if notify == nil {
+				notify = requestInstanceFocus
+			}
+			_ = notify(dir)
+		}
+		return err
+	}
+	keepLock := false
+	defer func() {
+		if keepLock {
+			return
+		}
+		_ = guard.Close()
+	}()
 	open := s.openEdge
 	if open == nil {
 		open = defaultOpenEdge
@@ -67,16 +108,18 @@ func (s *CoreService) ServiceStartup(ctx context.Context, _ application.ServiceO
 		return err
 	}
 	s.mu.Lock()
-	if s.edge != nil {
+	if s.edge != nil || s.instance != nil {
 		s.mu.Unlock()
 		_ = runtime.Close(ctx)
 		return errors.New("edge runtime is already started")
 	}
 	s.edge = runtime
+	s.instance = guard
 	if s.shutdownBudget.Turn == 0 {
 		s.shutdownBudget = defaultShutdownBudget()
 	}
 	s.mu.Unlock()
+	keepLock = true
 	return nil
 }
 
@@ -97,9 +140,10 @@ func (s *CoreService) shutdownOwnedRuntime(parent context.Context) error {
 		budget = defaultShutdownBudget()
 	}
 	runtime := s.edge
+	guard := s.instance
 	conversation, turnID, active := s.conversation, s.activeTurnID, s.active
 	socket, cache, observation := s.socket, s.visualCache, s.observation
-	s.socket, s.assets, s.visualCache, s.observation, s.edge = nil, nil, nil, nil, nil
+	s.socket, s.assets, s.visualCache, s.observation, s.edge, s.instance = nil, nil, nil, nil, nil, nil
 	s.active, s.activeTurnID = false, ""
 	s.mu.Unlock()
 
@@ -125,6 +169,9 @@ func (s *CoreService) shutdownOwnedRuntime(parent context.Context) error {
 		runtimeCtx, cancelRuntime := context.WithTimeout(parent, budget.Runtime)
 		errs = errors.Join(errs, runtime.Close(runtimeCtx))
 		cancelRuntime()
+	}
+	if guard != nil {
+		errs = errors.Join(errs, guard.Close())
 	}
 	return errs
 }

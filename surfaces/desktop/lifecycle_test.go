@@ -62,6 +62,7 @@ func (f *fakeOwnedRuntime) snapshot() []string {
 
 func TestServiceStartupFailsClosedWhenEdgeOpenFails(t *testing.T) {
 	service := NewCoreService()
+	useTempProfile(t, service)
 	want := errors.New("seekdb binary is required")
 	service.openEdge = func(context.Context) (ownedRuntime, error) {
 		return nil, want
@@ -119,6 +120,7 @@ func TestServiceShutdownHonorsReverseDeadlines(t *testing.T) {
 func TestServiceStartupThenShutdownClosesInjectedRuntime(t *testing.T) {
 	runtime := &fakeOwnedRuntime{}
 	service := NewCoreService()
+	useTempProfile(t, service)
 	service.openEdge = func(context.Context) (ownedRuntime, error) {
 		return runtime, nil
 	}
@@ -138,6 +140,7 @@ func TestServiceStartupThenShutdownClosesInjectedRuntime(t *testing.T) {
 
 func TestServiceStartupDoesNotMentionLegacyCoreEndpoint(t *testing.T) {
 	service := NewCoreService()
+	useTempProfile(t, service)
 	service.openEdge = func(context.Context) (ownedRuntime, error) {
 		return nil, errors.New("SeekDB binary is required")
 	}

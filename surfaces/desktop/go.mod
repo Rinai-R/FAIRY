@@ -9,6 +9,7 @@ require (
 	github.com/spf13/pathologize v1.1.0
 	github.com/wailsapp/wails/v3 v3.0.0-alpha2.117
 	golang.org/x/image v0.40.0
+	golang.org/x/sys v0.45.0
 )
 
 replace fairy => ../../fairy
@@ -45,6 +46,5 @@ require (
 	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/net v0.53.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )

@@ -61,6 +61,10 @@ type CoreService struct {
 	openEdge         func(context.Context) (ownedRuntime, error)
 	openTransport    func(context.Context) (sessionPlane, sessionAssets, CoreSettings, error)
 	localEndpointKey string
+	instance         instanceGuard
+	acquireLock      func(string, func()) (instanceGuard, error)
+	profileDir       func() (string, error)
+	requestFocus     func(string) error
 	shutdownBudget   shutdownBudget
 }
 

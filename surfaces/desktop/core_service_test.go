@@ -544,6 +544,7 @@ func TestConnectUsesInProcessFacadeWithoutHTTP(t *testing.T) {
 	}
 	runtime := &scriptedOwnedRuntime{plane: plane, assets: assets}
 	service := NewCoreService()
+	useTempProfile(t, service)
 	service.newCache = func() (*visualCache, error) { return newVisualCacheAt(t.TempDir()) }
 	service.openEdge = func(context.Context) (ownedRuntime, error) { return runtime, nil }
 	if err := service.ServiceStartup(t.Context(), application.ServiceOptions{}); err != nil {
