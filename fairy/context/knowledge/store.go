@@ -15,11 +15,10 @@ import (
 )
 
 var (
-	ErrDatabasePoolEmpty          = errors.New("knowledge database pool is required")
-	ErrSeekDBConnectionEmpty      = errors.New("knowledge SeekDB connection is required")
-	ErrSeekDBQueryLimitInvalid    = errors.New("knowledge SeekDB query limit must be greater than zero")
-	ErrStoreBackendUnavailable    = errors.New("knowledge store backend is unavailable")
-	ErrSeekDBRetrievalUnavailable = errors.New("knowledge SeekDB hybrid retrieval is unavailable")
+	ErrDatabasePoolEmpty       = errors.New("knowledge database pool is required")
+	ErrSeekDBConnectionEmpty   = errors.New("knowledge SeekDB connection is required")
+	ErrSeekDBQueryLimitInvalid = errors.New("knowledge SeekDB query limit must be greater than zero")
+	ErrStoreBackendUnavailable = errors.New("knowledge store backend is unavailable")
 )
 
 type Store struct {

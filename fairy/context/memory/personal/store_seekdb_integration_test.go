@@ -45,6 +45,7 @@ func TestRealSeekDBPersonalStoreIsScopedAtomicAndPersistent(t *testing.T) {
 
 	records := assertPersonalSeekDBCRUDCatalogAndEmbeddings(t, database, textStore, vectorStore)
 	assertPersonalSeekDBProjectionIsScoped(t, textStore, vectorStore)
+	assertPersonalSeekDBHybridRetrieval(t, textStore, vectorStore)
 	assertPersonalSeekDBPortraitIsScopedAndBounded(t, vectorStore)
 	assertPersonalSeekDBSummary(t, database, textStore)
 	assertPersonalSeekDBProviderFailureWritesNothing(t, database, textStore, runtimeConfig.QueryLimit)
@@ -266,6 +267,95 @@ func assertPersonalSeekDBProjectionIsScoped(t *testing.T, textStore, vectorStore
 			record.Scope.Type == "character" && record.Scope.CharacterID != personalCharacterA {
 			t.Fatalf("projection leaked invalid scope: %#v", record)
 		}
+	}
+}
+
+func assertPersonalSeekDBHybridRetrieval(t *testing.T, textStore, vectorStore *Store) {
+	t.Helper()
+	ctx := t.Context()
+	global, err := textStore.CreatePersonalMemoryContext(
+		ctx, "profile", Scope{Type: "global"}, "hybrid-global-aurora-token 公开场合先听完再回应", 9100,
+	)
+	if err != nil {
+		t.Fatalf("create hybrid global memory: %v", err)
+	}
+	characterA, err := vectorStore.CreatePersonalMemoryContext(
+		ctx, "relationship", Scope{Type: "character", CharacterID: personalCharacterA},
+		"hybrid-character-aurora-token 只属于角色 A 的关系", 9300,
+	)
+	if err != nil {
+		t.Fatalf("create hybrid character A memory: %v", err)
+	}
+	characterB, err := vectorStore.CreatePersonalMemoryContext(
+		ctx, "relationship", Scope{Type: "character", CharacterID: personalCharacterB},
+		"hybrid-character-aurora-token 只属于角色 B 的关系", 9900,
+	)
+	if err != nil {
+		t.Fatalf("create hybrid character B memory: %v", err)
+	}
+	pending, err := textStore.CreatePersonalMemoryContext(
+		ctx, "relationship", Scope{Type: "unassigned_legacy"},
+		"hybrid-review-aurora-token 待审记忆不得进入召回", 8000,
+	)
+	if err != nil {
+		t.Fatalf("create hybrid needs-review memory: %v", err)
+	}
+
+	textGlobal, err := textStore.RetrieveContext(ctx, personalCharacterA, "hybrid-global-aurora-token")
+	if err != nil {
+		t.Fatalf("text-only global retrieve: %v", err)
+	}
+	if textGlobal.SemanticStatus != string(embedding.SemanticStatusUnavailable) {
+		t.Fatalf("text-only semantic status = %q, want unavailable", textGlobal.SemanticStatus)
+	}
+	if !personalRetrievedContain(textGlobal.PersonalMemories, global.ID) {
+		t.Fatalf("text-only retrieve missed global memory: %#v", textGlobal)
+	}
+
+	textCharacter, err := textStore.RetrieveContext(ctx, personalCharacterA, "hybrid-character-aurora-token")
+	if err != nil {
+		t.Fatalf("text-only character retrieve: %v", err)
+	}
+	if !personalRetrievedContain(textCharacter.PersonalMemories, characterA.ID) {
+		t.Fatalf("text-only retrieve missed character A: %#v", textCharacter)
+	}
+	if personalRetrievedContain(textCharacter.PersonalMemories, characterB.ID) ||
+		personalRetrievedContain(textCharacter.PersonalMemories, pending.ID) {
+		t.Fatalf("text-only retrieve leaked character/status records: %#v", textCharacter)
+	}
+
+	textPending, err := textStore.RetrieveContext(ctx, personalCharacterA, "hybrid-review-aurora-token")
+	if err != nil {
+		t.Fatalf("text-only needs-review retrieve: %v", err)
+	}
+	if personalRetrievedContain(textPending.PersonalMemories, pending.ID) {
+		t.Fatalf("text-only retrieve leaked needs-review memory: %#v", textPending)
+	}
+
+	vectorOnly, err := vectorStore.RetrieveContext(ctx, personalCharacterA, "zzzzvectorquery")
+	if err != nil {
+		t.Fatalf("vector-only personal retrieve: %v", err)
+	}
+	if vectorOnly.SemanticStatus != string(embedding.SemanticStatusUsed) {
+		t.Fatalf("vector retrieve semantic status = %q, want used", vectorOnly.SemanticStatus)
+	}
+	if !personalRetrievedContain(vectorOnly.PersonalMemories, characterA.ID) {
+		t.Fatalf("vector retrieve missed in-scope character memory: %#v", vectorOnly)
+	}
+	if personalRetrievedContain(vectorOnly.PersonalMemories, characterB.ID) ||
+		personalRetrievedContain(vectorOnly.PersonalMemories, pending.ID) {
+		t.Fatalf("vector retrieve leaked character/status records: %#v", vectorOnly)
+	}
+
+	textOnlyVectorQuery, err := textStore.RetrieveContext(ctx, personalCharacterA, "zzzzvectorquery")
+	if err != nil {
+		t.Fatalf("text-only vector query: %v", err)
+	}
+	if textOnlyVectorQuery.SemanticStatus != string(embedding.SemanticStatusUnavailable) {
+		t.Fatalf("text-only vector-query status = %q, want unavailable", textOnlyVectorQuery.SemanticStatus)
+	}
+	if personalRetrievedContain(textOnlyVectorQuery.PersonalMemories, characterA.ID) {
+		t.Fatalf("text-only mode invented a vector hit: %#v", textOnlyVectorQuery)
 	}
 }
 

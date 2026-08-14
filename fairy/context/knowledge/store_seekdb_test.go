@@ -44,7 +44,7 @@ func TestNewSeekDBStoreValidatesAndSelectsOneAuthority(t *testing.T) {
 	}
 }
 
-func TestSeekDBRetrieveContextFailsClosedWithoutQueryOrFallback(t *testing.T) {
+func TestSeekDBRetrieveContextValidatesQueryBeforeOpening(t *testing.T) {
 	connector := &knowledgeUnitConnector{}
 	database := sql.OpenDB(connector)
 	t.Cleanup(func() { _ = database.Close() })
@@ -53,12 +53,61 @@ func TestSeekDBRetrieveContextFailsClosedWithoutQueryOrFallback(t *testing.T) {
 		t.Fatalf("NewSeekDBStore() error = %v", err)
 	}
 
-	_, err = store.RetrieveContext(context.Background(), "verified fact")
-	if !errors.Is(err, ErrSeekDBRetrievalUnavailable) {
-		t.Fatalf("RetrieveContext() error = %v, want %v", err, ErrSeekDBRetrievalUnavailable)
+	_, err = store.RetrieveContext(context.Background(), "   ")
+	if err == nil || err.Error() != "knowledge search query is required" {
+		t.Fatalf("RetrieveContext(blank) error = %v, want query required", err)
 	}
 	if got := connector.connects.Load(); got != 0 {
-		t.Fatalf("RetrieveContext opened %d database connections, want 0", got)
+		t.Fatalf("blank RetrieveContext opened %d database connections, want 0", got)
+	}
+
+	_, err = store.RetrieveContext(context.Background(), "verified fact")
+	if err == nil {
+		t.Fatal("RetrieveContext() error = nil, want database connection error")
+	}
+	if got := connector.connects.Load(); got == 0 {
+		t.Fatal("RetrieveContext did not query SeekDB")
+	}
+}
+
+func TestSeekDBKnowledgeHybridSQLKeepsVerifiedScopeBeforeRanking(t *testing.T) {
+	for _, fragment := range []string{
+		"status = 'verified'",
+		"COSINE_DISTANCE(entry.embedding, ?)",
+		"embedding_space_id = ?",
+		"ORDER BY COSINE_DISTANCE(entry.embedding, ?), entry.id ASC",
+	} {
+		if !strings.Contains(knowledgeSeekDBVectorSearchSQL, fragment) {
+			t.Fatalf("SeekDB knowledge vector SQL is missing %q", fragment)
+		}
+	}
+	if strings.Contains(knowledgeSeekDBVectorSearchSQL, "APPROXIMATE") {
+		t.Fatal("4.5 knowledge vector SQL must use exact cosine, not ANN")
+	}
+	for _, table := range []string{"personal_memories", "social_memory_entries"} {
+		if strings.Contains(knowledgeSeekDBVectorSearchSQL, table) ||
+			strings.Contains(knowledgeIngestSearchSeekDBSQL, table) {
+			t.Fatalf("public retrieval SQL must not read %s", table)
+		}
+	}
+	if got := strings.Count(knowledgeSeekDBVectorSearchSQL, "status = 'verified'"); got != 1 {
+		t.Fatalf("verified status predicates in vector SQL = %d, want 1", got)
+	}
+}
+
+func TestQuerySeekDBKnowledgeEmbeddingMarksTextOnlyWithoutProvider(t *testing.T) {
+	literal, spaceID, status, err := querySeekDBKnowledgeEmbedding(context.Background(), nil, "verified fact")
+	if err != nil || literal != "" || spaceID != "" || status != embedding.SemanticStatusUnavailable {
+		t.Fatalf("nil embedder = (%q, %q, %s, %v)", literal, spaceID, status, err)
+	}
+
+	embedder := &knowledgeUnitLegacyEmbedder{}
+	literal, spaceID, status, err = querySeekDBKnowledgeEmbedding(context.Background(), embedder, "verified fact")
+	if err != nil || literal == "" || spaceID != "unit-model" || status != embedding.SemanticStatusReady {
+		t.Fatalf("ready embedder = (%q, %q, %s, %v)", literal, spaceID, status, err)
+	}
+	if embedder.calls.Load() != 1 {
+		t.Fatalf("ready embedder calls = %d, want 1", embedder.calls.Load())
 	}
 }
 

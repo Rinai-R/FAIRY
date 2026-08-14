@@ -26,7 +26,7 @@ func (s *Store) searchForIngestPostgres(
 
 func (s *Store) RetrieveContext(ctx context.Context, query string) (Retrieval, error) {
 	if s.usesSeekDB() {
-		return Retrieval{}, ErrSeekDBRetrievalUnavailable
+		return s.retrieveSeekDB(ctx, query)
 	}
 	if !s.usesPostgres() {
 		return Retrieval{}, ErrStoreBackendUnavailable

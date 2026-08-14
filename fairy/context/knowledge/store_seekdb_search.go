@@ -56,12 +56,9 @@ func knowledgeIngestSearchUsesLiteralOnly(query string) bool {
 	return strings.ContainsAny(query, "%_")
 }
 
-// searchForIngestSeekDB is deliberately text-only until the general hybrid
-// retrieval task lands. Candidate generation is status-first, and the native
-// FULLTEXT branch is combined with a literal branch so tokenizer boundaries do
-// not hide exact substrings. Queries that contain LIKE wildcards stay on the
-// literal branch: IK FULLTEXT treats `%` and `_` as token separators and would
-// otherwise recall records that do not contain the original substring.
+// searchForIngestSeekDB keeps the Knowledge Worker on verified-only text
+// candidates. Public hybrid retrieval fuses this path with exact cosine
+// candidates in retrieveSeekDB; ingest lookup does not invent vector scores.
 func (s *Store) searchForIngestSeekDB(ctx context.Context, query string, limit int) ([]Retrieved, error) {
 	queryCtx, cancel := s.seekDBQueryContext(ctx)
 	defer cancel()
@@ -76,7 +73,11 @@ func (s *Store) searchForIngestSeekDB(ctx context.Context, query string, limit i
 		return nil, fmt.Errorf("searching SeekDB knowledge for ingest: %w", err)
 	}
 	defer rows.Close()
-	results := make([]Retrieved, 0, limit)
+	return scanSeekDBKnowledgeRetrieved(rows, "scanning SeekDB knowledge ingest result", true)
+}
+
+func scanSeekDBKnowledgeRetrieved(rows *sql.Rows, scanLabel string, requirePositiveScore bool) ([]Retrieved, error) {
+	results := make([]Retrieved, 0)
 	for rows.Next() {
 		var (
 			record          Retrieved
@@ -91,12 +92,12 @@ func (s *Store) searchForIngestSeekDB(ctx context.Context, query string, limit i
 			&confidence, &sourceURL, &sourceTitle, &sourceEvidence, &sourceFetchedAt,
 			&record.UpdatedAtUnixMS, &record.TextScore,
 		); err != nil {
-			return nil, fmt.Errorf("scanning SeekDB knowledge ingest result: %w", err)
+			return nil, fmt.Errorf("%s: %w", scanLabel, err)
 		}
 		if confidence < 0 || confidence > 10000 {
 			return nil, errors.New("knowledge search confidence is invalid")
 		}
-		if record.TextScore <= 0 || record.TextScore > 1 {
+		if record.TextScore < 0 || record.TextScore > 1 || (requirePositiveScore && record.TextScore <= 0) {
 			return nil, errors.New("knowledge search score is invalid")
 		}
 		record.Layer = "knowledge"
@@ -119,7 +120,7 @@ func (s *Store) searchForIngestSeekDB(ctx context.Context, query string, limit i
 		results = append(results, record)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating SeekDB knowledge ingest results: %w", err)
+		return nil, fmt.Errorf("iterating SeekDB knowledge results: %w", err)
 	}
 	return results, nil
 }

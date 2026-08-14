@@ -4,6 +4,7 @@ package knowledge
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"math"
@@ -53,6 +54,7 @@ func TestRealSeekDBKnowledgeStoreIsAtomicAndPersistent(t *testing.T) {
 	assertKnowledgeSeekDBIngestSearchSemantics(t, database, textStore)
 	catalog := assertKnowledgeSeekDBCatalogAndStatusIsolation(t, database, runtimeConfig.QueryLimit, textStore, vectorStore)
 	actions := assertKnowledgeSeekDBDocumentActionsAreAtomic(t, database, runtimeConfig.QueryLimit, textStore, vectorStore)
+	assertKnowledgeSeekDBHybridRetrieval(t, database, textStore, vectorStore, direct, catalog)
 	assertKnowledgeSeekDBVectorMaintenance(t, database, runtimeConfig.QueryLimit, direct, catalog)
 
 	if err := seekdb.MigrateSchema(t.Context(), database, seekdb.BuiltinMigrations()); err != nil {
@@ -957,6 +959,128 @@ func knowledgeIntegrationDocument(prefix string, fetchedAt int64, content string
 		ReconcilerRevision: embedding.ContentHash("reconciler-" + prefix),
 	}
 	return task, document
+}
+
+func assertKnowledgeSeekDBHybridRetrieval(
+	t *testing.T,
+	database *sql.DB,
+	textStore, vectorStore *Store,
+	direct knowledgeDirectFixture,
+	catalog knowledgeCatalogFixture,
+) {
+	t.Helper()
+	ctx := t.Context()
+	seedKnowledgePrivacyLeakRecords(t, database)
+
+	text, err := textStore.RetrieveContext(ctx, "玄蓝星航")
+	if err != nil {
+		t.Fatalf("text-only public retrieve: %v", err)
+	}
+	if text.SemanticStatus != string(embedding.SemanticStatusUnavailable) {
+		t.Fatalf("text-only semantic status = %q, want unavailable", text.SemanticStatus)
+	}
+	if !knowledgeRetrievedContain(text.Entries, "玄蓝星航公开知识") {
+		t.Fatalf("text-only retrieve missed verified knowledge: %#v", text)
+	}
+	assertKnowledgeRetrievalExcludesPrivateAndTerminal(t, text.Entries, catalog)
+
+	hybrid, err := vectorStore.RetrieveContext(ctx, "玄蓝星航")
+	if err != nil {
+		t.Fatalf("hybrid public retrieve: %v", err)
+	}
+	if hybrid.SemanticStatus != string(embedding.SemanticStatusUsed) {
+		t.Fatalf("hybrid semantic status = %q, want used", hybrid.SemanticStatus)
+	}
+	if !knowledgeRetrievedContain(hybrid.Entries, "玄蓝星航公开知识") {
+		t.Fatalf("hybrid retrieve missed verified knowledge: %#v", hybrid)
+	}
+	assertKnowledgeRetrievalExcludesPrivateAndTerminal(t, hybrid.Entries, catalog)
+
+	textVectorQuery, err := textStore.RetrieveContext(ctx, "zzzzvectorquery")
+	if err != nil {
+		t.Fatalf("text-only vector query: %v", err)
+	}
+	if textVectorQuery.SemanticStatus != string(embedding.SemanticStatusUnavailable) {
+		t.Fatalf("text-only vector-query status = %q, want unavailable", textVectorQuery.SemanticStatus)
+	}
+	if knowledgeRetrievedContainID(textVectorQuery.Entries, direct.sourced.ID) {
+		t.Fatalf("text-only mode invented a vector hit: %#v", textVectorQuery)
+	}
+
+	vectorOnly, err := vectorStore.RetrieveContext(ctx, "zzzzvectorquery")
+	if err != nil {
+		t.Fatalf("vector-only public retrieve: %v", err)
+	}
+	if vectorOnly.SemanticStatus != string(embedding.SemanticStatusUsed) {
+		t.Fatalf("vector-only semantic status = %q, want used", vectorOnly.SemanticStatus)
+	}
+	if !knowledgeRetrievedContainID(vectorOnly.Entries, direct.sourced.ID) &&
+		!knowledgeRetrievedContainID(vectorOnly.Entries, direct.sourceFree.ID) {
+		t.Fatalf("vector-only retrieve missed embedded verified knowledge: %#v", vectorOnly)
+	}
+	assertKnowledgeRetrievalExcludesPrivateAndTerminal(t, vectorOnly.Entries, catalog)
+}
+
+func assertKnowledgeRetrievalExcludesPrivateAndTerminal(
+	t *testing.T,
+	entries []Retrieved,
+	catalog knowledgeCatalogFixture,
+) {
+	t.Helper()
+	for _, entry := range entries {
+		switch entry.ID {
+		case "privacy-leak-personal", "privacy-leak-social",
+			catalog.failedCandidateID, catalog.tombstoneID,
+			"knowledge-candidate-search-isolation":
+			t.Fatalf("public retrieval leaked private or terminal record: %#v", entry)
+		}
+	}
+}
+
+func seedKnowledgePrivacyLeakRecords(t *testing.T, database *sql.DB) {
+	t.Helper()
+	now := int64(1_786_200_002_000)
+	personalContent := "玄蓝星航公开知识只是伪装成公共事实的个人记忆。"
+	personalHash := sha256.Sum256([]byte(personalContent))
+	if _, err := database.ExecContext(t.Context(), `
+INSERT INTO personal_memories(
+  id, kind, scope_kind, character_id, review_status, content, status,
+  confidence_basis_points, source_conversation_id, source_turn_id, evidence_ids,
+  supersedes_id, embedding_space_id, embedding_content_hash, embedding,
+  created_at_ms, updated_at_ms, normalized_content_hash
+) VALUES (
+  'privacy-leak-personal', 'profile', 'global', NULL, 'ready', ?, 'active',
+  9900, ?, ?, CAST('[]' AS JSON), NULL, ?, ?, ?, ?, ?, ?
+)`,
+		personalContent, knowledgeIntegrationConversation, knowledgeIntegrationTurn,
+		knowledgeIntegrationSpaceA, personalHash[:], knowledgeIntegrationVectorLiteral(),
+		now, now, personalHash[:],
+	); err != nil {
+		t.Fatalf("seed privacy-leak personal memory: %v", err)
+	}
+
+	socialContent := "社交侧的相似向量不得进入公共召回。"
+	socialHash := sha256.Sum256([]byte("privacy-leak-social"))
+	embeddingHash := sha256.Sum256([]byte(socialContent))
+	if _, err := database.ExecContext(t.Context(), `
+INSERT INTO social_memory_entries(
+  id, character_id, conversation_id, kind, situation, content, recall_cue,
+  content_hash, sender_id, sender_name, status, source_start_ms, source_end_ms,
+  feedback_evaluation_count, feedback_adopted_count, feedback_positive_count,
+  feedback_partial_count, feedback_negative_count, feedback_score_basis_points,
+  embedding_space_id, embedding_content_hash, embedding, created_at_ms, updated_at_ms
+) VALUES (
+  'privacy-leak-social', ?, ?, 'episode', '玄蓝星航公开知识', ?, '玄蓝星航',
+  ?, NULL, '', 'active', 1, 1,
+  0, 0, 0, 0, 0, 0,
+  ?, ?, ?, ?, ?
+)`,
+		knowledgeIntegrationCharacter, knowledgeIntegrationConversation, socialContent,
+		socialHash[:], knowledgeIntegrationSpaceA, embeddingHash[:],
+		knowledgeIntegrationVectorLiteral(), now, now,
+	); err != nil {
+		t.Fatalf("seed privacy-leak social memory: %v", err)
+	}
 }
 
 func seedKnowledgeIntegrationAuthority(t *testing.T, database *sql.DB) {
