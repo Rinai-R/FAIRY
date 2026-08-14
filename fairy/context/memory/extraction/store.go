@@ -91,6 +91,7 @@ func NewSeekDBStore(database *sql.DB, queryLimit time.Duration, workerID string,
 	return &Store{
 		seekDB:           database,
 		queryLimit:       queryLimit,
+		embedder:         embedding.NewDynamicSemanticEmbedder(nil),
 		workerID:         workerID,
 		jobLeaseDuration: leaseDuration,
 		now:              time.Now,

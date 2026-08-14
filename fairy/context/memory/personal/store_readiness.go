@@ -7,8 +7,11 @@ import (
 )
 
 func (s *Store) SemanticEmbeddingStatus(ctx context.Context) (SemanticEmbeddingReadiness, error) {
-	if s == nil || s.pool == nil {
-		return SemanticEmbeddingReadiness{}, ErrDatabasePoolEmpty
+	if s.usesSeekDB() {
+		return s.semanticEmbeddingStatusSeekDB(ctx)
+	}
+	if !s.usesPostgres() {
+		return SemanticEmbeddingReadiness{}, ErrStoreBackendUnavailable
 	}
 	queryCtx, cancel := s.pool.QueryContext(ctx)
 	defer cancel()
@@ -16,6 +19,20 @@ func (s *Store) SemanticEmbeddingStatus(ctx context.Context) (SemanticEmbeddingR
 	if err != nil {
 		return SemanticEmbeddingReadiness{}, err
 	}
+	return s.semanticEmbeddingReadiness(vectorRows), nil
+}
+
+func (s *Store) semanticEmbeddingStatusSeekDB(ctx context.Context) (SemanticEmbeddingReadiness, error) {
+	queryCtx, cancel := s.seekDBQueryContext(ctx)
+	defer cancel()
+	var vectorRows int64
+	if err := s.seekDB.QueryRowContext(queryCtx, "SELECT COUNT(*) FROM personal_memories WHERE embedding IS NOT NULL").Scan(&vectorRows); err != nil {
+		return SemanticEmbeddingReadiness{}, err
+	}
+	return s.semanticEmbeddingReadiness(vectorRows), nil
+}
+
+func (s *Store) semanticEmbeddingReadiness(vectorRows int64) SemanticEmbeddingReadiness {
 	status := embedding.SemanticStatusUnavailable
 	reason := "api_embedder_required"
 	if s.embedder.Ready() {
@@ -25,5 +42,5 @@ func (s *Store) SemanticEmbeddingStatus(ctx context.Context) (SemanticEmbeddingR
 	return SemanticEmbeddingReadiness{
 		Dimensions: embedding.Dimensions, DatabaseStatus: SemanticDatabaseStatusReady,
 		SemanticStatus: string(status), Reason: reason, VectorRows: vectorRows,
-	}, nil
+	}
 }

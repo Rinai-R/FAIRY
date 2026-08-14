@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	turn "fairy/agent/conversation"
 	initiative "fairy/agent/presence"
 	"fairy/agent/sticker"
+	"fairy/app/foundation"
 	"fairy/context/character"
 	historycompaction "fairy/context/history/compaction"
 	historyruntime "fairy/context/history/runtime"
@@ -26,7 +28,6 @@ import (
 	"fairy/context/memory/personal"
 	"fairy/context/social"
 	"fairy/runtime/config"
-	coredb "fairy/runtime/database"
 	"fairy/runtime/ledger"
 	"fairy/runtime/model"
 	"fairy/runtime/observability"
@@ -40,12 +41,12 @@ var _ api.ObservabilityHistory = (*observabilityhistory.Store)(nil)
 
 // RuntimeOptions configures a Session Core process.
 type RuntimeOptions struct {
-	ConfigRoot   string
-	Logger       *zap.Logger
-	LogStore     *observability.LogStore
-	HTTPMetrics  *observability.HTTPMetrics
-	Dependencies *Dependencies
-	// Profile selects full vs desktop-lite dependency rules. Empty defaults to full.
+	ConfigRoot  string
+	Logger      *zap.Logger
+	LogStore    *observability.LogStore
+	HTTPMetrics *observability.HTTPMetrics
+	// Profile selects full vs desktop-lite labels. Empty defaults to full.
+	// Both profiles use the local SeekDB foundation; neither probes PostgreSQL.
 	Profile Profile
 	// LogEventsJSONL prints turn events to stdout (optional local debugging).
 	LogEventsJSONL bool
@@ -63,7 +64,7 @@ type Runtime struct {
 	Messages      *observability.MessageMetrics
 	History       *observabilityhistory.Store
 	StartedAt     time.Time
-	Database      *coredb.Pool
+	Foundation    *foundation.Foundation
 
 	TranscriptStore    *history.Store
 	CompactionStore    *historycompaction.Store
@@ -86,7 +87,7 @@ type Runtime struct {
 	Stickers           *sticker.Store
 	WebSearch          *knowledge.WebSearchService
 	Bootstrap          *BootstrapService
-	ownDatabase        bool
+	lifetimeCancel     context.CancelFunc
 	closeOnce          sync.Once
 	closeErr           error
 }
@@ -97,7 +98,8 @@ func (rt *Runtime) APIDependencies() *api.Dependencies {
 	}
 	return &api.Dependencies{
 		ConfigRoot: rt.ConfigRoot, Logger: rt.Logger, StartedAt: rt.StartedAt,
-		Database: rt.Database, TranscriptStore: rt.TranscriptStore, RuntimeStore: rt.RuntimeStore, KnowledgeStore: rt.KnowledgeStore, MemoryStore: rt.MemoryStore, ObservabilityStore: rt.ObservabilityStore,
+		QueryStorageStatus: rt.storageStatus,
+		TranscriptStore:    rt.TranscriptStore, RuntimeStore: rt.RuntimeStore, KnowledgeStore: rt.KnowledgeStore, MemoryStore: rt.MemoryStore, ObservabilityStore: rt.ObservabilityStore,
 		Identity: rt.Identity, Memory: rt.Memory, Secret: rt.Secret,
 		Turns: turnAPIAdapter{service: rt.Turn}, Initiative: initiativeAPIAdapter{service: rt.Initiative}, Character: rt.Character,
 		Config: rt.Config, Profile: rt.Profile, Stickers: rt.Stickers, Captures: rt.Captures,
@@ -120,6 +122,29 @@ func (rt *Runtime) APIDependencies() *api.Dependencies {
 		},
 		TurnEventSubscriberCount: rt.Events.SubscriberCount,
 	}
+}
+
+func (rt *Runtime) storageStatus(ctx context.Context) (api.StorageStatus, error) {
+	if rt == nil || rt.Foundation == nil {
+		return api.StorageStatus{Mode: "unavailable", Error: foundation.ErrFoundationClosed.Error()}, nil
+	}
+	status, err := rt.Foundation.Status(ctx)
+	if err != nil {
+		return api.StorageStatus{Mode: "production", Storage: "seekdb", Error: err.Error()}, nil
+	}
+	openConnections := 0
+	if database, sqlErr := rt.Foundation.SQL(); sqlErr == nil && database != nil {
+		openConnections = database.Stats().OpenConnections
+	}
+	return api.StorageStatus{
+		Ready:           status.Schema.State == "current" && status.SecretsReady,
+		Mode:            "production",
+		Storage:         status.Storage,
+		Descriptor:      status.SeekDB,
+		Schema:          status.Schema,
+		SecretsReady:    status.SecretsReady,
+		OpenConnections: openConnections,
+	}, nil
 }
 
 func Open(options RuntimeOptions) (*Runtime, error) {
@@ -147,89 +172,67 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 		configRoot = filepath.Join(os.Getenv("HOME"), "Library", "Application Support", "dev.rinai.fairy", "session-core", "v1")
 	}
 
-	runtimeProfile := options.Profile
-	if runtimeProfile == "" {
-		parsed, err := ProfileFromEnv(os.Getenv)
-		if err != nil {
-			return nil, err
-		}
-		runtimeProfile = parsed
-	} else {
-		parsed, err := ParseProfile(string(runtimeProfile))
-		if err != nil {
-			return nil, err
-		}
-		runtimeProfile = parsed
+	configRoot, err := filepath.Abs(configRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolving config root: %w", err)
 	}
 
-	opened, err := openDependencies(context.Background(), options.Dependencies, runtimeProfile)
-	if err != nil {
+	if options.Profile == "" {
+		if _, err := ProfileFromEnv(os.Getenv); err != nil {
+			return nil, err
+		}
+	} else if _, err := ParseProfile(string(options.Profile)); err != nil {
 		return nil, err
 	}
-	keepDependencies := false
+
+	lifetime, cancelLifetime := context.WithCancel(context.Background())
+	opened, err := openFoundation(lifetime, configRoot)
+	if err != nil {
+		cancelLifetime()
+		return nil, err
+	}
+	keepFoundation := false
 	defer func() {
-		if keepDependencies {
+		if keepFoundation {
 			return
 		}
-		opened.closeOwned()
+		closeCtx, cancel := context.WithTimeout(context.Background(), opened.ShutdownLimit())
+		defer cancel()
+		_ = opened.Close(closeCtx)
+		cancelLifetime()
 	}()
 
+	database, err := opened.SQL()
+	if err != nil {
+		return nil, err
+	}
+	queryLimit := opened.QueryLimit()
 	configReader := config.NewReader(configRoot)
-	modelService := model.NewModelService(configRoot, opened.SecretStore)
+	modelService := model.NewModelService(configRoot, opened.Secrets)
 	embedder := semanticEmbedder(modelService, configReader, logger.Named("semantic"))
-	memoryStore := opened.MemoryStore
-	if memoryStore == nil {
-		memoryStore, err = personal.NewStoreFromPool(opened.Database, nil)
-		if err != nil {
-			return nil, err
-		}
-		opened.MemoryStore = memoryStore
+	memoryStore, err := personal.NewSeekDBStore(database, queryLimit, embedder)
+	if err != nil {
+		return nil, err
 	}
 	memoryStore.ReplaceSemanticEmbedder(embedder)
-	extractionStore, err := extraction.NewStoreFromPool(opened.Database, embedder)
+	extractionStore, err := extraction.NewSeekDBStoreWithPersonal(database, queryLimit, "core-extraction", 30*time.Second, memoryStore)
 	if err != nil {
 		return nil, err
 	}
-	knowledgeStore, err := knowledge.NewStoreFromPool(opened.Database, embedder)
+	extractionStore.ReplaceSemanticEmbedder(embedder)
+	knowledgeStore, err := knowledge.NewSeekDBStore(database, queryLimit, embedder)
 	if err != nil {
 		return nil, err
 	}
-	socialStore, err := social.NewStoreFromPool(opened.Database)
+	socialStore, err := social.NewSeekDBStore(database, queryLimit)
 	if err != nil {
 		return nil, err
 	}
-	transcriptStore := opened.TranscriptStore
-	if transcriptStore == nil {
-		transcriptStore, err = history.NewStoreFromPool(opened.Database)
-		if err != nil {
-			return nil, err
-		}
-		opened.TranscriptStore = transcriptStore
-	}
-	compactionStore := opened.CompactionStore
-	if compactionStore == nil {
-		compactionStore, err = historycompaction.NewStoreFromPool(opened.Database)
-		if err != nil {
-			return nil, err
-		}
-		opened.CompactionStore = compactionStore
-	}
-	runtimeStore := opened.RuntimeStore
-	if runtimeStore == nil {
-		runtimeStore, err = historyruntime.NewStoreFromPool(opened.Database)
-		if err != nil {
-			return nil, err
-		}
-		opened.RuntimeStore = runtimeStore
-	}
-	observabilityStore, err := ledger.NewStoreFromPool(opened.Database)
-	if err != nil {
-		return nil, err
-	}
-	observabilityHistory, err := observabilityhistory.New(opened.Database)
-	if err != nil {
-		return nil, err
-	}
+	transcriptStore := opened.Conversations.Transcript
+	compactionStore := opened.Conversations.Compaction
+	runtimeStore := opened.Conversations.Runtime
+	observabilityStore := opened.Observability.Ledger
+	observabilityHistory := opened.Observability.History
 	observabilityHistory.SetSinkDiagnostics(func(component string, recovered bool, err error) {
 		if recovered {
 			logger.Info("observability " + component + " recovered")
@@ -237,24 +240,22 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 		}
 		logger.Warn("observability "+component+" failed", zap.Error(err))
 	})
-	keepHistory := false
-	defer func() {
-		if !keepHistory {
-			observabilityHistory.Close()
-		}
-	}()
 	restoredLogs, err := observabilityHistory.RecentLogs(context.Background(), observability.DefaultLogCapacity)
 	if err != nil {
 		return nil, fmt.Errorf("restoring observability logs: %w", err)
 	}
 	logStore.Restore(restoredLogs)
 	logStore.SetHistorySink(observabilityHistory.EnqueueLog)
-	services, err := wireCoreServices(configRoot, opened.Database, transcriptStore, compactionStore, runtimeStore, memoryStore, extractionStore, knowledgeStore, socialStore, opened.SecretStore, modelService, configReader)
+	services, err := wireCoreServices(configRoot, transcriptStore, compactionStore, runtimeStore, memoryStore, extractionStore, knowledgeStore, socialStore, opened.Identity, opened.Characters, opened.Profile, opened.Secrets, modelService, configReader)
 	if err != nil {
 		return nil, err
 	}
 	services.Config.AttachSemanticEmbeddingRuntime(semanticEmbeddingRuntime{model: modelService, store: semanticEmbedderPublishers{memoryStore, extractionStore, knowledgeStore}})
-	stickerStore, err := sticker.NewStore(opened.Database)
+	stickerRoot := filepath.Join(configRoot, "sticker-content")
+	if err := os.MkdirAll(stickerRoot, 0o700); err != nil {
+		return nil, fmt.Errorf("creating sticker content root: %w", err)
+	}
+	stickerStore, err := sticker.NewSeekDBStore(database, stickerRoot, queryLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -273,18 +274,18 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 		Messages:           messageMetrics,
 		History:            observabilityHistory,
 		StartedAt:          time.Now(),
-		Database:           opened.Database,
-		TranscriptStore:    opened.TranscriptStore,
-		CompactionStore:    opened.CompactionStore,
-		RuntimeStore:       opened.RuntimeStore,
+		Foundation:         opened,
+		TranscriptStore:    transcriptStore,
+		CompactionStore:    compactionStore,
+		RuntimeStore:       runtimeStore,
 		KnowledgeStore:     knowledgeStore,
-		MemoryStore:        opened.MemoryStore,
+		MemoryStore:        memoryStore,
 		ExtractionStore:    extractionStore,
 		SocialStore:        socialStore,
 		ObservabilityStore: observabilityStore,
 		Identity:           services.Identity,
 		Memory:             services.Memory,
-		Secret:             opened.SecretStore,
+		Secret:             opened.Secrets,
 		Model:              services.Model,
 		Turn:               services.Turn,
 		Character:          services.Character,
@@ -297,7 +298,7 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 			AppName:     "FAIRY",
 			CoreVersion: "0.1.0",
 		}),
-		ownDatabase: opened.OwnDatabase,
+		lifetimeCancel: cancelLifetime,
 	}
 	if err := rt.Captures.SettleRecovered(context.Background()); err != nil {
 		return nil, fmt.Errorf("settling recovered desktop captures: %w", err)
@@ -313,7 +314,7 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 	knowledge.AttachWebSearchLogger(services.WebSearch, logger.Named("openserp"))
 
 	initiativePorts := initiativeAdapter{
-		turns: services.Turn, history: opened.TranscriptStore, social: socialStore,
+		turns: services.Turn, history: transcriptStore, social: socialStore,
 		characters: services.Character, config: services.ConfigReader, model: services.Model,
 		messages: messageMetrics, events: rt.Participation, logger: logger.Named("initiative"),
 	}
@@ -335,8 +336,7 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 			fmt.Println(string(line))
 		}
 	})
-	keepDependencies = true
-	keepHistory = true
+	keepFoundation = true
 	return rt, nil
 }
 
@@ -348,15 +348,31 @@ func (rt *Runtime) Close() error {
 		if rt.Initiative != nil {
 			rt.Initiative.Close()
 		}
-		rt.closeErr = rt.Turn.Close()
-		rt.Events.Close()
-		rt.Participation.Close()
-		rt.Captures.Close()
-		rt.Messages.Close()
-		rt.Logs.Close()
-		rt.History.Close()
-		if rt.ownDatabase && rt.Database != nil {
-			rt.Database.Close()
+		if rt.Turn != nil {
+			rt.closeErr = rt.Turn.Close()
+		}
+		if rt.Events != nil {
+			rt.Events.Close()
+		}
+		if rt.Participation != nil {
+			rt.Participation.Close()
+		}
+		if rt.Captures != nil {
+			rt.Captures.Close()
+		}
+		if rt.Messages != nil {
+			rt.Messages.Close()
+		}
+		if rt.Logs != nil {
+			rt.Logs.Close()
+		}
+		if rt.Foundation != nil {
+			closeCtx, cancel := context.WithTimeout(context.Background(), rt.Foundation.ShutdownLimit())
+			rt.closeErr = errors.Join(rt.closeErr, rt.Foundation.Close(closeCtx))
+			cancel()
+		}
+		if rt.lifetimeCancel != nil {
+			rt.lifetimeCancel()
 		}
 	})
 	return rt.closeErr

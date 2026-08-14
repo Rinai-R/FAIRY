@@ -4,32 +4,23 @@ package web_test
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	fairycore "fairy/app/core"
-	coredb "fairy/runtime/database"
 	api "fairy/transport/web"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
 
 func TestProductionInfrastructureStatusAndMetrics(t *testing.T) {
-	databaseURL, cleanup := isolatedAPISchema(t)
-	defer cleanup()
-	masterKey := base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789"))
-	setAPIProductionEnv(t, databaseURL, masterKey)
+	applySeekDBAPIEnv(t)
 
 	rt, err := fairycore.Open(fairycore.RuntimeOptions{ConfigRoot: t.TempDir(), Logger: zap.NewNop()})
 	if err != nil {
@@ -43,7 +34,7 @@ func TestProductionInfrastructureStatusAndMetrics(t *testing.T) {
 	if err != nil || statusResponse.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d body=%s err=%v", statusResponse.StatusCode, statusBody, err)
 	}
-	for _, forbidden := range []string{"fairy_test_password", masterKey, "FAIRY_SECRET_MASTER_KEY"} {
+	for _, forbidden := range []string{"fairy_test_password", "postgres://", "FAIRY_SECRET_MASTER_KEY"} {
 		if strings.Contains(string(statusBody), forbidden) {
 			t.Fatalf("status leaked %q: %s", forbidden, statusBody)
 		}
@@ -55,8 +46,11 @@ func TestProductionInfrastructureStatusAndMetrics(t *testing.T) {
 	assertReadyDependency(t, status, "database")
 	assertReadyDependency(t, status, "secretKey")
 	database := status["database"].(map[string]any)
+	if database["storage"] != "seekdb" {
+		t.Fatalf("database storage = %#v", database["storage"])
+	}
 	schema := database["schema"].(map[string]any)
-	if schema["current"] != true || schema["presentObjects"] != schema["expectedObjects"] {
+	if schema["state"] != "current" {
 		t.Fatalf("database schema status = %#v", schema)
 	}
 	if _, ok := status["qdrant"]; ok {
@@ -85,10 +79,7 @@ func TestProductionInfrastructureStatusAndMetrics(t *testing.T) {
 }
 
 func TestProductionMetricSamplerPersistsWithoutMetricsRequestsAndRestoresAfterRestart(t *testing.T) {
-	databaseURL, cleanup := isolatedAPISchema(t)
-	defer cleanup()
-	masterKey := base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789"))
-	setAPIProductionEnv(t, databaseURL, masterKey)
+	applySeekDBAPIEnv(t)
 
 	rt, err := fairycore.Open(fairycore.RuntimeOptions{ConfigRoot: t.TempDir(), Logger: zap.NewNop()})
 	if err != nil {
@@ -168,10 +159,7 @@ func waitForPersistedMetricCount(t *testing.T, rt *fairycore.Runtime, want int) 
 }
 
 func TestProductionPersonalMemoryContentLimitReturnsBadRequest(t *testing.T) {
-	databaseURL, cleanup := isolatedAPISchema(t)
-	defer cleanup()
-	masterKey := base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789"))
-	setAPIProductionEnv(t, databaseURL, masterKey)
+	applySeekDBAPIEnv(t)
 
 	rt, err := fairycore.Open(fairycore.RuntimeOptions{ConfigRoot: t.TempDir(), Logger: zap.NewNop()})
 	if err != nil {
@@ -210,11 +198,15 @@ func TestProductionPersonalMemoryContentLimitReturnsBadRequest(t *testing.T) {
 	if response.StatusCode != http.StatusBadRequest || !strings.Contains(string(responseBody), "2400 Unicode characters") {
 		t.Fatalf("oversized memory response = %d %s", response.StatusCode, responseBody)
 	}
-	if strings.Contains(string(responseBody), masterKey) || strings.Contains(string(responseBody), "fairy_test_password") {
-		t.Fatalf("oversized memory error leaked secret: %s", responseBody)
+	if strings.Contains(string(responseBody), "postgres://") {
+		t.Fatalf("oversized memory error leaked database URL: %s", responseBody)
+	}
+	database, err := rt.Foundation.SQL()
+	if err != nil {
+		t.Fatal(err)
 	}
 	var count int
-	if err := rt.Database.Raw().QueryRow(t.Context(), "SELECT count(*) FROM personal_memories").Scan(&count); err != nil {
+	if err := database.QueryRowContext(t.Context(), "SELECT count(*) FROM personal_memories").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {
@@ -223,10 +215,7 @@ func TestProductionPersonalMemoryContentLimitReturnsBadRequest(t *testing.T) {
 }
 
 func TestProductionKnowledgeManagementRouteRequiresAuthAndRemovedJobsRouteStaysAbsent(t *testing.T) {
-	databaseURL, cleanup := isolatedAPISchema(t)
-	defer cleanup()
-	masterKey := base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789"))
-	setAPIProductionEnv(t, databaseURL, masterKey)
+	applySeekDBAPIEnv(t)
 
 	rt, err := fairycore.Open(fairycore.RuntimeOptions{ConfigRoot: t.TempDir(), Logger: zap.NewNop()})
 	if err != nil {
@@ -285,65 +274,6 @@ func startProductionAPIServer(t *testing.T, rt *fairycore.Runtime) (string, stri
 	})
 	waitHTTP(t, "http://"+addr+"/v1/status", token)
 	return "http://" + addr, token
-}
-
-func isolatedAPISchema(t *testing.T) (string, func()) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	rawURL := os.Getenv("FAIRY_TEST_DATABASE_URL")
-	if rawURL == "" {
-		rawURL = "postgres://fairy:fairy_test_password@127.0.0.1:15432/fairy_test?sslmode=disable"
-	}
-	admin, err := pgxpool.New(ctx, rawURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	schema := fmt.Sprintf("fairy_api_test_%d", time.Now().UnixNano())
-	quoted := pgx.Identifier{schema}.Sanitize()
-	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+quoted); err != nil {
-		admin.Close()
-		t.Fatal(err)
-	}
-	admin.Close()
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	values := parsed.Query()
-	values.Set("search_path", schema)
-	parsed.RawQuery = values.Encode()
-	databaseURL := parsed.String()
-	pool, err := coredb.Open(ctx, coredb.ShortTimeoutConfig(databaseURL))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := coredb.Migrate(ctx, pool.Raw()); err != nil {
-		pool.Close()
-		t.Fatal(err)
-	}
-	pool.Close()
-	return databaseURL, func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cleanupCancel()
-		cleanupPool, err := pgxpool.New(cleanupCtx, rawURL)
-		if err != nil {
-			t.Logf("open cleanup pool: %v", err)
-			return
-		}
-		defer cleanupPool.Close()
-		_, _ = cleanupPool.Exec(cleanupCtx, "DROP SCHEMA IF EXISTS "+quoted+" CASCADE")
-	}
-}
-
-func setAPIProductionEnv(t *testing.T, databaseURL, masterKey string) {
-	t.Helper()
-	t.Setenv(coredb.EnvDatabaseURL, databaseURL)
-	t.Setenv(coredb.EnvMaxConns, "4")
-	t.Setenv(coredb.EnvMinConns, "0")
-	t.Setenv(coredb.EnvConnectTimeout, "2s")
-	t.Setenv(coredb.EnvQueryTimeout, "2s")
-	t.Setenv("FAIRY_SECRET_MASTER_KEY", masterKey)
 }
 
 func doRequest(t *testing.T, method, rawURL, token string) *http.Response {

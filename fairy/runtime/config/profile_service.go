@@ -1,5 +1,7 @@
 package config
 
+import "errors"
+
 type ProfileService struct {
 	root  string
 	store *ProfileStore
@@ -7,6 +9,14 @@ type ProfileService struct {
 
 func NewProfileService(root string) *ProfileService {
 	return &ProfileService{root: root, store: NewProfileStore(root)}
+}
+
+// NewProfileServiceWithStore wires the service to one authoritative profile store.
+func NewProfileServiceWithStore(store *ProfileStore) (*ProfileService, error) {
+	if store == nil {
+		return nil, errors.New("profile store is required")
+	}
+	return &ProfileService{store: store}, nil
 }
 
 // ProfileStore returns the process-scoped user-profile store for sharing with

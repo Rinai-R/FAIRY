@@ -4,7 +4,7 @@ package web_test
 
 import (
 	"context"
-	"encoding/base64"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"os"
@@ -16,35 +16,31 @@ import (
 	fairycore "fairy/app/core"
 	"fairy/context/character"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
 	"fairy/transport/session"
 )
 
 func TestEndpointSessionIsolatesKeysAndPersistsNoRawKeyIntegration(t *testing.T) {
+	applySeekDBAPIEnv(t)
 	root := t.TempDir()
 	writeEndpointVisualManifest(t, root)
-	characterService := character.NewCharacterService(root)
-	record, err := characterService.CreateCharacter(character.Brief{Name: "Endpoint", Description: "Integration character", TextLanguage: "zh", SpeakingLanguage: "zh"}, "fairy.endpoint")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := characterService.ActivateCharacter(record.CharacterID, record.Revision); err != nil {
-		t.Fatal(err)
-	}
-	target, err := characterService.CreateCharacter(character.Brief{Name: "Debug Target", Description: "Evaluation-only character", TextLanguage: "zh", SpeakingLanguage: "zh"}, "fairy.endpoint")
-	if err != nil {
-		t.Fatal(err)
-	}
-	databaseURL, cleanup := isolatedAPISchema(t)
-	defer cleanup()
-	setAPIProductionEnv(t, databaseURL, base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789")))
 	rt, err := fairycore.Open(fairycore.RuntimeOptions{ConfigRoot: root, Logger: zap.NewNop()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = rt.Close() })
+	record, err := rt.Character.CreateCharacter(character.Brief{Name: "Endpoint", Description: "Integration character", TextLanguage: "zh", SpeakingLanguage: "zh"}, "fairy.endpoint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Character.ActivateCharacter(record.CharacterID, record.Revision); err != nil {
+		t.Fatal(err)
+	}
+	target, err := rt.Character.CreateCharacter(character.Brief{Name: "Debug Target", Description: "Evaluation-only character", TextLanguage: "zh", SpeakingLanguage: "zh"}, "fairy.endpoint")
+	if err != nil {
+		t.Fatal(err)
+	}
 	baseURL, token := startProductionAPIServer(t, rt)
 	assetResponse := doRequest(t, http.MethodGet, baseURL+"/v1/visual-assets/fairy.endpoint/idle.png", token)
 	assetBytes, err := io.ReadAll(assetResponse.Body)
@@ -126,24 +122,24 @@ func TestEndpointSessionIsolatesKeysAndPersistsNoRawKeyIntegration(t *testing.T)
 		t.Fatal("closed SessionSocket retained advertised sticker capability")
 	}
 
-	pool, err := pgxpool.New(context.Background(), databaseURL)
+	database, err := rt.Foundation.SQL()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
-	var digest string
-	if err := pool.QueryRow(context.Background(), "SELECT endpoint_key_digest FROM endpoint_conversations WHERE endpoint = 'im' ORDER BY endpoint_key_digest LIMIT 1").Scan(&digest); err != nil {
+	var digestBytes []byte
+	if err := database.QueryRowContext(context.Background(), "SELECT endpoint_key_digest FROM endpoint_conversations WHERE endpoint = 'im' ORDER BY endpoint_key_digest LIMIT 1").Scan(&digestBytes); err != nil {
 		t.Fatal(err)
 	}
+	digest := hex.EncodeToString(digestBytes)
 	if len(digest) != 64 || strings.Contains(digest, "123") || strings.Contains(digest, "456") {
 		t.Fatalf("endpoint digest leaked source key: %q", digest)
 	}
 	var evaluationPersisted bool
 	var evaluationCharacterID string
-	if err := pool.QueryRow(context.Background(), `
+	if err := database.QueryRowContext(context.Background(), `
 SELECT evaluation, character_id
 FROM endpoint_conversations
-WHERE conversation_id = $1`, evaluation.ConversationID).Scan(&evaluationPersisted, &evaluationCharacterID); err != nil {
+WHERE conversation_id = ?`, evaluation.ConversationID).Scan(&evaluationPersisted, &evaluationCharacterID); err != nil {
 		t.Fatal(err)
 	}
 	if !evaluationPersisted || evaluationCharacterID != target.CharacterID {
@@ -160,9 +156,9 @@ WHERE conversation_id = $1`, evaluation.ConversationID).Scan(&evaluationPersiste
 		t.Fatalf("owner list = %#v, %v", owners, err)
 	}
 	var rawOwnerRows int
-	if err := pool.QueryRow(context.Background(), `
+	if err := database.QueryRowContext(context.Background(), `
 SELECT count(*) FROM owner_identities
-WHERE namespace = $1 OR subject_digest = $1`, rawOwnerSubject).Scan(&rawOwnerRows); err != nil {
+WHERE namespace = ? OR subject_digest = ?`, rawOwnerSubject, rawOwnerSubject).Scan(&rawOwnerRows); err != nil {
 		t.Fatal(err)
 	}
 	if rawOwnerRows != 0 {

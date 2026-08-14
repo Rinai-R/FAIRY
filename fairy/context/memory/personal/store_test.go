@@ -9,6 +9,17 @@ import (
 	"fairy/runtime/embedding"
 )
 
+func TestSemanticEmbeddingStatusRequiresBackend(t *testing.T) {
+	_, err := (*Store)(nil).SemanticEmbeddingStatus(t.Context())
+	if !errors.Is(err, ErrStoreBackendUnavailable) {
+		t.Fatalf("nil store error = %v, want %v", err, ErrStoreBackendUnavailable)
+	}
+	_, err = (&Store{}).SemanticEmbeddingStatus(t.Context())
+	if !errors.Is(err, ErrStoreBackendUnavailable) {
+		t.Fatalf("empty store error = %v, want %v", err, ErrStoreBackendUnavailable)
+	}
+}
+
 func TestNewStoreFromPoolRequiresPool(t *testing.T) {
 	store, err := NewStoreFromPool(nil, nil)
 	if store != nil || !errors.Is(err, ErrDatabasePoolEmpty) {

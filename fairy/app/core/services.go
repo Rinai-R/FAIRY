@@ -16,7 +16,6 @@ import (
 	"fairy/context/memory/personal"
 	"fairy/context/social"
 	"fairy/runtime/config"
-	coredb "fairy/runtime/database"
 	"fairy/runtime/model"
 )
 
@@ -33,7 +32,22 @@ type coreServices struct {
 	Memory       *memoryadmin.Service
 }
 
-func wireCoreServices(configRoot string, database *coredb.Pool, transcriptStore *history.Store, compactionStore *historycompaction.Store, runtimeStore *historyruntime.Store, memoryStore *personal.Store, extractionStore *extraction.Store, knowledgeStore *knowledge.Store, socialStore *social.Store, secretStore *config.SecretStore, modelService *model.ModelService, configReader *config.Reader) (*coreServices, error) {
+func wireCoreServices(
+	configRoot string,
+	transcriptStore *history.Store,
+	compactionStore *historycompaction.Store,
+	runtimeStore *historyruntime.Store,
+	memoryStore *personal.Store,
+	extractionStore *extraction.Store,
+	knowledgeStore *knowledge.Store,
+	socialStore *social.Store,
+	identityStore *identity.Store,
+	characterStore *character.Store,
+	profileStore *config.ProfileStore,
+	secretStore *config.SecretStore,
+	modelService *model.ModelService,
+	configReader *config.Reader,
+) (*coreServices, error) {
 	webSettings, err := config.ReadWebSearchSettings(configRoot)
 	if err != nil {
 		return nil, err
@@ -43,14 +57,19 @@ func wireCoreServices(configRoot string, database *coredb.Pool, transcriptStore 
 		modelService = model.NewModelService(configRoot, secretStore)
 	}
 	turnService := turn.NewServiceWithRuntime(configRoot, transcriptStore, compactionStore, runtimeStore, memoryStore, extractionStore, knowledgeStore, socialStore, modelService, webSearch)
-	identityStore, err := identity.NewStore(database)
+	if identityStore == nil {
+		return nil, fmt.Errorf("identity store is required")
+	}
+	turn.AttachOwnerIdentityStore(turnService, identityStore)
+	characterService, err := character.NewCharacterServiceWithStore(characterStore)
 	if err != nil {
 		return nil, err
 	}
-	turn.AttachOwnerIdentityStore(turnService, identityStore)
-	characterService := character.NewCharacterService(configRoot)
 	configService := config.NewConfigService(configRoot, secretStore)
-	profileService := config.NewProfileService(configRoot)
+	profileService, err := config.NewProfileServiceWithStore(profileStore)
+	if err != nil {
+		return nil, err
+	}
 	if configReader == nil {
 		configReader = config.NewReader(configRoot)
 	}

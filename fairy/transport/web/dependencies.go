@@ -14,7 +14,6 @@ import (
 	memoryadmin "fairy/context/memory/admin"
 	"fairy/context/memory/personal"
 	"fairy/runtime/config"
-	coredb "fairy/runtime/database"
 	"fairy/runtime/ledger"
 	"fairy/runtime/model"
 	"fairy/runtime/observability"
@@ -165,8 +164,8 @@ type ExperienceStats struct {
 }
 
 // ObservabilityHistory is the Web layer's read/write view of persisted
-// observability projections. The concrete PostgreSQL lifecycle remains owned
-// by the Core composition root.
+// observability projections. The SeekDB lifecycle remains owned by the Core
+// composition root.
 type ObservabilityHistory interface {
 	RecentLogs(context.Context, int) ([]observability.LogEntry, error)
 	RecentTraces(context.Context, int) ([]observability.MessageTraceDetail, error)
@@ -190,7 +189,7 @@ type Dependencies struct {
 	Logger     *zap.Logger
 	StartedAt  time.Time
 
-	Database           *coredb.Pool
+	QueryStorageStatus func(context.Context) (StorageStatus, error)
 	TranscriptStore    *history.Store
 	RuntimeStore       *historyruntime.Store
 	KnowledgeStore     *knowledge.Store
@@ -215,4 +214,17 @@ type Dependencies struct {
 	SubscribeTurnEvents      func(conversationID string) (EventSubscription, error)
 	SubscribeParticipation   func(conversationID string) (ParticipationSubscription, error)
 	TurnEventSubscriberCount func() uint64
+}
+
+// StorageStatus is the credential-free storage readiness projection for local
+// status and metrics. It never includes connection strings or master-key material.
+type StorageStatus struct {
+	Ready           bool   `json:"ready"`
+	Mode            string `json:"mode"`
+	Storage         string `json:"storage,omitempty"`
+	Descriptor      any    `json:"descriptor,omitempty"`
+	Schema          any    `json:"schema,omitempty"`
+	SecretsReady    bool   `json:"secretsReady,omitempty"`
+	OpenConnections int    `json:"openConnections,omitempty"`
+	Error           string `json:"error,omitempty"`
 }

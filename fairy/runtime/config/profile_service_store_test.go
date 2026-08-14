@@ -16,3 +16,10 @@ func TestProfileServiceReusesProfileStore(t *testing.T) {
 		t.Fatal("ProfileStore() changed after Current")
 	}
 }
+
+func TestNewProfileServiceWithStoreRequiresStore(t *testing.T) {
+	service, err := NewProfileServiceWithStore(nil)
+	if service != nil || err == nil || err.Error() != "profile store is required" {
+		t.Fatalf("NewProfileServiceWithStore(nil) = (%#v, %v)", service, err)
+	}
+}
