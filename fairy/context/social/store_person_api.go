@@ -10,19 +10,19 @@ import (
 )
 
 func (s *Store) UpsertSocialPersonNote(ctx context.Context, input SocialPersonNoteInput) (SocialPersonNote, error) {
-	if s == nil || s.pool == nil {
-		return SocialPersonNote{}, ErrDatabasePoolEmpty
-	}
 	if err := validateSocialPersonNoteInput(input); err != nil {
 		return SocialPersonNote{}, err
+	}
+	if s.usesSeekDB() {
+		return s.upsertSocialPersonNoteSeekDB(ctx, input)
+	}
+	if !s.usesPostgres() {
+		return SocialPersonNote{}, ErrStoreBackendUnavailable
 	}
 	return s.upsertSocialPersonNotePostgres(ctx, input)
 }
 
 func (s *Store) ListSocialPersonNotes(ctx context.Context, characterID, conversationID string, senderIDs []string) ([]SocialPersonNote, error) {
-	if s == nil || s.pool == nil {
-		return nil, ErrDatabasePoolEmpty
-	}
 	if err := ValidateID("character_id", characterID); err != nil {
 		return nil, err
 	}
@@ -50,6 +50,12 @@ func (s *Store) ListSocialPersonNotes(ctx context.Context, characterID, conversa
 	}
 	if len(cleanIDs) == 0 {
 		return []SocialPersonNote{}, nil
+	}
+	if s.usesSeekDB() {
+		return s.listSocialPersonNotesSeekDB(ctx, characterID, conversationID, cleanIDs)
+	}
+	if !s.usesPostgres() {
+		return nil, ErrStoreBackendUnavailable
 	}
 	return s.listSocialPersonNotesPostgres(ctx, characterID, conversationID, cleanIDs)
 }

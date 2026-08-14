@@ -12,8 +12,8 @@ import (
 func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first := BuiltinMigrations()
 	second := BuiltinMigrations()
-	if len(first) != 8 || len(second) != 8 {
-		t.Fatalf("builtin migration counts = %d and %d, want 8", len(first), len(second))
+	if len(first) != 9 || len(second) != 9 {
+		t.Fatalf("builtin migration counts = %d and %d, want 9", len(first), len(second))
 	}
 	foundation := Revision{Number: foundationSchemaRevision, Checksum: foundationSchemaChecksum()}
 	conversation := Revision{Number: conversationSchemaRevision, Checksum: conversationSchemaChecksum()}
@@ -23,8 +23,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	extractionCoordination := Revision{Number: extractionCoordinationRevision, Checksum: extractionCoordinationChecksum()}
 	cognitiveRecords := Revision{Number: cognitiveRecordsSchemaRevision, Checksum: cognitiveRecordsSchemaChecksum()}
 	duplicateRevalidation := Revision{Number: duplicateRevalidationRevision, Checksum: duplicateRevalidationSchemaChecksum()}
-	if current := CurrentSchemaRevision(); current != duplicateRevalidation {
-		t.Fatalf("current schema revision = %#v, want %#v", current, duplicateRevalidation)
+	socialFeedback := Revision{Number: socialFeedbackEventsRevision, Checksum: socialFeedbackEventsSchemaChecksum()}
+	if current := CurrentSchemaRevision(); current != socialFeedback {
+		t.Fatalf("current schema revision = %#v, want %#v", current, socialFeedback)
 	}
 	if first[0].Revision != foundation || first[0].Name != "create-foundation-schema" {
 		t.Fatalf("foundation migration = %#v, want revision %#v", first[0], foundation)
@@ -50,6 +51,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	if first[7].Revision != duplicateRevalidation || first[7].Name != "index-personal-memory-duplicates" {
 		t.Fatalf("duplicate revalidation migration = %#v, want revision %#v", first[7], duplicateRevalidation)
 	}
+	if first[8].Revision != socialFeedback || first[8].Name != "create-social-memory-feedback-events" {
+		t.Fatalf("social feedback events migration = %#v, want revision %#v", first[8], socialFeedback)
+	}
 	for index, migration := range first {
 		if migration.Apply == nil || migration.Verify == nil {
 			t.Fatalf("builtin migration %d must provide Apply and Verify", index+1)
@@ -64,6 +68,7 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first[5].Name = "mutated-extraction-coordination"
 	first[6].Revision.Number = 102
 	first[7].Name = "mutated-duplicate-revalidation"
+	first[8].Name = "mutated-social-feedback-events"
 	if second[0].Name != "create-foundation-schema" || second[0].Revision != foundation ||
 		second[1].Name != "create-conversation-schema" || second[1].Revision != conversation ||
 		second[2].Name != "create-turn-evidence-schema" || second[2].Revision != turnEvidence ||
@@ -71,7 +76,8 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 		second[4].Name != "create-conversation-runtime-schema" || second[4].Revision != conversationRuntime ||
 		second[5].Name != "strengthen-extraction-coordination-schema" || second[5].Revision != extractionCoordination ||
 		second[6].Name != "create-cognitive-records-schema" || second[6].Revision != cognitiveRecords ||
-		second[7].Name != "index-personal-memory-duplicates" || second[7].Revision != duplicateRevalidation {
+		second[7].Name != "index-personal-memory-duplicates" || second[7].Revision != duplicateRevalidation ||
+		second[8].Name != "create-social-memory-feedback-events" || second[8].Revision != socialFeedback {
 		t.Fatalf("caller mutation changed later BuiltinMigrations result: %#v", second[0])
 	}
 	if got := hex.EncodeToString(foundation.Checksum[:]); got != "e674bec12d0b6895da8b351d082a686c9c2f44990fb68749bbad083c4a6805d3" {
@@ -97,6 +103,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	}
 	if got := hex.EncodeToString(duplicateRevalidation.Checksum[:]); got != "a6b91fc39ba1e5a46ff80fdbe0c85ba76177b6c9466b5f0f61d8cea6f31c82f6" {
 		t.Fatalf("duplicate revalidation checksum = %s, update requires an explicit revision decision", got)
+	}
+	if got := hex.EncodeToString(socialFeedback.Checksum[:]); got != "b7b9325c52f070b5e54c57e2e4f5a14854782052c332334fa794edf305199dc7" {
+		t.Fatalf("social feedback events checksum = %s, update requires an explicit revision decision", got)
 	}
 }
 
@@ -316,6 +325,44 @@ func TestDuplicateRevalidationSchemaEvolvesOnlyPersonalDuplicateMetadata(t *test
 		name: "personal_memory_write_guard_singleton_check", clause: "(`id` = 1)",
 	}) || len(guard.foreignKeys) != 0 {
 		t.Fatalf("personal memory write guard schema = %#v", guard)
+	}
+}
+
+func TestSocialFeedbackEventsSchemaDefinesAuditLedgerWithoutBody(t *testing.T) {
+	table := socialMemoryFeedbackEventsSchema
+	assertPortableSchemaTables(t, []schemaTable{table}, []string{socialMemoryFeedbackEventsTableName})
+	lower := strings.ToLower(table.ddl)
+	for _, forbidden := range []string{
+		"situation", "content", "recall_cue", "embedding", "jsonb", "bytea", "$1",
+	} {
+		if strings.Contains(lower, forbidden) {
+			t.Errorf("social feedback events DDL contains forbidden token %q", forbidden)
+		}
+	}
+	if evidence := schemaColumnNamed(t, table, "evidence_message_ids"); evidence.columnType != "json" || evidence.nullable {
+		t.Fatalf("social feedback evidence IDs = %#v", evidence)
+	}
+	if !schemaHasIndex(table, ascendingBTreeIndex(
+		"social_memory_feedback_events_turn_entry_key", true, "turn_id", "entry_id",
+	)) {
+		t.Fatal("social feedback events lack (turn_id, entry_id) idempotency key")
+	}
+	if len(table.foreignKeys) != 3 ||
+		table.foreignKeys[0].referencedTable != "conversations" || table.foreignKeys[0].deleteRule != "cascade" ||
+		table.foreignKeys[1].referencedTable != "conversation_turns" || table.foreignKeys[1].deleteRule != "cascade" ||
+		table.foreignKeys[2].referencedTable != "social_memory_entries" || table.foreignKeys[2].deleteRule != "cascade" {
+		t.Fatalf("social feedback foreign keys = %#v", table.foreignKeys)
+	}
+	check := schemaCheckNamed(t, table, "social_memory_feedback_events_invariants_check")
+	for _, token := range []string{
+		"(JSON_TYPE(`evidence_message_ids`) = 'ARRAY')",
+		"(JSON_LENGTH(`evidence_message_ids`) <= 6)",
+		"((`outcome` = 'unknown') = (JSON_LENGTH(`evidence_message_ids`) = 0))",
+		"(`adoption` in ('adopted','not_adopted','uncertain'))",
+	} {
+		if !strings.Contains(check.clause, token) {
+			t.Errorf("social feedback CHECK lacks %q: %s", token, check.clause)
+		}
 	}
 }
 

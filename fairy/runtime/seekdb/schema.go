@@ -21,6 +21,7 @@ const (
 	extractionCoordinationRevision    int64 = 6
 	cognitiveRecordsSchemaRevision    int64 = 7
 	duplicateRevalidationRevision     int64 = 8
+	socialFeedbackEventsRevision      int64 = 9
 
 	transcriptRecallTableName = "conversation_messages"
 	transcriptRecallIndexName = "conversation_messages_content_fts_idx"
@@ -146,14 +147,23 @@ func BuiltinMigrations() []Migration {
 			Apply:  applyDuplicateRevalidationSchema,
 			Verify: verifyDuplicateRevalidationSchema,
 		},
+		{
+			Revision: Revision{
+				Number:   socialFeedbackEventsRevision,
+				Checksum: socialFeedbackEventsSchemaChecksum(),
+			},
+			Name:   "create-social-memory-feedback-events",
+			Apply:  applySocialFeedbackEventsSchema,
+			Verify: verifySocialFeedbackEventsSchema,
+		},
 	}
 }
 
 // CurrentSchemaRevision is the exact revision accepted by runtime readiness.
 func CurrentSchemaRevision() Revision {
 	return Revision{
-		Number:   duplicateRevalidationRevision,
-		Checksum: duplicateRevalidationSchemaChecksum(),
+		Number:   socialFeedbackEventsRevision,
+		Checksum: socialFeedbackEventsSchemaChecksum(),
 	}
 }
 

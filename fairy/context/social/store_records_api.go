@@ -7,19 +7,19 @@ import (
 )
 
 func (s *Store) StoreSocialMemoryEntries(ctx context.Context, input SocialMemoryBatchInput) ([]SocialMemoryEntry, error) {
-	if s == nil || s.pool == nil {
-		return nil, ErrDatabasePoolEmpty
-	}
 	if err := ValidateSocialMemoryBatch(input); err != nil {
 		return nil, err
+	}
+	if s.usesSeekDB() {
+		return s.storeSocialMemoryEntriesSeekDB(ctx, input)
+	}
+	if !s.usesPostgres() {
+		return nil, ErrStoreBackendUnavailable
 	}
 	return s.storeSocialMemoryEntriesPostgres(ctx, input)
 }
 
 func (s *Store) RetrieveSocialMemoryContext(ctx context.Context, characterID, conversationID, query string) (SocialMemoryContext, error) {
-	if s == nil || s.pool == nil {
-		return SocialMemoryContext{}, ErrDatabasePoolEmpty
-	}
 	if err := ValidateID("character_id", characterID); err != nil {
 		return SocialMemoryContext{}, err
 	}
@@ -33,6 +33,12 @@ func (s *Store) RetrieveSocialMemoryContext(ctx context.Context, characterID, co
 	if normalized == "" {
 		return SocialMemoryContext{Entries: []SocialMemoryEntry{}}, nil
 	}
+	if s.usesSeekDB() {
+		return s.retrieveSocialMemoryContextSeekDB(ctx, characterID, conversationID, normalized)
+	}
+	if !s.usesPostgres() {
+		return SocialMemoryContext{}, ErrStoreBackendUnavailable
+	}
 	fragments := buildSocialRetrievalProjection(normalized)
 	if len(fragments) == 0 {
 		return SocialMemoryContext{Entries: []SocialMemoryEntry{}}, nil
@@ -41,9 +47,6 @@ func (s *Store) RetrieveSocialMemoryContext(ctx context.Context, characterID, co
 }
 
 func (s *Store) RetrieveCharacterSocialMemoryContext(ctx context.Context, characterID, query string) (SocialMemoryContext, error) {
-	if s == nil || s.pool == nil {
-		return SocialMemoryContext{}, ErrDatabasePoolEmpty
-	}
 	if err := ValidateID("character_id", characterID); err != nil {
 		return SocialMemoryContext{}, err
 	}
@@ -54,6 +57,12 @@ func (s *Store) RetrieveCharacterSocialMemoryContext(ctx context.Context, charac
 	if normalized == "" {
 		return SocialMemoryContext{Entries: []SocialMemoryEntry{}}, nil
 	}
+	if s.usesSeekDB() {
+		return s.retrieveCharacterSocialMemoryContextSeekDB(ctx, characterID, normalized)
+	}
+	if !s.usesPostgres() {
+		return SocialMemoryContext{}, ErrStoreBackendUnavailable
+	}
 	fragments := buildSocialRetrievalProjection(normalized)
 	if len(fragments) == 0 {
 		return SocialMemoryContext{Entries: []SocialMemoryEntry{}}, nil
@@ -62,11 +71,14 @@ func (s *Store) RetrieveCharacterSocialMemoryContext(ctx context.Context, charac
 }
 
 func (s *Store) RecordSocialFeedbackBatch(ctx context.Context, input SocialFeedbackBatchInput) (SocialFeedbackBatchResult, error) {
-	if s == nil || s.pool == nil {
-		return SocialFeedbackBatchResult{}, ErrDatabasePoolEmpty
-	}
 	if err := ValidateSocialFeedbackBatch(input); err != nil {
 		return SocialFeedbackBatchResult{}, err
+	}
+	if s.usesSeekDB() {
+		return s.recordSocialFeedbackBatchSeekDB(ctx, input)
+	}
+	if !s.usesPostgres() {
+		return SocialFeedbackBatchResult{}, ErrStoreBackendUnavailable
 	}
 	return s.recordSocialFeedbackBatchPostgres(ctx, input)
 }

@@ -52,10 +52,14 @@ func ScanSocialMemoryEntry(row scanner) (SocialMemoryEntry, error) {
 }
 
 func SocialMemoryContentHash(entry SocialMemoryEntryInput) string {
+	digest := socialMemoryContentDigest(entry)
+	return hex.EncodeToString(digest[:])
+}
+
+func socialMemoryContentDigest(entry SocialMemoryEntryInput) [32]byte {
 	normalize := func(value string) string { return strings.Join(strings.Fields(value), " ") }
 	payload := strings.Join([]string{entry.Kind, normalize(entry.Situation), normalize(entry.Content), normalize(entry.RecallCue)}, "\x00")
-	digest := sha256.Sum256([]byte(payload))
-	return hex.EncodeToString(digest[:])
+	return sha256.Sum256([]byte(payload))
 }
 
 func InsertSocialMemoryEntry(

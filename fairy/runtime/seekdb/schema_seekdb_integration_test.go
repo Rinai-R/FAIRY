@@ -45,6 +45,7 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	assertExtractionCoordinationSchemaVerified(t, database)
 	assertCognitiveRecordsSchemaVerified(t, database)
 	assertDuplicateRevalidationSchemaVerified(t, database)
+	assertSocialFeedbackEventsSchemaVerified(t, database)
 	assertSchemaTableSet(t, database, CurrentSchemaRevision().Number)
 	if got := integrationJournalRowForRevision(t, database, foundationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("foundation attempt count = %d, want 1", got)
@@ -69,6 +70,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	}
 	if got := integrationJournalRowForRevision(t, database, duplicateRevalidationRevision).AttemptCount; got != 1 {
 		t.Fatalf("duplicate revalidation attempt count = %d, want 1", got)
+	}
+	if got := integrationJournalRowForRevision(t, database, socialFeedbackEventsRevision).AttemptCount; got != 1 {
+		t.Fatalf("social feedback events attempt count = %d, want 1", got)
 	}
 
 	if err := MigrateSchema(t.Context(), database, BuiltinMigrations()); err != nil {
@@ -98,6 +102,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	if got := integrationJournalRowForRevision(t, database, duplicateRevalidationRevision).AttemptCount; got != 1 {
 		t.Fatalf("duplicate revalidation attempt count after repeat = %d, want 1", got)
 	}
+	if got := integrationJournalRowForRevision(t, database, socialFeedbackEventsRevision).AttemptCount; got != 1 {
+		t.Fatalf("social feedback events attempt count after repeat = %d, want 1", got)
+	}
 	assertFoundationChecksRejectInvalidData(t, database)
 
 	closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
@@ -115,6 +122,7 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	assertExtractionCoordinationSchemaVerified(t, restarted.SQL())
 	assertCognitiveRecordsSchemaVerified(t, restarted.SQL())
 	assertDuplicateRevalidationSchemaVerified(t, restarted.SQL())
+	assertSocialFeedbackEventsSchemaVerified(t, restarted.SQL())
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), foundationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("foundation attempt count after restart = %d, want 1", got)
 	}
@@ -138,6 +146,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	}
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), duplicateRevalidationRevision).AttemptCount; got != 1 {
 		t.Fatalf("duplicate revalidation attempt count after restart = %d, want 1", got)
+	}
+	if got := integrationJournalRowForRevision(t, restarted.SQL(), socialFeedbackEventsRevision).AttemptCount; got != 1 {
+		t.Fatalf("social feedback events attempt count after restart = %d, want 1", got)
 	}
 }
 
@@ -166,6 +177,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, "runtime", "upgrade-proof", 1, 1, `{"kept":true}`
 	assertExtractionCoordinationSchemaVerified(t, database)
 	assertCognitiveRecordsSchemaVerified(t, database)
 	assertDuplicateRevalidationSchemaVerified(t, database)
+	assertSocialFeedbackEventsSchemaVerified(t, database)
 	for _, revision := range []int64{
 		foundationSchemaRevision,
 		conversationSchemaRevision,
@@ -175,6 +187,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, "runtime", "upgrade-proof", 1, 1, `{"kept":true}`
 		extractionCoordinationRevision,
 		cognitiveRecordsSchemaRevision,
 		duplicateRevalidationRevision,
+		socialFeedbackEventsRevision,
 	} {
 		row := integrationJournalRowForRevision(t, database, revision)
 		if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
@@ -531,6 +544,7 @@ func TestRealSeekDBDuplicateRevalidationSchemaFreshInstallIsCurrent(t *testing.T
 	assertExtractionCoordinationSchemaVerified(t, database)
 	assertCognitiveRecordsSchemaVerified(t, database)
 	assertDuplicateRevalidationSchemaVerified(t, database)
+	assertSocialFeedbackEventsSchemaVerified(t, database)
 	assertSchemaTableSet(t, database, CurrentSchemaRevision().Number)
 	for _, revision := range []int64{
 		foundationSchemaRevision,
@@ -541,6 +555,7 @@ func TestRealSeekDBDuplicateRevalidationSchemaFreshInstallIsCurrent(t *testing.T
 		extractionCoordinationRevision,
 		cognitiveRecordsSchemaRevision,
 		duplicateRevalidationRevision,
+		socialFeedbackEventsRevision,
 	} {
 		row := integrationJournalRowForRevision(t, database, revision)
 		if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
@@ -558,6 +573,7 @@ func TestRealSeekDBDuplicateRevalidationSchemaFreshInstallIsCurrent(t *testing.T
 	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
 	assertCognitiveRecordsSchemaVerified(t, restarted.SQL())
 	assertDuplicateRevalidationSchemaVerified(t, restarted.SQL())
+	assertSocialFeedbackEventsSchemaVerified(t, restarted.SQL())
 	assertSchemaTableSet(t, restarted.SQL(), CurrentSchemaRevision().Number)
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), cognitiveRecordsSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("fresh cognitive records attempt count after restart = %d, want 1", got)
@@ -1003,7 +1019,7 @@ func TestRealSeekDBDuplicateRevalidationSchemaUpgradesRevisionSevenBackfillsUnic
 	}
 	backfillIntegrationPersonalNormalizedHashes(t, database, ids[:3])
 
-	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+	if err := MigrateSchema(t.Context(), database, migrations[:8]); err != nil {
 		t.Fatalf("MigrateSchema(partial revision eight) error = %v", err)
 	}
 	assertCurrentSchema(t, database, migrations[7].Revision)
@@ -1016,7 +1032,7 @@ func TestRealSeekDBDuplicateRevalidationSchemaUpgradesRevisionSevenBackfillsUnic
 		t.Fatalf("duplicate revalidation journal = %#v", row)
 	}
 
-	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+	if err := MigrateSchema(t.Context(), database, migrations[:8]); err != nil {
 		t.Fatalf("MigrateSchema(repeated revision eight) error = %v", err)
 	}
 	if got := integrationJournalRowForRevision(t, database, duplicateRevalidationRevision).AttemptCount; got != 1 {
@@ -1079,7 +1095,7 @@ func TestRealSeekDBDuplicateRevalidationSchemaRecoversEveryPhysicalBoundary(t *t
 				}
 			}
 
-			if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+			if err := MigrateSchema(t.Context(), database, migrations[:8]); err != nil {
 				t.Fatalf("MigrateSchema(%s) error = %v", testCase.name, err)
 			}
 			assertCurrentSchema(t, database, migrations[7].Revision)
@@ -1213,6 +1229,62 @@ func TestRealSeekDBDuplicateRevalidationSchemaRequiresExactGuardRow(t *testing.T
 	}
 	assertDuplicateRevalidationSchemaVerified(t, database)
 	assertIntegrationPersonalMemoryWriteGuard(t, database)
+}
+
+func TestRealSeekDBSocialFeedbackEventsSchemaUpgradesRevisionEightAndPersists(t *testing.T) {
+	instance, config := openSchemaMigrationRuntime(t)
+	closed := false
+	defer func() {
+		if !closed {
+			closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+		}
+	}()
+	database := instance.SQL()
+	migrations := BuiltinMigrations()
+	if err := MigrateSchema(t.Context(), database, migrations[:8]); err != nil {
+		t.Fatalf("MigrateSchema(revision eight) error = %v", err)
+	}
+	assertCurrentSchema(t, database, migrations[7].Revision)
+	assertSchemaTableSet(t, database, duplicateRevalidationRevision)
+	if got := integrationTableCount(t, database, socialMemoryFeedbackEventsTableName); got != 0 {
+		t.Fatalf("revision eight created social feedback events table")
+	}
+
+	if _, err := database.ExecContext(t.Context(), socialMemoryFeedbackEventsSchema.ddl); err != nil {
+		t.Fatalf("precreate social feedback events table: %v", err)
+	}
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(partial revision nine) error = %v", err)
+	}
+	assertCurrentSchema(t, database, CurrentSchemaRevision())
+	assertSocialFeedbackEventsSchemaVerified(t, database)
+	assertSchemaTableSet(t, database, socialFeedbackEventsRevision)
+	row := integrationJournalRowForRevision(t, database, socialFeedbackEventsRevision)
+	if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
+		t.Fatalf("social feedback events journal = %#v", row)
+	}
+
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(repeated revision nine) error = %v", err)
+	}
+	if got := integrationJournalRowForRevision(t, database, socialFeedbackEventsRevision).AttemptCount; got != 1 {
+		t.Fatalf("social feedback events attempt count after repeat = %d, want 1", got)
+	}
+
+	closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+	closed = true
+	restarted, err := Open(t.Context(), config)
+	if err != nil {
+		t.Fatalf("restart SeekDB social feedback events runtime: %v", err)
+	}
+	instance = restarted
+	closed = false
+	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
+	assertSocialFeedbackEventsSchemaVerified(t, restarted.SQL())
+	assertSchemaTableSet(t, restarted.SQL(), socialFeedbackEventsRevision)
+	if got := integrationJournalRowForRevision(t, restarted.SQL(), socialFeedbackEventsRevision).AttemptCount; got != 1 {
+		t.Fatalf("social feedback events attempt count after restart = %d, want 1", got)
+	}
 }
 
 func TestRealSeekDBCognitiveRecordsSchemaRejectsShapeAndSpecialIndexDrift(t *testing.T) {
@@ -1744,6 +1816,8 @@ func assertCognitiveRecordsSchemaVerified(t *testing.T, database *sql.DB, revisi
 		migrationIndex = 6
 	case duplicateRevalidationRevision:
 		migrationIndex = 7
+	case socialFeedbackEventsRevision:
+		migrationIndex = 8
 	default:
 		t.Fatalf("verify cognitive records schema: unsupported revision %d", revision)
 	}
@@ -1767,6 +1841,18 @@ func assertDuplicateRevalidationSchemaVerified(t *testing.T, database *sql.DB) {
 	defer connection.Close()
 	if err := BuiltinMigrations()[7].Verify(t.Context(), connection); err != nil {
 		t.Fatalf("verify duplicate revalidation schema: %v", err)
+	}
+}
+
+func assertSocialFeedbackEventsSchemaVerified(t *testing.T, database *sql.DB) {
+	t.Helper()
+	connection, err := database.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err := BuiltinMigrations()[8].Verify(t.Context(), connection); err != nil {
+		t.Fatalf("verify social feedback events schema: %v", err)
 	}
 }
 
@@ -1926,8 +2012,8 @@ WHERE table_schema = DATABASE()
 
 func assertSchemaTableSet(t *testing.T, database *sql.DB, revision int64) {
 	t.Helper()
-	if revision < foundationSchemaRevision || revision > duplicateRevalidationRevision {
-		t.Fatalf("schema table-set revision = %d, want %d..%d", revision, foundationSchemaRevision, duplicateRevalidationRevision)
+	if revision < foundationSchemaRevision || revision > socialFeedbackEventsRevision {
+		t.Fatalf("schema table-set revision = %d, want %d..%d", revision, foundationSchemaRevision, socialFeedbackEventsRevision)
 	}
 	expected := make([]string, 0)
 	for _, table := range foundationSchema {
@@ -1955,6 +2041,9 @@ func assertSchemaTableSet(t *testing.T, database *sql.DB, revision int64) {
 	}
 	if revision >= duplicateRevalidationRevision {
 		expected = append(expected, personalMemoryWriteGuardTableName)
+	}
+	if revision >= socialFeedbackEventsRevision {
+		expected = append(expected, socialMemoryFeedbackEventsTableName)
 	}
 	for _, table := range expected {
 		if got := integrationTableCount(t, database, table); got != 1 {
