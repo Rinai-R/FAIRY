@@ -20,10 +20,10 @@ func TestSemanticEmbeddingStatusRequiresBackend(t *testing.T) {
 	}
 }
 
-func TestNewStoreFromPoolRequiresPool(t *testing.T) {
-	store, err := NewStoreFromPool(nil, nil)
-	if store != nil || !errors.Is(err, ErrDatabasePoolEmpty) {
-		t.Fatalf("NewStoreFromPool(nil) = (%v, %v), want (nil, %v)", store, err, ErrDatabasePoolEmpty)
+func TestNewSeekDBStoreRequiresDatabase(t *testing.T) {
+	store, err := NewSeekDBStore(nil, time.Second, nil)
+	if store != nil || !errors.Is(err, ErrSeekDBConnectionEmpty) {
+		t.Fatalf("NewSeekDBStore(nil) = (%v, %v), want (nil, %v)", store, err, ErrSeekDBConnectionEmpty)
 	}
 }
 

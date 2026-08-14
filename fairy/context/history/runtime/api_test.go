@@ -60,9 +60,11 @@ func TestPostgresPersistenceHelpersStayPrivate(t *testing.T) {
 func TestExportedAPIDoesNotExposePGX(t *testing.T) {
 	t.Parallel()
 
-	foundPoolConstructor := false
 	for path, file := range parseRuntimeProductionFiles(t) {
 		pgxAliases := runtimePGXImportAliases(t, file)
+		if len(pgxAliases) > 0 {
+			t.Errorf("%s imports pgx in production code", path)
+		}
 		for _, declaration := range file.Decls {
 			switch declaration := declaration.(type) {
 			case *ast.FuncDecl:
@@ -70,7 +72,7 @@ func TestExportedAPIDoesNotExposePGX(t *testing.T) {
 					continue
 				}
 				if declaration.Recv == nil && declaration.Name.Name == "NewStoreFromPool" {
-					foundPoolConstructor = true
+					t.Errorf("%s exports removed PostgreSQL constructor NewStoreFromPool", path)
 				}
 				assertRuntimeNodeHasNoPGX(t, path, "function "+declaration.Name.Name, declaration.Type, pgxAliases)
 			case *ast.GenDecl:
@@ -82,9 +84,6 @@ func TestExportedAPIDoesNotExposePGX(t *testing.T) {
 				}
 			}
 		}
-	}
-	if !foundPoolConstructor {
-		t.Error("NewStoreFromPool migration constructor is no longer exported")
 	}
 }
 

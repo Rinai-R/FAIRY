@@ -22,7 +22,7 @@ func NewServiceWithStore(root string, store *personal.Store, extractionStore *ex
 
 func NewServiceFromStore(store *personal.Store) (*Service, error) {
 	if store == nil {
-		return nil, personal.ErrDatabasePoolEmpty
+		return nil, personal.ErrStoreBackendUnavailable
 	}
 	return &Service{store: store}, nil
 }
@@ -35,12 +35,12 @@ func (s *Service) SummaryContext(ctx context.Context) (personal.Summary, error) 
 	if s.store != nil {
 		return s.store.SummaryContext(ctx)
 	}
-	return personal.Summary{}, personal.ErrDatabasePoolEmpty
+	return personal.Summary{}, personal.ErrStoreBackendUnavailable
 }
 
 func (s *Service) SemanticEmbeddingStatus() (personal.SemanticEmbeddingReadiness, error) {
 	if s == nil || s.store == nil {
-		return personal.SemanticEmbeddingReadiness{}, personal.ErrDatabasePoolEmpty
+		return personal.SemanticEmbeddingReadiness{}, personal.ErrStoreBackendUnavailable
 	}
 	return s.store.SemanticEmbeddingStatus(context.Background())
 }
@@ -87,14 +87,14 @@ func (s *Service) AssignLegacyRelationship(id string, characterID string) (perso
 
 func (s *Service) ExtractionBatchCatalog(characterID string) (extraction.Catalog, error) {
 	if s == nil || s.extraction == nil {
-		return extraction.Catalog{}, extraction.ErrDatabasePoolEmpty
+		return extraction.Catalog{}, extraction.ErrStoreBackendUnavailable
 	}
 	return s.extraction.ExtractionBatchCatalog(characterID)
 }
 
 func (s *Service) RetryExtractionBatch(id string) error {
 	if s == nil || s.extraction == nil {
-		return extraction.ErrDatabasePoolEmpty
+		return extraction.ErrStoreBackendUnavailable
 	}
 	return s.extraction.RetryExtractionBatch(id)
 }
@@ -103,5 +103,5 @@ func (s *Service) openStore() (*personal.Store, error) {
 	if s.store != nil {
 		return s.store, nil
 	}
-	return nil, personal.ErrDatabasePoolEmpty
+	return nil, personal.ErrStoreBackendUnavailable
 }

@@ -11,6 +11,30 @@ import (
 	"fairy/runtime/embedding"
 )
 
+const maxVectorMaintenancePageSize = 100
+
+type VectorRebuildResult struct {
+	ScannedItems int `json:"scannedItems"`
+	UpdatedItems int `json:"updatedItems"`
+	SkippedItems int `json:"skippedItems"`
+	FailedItems  int `json:"failedItems"`
+}
+
+type vectorItem struct {
+	ID        string
+	Topic     string
+	Statement string
+	Content   string
+	Current   bool
+}
+
+func (s *Store) RebuildVectors(ctx context.Context, pageSize int) (VectorRebuildResult, error) {
+	if !s.usesSeekDB() {
+		return VectorRebuildResult{}, ErrStoreBackendUnavailable
+	}
+	return s.rebuildSeekDBVectors(ctx, pageSize)
+}
+
 func (s *Store) rebuildSeekDBVectors(ctx context.Context, pageSize int) (VectorRebuildResult, error) {
 	embedder := s.semanticEmbedderSnapshot()
 	if embedder == nil || !embedder.Ready() {

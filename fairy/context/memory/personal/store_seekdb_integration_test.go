@@ -39,7 +39,7 @@ func TestRealSeekDBPersonalStoreIsScopedAtomicAndPersistent(t *testing.T) {
 	vectorStore := newPersonalSeekDBStore(
 		t, database, runtimeConfig.QueryLimit, personalIntegrationEmbedder{},
 	)
-	if textStore.usesPostgres() || !textStore.usesSeekDB() || textStore.pool != nil || textStore.seekDB != database {
+	if !textStore.usesSeekDB() || textStore.seekDB != database {
 		t.Fatalf("SeekDB personal store exposed another authority: %#v", textStore)
 	}
 

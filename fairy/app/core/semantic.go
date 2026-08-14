@@ -67,7 +67,7 @@ func (publishers semanticEmbedderPublishers) ReplaceSemanticEmbedder(embedder em
 
 func (runtime semanticEmbeddingRuntime) PrepareSemanticEmbedding(settings config.SemanticEmbeddingSettings) (func(), error) {
 	if runtime.store == nil {
-		return nil, personal.ErrDatabasePoolEmpty
+		return nil, personal.ErrStoreBackendUnavailable
 	}
 	if !settings.Enabled || settings.LegacyReason != "" || settings.Provider == config.SemanticEmbeddingProviderNone {
 		return func() { runtime.store.ReplaceSemanticEmbedder(nil) }, nil

@@ -36,7 +36,7 @@ func TestRealSeekDBLedgerStorePersistsUsageCacheAndToolCAS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.usesPostgres() || !store.usesSeekDB() {
+	if !store.usesSeekDB() {
 		t.Fatal("SeekDB ledger store reported a PostgreSQL fallback")
 	}
 	runtimeStore, err := historyruntime.NewSeekDBStore(database, runtimeConfig.QueryLimit)

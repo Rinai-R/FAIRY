@@ -172,12 +172,6 @@ func TestSeekDBExtractionPersonalSettlementAPIsFailClosedBeforeQuery(t *testing.
 	assertSettlementPending("CompleteExtractionBatchContext", func() error {
 		return store.CompleteExtractionBatchContext(t.Context(), "batch")
 	})
-	assertSettlementPending("CommitMemoryMutationsContext", func() error {
-		_, err := store.CommitMemoryMutationsContext(
-			t.Context(), "batch", "character", nil, nil,
-		)
-		return err
-	})
 	assertAuthorityFailure := func(name string, call func() error) {
 		t.Helper()
 		if err := call(); !errors.Is(err, errFailingExtractionSeekDBAuthority) {

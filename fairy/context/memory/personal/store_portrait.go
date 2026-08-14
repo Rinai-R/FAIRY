@@ -4,68 +4,16 @@ import (
 	"cmp"
 	"context"
 	"fairy/runtime/embedding"
-	"fmt"
 	"slices"
 	"strings"
 	"unicode/utf8"
 )
 
 func (s *Store) CompanionPortraitContext(ctx context.Context, characterID string) (Retrieval, error) {
-	if s.usesSeekDB() {
-		return s.companionPortraitSeekDB(ctx, characterID)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return Retrieval{}, ErrStoreBackendUnavailable
 	}
-	return s.companionPortraitPostgres(ctx, characterID)
-}
-
-func (s *Store) companionPortraitPostgres(ctx context.Context, characterID string) (Retrieval, error) {
-	if err := validateID("character_id", characterID); err != nil {
-		return Retrieval{}, err
-	}
-	queryCtx, cancel := s.pool.QueryContext(ctx)
-	defer cancel()
-	rows, err := s.pool.Raw().Query(queryCtx, `
-WITH ranked AS (
-    SELECT id, kind, scope_kind, character_id, review_status, content, status,
-           confidence_basis_points, source_conversation_id, source_turn_id,
-           supersedes_id, created_at_ms, updated_at_ms,
-           ROW_NUMBER() OVER (
-               PARTITION BY kind
-               ORDER BY confidence_basis_points DESC, updated_at_ms DESC, id ASC
-           ) AS kind_rank
-    FROM personal_memories
-    WHERE status = 'active' AND review_status = 'ready'
-      AND (
-        (scope_kind = 'global' AND character_id IS NULL AND kind IN ('profile', 'preference', 'experience'))
-        OR (scope_kind = 'character' AND character_id = $1 AND kind = 'relationship')
-      )
-)
-SELECT id, kind, scope_kind, character_id, review_status, content, status,
-       confidence_basis_points, source_conversation_id, source_turn_id,
-       supersedes_id, created_at_ms, updated_at_ms
-FROM ranked
-WHERE kind_rank <= 4
-ORDER BY CASE kind WHEN 'profile' THEN 0 WHEN 'preference' THEN 1 WHEN 'relationship' THEN 2 ELSE 3 END,
-         confidence_basis_points DESC, updated_at_ms DESC, id ASC
-LIMIT $2`, characterID, maxPortraitCandidates)
-	if err != nil {
-		return Retrieval{}, fmt.Errorf("querying companion portrait: %w", err)
-	}
-	defer rows.Close()
-	records := make([]Record, 0, maxPortraitCandidates)
-	for rows.Next() {
-		record, err := ScanRecord(rows)
-		if err != nil {
-			return Retrieval{}, err
-		}
-		records = append(records, record)
-	}
-	if err := rows.Err(); err != nil {
-		return Retrieval{}, fmt.Errorf("iterating companion portrait: %w", err)
-	}
-	return buildCompanionPortrait(characterID, records)
+	return s.companionPortraitSeekDB(ctx, characterID)
 }
 
 func buildCompanionPortrait(characterID string, records []Record) (Retrieval, error) {

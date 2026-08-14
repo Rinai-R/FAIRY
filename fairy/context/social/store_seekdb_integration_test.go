@@ -43,7 +43,7 @@ func TestRealSeekDBSocialStoreIsAtomicAndPersistent(t *testing.T) {
 		t.Fatalf("NewSeekDBStore(zero limit) error = %v", err)
 	}
 	store := newSocialSeekDBStore(t, database, runtimeConfig.QueryLimit)
-	if !store.usesSeekDB() || store.usesPostgres() {
+	if !store.usesSeekDB() {
 		t.Fatal("SeekDB social store reported the wrong backend")
 	}
 

@@ -37,6 +37,9 @@ func TestPostgresPersistenceAPIStaysPrivate(t *testing.T) {
 			t.Fatalf("parse %s: %v", path, err)
 		}
 		pgxAliases := transcriptPGXAliases(t, file)
+		if len(pgxAliases) > 0 {
+			t.Errorf("%s imports pgx in production code", path)
+		}
 		for _, declaration := range file.Decls {
 			switch declaration := declaration.(type) {
 			case *ast.FuncDecl:
@@ -90,8 +93,8 @@ func TestPostgresPersistenceAPIStaysPrivate(t *testing.T) {
 			}
 		}
 	}
-	if !foundPoolConstructor {
-		t.Error("NewStoreFromPool migration constructor is no longer exported")
+	if foundPoolConstructor {
+		t.Error("NewStoreFromPool migration constructor must not be exported")
 	}
 }
 

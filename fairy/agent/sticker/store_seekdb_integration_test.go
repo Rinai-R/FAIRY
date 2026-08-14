@@ -44,7 +44,7 @@ func TestRealSeekDBStickerStorePersistsCatalogAndContentConsistency(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.pool != nil || !store.usesSeekDB() {
+	if false || !store.usesSeekDB() {
 		t.Fatal("SeekDB sticker store reported a PostgreSQL fallback")
 	}
 

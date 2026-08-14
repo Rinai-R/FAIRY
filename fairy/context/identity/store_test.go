@@ -9,12 +9,6 @@ import (
 	"time"
 )
 
-func TestNewStoreRequiresDatabase(t *testing.T) {
-	if _, err := NewStore(nil); !errors.Is(err, ErrIdentityDatabasePoolRequired) {
-		t.Fatalf("NewStore(nil) error = %v", err)
-	}
-}
-
 func TestNewSeekDBStoreRequiresBoundedDatabase(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -33,7 +27,7 @@ func TestNewSeekDBStoreRequiresBoundedDatabase(t *testing.T) {
 			if !errors.Is(err, test.want) {
 				t.Fatalf("NewSeekDBStore() error = %v, want %v", err, test.want)
 			}
-			if test.want == nil && (store == nil || store.seekDB != test.database || store.pool != nil) {
+			if test.want == nil && (store == nil || store.seekDB != test.database) {
 				t.Fatalf("NewSeekDBStore() = %#v", store)
 			}
 		})

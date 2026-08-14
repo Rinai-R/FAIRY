@@ -10,7 +10,7 @@ import (
 )
 
 func (s *Store) KnowledgeIngestReady() bool {
-	return s.usesSeekDB() || s.usesPostgres()
+	return s.usesSeekDB()
 }
 
 func (s *Store) InsertVerifiedKnowledge(
@@ -55,19 +55,13 @@ func (s *Store) insertVerifiedKnowledge(
 	if err := validateDirectKnowledgeSources(sources); err != nil {
 		return Record{}, err
 	}
-	if s.usesSeekDB() {
-		return s.insertVerifiedKnowledgeSeekDB(
+	if !s.usesSeekDB() {
+		return Record{}, ErrStoreBackendUnavailable
+	}
+	return s.insertVerifiedKnowledgeSeekDB(
 			ctx, topic, statement, conversationID, turnID,
 			confidenceBasisPoints, sources, requireContext,
 		)
-	}
-	if !s.usesPostgres() {
-		return Record{}, ErrStoreBackendUnavailable
-	}
-	return s.insertVerifiedKnowledgePostgres(
-		ctx, topic, statement, conversationID, turnID,
-		confidenceBasisPoints, sources,
-	)
 }
 
 func (s *Store) SearchKnowledgeForIngest(query string, limit int) ([]Retrieved, error) {
@@ -92,13 +86,10 @@ func (s *Store) searchKnowledgeForIngest(
 	if query == "" {
 		return nil, errors.New("knowledge ingest search query is required")
 	}
-	if s.usesSeekDB() {
-		return s.searchForIngestSeekDB(ctx, query, limit)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return nil, ErrStoreBackendUnavailable
 	}
-	return s.searchForIngestPostgres(ctx, query, limit)
+	return s.searchForIngestSeekDB(ctx, query, limit)
 }
 
 func (s *Store) CommitKnowledgeDocumentActions(
@@ -130,17 +121,12 @@ func (s *Store) commitKnowledgeDocumentActions(
 	actions []DocumentAction,
 	requireContext bool,
 ) (int, error) {
-	if s.usesSeekDB() {
-		return s.commitKnowledgeDocumentActionsSeekDB(
-			ctx, task, document, suppliedKnowledgeIDs, actions, requireContext,
-		)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return 0, ErrStoreBackendUnavailable
 	}
-	return s.commitKnowledgeDocumentActionsPostgres(
-		ctx, task, document, suppliedKnowledgeIDs, actions,
-	)
+	return s.commitKnowledgeDocumentActionsSeekDB(
+			ctx, task, document, suppliedKnowledgeIDs, actions, requireContext,
+		)
 }
 
 func validateKnowledgeIngestTask(task IngestTask) ([]byte, error) {

@@ -9,14 +9,9 @@ import (
 	"strings"
 	"time"
 	"unicode"
-
-	coredb "fairy/runtime/database"
-
-	"github.com/jackc/pgx/v5"
 )
 
 var (
-	ErrDatabasePoolEmpty       = errors.New("social memory database pool is required")
 	ErrSeekDBConnectionEmpty   = errors.New("social memory SeekDB connection is required")
 	ErrSeekDBQueryLimitInvalid = errors.New("social memory SeekDB query limit must be greater than zero")
 	ErrStoreBackendUnavailable = errors.New("social memory store backend is unavailable")
@@ -31,21 +26,12 @@ const (
 )
 
 type Store struct {
-	pool       *coredb.Pool
 	seekDB     *sql.DB
 	queryLimit time.Duration
 	now        func() time.Time
 }
 
-func NewStoreFromPool(pool *coredb.Pool) (*Store, error) {
-	if pool == nil || pool.Raw() == nil {
-		return nil, ErrDatabasePoolEmpty
-	}
-	return &Store{pool: pool, now: time.Now}, nil
-}
-
-// NewSeekDBStore creates a social memory repository whose only authority is
-// SeekDB. It never falls back to the legacy PostgreSQL pool.
+// NewSeekDBStore creates a social memory repository whose only authority is SeekDB.
 func NewSeekDBStore(database *sql.DB, queryLimit time.Duration) (*Store, error) {
 	if database == nil {
 		return nil, ErrSeekDBConnectionEmpty
@@ -57,8 +43,6 @@ func NewSeekDBStore(database *sql.DB, queryLimit time.Duration) (*Store, error) 
 }
 
 func (s *Store) usesSeekDB() bool { return s != nil && s.seekDB != nil }
-
-func (s *Store) usesPostgres() bool { return s != nil && s.pool != nil && s.pool.Raw() != nil }
 
 func (s *Store) seekDBQueryContext(parent context.Context) (context.Context, context.CancelFunc) {
 	if parent == nil {
@@ -76,9 +60,6 @@ func (s *Store) currentUnixMS() int64 {
 }
 
 type scanner interface{ Scan(...any) error }
-type Querier interface {
-	Query(context.Context, string, ...any) (pgx.Rows, error)
-}
 
 func nowUnixMS() int64 { return time.Now().UnixMilli() }
 
@@ -105,7 +86,7 @@ func ValidateID(label, value string) error {
 	return nil
 }
 
-func normalizePostgresSearchQuery(query string) (string, error) {
+func normalizeSearchQuery(query string) (string, error) {
 	if len([]rune(query)) > maxSocialQueryRunes {
 		return "", errors.New("social retrieval query is too long or contains control characters")
 	}

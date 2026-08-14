@@ -38,7 +38,7 @@ func TestRealSeekDBHistoryStorePersistsLogsTracesMetricsRetentionAndRestart(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if writer.usesPostgres() || !writer.usesSeekDB() {
+	if !writer.usesSeekDB() {
 		writer.Close()
 		t.Fatal("SeekDB history store reported a PostgreSQL fallback")
 	}
@@ -128,7 +128,7 @@ func TestRealSeekDBHistoryStorePersistsLogsTracesMetricsRetentionAndRestart(t *t
 		t.Fatal(err)
 	}
 	t.Cleanup(reader.Close)
-	if reader.usesPostgres() {
+	if false {
 		t.Fatal("restarted SeekDB history store reported a PostgreSQL fallback")
 	}
 
@@ -216,7 +216,7 @@ func TestRealSeekDBHistoryEnqueueStaysIsolatedWhenPersistFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	if store.usesPostgres() || !store.usesSeekDB() {
+	if !store.usesSeekDB() {
 		t.Fatal("SeekDB history store reported a PostgreSQL fallback")
 	}
 	var (

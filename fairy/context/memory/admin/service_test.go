@@ -9,7 +9,7 @@ import (
 
 func TestNewServiceFromStoreRequiresStore(t *testing.T) {
 	service, err := NewServiceFromStore(nil)
-	if service != nil || !errors.Is(err, personal.ErrDatabasePoolEmpty) {
+	if service != nil || !errors.Is(err, personal.ErrStoreBackendUnavailable) {
 		t.Fatalf("NewServiceFromStore(nil) = (%v, %v)", service, err)
 	}
 }

@@ -13,12 +13,10 @@ import (
 	"unicode/utf8"
 
 	"fairy/context/memory/personal"
-	coredb "fairy/runtime/database"
 	"fairy/runtime/embedding"
 )
 
 var (
-	ErrDatabasePoolEmpty         = errors.New("extraction database pool is required")
 	ErrSeekDBConnectionEmpty     = errors.New("extraction SeekDB connection is required")
 	ErrSeekDBQueryLimitInvalid   = errors.New("extraction SeekDB query limit must be greater than zero")
 	ErrWorkerIDInvalid           = errors.New("extraction worker id is invalid")
@@ -30,15 +28,14 @@ var (
 	ErrExtractionClaimConflict   = errors.New("extraction claim changed before settlement")
 )
 
-const defaultJobLeaseDuration = 30 * time.Second
+const (
+	defaultJobLeaseDuration = 30 * time.Second
+	maxExtractionAttempts     = 3
+)
 
-// Store owns exactly one extraction persistence authority. The PostgreSQL
-// authority remains available for migration parity; a SeekDB Store becomes a
-// full settlement authority only when composed with a personal Store over the
-// same *sql.DB. The coordinator-only constructor fails closed for personal
-// projection, settlement, and coverage APIs.
+// Store owns exactly one extraction persistence authority. A full settlement
+// authority requires composition with a personal Store over the same *sql.DB.
 type Store struct {
-	pool             *coredb.Pool
 	seekDB           *sql.DB
 	personal         *personal.Store
 	queryLimit       time.Duration
@@ -47,29 +44,6 @@ type Store struct {
 	jobLeaseDuration time.Duration
 	now              func() time.Time
 	seekDBWriteHook  func(seekDBWriteStage) error
-}
-
-func NewStoreFromPool(pool *coredb.Pool, embedder embedding.SemanticEmbedder) (*Store, error) {
-	return NewStoreFromPoolWithLease(pool, embedder, "extraction-"+newID(), defaultJobLeaseDuration)
-}
-
-func NewStoreFromPoolWithLease(pool *coredb.Pool, embedder embedding.SemanticEmbedder, workerID string, leaseDuration time.Duration) (*Store, error) {
-	if pool == nil || pool.Raw() == nil {
-		return nil, ErrDatabasePoolEmpty
-	}
-	if err := validateID("worker_id", workerID); err != nil {
-		return nil, ErrWorkerIDInvalid
-	}
-	if leaseDuration <= 0 {
-		return nil, ErrJobLeaseInvalid
-	}
-	return &Store{
-		pool:             pool,
-		embedder:         embedding.NewDynamicSemanticEmbedder(embedder),
-		workerID:         workerID,
-		jobLeaseDuration: leaseDuration,
-		now:              time.Now,
-	}, nil
 }
 
 // NewSeekDBStore creates a coordinator whose only authority is SeekDB. Use
@@ -99,8 +73,7 @@ func NewSeekDBStore(database *sql.DB, queryLimit time.Duration, workerID string,
 }
 
 // NewSeekDBStoreWithPersonal creates a full extraction Store whose queue,
-// personal facts, evidence and coverage share one SeekDB authority. The
-// coordinator-only constructor remains available for task 3.5 callers.
+// personal facts, evidence and coverage share one SeekDB authority.
 func NewSeekDBStoreWithPersonal(
 	database *sql.DB,
 	queryLimit time.Duration,
@@ -130,7 +103,7 @@ func (s *Store) ReplaceSemanticEmbedder(embedder embedding.SemanticEmbedder) {
 
 func (s *Store) embeddingForContent(content string) (embedding.EmbeddingValue, error) {
 	if s == nil || s.embedder == nil {
-		return embedding.EmbeddingValue{}, ErrDatabasePoolEmpty
+		return embedding.EmbeddingValue{}, ErrStoreBackendUnavailable
 	}
 	return embedding.ForContent(s.embedder, content)
 }
@@ -191,8 +164,6 @@ func (s *Store) seekDBQueryContext(parent context.Context) (context.Context, con
 }
 
 func (s *Store) usesSeekDB() bool { return s != nil && s.seekDB != nil }
-
-func (s *Store) usesPostgres() bool { return s != nil && s.pool != nil && s.pool.Raw() != nil }
 
 func nowUnixMS() int64 { return time.Now().UnixMilli() }
 

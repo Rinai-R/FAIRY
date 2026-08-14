@@ -14,7 +14,7 @@ func TestNewSeekDBStoreRequiresConnection(t *testing.T) {
 
 func TestSeekDBSocialStoreDoesNotFallBackToPostgres(t *testing.T) {
 	store := &Store{}
-	if store.usesSeekDB() || store.usesPostgres() {
+	if store.usesSeekDB() {
 		t.Fatal("empty store reported a backend")
 	}
 	if _, err := store.StoreSocialMemoryEntries(context.Background(), SocialMemoryBatchInput{

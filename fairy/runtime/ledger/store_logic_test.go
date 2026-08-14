@@ -74,7 +74,7 @@ func TestUsageReportCollectorBoundsRecentAcrossLargeHistory(t *testing.T) {
 }
 
 func TestProductionUsageReportDoesNotLoadFullHistoryCollections(t *testing.T) {
-	for _, filename := range []string{"store_usage.go", "store_seekdb.go"} {
+	for _, filename := range []string{"store_usage_api.go", "store_seekdb.go"} {
 		source, err := os.ReadFile(filename)
 		if err != nil {
 			t.Fatalf("ReadFile(%s) error = %v", filename, err)

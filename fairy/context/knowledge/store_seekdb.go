@@ -162,7 +162,7 @@ func seekDBKnowledgeEmbeddingTuple(content string, value embedding.EmbeddingValu
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	return value.ModelID, hash, value.Vector.String(), nil
+	return value.ModelID, hash, value.Literal(), nil
 }
 
 func scanSeekDBKnowledge(row scanner) (Record, error) {

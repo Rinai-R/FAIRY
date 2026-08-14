@@ -10,20 +10,16 @@ import (
 	"sync"
 	"time"
 
-	coredb "fairy/runtime/database"
 	"fairy/transport/session"
-
-	"github.com/jackc/pgx/v5"
 )
 
 var (
-	ErrConnectionIDRequired       = errors.New("model connection_id is required")
-	ErrInvalidConnectionID        = errors.New("model connection_id must be 1-128 ASCII characters from [A-Za-z0-9._:-]")
-	ErrSecretRequired             = errors.New("model credential is required")
-	ErrInvalidSecret              = errors.New("model credential must not contain leading or trailing whitespace")
-	ErrSecretDatabasePoolRequired = errors.New("secret database pool is required")
-	ErrSecretSeekDBRequired       = errors.New("secret SeekDB connection is required")
-	ErrSecretQueryLimitInvalid    = errors.New("secret query limit must be greater than zero")
+	ErrConnectionIDRequired    = errors.New("model connection_id is required")
+	ErrInvalidConnectionID     = errors.New("model connection_id must be 1-128 ASCII characters from [A-Za-z0-9._:-]")
+	ErrSecretRequired          = errors.New("model credential is required")
+	ErrInvalidSecret           = errors.New("model credential must not contain leading or trailing whitespace")
+	ErrSecretSeekDBRequired    = errors.New("secret SeekDB connection is required")
+	ErrSecretQueryLimitInvalid = errors.New("secret query limit must be greater than zero")
 )
 
 // SecretValue stores an exact secret value in memory. It deliberately redacts fmt and
@@ -62,11 +58,9 @@ func (v SecretValue) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("secret value cannot be JSON encoded")
 }
 
-// SecretStore persists authenticated ciphertext. SeekDB is the target local
-// authority; the PostgreSQL field exists only while the legacy composition is
-// removed. Unit tests may opt into the explicit in-memory store.
+// SecretStore persists authenticated ciphertext in the local SeekDB authority.
+// Unit tests may opt into the explicit in-memory store.
 type SecretStore struct {
-	pool       *coredb.Pool
 	seekDB     *sql.DB
 	cipher     *SecretCipher
 	queryLimit time.Duration
@@ -75,9 +69,7 @@ type SecretStore struct {
 	testValues map[string]SecretValue
 }
 
-// NewSeekDBSecretStore persists only authenticated ciphertext in the local
-// SeekDB authority. The PostgreSQL constructor remains temporarily available
-// to the legacy import/runtime path while domain composition is migrated.
+// NewSeekDBSecretStore persists only authenticated ciphertext in the local SeekDB authority.
 func NewSeekDBSecretStore(database *sql.DB, cipher *SecretCipher, queryLimit time.Duration) (*SecretStore, error) {
 	if database == nil {
 		return nil, ErrSecretSeekDBRequired
@@ -91,16 +83,6 @@ func NewSeekDBSecretStore(database *sql.DB, cipher *SecretCipher, queryLimit tim
 	return &SecretStore{seekDB: database, cipher: cipher, queryLimit: queryLimit, now: time.Now}, nil
 }
 
-func NewPostgresSecretStore(pool *coredb.Pool, cipher *SecretCipher) (*SecretStore, error) {
-	if pool == nil || pool.Raw() == nil {
-		return nil, ErrSecretDatabasePoolRequired
-	}
-	if cipher == nil || cipher.aead == nil {
-		return nil, ErrSecretCipherRequired
-	}
-	return &SecretStore{pool: pool, cipher: cipher, now: time.Now}, nil
-}
-
 // NewTestSecretStore returns an explicit in-memory store for unit tests.
 func NewTestSecretStore() *SecretStore {
 	return &SecretStore{now: time.Now, testValues: make(map[string]SecretValue)}
@@ -109,7 +91,7 @@ func NewTestSecretStore() *SecretStore {
 // Encrypted reports whether the store has a durable database and initialized
 // AEAD cipher. It never exposes key material.
 func (s *SecretStore) Encrypted() bool {
-	return s != nil && ((s.seekDB != nil) || (s.pool != nil && s.pool.Raw() != nil)) && s.cipher != nil && s.cipher.aead != nil
+	return s != nil && s.seekDB != nil && s.cipher != nil && s.cipher.aead != nil
 }
 
 func (s *SecretStore) DigestEndpointKey(endpoint session.EndpointKind, rawKey string) (string, error) {
@@ -143,13 +125,10 @@ func (s *SecretStore) SaveContext(ctx context.Context, connectionID string, valu
 		s.testMu.Unlock()
 		return nil
 	}
-	if s != nil && s.seekDB != nil {
-		return s.saveSeekDB(ctx, connectionID, value)
+	if s == nil || s.seekDB == nil {
+		return ErrSecretSeekDBRequired
 	}
-	if s == nil || s.pool == nil {
-		return ErrSecretDatabasePoolRequired
-	}
-	return s.savePostgres(ctx, connectionID, value)
+	return s.saveSeekDB(ctx, connectionID, value)
 }
 
 func (s *SecretStore) Load(connectionID string) (SecretValue, bool, error) {
@@ -166,13 +145,10 @@ func (s *SecretStore) LoadContext(ctx context.Context, connectionID string) (Sec
 		s.testMu.RUnlock()
 		return value, ok, nil
 	}
-	if s != nil && s.seekDB != nil {
-		return s.loadSeekDB(ctx, connectionID)
+	if s == nil || s.seekDB == nil {
+		return SecretValue{}, false, ErrSecretSeekDBRequired
 	}
-	if s == nil || s.pool == nil {
-		return SecretValue{}, false, ErrSecretDatabasePoolRequired
-	}
-	return s.loadPostgres(ctx, connectionID)
+	return s.loadSeekDB(ctx, connectionID)
 }
 
 func (s *SecretStore) Delete(connectionID string) error {
@@ -189,13 +165,10 @@ func (s *SecretStore) DeleteContext(ctx context.Context, connectionID string) er
 		s.testMu.Unlock()
 		return nil
 	}
-	if s != nil && s.seekDB != nil {
-		return s.deleteSeekDB(ctx, connectionID)
+	if s == nil || s.seekDB == nil {
+		return ErrSecretSeekDBRequired
 	}
-	if s == nil || s.pool == nil {
-		return ErrSecretDatabasePoolRequired
-	}
-	return s.deletePostgres(ctx, connectionID)
+	return s.deleteSeekDB(ctx, connectionID)
 }
 
 func (s *SecretStore) saveSeekDB(ctx context.Context, name string, value SecretValue) error {
@@ -297,78 +270,6 @@ func canceledContextError(ctx context.Context) error {
 	default:
 		return nil
 	}
-}
-
-func (s *SecretStore) savePostgres(ctx context.Context, name string, value SecretValue) error {
-	if s.cipher == nil {
-		return ErrSecretCipherRequired
-	}
-	namespace := secretNamespace(name)
-	plaintext := []byte(value.raw)
-	nonce, ciphertext, aad, err := s.cipher.Seal(namespace, name, plaintext)
-	clear(plaintext)
-	if err != nil {
-		return err
-	}
-	queryCtx, cancel := s.pool.QueryContext(ctx)
-	defer cancel()
-	_, err = s.pool.Raw().Exec(queryCtx, `
-INSERT INTO secret_values(namespace, name, key_version, nonce, ciphertext, aad, created_at_ms, updated_at_ms)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
-ON CONFLICT(namespace, name) DO UPDATE SET
-  key_version = excluded.key_version,
-  nonce = excluded.nonce,
-  ciphertext = excluded.ciphertext,
-  aad = excluded.aad,
-  updated_at_ms = excluded.updated_at_ms`, namespace, name, SecretKeyVersion, nonce, ciphertext, aad, s.currentUnixMillis())
-	clear(ciphertext)
-	if err != nil {
-		return fmt.Errorf("saving encrypted secret: %w", err)
-	}
-	return nil
-}
-
-func (s *SecretStore) loadPostgres(ctx context.Context, name string) (SecretValue, bool, error) {
-	if s.cipher == nil {
-		return SecretValue{}, false, ErrSecretCipherRequired
-	}
-	namespace := secretNamespace(name)
-	queryCtx, cancel := s.pool.QueryContext(ctx)
-	defer cancel()
-	var keyVersion int
-	var nonce, ciphertext []byte
-	var aad string
-	err := s.pool.Raw().QueryRow(queryCtx, `
-SELECT key_version, nonce, ciphertext, aad
-FROM secret_values
-WHERE namespace = $1 AND name = $2`, namespace, name).Scan(&keyVersion, &nonce, &ciphertext, &aad)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return SecretValue{}, false, nil
-	}
-	if err != nil {
-		return SecretValue{}, false, fmt.Errorf("loading encrypted secret: %w", err)
-	}
-	plaintext, err := s.cipher.Open(namespace, name, keyVersion, nonce, ciphertext, aad)
-	clear(ciphertext)
-	if err != nil {
-		return SecretValue{}, false, err
-	}
-	raw := string(plaintext)
-	clear(plaintext)
-	value, err := NewSecretValue(raw)
-	if err != nil {
-		return SecretValue{}, false, errors.New("decrypted secret value is invalid")
-	}
-	return value, true, nil
-}
-
-func (s *SecretStore) deletePostgres(ctx context.Context, name string) error {
-	queryCtx, cancel := s.pool.QueryContext(ctx)
-	defer cancel()
-	if _, err := s.pool.Raw().Exec(queryCtx, "DELETE FROM secret_values WHERE namespace = $1 AND name = $2", secretNamespace(name), name); err != nil {
-		return fmt.Errorf("deleting encrypted secret: %w", err)
-	}
-	return nil
 }
 
 func secretNamespace(name string) string {

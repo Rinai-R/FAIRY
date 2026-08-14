@@ -34,6 +34,9 @@ func TestExportedAPIExcludesPostgresPrimitives(t *testing.T) {
 			t.Fatalf("parse %s: %v", name, err)
 		}
 		pgxAliases := postgresImportAliases(t, file)
+		if len(pgxAliases) > 0 {
+			t.Errorf("%s imports pgx in production code", name)
+		}
 		for _, declaration := range file.Decls {
 			switch declaration := declaration.(type) {
 			case *ast.FuncDecl:

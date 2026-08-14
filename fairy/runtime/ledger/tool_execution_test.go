@@ -47,7 +47,7 @@ func TestCreateToolExecutionRequiresDesktopToolAndFutureDeadline(t *testing.T) {
 }
 
 func TestRecoveredToolExecutionSettlementRemainsSetBased(t *testing.T) {
-	implementation, err := os.ReadFile("tool_execution.go")
+	implementation, err := os.ReadFile("tool_execution_types.go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,15 +72,12 @@ func TestRecoveredToolExecutionSettlementRemainsSetBased(t *testing.T) {
 		}
 	}
 	for _, required := range []string{
-		"WITH recoverable AS MATERIALIZED",
-		"failed_executions AS",
-		"failed_turns AS",
-		"SELECT COUNT(*) FROM failed_turns",
+		"INNER JOIN tool_executions execution",
+		"execution.error_code = 'core_restarted'",
 		"desktop capture was interrupted by Core restart",
 		"desktop capture evidence was lost during Core restart",
-		"INNER JOIN tool_executions execution",
-		"error_code = 'core_restarted'",
 		"DESKTOP_CAPTURE_RECOVERY_FAILED",
+		"FOR UPDATE",
 	} {
 		if !strings.Contains(production, required) {
 			t.Fatalf("set-based recovery is missing %q", required)

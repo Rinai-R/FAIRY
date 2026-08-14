@@ -13,13 +13,10 @@ func (s *Store) BeginInitiationTurn(conversationID string, evidenceIDs []string)
 }
 
 func (s *Store) BeginInitiationTurnContext(ctx context.Context, conversationID string, evidenceIDs []string) (PersistedTurn, error) {
-	if s.usesSeekDB() {
-		return s.beginInitiationTurnSeekDB(ctx, conversationID, evidenceIDs)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return PersistedTurn{}, ErrStoreBackendUnavailable
 	}
-	return s.beginInitiationTurnPostgres(ctx, conversationID, evidenceIDs)
+	return s.beginInitiationTurnSeekDB(ctx, conversationID, evidenceIDs)
 }
 
 func (s *Store) OpenOrCreateEndpointConversation(characterID string, binding session.Binding, endpointKeyDigest string) (ConversationBootstrap, error) {
@@ -30,13 +27,10 @@ func (s *Store) OpenOrCreateEndpointConversationContext(ctx context.Context, cha
 	if err := validateEndpointConversationKey(characterID, binding, endpointKeyDigest); err != nil {
 		return ConversationBootstrap{}, err
 	}
-	if s.usesSeekDB() {
-		return s.openOrCreateEndpointConversationSeekDB(ctx, characterID, binding, endpointKeyDigest)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return ConversationBootstrap{}, ErrStoreBackendUnavailable
 	}
-	return s.openOrCreateEndpointConversationPostgres(ctx, characterID, binding, endpointKeyDigest)
+	return s.openOrCreateEndpointConversationSeekDB(ctx, characterID, binding, endpointKeyDigest)
 }
 
 func (s *Store) LookupEndpointForConversation(conversationID string) (session.Binding, bool, error) {
@@ -47,13 +41,10 @@ func (s *Store) LookupEndpointForConversationContext(ctx context.Context, conver
 	if err := ValidateID("conversation_id", conversationID); err != nil {
 		return session.Binding{}, false, err
 	}
-	if s.usesSeekDB() {
-		return s.lookupEndpointForConversationSeekDB(ctx, conversationID)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return session.Binding{}, false, ErrStoreBackendUnavailable
 	}
-	return s.lookupEndpointForConversationPostgres(ctx, conversationID)
+	return s.lookupEndpointForConversationSeekDB(ctx, conversationID)
 }
 
 func (s *Store) OpenOrCreateCharacterConversation(characterID string) (ConversationBootstrap, error) {
@@ -64,13 +55,10 @@ func (s *Store) OpenOrCreateCharacterConversationContext(ctx context.Context, ch
 	if err := ValidateID("character_id", characterID); err != nil {
 		return ConversationBootstrap{}, err
 	}
-	if s.usesSeekDB() {
-		return s.openOrCreateCharacterConversationSeekDB(ctx, characterID)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return ConversationBootstrap{}, ErrStoreBackendUnavailable
 	}
-	return s.openOrCreateCharacterConversationPostgres(ctx, characterID)
+	return s.openOrCreateCharacterConversationSeekDB(ctx, characterID)
 }
 
 func (s *Store) LoadConversation(conversationID string) (ConversationBootstrap, error) {
@@ -81,13 +69,10 @@ func (s *Store) LoadConversationContext(ctx context.Context, conversationID stri
 	if err := ValidateID("conversation_id", conversationID); err != nil {
 		return ConversationBootstrap{}, err
 	}
-	if s.usesSeekDB() {
-		return s.loadConversationSeekDB(ctx, conversationID)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return ConversationBootstrap{}, ErrStoreBackendUnavailable
 	}
-	return s.loadConversationPostgres(ctx, conversationID)
+	return s.loadConversationSeekDB(ctx, conversationID)
 }
 
 func (s *Store) LoadConversationRecord(conversationID string) (ConversationRecord, error) {
@@ -98,13 +83,10 @@ func (s *Store) LoadConversationRecordContext(ctx context.Context, conversationI
 	if err := ValidateID("conversation_id", conversationID); err != nil {
 		return ConversationRecord{}, err
 	}
-	if s.usesSeekDB() {
-		return s.loadConversationRecordSeekDB(ctx, conversationID)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return ConversationRecord{}, ErrStoreBackendUnavailable
 	}
-	return s.loadConversationRecordPostgres(ctx, conversationID)
+	return s.loadConversationRecordSeekDB(ctx, conversationID)
 }
 
 func (s *Store) LoadConversationActivity(conversationID string, nowUnixMS int64) (ConversationActivity, error) {
@@ -118,13 +100,10 @@ func (s *Store) LoadConversationActivityContext(ctx context.Context, conversatio
 	if nowUnixMS <= 0 {
 		return ConversationActivity{}, errors.New("activity evaluation time must be positive")
 	}
-	if s.usesSeekDB() {
-		return s.loadConversationActivitySeekDB(ctx, conversationID, nowUnixMS)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return ConversationActivity{}, ErrStoreBackendUnavailable
 	}
-	return s.loadConversationActivityPostgres(ctx, conversationID, nowUnixMS)
+	return s.loadConversationActivitySeekDB(ctx, conversationID, nowUnixMS)
 }
 
 func (s *Store) LoadConversationPrompt(conversationID string) (ConversationPromptContext, error) {
@@ -135,13 +114,10 @@ func (s *Store) LoadConversationPromptContext(ctx context.Context, conversationI
 	if err := ValidateID("conversation_id", conversationID); err != nil {
 		return ConversationPromptContext{}, err
 	}
-	if s.usesSeekDB() {
-		return s.loadConversationPromptContextSeekDB(ctx, conversationID)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return ConversationPromptContext{}, ErrStoreBackendUnavailable
 	}
-	return s.loadConversationPromptContextPostgres(ctx, conversationID)
+	return s.loadConversationPromptContextSeekDB(ctx, conversationID)
 }
 
 func (s *Store) BeginTurn(conversationID string, userMessage string) (PersistedTurn, error) {
@@ -149,13 +125,10 @@ func (s *Store) BeginTurn(conversationID string, userMessage string) (PersistedT
 }
 
 func (s *Store) BeginTurnContext(ctx context.Context, conversationID string, userMessage string) (PersistedTurn, error) {
-	if s.usesSeekDB() {
-		return s.beginTurnSeekDB(ctx, conversationID, userMessage, "")
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return PersistedTurn{}, ErrStoreBackendUnavailable
 	}
-	return s.beginTurnPostgres(ctx, conversationID, userMessage, "")
+	return s.beginTurnSeekDB(ctx, conversationID, userMessage, "")
 }
 
 func (s *Store) BeginCorrelatedTurn(conversationID string, userMessage string, messageID string) (PersistedTurn, error) {
@@ -163,13 +136,10 @@ func (s *Store) BeginCorrelatedTurn(conversationID string, userMessage string, m
 }
 
 func (s *Store) BeginCorrelatedTurnContext(ctx context.Context, conversationID string, userMessage string, messageID string) (PersistedTurn, error) {
-	if s.usesSeekDB() {
-		return s.beginTurnSeekDB(ctx, conversationID, userMessage, messageID)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return PersistedTurn{}, ErrStoreBackendUnavailable
 	}
-	return s.beginTurnPostgres(ctx, conversationID, userMessage, messageID)
+	return s.beginTurnSeekDB(ctx, conversationID, userMessage, messageID)
 }
 
 func (s *Store) CompleteTurn(conversationID string, turnID string, assistantMessage string) (MessageRecord, error) {
@@ -177,13 +147,10 @@ func (s *Store) CompleteTurn(conversationID string, turnID string, assistantMess
 }
 
 func (s *Store) CompleteTurnContext(ctx context.Context, conversationID string, turnID string, assistantMessage string) (MessageRecord, error) {
-	if s.usesSeekDB() {
-		return s.completeExpressionTurnSeekDB(ctx, conversationID, turnID, assistantMessage, nil, true)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return MessageRecord{}, ErrStoreBackendUnavailable
 	}
-	return s.completeTurnPostgres(ctx, conversationID, turnID, assistantMessage)
+	return s.completeExpressionTurnSeekDB(ctx, conversationID, turnID, assistantMessage, nil, true)
 }
 
 func (s *Store) CompleteExpressionTurn(conversationID string, turnID string, assistantMessage string, parts []historyexpr.Part) (MessageRecord, error) {
@@ -191,23 +158,17 @@ func (s *Store) CompleteExpressionTurn(conversationID string, turnID string, ass
 }
 
 func (s *Store) CompleteExpressionTurnContext(ctx context.Context, conversationID string, turnID string, assistantMessage string, parts []historyexpr.Part) (MessageRecord, error) {
-	if s.usesSeekDB() {
-		return s.completeExpressionTurnSeekDB(ctx, conversationID, turnID, assistantMessage, parts, true)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return MessageRecord{}, ErrStoreBackendUnavailable
 	}
-	return s.completeExpressionTurnPostgres(ctx, conversationID, turnID, assistantMessage, parts, true)
+	return s.completeExpressionTurnSeekDB(ctx, conversationID, turnID, assistantMessage, parts, true)
 }
 
 func (s *Store) CompleteExpressionTurnForPolicy(conversationID string, turnID string, assistantMessage string, parts []historyexpr.Part, extractionEligible bool) (MessageRecord, error) {
-	if s.usesSeekDB() {
-		return s.completeExpressionTurnSeekDB(context.Background(), conversationID, turnID, assistantMessage, parts, extractionEligible)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return MessageRecord{}, ErrStoreBackendUnavailable
 	}
-	return s.completeExpressionTurnPostgres(context.Background(), conversationID, turnID, assistantMessage, parts, extractionEligible)
+	return s.completeExpressionTurnSeekDB(context.Background(), conversationID, turnID, assistantMessage, parts, extractionEligible)
 }
 
 func (s *Store) InterruptTurn(conversationID string, turnID string, publishedPrefix string) (*MessageRecord, error) {
@@ -215,13 +176,10 @@ func (s *Store) InterruptTurn(conversationID string, turnID string, publishedPre
 }
 
 func (s *Store) InterruptTurnContext(ctx context.Context, conversationID string, turnID string, publishedPrefix string) (*MessageRecord, error) {
-	if s.usesSeekDB() {
-		return s.interruptExpressionTurnSeekDB(ctx, conversationID, turnID, publishedPrefix, nil)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return nil, ErrStoreBackendUnavailable
 	}
-	return s.interruptTurnPostgres(ctx, conversationID, turnID, publishedPrefix)
+	return s.interruptExpressionTurnSeekDB(ctx, conversationID, turnID, publishedPrefix, nil)
 }
 
 func (s *Store) InterruptExpressionTurn(conversationID string, turnID string, publishedPrefix string, parts []historyexpr.Part) (*MessageRecord, error) {
@@ -229,13 +187,10 @@ func (s *Store) InterruptExpressionTurn(conversationID string, turnID string, pu
 }
 
 func (s *Store) InterruptExpressionTurnContext(ctx context.Context, conversationID string, turnID string, publishedPrefix string, parts []historyexpr.Part) (*MessageRecord, error) {
-	if s.usesSeekDB() {
-		return s.interruptExpressionTurnSeekDB(ctx, conversationID, turnID, publishedPrefix, parts)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return nil, ErrStoreBackendUnavailable
 	}
-	return s.interruptExpressionTurnPostgres(ctx, conversationID, turnID, publishedPrefix, parts)
+	return s.interruptExpressionTurnSeekDB(ctx, conversationID, turnID, publishedPrefix, parts)
 }
 
 func (s *Store) FailTurn(conversationID string, turnID string, code string, message string, retryable bool) error {
@@ -243,11 +198,8 @@ func (s *Store) FailTurn(conversationID string, turnID string, code string, mess
 }
 
 func (s *Store) FailTurnContext(ctx context.Context, conversationID string, turnID string, code string, message string, retryable bool) error {
-	if s.usesSeekDB() {
-		return s.failTurnSeekDB(ctx, conversationID, turnID, code, message, retryable)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return ErrStoreBackendUnavailable
 	}
-	return s.failTurnPostgres(ctx, conversationID, turnID, code, message, retryable)
+	return s.failTurnSeekDB(ctx, conversationID, turnID, code, message, retryable)
 }

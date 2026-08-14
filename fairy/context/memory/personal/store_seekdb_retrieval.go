@@ -9,9 +9,8 @@ import (
 	"strings"
 	"time"
 
+	memoryretrieval "fairy/context/memory/retrieval"
 	"fairy/runtime/embedding"
-
-	"github.com/pgvector/pgvector-go"
 )
 
 const seekDBRecentVectorWindow = 60 * time.Second
@@ -110,7 +109,7 @@ func (s *Store) retrieveSeekDB(ctx context.Context, characterID, query string) (
 	if err := validateID("character_id", characterID); err != nil {
 		return Retrieval{}, err
 	}
-	normalized, err := normalizePostgresSearchQuery(query)
+	normalized, err := memoryretrieval.NormalizePostgresQuery(query)
 	if err != nil {
 		return Retrieval{}, err
 	}
@@ -265,8 +264,7 @@ func querySeekDBPersonalEmbedding(
 	if err := embedding.ValidateVector(vectors[0]); err != nil {
 		return "", "", embedding.SemanticStatusUnavailable, err
 	}
-	vector := pgvector.NewVector(vectors[0])
-	return vector.String(), spaceID, embedding.SemanticStatusReady, nil
+	return embedding.VectorLiteral(vectors[0]), spaceID, embedding.SemanticStatusReady, nil
 }
 
 func scanSeekDBRetrieved(rows *sql.Rows, remaining *int) ([]Retrieved, error) {

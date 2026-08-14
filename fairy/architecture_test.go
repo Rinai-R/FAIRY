@@ -55,7 +55,7 @@ func TestDomainPackagesDoNotImportCompositionOrTransport(t *testing.T) {
 		"./context/character",
 		"./runtime/config",
 		"./agent/conversation",
-		"./runtime/database",
+		"./runtime/seekdb",
 		"./transport/desktopcapture",
 		"./context/knowledge",
 		"./agent/learning",
@@ -376,22 +376,16 @@ func TestDesktopCapturePersistenceBoundary(t *testing.T) {
 			}
 		}
 	}
-	schema, err := os.ReadFile("runtime/database/schema.go")
+	schema, err := os.ReadFile("runtime/seekdb/schema_ledger.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	lower := strings.ToLower(string(schema))
-	start := strings.Index(lower, "type toolexecutionschema struct {")
-	if start < 0 {
+	if !strings.Contains(lower, "create table if not exists tool_executions") {
 		t.Fatal("tool_executions schema is missing")
 	}
-	end := strings.Index(lower[start:], "\n}")
-	if end < 0 {
-		t.Fatal("tool_executions schema is incomplete")
-	}
-	table := lower[start : start+end]
 	for _, marker := range []string{"[]byte", "dataurl", "payload", "content"} {
-		if strings.Contains(table, marker) {
+		if strings.Contains(lower, marker) {
 			t.Fatalf("tool_executions persists forbidden raw evidence column marker %q", marker)
 		}
 	}

@@ -29,7 +29,6 @@ var targetPackages = []string{
 	"fairy/agent/conversation/lifecycle",
 	"fairy/agent/conversation/turngate",
 	"fairy/app/core",
-	"fairy/runtime/database",
 	"fairy/runtime/seekdb",
 	"fairy/runtime/embedding",
 	"fairy/runtime/ledger",
@@ -183,14 +182,14 @@ func TestExtractedStoresDoNotLeakBackIntoMemory(t *testing.T) {
 		}
 	}
 	for _, required := range []string{
-		filepath.Join("context", "history", "transcript", "store_conversation.go"),
-		filepath.Join("context", "history", "compaction", "store_compaction.go"),
-		filepath.Join("context", "history", "runtime", "store_postgres.go"),
-		filepath.Join("runtime", "ledger", "tool_execution.go"),
-		filepath.Join("runtime", "ledger", "store_usage.go"),
+		filepath.Join("context", "history", "transcript", "store_seekdb.go"),
+		filepath.Join("context", "history", "compaction", "store_seekdb.go"),
+		filepath.Join("context", "history", "runtime", "store_seekdb.go"),
+		filepath.Join("runtime", "ledger", "tool_execution_types.go"),
+		filepath.Join("runtime", "ledger", "store_usage_api.go"),
 		filepath.Join("context", "identity", "store.go"),
-		filepath.Join("context", "social", "records.go"),
-		filepath.Join("context", "knowledge", "store_documents.go"),
+		filepath.Join("context", "social", "social_shared.go"),
+		filepath.Join("context", "knowledge", "store_seekdb_documents.go"),
 	} {
 		if _, err := os.Stat(required); err != nil {
 			t.Errorf("required responsibility owner %s is missing: %v", required, err)
@@ -362,7 +361,7 @@ func TestProductionMemorySQLDoesNotUseRemovedAuxiliaryTables(t *testing.T) {
 		"extraction_batch_turns",
 		"knowledge_ingest_jobs",
 	}
-	for _, directory := range []string{"context/memory", "runtime/database"} {
+	for _, directory := range []string{"context/memory", "runtime/seekdb"} {
 		entries, err := os.ReadDir(directory)
 		if err != nil {
 			t.Fatal(err)
@@ -370,7 +369,7 @@ func TestProductionMemorySQLDoesNotUseRemovedAuxiliaryTables(t *testing.T) {
 		for _, entry := range entries {
 			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") ||
 				strings.HasSuffix(entry.Name(), "_test.go") ||
-				directory == "runtime/database" && entry.Name() == "migrate.go" {
+				directory == "runtime/seekdb" && strings.HasPrefix(entry.Name(), "schema_") {
 				continue
 			}
 			path := filepath.Join(directory, entry.Name())
@@ -399,9 +398,8 @@ func TestProductionMemorySQLDoesNotUseRemovedAuxiliaryTables(t *testing.T) {
 
 func TestSocialFeedbackLedgerHasNarrowProductionOwner(t *testing.T) {
 	allowed := map[string]bool{
-		"runtime/database/migrate.go": true,
-		"runtime/database/schema.go":  true,
-		"context/social/records.go":   true,
+		"context/social/store_seekdb_feedback.go":  true,
+		"runtime/seekdb/schema_social_feedback.go": true,
 	}
 	err := filepath.WalkDir(".", func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -469,30 +467,25 @@ func TestOnlyCoreComposesExecutionDomains(t *testing.T) {
 
 func TestThirdPartySDKImportsMatchMigrationInventory(t *testing.T) {
 	allowed := map[string][]string{
-		"github.com/jackc/pgx/": {
-			"fairy/runtime/database",
-			"fairy/runtime/config",
-			"fairy/context/history/compaction",
-			"fairy/context/history/runtime",
-			"fairy/context/history/transcript",
-			"fairy/context/memory/extraction",
-			"fairy/context/memory/personal",
-			"fairy/context/knowledge",
-			"fairy/context/social",
-			"fairy/runtime/ledger",
-			"fairy/runtime/observability/history",
-			"fairy/agent/sticker",
-		},
-		"gorm.io/":                     {"fairy/runtime/database"},
-		"github.com/pgvector/":         {"fairy/runtime/database", "fairy/runtime/embedding", "fairy/context/memory/personal", "fairy/context/knowledge"},
 		"github.com/openai/":           {"fairy/runtime/model"},
 		"github.com/cloudwego/hertz/":  {"fairy/transport/web"},
 		"github.com/gorilla/websocket": {"fairy/transport/web", "fairy/transport/session"},
 		"github.com/spf13/cobra":       {"fairy/app/cmd"},
 		"github.com/spf13/viper":       {"fairy/app/cmd"},
 	}
+	forbidden := []string{
+		"github.com/jackc/pgx",
+		"github.com/pgvector/pgvector-go",
+		"gorm.io/",
+		"fairy/runtime/database",
+	}
 	for _, pkg := range listPackages(t, "./...") {
 		for _, imported := range pkg.Imports {
+			for _, prefix := range forbidden {
+				if imported == prefix || strings.HasPrefix(imported, prefix) {
+					t.Errorf("package %s still imports removed storage SDK %s", pkg.ImportPath, imported)
+				}
+			}
 			for sdkPrefix, owners := range allowed {
 				if strings.HasPrefix(imported, sdkPrefix) && !slices.Contains(owners, pkg.ImportPath) {
 					t.Errorf("package %s imports SDK %s outside migration inventory %v", pkg.ImportPath, imported, owners)
@@ -507,6 +500,11 @@ func TestObsoletePostgresPackageIsAbsent(t *testing.T) {
 		t.Fatal("obsolete top-level postgres package still exists")
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("stat obsolete postgres package: %v", err)
+	}
+	if _, err := os.Stat("runtime/database"); err == nil {
+		t.Fatal("removed PostgreSQL runtime/database package still exists")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat runtime/database: %v", err)
 	}
 }
 

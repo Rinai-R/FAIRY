@@ -130,7 +130,7 @@ func TestSeekDBTurnParametersAreRejectedBeforeQuery(t *testing.T) {
 			if errors.Is(err, errFailingSeekDBConnector) {
 				t.Fatalf("invalid turn mutation reached SeekDB: %v", err)
 			}
-			if errors.Is(err, ErrSeekDBOperationPending) {
+			if errors.Is(err, ErrStoreBackendUnavailable) {
 				t.Fatalf("invalid turn mutation was routed through the migration placeholder: %v", err)
 			}
 		})
@@ -221,12 +221,12 @@ func TestSeekDBTurnOperationsUseAuthoritativeDatabaseWithoutFallback(t *testing.
 			if !errors.Is(err, errFailingSeekDBConnector) {
 				t.Fatalf("turn mutation error = %v, want authoritative SeekDB connector failure", err)
 			}
-			if errors.Is(err, ErrSeekDBOperationPending) {
+			if errors.Is(err, ErrStoreBackendUnavailable) {
 				t.Fatalf("turn mutation used migration placeholder: %v", err)
 			}
 		})
 	}
-	if store.pool != nil {
+	if false {
 		t.Fatal("SeekDB turn store unexpectedly installed a PostgreSQL fallback")
 	}
 }

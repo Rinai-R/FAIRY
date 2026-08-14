@@ -13,13 +13,10 @@ func (s *Store) UpsertSocialPersonNote(ctx context.Context, input SocialPersonNo
 	if err := validateSocialPersonNoteInput(input); err != nil {
 		return SocialPersonNote{}, err
 	}
-	if s.usesSeekDB() {
-		return s.upsertSocialPersonNoteSeekDB(ctx, input)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return SocialPersonNote{}, ErrStoreBackendUnavailable
 	}
-	return s.upsertSocialPersonNotePostgres(ctx, input)
+	return s.upsertSocialPersonNoteSeekDB(ctx, input)
 }
 
 func (s *Store) ListSocialPersonNotes(ctx context.Context, characterID, conversationID string, senderIDs []string) ([]SocialPersonNote, error) {
@@ -51,13 +48,10 @@ func (s *Store) ListSocialPersonNotes(ctx context.Context, characterID, conversa
 	if len(cleanIDs) == 0 {
 		return []SocialPersonNote{}, nil
 	}
-	if s.usesSeekDB() {
-		return s.listSocialPersonNotesSeekDB(ctx, characterID, conversationID, cleanIDs)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return nil, ErrStoreBackendUnavailable
 	}
-	return s.listSocialPersonNotesPostgres(ctx, characterID, conversationID, cleanIDs)
+	return s.listSocialPersonNotesSeekDB(ctx, characterID, conversationID, cleanIDs)
 }
 
 const MaxSocialPersonNoteRunes = 240

@@ -33,21 +33,13 @@ func (s *Store) CommitPromptProjectionContext(
 	contextWindow historyruntime.ContextWindowRecord,
 	clearLane string,
 ) (Result, error) {
-	if s.usesSeekDB() {
-		return s.commitPromptProjectionSeekDB(
+	if !s.usesSeekDB() {
+		return Result{}, ErrStoreBackendUnavailable
+	}
+	return s.commitPromptProjectionSeekDB(
 			ctx, conversationID,
 			expectedWindowRevision, expectedProjectionRevision,
 			expectedTranscript,
 			projection, contextWindow, clearLane,
 		)
-	}
-	if !s.usesPostgres() {
-		return Result{}, ErrStoreBackendUnavailable
-	}
-	return s.commitPromptProjectionPostgres(
-		ctx, conversationID,
-		expectedWindowRevision, expectedProjectionRevision,
-		expectedTranscript,
-		projection, contextWindow, clearLane,
-	)
 }

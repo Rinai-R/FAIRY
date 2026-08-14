@@ -250,7 +250,7 @@ func seekDBEmbeddingTuple(content string, value embedding.EmbeddingValue) (any, 
 	if err != nil || len(hash) != 32 {
 		return nil, nil, nil, errors.New("embedding content hash is invalid")
 	}
-	return value.ModelID, hash, value.Vector.String(), nil
+	return value.ModelID, hash, value.Literal(), nil
 }
 
 // InsertSeekDBTx inserts one active personal fact into the caller's short

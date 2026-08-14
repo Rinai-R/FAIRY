@@ -11,8 +11,6 @@ import (
 
 	memoryretrieval "fairy/context/memory/retrieval"
 	"fairy/runtime/embedding"
-
-	"github.com/pgvector/pgvector-go"
 )
 
 const seekDBRecentVectorWindow = 60 * time.Second
@@ -96,8 +94,7 @@ func querySeekDBKnowledgeEmbedding(
 	if err := embedding.ValidateVector(vectors[0]); err != nil {
 		return "", "", embedding.SemanticStatusUnavailable, err
 	}
-	vector := pgvector.NewVector(vectors[0])
-	return vector.String(), spaceID, embedding.SemanticStatusReady, nil
+	return embedding.VectorLiteral(vectors[0]), spaceID, embedding.SemanticStatusReady, nil
 }
 
 func embedSeekDBQuery(ctx context.Context, embedder embedding.SemanticEmbedder, query string) ([][]float32, error) {

@@ -4,12 +4,13 @@ import (
 	"errors"
 	"math"
 	"testing"
+	"time"
 )
 
-func TestNewStoreRejectsMissingPool(t *testing.T) {
-	store, err := NewStoreFromPool(nil)
-	if store != nil || !errors.Is(err, ErrDatabasePoolEmpty) {
-		t.Fatalf("NewStoreFromPool(nil) = (%v, %v), want nil, %v", store, err, ErrDatabasePoolEmpty)
+func TestNewSeekDBStoreRejectsMissingDatabase(t *testing.T) {
+	store, err := NewSeekDBStore(nil, time.Second)
+	if store != nil || !errors.Is(err, ErrSeekDBConnectionEmpty) {
+		t.Fatalf("NewSeekDBStore(nil) = (%v, %v), want nil, %v", store, err, ErrSeekDBConnectionEmpty)
 	}
 }
 

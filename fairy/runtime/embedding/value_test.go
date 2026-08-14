@@ -59,7 +59,7 @@ func TestEmbeddingForContentDisabled(t *testing.T) {
 	}
 }
 
-func TestEmbeddingForContentBuildsPostgresValue(t *testing.T) {
+func TestEmbeddingForContentBuildsCompleteValue(t *testing.T) {
 	vector := make([]float32, Dimensions)
 	vector[7] = 0.75
 	embedder := &fixedSemanticEmbedder{
@@ -77,7 +77,7 @@ func TestEmbeddingForContentBuildsPostgresValue(t *testing.T) {
 	if value.ContentHash != ContentHash("topic\nstatement") {
 		t.Fatalf("ContentHash = %q", value.ContentHash)
 	}
-	if got := value.Vector.Slice()[7]; got != 0.75 {
+	if got := value.Vector[7]; got != 0.75 {
 		t.Fatalf("Vector[7] = %v, want 0.75", got)
 	}
 	if len(embedder.inputs) != 1 || len(embedder.inputs[0]) != 1 || embedder.inputs[0][0] != "topic\nstatement" {
@@ -213,7 +213,20 @@ func TestEmbeddingForContentRejectsInvalidProviderResults(t *testing.T) {
 	}
 }
 
-func TestEmbeddingValueRejectsPartialMetadata(t *testing.T) {
+func TestVectorLiteralFormatsSeekDBLiteral(t *testing.T) {
+	vector := make([]float32, 3)
+	vector[0] = 1
+	vector[2] = 0.5
+	if got := VectorLiteral(vector); got != "[1,0,0.5]" {
+		t.Fatalf("VectorLiteral() = %q", got)
+	}
+	value := EmbeddingValue{Vector: vector}
+	if got := value.Literal(); got != "[1,0,0.5]" {
+		t.Fatalf("Literal() = %q", got)
+	}
+}
+
+func TestEmbeddingValueValidateRejectsMissingVector(t *testing.T) {
 	value := EmbeddingValue{ModelID: testSemanticEmbeddingModelID}
 	if err := value.Validate(); err == nil {
 		t.Fatal("embedding.EmbeddingValue.Validate() error = nil")

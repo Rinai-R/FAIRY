@@ -12,29 +12,26 @@ func (s *Store) ClaimExtractionBatch(conversationID string, limit int) (*BatchIn
 }
 
 func (s *Store) ClaimExtractionBatchContext(ctx context.Context, conversationID string, limit int) (*BatchInput, error) {
-	if s.usesSeekDB() {
-		if s.personal == nil {
-			return nil, ErrPersonalSettlementPending
-		}
-		claim, err := s.ClaimExtractionTurnsContext(ctx, conversationID, limit)
-		if err != nil || claim == nil {
-			return nil, err
-		}
-		input, err := s.EnrichClaimedBatchContext(ctx, claim)
-		if err != nil {
-			// Preserve the durable identity so the caller can fail/retry the
-			// claim. ExistingMemories is not authoritative while err != nil.
-			return &BatchInput{
-				BatchID: claim.BatchID, ConversationID: claim.ConversationID,
-				CharacterID: claim.CharacterID, Turns: append([]Turn(nil), claim.Turns...),
-			}, err
-		}
-		return input, nil
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return nil, ErrStoreBackendUnavailable
 	}
-	return s.claimExtractionBatchPostgres(ctx, conversationID, limit)
+	if s.personal == nil {
+		return nil, ErrPersonalSettlementPending
+	}
+	claim, err := s.ClaimExtractionTurnsContext(ctx, conversationID, limit)
+	if err != nil || claim == nil {
+		return nil, err
+	}
+	input, err := s.EnrichClaimedBatchContext(ctx, claim)
+	if err != nil {
+		// Preserve the durable identity so the caller can fail/retry the
+		// claim. ExistingMemories is not authoritative while err != nil.
+		return &BatchInput{
+			BatchID: claim.BatchID, ConversationID: claim.ConversationID,
+			CharacterID: claim.CharacterID, Turns: append([]Turn(nil), claim.Turns...),
+		}, err
+	}
+	return input, nil
 }
 
 // ClaimExtractionTurns claims the next durable SeekDB extraction batch
@@ -97,28 +94,16 @@ func (s *Store) CommitClaimedMemoryMutationsContext(
 	batch *BatchInput,
 	mutations []Mutation,
 ) ([]MutationResult, error) {
-	if s.usesSeekDB() {
-		if s.personal == nil {
-			return nil, ErrPersonalSettlementPending
-		}
-		if batch == nil {
-			return nil, errors.New("extraction batch input is required")
-		}
-		return s.commitClaimedMemoryMutationsSeekDB(ctx, batch, mutations)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return nil, ErrStoreBackendUnavailable
+	}
+	if s.personal == nil {
+		return nil, ErrPersonalSettlementPending
 	}
 	if batch == nil {
 		return nil, errors.New("extraction batch input is required")
 	}
-	allowed := make([]string, 0, len(batch.ExistingMemories))
-	for _, item := range batch.ExistingMemories {
-		allowed = append(allowed, item.ID)
-	}
-	return s.commitMemoryMutationsPostgres(
-		ctx, batch.BatchID, batch.CharacterID, allowed, mutations,
-	)
+	return s.commitClaimedMemoryMutationsSeekDB(ctx, batch, mutations)
 }
 
 func (s *Store) PendingExtractionTurnCount(conversationID string) (uint64, error) {
@@ -126,13 +111,10 @@ func (s *Store) PendingExtractionTurnCount(conversationID string) (uint64, error
 }
 
 func (s *Store) PendingExtractionTurnCountContext(ctx context.Context, conversationID string) (uint64, error) {
-	if s.usesSeekDB() {
-		return s.pendingExtractionTurnCountSeekDB(ctx, conversationID)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return 0, ErrStoreBackendUnavailable
 	}
-	return s.pendingExtractionTurnCountPostgres(ctx, conversationID)
+	return s.pendingExtractionTurnCountSeekDB(ctx, conversationID)
 }
 
 func (s *Store) FailExtractionBatch(batchID, code, message string, retryable bool) error {
@@ -140,13 +122,10 @@ func (s *Store) FailExtractionBatch(batchID, code, message string, retryable boo
 }
 
 func (s *Store) FailExtractionBatchContext(ctx context.Context, batchID, code, message string, retryable bool) error {
-	if s.usesSeekDB() {
-		return s.failExtractionBatchSeekDB(ctx, batchID, code, message, retryable)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return ErrStoreBackendUnavailable
 	}
-	return s.failExtractionBatchPostgres(ctx, batchID, code, message, retryable)
+	return s.failExtractionBatchSeekDB(ctx, batchID, code, message, retryable)
 }
 
 func (s *Store) CompleteExtractionBatch(batchID string) error {
@@ -154,36 +133,10 @@ func (s *Store) CompleteExtractionBatch(batchID string) error {
 }
 
 func (s *Store) CompleteExtractionBatchContext(ctx context.Context, batchID string) error {
-	if s.usesSeekDB() {
-		return ErrPersonalSettlementPending
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return ErrStoreBackendUnavailable
 	}
-	return s.completeExtractionBatchPostgres(ctx, batchID)
-}
-
-func (s *Store) CommitMemoryMutations(
-	batchID string,
-	characterID string,
-	allowedMemoryIDs []string,
-	mutations []Mutation,
-) ([]MutationResult, error) {
-	return s.CommitMemoryMutationsContext(context.Background(), batchID, characterID, allowedMemoryIDs, mutations)
-}
-
-func (s *Store) CommitMemoryMutationsContext(
-	ctx context.Context,
-	batchID string,
-	characterID string,
-	allowedMemoryIDs []string,
-	mutations []Mutation,
-) ([]MutationResult, error) {
-	if s.usesSeekDB() {
-		return nil, ErrPersonalSettlementPending
-	}
-	if !s.usesPostgres() {
-		return nil, ErrStoreBackendUnavailable
-	}
-	return s.commitMemoryMutationsPostgres(ctx, batchID, characterID, allowedMemoryIDs, mutations)
+	_ = ctx
+	_ = batchID
+	return ErrPersonalSettlementPending
 }

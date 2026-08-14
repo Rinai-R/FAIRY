@@ -7,19 +7,10 @@ import (
 )
 
 func (s *Store) SemanticEmbeddingStatus(ctx context.Context) (SemanticEmbeddingReadiness, error) {
-	if s.usesSeekDB() {
-		return s.semanticEmbeddingStatusSeekDB(ctx)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return SemanticEmbeddingReadiness{}, ErrStoreBackendUnavailable
 	}
-	queryCtx, cancel := s.pool.QueryContext(ctx)
-	defer cancel()
-	vectorRows, err := countPostgresScalar(queryCtx, s, "SELECT count(*) FROM personal_memories WHERE embedding_v2 IS NOT NULL")
-	if err != nil {
-		return SemanticEmbeddingReadiness{}, err
-	}
-	return s.semanticEmbeddingReadiness(vectorRows), nil
+	return s.semanticEmbeddingStatusSeekDB(ctx)
 }
 
 func (s *Store) semanticEmbeddingStatusSeekDB(ctx context.Context) (SemanticEmbeddingReadiness, error) {

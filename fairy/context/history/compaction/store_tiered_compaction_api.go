@@ -37,21 +37,13 @@ func (s *Store) CommitTieredCompactionContext(
 	contextWindow historyruntime.ContextWindowRecord,
 	clearLane string,
 ) (Result, error) {
-	if s.usesSeekDB() {
-		return s.commitTieredCompactionSeekDB(
+	if !s.usesSeekDB() {
+		return Result{}, ErrStoreBackendUnavailable
+	}
+	return s.commitTieredCompactionSeekDB(
 			ctx, conversationID,
 			expectedWindowRevision, expectedProjectionRevision,
 			expectedTranscript,
 			summary, cutoff, projection, contextWindow, clearLane,
 		)
-	}
-	if !s.usesPostgres() {
-		return Result{}, ErrStoreBackendUnavailable
-	}
-	return s.commitTieredCompactionPostgres(
-		ctx, conversationID,
-		expectedWindowRevision, expectedProjectionRevision,
-		expectedTranscript,
-		summary, cutoff, projection, contextWindow, clearLane,
-	)
 }

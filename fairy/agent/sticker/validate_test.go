@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSniffMIMEType(t *testing.T) {
@@ -84,8 +85,8 @@ func TestValidateCreateRejectsInvalidInputs(t *testing.T) {
 	}
 }
 
-func TestNewStoreRejectsMissingPool(t *testing.T) {
-	if _, err := NewStore(nil); !errors.Is(err, ErrDatabasePoolRequired) {
-		t.Fatalf("NewStore(nil) error = %v", err)
+func TestNewSeekDBStoreRejectsMissingDatabase(t *testing.T) {
+	if _, err := NewSeekDBStore(nil, "/tmp/stickers", time.Second); !errors.Is(err, ErrSeekDBRequired) {
+		t.Fatalf("NewSeekDBStore(nil) error = %v", err)
 	}
 }

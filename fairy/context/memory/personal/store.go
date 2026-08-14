@@ -10,12 +10,10 @@ import (
 	"strings"
 	"time"
 
-	coredb "fairy/runtime/database"
 	"fairy/runtime/embedding"
 )
 
 var (
-	ErrDatabasePoolEmpty       = errors.New("personal memory database pool is required")
 	ErrSeekDBConnectionEmpty   = errors.New("personal memory SeekDB connection is required")
 	ErrSeekDBQueryLimitInvalid = errors.New("personal memory SeekDB query limit must be greater than zero")
 	ErrSeekDBTransactionEmpty  = errors.New("personal memory SeekDB transaction is required")
@@ -23,22 +21,14 @@ var (
 )
 
 type Store struct {
-	pool       *coredb.Pool
 	seekDB     *sql.DB
 	queryLimit time.Duration
 	embedder   *embedding.DynamicSemanticEmbedder
 	now        func() time.Time
 }
 
-func NewStoreFromPool(pool *coredb.Pool, embedder embedding.SemanticEmbedder) (*Store, error) {
-	if pool == nil || pool.Raw() == nil {
-		return nil, ErrDatabasePoolEmpty
-	}
-	return &Store{pool: pool, embedder: embedding.NewDynamicSemanticEmbedder(embedder), now: time.Now}, nil
-}
-
 // NewSeekDBStore creates a personal-memory repository whose only authority is
-// SeekDB. It never falls back to the legacy PostgreSQL pool.
+// SeekDB.
 func NewSeekDBStore(database *sql.DB, queryLimit time.Duration, embedder embedding.SemanticEmbedder) (*Store, error) {
 	if database == nil {
 		return nil, ErrSeekDBConnectionEmpty
@@ -60,7 +50,7 @@ func (s *Store) ReplaceSemanticEmbedder(embedder embedding.SemanticEmbedder) {
 
 func (s *Store) embeddingForContent(content string) (embedding.EmbeddingValue, error) {
 	if s == nil || s.embedder == nil {
-		return embedding.EmbeddingValue{}, ErrDatabasePoolEmpty
+		return embedding.EmbeddingValue{}, ErrStoreBackendUnavailable
 	}
 	return embedding.ForContent(s.embedder, content)
 }
@@ -114,9 +104,9 @@ func (s *Store) seekDBQueryContext(parent context.Context) (context.Context, con
 	return context.WithTimeout(parent, s.queryLimit)
 }
 
-func (s *Store) usesSeekDB() bool { return s != nil && s.seekDB != nil }
+type scanner interface{ Scan(dest ...any) error }
 
-func (s *Store) usesPostgres() bool { return s != nil && s.pool != nil && s.pool.Raw() != nil }
+func (s *Store) usesSeekDB() bool { return s != nil && s.seekDB != nil }
 
 func (s *Store) currentUnixMS() int64 {
 	now := time.Now

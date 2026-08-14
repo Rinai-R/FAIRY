@@ -9,15 +9,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	coredb "fairy/runtime/database"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 var (
-	ErrDatabasePoolEmpty       = errors.New("observability database pool is required")
 	ErrSeekDBConnectionEmpty   = errors.New("observability SeekDB connection is required")
 	ErrSeekDBQueryLimitInvalid = errors.New("observability SeekDB query limit must be greater than zero")
 	ErrStoreBackendUnavailable = errors.New("observability store backend is unavailable")
@@ -26,21 +20,12 @@ var (
 // Store owns durable execution diagnostics: model usage and tool executions.
 // It does not own conversation content or learned memory.
 type Store struct {
-	pool       *coredb.Pool
 	seekDB     *sql.DB
 	queryLimit time.Duration
 	now        func() time.Time
 }
 
-func NewStoreFromPool(pool *coredb.Pool) (*Store, error) {
-	if pool == nil || pool.Raw() == nil {
-		return nil, ErrDatabasePoolEmpty
-	}
-	return &Store{pool: pool, now: time.Now}, nil
-}
-
 // NewSeekDBStore creates an observability ledger whose only authority is SeekDB.
-// It never falls back to the legacy PostgreSQL pool.
 func NewSeekDBStore(database *sql.DB, queryLimit time.Duration) (*Store, error) {
 	if database == nil {
 		return nil, ErrSeekDBConnectionEmpty
@@ -52,8 +37,6 @@ func NewSeekDBStore(database *sql.DB, queryLimit time.Duration) (*Store, error) 
 }
 
 func (s *Store) usesSeekDB() bool { return s != nil && s.seekDB != nil }
-
-func (s *Store) usesPostgres() bool { return s != nil && s.pool != nil && s.pool.Raw() != nil }
 
 func (s *Store) seekDBQueryContext(parent context.Context) (context.Context, context.CancelFunc) {
 	if parent == nil {
@@ -71,9 +54,6 @@ func (s *Store) currentUnixMS() int64 {
 }
 
 type scanner interface{ Scan(dest ...any) error }
-type Querier interface {
-	Query(context.Context, string, ...any) (pgx.Rows, error)
-}
 
 func validateID(label, value string) error {
 	if value == "" || strings.TrimSpace(value) != value || containsDisallowedControl(value) {
@@ -89,14 +69,6 @@ func containsDisallowedControl(value string) bool {
 		}
 	}
 	return false
-}
-
-func stringPtrFromPGText(value pgtype.Text) *string {
-	if !value.Valid {
-		return nil
-	}
-	result := value.String
-	return &result
 }
 
 func nowUnixMS() int64 { return time.Now().UnixMilli() }

@@ -33,7 +33,7 @@ func TestNewSeekDBStoreValidatesAndSelectsOneAuthority(t *testing.T) {
 	if store.seekDB != database || !store.usesSeekDB() {
 		t.Fatal("NewSeekDBStore did not retain SeekDB as its authority")
 	}
-	if store.pool != nil || store.usesPostgres() {
+	if false {
 		t.Fatal("NewSeekDBStore unexpectedly configured a PostgreSQL fallback")
 	}
 	if !store.KnowledgeIngestReady() {

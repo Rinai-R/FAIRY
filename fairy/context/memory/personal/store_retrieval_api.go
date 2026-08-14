@@ -10,13 +10,10 @@ func (s *Store) Retrieve(characterID string, query string) (Retrieval, error) {
 }
 
 func (s *Store) RetrieveContext(ctx context.Context, characterID string, query string) (Retrieval, error) {
-	if s.usesSeekDB() {
-		return s.retrieveSeekDB(ctx, characterID, query)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return Retrieval{}, ErrStoreBackendUnavailable
 	}
-	return s.retrievePostgres(ctx, characterID, query)
+	return s.retrieveSeekDB(ctx, characterID, query)
 }
 
 func semanticQueryText(query string) string {

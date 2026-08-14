@@ -19,7 +19,7 @@ func TestDynamicSemanticEmbedderPublishesImmutableSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.ModelID != "space-first" || value.Vector.Slice()[0] != 1 {
+	if value.ModelID != "space-first" || value.Vector[0] != 1 {
 		t.Fatalf("snapshot embedding = %#v", value)
 	}
 	dynamic.Replace(nil)
@@ -78,7 +78,7 @@ func TestSnapshotKeepsEmbeddingSpaceDuringReplace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Enabled() || result.Vector.Slice()[0] != 1 || result.ModelID != "space-first" {
+	if !result.Enabled() || result.Vector[0] != 1 || result.ModelID != "space-first" {
 		t.Fatalf("query embedding = %#v", result)
 	}
 	if dynamic.ModelID() != "space-second" {

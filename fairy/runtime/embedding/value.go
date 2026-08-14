@@ -7,23 +7,22 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
-
-	"github.com/pgvector/pgvector-go"
 )
 
 const Dimensions = 1024
 
 // EmbeddingValue is either completely disabled (all zero values) or a complete
-// PostgreSQL vector projection for one authoritative record.
+// SeekDB vector projection for one authoritative record.
 type EmbeddingValue struct {
 	ModelID     string
 	ContentHash string
-	Vector      *pgvector.Vector
+	Vector      []float32
 }
 
 func (value EmbeddingValue) Enabled() bool {
-	return value.ModelID != "" || value.ContentHash != "" || value.Vector != nil
+	return value.ModelID != "" || value.ContentHash != "" || len(value.Vector) > 0
 }
 
 func (value EmbeddingValue) Validate() error {
@@ -36,10 +35,29 @@ func (value EmbeddingValue) Validate() error {
 	if !validContentHash(value.ContentHash) {
 		return errors.New("embedding content hash is invalid")
 	}
-	if value.Vector == nil {
+	if len(value.Vector) == 0 {
 		return errors.New("embedding vector is required")
 	}
-	return ValidateVector(value.Vector.Slice())
+	return ValidateVector(value.Vector)
+}
+
+// Literal formats the vector as a SeekDB VECTOR literal `[1,0,...]`.
+func (value EmbeddingValue) Literal() string {
+	return VectorLiteral(value.Vector)
+}
+
+// VectorLiteral formats a validated float32 slice as a SeekDB VECTOR literal.
+func VectorLiteral(vector []float32) string {
+	buf := make([]byte, 0, 2+16*len(vector))
+	buf = append(buf, '[')
+	for index, component := range vector {
+		if index > 0 {
+			buf = append(buf, ',')
+		}
+		buf = strconv.AppendFloat(buf, float64(component), 'f', -1, 32)
+	}
+	buf = append(buf, ']')
+	return string(buf)
 }
 
 func ForContent(embedder SemanticEmbedder, content string) (EmbeddingValue, error) {
@@ -116,11 +134,11 @@ func forContents(
 		if err := ValidateVector(vectorSlice); err != nil {
 			return nil, fmt.Errorf("validating embedding[%d]: %w", index, err)
 		}
-		vector := pgvector.NewVector(vectorSlice)
+		copied := append([]float32(nil), vectorSlice...)
 		values[index] = EmbeddingValue{
 			ModelID:     modelID,
 			ContentHash: ContentHash(contents[index]),
-			Vector:      &vector,
+			Vector:      copied,
 		}
 		if err := values[index].Validate(); err != nil {
 			return nil, fmt.Errorf("validating embedding[%d]: %w", index, err)

@@ -28,7 +28,7 @@ func TestNewSeekDBStoreRejectsInvalidInputs(t *testing.T) {
 			if !errors.Is(err, test.want) {
 				t.Fatalf("NewSeekDBStore() error = %v, want %v", err, test.want)
 			}
-			if test.want == nil && (store == nil || !store.usesSeekDB() || store.usesPostgres()) {
+			if test.want == nil && (store == nil || !store.usesSeekDB()) {
 				t.Fatalf("NewSeekDBStore() = %#v", store)
 			}
 		})

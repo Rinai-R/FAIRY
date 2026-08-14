@@ -26,18 +26,10 @@ func (s *Store) RetrieveExtractionProjectionContext(
 	if remaining == nil || *remaining < 0 {
 		return nil, errors.New("extraction retrieval budget is invalid")
 	}
-	if s.usesSeekDB() {
-		return s.retrieveExtractionProjectionSeekDB(ctx, characterID, projection, remaining)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return nil, ErrStoreBackendUnavailable
 	}
-	queryCtx, cancel := s.pool.QueryContext(ctx)
-	defer cancel()
-	return RetrieveExtractionProjection(
-		queryCtx, s.pool.Raw(), characterID, projection, remaining,
-		memoryretrieval.NormalizePostgresQuery,
-	)
+	return s.retrieveExtractionProjectionSeekDB(ctx, characterID, projection, remaining)
 }
 
 func (s *Store) retrieveExtractionProjectionSeekDB(

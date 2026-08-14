@@ -7,11 +7,8 @@ func (s *Store) LoadCommittedMemoryCoverage(conversationID string) ([]Coverage, 
 }
 
 func (s *Store) LoadCommittedMemoryCoverageContext(ctx context.Context, conversationID string) ([]Coverage, error) {
-	if s.usesSeekDB() {
-		return s.loadCommittedMemoryCoverageSeekDB(ctx, conversationID)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return nil, ErrStoreBackendUnavailable
 	}
-	return s.loadCommittedMemoryCoveragePostgres(ctx, conversationID)
+	return s.loadCommittedMemoryCoverageSeekDB(ctx, conversationID)
 }

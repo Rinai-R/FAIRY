@@ -7,13 +7,10 @@ func (s *Store) AppendTurnRuntimeEvent(input TurnRuntimeEventInput) (TurnRuntime
 }
 
 func (s *Store) AppendTurnRuntimeEventContext(ctx context.Context, input TurnRuntimeEventInput) (TurnRuntimeEventRecord, error) {
-	if s.usesSeekDB() {
-		return s.appendTurnRuntimeEventSeekDB(ctx, input)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return TurnRuntimeEventRecord{}, ErrStoreBackendUnavailable
 	}
-	return s.appendTurnRuntimeEventPostgres(ctx, input)
+	return s.appendTurnRuntimeEventSeekDB(ctx, input)
 }
 
 func (s *Store) ListTurnRuntimeEvents(conversationID string, turnID string) ([]TurnRuntimeEventRecord, error) {
@@ -21,13 +18,10 @@ func (s *Store) ListTurnRuntimeEvents(conversationID string, turnID string) ([]T
 }
 
 func (s *Store) ListTurnRuntimeEventsContext(ctx context.Context, conversationID string, turnID string) ([]TurnRuntimeEventRecord, error) {
-	if s.usesSeekDB() {
-		return s.listTurnRuntimeEventsSeekDB(ctx, conversationID, turnID)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return nil, ErrStoreBackendUnavailable
 	}
-	return s.listTurnRuntimeEventsPostgres(ctx, conversationID, turnID)
+	return s.listTurnRuntimeEventsSeekDB(ctx, conversationID, turnID)
 }
 
 func (s *Store) SaveLaneContinuation(record LaneContinuationRecord) (LaneContinuationRecord, error) {
@@ -35,13 +29,10 @@ func (s *Store) SaveLaneContinuation(record LaneContinuationRecord) (LaneContinu
 }
 
 func (s *Store) SaveLaneContinuationContext(ctx context.Context, record LaneContinuationRecord) (LaneContinuationRecord, error) {
-	if s.usesSeekDB() {
-		return s.saveLaneContinuationSeekDB(ctx, record)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return LaneContinuationRecord{}, ErrStoreBackendUnavailable
 	}
-	return s.saveLaneContinuationPostgres(ctx, record)
+	return s.saveLaneContinuationSeekDB(ctx, record)
 }
 
 func (s *Store) LoadLaneContinuation(conversationID string, lane string) (LaneContinuationRecord, bool, error) {
@@ -49,13 +40,10 @@ func (s *Store) LoadLaneContinuation(conversationID string, lane string) (LaneCo
 }
 
 func (s *Store) LoadLaneContinuationContext(ctx context.Context, conversationID string, lane string) (LaneContinuationRecord, bool, error) {
-	if s.usesSeekDB() {
-		return s.loadLaneContinuationSeekDB(ctx, conversationID, lane)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return LaneContinuationRecord{}, false, ErrStoreBackendUnavailable
 	}
-	return s.loadLaneContinuationPostgres(ctx, conversationID, lane)
+	return s.loadLaneContinuationSeekDB(ctx, conversationID, lane)
 }
 
 func (s *Store) ClearLaneContinuation(conversationID string, lane string) error {
@@ -63,13 +51,10 @@ func (s *Store) ClearLaneContinuation(conversationID string, lane string) error 
 }
 
 func (s *Store) ClearLaneContinuationContext(ctx context.Context, conversationID string, lane string) error {
-	if s.usesSeekDB() {
-		return s.clearLaneContinuationSeekDB(ctx, conversationID, lane)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return ErrStoreBackendUnavailable
 	}
-	return s.clearLaneContinuationPostgres(ctx, conversationID, lane)
+	return s.clearLaneContinuationSeekDB(ctx, conversationID, lane)
 }
 
 func (s *Store) SaveContextWindow(record ContextWindowRecord) (ContextWindowRecord, error) {
@@ -77,13 +62,10 @@ func (s *Store) SaveContextWindow(record ContextWindowRecord) (ContextWindowReco
 }
 
 func (s *Store) SaveContextWindowContext(ctx context.Context, record ContextWindowRecord) (ContextWindowRecord, error) {
-	if s.usesSeekDB() {
-		return s.saveContextWindowSeekDB(ctx, record)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return ContextWindowRecord{}, ErrStoreBackendUnavailable
 	}
-	return s.saveContextWindowPostgres(ctx, record)
+	return s.saveContextWindowSeekDB(ctx, record)
 }
 
 func (s *Store) LoadContextWindow(conversationID string, lane string) (ContextWindowRecord, bool, error) {
@@ -91,11 +73,8 @@ func (s *Store) LoadContextWindow(conversationID string, lane string) (ContextWi
 }
 
 func (s *Store) LoadContextWindowContext(ctx context.Context, conversationID string, lane string) (ContextWindowRecord, bool, error) {
-	if s.usesSeekDB() {
-		return s.loadContextWindowSeekDB(ctx, conversationID, lane)
-	}
-	if !s.usesPostgres() {
+	if !s.usesSeekDB() {
 		return ContextWindowRecord{}, false, ErrStoreBackendUnavailable
 	}
-	return s.loadContextWindowPostgres(ctx, conversationID, lane)
+	return s.loadContextWindowSeekDB(ctx, conversationID, lane)
 }

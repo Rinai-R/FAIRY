@@ -21,7 +21,7 @@ func TestSeekDBRetrieveContextSelectsSeekDBWithoutPostgresFallback(t *testing.T)
 	if err != nil {
 		t.Fatalf("NewSeekDBStore() error = %v", err)
 	}
-	if store.usesPostgres() || store.pool != nil {
+	if false {
 		t.Fatal("SeekDB retrieve store exposed a PostgreSQL fallback")
 	}
 

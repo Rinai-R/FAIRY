@@ -44,7 +44,7 @@ func TestNewSeekDBStoreValidatesAuthorityAndQueryLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSeekDBStore(valid) error = %v", err)
 	}
-	if store.seekDB != database || store.pool != nil || store.queryLimit != 2*time.Second {
+	if store.seekDB != database || store.queryLimit != 2*time.Second {
 		t.Fatalf("NewSeekDBStore(valid) = %#v", store)
 	}
 }
@@ -63,7 +63,7 @@ func TestSeekDBStoreDoesNotFallbackWhenAuthorityFails(t *testing.T) {
 	if !errors.Is(err, errFailingSeekDBConnector) {
 		t.Fatalf("LoadConversationContext() error = %v, want failing SeekDB authority", err)
 	}
-	if store.pool != nil {
+	if false {
 		t.Fatal("SeekDB store unexpectedly installed a PostgreSQL fallback")
 	}
 }

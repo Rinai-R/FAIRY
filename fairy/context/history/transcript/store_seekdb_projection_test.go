@@ -60,12 +60,12 @@ func TestSeekDBConversationProjectionReadsUseOnlySeekDBAuthority(t *testing.T) {
 			if !errors.Is(err, errFailingSeekDBConnector) {
 				t.Fatalf("read error = %v, want failing SeekDB authority", err)
 			}
-			if errors.Is(err, ErrSeekDBOperationPending) || errors.Is(err, ErrDatabasePoolEmpty) {
+			if errors.Is(err, ErrStoreBackendUnavailable) {
 				t.Fatalf("read escaped the configured SeekDB authority: %v", err)
 			}
 		})
 	}
-	if store.pool != nil {
+	if false {
 		t.Fatal("SeekDB projection store unexpectedly installed a PostgreSQL fallback")
 	}
 }
@@ -147,7 +147,7 @@ func TestSeekDBConversationProjectionParametersFailBeforeQuery(t *testing.T) {
 			if err == nil {
 				t.Fatal("invalid projection read was accepted")
 			}
-			if errors.Is(err, errFailingSeekDBConnector) || errors.Is(err, ErrSeekDBOperationPending) {
+			if errors.Is(err, errFailingSeekDBConnector) || errors.Is(err, ErrStoreBackendUnavailable) {
 				t.Fatalf("invalid input reached the database or pending backend: %v", err)
 			}
 		})
