@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ClockIcon, Cross2Icon, GearIcon, PaperPlaneIcon, StopIcon } from "@radix-ui/react-icons";
 import { Card, Flex, IconButton, Text, TextArea } from "@radix-ui/themes";
 import { Events } from "@wailsio/runtime";
-import { Cancel, CloseControlPanel, CloseHistory, Connect, ConnectionSettings, DisableDesktopObservation, EnableDesktopObservation, HideSpeechBubble, OpenControlPanel, OpenHistory, RecentMessages, ReportStickerDelivery, SaveConnection, Send, SetDesktopObservationPrivacy } from "../bindings/fairy-desktop/coreservice.js";
+import { Cancel, CloseControlPanel, CloseHistory, Connect, DisableDesktopObservation, EnableDesktopObservation, HideSpeechBubble, OpenControlPanel, OpenHistory, RecentMessages, ReportStickerDelivery, RuntimeInfo, Send, SetDesktopObservationPrivacy } from "../bindings/fairy-desktop/coreservice.js";
 import { CharacterExpressionBubble, CharacterSpeechBubble } from "./components/CharacterSpeechBubble.jsx";
 import { PixelCharacter } from "./components/PixelCharacter.jsx";
 import { resolveChatKeyboardAction } from "./companionViewState.mjs";
@@ -16,8 +16,6 @@ import { projectDesktopTurnActive } from "./turnViewState.mjs";
 
 const FOOT_INPUT_MAX_HEIGHT = 88;
 const MAX_REPORTED_STICKER_RECEIPTS = 16;
-
-const defaultEndpoint = "http://127.0.0.1:8787";
 
 function renderableVisual(visual) {
   if (!visual?.packId || !Array.isArray(visual.states) || !visual.frame || !visual.anchor) return null;
@@ -49,7 +47,7 @@ function CompanionSurface() {
     Connect().then((next) => {
       if (cancelled) return;
       setSession(next);
-    }).catch((cause) => { if (!cancelled) setError(cause?.message || "Core 未连接"); });
+    }).catch((cause) => { if (!cancelled) setError(cause?.message || "本地运行时未连接"); });
     return () => { cancelled = true; };
   }, []);
 
@@ -133,11 +131,11 @@ function CompanionSurface() {
       <div className={`fairy-foot-dock${dockOpen || historyOpen || inputFocused ? " is-visible" : ""}`} onPointerEnter={() => setDockOpen(true)}>
         <div className="fairy-foot-dock__shell">
           <div className="fairy-foot-dock__tools">
-            <IconButton type="button" size="1" variant="ghost" color="gray" className="fairy-foot-dock__btn" aria-label="Core 设置" onClick={() => OpenControlPanel().catch((cause) => setError(cause?.message || "无法打开设置"))}><GearIcon /></IconButton>
+            <IconButton type="button" size="1" variant="ghost" color="gray" className="fairy-foot-dock__btn" aria-label="设置" onClick={() => OpenControlPanel().catch((cause) => setError(cause?.message || "无法打开设置"))}><GearIcon /></IconButton>
             <IconButton type="button" size="1" variant={historyOpen ? "soft" : "ghost"} color="gray" className="fairy-foot-dock__btn" aria-label={historyOpen ? "关闭历史消息" : "历史消息"} aria-pressed={historyOpen} onClick={toggleHistory}><ClockIcon /></IconButton>
           </div>
           <form className="fairy-foot-dock__form" ref={formRef} onSubmit={submit}>
-            <TextArea className="fairy-foot-dock__input" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={handleInputKeyDown} onFocus={() => { setDockOpen(true); setInputFocused(true); }} onBlur={() => setInputFocused(false)} rows={1} resize="none" placeholder={session ? "" : "正在连接 Core…"} aria-label="快捷消息输入" disabled={!session || active} />
+            <TextArea className="fairy-foot-dock__input" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={handleInputKeyDown} onFocus={() => { setDockOpen(true); setInputFocused(true); }} onBlur={() => setInputFocused(false)} rows={1} resize="none" placeholder={session ? "" : "正在连接本地运行时…"} aria-label="快捷消息输入" disabled={!session || active} />
             {active ? <IconButton type="button" size="1" color="tomato" variant="soft" className="fairy-foot-dock__btn" aria-label="停止回复" onClick={cancel}><StopIcon /></IconButton> : <IconButton type="submit" size="1" className="fairy-foot-dock__send" aria-label="发送消息" disabled={!draft.trim() || !session}><PaperPlaneIcon /></IconButton>}
           </form>
         </div>
@@ -173,7 +171,7 @@ function HistoryMessage({ message }) {
 
 function HistorySurface() {
   const [messages, setMessages] = useState([]);
-  const [status, setStatus] = useState("正在连接 Core…");
+  const [status, setStatus] = useState("正在连接本地运行时…");
 
   useEffect(() => {
     let cancelled = false;
@@ -185,7 +183,7 @@ function HistorySurface() {
     }).catch((cause) => {
       if (cancelled) return;
       if (cause?.message === "Core session is not connected") {
-        setStatus("正在连接 Core…");
+        setStatus("正在连接本地运行时…");
         retry = window.setTimeout(loadMessages, 500);
         return;
       }
@@ -231,10 +229,8 @@ function HistorySurface() {
 }
 
 function SettingsSurface() {
-  const [endpoint, setEndpoint] = useState(defaultEndpoint);
-  const [endpointKey, setEndpointKey] = useState("");
-  const [token, setToken] = useState("");
-  const [connectionStatus, setConnectionStatus] = useState("");
+  const [runtime, setRuntime] = useState(null);
+  const [runtimeStatus, setRuntimeStatus] = useState("");
   const [observationStatus, setObservationStatus] = useState("");
   const [observationEnabled, setObservationEnabled] = useState(() => localStorage.getItem("fairy.observation.enabled") === "true");
   const [privacy, setPrivacy] = useState(() => localStorage.getItem("fairy.observation.privacy") || "normal");
@@ -243,28 +239,15 @@ function SettingsSurface() {
 
   useEffect(() => {
     let cancelled = false;
-    ConnectionSettings().then((settings) => {
+    RuntimeInfo().then((info) => {
       if (cancelled) return;
-      setEndpoint(settings.endpoint || defaultEndpoint);
-      setEndpointKey(settings.endpointKey || "");
+      setRuntime(info);
     }).catch((cause) => {
-      if (!cancelled) setConnectionStatus(cause?.message || "无法读取 Core 连接配置");
+      if (!cancelled) setRuntimeStatus(cause?.message || "无法读取本地运行时状态");
     });
     return () => { cancelled = true; };
   }, []);
 
-  async function save(event) {
-    event.preventDefault();
-    try {
-      const settings = await SaveConnection(endpoint, token, endpointKey);
-      setEndpoint(settings.endpoint);
-      setEndpointKey(settings.endpointKey);
-      setToken("");
-      setConnectionStatus("已保存到当前用户的本地连接文件，重启后将自动连接。");
-    } catch (cause) {
-      setConnectionStatus(cause?.message || "保存失败");
-    }
-  }
   async function applyObservation() {
     try {
       await SetDesktopObservationPrivacy(privacy);
@@ -286,7 +269,7 @@ function SettingsSurface() {
         <header className="cp-header">
           <div className="cp-header-copy">
             <span className="cp-eyebrow">桌面设置</span>
-            <h1>Core 设置</h1>
+            <h1>本地运行时</h1>
           </div>
           <IconButton className="cp-close" type="button" size="2" variant="ghost" color="gray" aria-label="关闭设置" onClick={() => CloseControlPanel()}>
             <Cross2Icon />
@@ -295,29 +278,27 @@ function SettingsSurface() {
 
         <div className="cp-settings-scroll" data-testid="settings-scroll-region">
           <div className="cp-settings-content">
-            <section className="cp-settings-section" aria-labelledby="core-connection-title">
+            <section className="cp-settings-section" aria-labelledby="local-runtime-title">
               <div className="cp-settings-section__head">
                 <div>
-                  <p className="cp-settings-kicker">连接</p>
-                  <h2 id="core-connection-title">Core 连接</h2>
+                  <p className="cp-settings-kicker">运行时</p>
+                  <h2 id="local-runtime-title">本地运行时</h2>
                 </div>
                 <span className="cp-section-index" aria-hidden="true">01</span>
               </div>
-              <p className="cp-settings-description">配置本机 Desktop 访问 Core 的地址和令牌。保存后将在下次启动时自动连接。</p>
-
-              <form className="cp-settings-form" onSubmit={save}>
+              <p className="cp-settings-description">桌面伴侣在同一进程内启动本地 runtime。无需单独启动 Core，也不需要填写连接地址或令牌。</p>
+              <div className="cp-settings-form">
                 <label className="cp-settings-field">
-                  <span>Core 地址</span>
-                  <input type="url" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} autoComplete="url" spellCheck="false" />
+                  <span>运行状态</span>
+                  <input type="text" value={runtime == null ? "" : (runtime.ready ? "已就绪" : "未就绪")} readOnly />
                 </label>
                 <label className="cp-settings-field">
-                  <span>访问令牌</span>
-                  <input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="留空则保留已有令牌" autoComplete="off" />
-                  <small>令牌只保存到当前用户的本地连接文件，不会在界面中回显。</small>
+                  <span>数据目录</span>
+                  <input type="text" value={runtime == null ? "" : runtime.profileDir} readOnly spellCheck="false" />
+                  <small>诊断信息仅显示本机路径，不包含凭据。</small>
                 </label>
-                <button className="cp-primary-action" type="submit">保存连接配置</button>
-                {connectionStatus ? <p className="cp-settings-status" role="status">{connectionStatus}</p> : null}
-              </form>
+                {runtimeStatus ? <p className="cp-settings-status" role="status">{runtimeStatus}</p> : null}
+              </div>
             </section>
 
             <section className="cp-settings-section" aria-labelledby="desktop-observation-title">

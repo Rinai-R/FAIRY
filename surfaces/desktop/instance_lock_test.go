@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"sync/atomic"
 	"testing"
 
@@ -113,6 +114,9 @@ func TestDesktopProfileDirUsesConfigRoot(t *testing.T) {
 func useTempProfile(t *testing.T, service *CoreService) {
 	t.Helper()
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	service.profileDir = func() (string, error) { return dir, nil }
 	service.acquireLock = func(string, func()) (instanceGuard, error) {
 		return &fakeInstanceGuard{}, nil

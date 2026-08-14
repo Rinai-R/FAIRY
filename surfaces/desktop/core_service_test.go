@@ -64,30 +64,6 @@ func useFakeWindowRelation(service *CoreService) *fakeWindowRelation {
 	return relation
 }
 
-type memoryConnectionStore struct {
-	connection desktopConnection
-	loadErr    error
-	saveErr    error
-	saveCount  int
-}
-
-func (s *memoryConnectionStore) Load() (desktopConnection, error) {
-	if s.loadErr != nil {
-		return desktopConnection{}, s.loadErr
-	}
-	return s.connection, nil
-}
-
-func (s *memoryConnectionStore) Save(connection desktopConnection) error {
-	if s.saveErr != nil {
-		return s.saveErr
-	}
-	s.connection = connection
-	s.loadErr = nil
-	s.saveCount++
-	return nil
-}
-
 func (w *fakeWindow) Position() (int, int) {
 	w.positionCalls++
 	return w.x, w.y
@@ -363,93 +339,13 @@ func TestOpenControlPanelFailsClosedWhenNativeAttachFails(t *testing.T) {
 	}
 }
 
-func TestConnectionSettingsReturnsExplicitUnconfiguredState(t *testing.T) {
-	service := NewCoreService()
-	service.connections = &memoryConnectionStore{loadErr: errConnectionNotFound}
-
-	settings, err := service.ConnectionSettings()
-	if err != nil {
-		t.Fatalf("ConnectionSettings() error = %v", err)
-	}
-	if settings.Endpoint != defaultCoreEndpoint || settings.EndpointKey != "" || settings.HasToken {
-		t.Fatalf("ConnectionSettings() = %#v, want default unconfigured state", settings)
-	}
-	if _, err := service.Connect(); err == nil || !strings.Contains(err.Error(), "edge runtime is not started") {
-		t.Fatalf("Connect() error = %v, want edge runtime missing", err)
-	}
-}
-
-func TestConnectionSettingsRejectsDamagedStore(t *testing.T) {
-	service := NewCoreService()
-	service.connections = &memoryConnectionStore{loadErr: errors.New("mode must use 0600")}
-
-	if _, err := service.ConnectionSettings(); err == nil || !strings.Contains(err.Error(), "mode must use 0600") {
-		t.Fatalf("ConnectionSettings() error = %v, want store diagnostic", err)
-	}
-	if _, err := service.Connect(); err == nil || !strings.Contains(err.Error(), "edge runtime is not started") {
-		t.Fatalf("Connect() error = %v, want edge runtime missing", err)
-	}
-}
-
-func TestSaveConnectionRequiresInitialTokenAndRetainsExistingToken(t *testing.T) {
-	store := &memoryConnectionStore{loadErr: errConnectionNotFound}
-	service := NewCoreService()
-	service.connections = store
-
-	if _, err := service.SaveConnection(defaultCoreEndpoint, "", "desktop-test"); err == nil || !strings.Contains(err.Error(), "required") {
-		t.Fatalf("initial SaveConnection() error = %v, want token required", err)
-	}
-	settings, err := service.SaveConnection(defaultCoreEndpoint, "desktop-secret", "desktop-test")
-	if err != nil {
-		t.Fatalf("SaveConnection() error = %v", err)
-	}
-	if !settings.HasToken || settings.EndpointKey != "desktop-test" {
-		t.Fatalf("SaveConnection() settings = %#v", settings)
-	}
-	encoded, err := json.Marshal(settings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(encoded), "desktop-secret") || strings.Contains(string(encoded), `"token"`) {
-		t.Fatalf("settings response exposed token: %s", encoded)
-	}
-
-	if _, err := service.SaveConnection("http://127.0.0.1:8788", "", "desktop-test-2"); err != nil {
-		t.Fatalf("SaveConnection() retaining token error = %v", err)
-	}
-	if store.connection.Token != "desktop-secret" {
-		t.Fatalf("retained token = %q, want original token", store.connection.Token)
-	}
-	if store.connection.Endpoint != "http://127.0.0.1:8788" || store.connection.EndpointKey != "desktop-test-2" {
-		t.Fatalf("saved connection = %#v", store.connection)
-	}
-}
-
-func TestSaveConnectionGeneratesInstallationKey(t *testing.T) {
-	store := &memoryConnectionStore{loadErr: errConnectionNotFound}
-	service := NewCoreService()
-	service.connections = store
-
-	settings, err := service.SaveConnection(defaultCoreEndpoint, "desktop-secret", "")
-	if err != nil {
-		t.Fatalf("SaveConnection() error = %v", err)
-	}
-	if !installationKeyPattern.MatchString(settings.EndpointKey) || !strings.HasPrefix(settings.EndpointKey, "macos-") {
-		t.Fatalf("generated endpoint key = %q", settings.EndpointKey)
-	}
-}
-
-func useLoopbackSessionTransport(t *testing.T, service *CoreService) {
+func useLoopbackSessionTransport(t *testing.T, service *CoreService, endpoint, token string) {
 	t.Helper()
+	if service.profileDir == nil {
+		useTempProfile(t, service)
+	}
 	service.openTransport = func(ctx context.Context) (sessionPlane, sessionAssets, CoreSettings, error) {
-		connection, err := service.connections.Load()
-		if errors.Is(err, errConnectionNotFound) {
-			return nil, nil, CoreSettings{}, errors.New("Core connection is not configured: open settings and save FAIRY_API_TOKEN")
-		}
-		if err != nil {
-			return nil, nil, CoreSettings{}, err
-		}
-		client, err := session.New(session.Options{Endpoint: connection.Endpoint, Token: connection.Token})
+		client, err := session.New(session.Options{Endpoint: endpoint, Token: token})
 		if err != nil {
 			return nil, nil, CoreSettings{}, err
 		}
@@ -457,7 +353,7 @@ func useLoopbackSessionTransport(t *testing.T, service *CoreService) {
 		if err != nil {
 			return nil, nil, CoreSettings{}, err
 		}
-		return socket, client, settingsForConnection(connection), nil
+		return socket, client, CoreSettings{}, nil
 	}
 }
 
@@ -559,8 +455,17 @@ func TestConnectUsesInProcessFacadeWithoutHTTP(t *testing.T) {
 	if sessionState.ConversationID != "c1" || sessionState.Character.CharacterID != character.CharacterID {
 		t.Fatalf("Connect() session = %#v", sessionState)
 	}
-	if strings.Contains(strings.ToLower(sessionState.Settings.Endpoint), "http") {
-		t.Fatalf("in-process Connect returned HTTP endpoint %q", sessionState.Settings.Endpoint)
+	if !sessionState.Settings.Ready || sessionState.Settings.ProfileDir == "" {
+		t.Fatalf("Connect() settings = %#v", sessionState.Settings)
+	}
+	encoded, err := json.Marshal(sessionState.Settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{`"endpoint"`, "endpointKey", "hasToken", "http://", "token"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("in-process Connect leaked %q: %s", forbidden, encoded)
+		}
 	}
 	if err := service.Send("hello"); err != nil {
 		t.Fatalf("Send() error = %v", err)
@@ -666,13 +571,8 @@ func TestCoreServiceUsesOneSocketAndClearsCompletedTurn(t *testing.T) {
 	defer server.Close()
 
 	service := NewCoreService()
-	service.connections = &memoryConnectionStore{connection: desktopConnection{
-		Endpoint:    server.URL,
-		EndpointKey: "desktop-test",
-		Token:       "desktop-test-token",
-	}}
 	service.newCache = func() (*visualCache, error) { return newVisualCacheAt(t.TempDir()) }
-	useLoopbackSessionTransport(t, service)
+	useLoopbackSessionTransport(t, service, server.URL, "desktop-test-token")
 	turns := make(chan desktopTurnEvent, 4)
 	service.attachEmitter(func(name string, payload any) {
 		if name == "desktop:turn" {
@@ -776,11 +676,8 @@ func TestCoreServiceRejectsSendAndCancelsProactiveTurn(t *testing.T) {
 	defer server.Close()
 
 	service := NewCoreService()
-	service.connections = &memoryConnectionStore{connection: desktopConnection{
-		Endpoint: server.URL, EndpointKey: "desktop-test", Token: "desktop-test-token",
-	}}
 	service.newCache = func() (*visualCache, error) { return newVisualCacheAt(t.TempDir()) }
-	useLoopbackSessionTransport(t, service)
+	useLoopbackSessionTransport(t, service, server.URL, "desktop-test-token")
 	turns := make(chan desktopTurnEvent, 4)
 	service.attachEmitter(func(name string, payload any) {
 		if name == "desktop:turn" {
@@ -885,11 +782,8 @@ func TestCoreServicePreparesControlledStickerAndReportsRenderSuccess(t *testing.
 	defer server.Close()
 
 	service := NewCoreService()
-	service.connections = &memoryConnectionStore{connection: desktopConnection{
-		Endpoint: server.URL, EndpointKey: "desktop-test", Token: "desktop-test-token",
-	}}
 	service.newCache = func() (*visualCache, error) { return newVisualCacheAt(t.TempDir()) }
-	useLoopbackSessionTransport(t, service)
+	useLoopbackSessionTransport(t, service, server.URL, "desktop-test-token")
 	turns := make(chan desktopTurnEvent, 6)
 	service.attachEmitter(func(name string, payload any) {
 		if name == "desktop:turn" {

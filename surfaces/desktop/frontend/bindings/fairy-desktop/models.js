@@ -77,26 +77,19 @@ export class CoreSettings {
      * @param {Partial<CoreSettings>} [$$source = {}] - The source object to create the CoreSettings.
      */
     constructor($$source = {}) {
-        if (!("endpoint" in $$source)) {
+        if (!("profileDir" in $$source)) {
             /**
              * @member
              * @type {string}
              */
-            this["endpoint"] = "";
+            this["profileDir"] = "";
         }
-        if (!("endpointKey" in $$source)) {
-            /**
-             * @member
-             * @type {string}
-             */
-            this["endpointKey"] = "";
-        }
-        if (!("hasToken" in $$source)) {
+        if (!("ready" in $$source)) {
             /**
              * @member
              * @type {boolean}
              */
-            this["hasToken"] = false;
+            this["ready"] = false;
         }
 
         Object.assign(this, $$source);

@@ -13,7 +13,7 @@ import (
 var assets embed.FS
 
 const (
-	surfaceRevision       = "20260810-settings-webui-1"
+	surfaceRevision       = "20260814-local-runtime-1"
 	controlPanelWidth     = 420
 	controlPanelHeight    = 560
 	controlPanelMinWidth  = 360
@@ -45,7 +45,7 @@ func main() {
 		Mac:              companionWindowOptions(),
 	})
 	settings := app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title: "FAIRY Core 设置", Name: "control-panel", URL: "/?surface=control-panel&revision=" + surfaceRevision,
+		Title: "FAIRY 设置", Name: "control-panel", URL: "/?surface=control-panel&revision=" + surfaceRevision,
 		Width: controlPanelWidth, Height: controlPanelHeight, MinWidth: controlPanelMinWidth, MinHeight: controlPanelMinHeight,
 		Hidden: true, Frameless: true, AlwaysOnTop: true,
 		BackgroundType: application.BackgroundTypeTransparent, BackgroundColour: application.NewRGBA(0, 0, 0, 0),

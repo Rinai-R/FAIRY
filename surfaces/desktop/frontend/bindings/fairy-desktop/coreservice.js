@@ -45,15 +45,6 @@ export function Connect() {
 }
 
 /**
- * @returns {$CancellablePromise<$models.CoreSettings>}
- */
-export function ConnectionSettings() {
-    return $Call.ByID(2086730623).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType1($result);
-    }));
-}
-
-/**
  * @returns {$CancellablePromise<void>}
  */
 export function DisableDesktopObservation() {
@@ -127,13 +118,10 @@ export function RepositionSpeechBubble() {
 }
 
 /**
- * @param {string} endpoint
- * @param {string} token
- * @param {string} endpointKey
  * @returns {$CancellablePromise<$models.CoreSettings>}
  */
-export function SaveConnection(endpoint, token, endpointKey) {
-    return $Call.ByID(3874272299, endpoint, token, endpointKey).then(/** @type {($result: any) => any} */(($result) => {
+export function RuntimeInfo() {
+    return $Call.ByID(1820803190).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType1($result);
     }));
 }

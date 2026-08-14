@@ -2,16 +2,11 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fairy/transport/session"
 	"fmt"
-	"net"
 	"net/http"
-	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -19,12 +14,9 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
-var installationKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
-
 type CoreSettings struct {
-	Endpoint    string `json:"endpoint"`
-	EndpointKey string `json:"endpointKey"`
-	HasToken    bool   `json:"hasToken"`
+	ProfileDir string `json:"profileDir"`
+	Ready      bool   `json:"ready"`
 }
 
 type CoreSession struct {
@@ -35,42 +27,41 @@ type CoreSession struct {
 }
 
 type CoreService struct {
-	connections      connectionStore
-	mu               sync.Mutex
-	app              *application.App
-	companion        application.Window
-	controlPanel     application.Window
-	history          application.Window
-	speechBubble     application.Window
-	windowLink       windowRelation
-	controlOpen      bool
-	historyOpen      bool
-	controlWidth     int
-	assets           sessionAssets
-	socket           sessionPlane
-	visualCache      *visualCache
-	newCache         func() (*visualCache, error)
-	conversation     string
-	active           bool
-	activeTurnID     string
-	emit             func(string, any)
-	observation      *desktopObservationRuntime
-	capture          *desktopCaptureRuntime
-	privacy          session.DesktopPrivacyState
-	edge             ownedRuntime
-	openEdge         func(context.Context) (ownedRuntime, error)
-	openTransport    func(context.Context) (sessionPlane, sessionAssets, CoreSettings, error)
-	localEndpointKey string
-	instance         instanceGuard
-	acquireLock      func(string, func()) (instanceGuard, error)
-	profileDir       func() (string, error)
-	requestFocus     func(string) error
-	shutdownBudget   shutdownBudget
+	mu                   sync.Mutex
+	app                  *application.App
+	companion            application.Window
+	controlPanel         application.Window
+	history              application.Window
+	speechBubble         application.Window
+	windowLink           windowRelation
+	controlOpen          bool
+	historyOpen          bool
+	controlWidth         int
+	assets               sessionAssets
+	socket               sessionPlane
+	visualCache          *visualCache
+	newCache             func() (*visualCache, error)
+	conversation         string
+	active               bool
+	activeTurnID         string
+	emit                 func(string, any)
+	observation          *desktopObservationRuntime
+	capture              *desktopCaptureRuntime
+	privacy              session.DesktopPrivacyState
+	edge                 ownedRuntime
+	openEdge             func(context.Context) (ownedRuntime, error)
+	openTransport        func(context.Context) (sessionPlane, sessionAssets, CoreSettings, error)
+	localEndpointKey     string
+	legacyConnectionFile func() (string, error)
+	instance             instanceGuard
+	acquireLock          func(string, func()) (instanceGuard, error)
+	profileDir           func() (string, error)
+	requestFocus         func(string) error
+	shutdownBudget       shutdownBudget
 }
 
 func NewCoreService() *CoreService {
 	service := &CoreService{
-		connections:  newSystemConnectionStore(),
 		newCache:     newVisualCache,
 		privacy:      session.DesktopPrivacyProtected,
 		controlWidth: controlPanelWidth,
@@ -417,54 +408,32 @@ func (s *CoreService) showSpeechBubble() {
 	bubble.Show()
 }
 
-func (s *CoreService) SaveConnection(endpoint, token, endpointKey string) (CoreSettings, error) {
-	endpoint, err := validateEndpoint(endpoint)
+func (s *CoreService) RuntimeInfo() (CoreSettings, error) {
+	if s == nil {
+		return CoreSettings{}, errors.New("desktop core service is unavailable")
+	}
+	dir, err := s.resolveProfileDir()
 	if err != nil {
 		return CoreSettings{}, err
 	}
-	if endpointKey == "" {
-		endpointKey, err = generateInstallationKey()
-		if err != nil {
-			return CoreSettings{}, err
-		}
-	}
-	if !installationKeyPattern.MatchString(endpointKey) {
-		return CoreSettings{}, errors.New("installation key is invalid")
-	}
-	if token == "" {
-		existing, loadErr := s.connections.Load()
-		if errors.Is(loadErr, errConnectionNotFound) {
-			return CoreSettings{}, errors.New("Core token is required when saving the first Desktop connection")
-		}
-		if loadErr != nil {
-			return CoreSettings{}, fmt.Errorf("load existing Desktop Core connection: %w", loadErr)
-		}
-		token = existing.Token
-	} else if token != strings.TrimSpace(token) {
-		return CoreSettings{}, errors.New("Core token must contain no surrounding whitespace")
-	}
-	connection := desktopConnection{Endpoint: endpoint, EndpointKey: endpointKey, Token: token}
-	if err := s.connections.Save(connection); err != nil {
-		return CoreSettings{}, fmt.Errorf("save Desktop Core connection: %w", err)
-	}
-	return settingsForConnection(connection), nil
+	s.mu.Lock()
+	ready := s.edge != nil
+	s.mu.Unlock()
+	return CoreSettings{ProfileDir: dir, Ready: ready}, nil
 }
 
-func (s *CoreService) ConnectionSettings() (CoreSettings, error) {
-	connection, err := s.connections.Load()
-	if errors.Is(err, errConnectionNotFound) {
-		return CoreSettings{Endpoint: defaultCoreEndpoint}, nil
+func (s *CoreService) resolveProfileDir() (string, error) {
+	resolve := s.profileDir
+	if resolve == nil {
+		resolve = desktopProfileDir
 	}
-	if err != nil {
-		return CoreSettings{}, fmt.Errorf("load Desktop Core connection: %w", err)
-	}
-	return settingsForConnection(connection), nil
+	return resolve()
 }
 
 func (s *CoreService) Connect() (CoreSession, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	socket, assets, settings, err := s.openSessionTransport(ctx)
+	socket, assets, _, err := s.openSessionTransport(ctx)
 	if err != nil {
 		return CoreSession{}, err
 	}
@@ -473,6 +442,16 @@ func (s *CoreService) Connect() (CoreSession, error) {
 			_ = socket.Close()
 		}
 		return CoreSession{}, errors.New("session transport is unavailable")
+	}
+	endpointKey, err := s.desktopEndpointKey()
+	if err != nil {
+		_ = socket.Close()
+		return CoreSession{}, err
+	}
+	info, err := s.RuntimeInfo()
+	if err != nil {
+		_ = socket.Close()
+		return CoreSession{}, err
 	}
 	if err := socket.SetDesktopCaptureHandler(func(ctx context.Context, request session.DesktopCaptureRequest) session.DesktopCaptureResult {
 		s.mu.Lock()
@@ -494,7 +473,7 @@ func (s *CoreService) Connect() (CoreSession, error) {
 	}()
 	opened, err := socket.OpenSession(ctx, session.OpenSessionRequest{
 		Endpoint:    session.EndpointDesktop,
-		EndpointKey: settings.EndpointKey,
+		EndpointKey: endpointKey,
 		Interaction: session.Context{
 			Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationEmbodied,
 		},
@@ -548,7 +527,7 @@ func (s *CoreService) Connect() (CoreSession, error) {
 	s.emitDesktopSession(messages.Messages)
 	character := *catalog.Active
 	character.Appearance.Visual = &localVisual
-	return CoreSession{Settings: settings, ConversationID: opened.ConversationID, Character: character, Messages: messages.Messages}, nil
+	return CoreSession{Settings: info, ConversationID: opened.ConversationID, Character: character, Messages: messages.Messages}, nil
 }
 
 func (s *CoreService) openSessionTransport(ctx context.Context) (sessionPlane, sessionAssets, CoreSettings, error) {
@@ -572,12 +551,12 @@ func (s *CoreService) openSessionTransport(ctx context.Context) (sessionPlane, s
 		}
 		return nil, nil, CoreSettings{}, errors.New("edge session transport is unavailable")
 	}
-	key, err := s.desktopEndpointKey()
+	info, err := s.RuntimeInfo()
 	if err != nil {
 		_ = plane.Close()
 		return nil, nil, CoreSettings{}, err
 	}
-	return plane, assets, CoreSettings{EndpointKey: key}, nil
+	return plane, assets, info, nil
 }
 
 func (s *CoreService) desktopEndpointKey() (string, error) {
@@ -587,20 +566,16 @@ func (s *CoreService) desktopEndpointKey() (string, error) {
 		s.mu.Unlock()
 		return key, nil
 	}
-	connections := s.connections
 	s.mu.Unlock()
-	if connections != nil {
-		if connection, err := connections.Load(); err == nil && connection.EndpointKey != "" {
-			s.mu.Lock()
-			if s.localEndpointKey == "" {
-				s.localEndpointKey = connection.EndpointKey
-			}
-			key := s.localEndpointKey
-			s.mu.Unlock()
-			return key, nil
-		}
+	dir, err := s.resolveProfileDir()
+	if err != nil {
+		return "", err
 	}
-	key, err := generateInstallationKey()
+	legacyPath, err := s.resolveLegacyConnectionFile()
+	if err != nil {
+		return "", err
+	}
+	key, err := loadOrCreateEndpointKey(dir, legacyPath)
 	if err != nil {
 		return "", err
 	}
@@ -612,6 +587,13 @@ func (s *CoreService) desktopEndpointKey() (string, error) {
 	}
 	s.mu.Unlock()
 	return key, nil
+}
+
+func (s *CoreService) resolveLegacyConnectionFile() (string, error) {
+	if s != nil && s.legacyConnectionFile != nil {
+		return s.legacyConnectionFile()
+	}
+	return defaultLegacyConnectionFile()
 }
 
 func (s *CoreService) Send(input string) error {
@@ -914,41 +896,4 @@ func (s *CoreService) emitDesktopSession(messages []session.MessageRecord) {
 	if emit != nil {
 		emit("desktop:session", map[string]any{"messages": messages})
 	}
-}
-
-func generateInstallationKey() (string, error) {
-	raw := make([]byte, 24)
-	if _, err := rand.Read(raw); err != nil {
-		return "", err
-	}
-	return "macos-" + base64.RawURLEncoding.EncodeToString(raw), nil
-}
-
-func settingsForConnection(connection desktopConnection) CoreSettings {
-	return CoreSettings{
-		Endpoint:    connection.Endpoint,
-		EndpointKey: connection.EndpointKey,
-		HasToken:    connection.Token != "",
-	}
-}
-
-func validateEndpoint(raw string) (string, error) {
-	if raw != strings.TrimSpace(raw) || raw == "" {
-		return "", errors.New("Core endpoint must not be empty or contain surrounding whitespace")
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
-		return "", errors.New("Core endpoint must be an absolute origin without credentials, path, query, or fragment")
-	}
-	if parsed.Scheme == "https" {
-		return strings.TrimSuffix(parsed.String(), "/"), nil
-	}
-	if parsed.Scheme != "http" || !isLoopback(parsed.Hostname()) {
-		return "", errors.New("remote Core endpoints require HTTPS")
-	}
-	return strings.TrimSuffix(parsed.String(), "/"), nil
-}
-
-func isLoopback(host string) bool {
-	return strings.EqualFold(host, "localhost") || (net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback())
 }

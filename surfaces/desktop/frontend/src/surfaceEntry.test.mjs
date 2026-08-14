@@ -42,16 +42,13 @@ test("companion surface projects direct and proactive Turn events into one activ
   assert.match(surfaceSource, /active \? <IconButton[^>]+aria-label="停止回复"/);
 });
 
-test("Core connection settings stay in the Go backend rather than WebView storage", () => {
-  assert.match(surfaceSource, /ConnectionSettings\(\)/);
+test("settings surface shows local runtime status instead of Core connection fields", () => {
+  assert.match(surfaceSource, /RuntimeInfo\(\)/);
   assert.match(surfaceSource, /Connect\(\)/);
-  assert.match(surfaceSource, />保存连接配置<\/button>/);
-  assert.match(surfaceSource, /重启后将自动连接/);
-  assert.doesNotMatch(surfaceSource, /保存并连接/);
-  const saveStart = surfaceSource.indexOf("async function save(event)");
-  const saveEnd = surfaceSource.indexOf("async function applyObservation()", saveStart);
-  assert.ok(saveStart >= 0 && saveEnd > saveStart);
-  assert.doesNotMatch(surfaceSource.slice(saveStart, saveEnd), /\bConnect\(\)/);
+  assert.match(surfaceSource, /id="local-runtime-title"/);
+  assert.match(surfaceSource, /无需单独启动 Core，也不需要填写连接地址或令牌/);
+  assert.doesNotMatch(surfaceSource, /ConnectionSettings|SaveConnection|保存连接配置|defaultEndpoint/);
+  assert.doesNotMatch(surfaceSource, /127\.0\.0\.1:8787|FAIRY_API_TOKEN|Core 地址/);
   assert.doesNotMatch(surfaceSource, /Keychain|keychain/);
   assert.doesNotMatch(surfaceSource, /fairy\.endpoint(?:Key)?/);
   assert.doesNotMatch(surfaceSource, /localStorage\.(?:getItem|setItem)\([^)]*(?:endpoint|token)/);
@@ -59,7 +56,7 @@ test("Core connection settings stay in the Go backend rather than WebView storag
 
 test("Core settings keep every field accessible in a resizable scrolling WebUI panel", () => {
   assert.match(surfaceSource, /className="cp-settings-scroll" data-testid="settings-scroll-region"/);
-  assert.match(surfaceSource, /className="cp-settings-section" aria-labelledby="core-connection-title"/);
+  assert.match(surfaceSource, /className="cp-settings-section" aria-labelledby="local-runtime-title"/);
   assert.match(surfaceSource, /className="cp-settings-section" aria-labelledby="desktop-observation-title"/);
   assert.match(surfaceSource, /className="cp-settings-status" role="status"/);
   assert.match(controlPanelStyles, /--cp-bg:\s*#f4f8fc/);
