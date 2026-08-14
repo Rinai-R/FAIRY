@@ -22,6 +22,7 @@ const (
 	cognitiveRecordsSchemaRevision    int64 = 7
 	duplicateRevalidationRevision     int64 = 8
 	socialFeedbackEventsRevision      int64 = 9
+	stickerCatalogSchemaRevision      int64 = 10
 
 	transcriptRecallTableName = "conversation_messages"
 	transcriptRecallIndexName = "conversation_messages_content_fts_idx"
@@ -156,14 +157,23 @@ func BuiltinMigrations() []Migration {
 			Apply:  applySocialFeedbackEventsSchema,
 			Verify: verifySocialFeedbackEventsSchema,
 		},
+		{
+			Revision: Revision{
+				Number:   stickerCatalogSchemaRevision,
+				Checksum: stickerCatalogSchemaChecksum(),
+			},
+			Name:   "create-sticker-and-expression-delivery-schema",
+			Apply:  applyStickerCatalogSchema,
+			Verify: verifyStickerCatalogSchema,
+		},
 	}
 }
 
 // CurrentSchemaRevision is the exact revision accepted by runtime readiness.
 func CurrentSchemaRevision() Revision {
 	return Revision{
-		Number:   socialFeedbackEventsRevision,
-		Checksum: socialFeedbackEventsSchemaChecksum(),
+		Number:   stickerCatalogSchemaRevision,
+		Checksum: stickerCatalogSchemaChecksum(),
 	}
 }
 

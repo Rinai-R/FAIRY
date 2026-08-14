@@ -2,6 +2,7 @@ package sticker
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,17 +16,24 @@ import (
 )
 
 type Store struct {
-	pool *coredb.Pool
+	pool        *coredb.Pool
+	seekDB      *sql.DB
+	queryLimit  time.Duration
+	contentRoot string
+	now         func() time.Time
 }
 
 func NewStore(pool *coredb.Pool) (*Store, error) {
 	if pool == nil || pool.Raw() == nil {
 		return nil, ErrDatabasePoolRequired
 	}
-	return &Store{pool: pool}, nil
+	return &Store{pool: pool, now: time.Now}, nil
 }
 
 func (s *Store) Create(ctx context.Context, input CreateInput) (Record, error) {
+	if s.usesSeekDB() {
+		return s.createSeekDB(ctx, input)
+	}
 	if err := s.ready(); err != nil {
 		return Record{}, err
 	}
@@ -61,6 +69,9 @@ RETURNING id, content_sha256, mime_type, byte_count, description, tags, status, 
 }
 
 func (s *Store) Find(ctx context.Context, id string) (Record, error) {
+	if s.usesSeekDB() {
+		return s.findSeekDB(ctx, id)
+	}
 	if err := s.ready(); err != nil {
 		return Record{}, err
 	}
@@ -83,6 +94,9 @@ FROM stickers WHERE id = $1`, id))
 }
 
 func (s *Store) List(ctx context.Context, input ListInput) (Page, error) {
+	if s.usesSeekDB() {
+		return s.listSeekDB(ctx, input)
+	}
 	if err := s.ready(); err != nil {
 		return Page{}, err
 	}
@@ -139,6 +153,9 @@ OFFSET $2 LIMIT $3`, status, input.Offset, input.Limit)
 }
 
 func (s *Store) Update(ctx context.Context, id string, input UpdateInput) (Record, error) {
+	if s.usesSeekDB() {
+		return s.updateSeekDB(ctx, id, input)
+	}
 	if err := s.ready(); err != nil {
 		return Record{}, err
 	}
@@ -202,6 +219,9 @@ RETURNING id, content_sha256, mime_type, byte_count, description, tags, status, 
 }
 
 func (s *Store) Delete(ctx context.Context, id string) error {
+	if s.usesSeekDB() {
+		return s.deleteSeekDB(ctx, id)
+	}
 	if err := s.ready(); err != nil {
 		return err
 	}
@@ -223,6 +243,9 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 }
 
 func (s *Store) Content(ctx context.Context, id string) (Content, error) {
+	if s.usesSeekDB() {
+		return s.contentSeekDB(ctx, id)
+	}
 	if err := s.ready(); err != nil {
 		return Content{}, err
 	}
@@ -247,6 +270,9 @@ FROM stickers WHERE id = $1`, id,
 }
 
 func (s *Store) HasActive(ctx context.Context) (bool, error) {
+	if s.usesSeekDB() {
+		return s.hasActiveSeekDB(ctx)
+	}
 	if err := s.ready(); err != nil {
 		return false, err
 	}
@@ -262,6 +288,9 @@ func (s *Store) HasActive(ctx context.Context) (bool, error) {
 }
 
 func (s *Store) Search(ctx context.Context, query string, limit int) ([]Candidate, error) {
+	if s.usesSeekDB() {
+		return s.searchSeekDB(ctx, query, limit)
+	}
 	if err := s.ready(); err != nil {
 		return nil, err
 	}
@@ -344,5 +373,6 @@ func scanRecord(row rowScanner) (Record, error) {
 	if record.Tags == nil {
 		record.Tags = []string{}
 	}
+	record.ContentSHA256 = strings.ToLower(record.ContentSHA256)
 	return record, nil
 }

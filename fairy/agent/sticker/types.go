@@ -18,6 +18,10 @@ const (
 
 var (
 	ErrDatabasePoolRequired = errors.New("sticker database pool is required")
+	ErrSeekDBRequired       = errors.New("sticker SeekDB connection is required")
+	ErrQueryLimitInvalid    = errors.New("sticker query limit must be greater than zero")
+	ErrContentRootInvalid   = errors.New("sticker content root must be an absolute non-root path")
+	ErrContentInconsistent  = errors.New("sticker content file does not match catalog record")
 	ErrContentRequired      = errors.New("sticker content is required")
 	ErrContentTooLarge      = errors.New("sticker content exceeds 5 MiB")
 	ErrUnsupportedMIME      = errors.New("sticker image format is unsupported")

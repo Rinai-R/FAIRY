@@ -12,8 +12,8 @@ import (
 func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first := BuiltinMigrations()
 	second := BuiltinMigrations()
-	if len(first) != 9 || len(second) != 9 {
-		t.Fatalf("builtin migration counts = %d and %d, want 9", len(first), len(second))
+	if len(first) != 10 || len(second) != 10 {
+		t.Fatalf("builtin migration counts = %d and %d, want 10", len(first), len(second))
 	}
 	foundation := Revision{Number: foundationSchemaRevision, Checksum: foundationSchemaChecksum()}
 	conversation := Revision{Number: conversationSchemaRevision, Checksum: conversationSchemaChecksum()}
@@ -24,8 +24,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	cognitiveRecords := Revision{Number: cognitiveRecordsSchemaRevision, Checksum: cognitiveRecordsSchemaChecksum()}
 	duplicateRevalidation := Revision{Number: duplicateRevalidationRevision, Checksum: duplicateRevalidationSchemaChecksum()}
 	socialFeedback := Revision{Number: socialFeedbackEventsRevision, Checksum: socialFeedbackEventsSchemaChecksum()}
-	if current := CurrentSchemaRevision(); current != socialFeedback {
-		t.Fatalf("current schema revision = %#v, want %#v", current, socialFeedback)
+	stickerCatalog := Revision{Number: stickerCatalogSchemaRevision, Checksum: stickerCatalogSchemaChecksum()}
+	if current := CurrentSchemaRevision(); current != stickerCatalog {
+		t.Fatalf("current schema revision = %#v, want %#v", current, stickerCatalog)
 	}
 	if first[0].Revision != foundation || first[0].Name != "create-foundation-schema" {
 		t.Fatalf("foundation migration = %#v, want revision %#v", first[0], foundation)
@@ -54,6 +55,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	if first[8].Revision != socialFeedback || first[8].Name != "create-social-memory-feedback-events" {
 		t.Fatalf("social feedback events migration = %#v, want revision %#v", first[8], socialFeedback)
 	}
+	if first[9].Revision != stickerCatalog || first[9].Name != "create-sticker-and-expression-delivery-schema" {
+		t.Fatalf("sticker catalog migration = %#v, want revision %#v", first[9], stickerCatalog)
+	}
 	for index, migration := range first {
 		if migration.Apply == nil || migration.Verify == nil {
 			t.Fatalf("builtin migration %d must provide Apply and Verify", index+1)
@@ -69,6 +73,7 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first[6].Revision.Number = 102
 	first[7].Name = "mutated-duplicate-revalidation"
 	first[8].Name = "mutated-social-feedback-events"
+	first[9].Name = "mutated-sticker-catalog"
 	if second[0].Name != "create-foundation-schema" || second[0].Revision != foundation ||
 		second[1].Name != "create-conversation-schema" || second[1].Revision != conversation ||
 		second[2].Name != "create-turn-evidence-schema" || second[2].Revision != turnEvidence ||
@@ -77,7 +82,8 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 		second[5].Name != "strengthen-extraction-coordination-schema" || second[5].Revision != extractionCoordination ||
 		second[6].Name != "create-cognitive-records-schema" || second[6].Revision != cognitiveRecords ||
 		second[7].Name != "index-personal-memory-duplicates" || second[7].Revision != duplicateRevalidation ||
-		second[8].Name != "create-social-memory-feedback-events" || second[8].Revision != socialFeedback {
+		second[8].Name != "create-social-memory-feedback-events" || second[8].Revision != socialFeedback ||
+		second[9].Name != "create-sticker-and-expression-delivery-schema" || second[9].Revision != stickerCatalog {
 		t.Fatalf("caller mutation changed later BuiltinMigrations result: %#v", second[0])
 	}
 	if got := hex.EncodeToString(foundation.Checksum[:]); got != "e674bec12d0b6895da8b351d082a686c9c2f44990fb68749bbad083c4a6805d3" {
@@ -106,6 +112,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	}
 	if got := hex.EncodeToString(socialFeedback.Checksum[:]); got != "b7b9325c52f070b5e54c57e2e4f5a14854782052c332334fa794edf305199dc7" {
 		t.Fatalf("social feedback events checksum = %s, update requires an explicit revision decision", got)
+	}
+	if got := hex.EncodeToString(stickerCatalog.Checksum[:]); got != "9bd51976b0ebe8993f774fff2d34bfa2773311956c0e50e0c2c0e9ff87a606db" {
+		t.Fatalf("sticker catalog checksum = %s, update requires an explicit revision decision", got)
 	}
 }
 
@@ -362,6 +371,54 @@ func TestSocialFeedbackEventsSchemaDefinesAuditLedgerWithoutBody(t *testing.T) {
 	} {
 		if !strings.Contains(check.clause, token) {
 			t.Errorf("social feedback CHECK lacks %q: %s", token, check.clause)
+		}
+	}
+}
+
+func TestStickerCatalogSchemaDefinesMetadataAndDeliveryLedger(t *testing.T) {
+	assertPortableSchemaTables(t, stickerCatalogSchema[:], []string{stickersTableName, expressionDeliveriesTableName})
+	stickers := stickerCatalogSchema[0]
+	lower := strings.ToLower(stickers.ddl)
+	for _, forbidden := range []string{"bytea", "jsonb", "longblob", "content ", "$1"} {
+		if strings.Contains(lower, forbidden) {
+			t.Errorf("stickers DDL contains forbidden token %q", forbidden)
+		}
+	}
+	if hash := schemaColumnNamed(t, stickers, "content_sha256"); hash.columnType != "binary(32)" || hash.nullable {
+		t.Fatalf("sticker content hash = %#v", hash)
+	}
+	if !schemaHasIndex(stickers, ascendingBTreeIndex("stickers_content_sha256_key", true, "content_sha256")) {
+		t.Fatal("stickers lack unique content hash")
+	}
+	check := schemaCheckNamed(t, stickers, "stickers_invariants_check")
+	for _, token := range []string{
+		"(`mime_type` in ('image/jpeg','image/png','image/gif','image/webp'))",
+		"(`status` in ('draft','active','disabled'))",
+		"((`status` <> 'active') or (CHAR_LENGTH(`description`) > 0))",
+		"(JSON_TYPE(`tags`) = 'ARRAY')",
+	} {
+		if !strings.Contains(check.clause, token) {
+			t.Errorf("stickers CHECK lacks %q: %s", token, check.clause)
+		}
+	}
+
+	deliveries := stickerCatalogSchema[1]
+	if !schemaHasIndex(deliveries, ascendingBTreeIndex("PRIMARY", true, "conversation_id", "turn_id", "beat_id")) {
+		t.Fatal("expression deliveries lack (conversation, turn, beat) idempotency key")
+	}
+	if len(deliveries.foreignKeys) != 1 ||
+		deliveries.foreignKeys[0].referencedTable != "conversation_turns" ||
+		deliveries.foreignKeys[0].deleteRule != "cascade" {
+		t.Fatalf("expression delivery foreign keys = %#v", deliveries.foreignKeys)
+	}
+	deliveryCheck := schemaCheckNamed(t, deliveries, "expression_deliveries_invariants_check")
+	for _, token := range []string{
+		"(`status` in ('succeeded','failed'))",
+		"((`status` = 'succeeded') = (`error_message` is null))",
+		"((`status` = 'succeeded') or (`external_message_id` is null))",
+	} {
+		if !strings.Contains(deliveryCheck.clause, token) {
+			t.Errorf("expression deliveries CHECK lacks %q: %s", token, deliveryCheck.clause)
 		}
 	}
 }
@@ -861,7 +918,8 @@ func assertPortableSchemaTables(t *testing.T, tables []schemaTable, wantTables [
 		}
 		for _, column := range table.columns {
 			if strings.HasSuffix(column.name, "_id") &&
-				column.name != "message_id" && column.name != "evidence_id" && column.name != "previous_response_id" &&
+				column.name != "message_id" && column.name != "evidence_id" &&
+				column.name != "previous_response_id" && column.name != "external_message_id" &&
 				column.collation != "ascii_bin" {
 				t.Errorf("table %s identifier %s collation = %q, want ascii_bin", table.name, column.name, column.collation)
 			}
