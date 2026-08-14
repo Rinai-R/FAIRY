@@ -196,7 +196,7 @@ func (a initiativeAdapter) EmitParticipation(event initiative.Event) {
 			ConversationID: event.ConversationID, Generation: event.Generation,
 			EvaluationReason: string(event.EvaluationReason), Action: event.Action,
 			TargetMessageID: event.TargetMessageID, WaitSeconds: event.WaitSeconds,
-			Usage: append([]model.LaneModelUsage(nil), event.Usage...), ObservedAt: event.ObservedAt,
+			Usage: projectParticipationUsage(event.Usage), ObservedAt: event.ObservedAt,
 		})
 	}
 }
@@ -240,4 +240,24 @@ func (a ambientReplyAdapter) ObserveAmbientReply(reply turn.AmbientReply) {
 		CharacterID: reply.CharacterID, ConversationID: reply.ConversationID,
 		TurnID: reply.TurnID, Candidates: append([]social.SocialFeedbackCandidate(nil), reply.Candidates...), ReplyText: reply.ReplyText,
 	})
+}
+
+func projectParticipationUsage(items []model.LaneModelUsage) []session.LaneModelUsage {
+	if len(items) == 0 {
+		return nil
+	}
+	projected := make([]session.LaneModelUsage, len(items))
+	for index, item := range items {
+		projected[index] = session.LaneModelUsage{
+			Lane:          item.Lane,
+			HistoryWindow: item.HistoryWindow,
+			Usage: session.LaneUsage{
+				InputTokens:       item.Usage.InputTokens,
+				OutputTokens:      item.Usage.OutputTokens,
+				CachedInputTokens: session.CachedTokenObservation{Status: item.Usage.CachedInputTokens.Status, Tokens: item.Usage.CachedInputTokens.Tokens},
+				CacheWriteTokens:  session.CachedTokenObservation{Status: item.Usage.CacheWriteTokens.Status, Tokens: item.Usage.CacheWriteTokens.Tokens},
+			},
+		}
+	}
+	return projected
 }

@@ -2,10 +2,10 @@ package web
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"fairy/agent/sticker"
+	appsession "fairy/app/session"
 	"fairy/context/character"
 	historyruntime "fairy/context/history/runtime"
 	history "fairy/context/history/transcript"
@@ -15,7 +15,6 @@ import (
 	"fairy/context/memory/personal"
 	"fairy/runtime/config"
 	"fairy/runtime/ledger"
-	"fairy/runtime/model"
 	"fairy/runtime/observability"
 	"fairy/transport/desktopcapture"
 	"fairy/transport/session"
@@ -24,89 +23,36 @@ import (
 )
 
 var (
-	ErrEventSubscriberOverflow         = errors.New("event subscriber overflow")
-	ErrParticipationSubscriberOverflow = errors.New("participation subscriber overflow")
-	ErrEventSubscriberCapacity         = errors.New("event subscriber capacity reached")
-	ErrParticipationSubscriberCapacity = errors.New("participation subscriber capacity reached")
+	ErrEventSubscriberOverflow         = appsession.ErrEventSubscriberOverflow
+	ErrParticipationSubscriberOverflow = appsession.ErrParticipationSubscriberOverflow
+	ErrEventSubscriberCapacity         = appsession.ErrEventSubscriberCapacity
+	ErrParticipationSubscriberCapacity = appsession.ErrParticipationSubscriberCapacity
 )
 
-type EventSubscription struct {
-	Events   <-chan session.Event
-	Failures <-chan error
-	Cancel   func()
-}
-
-func (s EventSubscription) Unsubscribe() {
-	if s.Cancel != nil {
-		s.Cancel()
-	}
-}
-
-type ParticipationSubscription struct {
-	Events   <-chan ParticipationEvent
-	Failures <-chan error
-	Cancel   func()
-}
+type (
+	EventSubscription            = appsession.EventSubscription
+	ParticipationSubscription    = appsession.ParticipationSubscription
+	TurnSubmission               = appsession.TurnSubmission
+	ParticipationEvent           = session.ParticipationEvent
+	DesktopObservationStep       = appsession.DesktopObservationStep
+	DesktopObservationDiagnostic = appsession.DesktopObservationDiagnostic
+	DesktopObservationResult     = appsession.DesktopObservationResult
+)
 
 // TurnRuntime is the transport layer's consumption-side view of reactive
 // conversation orchestration. Core adapts the concrete turn service to it.
 type TurnRuntime interface {
-	OutputCapabilities(string) session.OutputCapabilities
-	ReportExpressionDelivery(session.ExpressionDeliveryResult) error
-	BindOutputCapabilities(ownerID, conversationID string, capabilities session.OutputCapabilities) error
-	UnbindOutputCapabilities(ownerID, conversationID string)
-	SubmitTurn(TurnSubmission) (any, error)
-	CancelTurn(conversationID, turnID string) error
-	BindInteraction(conversationID string, binding session.Binding) error
+	appsession.TurnRuntime
 	ActiveBackgroundJobs() int64
 	AgentLoopMetrics() AgentLoopMetrics
-}
-
-type TurnSubmission struct {
-	ConversationID string
-	Input          string
-	MessageID      string
 }
 
 // InitiativeRuntime is the Web-facing port for the Presence domain.
 // Transport DTOs stay in api/session; initiative-owned control data does not
 // cross this boundary.
 type InitiativeRuntime interface {
-	ObserveAmbient(conversationID string, observation session.AmbientObservation) error
-	ObserveDesktop(conversationID string, observation session.DesktopObservation) (DesktopObservationResult, error)
-	DecideParticipation(context.Context, string, session.ParticipationRequest) (session.ParticipationResponse, error)
+	appsession.InitiativeRuntime
 	ExperienceStats() ExperienceStats
-}
-
-type ParticipationEvent struct {
-	ConversationID   string                 `json:"conversationId"`
-	Generation       uint64                 `json:"generation"`
-	EvaluationReason string                 `json:"evaluationReason"`
-	Action           string                 `json:"action"`
-	TargetMessageID  string                 `json:"targetMessageId,omitempty"`
-	WaitSeconds      int                    `json:"waitSeconds,omitempty"`
-	Usage            []model.LaneModelUsage `json:"usage,omitempty"`
-	ObservedAt       time.Time              `json:"observedAt"`
-}
-
-type DesktopObservationStep struct {
-	ID       string   `json:"id"`
-	Kind     string   `json:"kind"`
-	Depends  []string `json:"dependsOn,omitempty"`
-	OmitCode string   `json:"omitCode,omitempty"`
-}
-
-type DesktopObservationDiagnostic struct {
-	Node   string `json:"node"`
-	Kind   string `json:"kind"`
-	Status string `json:"status"`
-}
-
-type DesktopObservationResult struct {
-	Nodes       []DesktopObservationStep       `json:"nodes"`
-	Action      string                         `json:"action"`
-	OmitReasons []string                       `json:"omitReasons,omitempty"`
-	Diagnostics []DesktopObservationDiagnostic `json:"diagnostics,omitempty"`
 }
 
 type LatencyMetrics struct {
@@ -176,12 +122,6 @@ type ObservabilityHistory interface {
 	Stats() observability.HistoryStats
 }
 
-func (s ParticipationSubscription) Unsubscribe() {
-	if s.Cancel != nil {
-		s.Cancel()
-	}
-}
-
 // Dependencies is API's consumption-side view of the Core composition root.
 // API owns no construction or shutdown of these process-scoped services.
 type Dependencies struct {
@@ -227,4 +167,20 @@ type StorageStatus struct {
 	SecretsReady    bool   `json:"secretsReady,omitempty"`
 	OpenConnections int    `json:"openConnections,omitempty"`
 	Error           string `json:"error,omitempty"`
+}
+
+func newSessionService(rt *Dependencies) *appsession.Service {
+	if rt == nil {
+		return appsession.New(appsession.Dependencies{})
+	}
+	return appsession.New(appsession.Dependencies{
+		Secret:                 rt.Secret,
+		Characters:             rt.Character,
+		Transcript:             rt.TranscriptStore,
+		Turns:                  rt.Turns,
+		Initiative:             rt.Initiative,
+		Captures:               rt.Captures,
+		SubscribeTurnEvents:    rt.SubscribeTurnEvents,
+		SubscribeParticipation: rt.SubscribeParticipation,
+	})
 }

@@ -31,7 +31,7 @@ func (s *Server) handleSessionMessages(ctx context.Context, c *app.RequestContex
 		}
 		before = parsed
 	}
-	page, err := s.rt.TranscriptStore.ListConversationMessagesBeforeContext(ctx, conversationID, before, limit)
+	page, err := s.sessionService().ListMessages(ctx, conversationID, before, limit)
 	if err != nil {
 		writeErr(c, http.StatusBadRequest, err)
 		return

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 
 	"fairy/agent/sticker"
+	appsession "fairy/app/session"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -23,12 +25,14 @@ type Options struct {
 // Server wraps Hertz around Core-injected process services.
 type Server struct {
 	rt              *Dependencies
+	sessions        *appsession.Service
 	engine          *server.Hertz
 	token           string
 	logger          *zap.Logger
 	sessionTickets  *browserSessionTicketRegistry
 	metricCollector metricCollector
 	metricSampler   *metricSampler
+	sessionOnce     sync.Once
 }
 
 func NewServer(rt *Dependencies, options Options) (*Server, error) {
@@ -58,7 +62,7 @@ func NewServer(rt *Dependencies, options Options) (*Server, error) {
 		server.WithMaxRequestBodySize(sticker.MaxContentBytes+(1<<20)),
 	)
 	s := &Server{
-		rt: rt, engine: engine, token: options.Token, logger: logger,
+		rt: rt, sessions: newSessionService(rt), engine: engine, token: options.Token, logger: logger,
 		sessionTickets: newBrowserSessionTicketRegistry(browserSessionTicketCapacity, browserSessionTicketTTL),
 	}
 	s.metricCollector = s.collectCurrentMetrics
@@ -154,4 +158,16 @@ func (s *Server) handleStatus(ctx context.Context, c *app.RequestContext) {
 
 func writeErr(c *app.RequestContext, status int, err error) {
 	c.JSON(status, map[string]any{"error": err.Error()})
+}
+
+func (s *Server) sessionService() *appsession.Service {
+	if s == nil {
+		return nil
+	}
+	s.sessionOnce.Do(func() {
+		if s.sessions == nil {
+			s.sessions = newSessionService(s.rt)
+		}
+	})
+	return s.sessions
 }

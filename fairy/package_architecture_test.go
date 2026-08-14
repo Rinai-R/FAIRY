@@ -21,6 +21,7 @@ var targetPackages = []string{
 	"fairy/context/character",
 	"fairy/app/cmd",
 	"fairy/app/foundation",
+	"fairy/app/session",
 	"fairy/runtime/config",
 	"fairy/agent/conversation",
 	"fairy/agent/conversation/contextplan",

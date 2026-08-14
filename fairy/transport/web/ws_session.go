@@ -9,15 +9,15 @@ import (
 	"sync"
 	"time"
 
+	appsession "fairy/app/session"
 	"fairy/transport/desktopcapture"
+	"fairy/transport/session"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/common/adaptor"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
-
-	"fairy/transport/session"
 )
 
 const (
@@ -27,18 +27,18 @@ const (
 	wsPongWait       = 60 * time.Second
 	maxWSRequestJSON = 1 << 20
 
-	sessionConnectionWatchCapacity       = 64
-	sessionConnectionAssociationCapacity = 64
-	sessionConnectionTurnCapacity        = 16
+	sessionConnectionWatchCapacity       = appsession.ConnectionWatchCapacity
+	sessionConnectionAssociationCapacity = appsession.ConnectionAssociationCapacity
+	sessionConnectionTurnCapacity        = appsession.ConnectionTurnCapacity
 	fairySessionProtocol                 = "fairy.session.v1"
 	fairySessionTicketProtocolPrefix     = "fairy.session.ticket."
 )
 
 var (
-	errSessionWatchCapacity       = errors.New("session watch capacity exhausted")
-	errSessionAssociationCapacity = errors.New("session association capacity exhausted")
-	errSessionTurnCapacity        = errors.New("session turn submission capacity exhausted")
-	errSessionConnectionClosed    = errors.New("session connection is closed")
+	errSessionWatchCapacity       = appsession.ErrWatchCapacity
+	errSessionAssociationCapacity = appsession.ErrAssociationCapacity
+	errSessionTurnCapacity        = appsession.ErrTurnCapacity
+	errSessionConnectionClosed    = appsession.ErrConnectionClosed
 )
 
 var sessionUpgrader = websocket.Upgrader{
@@ -284,10 +284,10 @@ func (c *sessionConn) handleExpressionDelivery(frame wsClientFrame) {
 	_, watched := c.watches[result.ConversationID]
 	c.watchMu.Unlock()
 	if !watched {
-		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "delivery report is unavailable for this session"})
+		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: appsession.ErrDeliveryUnavailable.Error()})
 		return
 	}
-	if err := c.server.rt.Turns.ReportExpressionDelivery(result); err != nil {
+	if err := c.server.sessionService().ReportExpressionDelivery(result); err != nil {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 		return
 	}
@@ -295,7 +295,9 @@ func (c *sessionConn) handleExpressionDelivery(frame wsClientFrame) {
 }
 
 func (c *sessionConn) handleOpen(ctx context.Context, frame wsClientFrame) {
-	result, err := c.server.openSession(ctx, frame.Endpoint, frame.EndpointKey, frame.CharacterID, frame.Interaction)
+	result, err := c.server.sessionService().Open(ctx, session.OpenRequest{
+		Endpoint: frame.Endpoint, EndpointKey: frame.EndpointKey, CharacterID: frame.CharacterID, Interaction: frame.Interaction,
+	})
 	if err != nil {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 		return
@@ -305,7 +307,7 @@ func (c *sessionConn) handleOpen(ctx context.Context, frame wsClientFrame) {
 		return
 	}
 	if frame.Endpoint == session.EndpointDesktop && frame.Interaction.Audience == session.AudienceSingle && frame.Interaction.Presentation == session.PresentationEmbodied {
-		registrationID, unregister, registerErr := c.server.rt.Captures.Register(result.ConversationID, frame.Endpoint, frame.Interaction, func(request session.DesktopCaptureRequest) error {
+		registrationID, unregister, registerErr := c.server.sessionService().RegisterDesktopCapture(result.ConversationID, frame.Endpoint, frame.Interaction, func(request session.DesktopCaptureRequest) error {
 			requestCopy := request
 			return c.write(wsServerFrame{Type: "desktop.capture.request", ConversationID: request.ConversationID, CaptureRequest: &requestCopy})
 		})
@@ -334,14 +336,14 @@ func (c *sessionConn) handleOpen(ctx context.Context, frame wsClientFrame) {
 }
 
 func (c *sessionConn) bindOutputCapabilities(conversationID string, capabilities session.OutputCapabilities) error {
-	if c == nil || c.server == nil || c.server.rt == nil || c.server.rt.Turns == nil {
+	if c == nil || c.server == nil || c.server.sessionService() == nil {
 		return errors.New("companion service is unavailable")
 	}
 	added, err := c.reserveCapabilityBinding(conversationID)
 	if err != nil {
 		return err
 	}
-	if err := c.server.rt.Turns.BindOutputCapabilities(c.ownerID, conversationID, capabilities); err != nil {
+	if err := c.server.sessionService().BindOutputCapabilities(c.ownerID, conversationID, capabilities); err != nil {
 		if added {
 			c.rollbackCapabilityBinding(conversationID)
 		}
@@ -351,7 +353,7 @@ func (c *sessionConn) bindOutputCapabilities(conversationID string, capabilities
 	if c.closed {
 		delete(c.capabilityBindings, conversationID)
 		c.watchMu.Unlock()
-		c.server.rt.Turns.UnbindOutputCapabilities(c.ownerID, conversationID)
+		c.server.sessionService().UnbindOutputCapabilities(c.ownerID, conversationID)
 		return errSessionConnectionClosed
 	}
 	c.watchMu.Unlock()
@@ -400,7 +402,7 @@ func (c *sessionConn) handleCaptureResult(ctx context.Context, frame wsClientFra
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: desktopcapture.ErrDesktopCaptureResultRejected.Error()})
 		return
 	}
-	if err := c.server.rt.Captures.AcceptResult(ctx, registration.id, result); err != nil {
+	if err := c.server.sessionService().AcceptDesktopCapture(ctx, registration.id, result); err != nil {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 		return
 	}
@@ -413,7 +415,7 @@ func (c *sessionConn) handleWatch(frame wsClientFrame) {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "conversationId is required"})
 		return
 	}
-	if c.server.rt.SubscribeTurnEvents == nil || c.server.rt.SubscribeParticipation == nil {
+	if c.server.sessionService() == nil {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "event subscriptions are unavailable"})
 		return
 	}
@@ -426,30 +428,23 @@ func (c *sessionConn) handleWatch(frame wsClientFrame) {
 		_ = c.write(wsServerFrame{Type: "ack", RequestID: frame.RequestID, ConversationID: conversationID})
 		return
 	}
-	subscription, err := c.server.rt.SubscribeTurnEvents(conversationID)
+	watch, err := c.server.sessionService().Watch(conversationID)
 	if err != nil {
-		c.rollbackWatchReservation(conversationID)
-		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
-		return
-	}
-	participation, err := c.server.rt.SubscribeParticipation(conversationID)
-	if err != nil {
-		subscription.Unsubscribe()
 		c.rollbackWatchReservation(conversationID)
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 		return
 	}
 	unsubscribe := func() {
-		subscription.Unsubscribe()
-		participation.Unsubscribe()
+		watch.Turns.Unsubscribe()
+		watch.Participation.Unsubscribe()
 	}
 	if err := c.commitWatch(conversationID, unsubscribe); err != nil {
 		unsubscribe()
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 		return
 	}
-	go c.forwardTurnEvents(conversationID, subscription)
-	go c.forwardParticipationEvents(conversationID, participation)
+	go c.forwardTurnEvents(conversationID, watch.Turns)
+	go c.forwardParticipationEvents(conversationID, watch.Participation)
 	_ = c.write(wsServerFrame{Type: "ack", RequestID: frame.RequestID, ConversationID: conversationID})
 }
 
@@ -562,11 +557,7 @@ func (c *sessionConn) handleObserve(frame wsClientFrame) {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "message is required"})
 		return
 	}
-	if c.server.rt.Initiative == nil {
-		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "initiative service is unavailable"})
-		return
-	}
-	if err := c.server.rt.Initiative.ObserveAmbient(frame.ConversationID, *frame.Message); err != nil {
+	if err := c.server.sessionService().ObserveAmbient(frame.ConversationID, *frame.Message); err != nil {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 		return
 	}
@@ -578,11 +569,7 @@ func (c *sessionConn) handleDesktopObserve(frame wsClientFrame) {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "desktopObservation is required"})
 		return
 	}
-	if c.server.rt.Initiative == nil {
-		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "initiative service is unavailable"})
-		return
-	}
-	plan, err := c.server.rt.Initiative.ObserveDesktop(frame.ConversationID, *frame.DesktopObservation)
+	plan, err := c.server.sessionService().ObserveDesktop(frame.ConversationID, *frame.DesktopObservation)
 	if err != nil {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 		return
@@ -596,11 +583,7 @@ func (c *sessionConn) handleDesktopObserve(frame wsClientFrame) {
 }
 
 func (c *sessionConn) handleParticipate(ctx context.Context, frame wsClientFrame) {
-	if c.server.rt.Initiative == nil {
-		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: "initiative service is unavailable"})
-		return
-	}
-	result, err := c.server.rt.Initiative.DecideParticipation(ctx, frame.ConversationID, session.ParticipationRequest{
+	result, err := c.server.sessionService().DecideParticipation(ctx, frame.ConversationID, session.ParticipationRequest{
 		EvaluationReason: frame.EvaluationReason,
 		Messages:         frame.Messages,
 	})
@@ -628,7 +611,7 @@ func (c *sessionConn) handleSubmitTurn(frame wsClientFrame) {
 	}
 	go func() {
 		defer release()
-		outcome, err := c.server.rt.Turns.SubmitTurn(TurnSubmission{
+		response, err := c.server.sessionService().SubmitTurn(appsession.TurnSubmission{
 			ConversationID: frame.ConversationID,
 			Input:          frame.Input,
 			MessageID:      frame.MessageID,
@@ -637,7 +620,7 @@ func (c *sessionConn) handleSubmitTurn(frame wsClientFrame) {
 			_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 			return
 		}
-		payload, err := json.Marshal(map[string]any{"outcome": outcome})
+		payload, err := json.Marshal(response)
 		if err != nil {
 			_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 			return
@@ -679,7 +662,7 @@ func (c *sessionConn) acquireTurnSubmission() (func(), error) {
 }
 
 func (c *sessionConn) handleCancelTurn(frame wsClientFrame) {
-	if err := c.server.rt.Turns.CancelTurn(frame.ConversationID, frame.TurnID); err != nil {
+	if err := c.server.sessionService().CancelTurn(frame.ConversationID, frame.TurnID); err != nil {
 		_ = c.write(wsServerFrame{Type: "error", RequestID: frame.RequestID, Error: err.Error()})
 		return
 	}
@@ -735,76 +718,11 @@ func (c *sessionConn) shutdown(reason error) {
 		for _, unregister := range captureUnregisters {
 			unregister()
 		}
-		if c.server != nil && c.server.rt != nil && c.server.rt.Turns != nil {
+		if c.server != nil && c.server.sessionService() != nil {
 			for _, conversationID := range capabilityBindings {
-				c.server.rt.Turns.UnbindOutputCapabilities(c.ownerID, conversationID)
+				c.server.sessionService().UnbindOutputCapabilities(c.ownerID, conversationID)
 			}
 		}
 		_ = c.conn.Close()
 	})
-}
-
-type openSessionResult struct {
-	ConversationID string
-	CharacterID    string
-	MessageCount   int
-	Endpoint       session.EndpointKind
-}
-
-func (s *Server) openSession(ctx context.Context, endpoint session.EndpointKind, endpointKey string, characterID string, interactionContext session.Context) (openSessionResult, error) {
-	if err := interactionContext.Validate(endpoint); err != nil {
-		return openSessionResult{}, err
-	}
-	if strings.TrimSpace(endpointKey) == "" {
-		return openSessionResult{}, errors.New("endpointKey is required")
-	}
-	endpointKeyDigest, err := s.rt.Secret.DigestEndpointKey(endpoint, endpointKey)
-	if err != nil {
-		return openSessionResult{}, err
-	}
-	principalDigest := ""
-	if interactionContext.Principal != nil {
-		principalDigest, err = s.rt.Secret.DigestPrincipal(*interactionContext.Principal)
-		if err != nil {
-			return openSessionResult{}, err
-		}
-	}
-	binding, err := session.NewBinding(endpoint, interactionContext, principalDigest)
-	if err != nil {
-		return openSessionResult{}, err
-	}
-	catalog, err := s.rt.Character.ListCharacters()
-	if err != nil {
-		return openSessionResult{}, err
-	}
-	selected := catalog.Active
-	characterID = strings.TrimSpace(characterID)
-	if characterID != "" {
-		selected = nil
-		for index := range catalog.Characters {
-			if catalog.Characters[index].CharacterID == characterID {
-				selected = &catalog.Characters[index]
-				break
-			}
-		}
-		if selected == nil {
-			return openSessionResult{}, errors.New("character not found")
-		}
-	}
-	if selected == nil {
-		return openSessionResult{}, errors.New("no active character")
-	}
-	bootstrap, err := s.rt.TranscriptStore.OpenOrCreateEndpointConversationContext(ctx, selected.CharacterID, binding, endpointKeyDigest)
-	if err != nil {
-		return openSessionResult{}, err
-	}
-	if err := s.rt.Turns.BindInteraction(bootstrap.Conversation.ID, binding); err != nil {
-		return openSessionResult{}, err
-	}
-	return openSessionResult{
-		ConversationID: bootstrap.Conversation.ID,
-		CharacterID:    bootstrap.Conversation.CharacterID,
-		MessageCount:   len(bootstrap.Messages),
-		Endpoint:       endpoint,
-	}, nil
 }
