@@ -424,6 +424,19 @@ function MetricsTask() {
         <div><dt>消息</dt><dd>收 {data?.messages?.received || 0} · 发 {data?.messages?.sent || 0}</dd></div>
         <div><dt>历史点</dt><dd>{data?.history?.length || 0}</dd></div>
       </dl>
+      {data?.history?.length ? (
+        <div className="metric-chart" data-testid="metric-chart">
+          {data.history.map((point) => {
+            const max = Math.max(...data.history.map((item) => item.messagesReceived || 0), 1);
+            const height = Math.max(4, ((point.messagesReceived || 0) / max) * 100);
+            return (
+              <div key={point.timestampUnixMs} className="metric-bar" style={{ height: `${height}%` }}>
+                <span className="metric-bar__tip">{point.timestampUnixMs} · 收 {point.messagesReceived || 0}</span>
+              </div>
+            );
+          })}
+        </div>
+      ) : <p className="management-note">暂无指标历史。</p>}
     </StatusBlock>
   );
 }
@@ -465,11 +478,26 @@ function TracingTask({ messageID, traceID, onFilter }) {
         ))}
       </ul>
       {detail ? (
-        <ol className="management-list">
-          {(detail.spans || []).map((span) => (
-            <li key={span.spanId}><strong>{span.operation}</strong><span>{span.status} · {span.durationMs}ms</span></li>
-          ))}
-        </ol>
+        <div className="trace-panel">
+          <div className="trace-timeline" data-testid="trace-timeline">
+            {(detail.spans || []).map((span) => {
+              const duration = detail.durationMs > 0 ? detail.durationMs : 1;
+              const left = Math.max(0, ((span.startedAtUnixMs - detail.startedAtUnixMs) / duration) * 100);
+              const width = Math.max(0.8, (span.durationMs / duration) * 100);
+              return (
+                <div key={span.spanId} className="trace-span" style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%` }}>
+                  <span className="trace-span__bar" />
+                  <span className="trace-span__tip">{span.operation} · {span.status} · {span.durationMs}ms</span>
+                </div>
+              );
+            })}
+          </div>
+          <ol className="management-list">
+            {(detail.spans || []).map((span) => (
+              <li key={span.spanId}><strong>{span.operation}</strong><span>{span.status} · {span.durationMs}ms</span></li>
+            ))}
+          </ol>
+        </div>
       ) : traceID ? <p className="management-note">Trace {traceID}</p> : null}
     </div>
   );

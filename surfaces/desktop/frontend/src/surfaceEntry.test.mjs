@@ -105,3 +105,20 @@ test("management workspace is a resizable local shell with sibling observability
   assert.match(managementSource, /SaveManagementWorkspaceState\(/);
   assert.doesNotMatch(managementSource, /fetch\s*\(|fairy\.apiToken|Authorization|\/v1\//);
 });
+
+test("management workspace keeps canvas scrolling and hover diagnostics inside the window", () => {
+  const managementSource = readFileSync(new URL("./management.jsx", import.meta.url), "utf8");
+  const managementStyles = readFileSync(new URL("./styles/management.css", import.meta.url), "utf8");
+  assert.match(desktopMainSource, /MinWidth: managementMinWidth/);
+  assert.match(desktopMainSource, /MinHeight: managementMinHeight/);
+  assert.match(managementStyles, /min-width:\s*960px/);
+  assert.match(managementStyles, /height:\s*100vh/);
+  assert.match(managementStyles, /\.shell\s*\{[^}]*overflow:\s*hidden/s);
+  assert.match(managementStyles, /\.main-canvas\s*\{[^}]*overflow-y:\s*scroll[^}]*scrollbar-gutter:\s*stable/s);
+  assert.match(managementStyles, /@media \(min-width: 1600px\)/);
+  assert.match(managementStyles, /\.trace-span:hover \.trace-span__tip/);
+  assert.match(managementStyles, /\.metric-bar:hover \.metric-bar__tip/);
+  assert.match(managementStyles, /max-width:\s*min\(360px, 70vw\)/);
+  assert.match(managementSource, /data-testid="trace-timeline"/);
+  assert.match(managementSource, /data-testid="metric-chart"/);
+});
