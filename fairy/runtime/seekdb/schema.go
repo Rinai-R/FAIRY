@@ -25,6 +25,7 @@ const (
 	stickerCatalogSchemaRevision      int64 = 10
 	toolExecutionLedgerRevision       int64 = 11
 	observabilityHistoryRevision      int64 = 12
+	pluginPersistenceRevision         int64 = 13
 
 	transcriptRecallTableName = "conversation_messages"
 	transcriptRecallIndexName = "conversation_messages_content_fts_idx"
@@ -186,14 +187,23 @@ func BuiltinMigrations() []Migration {
 			Apply:  applyObservabilityHistorySchema,
 			Verify: verifyObservabilityHistorySchema,
 		},
+		{
+			Revision: Revision{
+				Number:   pluginPersistenceRevision,
+				Checksum: pluginPersistenceSchemaChecksum(),
+			},
+			Name:   "create-plugin-persistence-schema",
+			Apply:  applyPluginPersistenceSchema,
+			Verify: verifyPluginPersistenceSchema,
+		},
 	}
 }
 
 // CurrentSchemaRevision is the exact revision accepted by runtime readiness.
 func CurrentSchemaRevision() Revision {
 	return Revision{
-		Number:   observabilityHistoryRevision,
-		Checksum: observabilityHistorySchemaChecksum(),
+		Number:   pluginPersistenceRevision,
+		Checksum: pluginPersistenceSchemaChecksum(),
 	}
 }
 

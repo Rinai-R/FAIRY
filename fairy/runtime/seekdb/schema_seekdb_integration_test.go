@@ -86,6 +86,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	if got := integrationJournalRowForRevision(t, database, observabilityHistoryRevision).AttemptCount; got != 1 {
 		t.Fatalf("observability history attempt count = %d, want 1", got)
 	}
+	if got := integrationJournalRowForRevision(t, database, pluginPersistenceRevision).AttemptCount; got != 1 {
+		t.Fatalf("plugin persistence attempt count = %d, want 1", got)
+	}
 
 	if err := MigrateSchema(t.Context(), database, BuiltinMigrations()); err != nil {
 		t.Fatalf("idempotent MigrateSchema(foundation) error = %v", err)
@@ -126,6 +129,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	if got := integrationJournalRowForRevision(t, database, observabilityHistoryRevision).AttemptCount; got != 1 {
 		t.Fatalf("observability history attempt count after repeat = %d, want 1", got)
 	}
+	if got := integrationJournalRowForRevision(t, database, pluginPersistenceRevision).AttemptCount; got != 1 {
+		t.Fatalf("plugin persistence attempt count after repeat = %d, want 1", got)
+	}
 	assertFoundationChecksRejectInvalidData(t, database)
 
 	closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
@@ -147,6 +153,7 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	assertStickerCatalogSchemaVerified(t, restarted.SQL())
 	assertToolExecutionLedgerSchemaVerified(t, restarted.SQL())
 	assertObservabilityHistorySchemaVerified(t, restarted.SQL())
+	assertPluginPersistenceSchemaVerified(t, restarted.SQL())
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), foundationSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("foundation attempt count after restart = %d, want 1", got)
 	}
@@ -183,6 +190,9 @@ func TestRealSeekDBFoundationSchemaRecoversPartialAndPersists(t *testing.T) {
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), observabilityHistoryRevision).AttemptCount; got != 1 {
 		t.Fatalf("observability history attempt count after restart = %d, want 1", got)
 	}
+	if got := integrationJournalRowForRevision(t, restarted.SQL(), pluginPersistenceRevision).AttemptCount; got != 1 {
+		t.Fatalf("plugin persistence attempt count after restart = %d, want 1", got)
+	}
 }
 
 func TestRealSeekDBConversationSchemaUpgradesRevisionOneWithoutRewritingIt(t *testing.T) {
@@ -214,6 +224,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, "runtime", "upgrade-proof", 1, 1, `{"kept":true}`
 	assertStickerCatalogSchemaVerified(t, database)
 	assertToolExecutionLedgerSchemaVerified(t, database)
 	assertObservabilityHistorySchemaVerified(t, database)
+	assertPluginPersistenceSchemaVerified(t, database)
 	for _, revision := range []int64{
 		foundationSchemaRevision,
 		conversationSchemaRevision,
@@ -227,6 +238,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, "runtime", "upgrade-proof", 1, 1, `{"kept":true}`
 		stickerCatalogSchemaRevision,
 		toolExecutionLedgerRevision,
 		observabilityHistoryRevision,
+		pluginPersistenceRevision,
 	} {
 		row := integrationJournalRowForRevision(t, database, revision)
 		if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
@@ -587,6 +599,7 @@ func TestRealSeekDBDuplicateRevalidationSchemaFreshInstallIsCurrent(t *testing.T
 	assertStickerCatalogSchemaVerified(t, database)
 	assertToolExecutionLedgerSchemaVerified(t, database)
 	assertObservabilityHistorySchemaVerified(t, database)
+	assertPluginPersistenceSchemaVerified(t, database)
 	assertSchemaTableSet(t, database, CurrentSchemaRevision().Number)
 	for _, revision := range []int64{
 		foundationSchemaRevision,
@@ -601,6 +614,7 @@ func TestRealSeekDBDuplicateRevalidationSchemaFreshInstallIsCurrent(t *testing.T
 		stickerCatalogSchemaRevision,
 		toolExecutionLedgerRevision,
 		observabilityHistoryRevision,
+		pluginPersistenceRevision,
 	} {
 		row := integrationJournalRowForRevision(t, database, revision)
 		if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
@@ -622,6 +636,7 @@ func TestRealSeekDBDuplicateRevalidationSchemaFreshInstallIsCurrent(t *testing.T
 	assertStickerCatalogSchemaVerified(t, restarted.SQL())
 	assertToolExecutionLedgerSchemaVerified(t, restarted.SQL())
 	assertObservabilityHistorySchemaVerified(t, restarted.SQL())
+	assertPluginPersistenceSchemaVerified(t, restarted.SQL())
 	assertSchemaTableSet(t, restarted.SQL(), CurrentSchemaRevision().Number)
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), cognitiveRecordsSchemaRevision).AttemptCount; got != 1 {
 		t.Fatalf("fresh cognitive records attempt count after restart = %d, want 1", got)
@@ -1481,10 +1496,10 @@ func TestRealSeekDBObservabilityHistorySchemaUpgradesRevisionElevenAndPersists(t
 	if _, err := database.ExecContext(t.Context(), observabilityHistorySchema[0].ddl); err != nil {
 		t.Fatalf("precreate observability_records table: %v", err)
 	}
-	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+	if err := MigrateSchema(t.Context(), database, migrations[:12]); err != nil {
 		t.Fatalf("MigrateSchema(partial revision twelve) error = %v", err)
 	}
-	assertCurrentSchema(t, database, CurrentSchemaRevision())
+	assertCurrentSchema(t, database, migrations[11].Revision)
 	assertObservabilityHistorySchemaVerified(t, database)
 	assertSchemaTableSet(t, database, observabilityHistoryRevision)
 	row := integrationJournalRowForRevision(t, database, observabilityHistoryRevision)
@@ -1492,8 +1507,11 @@ func TestRealSeekDBObservabilityHistorySchemaUpgradesRevisionElevenAndPersists(t
 		t.Fatalf("observability history journal = %#v", row)
 	}
 	assertObservabilityHistoryConstraints(t, database)
+	if got := integrationTableCount(t, database, pluginInstanceStateTableName); got != 0 {
+		t.Fatalf("revision twelve created plugin_instance_state table")
+	}
 
-	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+	if err := MigrateSchema(t.Context(), database, migrations[:12]); err != nil {
 		t.Fatalf("MigrateSchema(repeated revision twelve) error = %v", err)
 	}
 	if got := integrationJournalRowForRevision(t, database, observabilityHistoryRevision).AttemptCount; got != 1 {
@@ -1508,11 +1526,67 @@ func TestRealSeekDBObservabilityHistorySchemaUpgradesRevisionElevenAndPersists(t
 	}
 	instance = restarted
 	closed = false
-	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
+	assertCurrentSchema(t, restarted.SQL(), migrations[11].Revision)
 	assertObservabilityHistorySchemaVerified(t, restarted.SQL())
 	assertSchemaTableSet(t, restarted.SQL(), observabilityHistoryRevision)
 	if got := integrationJournalRowForRevision(t, restarted.SQL(), observabilityHistoryRevision).AttemptCount; got != 1 {
 		t.Fatalf("observability history attempt count after restart = %d, want 1", got)
+	}
+}
+
+func TestRealSeekDBPluginPersistenceSchemaUpgradesRevisionTwelveAndPersists(t *testing.T) {
+	instance, config := openSchemaMigrationRuntime(t)
+	closed := false
+	defer func() {
+		if !closed {
+			closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+		}
+	}()
+	database := instance.SQL()
+	migrations := BuiltinMigrations()
+	if err := MigrateSchema(t.Context(), database, migrations[:12]); err != nil {
+		t.Fatalf("MigrateSchema(revision twelve) error = %v", err)
+	}
+	assertCurrentSchema(t, database, migrations[11].Revision)
+	assertSchemaTableSet(t, database, observabilityHistoryRevision)
+	if got := integrationTableCount(t, database, pluginInstanceStateTableName); got != 0 {
+		t.Fatalf("revision twelve created plugin_instance_state table")
+	}
+
+	if _, err := database.ExecContext(t.Context(), pluginPersistenceSchema[0].ddl); err != nil {
+		t.Fatalf("precreate plugin_instance_state table: %v", err)
+	}
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(partial revision thirteen) error = %v", err)
+	}
+	assertCurrentSchema(t, database, CurrentSchemaRevision())
+	assertPluginPersistenceSchemaVerified(t, database)
+	assertSchemaTableSet(t, database, pluginPersistenceRevision)
+	row := integrationJournalRowForRevision(t, database, pluginPersistenceRevision)
+	if row.State != string(MigrationCurrent) || row.AttemptCount != 1 {
+		t.Fatalf("plugin persistence journal = %#v", row)
+	}
+
+	if err := MigrateSchema(t.Context(), database, migrations); err != nil {
+		t.Fatalf("MigrateSchema(repeated revision thirteen) error = %v", err)
+	}
+	if got := integrationJournalRowForRevision(t, database, pluginPersistenceRevision).AttemptCount; got != 1 {
+		t.Fatalf("plugin persistence attempt count after repeat = %d, want 1", got)
+	}
+
+	closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+	closed = true
+	restarted, err := Open(t.Context(), config)
+	if err != nil {
+		t.Fatalf("restart SeekDB plugin persistence runtime: %v", err)
+	}
+	instance = restarted
+	closed = false
+	assertCurrentSchema(t, restarted.SQL(), CurrentSchemaRevision())
+	assertPluginPersistenceSchemaVerified(t, restarted.SQL())
+	assertSchemaTableSet(t, restarted.SQL(), pluginPersistenceRevision)
+	if got := integrationJournalRowForRevision(t, restarted.SQL(), pluginPersistenceRevision).AttemptCount; got != 1 {
+		t.Fatalf("plugin persistence attempt count after restart = %d, want 1", got)
 	}
 }
 
@@ -2053,6 +2127,8 @@ func assertCognitiveRecordsSchemaVerified(t *testing.T, database *sql.DB, revisi
 		migrationIndex = 10
 	case observabilityHistoryRevision:
 		migrationIndex = 11
+	case pluginPersistenceRevision:
+		migrationIndex = 12
 	default:
 		t.Fatalf("verify cognitive records schema: unsupported revision %d", revision)
 	}
@@ -2124,6 +2200,18 @@ func assertObservabilityHistorySchemaVerified(t *testing.T, database *sql.DB) {
 	defer connection.Close()
 	if err := BuiltinMigrations()[11].Verify(t.Context(), connection); err != nil {
 		t.Fatalf("verify observability history schema: %v", err)
+	}
+}
+
+func assertPluginPersistenceSchemaVerified(t *testing.T, database *sql.DB) {
+	t.Helper()
+	connection, err := database.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err := BuiltinMigrations()[12].Verify(t.Context(), connection); err != nil {
+		t.Fatalf("verify plugin persistence schema: %v", err)
 	}
 }
 
@@ -2377,8 +2465,8 @@ WHERE table_schema = DATABASE()
 
 func assertSchemaTableSet(t *testing.T, database *sql.DB, revision int64) {
 	t.Helper()
-	if revision < foundationSchemaRevision || revision > observabilityHistoryRevision {
-		t.Fatalf("schema table-set revision = %d, want %d..%d", revision, foundationSchemaRevision, observabilityHistoryRevision)
+	if revision < foundationSchemaRevision || revision > pluginPersistenceRevision {
+		t.Fatalf("schema table-set revision = %d, want %d..%d", revision, foundationSchemaRevision, pluginPersistenceRevision)
 	}
 	expected := make([]string, 0)
 	for _, table := range foundationSchema {
@@ -2418,6 +2506,9 @@ func assertSchemaTableSet(t *testing.T, database *sql.DB, revision int64) {
 	}
 	if revision >= observabilityHistoryRevision {
 		expected = append(expected, observabilityRecordsTableName)
+	}
+	if revision >= pluginPersistenceRevision {
+		expected = append(expected, pluginInstanceStateTableName, pluginInstanceStatsTableName, pluginUpgradeJournalTableName, pluginInstanceConfigRefsTableName)
 	}
 	for _, table := range expected {
 		if got := integrationTableCount(t, database, table); got != 1 {

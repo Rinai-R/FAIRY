@@ -12,8 +12,8 @@ import (
 func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first := BuiltinMigrations()
 	second := BuiltinMigrations()
-	if len(first) != 12 || len(second) != 12 {
-		t.Fatalf("builtin migration counts = %d and %d, want 12", len(first), len(second))
+	if len(first) != 13 || len(second) != 13 {
+		t.Fatalf("builtin migration counts = %d and %d, want 13", len(first), len(second))
 	}
 	foundation := Revision{Number: foundationSchemaRevision, Checksum: foundationSchemaChecksum()}
 	conversation := Revision{Number: conversationSchemaRevision, Checksum: conversationSchemaChecksum()}
@@ -27,8 +27,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	stickerCatalog := Revision{Number: stickerCatalogSchemaRevision, Checksum: stickerCatalogSchemaChecksum()}
 	toolExecution := Revision{Number: toolExecutionLedgerRevision, Checksum: toolExecutionLedgerSchemaChecksum()}
 	observabilityHistory := Revision{Number: observabilityHistoryRevision, Checksum: observabilityHistorySchemaChecksum()}
-	if current := CurrentSchemaRevision(); current != observabilityHistory {
-		t.Fatalf("current schema revision = %#v, want %#v", current, observabilityHistory)
+	pluginPersistence := Revision{Number: pluginPersistenceRevision, Checksum: pluginPersistenceSchemaChecksum()}
+	if current := CurrentSchemaRevision(); current != pluginPersistence {
+		t.Fatalf("current schema revision = %#v, want %#v", current, pluginPersistence)
 	}
 	if first[0].Revision != foundation || first[0].Name != "create-foundation-schema" {
 		t.Fatalf("foundation migration = %#v, want revision %#v", first[0], foundation)
@@ -66,6 +67,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	if first[11].Revision != observabilityHistory || first[11].Name != "create-observability-history-schema" {
 		t.Fatalf("observability history migration = %#v, want revision %#v", first[11], observabilityHistory)
 	}
+	if first[12].Revision != pluginPersistence || first[12].Name != "create-plugin-persistence-schema" {
+		t.Fatalf("plugin persistence migration = %#v, want revision %#v", first[12], pluginPersistence)
+	}
 	for index, migration := range first {
 		if migration.Apply == nil || migration.Verify == nil {
 			t.Fatalf("builtin migration %d must provide Apply and Verify", index+1)
@@ -84,6 +88,7 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	first[9].Name = "mutated-sticker-catalog"
 	first[10].Name = "mutated-tool-execution-ledger"
 	first[11].Name = "mutated-observability-history"
+	first[12].Name = "mutated-plugin-persistence"
 	if second[0].Name != "create-foundation-schema" || second[0].Revision != foundation ||
 		second[1].Name != "create-conversation-schema" || second[1].Revision != conversation ||
 		second[2].Name != "create-turn-evidence-schema" || second[2].Revision != turnEvidence ||
@@ -95,7 +100,8 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 		second[8].Name != "create-social-memory-feedback-events" || second[8].Revision != socialFeedback ||
 		second[9].Name != "create-sticker-and-expression-delivery-schema" || second[9].Revision != stickerCatalog ||
 		second[10].Name != "create-tool-execution-ledger-schema" || second[10].Revision != toolExecution ||
-		second[11].Name != "create-observability-history-schema" || second[11].Revision != observabilityHistory {
+		second[11].Name != "create-observability-history-schema" || second[11].Revision != observabilityHistory ||
+		second[12].Name != "create-plugin-persistence-schema" || second[12].Revision != pluginPersistence {
 		t.Fatalf("caller mutation changed later BuiltinMigrations result: %#v", second[0])
 	}
 	if got := hex.EncodeToString(foundation.Checksum[:]); got != "e674bec12d0b6895da8b351d082a686c9c2f44990fb68749bbad083c4a6805d3" {
@@ -133,6 +139,9 @@ func TestBuiltinMigrationsExposeImmutableOrderedRevisionChain(t *testing.T) {
 	}
 	if got := hex.EncodeToString(observabilityHistory.Checksum[:]); got != "78bf83cce13800083ab7cdc442064f0f743809a9ae38431670b4858e96c37f00" {
 		t.Fatalf("observability history checksum = %s, update requires an explicit revision decision", got)
+	}
+	if got := hex.EncodeToString(pluginPersistence.Checksum[:]); got != "2034be1c5a466974097144f16c4aa66093018d408b2efc0fc1229b749ae5c88e" {
+		t.Fatalf("plugin persistence checksum = %s, update requires an explicit revision decision", got)
 	}
 }
 
@@ -438,6 +447,36 @@ func TestStickerCatalogSchemaDefinesMetadataAndDeliveryLedger(t *testing.T) {
 		if !strings.Contains(deliveryCheck.clause, token) {
 			t.Errorf("expression deliveries CHECK lacks %q: %s", token, deliveryCheck.clause)
 		}
+	}
+}
+
+func TestPluginPersistenceSchemaDefinesHostOwnedStateStatsJournalAndSecretRefs(t *testing.T) {
+	assertPortableSchemaTables(t, pluginPersistenceSchema[:], []string{
+		pluginInstanceStateTableName,
+		pluginInstanceStatsTableName,
+		pluginUpgradeJournalTableName,
+		pluginInstanceConfigRefsTableName,
+	})
+	for _, table := range pluginPersistenceSchema {
+		lower := strings.ToLower(table.ddl)
+		for _, forbidden := range []string{"bytea", "jsonb", "$1", "password", "api_key", "guest sql"} {
+			if strings.Contains(lower, forbidden) {
+				t.Errorf("%s DDL contains forbidden token %q", table.name, forbidden)
+			}
+		}
+	}
+	state := pluginPersistenceSchema[0]
+	if !schemaHasIndex(state, ascendingBTreeIndex("PRIMARY", true, "instance_id", "state_key")) {
+		t.Fatal("plugin instance state lacks instance-scoped primary key")
+	}
+	if len(state.foreignKeys) != 1 || state.foreignKeys[0].referencedTable != "plugin_instances" ||
+		state.foreignKeys[0].deleteRule != "cascade" {
+		t.Fatalf("plugin instance state foreign key = %#v", state.foreignKeys)
+	}
+	refs := pluginPersistenceSchema[3]
+	if len(refs.foreignKeys) != 2 || refs.foreignKeys[1].referencedTable != "secret_values" ||
+		refs.foreignKeys[1].deleteRule != "restrict" {
+		t.Fatalf("plugin config refs must point at secret_values without cascading deletes: %#v", refs.foreignKeys)
 	}
 }
 
