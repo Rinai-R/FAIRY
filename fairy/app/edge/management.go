@@ -91,8 +91,40 @@ type IntelligenceSnapshot struct {
 }
 
 type PluginStatus struct {
-	Ready  bool   `json:"ready"`
-	Reason string `json:"reason"`
+	Ready     bool                                `json:"ready"`
+	Reason    string                              `json:"reason,omitempty"`
+	Metrics   observability.PluginMetricsSnapshot `json:"metrics"`
+	Instances []PluginInstanceStatus              `json:"instances"`
+	Upgrades  []PluginUpgradeStatus               `json:"upgrades"`
+}
+
+type PluginInstanceStatus struct {
+	ID               string `json:"id"`
+	PluginID         string `json:"pluginId,omitempty"`
+	Version          string `json:"version,omitempty"`
+	Enabled          bool   `json:"enabled"`
+	Lifecycle        string `json:"lifecycle,omitempty"`
+	Calls            uint64 `json:"calls"`
+	HostCalls        uint64 `json:"hostCalls"`
+	BudgetExceeded   uint64 `json:"budgetExceeded"`
+	CapabilityDenied uint64 `json:"capabilityDenied"`
+	QueueDepth       uint64 `json:"queueDepth"`
+	Traps            uint64 `json:"traps"`
+	Restarts         uint64 `json:"restarts"`
+	Cancelled        uint64 `json:"cancelled"`
+	LastErrorCode    string `json:"lastErrorCode,omitempty"`
+	LastTraceID      string `json:"lastTraceId,omitempty"`
+}
+
+type PluginUpgradeStatus struct {
+	JournalID        string `json:"journalId"`
+	InstanceID       string `json:"instanceId"`
+	FromVersion      string `json:"fromVersion"`
+	ToVersion        string `json:"toVersion"`
+	Status           string `json:"status"`
+	ErrorCode        string `json:"errorCode,omitempty"`
+	StartedAtUnixMS  int64  `json:"startedAtUnixMs"`
+	FinishedAtUnixMS int64  `json:"finishedAtUnixMs,omitempty"`
 }
 
 type ModelWrite struct {
@@ -134,6 +166,7 @@ type MetricsSnapshot struct {
 	Process              observability.ProcessMetrics         `json:"process"`
 	Logs                 observability.LogStats               `json:"logs"`
 	Messages             observability.MessageMetricsSnapshot `json:"messages"`
+	Plugins              observability.PluginMetricsSnapshot  `json:"plugins"`
 	History              []observability.MetricHistoryPoint   `json:"history"`
 	HistoryPersistence   observability.HistoryStats           `json:"historyPersistence"`
 	ActiveBackgroundJobs int64                                `json:"activeBackgroundJobs"`
@@ -385,11 +418,86 @@ func (m *Management) Plugins() (PluginStatus, error) {
 	if m == nil || m.runtime == nil {
 		return PluginStatus{}, ErrManagementUnavailable
 	}
-	_, err := m.runtime.PluginHost()
+	host, err := m.runtime.PluginHost()
 	if err != nil {
 		return PluginStatus{}, err
 	}
-	return PluginStatus{Ready: true}, nil
+	metrics := host.SnapshotMetrics()
+	status := PluginStatus{
+		Ready:     true,
+		Metrics:   metrics,
+		Instances: make([]PluginInstanceStatus, 0, len(metrics.Instances)),
+		Upgrades:  []PluginUpgradeStatus{},
+	}
+	live := make(map[string]observability.PluginInstanceMetrics, len(metrics.Instances))
+	for _, item := range metrics.Instances {
+		live[item.InstanceID] = item
+		status.Instances = append(status.Instances, instanceStatusFromMetrics(item))
+	}
+	if m.runtime.plugins == nil {
+		return status, nil
+	}
+	records, err := m.runtime.plugins.Instances(context.Background())
+	if err != nil {
+		return PluginStatus{}, err
+	}
+	merged := make([]PluginInstanceStatus, 0, len(records)+len(status.Instances))
+	seen := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		seen[record.ID] = struct{}{}
+		view := PluginInstanceStatus{
+			ID: record.ID, PluginID: record.PluginID, Version: record.PluginVersion,
+			Enabled: record.Enabled, Lifecycle: record.Lifecycle,
+		}
+		if item, ok := live[record.ID]; ok {
+			view = overlayInstanceMetrics(view, item)
+		}
+		merged = append(merged, view)
+	}
+	for _, item := range status.Instances {
+		if _, ok := seen[item.ID]; ok {
+			continue
+		}
+		merged = append(merged, item)
+	}
+	status.Instances = merged
+	upgrades, err := m.runtime.plugins.Upgrades(context.Background(), "")
+	if err != nil {
+		return PluginStatus{}, err
+	}
+	status.Upgrades = make([]PluginUpgradeStatus, 0, len(upgrades))
+	for _, record := range upgrades {
+		status.Upgrades = append(status.Upgrades, PluginUpgradeStatus{
+			JournalID: record.JournalID, InstanceID: record.InstanceID,
+			FromVersion: record.FromVersion, ToVersion: record.ToVersion,
+			Status: record.Status, ErrorCode: record.ErrorCode,
+			StartedAtUnixMS: record.StartedAtUnixMS, FinishedAtUnixMS: record.FinishedAtUnixMS,
+		})
+	}
+	return status, nil
+}
+
+func instanceStatusFromMetrics(item observability.PluginInstanceMetrics) PluginInstanceStatus {
+	return PluginInstanceStatus{
+		ID: item.InstanceID, Calls: item.Calls, HostCalls: item.HostCalls,
+		BudgetExceeded: item.BudgetExceeded, CapabilityDenied: item.CapabilityDenied,
+		QueueDepth: item.QueueDepth, Traps: item.Traps, Restarts: item.Restarts,
+		Cancelled: item.Cancelled, LastErrorCode: item.LastErrorCode, LastTraceID: item.LastTraceID,
+	}
+}
+
+func overlayInstanceMetrics(view PluginInstanceStatus, item observability.PluginInstanceMetrics) PluginInstanceStatus {
+	view.Calls = item.Calls
+	view.HostCalls = item.HostCalls
+	view.BudgetExceeded = item.BudgetExceeded
+	view.CapabilityDenied = item.CapabilityDenied
+	view.QueueDepth = item.QueueDepth
+	view.Traps = item.Traps
+	view.Restarts = item.Restarts
+	view.Cancelled = item.Cancelled
+	view.LastErrorCode = item.LastErrorCode
+	view.LastTraceID = item.LastTraceID
+	return view
 }
 
 func (m *Management) Stickers(ctx context.Context) (StickerPage, error) {

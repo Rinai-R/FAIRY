@@ -82,6 +82,14 @@ func TestRealSeekDBPluginStorePersistsStateStatsJournalAndSecretRefs(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
+	listed, err := store.Instances(t.Context())
+	if err != nil || len(listed) != 1 || listed[0].ID != record.ID || listed[0].PluginVersion != "1.0.0" {
+		t.Fatalf("Instances() = (%#v, %v)", listed, err)
+	}
+	upgrades, err := store.Upgrades(t.Context(), record.ID)
+	if err != nil || len(upgrades) != 1 || upgrades[0].JournalID != "up-1" || upgrades[0].ErrorMessage != "" {
+		t.Fatalf("Upgrades() = (%#v, %v)", upgrades, err)
+	}
 
 	if _, err := database.ExecContext(t.Context(), `
 INSERT INTO secret_values(namespace, name, key_version, nonce, ciphertext, aad, created_at_ms, updated_at_ms)

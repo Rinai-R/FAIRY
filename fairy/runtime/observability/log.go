@@ -64,10 +64,11 @@ type EntryInput struct {
 
 // LogFilter is shared by queries and live subscriptions.
 type LogFilter struct {
-	MinimumLevel  string
-	LoggerPrefix  string
-	AfterSequence uint64
-	Limit         int
+	MinimumLevel     string
+	LoggerPrefix     string
+	PluginInstanceID string
+	AfterSequence    uint64
+	Limit            int
 }
 
 // LogSnapshot contains a deterministic query result and store counters.
@@ -343,7 +344,22 @@ func matchesLog(entry LogEntry, filter LogFilter) bool {
 	if filter.LoggerPrefix != "" && !strings.HasPrefix(entry.Logger, filter.LoggerPrefix) {
 		return false
 	}
+	if filter.PluginInstanceID != "" && !matchesPluginInstance(entry, filter.PluginInstanceID) {
+		return false
+	}
 	return levelRank(entry.Level) >= levelRank(filter.MinimumLevel)
+}
+
+func matchesPluginInstance(entry LogEntry, instanceID string) bool {
+	if strings.HasPrefix(entry.Logger, "plugin."+instanceID) {
+		return true
+	}
+	for _, field := range entry.Fields {
+		if field.Key == "pluginInstanceId" && field.Value == instanceID {
+			return true
+		}
+	}
+	return false
 }
 
 func levelRank(level string) int {

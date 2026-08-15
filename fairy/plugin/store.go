@@ -154,20 +154,106 @@ func (s *Store) Instance(ctx context.Context, instanceID string) (InstanceRecord
 	}
 	qctx, cancel := s.queryContext(ctx)
 	defer cancel()
-	var record InstanceRecord
-	var enabled int
-	var grants json.RawMessage
-	var config string
-	err := s.db.QueryRowContext(qctx, `
+	record, err := scanInstance(s.db.QueryRowContext(qctx, `
 SELECT instance_id, plugin_id, plugin_version, enabled, lifecycle_state, capability_grants, config_document, created_at_ms, updated_at_ms
-FROM plugin_instances WHERE instance_id = ?`, instanceID).Scan(
-		&record.ID, &record.PluginID, &record.PluginVersion, &enabled, &record.Lifecycle, &grants, &config,
-		&record.CreatedAtUnixMS, &record.UpdatedAtUnixMS)
+FROM plugin_instances WHERE instance_id = ?`, instanceID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return InstanceRecord{}, fmt.Errorf("%w: instance %s is not installed", ErrInstanceInvalid, instanceID)
 	}
 	if err != nil {
 		return InstanceRecord{}, fmt.Errorf("read plugin instance %s: %w", instanceID, err)
+	}
+	return record, nil
+}
+
+const (
+	maxInstanceList = 256
+	maxUpgradeList  = 50
+)
+
+func (s *Store) Instances(ctx context.Context) ([]InstanceRecord, error) {
+	qctx, cancel := s.queryContext(ctx)
+	defer cancel()
+	rows, err := s.db.QueryContext(qctx, `
+SELECT instance_id, plugin_id, plugin_version, enabled, lifecycle_state, capability_grants, config_document, created_at_ms, updated_at_ms
+FROM plugin_instances
+ORDER BY instance_id
+LIMIT ?`, maxInstanceList)
+	if err != nil {
+		return nil, fmt.Errorf("list plugin instances: %w", err)
+	}
+	defer rows.Close()
+	records := make([]InstanceRecord, 0)
+	for rows.Next() {
+		record, err := scanInstance(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list plugin instances: %w", err)
+	}
+	return records, nil
+}
+
+func (s *Store) Upgrades(ctx context.Context, instanceID string) ([]UpgradeRecord, error) {
+	if instanceID != "" {
+		if err := validatePluginID(instanceID); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInstanceInvalid, err)
+		}
+	}
+	qctx, cancel := s.queryContext(ctx)
+	defer cancel()
+	query := `
+SELECT journal_id, instance_id, from_version, to_version, status, error_code, error_message, started_at_ms, finished_at_ms
+FROM plugin_upgrade_journal`
+	args := []any{}
+	if instanceID != "" {
+		query += ` WHERE instance_id = ?`
+		args = append(args, instanceID)
+	}
+	query += ` ORDER BY started_at_ms DESC, journal_id DESC LIMIT ?`
+	args = append(args, maxUpgradeList)
+	rows, err := s.db.QueryContext(qctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list plugin upgrades: %w", err)
+	}
+	defer rows.Close()
+	records := make([]UpgradeRecord, 0)
+	for rows.Next() {
+		var record UpgradeRecord
+		var errCode, errMsg sql.NullString
+		var finished sql.NullInt64
+		if err := rows.Scan(
+			&record.JournalID, &record.InstanceID, &record.FromVersion, &record.ToVersion, &record.Status,
+			&errCode, &errMsg, &record.StartedAtUnixMS, &finished,
+		); err != nil {
+			return nil, fmt.Errorf("scan plugin upgrade: %w", err)
+		}
+		record.ErrorCode = errCode.String
+		record.ErrorMessage = errMsg.String
+		record.FinishedAtUnixMS = finished.Int64
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list plugin upgrades: %w", err)
+	}
+	return records, nil
+}
+
+func scanInstance(row interface {
+	Scan(dest ...any) error
+}) (InstanceRecord, error) {
+	var record InstanceRecord
+	var enabled int
+	var grants json.RawMessage
+	var config string
+	if err := row.Scan(
+		&record.ID, &record.PluginID, &record.PluginVersion, &enabled, &record.Lifecycle, &grants, &config,
+		&record.CreatedAtUnixMS, &record.UpdatedAtUnixMS,
+	); err != nil {
+		return InstanceRecord{}, err
 	}
 	record.Enabled = enabled == 1
 	record.ConfigDocument = json.RawMessage(config)

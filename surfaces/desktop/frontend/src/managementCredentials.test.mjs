@@ -91,7 +91,7 @@ test("management DOM, log, toast, and error fixtures never echo credentials", ()
     logEntry: { sequence: 1, level: "info", message: "runtime ready", fields: [{ key: "authorization", value: "[REDACTED]" }] },
     saveError: { message: "model credential is required" },
     backup: { path: "/tmp/fairy-backup", fileCount: 1, createdAtUnixMs: 1 },
-    workspace: { section: "tracing", traceId: "trace-1", messageId: "message-1", logLevel: "warn" },
+    workspace: { section: "tracing", traceId: "trace-1", messageId: "message-1", logLevel: "warn", pluginInstanceId: "echo-1" },
     trace: { traceId: "trace-1", spans: [{ spanId: "span-1", operation: "model", status: "ok", durationMs: 12 }] },
     clearedForm: { protocol: "openai_compatible_api", endpoint: "", model: "test", apiKey: "" },
   };

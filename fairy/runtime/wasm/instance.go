@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tetratelabs/wazero/api"
 
@@ -31,6 +32,8 @@ type Instance struct {
 	lastEvent      []byte
 	lastAction     []byte
 	lastTool       []byte
+	current        plugin.Correlation
+	currentSpan    string
 }
 
 func (h *Host) Load(ctx context.Context, name string, binary []byte, budget Budget) (*Instance, error) {
@@ -132,15 +135,31 @@ func (i *Instance) invoke(ctx context.Context, export string, envelope []byte) (
 	if err := ctx.Err(); err != nil {
 		return nil, cancelErr(err)
 	}
+	i.queueEnter()
 	select {
 	case i.slots <- struct{}{}:
+		i.queueLeave()
 	case <-ctx.Done():
-		return nil, cancelErr(ctx.Err())
+		i.queueLeave()
+		i.bindCorrelation(envelope)
+		err := cancelErr(ctx.Err())
+		i.finishCall(callWatch{
+			capability: exportCapability(export),
+			bytesIn:    len(envelope),
+			traceID:    peekCorrelation(envelope).TraceID,
+			begin:      time.Now(),
+		}, nil, err, false)
+		return nil, err
 	}
 	defer func() { <-i.slots }()
 
+	i.bindCorrelation(envelope)
+	watch := i.watchCall(export, envelope)
+
 	if export != plugin.ExportShutdown && uint32(len(envelope)) > i.budget.MaxInputBytes {
-		return nil, coded(plugin.CodeBudgetExceeded, "plugin input exceeds budget")
+		err := coded(plugin.CodeBudgetExceeded, "plugin input exceeds budget")
+		i.finishCall(watch, nil, err, false)
+		return nil, err
 	}
 
 	i.mu.Lock()
@@ -150,11 +169,14 @@ func (i *Instance) invoke(ctx context.Context, export string, envelope []byte) (
 		if err == nil {
 			err = ErrHostClosed
 		}
+		i.finishCall(watch, nil, err, false)
 		return nil, err
 	}
 	if i.calls >= i.budget.MaxCalls {
 		i.mu.Unlock()
-		return nil, coded(plugin.CodeBudgetExceeded, "plugin call budget exhausted")
+		err := coded(plugin.CodeBudgetExceeded, "plugin call budget exhausted")
+		i.finishCall(watch, nil, err, false)
+		return nil, err
 	}
 	i.calls++
 	module := i.module
@@ -163,13 +185,16 @@ func (i *Instance) invoke(ctx context.Context, export string, envelope []byte) (
 	out, err := i.callGuest(ctx, module, export, envelope)
 	if err != nil {
 		i.kill(ctx, err)
+		i.finishCall(watch, nil, err, true)
 		return nil, err
 	}
 	if pages := memoryPages(module); pages > i.budget.MaxMemoryPages {
 		err := coded(plugin.CodeBudgetExceeded, "plugin memory page budget exceeded")
 		i.kill(ctx, err)
+		i.finishCall(watch, out, err, true)
 		return nil, err
 	}
+	i.finishCall(watch, out, nil, false)
 	return out, nil
 }
 

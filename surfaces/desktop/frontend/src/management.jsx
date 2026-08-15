@@ -370,11 +370,40 @@ function IntelligenceTask() {
   );
 }
 
-function PluginsTask() {
-  const { error, loading } = useHost(() => ManagementPlugins(), []);
+function PluginsTask({ pluginInstanceId, onFilter }) {
+  const { data, error, loading } = useHost(() => ManagementPlugins(), []);
+  const instances = (data?.instances || []).filter((item) => !pluginInstanceId || item.id === pluginInstanceId);
+  const upgrades = (data?.upgrades || []).filter((item) => !pluginInstanceId || item.instanceId === pluginInstanceId);
   return (
     <StatusBlock error={error} loading={loading}>
-      <p>插件宿主已就绪。安装与授权将在后续任务提供。</p>
+      <Field label="插件实例">
+        <input value={pluginInstanceId} onChange={(event) => onFilter({ pluginInstanceId: event.target.value })} placeholder="全部实例" />
+      </Field>
+      <dl className="management-dl">
+        <div><dt>调用</dt><dd>{data?.metrics?.calls || 0}</dd></div>
+        <div><dt>权限拒绝</dt><dd>{data?.metrics?.capabilityDenied || 0}</dd></div>
+        <div><dt>预算耗尽</dt><dd>{data?.metrics?.budgetExceeded || 0}</dd></div>
+        <div><dt>队列深度</dt><dd>{data?.metrics?.queueWaiters || 0}</dd></div>
+        <div><dt>Trap / 重启</dt><dd>{(data?.metrics?.traps || 0)} / {(data?.metrics?.restarts || 0)}</dd></div>
+      </dl>
+      <ul className="management-list">
+        {instances.map((item) => (
+          <li key={item.id}>
+            <strong>{item.id}</strong>
+            <span>{item.pluginId ? `${item.pluginId}@${item.version || ""}` : item.lifecycle || "runtime"} · 拒绝 {item.capabilityDenied || 0} · 预算 {item.budgetExceeded || 0} · 队列 {item.queueDepth || 0} · trap {item.traps || 0}</span>
+            {item.lastTraceId ? <button type="button" onClick={() => onFilter({ section: "tracing", traceId: item.lastTraceId })}>打开 Trace</button> : null}
+          </li>
+        ))}
+      </ul>
+      <p className="management-note">升级 journal</p>
+      <ul className="management-list">
+        {upgrades.map((item) => (
+          <li key={item.journalId}>
+            <strong>{item.instanceId}</strong>
+            <span>{item.fromVersion} → {item.toVersion} · {item.status}{item.errorCode ? ` · ${item.errorCode}` : ""}</span>
+          </li>
+        ))}
+      </ul>
     </StatusBlock>
   );
 }
@@ -422,6 +451,10 @@ function MetricsTask() {
         <div><dt>Goroutines</dt><dd>{data?.process?.goroutines}</dd></div>
         <div><dt>Heap</dt><dd>{data?.process?.heapAllocBytes}</dd></div>
         <div><dt>消息</dt><dd>收 {data?.messages?.received || 0} · 发 {data?.messages?.sent || 0}</dd></div>
+        <div><dt>插件拒绝</dt><dd>{data?.plugins?.capabilityDenied || 0}</dd></div>
+        <div><dt>插件预算</dt><dd>{data?.plugins?.budgetExceeded || 0}</dd></div>
+        <div><dt>插件队列</dt><dd>{data?.plugins?.queueWaiters || 0}</dd></div>
+        <div><dt>Trap / 重启</dt><dd>{(data?.plugins?.traps || 0)} / {(data?.plugins?.restarts || 0)}</dd></div>
         <div><dt>历史点</dt><dd>{data?.history?.length || 0}</dd></div>
       </dl>
       {data?.history?.length ? (
@@ -441,7 +474,7 @@ function MetricsTask() {
   );
 }
 
-function TracingTask({ messageID, traceID, onFilter }) {
+function TracingTask({ messageID, traceID, pluginInstanceId, onFilter }) {
   const [search, setSearch] = useState(null);
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState("");
@@ -466,6 +499,7 @@ function TracingTask({ messageID, traceID, onFilter }) {
         ManagementTraces(messageID).then((value) => { setSearch(value); setError(""); }).catch((err) => { setSearch(null); setError(hostError(err)); });
       }}>
         <Field label="messageId"><input value={messageID} onChange={(event) => onFilter({ messageId: event.target.value })} /></Field>
+        <Field label="插件实例"><input value={pluginInstanceId} onChange={(event) => onFilter({ pluginInstanceId: event.target.value })} placeholder="全部实例" /></Field>
         <button type="submit">搜索 Trace</button>
       </form>
       <ul className="management-list">
@@ -493,8 +527,8 @@ function TracingTask({ messageID, traceID, onFilter }) {
             })}
           </div>
           <ol className="management-list">
-            {(detail.spans || []).map((span) => (
-              <li key={span.spanId}><strong>{span.operation}</strong><span>{span.status} · {span.durationMs}ms</span></li>
+            {(detail.spans || []).filter((span) => !pluginInstanceId || span.attributes?.pluginId === pluginInstanceId || span.category !== "plugin").map((span) => (
+              <li key={span.spanId}><strong>{span.operation}</strong><span>{span.status} · {span.durationMs}ms{span.attributes?.pluginId ? ` · ${span.attributes.pluginId}` : ""}</span></li>
             ))}
           </ol>
         </div>
@@ -503,7 +537,7 @@ function TracingTask({ messageID, traceID, onFilter }) {
   );
 }
 
-function LogsTask({ logLevel, onFilter }) {
+function LogsTask({ logLevel, pluginInstanceId, onFilter }) {
   const [entries, setEntries] = useState([]);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -524,7 +558,11 @@ function LogsTask({ logLevel, onFilter }) {
   }, []);
   const ranks = { debug: 0, info: 1, warn: 2, error: 3 };
   const minimum = ranks[logLevel] ?? 0;
-  const visible = entries.filter((entry) => (ranks[entry.level] ?? 0) >= minimum);
+  const visible = entries.filter((entry) => {
+    if ((ranks[entry.level] ?? 0) < minimum) return false;
+    if (!pluginInstanceId) return true;
+    return typeof entry.logger === "string" && entry.logger.startsWith(`plugin.${pluginInstanceId}`);
+  });
   return (
     <div>
       {error ? <p className="management-error" role="alert">{error}</p> : null}
@@ -536,6 +574,9 @@ function LogsTask({ logLevel, onFilter }) {
           <option value="warn">warn</option>
           <option value="error">error</option>
         </select>
+      </Field>
+      <Field label="插件实例">
+        <input value={pluginInstanceId} onChange={(event) => onFilter({ pluginInstanceId: event.target.value })} placeholder="全部实例" />
       </Field>
       <ol className="management-log">
         {visible.map((entry) => (
@@ -584,11 +625,11 @@ function ManagementTask({ section, workspace, onWorkspace }) {
     case "stickers": body = <StickersTask />; break;
     case "integrations": body = <IntegrationsTask />; break;
     case "intelligence": body = <IntelligenceTask />; break;
-    case "plugins": body = <PluginsTask />; break;
+    case "plugins": body = <PluginsTask pluginInstanceId={workspace.pluginInstanceId} onFilter={onWorkspace} />; break;
     case "conversation-debug": body = <ConversationTask />; break;
     case "metrics": body = <MetricsTask />; break;
-    case "tracing": body = <TracingTask messageID={workspace.messageId} traceID={workspace.traceId} onFilter={onWorkspace} />; break;
-    case "logs": body = <LogsTask logLevel={workspace.logLevel} onFilter={onWorkspace} />; break;
+    case "tracing": body = <TracingTask messageID={workspace.messageId} traceID={workspace.traceId} pluginInstanceId={workspace.pluginInstanceId} onFilter={onWorkspace} />; break;
+    case "logs": body = <LogsTask logLevel={workspace.logLevel} pluginInstanceId={workspace.pluginInstanceId} onFilter={onWorkspace} />; break;
     case "backup": body = <BackupTask />; break;
     default: break;
   }
@@ -609,7 +650,7 @@ function ManagementTask({ section, workspace, onWorkspace }) {
 
 export function ManagementSurface() {
   const [section, setSection] = useState(() => sectionFromHash(window.location.hash));
-  const [workspace, setWorkspace] = useState({ section: "overview", traceId: "", messageId: "", logLevel: "" });
+  const [workspace, setWorkspace] = useState({ section: "overview", traceId: "", messageId: "", logLevel: "", pluginInstanceId: "" });
   const [workspaceError, setWorkspaceError] = useState("");
 
   function applyWorkspace(state) {
@@ -618,6 +659,7 @@ export function ManagementSurface() {
       traceId: state.traceId || "",
       messageId: state.messageId || "",
       logLevel: state.logLevel || "",
+      pluginInstanceId: state.pluginInstanceId || "",
     };
     setWorkspace(next);
     return next;
@@ -631,6 +673,7 @@ export function ManagementSurface() {
         traceId: next.traceId,
         messageId: next.messageId,
         logLevel: next.logLevel,
+        pluginInstanceId: next.pluginInstanceId,
       }).then(() => setWorkspaceError("")).catch((err) => setWorkspaceError(hostError(err)));
       return next;
     });

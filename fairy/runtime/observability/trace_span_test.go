@@ -160,6 +160,52 @@ func TestSpanProducerNeverBlocksOnFullQueue(t *testing.T) {
 	}
 }
 
+func TestPluginSpanParentsUnderTurnAndKeepsOnlyDeclaredAttributes(t *testing.T) {
+	metrics := NewMessageMetrics()
+	t.Cleanup(metrics.Close)
+	traceID := metrics.Begin("direct", "conversation")
+	metrics.Participation([]string{traceID}, traceID, "reply")
+	metrics.TurnStarted(traceID, "conversation", "turn")
+	metrics.TurnStage("conversation", "turn", "lifecycle:responding")
+	spanID := metrics.StartSpan(traceID, "", "插件调用", "plugin", map[string]string{
+		"pluginId": "echo-1", "pluginVersion": "1.0.0", "capability": "handle",
+		"attempt": "1", "bytes": "12", "authorization": "Bearer secret", "payload": "must-not-survive",
+	})
+	metrics.FinishSpan(spanID, "failed", map[string]string{
+		"status": "failed", "errorCode": "CAPABILITY_DENIED", "duration": "4", "token": "secret",
+	})
+	metrics.End(traceID, "failed")
+	detail := waitForTraceDetail(t, metrics, traceID, func(value MessageTraceDetail) bool { return value.Status == "failed" })
+	var pluginSpan *TraceSpan
+	for index := range detail.Spans {
+		if detail.Spans[index].Category == "plugin" {
+			pluginSpan = &detail.Spans[index]
+			break
+		}
+	}
+	if pluginSpan == nil || pluginSpan.ParentSpanID == "" || pluginSpan.Attributes["pluginId"] != "echo-1" || pluginSpan.Attributes["capability"] != "handle" || pluginSpan.Attributes["errorCode"] != "CAPABILITY_DENIED" {
+		t.Fatalf("plugin span = %#v", pluginSpan)
+	}
+	parent := spanByID(detail.Spans, pluginSpan.ParentSpanID)
+	if parent.Category != "lifecycle" && parent.Category != "turn" {
+		t.Fatalf("plugin parent = %#v", parent)
+	}
+	for _, leaked := range []string{"authorization", "payload", "token"} {
+		if _, exists := pluginSpan.Attributes[leaked]; exists {
+			t.Fatalf("plugin span leaked %q: %#v", leaked, pluginSpan.Attributes)
+		}
+	}
+}
+
+func spanByID(spans []TraceSpan, spanID string) TraceSpan {
+	for _, span := range spans {
+		if span.SpanID == spanID {
+			return span
+		}
+	}
+	return TraceSpan{}
+}
+
 func TestTraceDetailContainsNoSensitiveAttributeNames(t *testing.T) {
 	metrics := NewMessageMetrics()
 	t.Cleanup(metrics.Close)

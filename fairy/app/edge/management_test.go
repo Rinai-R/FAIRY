@@ -5,6 +5,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"fairy/plugin"
+	"fairy/runtime/observability"
+	"fairy/runtime/wasm"
 )
 
 func TestManagementFailsClosedWithoutRuntime(t *testing.T) {
@@ -39,6 +43,34 @@ func TestManagementPluginsFailClosedUntilHostExists(t *testing.T) {
 	}
 	if status.Ready {
 		t.Fatal("Plugins() reported ready without a host")
+	}
+}
+
+func TestManagementPluginsProjectsMetricsWithoutSecrets(t *testing.T) {
+	metrics := observability.NewPluginMetrics()
+	host, err := wasm.OpenWith(t.Context(), wasm.Observer{Metrics: metrics})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Close(t.Context()) })
+	metrics.Finish("echo-1", plugin.CodeCapabilityDenied, "trace-keep", false, false)
+	metrics.Finish("echo-1", plugin.CodeBudgetExceeded, "trace-keep", false, false)
+	status, err := (&Management{runtime: &Runtime{host: host}}).Plugins()
+	if err != nil || !status.Ready || status.Metrics.CapabilityDenied != 1 || status.Metrics.BudgetExceeded != 1 {
+		t.Fatalf("Plugins() = (%#v, %v)", status, err)
+	}
+	if len(status.Instances) != 1 || status.Instances[0].ID != "echo-1" || status.Instances[0].LastTraceID != "trace-keep" || status.Upgrades == nil {
+		t.Fatalf("instance projection = %#v", status)
+	}
+	raw, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.ToLower(string(raw))
+	for _, forbidden := range []string{"sk-live", "bearer ", "authorization", `"upgrades":null`, `"instances":null`} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("plugin status contained %q: %s", forbidden, raw)
+		}
 	}
 }
 

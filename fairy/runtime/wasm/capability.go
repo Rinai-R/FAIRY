@@ -72,7 +72,9 @@ func (h *Host) hostCall(ctx context.Context, mod api.Module, ptr, size uint32) u
 	return packed
 }
 
-func (i *Instance) dispatchHost(ctx context.Context, mod api.Module, ptr, size uint32) (uint64, error) {
+func (i *Instance) dispatchHost(ctx context.Context, mod api.Module, ptr, size uint32) (packed uint64, err error) {
+	capability := ""
+	defer func() { i.observeHost(capability, err) }()
 	if ctx == nil {
 		return 0, errors.New("plugin wasm host context is required")
 	}
@@ -112,6 +114,7 @@ func (i *Instance) dispatchHost(ctx context.Context, mod api.Module, ptr, size u
 	if err != nil {
 		return 0, err
 	}
+	capability = request.Capability
 	body, err := i.serveCapability(ctx, grant, request)
 	if err != nil {
 		return 0, err

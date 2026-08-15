@@ -11,6 +11,7 @@ import (
 	"github.com/tetratelabs/wazero/api"
 
 	"fairy/plugin"
+	"fairy/runtime/observability"
 )
 
 var (
@@ -28,13 +29,18 @@ type Host struct {
 	closed    bool
 	http      *http.Client
 	instances map[string]*Instance
+	observer  Observer
 }
 
 func Open(ctx context.Context) (*Host, error) {
-	return open(ctx, DefaultBudget())
+	return OpenWith(ctx, Observer{})
 }
 
-func open(ctx context.Context, budget Budget) (*Host, error) {
+func OpenWith(ctx context.Context, observer Observer) (*Host, error) {
+	return open(ctx, DefaultBudget(), observer)
+}
+
+func open(ctx context.Context, budget Budget, observer Observer) (*Host, error) {
 	if ctx == nil {
 		return nil, errors.New("plugin wasm host context is required")
 	}
@@ -57,6 +63,7 @@ func open(ctx context.Context, budget Budget) (*Host, error) {
 			},
 		},
 		instances: make(map[string]*Instance),
+		observer:  observer,
 	}
 	if err := host.install(ctx); err != nil {
 		_ = runtime.Close(ctx)
@@ -104,6 +111,13 @@ func (h *Host) Close(ctx context.Context) error {
 		return nil
 	}
 	return runtime.Close(ctx)
+}
+
+func (h *Host) SnapshotMetrics() observability.PluginMetricsSnapshot {
+	if h == nil {
+		return observability.PluginMetricsSnapshot{Instances: []observability.PluginInstanceMetrics{}}
+	}
+	return h.observer.Metrics.Snapshot()
 }
 
 func (h *Host) Instantiate(ctx context.Context, name string, binary []byte) (api.Module, error) {

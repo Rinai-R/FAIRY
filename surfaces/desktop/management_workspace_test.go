@@ -15,7 +15,7 @@ func TestManagementWorkspacePersistsTaskAndTraceAcrossHide(t *testing.T) {
 	service.attachManagement(window)
 
 	saved, err := service.SaveManagementWorkspaceState(ManagementWorkspaceWrite{
-		Section: "tracing", TraceID: "trace-keep-this", MessageID: "message-keep-this", LogLevel: "warn",
+		Section: "tracing", TraceID: "trace-keep-this", MessageID: "message-keep-this", LogLevel: "warn", PluginInstanceID: "echo-1",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -51,7 +51,7 @@ func TestManagementWorkspacePersistsTaskAndTraceAcrossHide(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Section != "tracing" || state.TraceID != "trace-keep-this" || state.MessageID != "message-keep-this" || state.LogLevel != "warn" {
+	if state.Section != "tracing" || state.TraceID != "trace-keep-this" || state.MessageID != "message-keep-this" || state.LogLevel != "warn" || state.PluginInstanceID != "echo-1" {
 		t.Fatalf("restored workspace = %#v", state)
 	}
 }
@@ -61,6 +61,9 @@ func TestManagementWorkspaceRejectsInvalidTask(t *testing.T) {
 	useTempProfile(t, service)
 	if _, err := service.SaveManagementWorkspaceState(ManagementWorkspaceWrite{Section: "observability"}); err == nil || !strings.Contains(err.Error(), "invalid") {
 		t.Fatalf("invalid task error = %v", err)
+	}
+	if _, err := service.SaveManagementWorkspaceState(ManagementWorkspaceWrite{Section: "plugins", PluginInstanceID: "../etc/passwd"}); err == nil || !strings.Contains(err.Error(), "plugin instance") {
+		t.Fatalf("invalid plugin instance error = %v", err)
 	}
 }
 

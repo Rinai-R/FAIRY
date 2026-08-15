@@ -24,11 +24,16 @@ func (m *Management) Metrics(ctx context.Context) (MetricsSnapshot, error) {
 	if rt.Turn != nil {
 		jobs = rt.Turn.ActiveBackgroundJobs()
 	}
+	plugins := observability.PluginMetricsSnapshot{Instances: []observability.PluginInstanceMetrics{}}
+	if host, err := m.runtime.PluginHost(); err == nil {
+		plugins = host.SnapshotMetrics()
+	}
 	return MetricsSnapshot{
 		GeneratedAtUnixMS:    time.Now().UnixMilli(),
 		Process:              observability.SnapshotProcess(rt.StartedAt),
 		Logs:                 rt.Logs.Stats(),
 		Messages:             rt.Messages.Snapshot(),
+		Plugins:              plugins,
 		History:              history,
 		HistoryPersistence:   rt.History.Stats(),
 		ActiveBackgroundJobs: jobs,

@@ -21,22 +21,24 @@ var managementTaskIDs = map[string]struct{}{
 }
 
 type ManagementWorkspaceState struct {
-	Section   string `json:"section"`
-	Width     int    `json:"width"`
-	Height    int    `json:"height"`
-	X         int    `json:"x"`
-	Y         int    `json:"y"`
-	HasLayout bool   `json:"hasLayout"`
-	TraceID   string `json:"traceId"`
-	MessageID string `json:"messageId"`
-	LogLevel  string `json:"logLevel"`
+	Section          string `json:"section"`
+	Width            int    `json:"width"`
+	Height           int    `json:"height"`
+	X                int    `json:"x"`
+	Y                int    `json:"y"`
+	HasLayout        bool   `json:"hasLayout"`
+	TraceID          string `json:"traceId"`
+	MessageID        string `json:"messageId"`
+	LogLevel         string `json:"logLevel"`
+	PluginInstanceID string `json:"pluginInstanceId"`
 }
 
 type ManagementWorkspaceWrite struct {
-	Section   string `json:"section"`
-	TraceID   string `json:"traceId"`
-	MessageID string `json:"messageId"`
-	LogLevel  string `json:"logLevel"`
+	Section          string `json:"section"`
+	TraceID          string `json:"traceId"`
+	MessageID        string `json:"messageId"`
+	LogLevel         string `json:"logLevel"`
+	PluginInstanceID string `json:"pluginInstanceId"`
 }
 
 func (s *CoreService) ManagementWorkspaceState() (ManagementWorkspaceState, error) {
@@ -157,7 +159,33 @@ func normalizeManagementWorkspaceWrite(current ManagementWorkspaceState, write M
 	current.TraceID = strings.TrimSpace(write.TraceID)
 	current.MessageID = strings.TrimSpace(write.MessageID)
 	current.LogLevel = level
+	pluginInstanceID, err := normalizeWorkspacePluginInstanceID(write.PluginInstanceID)
+	if err != nil {
+		return ManagementWorkspaceState{}, err
+	}
+	current.PluginInstanceID = pluginInstanceID
 	return current, nil
+}
+
+func normalizeWorkspacePluginInstanceID(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if len(value) > 128 {
+		return "", fmt.Errorf("plugin instance id is invalid")
+	}
+	if value[0] == '.' || value[0] == '-' || value[len(value)-1] == '.' || value[len(value)-1] == '-' {
+		return "", fmt.Errorf("plugin instance id is invalid")
+	}
+	for _, r := range value {
+		letter := r >= 'a' && r <= 'z'
+		digit := r >= '0' && r <= '9'
+		if !letter && !digit && r != '.' && r != '-' {
+			return "", fmt.Errorf("plugin instance id is invalid")
+		}
+	}
+	return value, nil
 }
 
 func validateWorkspaceCorrelation(value string) error {

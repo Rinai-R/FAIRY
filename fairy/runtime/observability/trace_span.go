@@ -9,7 +9,7 @@ import (
 
 var allowedSpanCategories = map[string]struct{}{
 	"message": {}, "participation": {}, "turn": {}, "lifecycle": {}, "context": {},
-	"model": {}, "tool": {}, "compile": {}, "delivery": {},
+	"model": {}, "tool": {}, "compile": {}, "delivery": {}, "plugin": {},
 }
 
 var allowedSpanAttributeKeys = map[string]struct{}{
@@ -18,6 +18,7 @@ var allowedSpanAttributeKeys = map[string]struct{}{
 	"chainCount": {}, "callIndex": {}, "outputKind": {}, "lane": {},
 	"inputTokens": {}, "outputTokens": {}, "cachedInputTokens": {}, "cacheWriteTokens": {},
 	"beatId": {}, "externalMessageId": {},
+	"pluginId": {}, "pluginVersion": {}, "capability": {}, "bytes": {}, "duration": {},
 }
 
 func (s *messageMetricsState) surfaceDelivery(event messageEvent) {

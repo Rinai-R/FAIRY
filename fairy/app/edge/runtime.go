@@ -9,6 +9,8 @@ import (
 
 	"fairy/app/core"
 	appsession "fairy/app/session"
+	"fairy/plugin"
+	"fairy/runtime/observability"
 	"fairy/runtime/wasm"
 	api "fairy/transport/web"
 )
@@ -30,6 +32,7 @@ type Runtime struct {
 	sessions *appsession.Service
 	facade   *appsession.Facade
 	host     *wasm.Host
+	plugins  *plugin.Store
 	logger   *zap.Logger
 
 	closeOnce sync.Once
@@ -61,7 +64,19 @@ func Open(ctx context.Context, options Options) (*Runtime, error) {
 	if sessions == nil {
 		return nil, appsession.ErrSessionUnavailable
 	}
-	host, err := wasm.Open(ctx)
+	database, err := coreRuntime.Foundation.SQL()
+	if err != nil {
+		return nil, err
+	}
+	pluginStore, err := plugin.NewStore(database, coreRuntime.Foundation.QueryLimit())
+	if err != nil {
+		return nil, err
+	}
+	host, err := wasm.OpenWith(ctx, wasm.Observer{
+		Spans:   coreRuntime.Messages,
+		Metrics: observability.NewPluginMetrics(),
+		Logs:    coreRuntime.Logs,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -77,6 +92,7 @@ func Open(ctx context.Context, options Options) (*Runtime, error) {
 		sessions: sessions,
 		facade:   appsession.NewFacade(sessions),
 		host:     host,
+		plugins:  pluginStore,
 		logger:   coreRuntime.Logger,
 	}
 	keep = true

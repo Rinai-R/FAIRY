@@ -152,7 +152,7 @@ func TestHandleRejectsCallBudget(t *testing.T) {
 func TestLoadRejectsMemoryPagesOverHostLimit(t *testing.T) {
 	budget := DefaultBudget()
 	budget.MaxMemoryPages = 2
-	host, err := open(t.Context(), budget)
+	host, err := open(t.Context(), budget, Observer{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -178,3 +178,24 @@ func TestLogStoreConcurrentAppendQuery(t *testing.T) {
 		t.Fatalf("latest sequence = %d", got)
 	}
 }
+
+func TestLogFilterMatchesPluginInstanceLoggerAndField(t *testing.T) {
+	store := NewLogStore(8)
+	store.Append(EntryInput{
+		Level: "info", Logger: "plugin.echo-1", Message: "plugin call",
+		Fields: []FieldInput{{Key: "pluginInstanceId", Value: "echo-1"}, {Key: "capability", Value: "handle"}},
+	})
+	store.Append(EntryInput{
+		Level: "warn", Logger: "plugin.search-1", Message: "plugin host call",
+		Fields: []FieldInput{{Key: "pluginInstanceId", Value: "search-1"}, {Key: "errorCode", Value: "CAPABILITY_DENIED"}},
+	})
+	store.Append(EntryInput{Level: "info", Logger: "turn.turn", Message: "unrelated"})
+	matched := store.Query(LogFilter{PluginInstanceID: "echo-1", MinimumLevel: "debug"}).Entries
+	if len(matched) != 1 || matched[0].Logger != "plugin.echo-1" {
+		t.Fatalf("plugin instance filter = %#v", matched)
+	}
+	denied := store.Query(LogFilter{PluginInstanceID: "search-1"}).Entries
+	if len(denied) != 1 || denied[0].Fields[0].Value != "search-1" {
+		t.Fatalf("denied filter = %#v", denied)
+	}
+}
