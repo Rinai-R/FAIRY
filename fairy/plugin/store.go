@@ -115,6 +115,9 @@ func (s *Store) PutInstance(ctx context.Context, record InstanceRecord) error {
 	if err := validateInstance(record); err != nil {
 		return err
 	}
+	if record.CapabilityGrants == nil {
+		record.CapabilityGrants = []string{}
+	}
 	grants, err := json.Marshal(record.CapabilityGrants)
 	if err != nil {
 		return fmt.Errorf("encoding plugin capability grants: %w", err)
@@ -143,6 +146,38 @@ ON DUPLICATE KEY UPDATE plugin_id = VALUES(plugin_id), plugin_version = VALUES(p
 		return fmt.Errorf("persist plugin instance %s: %w", record.ID, err)
 	}
 	return nil
+}
+
+func (s *Store) Instance(ctx context.Context, instanceID string) (InstanceRecord, error) {
+	if err := validatePluginID(instanceID); err != nil {
+		return InstanceRecord{}, fmt.Errorf("%w: %v", ErrInstanceInvalid, err)
+	}
+	qctx, cancel := s.queryContext(ctx)
+	defer cancel()
+	var record InstanceRecord
+	var enabled int
+	var grants json.RawMessage
+	var config string
+	err := s.db.QueryRowContext(qctx, `
+SELECT instance_id, plugin_id, plugin_version, enabled, lifecycle_state, capability_grants, config_document, created_at_ms, updated_at_ms
+FROM plugin_instances WHERE instance_id = ?`, instanceID).Scan(
+		&record.ID, &record.PluginID, &record.PluginVersion, &enabled, &record.Lifecycle, &grants, &config,
+		&record.CreatedAtUnixMS, &record.UpdatedAtUnixMS)
+	if errors.Is(err, sql.ErrNoRows) {
+		return InstanceRecord{}, fmt.Errorf("%w: instance %s is not installed", ErrInstanceInvalid, instanceID)
+	}
+	if err != nil {
+		return InstanceRecord{}, fmt.Errorf("read plugin instance %s: %w", instanceID, err)
+	}
+	record.Enabled = enabled == 1
+	record.ConfigDocument = json.RawMessage(config)
+	if err := json.Unmarshal(grants, &record.CapabilityGrants); err != nil {
+		return InstanceRecord{}, fmt.Errorf("decode plugin instance grants: %w", err)
+	}
+	if record.CapabilityGrants == nil {
+		record.CapabilityGrants = []string{}
+	}
+	return record, nil
 }
 
 func (s *Store) PutState(ctx context.Context, instanceID, key, value string) error {
