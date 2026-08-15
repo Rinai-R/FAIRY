@@ -187,7 +187,7 @@ func RetrievalPromptItems(call model.FunctionCall, status string, result recall.
 
 func stableRetrievalToolStatus(status string) string {
 	switch status {
-	case "ok", "failed", "args_invalid", "disabled", "endpoint_missing", "not_whitelisted":
+	case "ok", "failed", "args_invalid", "disabled", "endpoint_missing", "capability_unavailable", "not_whitelisted":
 		return status
 	default:
 		return "failed"

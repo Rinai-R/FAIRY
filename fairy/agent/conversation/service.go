@@ -79,13 +79,21 @@ type MessageDeliveryTelemetry interface {
 	SurfaceDelivery(turnID, beatID, status, externalMessageID, errorCode string)
 }
 
-// WebSearchBackend is the optional OpenSERP sidecar search surface.
+// WebSearchBackend is the optional plugin-backed public web search surface.
 type WebSearchBackend interface {
 	Search(ctx context.Context, query string, limit int) ([]knowledge.WebSearchHit, error)
+	Available() bool
 	Close() error
 }
 
 // AttachEventEmitter wires a Wails-free sink from main (package function, not a bound service method).
+func AttachWebSearch(s *Service, backend WebSearchBackend) {
+	if s == nil {
+		return
+	}
+	s.webSearch = backend
+}
+
 func AttachEventEmitter(s *Service, emit lifecycle.EventEmitter) {
 	if s == nil {
 		return

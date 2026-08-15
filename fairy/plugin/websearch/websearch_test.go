@@ -143,6 +143,47 @@ func TestWebSearchPluginFailsClosedWithoutGrantOrProvider(t *testing.T) {
 	}
 }
 
+func TestWebSearchPluginFetchReturnsHostHTTPBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/item" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, "公开正文")
+	}))
+	t.Cleanup(server.Close)
+	host := newSearchHost(t, httpHostCall(http.DefaultClient))
+	payload, err := json.Marshal(map[string]any{
+		"tool":      websearch.FetchTool,
+		"arguments": map[string]any{"url": server.URL + "/item"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sdk.Encode(plugin.Envelope{
+		ABIVersion:  plugin.ABIVersion,
+		Kind:        "handle",
+		Correlation: plugin.Correlation{PluginInstanceID: "web-search-1"},
+		Payload:     payload,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := host.Invoke(t.Context(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := sdk.Decode(out)
+	if err != nil || parsed.Kind != "result" {
+		t.Fatalf("fetch = (%#v, %v)", parsed, err)
+	}
+	result, err := websearch.DecodeFetchResult(parsed.Payload)
+	if err != nil || result.Status != 200 || result.Body != "公开正文" {
+		t.Fatalf("fetch result = (%#v, %v)", result, err)
+	}
+}
+
 func TestWebSearchPluginDoesNotImportHostNetworkOrCore(t *testing.T) {
 	src, err := os.ReadFile("websearch.go")
 	if err != nil {

@@ -117,6 +117,13 @@ func newWithCapacity(options Options, jobCapacity, idleCapacity int) *Service {
 	}
 }
 
+func (e *Service) BindDocuments(fetcher knowledge.DocumentFetcher) {
+	if e == nil || fetcher == nil {
+		return
+	}
+	e.options.Documents = fetcher
+}
+
 func (e *Service) Start() {
 	if e == nil || e.closed.Load() {
 		return

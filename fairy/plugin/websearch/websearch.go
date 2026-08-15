@@ -13,10 +13,11 @@ import (
 )
 
 const (
-	PluginID = "fairy.plugin.web-search"
-	ToolName = "web_search"
-	Engine   = "duck"
-	MaxHits  = 5
+	PluginID  = "fairy.plugin.web-search"
+	ToolName  = "web_search"
+	FetchTool = "web_fetch"
+	Engine    = "duck"
+	MaxHits   = 5
 )
 
 type Source struct {
@@ -29,6 +30,20 @@ type Source struct {
 type SearchResult struct {
 	Query   string   `json:"query"`
 	Sources []Source `json:"sources"`
+}
+
+type FetchResult struct {
+	URL         string `json:"url"`
+	Status      int    `json:"status"`
+	ContentType string `json:"contentType"`
+	Body        string `json:"body"`
+}
+
+type toolPayload struct {
+	Tool      string          `json:"tool"`
+	Result    json.RawMessage `json:"result"`
+	Source    string          `json:"source"`
+	Knowledge json.RawMessage `json:"knowledgeEntries,omitempty"`
 }
 
 func Manifest() plugin.Manifest {
@@ -60,6 +75,72 @@ func Handle(ctx context.Context, envelope plugin.Envelope, call func(context.Con
 	if envelope.Kind != "handle" {
 		return sdk.Fail(envelope.Correlation, plugin.CodeManifestInvalid, "web-search plugin expects handle envelopes")
 	}
+	tool, err := peekTool(envelope.Payload)
+	if err != nil {
+		return sdk.Fail(envelope.Correlation, plugin.CodeManifestInvalid, err.Error())
+	}
+	switch tool {
+	case ToolName:
+		return handleSearch(ctx, envelope, call)
+	case FetchTool:
+		return handleFetch(ctx, envelope, call)
+	default:
+		return sdk.Fail(envelope.Correlation, plugin.CodeManifestInvalid, "web search tool is required")
+	}
+}
+
+func Discover(instances []plugin.InstanceRecord) (instanceID string, ok bool) {
+	for _, instance := range instances {
+		if instance.PluginID != PluginID || !instance.Enabled || instance.Lifecycle != "ready" {
+			continue
+		}
+		if !hasHTTPRequest(instance.CapabilityGrants) {
+			continue
+		}
+		return instance.ID, true
+	}
+	return "", false
+}
+
+func DecodeSearchResult(raw json.RawMessage) (SearchResult, error) {
+	payload, err := decodeToolPayload(raw, ToolName)
+	if err != nil {
+		return SearchResult{}, err
+	}
+	var result SearchResult
+	if err := json.Unmarshal(payload.Result, &result); err != nil {
+		return SearchResult{}, errors.New("web search result schema is invalid")
+	}
+	if result.Sources == nil {
+		result.Sources = []Source{}
+	}
+	if len(result.Sources) > MaxHits {
+		return SearchResult{}, errors.New("web search result exceeds source bound")
+	}
+	for _, source := range result.Sources {
+		if strings.TrimSpace(source.URL) == "" {
+			return SearchResult{}, errors.New("web search result source is missing url")
+		}
+	}
+	return result, nil
+}
+
+func DecodeFetchResult(raw json.RawMessage) (FetchResult, error) {
+	payload, err := decodeToolPayload(raw, FetchTool)
+	if err != nil {
+		return FetchResult{}, err
+	}
+	var result FetchResult
+	if err := json.Unmarshal(payload.Result, &result); err != nil {
+		return FetchResult{}, errors.New("web fetch result schema is invalid")
+	}
+	if strings.TrimSpace(result.URL) == "" {
+		return FetchResult{}, errors.New("web fetch result is missing url")
+	}
+	return result, nil
+}
+
+func handleSearch(ctx context.Context, envelope plugin.Envelope, call func(context.Context, string, json.RawMessage) ([]byte, error)) (plugin.Envelope, error) {
 	query, limit, baseURL, err := parseRequest(envelope.Payload)
 	if err != nil {
 		return sdk.Fail(envelope.Correlation, plugin.CodeManifestInvalid, err.Error())
@@ -67,34 +148,121 @@ func Handle(ctx context.Context, envelope plugin.Envelope, call func(context.Con
 	if call == nil {
 		return sdk.Fail(envelope.Correlation, plugin.CodeCapabilityDenied, "http.request: not granted")
 	}
-	if _, err := getHTTP(ctx, call, HealthEndpoint(baseURL)); err != nil {
+	response, err := requestHTTP(ctx, call, HealthEndpoint(baseURL))
+	if err != nil {
 		return failHost(envelope.Correlation, err)
+	}
+	if response.Status < 200 || response.Status >= 300 {
+		return sdk.Fail(envelope.Correlation, plugin.CodeModuleTrap, fmt.Sprintf("openserp status %d", response.Status))
 	}
 	searchURL, err := SearchEndpoint(baseURL, query, limit)
 	if err != nil {
 		return sdk.Fail(envelope.Correlation, plugin.CodeManifestInvalid, err.Error())
 	}
-	body, err := getHTTP(ctx, call, searchURL)
+	response, err = requestHTTP(ctx, call, searchURL)
 	if err != nil {
 		return failHost(envelope.Correlation, err)
 	}
-	sources, err := ParseHits(body, limit)
+	if response.Status < 200 || response.Status >= 300 {
+		return sdk.Fail(envelope.Correlation, plugin.CodeModuleTrap, fmt.Sprintf("openserp status %d", response.Status))
+	}
+	sources, err := ParseHits([]byte(response.Body), limit)
 	if err != nil {
 		return sdk.Fail(envelope.Correlation, plugin.CodeModuleTrap, "openserp search parse failed")
 	}
-	payload, err := json.Marshal(struct {
-		Tool   string       `json:"tool"`
-		Result SearchResult `json:"result"`
-		Source string       `json:"source"`
-	}{
-		Tool:   ToolName,
-		Result: SearchResult{Query: query, Sources: sources},
-		Source: "plugin",
+	return encodeToolResult(envelope.Correlation, ToolName, SearchResult{Query: query, Sources: sources})
+}
+
+func handleFetch(ctx context.Context, envelope plugin.Envelope, call func(context.Context, string, json.RawMessage) ([]byte, error)) (plugin.Envelope, error) {
+	target, err := parseFetchURL(envelope.Payload)
+	if err != nil {
+		return sdk.Fail(envelope.Correlation, plugin.CodeManifestInvalid, err.Error())
+	}
+	if call == nil {
+		return sdk.Fail(envelope.Correlation, plugin.CodeCapabilityDenied, "http.request: not granted")
+	}
+	response, err := requestHTTP(ctx, call, target)
+	if err != nil {
+		return failHost(envelope.Correlation, err)
+	}
+	return encodeToolResult(envelope.Correlation, FetchTool, FetchResult{
+		URL:         target,
+		Status:      response.Status,
+		ContentType: response.ContentType,
+		Body:        response.Body,
 	})
+}
+
+func peekTool(raw json.RawMessage) (string, error) {
+	var payload struct {
+		Tool string `json:"tool"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return "", errors.New("web search payload is invalid")
+	}
+	if payload.Tool == "" {
+		return "", errors.New("web search tool is required")
+	}
+	return payload.Tool, nil
+}
+
+func decodeToolPayload(raw json.RawMessage, want string) (toolPayload, error) {
+	var payload toolPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return toolPayload{}, errors.New("plugin tool result is invalid")
+	}
+	if payload.Tool != want || payload.Source != "plugin" {
+		return toolPayload{}, errors.New("plugin tool result schema is invalid")
+	}
+	if len(payload.Knowledge) > 0 && string(payload.Knowledge) != "null" {
+		return toolPayload{}, errors.New("plugin must not write knowledge entries")
+	}
+	if len(payload.Result) == 0 {
+		return toolPayload{}, errors.New("plugin tool result is missing")
+	}
+	return payload, nil
+}
+
+func hasHTTPRequest(grants []string) bool {
+	for _, grant := range grants {
+		if grant == "http.request" {
+			return true
+		}
+	}
+	return false
+}
+
+func encodeToolResult(correlation plugin.Correlation, tool string, result any) (plugin.Envelope, error) {
+	body, err := json.Marshal(result)
 	if err != nil {
 		return plugin.Envelope{}, err
 	}
-	return sdk.Result(envelope.Correlation, payload)
+	payload, err := json.Marshal(toolPayload{Tool: tool, Result: body, Source: "plugin"})
+	if err != nil {
+		return plugin.Envelope{}, err
+	}
+	return sdk.Result(correlation, payload)
+}
+
+func parseFetchURL(raw json.RawMessage) (string, error) {
+	var payload struct {
+		Tool      string          `json:"tool"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil || payload.Tool != FetchTool {
+		return "", errors.New("web fetch payload is invalid")
+	}
+	var arguments struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(payload.Arguments, &arguments); err != nil {
+		return "", errors.New("web fetch arguments are invalid")
+	}
+	target := strings.TrimSpace(arguments.URL)
+	if target == "" {
+		return "", errors.New("web fetch url is required")
+	}
+	return target, nil
 }
 
 func parseRequest(raw json.RawMessage) (query string, limit int, baseURL string, err error) {
@@ -195,18 +363,18 @@ type httpResponse struct {
 	Body        string `json:"body"`
 }
 
-func getHTTP(ctx context.Context, call func(context.Context, string, json.RawMessage) ([]byte, error), target string) ([]byte, error) {
+func requestHTTP(ctx context.Context, call func(context.Context, string, json.RawMessage) ([]byte, error), target string) (httpResponse, error) {
 	payload, err := json.Marshal(map[string]string{"method": "GET", "url": target})
 	if err != nil {
-		return nil, err
+		return httpResponse{}, err
 	}
 	raw, err := call(ctx, "http.request", payload)
 	if err != nil {
-		return nil, err
+		return httpResponse{}, err
 	}
 	var result hostResult
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return nil, &plugin.CodedError{Code: plugin.CodeModuleTrap, Message: "http.request result is invalid"}
+		return httpResponse{}, &plugin.CodedError{Code: plugin.CodeModuleTrap, Message: "http.request result is invalid"}
 	}
 	if !result.OK {
 		code := result.Code
@@ -217,16 +385,13 @@ func getHTTP(ctx context.Context, call func(context.Context, string, json.RawMes
 		if message == "" {
 			message = "http.request failed"
 		}
-		return nil, &plugin.CodedError{Code: code, Message: message}
+		return httpResponse{}, &plugin.CodedError{Code: code, Message: message}
 	}
 	var response httpResponse
 	if err := json.Unmarshal(result.Body, &response); err != nil {
-		return nil, &plugin.CodedError{Code: plugin.CodeModuleTrap, Message: "http.request body is invalid"}
+		return httpResponse{}, &plugin.CodedError{Code: plugin.CodeModuleTrap, Message: "http.request body is invalid"}
 	}
-	if response.Status < 200 || response.Status >= 300 {
-		return nil, &plugin.CodedError{Code: plugin.CodeModuleTrap, Message: fmt.Sprintf("openserp status %d", response.Status)}
-	}
-	return []byte(response.Body), nil
+	return response, nil
 }
 
 func failHost(correlation plugin.Correlation, err error) (plugin.Envelope, error) {

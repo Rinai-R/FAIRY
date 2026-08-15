@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -26,7 +27,64 @@ type httpResponseBody struct {
 	Body        string `json:"body"`
 }
 
+func (h *Host) HTTPRequest(ctx context.Context, grant Grant, payload json.RawMessage) ([]byte, error) {
+	if h == nil {
+		return nil, ErrHostClosed
+	}
+	h.mu.Lock()
+	closed := h.closed
+	client := h.http
+	h.mu.Unlock()
+	if closed || client == nil {
+		return nil, ErrHostClosed
+	}
+	return doHTTPRequest(ctx, client, grant, payload, func(message string) string { return message })
+}
+
+func HTTPRequestGrantFromURL(raw string, max uint32) (*HTTPRequestGrant, error) {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return nil, fmt.Errorf("%w: http.request url is invalid", ErrInvalidGrant)
+	}
+	port := parsed.Port()
+	if port == "" {
+		if parsed.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n <= 0 || n > 65535 {
+		return nil, fmt.Errorf("%w: http.request port is invalid", ErrInvalidGrant)
+	}
+	grant := &HTTPRequestGrant{
+		Scheme:           parsed.Scheme,
+		Host:             parsed.Hostname(),
+		Port:             uint16(n),
+		Methods:          []string{http.MethodGet},
+		MaxResponseBytes: max,
+	}
+	if err := grant.validate(); err != nil {
+		return nil, err
+	}
+	return grant, nil
+}
+
 func (i *Instance) httpRequest(ctx context.Context, grant Grant, payload json.RawMessage) ([]byte, error) {
+	if i == nil || i.host == nil {
+		return nil, ErrHostClosed
+	}
+	return doHTTPRequest(ctx, i.host.http, grant, payload, i.scrub)
+}
+
+func doHTTPRequest(ctx context.Context, client *http.Client, grant Grant, payload json.RawMessage, scrub func(string) string) ([]byte, error) {
+	if client == nil {
+		return nil, ErrHostClosed
+	}
+	if scrub == nil {
+		scrub = func(message string) string { return message }
+	}
 	if grant.HTTPRequest == nil {
 		return nil, capabilityDenied("http.request", "not granted")
 	}
@@ -59,15 +117,15 @@ func (i *Instance) httpRequest(ctx context.Context, grant Grant, payload json.Ra
 		httpReq.Header.Set("Authorization", "Bearer "+secret)
 	}
 
-	resp, err := i.host.http.Do(httpReq)
+	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, coded(plugin.CodeModuleTrap, "http.request: "+i.scrub(err.Error()))
+		return nil, coded(plugin.CodeModuleTrap, "http.request: "+scrub(err.Error()))
 	}
 	defer resp.Body.Close()
 	limited := io.LimitReader(resp.Body, int64(grant.HTTPRequest.MaxResponseBytes)+1)
 	body, err := io.ReadAll(limited)
 	if err != nil {
-		return nil, coded(plugin.CodeModuleTrap, "http.request: "+i.scrub(err.Error()))
+		return nil, coded(plugin.CodeModuleTrap, "http.request: "+scrub(err.Error()))
 	}
 	if uint32(len(body)) > grant.HTTPRequest.MaxResponseBytes {
 		return nil, coded(plugin.CodeBudgetExceeded, "http.request response exceeds budget")

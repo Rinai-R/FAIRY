@@ -20,7 +20,8 @@ import (
 
 const (
 	knowledgeFetchTimeout      = 12 * time.Second
-	knowledgeFetchMaxBodyBytes = 1 << 20
+	DocumentFetchMaxBodyBytes  = 1 << 20
+	knowledgeFetchMaxBodyBytes = DocumentFetchMaxBodyBytes
 	knowledgeFetchMaxRedirects = 5
 )
 
@@ -143,6 +144,13 @@ func (f *HTTPDocumentFetcher) fetch(ctx context.Context, source IngestSource) (D
 }
 
 func (f *HTTPDocumentFetcher) validateURL(ctx context.Context, parsed *url.URL) error {
+	return ValidatePublicKnowledgeURL(ctx, f.resolver, parsed)
+}
+
+func ValidatePublicKnowledgeURL(ctx context.Context, resolver knowledgeResolver, parsed *url.URL) error {
+	if resolver == nil {
+		return errors.New("knowledge document resolver is unavailable")
+	}
 	if parsed == nil || parsed.User != nil || parsed.Hostname() == "" {
 		return fmt.Errorf("%w: URL authority is invalid", ErrFetchRejected)
 	}
@@ -150,7 +158,7 @@ func (f *HTTPDocumentFetcher) validateURL(ctx context.Context, parsed *url.URL) 
 	if scheme != "http" && scheme != "https" {
 		return fmt.Errorf("%w: URL scheme is invalid", ErrFetchRejected)
 	}
-	addresses, err := f.resolver.LookupNetIP(ctx, "ip", parsed.Hostname())
+	addresses, err := resolver.LookupNetIP(ctx, "ip", parsed.Hostname())
 	if err != nil {
 		return fmt.Errorf("%w: DNS lookup failed: %v", ErrFetchTransient, err)
 	}

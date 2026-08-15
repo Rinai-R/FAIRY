@@ -20,7 +20,7 @@ import (
 )
 
 type coreServices struct {
-	WebSearch    *knowledge.WebSearchService
+	WebSearch    turn.WebSearchBackend
 	Model        *model.ModelService
 	Turn         *turn.Service
 	Retention    *retention.Service
@@ -48,11 +48,7 @@ func wireCoreServices(
 	modelService *model.ModelService,
 	configReader *config.Reader,
 ) (*coreServices, error) {
-	webSettings, err := config.ReadWebSearchSettings(configRoot)
-	if err != nil {
-		return nil, err
-	}
-	webSearch := knowledge.NewWebSearchService(config.ResolveWebSearchBaseURL(webSettings.BaseURL))
+	webSearch := turn.WebSearchBackend(nil)
 	if modelService == nil {
 		modelService = model.NewModelService(configRoot, secretStore)
 	}
@@ -76,7 +72,7 @@ func wireCoreServices(
 	retentionService := retention.New(retention.Options{
 		Extraction: extractionStore,
 		Knowledge:  knowledgeStore,
-		Documents:  knowledge.NewHTTPDocumentFetcher(),
+		Documents:  knowledge.UnavailableDocumentFetcher{},
 		Model:      modelService,
 		Config:     configReader,
 		Character: func(characterID string) (character.Record, error) {

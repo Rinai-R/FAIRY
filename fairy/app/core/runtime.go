@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap/zapcore"
 
 	turn "fairy/agent/conversation"
+	retention "fairy/agent/learning"
 	initiative "fairy/agent/presence"
 	"fairy/agent/sticker"
 	"fairy/app/foundation"
@@ -79,13 +80,14 @@ type Runtime struct {
 	Secret             *config.SecretStore
 	Model              *model.ModelService
 	Turn               *turn.Service
+	Retention          *retention.Service
 	Initiative         *initiative.Service
 	Character          *character.CharacterService
 	Config             *config.ConfigService
 	ConfigReader       *config.Reader
 	Profile            *config.ProfileService
 	Stickers           *sticker.Store
-	WebSearch          *knowledge.WebSearchService
+	WebSearch          turn.WebSearchBackend
 	Bootstrap          *BootstrapService
 	lifetimeCancel     context.CancelFunc
 	closeOnce          sync.Once
@@ -295,6 +297,7 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 		Secret:             opened.Secrets,
 		Model:              services.Model,
 		Turn:               services.Turn,
+		Retention:          services.Retention,
 		Character:          services.Character,
 		Config:             services.Config,
 		ConfigReader:       services.ConfigReader,
@@ -318,7 +321,6 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 	turn.AttachConfigSource(services.Turn, services.ConfigReader)
 	turn.AttachDesktopToolCoordinator(services.Turn, rt.Captures)
 	character.AttachLogger(services.Character, logger.Named("character"))
-	knowledge.AttachWebSearchLogger(services.WebSearch, logger.Named("openserp"))
 
 	initiativePorts := initiativeAdapter{
 		turns: services.Turn, history: transcriptStore, social: socialStore,
@@ -345,6 +347,17 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 	})
 	keepFoundation = true
 	return rt, nil
+}
+
+func (rt *Runtime) BindWebPlugin(tools *knowledge.PluginTools) {
+	if rt == nil || tools == nil {
+		return
+	}
+	rt.WebSearch = tools
+	turn.AttachWebSearch(rt.Turn, tools)
+	if rt.Retention != nil {
+		rt.Retention.BindDocuments(tools)
+	}
 }
 
 func (rt *Runtime) Close() error {

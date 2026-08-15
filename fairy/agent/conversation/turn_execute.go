@@ -151,7 +151,7 @@ func (e *TurnEngine) submitCompiledTurn(
 
 	agent.webSearchEnabled = false
 	if settings, err := s.configSource().WebSearchSettings(); err == nil {
-		agent.webSearchEnabled = settings.Enabled
+		agent.webSearchEnabled = settings.Enabled && s.webSearch != nil && s.webSearch.Available()
 	}
 	agent.stickerCandidates = make(stickerCandidateSet)
 	agent.stickerToolEnabled, err = stickerToolAvailable(turnCtx, request.OutputCapabilities, s.stickers)
@@ -697,12 +697,12 @@ func (e *TurnEngine) submitCompiledTurn(
 							"knowledgeCount": len(extra.Knowledge),
 						})
 					case tool.WebSearch:
-						if s.webSearch == nil {
-							toolResultStatus = "endpoint_missing"
-							toolResult = tool.FromError(call.Name, knowledge.ErrSearchEndpointNotConfigured)
-							lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("tool", call.Name), zap.String("reason", "endpoint_missing"))
+						if s.webSearch == nil || !s.webSearch.Available() {
+							toolResultStatus = "capability_unavailable"
+							toolResult = tool.FromError(call.Name, knowledge.ErrPluginCapabilityUnavailable)
+							lg.Warn("cognition loop", zap.String("phase", "tool_rejected"), zap.String("tool", call.Name), zap.String("reason", "capability_unavailable"))
 							retrieval = tool.MergeRetrieval(retrieval, toolResult)
-							appendRetrievalToolRuntime(call, query, "endpoint_missing", toolResult, retrieval, nil)
+							appendRetrievalToolRuntime(call, query, "capability_unavailable", toolResult, retrieval, nil)
 						} else {
 							hits, toolErr := s.webSearch.Search(turnCtx, query, 5)
 							if toolErr != nil {

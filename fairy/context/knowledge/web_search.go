@@ -92,6 +92,10 @@ func (s *WebSearchService) BaseURL() string {
 	return s.baseURL
 }
 
+func (s *WebSearchService) Available() bool {
+	return s != nil && s.BaseURL() != ""
+}
+
 func (s *WebSearchService) Close() error {
 	return nil
 }

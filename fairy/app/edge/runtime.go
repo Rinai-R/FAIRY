@@ -95,6 +95,9 @@ func Open(ctx context.Context, options Options) (*Runtime, error) {
 		plugins:  pluginStore,
 		logger:   coreRuntime.Logger,
 	}
+	if err := runtime.bindWebPlugin(ctx); err != nil {
+		return nil, err
+	}
 	keep = true
 	keepHost = true
 	return runtime, nil
