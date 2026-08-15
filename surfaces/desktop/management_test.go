@@ -9,6 +9,7 @@ import (
 
 func TestOpenManagementShowsAndFocusesExistingWindow(t *testing.T) {
 	service := NewCoreService()
+	useTempProfile(t, service)
 	workspace := &fakeWindow{}
 	service.attachManagement(workspace)
 
@@ -30,6 +31,7 @@ func TestOpenManagementShowsAndFocusesExistingWindow(t *testing.T) {
 
 func TestCloseManagementHidesWindowWithoutRequiringCoreEndpoint(t *testing.T) {
 	service := NewCoreService()
+	useTempProfile(t, service)
 	workspace := &fakeWindow{visible: true}
 	service.attachManagement(workspace)
 	if err := service.OpenManagement(); err != nil {

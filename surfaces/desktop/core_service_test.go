@@ -76,6 +76,11 @@ func (w *fakeWindow) SetPosition(x, y int) {
 	w.moveCalls++
 	w.x, w.y = x, y
 }
+func (w *fakeWindow) SetSize(width, height int) application.Window {
+	w.sizeCalls++
+	w.width, w.height = width, height
+	return w
+}
 func (w *fakeWindow) Show() application.Window {
 	w.shown, w.visible = true, true
 	w.showCount++

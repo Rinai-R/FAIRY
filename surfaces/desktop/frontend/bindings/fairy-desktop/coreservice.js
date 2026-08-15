@@ -278,6 +278,14 @@ export function CreateManagementBackup() {
     return $Call.ByID(1849297427);
 }
 
+export function ManagementWorkspaceState() {
+    return $Call.ByID(2913384795);
+}
+
+export function SaveManagementWorkspaceState(write) {
+    return $Call.ByID(2594999086, write);
+}
+
 // Private type creation functions
 const $$createType0 = $models.CoreSession.createFrom;
 const $$createType1 = $models.CoreSettings.createFrom;

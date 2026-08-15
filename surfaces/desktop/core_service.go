@@ -63,6 +63,8 @@ type CoreService struct {
 	shutdownBudget       shutdownBudget
 	characterName        string
 	logUnsub             func()
+	workspace            ManagementWorkspaceState
+	workspaceLoaded      bool
 }
 
 func NewCoreService() *CoreService {

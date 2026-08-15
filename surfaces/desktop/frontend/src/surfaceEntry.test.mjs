@@ -101,5 +101,7 @@ test("management workspace is a resizable local shell with sibling observability
   assert.match(managementSource, /SaveManagementModel\(/);
   assert.match(managementSource, /SubscribeManagementLogs\(\)/);
   assert.match(managementSource, /CreateManagementBackup\(\)/);
+  assert.match(managementSource, /ManagementWorkspaceState\(\)/);
+  assert.match(managementSource, /SaveManagementWorkspaceState\(/);
   assert.doesNotMatch(managementSource, /fetch\s*\(|fairy\.apiToken|Authorization|\/v1\//);
 });

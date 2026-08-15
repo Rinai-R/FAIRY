@@ -47,6 +47,8 @@ import {
   TombstoneManagementKnowledge,
   TombstoneManagementMemory,
   UnsubscribeManagementLogs,
+  ManagementWorkspaceState,
+  SaveManagementWorkspaceState,
 } from "../bindings/fairy-desktop/coreservice.js";
 
 const NAV = [
@@ -426,12 +428,23 @@ function MetricsTask() {
   );
 }
 
-function TracingTask() {
-  const [messageID, setMessageID] = useState("");
-  const [traceID, setTraceID] = useState("");
+function TracingTask({ messageID, traceID, onFilter }) {
   const [search, setSearch] = useState(null);
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState("");
+  useEffect(() => {
+    if (!traceID) {
+      setDetail(null);
+      return;
+    }
+    let cancelled = false;
+    ManagementTrace(traceID).then((value) => {
+      if (!cancelled) { setDetail(value); setError(""); }
+    }).catch((err) => {
+      if (!cancelled) { setDetail(null); setError(hostError(err)); }
+    });
+    return () => { cancelled = true; };
+  }, [traceID]);
   return (
     <div>
       {error ? <p className="management-error" role="alert">{error}</p> : null}
@@ -439,7 +452,7 @@ function TracingTask() {
         event.preventDefault();
         ManagementTraces(messageID).then((value) => { setSearch(value); setError(""); }).catch((err) => { setSearch(null); setError(hostError(err)); });
       }}>
-        <Field label="messageId"><input value={messageID} onChange={(event) => setMessageID(event.target.value)} /></Field>
+        <Field label="messageId"><input value={messageID} onChange={(event) => onFilter({ messageId: event.target.value })} /></Field>
         <button type="submit">搜索 Trace</button>
       </form>
       <ul className="management-list">
@@ -447,10 +460,7 @@ function TracingTask() {
           <li key={item.traceId}>
             <strong>{item.traceId}</strong>
             <span>{item.status} · {item.totalDurationMs}ms</span>
-            <button type="button" onClick={() => {
-              setTraceID(item.traceId);
-              ManagementTrace(item.traceId).then((value) => { setDetail(value); setError(""); }).catch((err) => { setDetail(null); setError(hostError(err)); });
-            }}>打开</button>
+            <button type="button" onClick={() => onFilter({ traceId: item.traceId })}>打开</button>
           </li>
         ))}
       </ul>
@@ -465,7 +475,7 @@ function TracingTask() {
   );
 }
 
-function LogsTask() {
+function LogsTask({ logLevel, onFilter }) {
   const [entries, setEntries] = useState([]);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -484,11 +494,23 @@ function LogsTask() {
       UnsubscribeManagementLogs();
     };
   }, []);
+  const ranks = { debug: 0, info: 1, warn: 2, error: 3 };
+  const minimum = ranks[logLevel] ?? 0;
+  const visible = entries.filter((entry) => (ranks[entry.level] ?? 0) >= minimum);
   return (
     <div>
       {error ? <p className="management-error" role="alert">{error}</p> : null}
+      <Field label="最低级别">
+        <select value={logLevel} onChange={(event) => onFilter({ logLevel: event.target.value })}>
+          <option value="">全部</option>
+          <option value="debug">debug</option>
+          <option value="info">info</option>
+          <option value="warn">warn</option>
+          <option value="error">error</option>
+        </select>
+      </Field>
       <ol className="management-log">
-        {entries.map((entry) => (
+        {visible.map((entry) => (
           <li key={entry.sequence}>
             <time>{entry.timestampUnixMs}</time>
             <strong>{entry.level}</strong>
@@ -522,7 +544,7 @@ function BackupTask() {
   );
 }
 
-function ManagementTask({ section }) {
+function ManagementTask({ section, workspace, onWorkspace }) {
   const item = NAV.find((entry) => entry.id === section);
   const observability = section === "metrics" || section === "tracing" || section === "logs";
   let body = null;
@@ -537,8 +559,8 @@ function ManagementTask({ section }) {
     case "plugins": body = <PluginsTask />; break;
     case "conversation-debug": body = <ConversationTask />; break;
     case "metrics": body = <MetricsTask />; break;
-    case "tracing": body = <TracingTask />; break;
-    case "logs": body = <LogsTask />; break;
+    case "tracing": body = <TracingTask messageID={workspace.messageId} traceID={workspace.traceId} onFilter={onWorkspace} />; break;
+    case "logs": body = <LogsTask logLevel={workspace.logLevel} onFilter={onWorkspace} />; break;
     case "backup": body = <BackupTask />; break;
     default: break;
   }
@@ -559,18 +581,60 @@ function ManagementTask({ section }) {
 
 export function ManagementSurface() {
   const [section, setSection] = useState(() => sectionFromHash(window.location.hash));
+  const [workspace, setWorkspace] = useState({ section: "overview", traceId: "", messageId: "", logLevel: "" });
+  const [workspaceError, setWorkspaceError] = useState("");
+
+  function applyWorkspace(state) {
+    const next = {
+      section: state.section || "overview",
+      traceId: state.traceId || "",
+      messageId: state.messageId || "",
+      logLevel: state.logLevel || "",
+    };
+    setWorkspace(next);
+    return next;
+  }
+
+  function persistWorkspace(patch) {
+    setWorkspace((current) => {
+      const next = { ...current, ...patch };
+      SaveManagementWorkspaceState({
+        section: next.section,
+        traceId: next.traceId,
+        messageId: next.messageId,
+        logLevel: next.logLevel,
+      }).then(() => setWorkspaceError("")).catch((err) => setWorkspaceError(hostError(err)));
+      return next;
+    });
+  }
 
   useEffect(() => {
+    const hashed = sectionFromHash(window.location.hash);
+    const raw = window.location.hash.replace(/^#\/?/, "").split("?", 1)[0];
+    const hasExplicit = raw !== "" && NAV.some((item) => item.id === hashed);
+    ManagementWorkspaceState().then((state) => {
+      const next = applyWorkspace(state);
+      const restored = hasExplicit ? hashed : next.section;
+      setSection(restored);
+      if (window.location.hash !== sectionHash(restored)) window.history.replaceState(null, "", sectionHash(restored));
+    }).catch((err) => setWorkspaceError(hostError(err)));
+    const off = Events.On("desktop:management-workspace", (event) => {
+      const state = event?.data ?? event;
+      const next = applyWorkspace(state);
+      setSection(next.section);
+      if (window.location.hash !== sectionHash(next.section)) window.history.replaceState(null, "", sectionHash(next.section));
+    });
     const syncSection = () => setSection(sectionFromHash(window.location.hash));
     window.addEventListener("hashchange", syncSection);
-    const parsedSection = sectionFromHash(window.location.hash);
-    const hasKnownRoute = window.location.hash.replace(/^#\/?/, "").split("?", 1)[0] === parsedSection;
-    if (!hasKnownRoute) window.history.replaceState(null, "", sectionHash(parsedSection));
-    return () => window.removeEventListener("hashchange", syncSection);
+    return () => {
+      window.removeEventListener("hashchange", syncSection);
+      if (typeof off === "function") off();
+    };
   }, []);
 
   function selectSection(next) {
     setSection(next);
+    persistWorkspace({ section: next });
     if (window.location.hash !== sectionHash(next)) window.location.hash = sectionHash(next);
   }
 
@@ -613,7 +677,8 @@ export function ManagementSurface() {
           </div>
         </header>
         <div className="main-canvas">
-          <ManagementTask section={section} />
+          {workspaceError ? <p className="management-error" role="alert">{workspaceError}</p> : null}
+          <ManagementTask section={section} workspace={workspace} onWorkspace={persistWorkspace} />
         </div>
       </main>
     </div>

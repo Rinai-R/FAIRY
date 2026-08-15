@@ -147,6 +147,9 @@ func (s *CoreService) shutdownOwnedRuntime(parent context.Context) error {
 	if budget.Turn == 0 {
 		budget = defaultShutdownBudget()
 	}
+	s.mu.Unlock()
+	_ = s.snapshotManagementLayout()
+	s.mu.Lock()
 	runtime := s.edge
 	guard := s.instance
 	conversation, turnID, active := s.conversation, s.activeTurnID, s.active

@@ -30,15 +30,18 @@ func (s *CoreService) OpenManagement() error {
 	alreadyOpen := s.managementOpen
 	s.managementOpen = true
 	s.mu.Unlock()
+	s.restoreManagementLayout()
 	window.Show()
 	window.Focus()
 	if !alreadyOpen {
 		s.emitManagementState(true)
 	}
+	s.emitManagementWorkspace()
 	return nil
 }
 
 func (s *CoreService) CloseManagement() error {
+	err := s.snapshotManagementLayout()
 	s.mu.Lock()
 	window := s.management
 	s.managementOpen = false
@@ -47,7 +50,20 @@ func (s *CoreService) CloseManagement() error {
 		window.Hide()
 	}
 	s.emitManagementState(false)
-	return nil
+	return err
+}
+
+func (s *CoreService) emitManagementWorkspace() {
+	state, err := s.loadManagementWorkspace()
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	emit := s.emit
+	s.mu.Unlock()
+	if emit != nil {
+		emit("desktop:management-workspace", state)
+	}
 }
 
 func (s *CoreService) emitManagementState(open bool) {
