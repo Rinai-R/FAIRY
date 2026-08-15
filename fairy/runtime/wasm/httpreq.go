@@ -42,6 +42,10 @@ func (h *Host) HTTPRequest(ctx context.Context, grant Grant, payload json.RawMes
 }
 
 func HTTPRequestGrantFromURL(raw string, max uint32) (*HTTPRequestGrant, error) {
+	return HTTPRequestGrantFromURLMethods(raw, max, http.MethodGet)
+}
+
+func HTTPRequestGrantFromURLMethods(raw string, max uint32, methods ...string) (*HTTPRequestGrant, error) {
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Host == "" {
 		return nil, fmt.Errorf("%w: http.request url is invalid", ErrInvalidGrant)
@@ -58,11 +62,14 @@ func HTTPRequestGrantFromURL(raw string, max uint32) (*HTTPRequestGrant, error) 
 	if err != nil || n <= 0 || n > 65535 {
 		return nil, fmt.Errorf("%w: http.request port is invalid", ErrInvalidGrant)
 	}
+	if len(methods) == 0 {
+		methods = []string{http.MethodGet}
+	}
 	grant := &HTTPRequestGrant{
 		Scheme:           parsed.Scheme,
 		Host:             parsed.Hostname(),
 		Port:             uint16(n),
-		Methods:          []string{http.MethodGet},
+		Methods:          append([]string(nil), methods...),
 		MaxResponseBytes: max,
 	}
 	if err := grant.validate(); err != nil {
