@@ -31,6 +31,9 @@ var (
 	ErrManifestInvalid  = errors.New("plugin manifest is invalid")
 	ErrEnvelopeInvalid  = errors.New("plugin envelope is invalid")
 	ErrCapabilityDenied = errors.New("plugin capability is denied")
+	ErrBudgetExceeded   = errors.New("plugin execution budget exceeded")
+	ErrCancelled        = errors.New("plugin execution cancelled")
+	ErrModuleTrap       = errors.New("plugin module trapped")
 )
 
 func RequiredExports() []string {
@@ -76,6 +79,12 @@ func (e *CodedError) Unwrap() error {
 		return ErrManifestInvalid
 	case CodeCapabilityDenied:
 		return ErrCapabilityDenied
+	case CodeBudgetExceeded:
+		return ErrBudgetExceeded
+	case CodeModuleTrap:
+		return ErrModuleTrap
+	case CodeCancelled:
+		return ErrCancelled
 	default:
 		return nil
 	}

@@ -21,18 +21,28 @@ var (
 type Host struct {
 	mu      sync.Mutex
 	runtime wazero.Runtime
+	pages   uint32
 	closed  bool
 }
 
 func Open(ctx context.Context) (*Host, error) {
+	return open(ctx, DefaultBudget())
+}
+
+func open(ctx context.Context, budget Budget) (*Host, error) {
 	if ctx == nil {
 		return nil, errors.New("plugin wasm host context is required")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	runtime := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().WithCloseOnContextDone(true))
-	return &Host{runtime: runtime}, nil
+	if err := budget.validate(); err != nil {
+		return nil, err
+	}
+	runtime := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().
+		WithCloseOnContextDone(true).
+		WithMemoryLimitPages(budget.MaxMemoryPages))
+	return &Host{runtime: runtime, pages: budget.MaxMemoryPages}, nil
 }
 
 func (h *Host) Close(ctx context.Context) error {
