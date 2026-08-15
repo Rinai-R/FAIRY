@@ -72,6 +72,16 @@ func (f *fakeQQSession) ReportExpressionDelivery(_ context.Context, result sessi
 	return nil
 }
 
+func (f *fakeQQSession) closeWatch() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.watch == nil {
+		return
+	}
+	close(f.watch)
+	f.watch = nil
+}
+
 func TestQQBridgePollsGroupBatchAndKeepsPrivateDirectTurn(t *testing.T) {
 	socket := &fakeQQSession{}
 	bridge := mustQQBridge(t, socket, nil, qqonebot.InstanceConfig{GroupAllowlist: []string{"20001"}}, nil)
@@ -126,6 +136,7 @@ func TestQQBridgeInvalidEventDoesNotBreakDesktopSession(t *testing.T) {
 		t.Fatalf("recovery ambient = %#v", socket.ambient)
 	}
 	socket.mu.Unlock()
+	socket.closeWatch()
 	if _, err := socket.OpenSession(t.Context(), session.OpenSessionRequest{
 		Endpoint: session.EndpointDesktop, EndpointKey: "desktop",
 		Interaction: session.Context{Audience: session.AudienceSingle, Initiation: session.InitiationDirect, Presentation: session.PresentationChat, Principal: &session.PrincipalRef{Namespace: "local", Subject: "owner"}},
@@ -236,6 +247,9 @@ func mustQQBridge(t *testing.T, socket qqSession, stickers qqStickerReader, conf
 	bridge, err := newQQBridge(socket, stickers, "qq-1", config, wasm.Grant{}, httpCall)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if fake, ok := socket.(*fakeQQSession); ok {
+		t.Cleanup(fake.closeWatch)
 	}
 	return bridge
 }

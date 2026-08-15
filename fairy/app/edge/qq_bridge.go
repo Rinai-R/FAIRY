@@ -285,7 +285,11 @@ func (b *QQBridge) consumeTurnEvents(ctx context.Context, conversationID string,
 func (b *QQBridge) shouldQuote(conversationID, messageID string, now time.Time, gap uint64) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.replyPositions[conversationID].ShouldQuote(messageID, now, gap)
+	tracker := b.replyPositions[conversationID]
+	if tracker == nil {
+		return false
+	}
+	return tracker.ShouldQuote(messageID, now, gap)
 }
 
 func (b *QQBridge) observeReplyPosition(conversationID, messageID string, at time.Time) {
