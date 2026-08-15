@@ -38,26 +38,49 @@ func code(locals byte, body ...byte) []byte {
 }
 
 func abiGuest(handle []byte, minPages uint32) []byte {
+	return abiGuestModule(handle, minPages, false)
+}
+
+func hostProxyGuestWASM() []byte {
+	handle := code(0,
+		0x20, 0x00,
+		0x20, 0x01,
+		0x10, 0x00,
+		0x0b,
+	)
+	return abiGuestModule(handle, 1, true)
+}
+
+func abiGuestModule(handle []byte, minPages uint32, withHost bool) []byte {
 	module := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
 	module = append(module, section(1, vec(
 		[]byte{0x60, 0x01, 0x7f, 0x01, 0x7f},       // (i32)->i32 alloc
 		[]byte{0x60, 0x02, 0x7f, 0x7f, 0x00},       // (i32,i32)->nil free
-		[]byte{0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7e}, // (i32,i32)->i64 init/handle
+		[]byte{0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7e}, // (i32,i32)->i64 init/handle/host
 		[]byte{0x60, 0x00, 0x00},                   // ()->nil shutdown
 	))...)
+	if withHost {
+		imp := append(name("fairy_host_v1"), name("call")...)
+		imp = append(imp, 0x00, 0x02)
+		module = append(module, section(2, vec(imp))...)
+	}
 	module = append(module, section(3, vec(
 		[]byte{0x00}, []byte{0x01}, []byte{0x02}, []byte{0x02}, []byte{0x03},
 	))...)
 	memory := append([]byte{0x00}, appendULEB(nil, minPages)...)
 	module = append(module, section(5, vec(memory))...)
 	module = append(module, section(6, vec([]byte{0x7f, 0x01, 0x41, 0x80, 0x08, 0x0b}))...) // mut i32=1024
+	allocIdx := byte(0)
+	if withHost {
+		allocIdx = 1
+	}
 	module = append(module, section(7, vec(
 		append(name("memory"), 0x02, 0x00),
-		append(name("fairy_alloc"), 0x00, 0x00),
-		append(name("fairy_free"), 0x00, 0x01),
-		append(name("fairy_init"), 0x00, 0x02),
-		append(name("fairy_handle"), 0x00, 0x03),
-		append(name("fairy_shutdown"), 0x00, 0x04),
+		append(name("fairy_alloc"), 0x00, allocIdx),
+		append(name("fairy_free"), 0x00, allocIdx+1),
+		append(name("fairy_init"), 0x00, allocIdx+2),
+		append(name("fairy_handle"), 0x00, allocIdx+3),
+		append(name("fairy_shutdown"), 0x00, allocIdx+4),
 	))...)
 	alloc := code(1, 0x01, 0x7f,
 		0x23, 0x00,

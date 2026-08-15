@@ -13,18 +13,35 @@ import (
 )
 
 type Instance struct {
-	name   string
-	module api.Module
-	budget Budget
-	slots  chan struct{}
-	mu     sync.Mutex
-	calls  uint32
-	poison error
-	closed bool
+	host           *Host
+	name           string
+	module         api.Module
+	budget         Budget
+	grant          Grant
+	slots          chan struct{}
+	mu             sync.Mutex
+	calls          uint32
+	hostCalls      uint32
+	poison         error
+	closed         bool
+	state          map[string]string
+	pendingIngress *ingressRequest
+	tick           uint64
+	due            bool
+	lastEvent      []byte
+	lastAction     []byte
+	lastTool       []byte
 }
 
 func (h *Host) Load(ctx context.Context, name string, binary []byte, budget Budget) (*Instance, error) {
+	return h.LoadGranted(ctx, name, binary, budget, Grant{})
+}
+
+func (h *Host) LoadGranted(ctx context.Context, name string, binary []byte, budget Budget, grant Grant) (*Instance, error) {
 	if err := budget.validate(); err != nil {
+		return nil, err
+	}
+	if err := grant.validate(); err != nil {
 		return nil, err
 	}
 	h.mu.Lock()
@@ -51,11 +68,15 @@ func (h *Host) Load(ctx context.Context, name string, binary []byte, budget Budg
 		return nil, coded(plugin.CodeBudgetExceeded, fmt.Sprintf("module memory pages %d exceed budget %d", pages, budget.MaxMemoryPages))
 	}
 	instance := &Instance{
+		host:   h,
 		name:   name,
 		module: module,
 		budget: budget,
+		grant:  grant,
 		slots:  make(chan struct{}, budget.MaxConcurrent),
+		state:  make(map[string]string),
 	}
+	h.track(instance)
 	keep = true
 	return instance, nil
 }
@@ -81,18 +102,27 @@ func (i *Instance) Close(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	i.mu.Lock()
-	defer i.mu.Unlock()
 	if i.closed {
-		return i.poison
+		err := i.poison
+		i.mu.Unlock()
+		return err
 	}
 	i.closed = true
 	if i.poison == nil {
 		i.poison = ErrHostClosed
 	}
-	if i.module != nil {
-		return i.module.Close(ctx)
+	module := i.module
+	host := i.host
+	name := i.name
+	err := i.poison
+	i.mu.Unlock()
+	if host != nil {
+		host.drop(name)
 	}
-	return nil
+	if module != nil {
+		return module.Close(ctx)
+	}
+	return err
 }
 
 func (i *Instance) invoke(ctx context.Context, export string, envelope []byte) ([]byte, error) {

@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
+
+	"fairy/plugin"
 )
 
 var (
@@ -19,10 +22,12 @@ var (
 // Host is the deny-by-default wazero engine. It never instantiates WASI or
 // grants filesystem, network, environment, or credential access.
 type Host struct {
-	mu      sync.Mutex
-	runtime wazero.Runtime
-	pages   uint32
-	closed  bool
+	mu        sync.Mutex
+	runtime   wazero.Runtime
+	pages     uint32
+	closed    bool
+	http      *http.Client
+	instances map[string]*Instance
 }
 
 func Open(ctx context.Context) (*Host, error) {
@@ -42,7 +47,44 @@ func open(ctx context.Context, budget Budget) (*Host, error) {
 	runtime := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().
 		WithCloseOnContextDone(true).
 		WithMemoryLimitPages(budget.MaxMemoryPages))
-	return &Host{runtime: runtime, pages: budget.MaxMemoryPages}, nil
+	host := &Host{
+		runtime: runtime,
+		pages:   budget.MaxMemoryPages,
+		http: &http.Client{
+			Transport: &http.Transport{Proxy: nil},
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		instances: make(map[string]*Instance),
+	}
+	if err := host.install(ctx); err != nil {
+		_ = runtime.Close(ctx)
+		return nil, err
+	}
+	return host, nil
+}
+
+func (h *Host) install(ctx context.Context) error {
+	_, err := h.runtime.NewHostModuleBuilder(plugin.HostNamespace).
+		NewFunctionBuilder().WithFunc(h.hostCall).Export(plugin.HostExportCall).
+		Instantiate(ctx)
+	if err != nil {
+		return fmt.Errorf("instantiating plugin host module: %w", err)
+	}
+	return nil
+}
+
+func (h *Host) track(instance *Instance) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.instances[instance.name] = instance
+}
+
+func (h *Host) drop(name string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.instances, name)
 }
 
 func (h *Host) Close(ctx context.Context) error {
@@ -56,6 +98,7 @@ func (h *Host) Close(ctx context.Context) error {
 	runtime := h.runtime
 	h.runtime = nil
 	h.closed = true
+	h.instances = map[string]*Instance{}
 	h.mu.Unlock()
 	if runtime == nil {
 		return nil

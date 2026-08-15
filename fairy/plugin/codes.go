@@ -15,6 +15,7 @@ const (
 	ExportInit     = "fairy_init"
 	ExportHandle   = "fairy_handle"
 	ExportShutdown = "fairy_shutdown"
+	HostExportCall = "call"
 )
 
 const (
