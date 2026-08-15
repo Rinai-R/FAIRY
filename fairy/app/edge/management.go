@@ -385,7 +385,7 @@ func (m *Management) Plugins() (PluginStatus, error) {
 	if m == nil || m.runtime == nil {
 		return PluginStatus{}, ErrManagementUnavailable
 	}
-	err := m.runtime.PluginHost()
+	_, err := m.runtime.PluginHost()
 	if err != nil {
 		return PluginStatus{}, err
 	}

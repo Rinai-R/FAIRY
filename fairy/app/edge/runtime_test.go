@@ -42,7 +42,7 @@ func TestClosedRuntimeDoesNotExposeSession(t *testing.T) {
 	if err := rt.Close(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if err := rt.PluginHost(); !errors.Is(err, ErrPluginHostUnavailable) {
+	if _, err := rt.PluginHost(); !errors.Is(err, ErrPluginHostUnavailable) {
 		t.Fatalf("PluginHost() = %v, want %v", err, ErrPluginHostUnavailable)
 	}
 }

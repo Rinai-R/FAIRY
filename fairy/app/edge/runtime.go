@@ -9,6 +9,7 @@ import (
 
 	"fairy/app/core"
 	appsession "fairy/app/session"
+	"fairy/runtime/wasm"
 	api "fairy/transport/web"
 )
 
@@ -23,12 +24,12 @@ type Options struct {
 }
 
 // Runtime is the Desktop-owned composition root. It starts SeekDB through Core,
-// then Session, and keeps the in-process facade on the same contracts as HTTP.
-// The WASM plugin host is intentionally absent until task 9.1.
+// then Session, then the deny-by-default WASM host on the same process lifetime.
 type Runtime struct {
 	core     *core.Runtime
 	sessions *appsession.Service
 	facade   *appsession.Facade
+	host     *wasm.Host
 	logger   *zap.Logger
 
 	closeOnce sync.Once
@@ -60,13 +61,26 @@ func Open(ctx context.Context, options Options) (*Runtime, error) {
 	if sessions == nil {
 		return nil, appsession.ErrSessionUnavailable
 	}
+	host, err := wasm.Open(ctx)
+	if err != nil {
+		return nil, err
+	}
+	keepHost := false
+	defer func() {
+		if keepHost {
+			return
+		}
+		_ = host.Close(ctx)
+	}()
 	runtime := &Runtime{
 		core:     coreRuntime,
 		sessions: sessions,
 		facade:   appsession.NewFacade(sessions),
+		host:     host,
 		logger:   coreRuntime.Logger,
 	}
 	keep = true
+	keepHost = true
 	return runtime, nil
 }
 
@@ -107,16 +121,25 @@ func (r *Runtime) Facade() *appsession.Facade {
 	return r.facade
 }
 
-func (r *Runtime) PluginHost() error {
-	return ErrPluginHostUnavailable
+func (r *Runtime) PluginHost() (*wasm.Host, error) {
+	if r == nil || r.host == nil {
+		return nil, ErrPluginHostUnavailable
+	}
+	return r.host, nil
 }
 
 func (r *Runtime) Close(ctx context.Context) error {
 	if r == nil {
 		return nil
 	}
-	_ = ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	r.closeOnce.Do(func() {
+		if r.host != nil {
+			r.closeErr = errors.Join(r.closeErr, r.host.Close(ctx))
+			r.host = nil
+		}
 		if r.facade != nil {
 			r.closeErr = errors.Join(r.closeErr, r.facade.Close())
 		}

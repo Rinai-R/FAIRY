@@ -3,7 +3,6 @@
 package edge
 
 import (
-	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -31,8 +30,17 @@ func TestOpenComposesSeekDBCoreAndSessionFacade(t *testing.T) {
 	if rt.Session() == nil || rt.Facade() == nil {
 		t.Fatal("edge did not compose Session service and facade")
 	}
-	if err := rt.PluginHost(); !errors.Is(err, ErrPluginHostUnavailable) {
-		t.Fatalf("PluginHost() = %v, want %v", err, ErrPluginHostUnavailable)
+	host, err := rt.PluginHost()
+	if err != nil {
+		t.Fatalf("PluginHost() = %v, want configured deny-by-default host", err)
+	}
+	if _, err := host.Instantiate(t.Context(), "wasi-guest", []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+		0x01, 0x09, 0x01, 0x60, 0x04, 0x7f, 0x7f, 0x7f, 0x7f, 0x01, 0x7f,
+		0x02, 0x23, 0x01, 0x16, 0x77, 0x61, 0x73, 0x69, 0x5f, 0x73, 0x6e, 0x61, 0x70, 0x73, 0x68, 0x6f, 0x74, 0x5f, 0x70, 0x72, 0x65, 0x76, 0x69, 0x65, 0x77, 0x31,
+		0x08, 0x66, 0x64, 0x5f, 0x77, 0x72, 0x69, 0x74, 0x65, 0x00, 0x00,
+	}); err == nil {
+		t.Fatal("edge plugin host instantiated a WASI guest")
 	}
 	status, err := rt.Core().Foundation.Status(t.Context())
 	if err != nil || status.Storage != "seekdb" || status.Schema.State != seekdb.SchemaCurrent {

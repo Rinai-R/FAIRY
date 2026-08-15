@@ -10,6 +10,7 @@ require (
 	github.com/openai/openai-go/v3 v3.43.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
+	github.com/tetratelabs/wazero v1.12.0
 	go.uber.org/zap v1.28.0
 	go.uber.org/zap/exp v0.3.0
 	golang.org/x/crypto v0.51.0

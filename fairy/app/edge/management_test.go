@@ -25,7 +25,7 @@ func TestRuntimeManagementIsNilWithoutCore(t *testing.T) {
 	if runtime.Management() != nil {
 		t.Fatal("nil runtime exposed management")
 	}
-	if err := runtime.PluginHost(); !errors.Is(err, ErrPluginHostUnavailable) {
+	if _, err := runtime.PluginHost(); !errors.Is(err, ErrPluginHostUnavailable) {
 		t.Fatalf("PluginHost() = %v, want %v", err, ErrPluginHostUnavailable)
 	}
 }

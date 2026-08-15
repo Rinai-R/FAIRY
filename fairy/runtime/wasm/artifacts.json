@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "product": "wazero",
+  "module": "github.com/tetratelabs/wazero",
+  "version": "v1.12.0",
+  "sourceURL": "https://github.com/tetratelabs/wazero",
+  "releaseURL": "https://github.com/tetratelabs/wazero/releases/tag/v1.12.0",
+  "license": "Apache-2.0",
+  "licenseURL": "https://raw.githubusercontent.com/tetratelabs/wazero/v1.12.0/LICENSE",
+  "licenseSHA256": "c46f033d017a5af71a1de0105ec56c41bd47f81a0bbdf779fffe316336dc7c1f",
+  "goSumZipHash": "h1:DuWcpNu/FzgEXgGBDp8J1Spc+CWOvvtvVyjKlaZopYU="
+}
