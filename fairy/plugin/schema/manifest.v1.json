@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fairy.local/plugin/abi/v1/manifest.json",
+  "title": "FAIRY plugin manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "version",
+    "abi",
+    "entry",
+    "exports",
+    "capabilities",
+    "configSchemaVersion",
+    "dataSchemaVersion"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "abi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min", "max"],
+      "properties": {
+        "min": { "type": "integer", "minimum": 1 },
+        "max": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "entry": {
+      "type": "string",
+      "const": "module.wasm"
+    },
+    "exports": {
+      "type": "array",
+      "minItems": 5,
+      "prefixItems": [
+        { "const": "fairy_alloc" },
+        { "const": "fairy_free" },
+        { "const": "fairy_init" },
+        { "const": "fairy_handle" },
+        { "const": "fairy_shutdown" }
+      ],
+      "items": false
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "http.request",
+          "http.ingress",
+          "state.read",
+          "state.write",
+          "timer.poll",
+          "event.emit",
+          "action.complete",
+          "tool.result"
+        ]
+      }
+    },
+    "configSchemaVersion": { "type": "integer", "minimum": 1 },
+    "dataSchemaVersion": { "type": "integer", "minimum": 1 }
+  }
+}
