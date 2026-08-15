@@ -1,0 +1,4 @@
+{
+  "defaultCapabilityGrants": [],
+  "note": "Plugin instances start with no Host capabilities. Grants are explicit per install."
+}

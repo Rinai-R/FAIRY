@@ -5,7 +5,7 @@
 ## 已落地
 
 - [x] Session Core：显式 Agent Loop、可取消 Turn、白名单工具、节奏化回复、持久会话与分层记忆
-- [x] 数据底座：PostgreSQL 17、GORM additive migration、pg_trgm + pgvector 单库混合召回与 OpenSERP 可选公开检索
+- [x] 数据底座：本机 SeekDB 为唯一权威存储；Desktop 拥有 Core 与插件 Host 生命周期
 - [x] Desktop Surface：Wails v3 桌宠、快捷输入、历史消息、coarse observation 与受控的模型按需主屏捕获
 - [x] Web 控制台：角色、称呼、模型、表情包、智能、用量与可观测性管理
 - [x] 公共社交陪伴：QQ 群聊接入，由 Core 判断是否自然参与
@@ -53,12 +53,13 @@ go test -C fairy -tags=live ./agent/conversation \
 
 ## 长会话稳定性门
 
-使用现有临时 PostgreSQL integration 容器，不调用真实 provider、不读取真实用户历史：
+使用真实本地 SeekDB，不调用真实 provider、不读取真实用户历史：
 
 ```bash
-docker compose -f docker-compose.integration.yml up -d --wait postgres
+FAIRY_SEEKDB_BINARY="$HOME/Library/Caches/FAIRY/seekdb/extract/usr/bin/seekdb" \
+FAIRY_SEEKDB_LIBRARY_PATH="$HOME/Library/Caches/FAIRY/seekdb/compat:/opt/homebrew/lib" \
 go test -C fairy -tags=integration ./agent/conversation \
-  -run '^TestPostgresLongSessionSurvivesRepeatedCompactionAndServiceRestart$' \
+  -run 'SeekDB|LongSession' \
   -count=1 -v
 ```
 

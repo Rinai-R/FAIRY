@@ -42,7 +42,15 @@ tasks:
     cmds:
       - task: seekdb:verify-artifact
       - rm -rf {{.BIN_DIR}}/{{.APP_NAME}}.app
-      - mkdir -p {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources
+      - mkdir -p {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugins {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugin-abi {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/licenses
       - cp build/darwin/Info.plist {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Info.plist
       - cp {{.BIN_DIR}}/{{.APP_NAME}} {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS/{{.APP_NAME}}
       - chmod +x {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS/{{.APP_NAME}}
+      - cp build/plugin-host.defaults.json {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugin-host.defaults.json
+      - cp ../../fairy/plugin/schema/manifest.v1.json {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugin-abi/manifest.v1.json
+      - cp ../../fairy/plugin/schema/envelope.v1.json {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugin-abi/envelope.v1.json
+      - cp ../../fairy/plugin/websearch/manifest.json {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugins/web-search.manifest.json
+      - cp ../../fairy/plugin/qqonebot/manifest.json {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugins/qq-onebot.manifest.json
+      - cp build/seekdb/LICENSE {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/licenses/SEEKDB-LICENSE
+      - cp build/seekdb/NOTICE {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/licenses/SEEKDB-NOTICE
+

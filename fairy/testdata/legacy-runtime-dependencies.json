@@ -1,17 +1,16 @@
 {
   "roots": [
     ".",
-    "../surfaces",
-    "../docker-compose.yml"
+    "../surfaces"
   ],
   "rules": {
     "postgres_driver": {
       "pattern": "github.com/jackc/pgx|gorm.io/driver/postgres",
-      "maxFiles": 33
+      "maxFiles": 0
     },
     "pgvector": {
       "pattern": "github.com/pgvector|pgvector/pgvector|CREATE EXTENSION.*vector",
-      "maxFiles": 8
+      "maxFiles": 0
     },
     "qdrant": {
       "pattern": "qdrant",
@@ -19,11 +18,11 @@
     },
     "compose_data_services": {
       "pattern": "postgres:|pgvector/pgvector|fairy-postgres|openserp:",
-      "maxFiles": 7
+      "maxFiles": 0
     },
     "remote_core_connection": {
       "pattern": "defaultCoreEndpoint|CoreEndpoint|FAIRY_CORE_ENDPOINT|FAIRY_CORE_TOKEN",
-      "maxFiles": 7
+      "maxFiles": 0
     }
   }
 }

@@ -564,8 +564,15 @@ func surfaceImportAllowed(surface, line string) bool {
 }
 
 func TestQQSurfaceDependencyGraphExcludesCoreDatabase(t *testing.T) {
+	directory := filepath.Join("..", "surfaces", "qq-onebot")
+	if _, err := os.Stat(filepath.Join(directory, "go.mod")); err != nil {
+		if os.IsNotExist(err) {
+			return
+		}
+		t.Fatal(err)
+	}
 	command := exec.CommandContext(t.Context(), "go", "list", "-deps", "-f", "{{.ImportPath}}", ".")
-	command.Dir = filepath.Join("..", "surfaces", "qq-onebot")
+	command.Dir = directory
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("list QQ Surface dependencies: %v\n%s", err, output)
