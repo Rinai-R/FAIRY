@@ -124,6 +124,13 @@ func (rt *Runtime) APIDependencies() *api.Dependencies {
 	}
 }
 
+// StorageStatus is the credential-free readiness projection used by local
+// management and the HTTP status handler. It never includes connection strings
+// or master-key material.
+func (rt *Runtime) StorageStatus(ctx context.Context) (api.StorageStatus, error) {
+	return rt.storageStatus(ctx)
+}
+
 func (rt *Runtime) storageStatus(ctx context.Context) (api.StorageStatus, error) {
 	if rt == nil || rt.Foundation == nil {
 		return api.StorageStatus{Mode: "unavailable", Error: foundation.ErrFoundationClosed.Error()}, nil

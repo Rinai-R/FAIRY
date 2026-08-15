@@ -95,4 +95,11 @@ test("management workspace is a resizable local shell with sibling observability
   assert.match(managementSource, /label: "日志"/);
   assert.doesNotMatch(managementSource, /observability-tabs|nav-subtasks|ConnectionGate|Bearer|127\.0\.0\.1:8787|FAIRY_API_TOKEN/);
   assert.match(managementSource, /不要求 Core endpoint 或 bearer/);
+  assert.match(managementSource, /label: "插件"/);
+  assert.match(managementSource, /label: "备份"/);
+  assert.match(managementSource, /ManagementOverview\(\)/);
+  assert.match(managementSource, /SaveManagementModel\(/);
+  assert.match(managementSource, /SubscribeManagementLogs\(\)/);
+  assert.match(managementSource, /CreateManagementBackup\(\)/);
+  assert.doesNotMatch(managementSource, /fetch\s*\(|fairy\.apiToken|Authorization|\/v1\//);
 });

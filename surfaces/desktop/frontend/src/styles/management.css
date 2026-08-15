@@ -158,6 +158,104 @@
 
 .management-task__header p,
 .observability-page p {
-  margin: 0;
+  margin: 0 0 20px;
   color: var(--fairy-muted);
+}
+
+.management-error {
+  color: #b42318;
+}
+
+.management-status,
+.management-note {
+  color: var(--fairy-muted);
+}
+
+.management-dl {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 20px;
+}
+
+.management-dl div {
+  display: grid;
+  gap: 4px;
+}
+
+.management-dl dt {
+  color: var(--fairy-muted);
+  font-size: 12px;
+}
+
+.management-dl dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.management-list,
+.management-log {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.management-list li,
+.management-log li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: baseline;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--fairy-line);
+}
+
+.management-form {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.management-field {
+  display: grid;
+  gap: 6px;
+}
+
+.management-field span {
+  color: var(--fairy-muted);
+  font-size: 12px;
+}
+
+.management-field input,
+.management-field textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--fairy-line);
+  border-radius: 8px;
+  color: var(--fairy-ink);
+  background: var(--fairy-surface);
+}
+
+.management-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.management-task button,
+.observability-page button {
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 8px;
+  color: #fff;
+  background: var(--fairy-blue);
+  cursor: pointer;
+}
+
+.management-task button[disabled],
+.observability-page button[disabled] {
+  cursor: wait;
+  opacity: 0.7;
 }

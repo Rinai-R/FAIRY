@@ -19,6 +19,7 @@ type ownedRuntime interface {
 	Close(context.Context) error
 	InterruptTurn(context.Context, string, string) error
 	OpenSessionTransport() (sessionPlane, sessionAssets, error)
+	Management() managementHost
 }
 
 type edgeAdapter struct {
@@ -30,6 +31,13 @@ func (a edgeAdapter) Close(ctx context.Context) error {
 		return nil
 	}
 	return a.runtime.Close(ctx)
+}
+
+func (a edgeAdapter) Management() managementHost {
+	if a.runtime == nil {
+		return nil
+	}
+	return a.runtime.Management()
 }
 
 type shutdownBudget struct {
@@ -143,11 +151,15 @@ func (s *CoreService) shutdownOwnedRuntime(parent context.Context) error {
 	guard := s.instance
 	conversation, turnID, active := s.conversation, s.activeTurnID, s.active
 	socket, cache, observation := s.socket, s.visualCache, s.observation
+	logUnsub := s.logUnsub
 	s.socket, s.assets, s.visualCache, s.observation, s.edge, s.instance = nil, nil, nil, nil, nil, nil
-	s.active, s.activeTurnID = false, ""
+	s.active, s.activeTurnID, s.logUnsub = false, "", nil
 	s.mu.Unlock()
 
 	var errs error
+	if logUnsub != nil {
+		logUnsub()
+	}
 	if active && runtime != nil && conversation != "" && turnID != "" {
 		turnCtx, cancel := context.WithTimeout(parent, budget.Turn)
 		errs = errors.Join(errs, runtime.InterruptTurn(turnCtx, conversation, turnID))

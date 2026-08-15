@@ -62,6 +62,7 @@ type CoreService struct {
 	requestFocus         func(string) error
 	shutdownBudget       shutdownBudget
 	characterName        string
+	logUnsub             func()
 }
 
 func NewCoreService() *CoreService {

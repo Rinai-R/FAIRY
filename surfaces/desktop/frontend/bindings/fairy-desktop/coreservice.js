@@ -154,6 +154,130 @@ export function SetDesktopObservationPrivacy(value) {
     return $Call.ByID(2769179032, value);
 }
 
+export function ManagementOverview() {
+    return $Call.ByID(4060208362);
+}
+
+export function ManagementCharacters() {
+    return $Call.ByID(3548151721);
+}
+
+export function ActivateManagementCharacter(characterID, revision) {
+    return $Call.ByID(3038762027, characterID, revision);
+}
+
+export function ManagementProfile() {
+    return $Call.ByID(3982175326);
+}
+
+export function SaveManagementProfile(preferredName) {
+    return $Call.ByID(731907285, preferredName);
+}
+
+export function ClearManagementProfile() {
+    return $Call.ByID(1729818257);
+}
+
+export function ManagementModel() {
+    return $Call.ByID(1334820682);
+}
+
+export function SaveManagementModel(write) {
+    return $Call.ByID(1276458717, write);
+}
+
+export function ClearManagementModel() {
+    return $Call.ByID(1847262929);
+}
+
+export function ManagementSemantic() {
+    return $Call.ByID(1739934513);
+}
+
+export function SaveManagementSemantic(write) {
+    return $Call.ByID(4208760900, write);
+}
+
+export function ClearManagementSemanticCredential() {
+    return $Call.ByID(1331962937);
+}
+
+export function ManagementIntelligence() {
+    return $Call.ByID(3540352306);
+}
+
+export function ManagementMemories(characterID) {
+    return $Call.ByID(2297955334, characterID);
+}
+
+export function CreateManagementMemory(write) {
+    return $Call.ByID(3634607786, write);
+}
+
+export function TombstoneManagementMemory(id) {
+    return $Call.ByID(851241689, id);
+}
+
+export function ManagementKnowledge() {
+    return $Call.ByID(3408034363);
+}
+
+export function TombstoneManagementKnowledge(id) {
+    return $Call.ByID(991370506, id);
+}
+
+export function ManagementPlugins() {
+    return $Call.ByID(276776827);
+}
+
+export function ManagementStickers() {
+    return $Call.ByID(1355178829);
+}
+
+export function ManagementQQ() {
+    return $Call.ByID(1027493703);
+}
+
+export function SaveManagementQQ(settings) {
+    return $Call.ByID(20767110, settings);
+}
+
+export function ManagementConversation(conversationID, beforeSequence, limit) {
+    return $Call.ByID(2239267606, conversationID, beforeSequence, limit);
+}
+
+export function ManagementTurnRuntime(conversationID, turnID) {
+    return $Call.ByID(3176782082, conversationID, turnID);
+}
+
+export function ManagementMetrics() {
+    return $Call.ByID(55359046);
+}
+
+export function ManagementTraces(messageID) {
+    return $Call.ByID(2907625815, messageID);
+}
+
+export function ManagementTrace(traceID) {
+    return $Call.ByID(1417458654, traceID);
+}
+
+export function ManagementLogs() {
+    return $Call.ByID(1432029494);
+}
+
+export function SubscribeManagementLogs() {
+    return $Call.ByID(3998863538);
+}
+
+export function UnsubscribeManagementLogs() {
+    return $Call.ByID(1663243459);
+}
+
+export function CreateManagementBackup() {
+    return $Call.ByID(1849297427);
+}
+
 // Private type creation functions
 const $$createType0 = $models.CoreSession.createFrom;
 const $$createType1 = $models.CoreSettings.createFrom;

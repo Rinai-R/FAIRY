@@ -17,6 +17,7 @@ type fakeOwnedRuntime struct {
 	closeDelay time.Duration
 	closeErr   error
 	interrupt  error
+	host       managementHost
 }
 
 func (f *fakeOwnedRuntime) Close(ctx context.Context) error {
@@ -37,6 +38,12 @@ func (f *fakeOwnedRuntime) Close(ctx context.Context) error {
 
 func (f *fakeOwnedRuntime) OpenSessionTransport() (sessionPlane, sessionAssets, error) {
 	return nil, nil, errors.New("fake runtime has no session transport")
+}
+
+func (f *fakeOwnedRuntime) Management() managementHost {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.host
 }
 
 func (f *fakeOwnedRuntime) InterruptTurn(ctx context.Context, conversationID, turnID string) error {
