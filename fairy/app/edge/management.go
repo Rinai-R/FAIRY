@@ -2,6 +2,7 @@ package edge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -11,6 +12,8 @@ import (
 	"fairy/context/character"
 	"fairy/context/knowledge"
 	"fairy/context/memory/personal"
+	"fairy/plugin"
+	"fairy/plugin/qqonebot"
 	"fairy/runtime/config"
 	"fairy/runtime/observability"
 	"fairy/runtime/seekdb"
@@ -34,7 +37,6 @@ type (
 	ProfileUpdate    = config.ProfileUpdate
 	ModelStatus      = config.ModelConnectionStatus
 	SemanticStatus   = config.SemanticEmbeddingStatus
-	QQSettings       = config.QQOneBotSettings
 	WebSearchStatus  = config.WebSearchStatus
 	MemoryCatalog    = personal.Catalog
 	MemoryRecord     = personal.Record
@@ -47,6 +49,14 @@ type (
 	TraceDetail      = observability.MessageTraceDetail
 	MessagePage      = session.MessagePage
 )
+
+type QQSettings struct {
+	SchemaVersion  uint32   `json:"schemaVersion"`
+	GroupAllowlist []string `json:"groupAllowlist"`
+	InstanceID     string   `json:"instanceId,omitempty"`
+	Ready          bool     `json:"ready"`
+	APIBaseURL     string   `json:"apiBaseURL,omitempty"`
+}
 
 type Management struct {
 	runtime *Runtime
@@ -509,19 +519,80 @@ func (m *Management) Stickers(ctx context.Context) (StickerPage, error) {
 }
 
 func (m *Management) QQ() (QQSettings, error) {
-	rt := m.coreRuntime()
-	if rt == nil || rt.Config == nil {
+	if m == nil || m.runtime == nil {
 		return QQSettings{}, ErrManagementUnavailable
 	}
-	return rt.Config.QQOneBotSettings()
+	if m.runtime.plugins == nil {
+		return QQSettings{SchemaVersion: 1, GroupAllowlist: []string{}}, nil
+	}
+	records, err := m.runtime.plugins.Instances(context.Background())
+	if err != nil {
+		return QQSettings{}, err
+	}
+	record, ok := qqPluginInstance(records)
+	if !ok {
+		return QQSettings{SchemaVersion: 1, GroupAllowlist: []string{}}, nil
+	}
+	config, err := qqonebot.ParseInstanceConfig(record.ConfigDocument)
+	if err != nil {
+		return QQSettings{}, err
+	}
+	_, discovered := qqonebot.Discover([]plugin.InstanceRecord{record})
+	return QQSettings{
+		SchemaVersion:  config.SchemaVersion,
+		GroupAllowlist: config.GroupAllowlist,
+		InstanceID:     record.ID,
+		Ready:          discovered,
+		APIBaseURL:     config.APIBaseURL,
+	}, nil
 }
 
 func (m *Management) SaveQQ(settings QQSettings) (QQSettings, error) {
-	rt := m.coreRuntime()
-	if rt == nil || rt.Config == nil {
+	if m == nil || m.runtime == nil {
 		return QQSettings{}, ErrManagementUnavailable
 	}
-	return rt.Config.SaveQQOneBotSettings(settings)
+	if m.runtime.plugins == nil {
+		return QQSettings{}, ErrQQPluginNotInstalled
+	}
+	records, err := m.runtime.plugins.Instances(context.Background())
+	if err != nil {
+		return QQSettings{}, err
+	}
+	record, ok := qqPluginInstance(records)
+	if !ok {
+		return QQSettings{}, ErrQQPluginNotInstalled
+	}
+	current, err := qqonebot.ParseInstanceConfig(record.ConfigDocument)
+	if err != nil {
+		return QQSettings{}, err
+	}
+	allowlist, err := qqonebot.NormalizeAllowlist(settings.GroupAllowlist)
+	if err != nil {
+		return QQSettings{}, err
+	}
+	current.GroupAllowlist = allowlist
+	if strings.TrimSpace(settings.APIBaseURL) != "" {
+		current.APIBaseURL = strings.TrimRight(strings.TrimSpace(settings.APIBaseURL), "/")
+	}
+	current.SchemaVersion = 1
+	raw, err := json.Marshal(current)
+	if err != nil {
+		return QQSettings{}, err
+	}
+	record.ConfigDocument = raw
+	if err := m.runtime.plugins.PutInstance(context.Background(), record); err != nil {
+		return QQSettings{}, err
+	}
+	return m.QQ()
+}
+
+func qqPluginInstance(records []plugin.InstanceRecord) (plugin.InstanceRecord, bool) {
+	for _, record := range records {
+		if record.PluginID == qqonebot.PluginID {
+			return record, true
+		}
+	}
+	return plugin.InstanceRecord{}, false
 }
 
 func (m *Management) Conversation(ctx context.Context, conversationID string, beforeSequence uint64, limit int) (MessagePage, error) {

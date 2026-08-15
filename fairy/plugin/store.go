@@ -368,6 +368,34 @@ ON DUPLICATE KEY UPDATE secret_namespace = VALUES(secret_namespace), secret_name
 	return nil
 }
 
+func (s *Store) ConfigRefs(ctx context.Context, instanceID string) ([]ConfigRef, error) {
+	if err := validatePluginID(instanceID); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrConfigRefInvalid, err)
+	}
+	qctx, cancel := s.queryContext(ctx)
+	defer cancel()
+	rows, err := s.db.QueryContext(qctx, `
+SELECT instance_id, handle, secret_namespace, secret_name
+FROM plugin_instance_config_refs WHERE instance_id = ?
+ORDER BY handle`, instanceID)
+	if err != nil {
+		return nil, fmt.Errorf("list plugin config refs %s: %w", instanceID, err)
+	}
+	defer rows.Close()
+	refs := make([]ConfigRef, 0)
+	for rows.Next() {
+		var ref ConfigRef
+		if err := rows.Scan(&ref.InstanceID, &ref.Handle, &ref.SecretNamespace, &ref.SecretName); err != nil {
+			return nil, fmt.Errorf("scan plugin config ref: %w", err)
+		}
+		refs = append(refs, ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list plugin config refs %s: %w", instanceID, err)
+	}
+	return refs, nil
+}
+
 func (s *Store) queryContext(parent context.Context) (context.Context, context.CancelFunc) {
 	if parent == nil {
 		parent = context.Background()

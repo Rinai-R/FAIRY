@@ -3,6 +3,7 @@ package edge
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sync"
 
 	"go.uber.org/zap"
@@ -34,6 +35,9 @@ type Runtime struct {
 	host     *wasm.Host
 	plugins  *plugin.Store
 	logger   *zap.Logger
+	qq       *QQBridge
+	qqCancel context.CancelFunc
+	qqHTTP   *http.Server
 
 	closeOnce sync.Once
 	closeErr  error
@@ -98,6 +102,9 @@ func Open(ctx context.Context, options Options) (*Runtime, error) {
 	if err := runtime.bindWebPlugin(ctx); err != nil {
 		return nil, err
 	}
+	if err := runtime.bindQQPlugin(ctx); err != nil {
+		return nil, err
+	}
 	keep = true
 	keepHost = true
 	return runtime, nil
@@ -155,6 +162,14 @@ func (r *Runtime) Close(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	r.closeOnce.Do(func() {
+		if r.qqCancel != nil {
+			r.qqCancel()
+			r.qqCancel = nil
+		}
+		if r.qqHTTP != nil {
+			_ = r.qqHTTP.Close()
+			r.qqHTTP = nil
+		}
 		if r.host != nil {
 			r.closeErr = errors.Join(r.closeErr, r.host.Close(ctx))
 			r.host = nil

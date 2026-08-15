@@ -19,6 +19,7 @@ type SendRequest struct {
 	GroupID        string `json:"groupId"`
 	UserID         string `json:"userId"`
 	Text           string `json:"text"`
+	ImageBase64    string `json:"imageBase64,omitempty"`
 	ReplyMessageID string `json:"replyMessageId"`
 }
 
@@ -104,9 +105,12 @@ func numericMessageIDZero(messageID string) bool {
 }
 
 func encodeSendBody(req SendRequest) (string, []byte, error) {
-	message := req.Text
+	message, err := encodeOneBotMessage(req)
+	if err != nil {
+		return "", nil, err
+	}
 	if strings.TrimSpace(req.ReplyMessageID) != "" {
-		message = "[CQ:reply,id=" + req.ReplyMessageID + "]" + req.Text
+		message = "[CQ:reply,id=" + req.ReplyMessageID + "]" + message
 	}
 	switch {
 	case strings.TrimSpace(req.GroupID) != "":
@@ -126,4 +130,17 @@ func encodeSendBody(req SendRequest) (string, []byte, error) {
 	default:
 		return "", nil, errors.New("send target is required")
 	}
+}
+
+func encodeOneBotMessage(req SendRequest) (string, error) {
+	if req.ImageBase64 != "" {
+		if strings.ContainsAny(req.ImageBase64, "[]=\r\n,") {
+			return "", errors.New("sticker payload is invalid")
+		}
+		return "[CQ:image,file=base64://" + req.ImageBase64 + "]", nil
+	}
+	if strings.TrimSpace(req.Text) == "" {
+		return "", errors.New("send text is required")
+	}
+	return req.Text, nil
 }

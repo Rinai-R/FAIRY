@@ -32,6 +32,7 @@ type Instance struct {
 	lastEvent      []byte
 	lastAction     []byte
 	lastTool       []byte
+	events         EventQueue
 	current        plugin.Correlation
 	currentSpan    string
 }

@@ -11,6 +11,8 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 )
 
+var errQQAllowlistLocalOnly = errors.New("QQ allowlist is managed by the local plugin workspace")
+
 func (s *Server) registerConfigRoutes() {
 	v1 := s.engine.Group("/v1")
 	v1.Use(s.authMiddleware)
@@ -30,35 +32,11 @@ func (s *Server) registerConfigRoutes() {
 }
 
 func (s *Server) handleGetQQOneBot(ctx context.Context, c *app.RequestContext) {
-	settings, err := s.rt.Config.QQOneBotSettings()
-	if err != nil {
-		writeErr(c, http.StatusInternalServerError, err)
-		return
-	}
-	c.JSON(http.StatusOK, settings)
+	writeErr(c, http.StatusForbidden, errQQAllowlistLocalOnly)
 }
 
 func (s *Server) handlePutQQOneBot(ctx context.Context, c *app.RequestContext) {
-	var body struct {
-		GroupAllowlist []string `json:"groupAllowlist"`
-	}
-	if err := c.Bind(&body); err != nil {
-		writeErr(c, http.StatusBadRequest, err)
-		return
-	}
-	settings, err := s.rt.Config.SaveQQOneBotSettings(config.QQOneBotSettings{
-		SchemaVersion:  1,
-		GroupAllowlist: body.GroupAllowlist,
-	})
-	if err != nil {
-		if errors.Is(err, config.ErrInvalidQQOneBotSettings) {
-			writeErr(c, http.StatusBadRequest, err)
-		} else {
-			writeErr(c, http.StatusInternalServerError, err)
-		}
-		return
-	}
-	c.JSON(http.StatusOK, settings)
+	writeErr(c, http.StatusForbidden, errQQAllowlistLocalOnly)
 }
 
 func (s *Server) handleGetModel(ctx context.Context, c *app.RequestContext) {

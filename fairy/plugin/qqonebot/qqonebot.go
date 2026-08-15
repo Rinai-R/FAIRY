@@ -64,7 +64,7 @@ func Handle(ctx context.Context, envelope plugin.Envelope, call func(context.Con
 	}
 	switch payload.Op {
 	case "parse":
-		return handleParse(envelope)
+		return handleParse(ctx, envelope, call)
 	case "send":
 		return handleSend(ctx, envelope, call)
 	default:
@@ -72,7 +72,7 @@ func Handle(ctx context.Context, envelope plugin.Envelope, call func(context.Con
 	}
 }
 
-func handleParse(envelope plugin.Envelope) (plugin.Envelope, error) {
+func handleParse(ctx context.Context, envelope plugin.Envelope, call func(context.Context, string, json.RawMessage) ([]byte, error)) (plugin.Envelope, error) {
 	var payload struct {
 		Op     string          `json:"op"`
 		Raw    json.RawMessage `json:"raw"`
@@ -98,6 +98,13 @@ func handleParse(envelope plugin.Envelope) (plugin.Envelope, error) {
 			}
 			return sdk.Result(envelope.Correlation, body)
 		}
+	}
+	if err := emitParsedEvent(ctx, envelope, call, event); err != nil {
+		var coded *plugin.CodedError
+		if errors.As(err, &coded) {
+			return sdk.Fail(envelope.Correlation, coded.Code, coded.Message)
+		}
+		return plugin.Envelope{}, err
 	}
 	body, err := json.Marshal(map[string]any{"accepted": true, "event": event})
 	if err != nil {
@@ -159,4 +166,34 @@ func hasAll(grants []string, names ...string) bool {
 		}
 	}
 	return true
+}
+
+func emitParsedEvent(ctx context.Context, envelope plugin.Envelope, call func(context.Context, string, json.RawMessage) ([]byte, error), event Event) error {
+	if call == nil {
+		return nil
+	}
+	traceID := envelope.Correlation.TraceID
+	if traceID == "" {
+		traceID = event.MessageID
+	}
+	eventRaw, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(struct {
+		PluginInstanceID  string          `json:"pluginInstanceId"`
+		TraceID           string          `json:"traceId"`
+		ExternalMessageID string          `json:"externalMessageId"`
+		Event             json.RawMessage `json:"event"`
+	}{
+		PluginInstanceID:  envelope.Correlation.PluginInstanceID,
+		TraceID:           traceID,
+		ExternalMessageID: event.MessageID,
+		Event:             eventRaw,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = call(ctx, "event.emit", payload)
+	return err
 }

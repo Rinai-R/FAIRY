@@ -329,6 +329,7 @@ func (i *Instance) recordCorrelated(granted bool, name string, payload json.RawM
 	switch kind {
 	case "event":
 		i.lastEvent = raw
+		i.events.Push(raw)
 	case "action":
 		i.lastAction = raw
 	case "tool":
@@ -336,6 +337,13 @@ func (i *Instance) recordCorrelated(granted bool, name string, payload json.RawM
 	}
 	i.mu.Unlock()
 	return marshalHostResult(hostResult{OK: true})
+}
+
+func (i *Instance) PollEvents(after uint64, limit int) []QueuedEvent {
+	if i == nil {
+		return nil
+	}
+	return i.events.Poll(after, limit)
 }
 
 func (i *Instance) LastEvent() []byte {

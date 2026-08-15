@@ -412,7 +412,7 @@ func sendEnvelope(t *testing.T, payload map[string]any) []byte {
 
 func httpHostCall(client *http.Client) testhost.HostCall {
 	return func(ctx context.Context, capability string, payload json.RawMessage) ([]byte, error) {
-		if capability == "action.complete" {
+		if capability == "action.complete" || capability == "event.emit" {
 			return json.Marshal(map[string]any{"ok": true})
 		}
 		if capability != "http.request" {

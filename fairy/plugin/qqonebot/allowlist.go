@@ -14,6 +14,7 @@ type InstanceConfig struct {
 	SchemaVersion  uint32   `json:"schemaVersion"`
 	GroupAllowlist []string `json:"groupAllowlist"`
 	APIBaseURL     string   `json:"apiBaseURL,omitempty"`
+	IngressBind    string   `json:"ingressBind,omitempty"`
 }
 
 func NormalizeAllowlist(values []string) ([]string, error) {
@@ -80,5 +81,6 @@ func ParseInstanceConfig(raw json.RawMessage) (InstanceConfig, error) {
 	config.SchemaVersion = 1
 	config.GroupAllowlist = allowlist
 	config.APIBaseURL = strings.TrimRight(strings.TrimSpace(config.APIBaseURL), "/")
+	config.IngressBind = strings.TrimSpace(config.IngressBind)
 	return config, nil
 }

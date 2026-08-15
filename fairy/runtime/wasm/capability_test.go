@@ -201,6 +201,10 @@ func TestEventActionToolRequireCorrelationAndStableActionStatus(t *testing.T) {
 	if len(instance.LastEvent()) == 0 || len(instance.LastAction()) == 0 || len(instance.LastTool()) == 0 {
 		t.Fatal("host did not retain correlated plugin results")
 	}
+	queued := instance.PollEvents(0, 8)
+	if len(queued) != 1 || queued[0].Sequence != 1 {
+		t.Fatalf("event queue = %#v", queued)
+	}
 }
 
 func TestHostCallBudgetIsEnforcedWithoutPoison(t *testing.T) {
