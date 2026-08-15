@@ -29,6 +29,7 @@ logs.txt
 /node_modules/
 /.pnpm-store/
 /target/
+/sdk/plugin-rs/target/
 /pnpm-debug.log*
 /.env
 /.env.persona.local

@@ -85,3 +85,17 @@ func EncodeEnvelope(envelope Envelope) ([]byte, error) {
 	}
 	return bytes.TrimSuffix(buffer.Bytes(), []byte("\n")), nil
 }
+
+func NewResult(correlation Correlation, payload json.RawMessage) Envelope {
+	if len(payload) == 0 {
+		payload = json.RawMessage(`{}`)
+	}
+	return Envelope{ABIVersion: ABIVersion, Kind: "result", Correlation: correlation, Payload: payload}
+}
+
+func NewError(correlation Correlation, code, message string) Envelope {
+	return Envelope{
+		ABIVersion: ABIVersion, Kind: "error", Correlation: correlation,
+		Error: &CodedError{Code: code, Message: message},
+	}
+}

@@ -25,7 +25,7 @@ func TestHelpExposesOnlySupportedSurface(t *testing.T) {
 	if err := root.ExecuteContext(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"serve", "status", "doctor", "session", "turn", "events", "logs", "metrics", "config", "character", "profile", "db"} {
+	for _, name := range []string{"serve", "status", "doctor", "session", "turn", "events", "logs", "metrics", "config", "character", "profile", "db", "plugin"} {
 		if !strings.Contains(output.String(), name) {
 			t.Fatalf("help missing %q:\n%s", name, output)
 		}
