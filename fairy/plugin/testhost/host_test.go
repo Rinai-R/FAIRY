@@ -121,6 +121,29 @@ func TestMinimalEventAndToolPluginsPreserveCorrelation(t *testing.T) {
 	}
 }
 
+func TestTestHostCallDeniesUngrantedHTTP(t *testing.T) {
+	host, err := testhost.New(echo, testhost.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = host.Call(t.Context(), "http.request", json.RawMessage(`{"method":"GET","url":"https://example.invalid"}`))
+	if !errors.Is(err, plugin.ErrCapabilityDenied) {
+		t.Fatalf("Call() = %v", err)
+	}
+	granted, err := testhost.New(echo, testhost.Options{
+		MaxInputBytes: testhost.DefaultOptions().MaxInputBytes,
+		MaxCalls:      testhost.DefaultOptions().MaxCalls,
+		Capabilities:  []string{"http.request"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = granted.Call(t.Context(), "http.request", json.RawMessage(`{}`))
+	if !errors.Is(err, plugin.ErrCapabilityDenied) {
+		t.Fatalf("Call() without HostCall = %v", err)
+	}
+}
+
 func echo(_ context.Context, envelope plugin.Envelope) (plugin.Envelope, error) {
 	return envelope, nil
 }

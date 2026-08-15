@@ -17,10 +17,13 @@ var ErrBudgetRequired = errors.New("plugin test host budget is required")
 // exercise the same envelopes without starting Desktop or compiling WASM.
 type Handler func(ctx context.Context, envelope plugin.Envelope) (plugin.Envelope, error)
 
+type HostCall func(ctx context.Context, capability string, payload json.RawMessage) ([]byte, error)
+
 type Options struct {
 	MaxInputBytes uint32
 	MaxCalls      uint32
 	Capabilities  []string
+	HostCall      HostCall
 }
 
 func DefaultOptions() Options {
@@ -77,15 +80,38 @@ func (h *Host) Invoke(ctx context.Context, raw []byte) ([]byte, error) {
 	return sdk.Encode(out)
 }
 
+func (h *Host) Call(ctx context.Context, capability string, payload json.RawMessage) ([]byte, error) {
+	if h == nil {
+		return nil, ErrHandlerRequired
+	}
+	if ctx == nil {
+		return nil, errors.New("plugin test host context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, &plugin.CodedError{Code: plugin.CodeCancelled, Message: err.Error()}
+	}
+	if capability == "" {
+		return nil, &plugin.CodedError{Code: plugin.CodeCapabilityDenied, Message: "capability is required"}
+	}
+	if !h.granted(capability) || h.opts.HostCall == nil {
+		return nil, &plugin.CodedError{Code: plugin.CodeCapabilityDenied, Message: fmt.Sprintf("%s: not granted", capability)}
+	}
+	return h.opts.HostCall(ctx, capability, payload)
+}
+
+func (h *Host) granted(capability string) bool {
+	for _, name := range h.opts.Capabilities {
+		if name == capability {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Host) authorize(envelope plugin.Envelope) error {
 	required := requiredCapability(envelope)
-	if required == "" {
+	if required == "" || h.granted(required) {
 		return nil
-	}
-	for _, name := range h.opts.Capabilities {
-		if name == required {
-			return nil
-		}
 	}
 	return &plugin.CodedError{Code: plugin.CodeCapabilityDenied, Message: fmt.Sprintf("%s: not granted", required)}
 }
