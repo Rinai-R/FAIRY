@@ -22,6 +22,21 @@ func (s *Store) CatalogContext(ctx context.Context) (Catalog, error) {
 	return s.catalogSeekDB(ctx)
 }
 
+func (s *Store) ConfirmCandidate(id string) (Record, error) {
+	return s.confirmCandidate(context.Background(), id, false)
+}
+
+func (s *Store) ConfirmCandidateContext(ctx context.Context, id string) (Record, error) {
+	return s.confirmCandidate(ctx, id, true)
+}
+
+func (s *Store) confirmCandidate(ctx context.Context, id string, requireContext bool) (Record, error) {
+	if !s.usesSeekDB() {
+		return Record{}, ErrStoreBackendUnavailable
+	}
+	return s.confirmCandidateSeekDB(ctx, id, requireContext)
+}
+
 func (s *Store) Tombstone(id string) error {
 	return s.TombstoneContext(context.Background(), id)
 }

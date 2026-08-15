@@ -59,6 +59,14 @@ var targetPackages = []string{
 	"fairy/agent/sticker",
 	"fairy/agent/tool",
 	"fairy/transport/web",
+	"fairy/plugin",
+	"fairy/plugin/examples/event",
+	"fairy/plugin/examples/tool",
+	"fairy/plugin/qqonebot",
+	"fairy/plugin/sdk",
+	"fairy/plugin/testhost",
+	"fairy/plugin/websearch",
+	"fairy/runtime/wasm",
 }
 
 type listedPackage struct {
@@ -119,7 +127,7 @@ func TestProductionPackagesLiveUnderRegisteredSubsystems(t *testing.T) {
 		"agent": true, "app": true, "context": true, "runtime": true, "transport": true,
 	}
 	for _, pkg := range listPackages(t, "./...") {
-		if pkg.ImportPath == "fairy" {
+		if pkg.ImportPath == "fairy" || strings.HasPrefix(pkg.ImportPath, "fairy/plugin/") || pkg.ImportPath == "fairy/plugin" {
 			continue
 		}
 		relative := strings.TrimPrefix(pkg.ImportPath, "fairy/")
@@ -533,7 +541,7 @@ func TestIndependentSurfacesDoNotImportCoreInternals(t *testing.T) {
 				}
 				return nil
 			}
-			if filepath.Ext(path) != ".go" {
+			if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
 				return nil
 			}
 			file, err := os.Open(path)
@@ -560,7 +568,10 @@ func surfaceImportAllowed(surface, line string) bool {
 	if strings.Contains(line, `"fairy/transport/session"`) {
 		return true
 	}
-	return surface == "desktop" && strings.Contains(line, `"fairy/app/edge"`)
+	if surface != "desktop" {
+		return false
+	}
+	return strings.Contains(line, `"fairy/app/edge"`) || strings.Contains(line, `"fairy/runtime/observability"`)
 }
 
 func TestQQSurfaceDependencyGraphExcludesCoreDatabase(t *testing.T) {

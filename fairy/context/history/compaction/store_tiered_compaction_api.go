@@ -41,9 +41,9 @@ func (s *Store) CommitTieredCompactionContext(
 		return Result{}, ErrStoreBackendUnavailable
 	}
 	return s.commitTieredCompactionSeekDB(
-			ctx, conversationID,
-			expectedWindowRevision, expectedProjectionRevision,
-			expectedTranscript,
-			summary, cutoff, projection, contextWindow, clearLane,
-		)
+		ctx, conversationID,
+		expectedWindowRevision, expectedProjectionRevision,
+		expectedTranscript,
+		summary, cutoff, projection, contextWindow, clearLane,
+	)
 }

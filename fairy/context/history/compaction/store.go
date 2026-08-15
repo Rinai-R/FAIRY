@@ -12,9 +12,9 @@ import (
 )
 
 var (
-	ErrSeekDBConnectionEmpty   = errors.New("history compaction SeekDB connection is required")
-	ErrSeekDBQueryLimitInvalid = errors.New("history compaction SeekDB query limit must be greater than zero")
-	ErrStoreBackendUnavailable = errors.New("history compaction store backend is unavailable")
+	ErrSeekDBConnectionEmpty       = errors.New("history compaction SeekDB connection is required")
+	ErrSeekDBQueryLimitInvalid     = errors.New("history compaction SeekDB query limit must be greater than zero")
+	ErrStoreBackendUnavailable     = errors.New("history compaction store backend is unavailable")
 	ErrPromptWindowRevisionChanged = errors.New("prompt window revision changed")
 )
 

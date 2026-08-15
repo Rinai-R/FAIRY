@@ -59,9 +59,9 @@ func (s *Store) insertVerifiedKnowledge(
 		return Record{}, ErrStoreBackendUnavailable
 	}
 	return s.insertVerifiedKnowledgeSeekDB(
-			ctx, topic, statement, conversationID, turnID,
-			confidenceBasisPoints, sources, requireContext,
-		)
+		ctx, topic, statement, conversationID, turnID,
+		confidenceBasisPoints, sources, requireContext,
+	)
 }
 
 func (s *Store) SearchKnowledgeForIngest(query string, limit int) ([]Retrieved, error) {
@@ -125,8 +125,8 @@ func (s *Store) commitKnowledgeDocumentActions(
 		return 0, ErrStoreBackendUnavailable
 	}
 	return s.commitKnowledgeDocumentActionsSeekDB(
-			ctx, task, document, suppliedKnowledgeIDs, actions, requireContext,
-		)
+		ctx, task, document, suppliedKnowledgeIDs, actions, requireContext,
+	)
 }
 
 func validateKnowledgeIngestTask(task IngestTask) ([]byte, error) {

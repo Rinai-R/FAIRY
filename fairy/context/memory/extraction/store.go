@@ -30,7 +30,7 @@ var (
 
 const (
 	defaultJobLeaseDuration = 30 * time.Second
-	maxExtractionAttempts     = 3
+	maxExtractionAttempts   = 3
 )
 
 // Store owns exactly one extraction persistence authority. A full settlement

@@ -37,9 +37,9 @@ func (s *Store) CommitPromptProjectionContext(
 		return Result{}, ErrStoreBackendUnavailable
 	}
 	return s.commitPromptProjectionSeekDB(
-			ctx, conversationID,
-			expectedWindowRevision, expectedProjectionRevision,
-			expectedTranscript,
-			projection, contextWindow, clearLane,
-		)
+		ctx, conversationID,
+		expectedWindowRevision, expectedProjectionRevision,
+		expectedTranscript,
+		projection, contextWindow, clearLane,
+	)
 }
