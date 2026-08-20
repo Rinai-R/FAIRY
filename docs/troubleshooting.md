@@ -3,8 +3,8 @@
 ## Desktop 无法启动
 
 - 确认用户数据目录可写，且没有第二个实例占用写锁。
-- 确认 SeekDB artifact 已随包校验；不要在启动时下载。
-- 日志和 Trace 在管理工作区中查看。启动失败应 fail closed，而不是回退到 PostgreSQL。
+- 确认 `libseekdb` 已随包放入 `Contents/Frameworks`，不要在启动时下载，也不要设置 `FAIRY_SEEKDB_BINARY`。
+- 日志和 Trace 在管理工作区中查看。启动失败应 fail closed，而不是回退到 PostgreSQL 或 SeekDB 子进程。
 
 ## 搜索不可用
 

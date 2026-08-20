@@ -391,6 +391,29 @@ func TestDesktopCapturePersistenceBoundary(t *testing.T) {
 	}
 }
 
+func TestSeekDBRuntimeDoesNotImportProcessOrMySQLDriver(t *testing.T) {
+	cmd := exec.Command("go", "list", "-json", "./runtime/seekdb")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list ./runtime/seekdb: %v", err)
+	}
+	var pkg struct {
+		Imports []string
+		Deps    []string
+	}
+	if err := json.Unmarshal(out, &pkg); err != nil {
+		t.Fatal(err)
+	}
+	for _, imported := range pkg.Imports {
+		if imported == "os/exec" {
+			t.Fatal("runtime/seekdb imports os/exec; in-process SeekDB must not spawn a child process")
+		}
+		if imported == "github.com/go-sql-driver/mysql" {
+			t.Fatal("runtime/seekdb imports go-sql-driver/mysql; in-process SeekDB must not use SQL TCP")
+		}
+	}
+}
+
 func TestDesktopSurfaceDependencyBoundary(t *testing.T) {
 	cmd := exec.Command("go", "list", "-json", ".")
 	cmd.Dir = filepath.Join("..", "surfaces", "desktop")

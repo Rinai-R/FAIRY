@@ -1,72 +1,63 @@
 {
   "schemaVersion": 1,
   "product": "seekdb",
-  "releaseTag": "v1.3.0",
-  "releaseURL": "https://github.com/oceanbase/seekdb/releases/tag/v1.3.0",
+  "releaseTag": "8c2bd7064084d985e3a9c5b8368976ffef8e8394",
+  "releaseURL": "https://github.com/oceanbase/seekdb/commit/8c2bd7064084d985e3a9c5b8368976ffef8e8394",
   "targets": [
     {
       "goos": "darwin",
       "goarch": "arm64",
       "status": "candidate",
-      "reason": "官方独立包及 SHA-256 已确认；该包依赖 Homebrew 动态库，完整依赖闭包、许可证随包与 FAIRY 内置启动仍需验证。",
+      "reason": "feat/embedded-mode commit 8c2bd7064084d985e3a9c5b8368976ffef8e8394 构建的 darwin/arm64 进程内 libseekdb.dylib；OceanBase 尚未发布官方嵌入库，故保持 candidate，打包在 verified 之前明确失败。",
       "artifact": {
-        "version": "1.3.0.0-100000092026051510",
-        "sourceURL": "https://github.com/oceanbase/seekdb/releases/download/v1.3.0/seekdb-1.3.0.0-100000092026051510-macos15-arm64.tar.gz",
-        "provenanceURL": "https://github.com/oceanbase/seekdb/releases/tag/v1.3.0",
-        "sha256": "65105646eface8e13e04ef83e61f6111b52d90ba473d03bd67f9c4ef06b81087",
-        "size": 145953781,
+        "version": "8c2bd7064084d985e3a9c5b8368976ffef8e8394",
+        "sourceURL": "https://github.com/oceanbase/seekdb/archive/8c2bd7064084d985e3a9c5b8368976ffef8e8394.tar.gz",
+        "provenanceURL": "https://github.com/oceanbase/seekdb/commit/8c2bd7064084d985e3a9c5b8368976ffef8e8394",
+        "sha256": "ac9e6c087705a21534971c0f86f37105fa20fe0d1334b2e80b2d52739bb6de48",
+        "size": 137952416,
         "license": "Apache-2.0",
-        "licenseURL": "https://raw.githubusercontent.com/oceanbase/seekdb/v1.3.0/LICENSE",
+        "licenseURL": "https://raw.githubusercontent.com/oceanbase/seekdb/8c2bd7064084d985e3a9c5b8368976ffef8e8394/LICENSE",
         "licenseSHA256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
-        "noticeURL": "https://raw.githubusercontent.com/oceanbase/seekdb/v1.3.0/NOTICE",
+        "noticeURL": "https://raw.githubusercontent.com/oceanbase/seekdb/8c2bd7064084d985e3a9c5b8368976ffef8e8394/NOTICE",
         "noticeSHA256": "c753aec56c61055ae25ca41d71984674b1f32d2e1c745efbbaa5bdbaf3ab2a0b",
-        "archiveFormat": "tar.gz",
-        "binaryPath": "usr/bin/seekdb",
+        "archiveFormat": "dylib",
+        "libraryPath": "libseekdb.dylib",
         "requiredPaths": [
-          "etc/seekdb",
-          "usr/bin/seekdb",
-          "usr/libexec/seekdb",
-          "usr/share/seekdb"
+          "libseekdb.dylib"
         ],
-        "externalDependencies": [
-          "brotli",
-          "re2",
-          "thrift",
-          "utf8proc",
-          "zstd"
-        ],
-        "minimumOSVersion": "15.6.1"
+        "externalDependencies": [],
+        "minimumOSVersion": "15.0"
       }
     },
     {
       "goos": "darwin",
       "goarch": "amd64",
       "status": "unsupported",
-      "reason": "官方 seekdb Homebrew formula 当前仅提供 macOS 15 arm64 artifact。"
+      "reason": "本次仅交付 darwin/arm64 进程内 libseekdb；其余平台保持 unsupported。"
     },
     {
       "goos": "linux",
       "goarch": "amd64",
       "status": "unsupported",
-      "reason": "官方提供按发行版安装的 RPM/DEB，但它们依赖系统包和 systemd，不是 FAIRY 可直接随包的 portable runtime。"
+      "reason": "本次仅交付 darwin/arm64 进程内 libseekdb；其余平台保持 unsupported。"
     },
     {
       "goos": "linux",
       "goarch": "arm64",
       "status": "unsupported",
-      "reason": "官方提供按发行版安装的 RPM/DEB，但它们依赖系统包和 systemd，不是 FAIRY 可直接随包的 portable runtime。"
+      "reason": "本次仅交付 darwin/arm64 进程内 libseekdb；其余平台保持 unsupported。"
     },
     {
       "goos": "windows",
       "goarch": "amd64",
       "status": "unsupported",
-      "reason": "官方只提供实验性 Windows 11 x86_64 MSI，不是 FAIRY 可直接随包解包和管理的 portable runtime。"
+      "reason": "本次仅交付 darwin/arm64 进程内 libseekdb；其余平台保持 unsupported。"
     },
     {
       "goos": "windows",
       "goarch": "arm64",
       "status": "unsupported",
-      "reason": "官方当前没有 Windows arm64 seekdb runtime artifact。"
+      "reason": "本次仅交付 darwin/arm64 进程内 libseekdb；其余平台保持 unsupported。"
     }
   ]
 }

@@ -638,7 +638,7 @@ func (m *Management) BackupSource() (BackupSource, error) {
 	if rt == nil || strings.TrimSpace(rt.ConfigRoot) == "" {
 		return BackupSource{}, ErrManagementUnavailable
 	}
-	cfg, err := seekdb.ConfigFromEnv(os.Getenv)
+	cfg, err := seekdb.ConfigFromEnv(seekdb.ProfileGetenv(rt.ConfigRoot, os.Getenv))
 	if err != nil {
 		return BackupSource{}, err
 	}

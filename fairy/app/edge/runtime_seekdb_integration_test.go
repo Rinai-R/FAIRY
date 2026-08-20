@@ -3,10 +3,12 @@
 package edge
 
 import (
-	"net"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -227,29 +229,41 @@ func TestCleanDirEdgeRuntimePersistsConversationMemoryKnowledgeAndLogs(t *testin
 
 func applyEdgeSeekDBEnvironment(t *testing.T) {
 	t.Helper()
-	binary := os.Getenv(seekdb.EnvBinaryPath)
-	if binary == "" {
-		t.Skip(seekdb.EnvBinaryPath + " is not set")
+	library := os.Getenv(seekdb.EnvLibrary)
+	if library == "" {
+		t.Skip(seekdb.EnvLibrary + " is not set")
 	}
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	address := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv(seekdb.EnvBinaryPath, binary)
-	t.Setenv(seekdb.EnvLibraryPath, os.Getenv(seekdb.EnvLibraryPath))
-	t.Setenv(seekdb.EnvDataDir, filepath.Join(t.TempDir(), "seekdb-data"))
-	t.Setenv(seekdb.EnvAddress, address)
-	t.Setenv(seekdb.EnvDatabase, seekdb.DefaultDatabase)
-	t.Setenv(seekdb.EnvUser, seekdb.DefaultUser)
+	t.Setenv(seekdb.EnvLibrary, library)
+	t.Setenv(seekdb.EnvDataDir, edgeProcessDataDir(t))
+	t.Setenv(seekdb.EnvDatabase, edgeUniqueDatabase(t))
 	t.Setenv(seekdb.EnvConnectLimit, "5s")
 	t.Setenv(seekdb.EnvStartLimit, "90s")
 	t.Setenv(seekdb.EnvQueryLimit, "15s")
 	t.Setenv(seekdb.EnvShutdownLimit, "20s")
 	t.Setenv("FAIRY_DATABASE_URL", "postgres://invalid-legacy-sentinel")
+}
+
+var (
+	edgeDataDirOnce sync.Once
+	edgeDataDir     string
+)
+
+func edgeProcessDataDir(t *testing.T) string {
+	t.Helper()
+	edgeDataDirOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "fairy-edge-seekdb-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		edgeDataDir = dir
+	})
+	return edgeDataDir
+}
+
+func edgeUniqueDatabase(t *testing.T) string {
+	t.Helper()
+	sum := sha256.Sum256([]byte(t.Name()))
+	return "db" + hex.EncodeToString(sum[:10])
 }
 
 func writeEdgeVisualPack(t *testing.T, root, packID string) {

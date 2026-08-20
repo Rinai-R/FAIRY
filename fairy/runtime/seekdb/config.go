@@ -1,10 +1,10 @@
-// Package seekdb owns FAIRY's local SeekDB process and SQL connection.
+// Package seekdb owns FAIRY's in-process SeekDB engine and SQL connection.
 package seekdb
 
 import (
 	"errors"
 	"fmt"
-	"net"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -13,12 +13,9 @@ import (
 )
 
 const (
-	EnvBinaryPath    = "FAIRY_SEEKDB_BINARY"
-	EnvLibraryPath   = "FAIRY_SEEKDB_LIBRARY_PATH"
+	EnvLibrary       = "FAIRY_SEEKDB_LIBRARY"
 	EnvDataDir       = "FAIRY_SEEKDB_DATA_DIR"
-	EnvAddress       = "FAIRY_SEEKDB_ADDRESS"
 	EnvDatabase      = "FAIRY_SEEKDB_DATABASE"
-	EnvUser          = "FAIRY_SEEKDB_USER"
 	EnvConnectLimit  = "FAIRY_SEEKDB_CONNECT_TIMEOUT"
 	EnvStartLimit    = "FAIRY_SEEKDB_START_TIMEOUT"
 	EnvQueryLimit    = "FAIRY_SEEKDB_QUERY_TIMEOUT"
@@ -26,9 +23,7 @@ const (
 	EnvMaxOpenConns  = "FAIRY_SEEKDB_MAX_OPEN_CONNS"
 	EnvMaxIdleConns  = "FAIRY_SEEKDB_MAX_IDLE_CONNS"
 
-	DefaultAddress       = "127.0.0.1:2881"
 	DefaultDatabase      = "fairy"
-	DefaultUser          = "root"
 	DefaultConnectLimit  = 5 * time.Second
 	DefaultStartLimit    = 30 * time.Second
 	DefaultQueryLimit    = 15 * time.Second
@@ -36,23 +31,27 @@ const (
 	DefaultMaxOpenConns  = 8
 	DefaultMaxIdleConns  = 4
 	maximumOpenConns     = 64
+
+	// Deprecated environment names kept only so leftover developer env fails closed
+	// instead of being silently honored as a subprocess path.
+	EnvBinaryPath  = "FAIRY_SEEKDB_BINARY"
+	EnvLibraryPath = "FAIRY_SEEKDB_LIBRARY_PATH"
+	EnvAddress     = "FAIRY_SEEKDB_ADDRESS"
+	EnvUser        = "FAIRY_SEEKDB_USER"
 )
 
 var (
-	ErrBinaryPathRequired = errors.New("FAIRY_SEEKDB_BINARY is required")
-	ErrDataDirRequired    = errors.New("FAIRY_SEEKDB_DATA_DIR is required")
-	ErrUncleanValue       = errors.New("SeekDB configuration values must not contain surrounding whitespace")
-	identifierPattern     = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
+	ErrLibraryRequired      = errors.New("FAIRY_SEEKDB_LIBRARY is required")
+	ErrDataDirRequired      = errors.New("FAIRY_SEEKDB_DATA_DIR is required")
+	ErrUncleanValue         = errors.New("SeekDB configuration values must not contain surrounding whitespace")
+	ErrDeprecatedProcessEnv = errors.New("legacy SeekDB process environment is not supported")
+	identifierPattern       = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
 )
 
 type Config struct {
-	BinaryPath    string
-	LibraryDirs   []string
+	LibraryPath   string
 	DataDir       string
-	Address       string
 	Database      string
-	User          string
-	Password      string
 	ConnectLimit  time.Duration
 	StartLimit    time.Duration
 	QueryLimit    time.Duration
@@ -62,21 +61,38 @@ type Config struct {
 }
 
 type Descriptor struct {
-	BinaryName string `json:"binaryName"`
-	Address    string `json:"address"`
-	Database   string `json:"database"`
+	Engine   string `json:"engine"`
+	Database string `json:"database"`
+}
+
+func ProfileGetenv(configRoot string, getenv func(string) string) func(string) string {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	return func(name string) string {
+		if value := getenv(name); value != "" {
+			return value
+		}
+		if name == EnvDataDir && configRoot != "" {
+			return filepath.Join(filepath.Clean(configRoot), "seekdb")
+		}
+		return ""
+	}
 }
 
 func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	if getenv == nil {
 		getenv = func(string) string { return "" }
 	}
+	for _, name := range []string{EnvBinaryPath, EnvLibraryPath, EnvAddress, EnvUser} {
+		if raw := getenv(name); raw != "" {
+			return Config{}, fmt.Errorf("%s: %w", name, ErrDeprecatedProcessEnv)
+		}
+	}
 	config := Config{
-		BinaryPath:    getenv(EnvBinaryPath),
+		LibraryPath:   getenv(EnvLibrary),
 		DataDir:       getenv(EnvDataDir),
-		Address:       valueOrDefault(getenv(EnvAddress), DefaultAddress),
 		Database:      valueOrDefault(getenv(EnvDatabase), DefaultDatabase),
-		User:          valueOrDefault(getenv(EnvUser), DefaultUser),
 		ConnectLimit:  DefaultConnectLimit,
 		StartLimit:    DefaultStartLimit,
 		QueryLimit:    DefaultQueryLimit,
@@ -85,12 +101,6 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		MaxIdleConns:  DefaultMaxIdleConns,
 	}
 	var err error
-	if raw := getenv(EnvLibraryPath); raw != "" {
-		if raw != strings.TrimSpace(raw) || strings.ContainsRune(raw, 0) {
-			return Config{}, fmt.Errorf("%s: %w", EnvLibraryPath, ErrUncleanValue)
-		}
-		config.LibraryDirs = filepath.SplitList(raw)
-	}
 	if raw := getenv(EnvConnectLimit); raw != "" {
 		config.ConnectLimit, err = parsePositiveDuration(EnvConnectLimit, raw)
 		if err != nil {
@@ -127,6 +137,11 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 			return Config{}, err
 		}
 	}
+	if config.LibraryPath == "" {
+		if located, locateErr := LocateLibrary(); locateErr == nil {
+			config.LibraryPath = located
+		}
+	}
 	if err := config.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -138,11 +153,9 @@ func (c Config) Validate() error {
 		name  string
 		value string
 	}{
-		{EnvBinaryPath, c.BinaryPath},
+		{EnvLibrary, c.LibraryPath},
 		{EnvDataDir, c.DataDir},
-		{EnvAddress, c.Address},
 		{EnvDatabase, c.Database},
-		{EnvUser, c.User},
 	}
 	for _, item := range values {
 		if item.value != strings.TrimSpace(item.value) {
@@ -152,17 +165,8 @@ func (c Config) Validate() error {
 			return fmt.Errorf("%s must not contain NUL", item.name)
 		}
 	}
-	if c.BinaryPath == "" {
-		return ErrBinaryPathRequired
-	}
-	if err := validateAbsoluteCleanPath(EnvBinaryPath, c.BinaryPath, false); err != nil {
-		return err
-	}
-	for _, directory := range c.LibraryDirs {
-		if directory == "" || directory != strings.TrimSpace(directory) || strings.ContainsRune(directory, 0) {
-			return fmt.Errorf("%s entries must be non-empty and clean", EnvLibraryPath)
-		}
-		if err := validateAbsoluteCleanPath(EnvLibraryPath, directory, true); err != nil {
+	if c.LibraryPath != "" {
+		if err := validateAbsoluteCleanPath(EnvLibrary, c.LibraryPath, false); err != nil {
 			return err
 		}
 	}
@@ -172,17 +176,8 @@ func (c Config) Validate() error {
 	if err := validateAbsoluteCleanPath(EnvDataDir, c.DataDir, true); err != nil {
 		return err
 	}
-	if err := validateLoopbackAddress(c.Address); err != nil {
-		return err
-	}
 	if !identifierPattern.MatchString(c.Database) {
 		return fmt.Errorf("%s must be a portable SQL identifier", EnvDatabase)
-	}
-	if !identifierPattern.MatchString(c.User) {
-		return fmt.Errorf("%s must be a portable SQL identifier", EnvUser)
-	}
-	if strings.ContainsRune(c.Password, 0) {
-		return errors.New("SeekDB password must not contain NUL")
 	}
 	limits := []struct {
 		name  string
@@ -207,12 +202,19 @@ func (c Config) Validate() error {
 	return nil
 }
 
-func (c Config) Descriptor() Descriptor {
-	return Descriptor{
-		BinaryName: filepath.Base(c.BinaryPath),
-		Address:    c.Address,
-		Database:   c.Database,
+func (c Config) requireLibrary() error {
+	if c.LibraryPath == "" {
+		return ErrLibraryRequired
 	}
+	return validateAbsoluteCleanPath(EnvLibrary, c.LibraryPath, false)
+}
+
+func (c Config) Descriptor() Descriptor {
+	engine := "seekdb"
+	if c.LibraryPath != "" {
+		engine = filepath.Base(c.LibraryPath)
+	}
+	return Descriptor{Engine: engine, Database: c.Database}
 }
 
 func validateAbsoluteCleanPath(name, value string, rejectRoot bool) error {
@@ -224,22 +226,6 @@ func validateAbsoluteCleanPath(name, value string, rejectRoot bool) error {
 	}
 	if rejectRoot && filepath.Dir(value) == value {
 		return fmt.Errorf("%s must not be a filesystem root", name)
-	}
-	return nil
-}
-
-func validateLoopbackAddress(address string) error {
-	host, rawPort, err := net.SplitHostPort(address)
-	if err != nil {
-		return fmt.Errorf("%s must be host:port: %w", EnvAddress, err)
-	}
-	ip := net.ParseIP(host)
-	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("%s must use a loopback IP literal", EnvAddress)
-	}
-	port, err := strconv.ParseUint(rawPort, 10, 16)
-	if err != nil || port == 0 {
-		return fmt.Errorf("%s port must be between 1 and 65535", EnvAddress)
 	}
 	return nil
 }

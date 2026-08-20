@@ -63,18 +63,11 @@ func TestProductionRuntimeRejectsMissingSeekDBDependencies(t *testing.T) {
 		want   string
 	}{
 		{
-			name: "binary",
+			name: "library",
 			mutate: func(environment *coreSeekDBEnvironment) {
-				environment.values[seekdb.EnvBinaryPath] = ""
+				environment.values[seekdb.EnvLibrary] = ""
 			},
-			want: "binary",
-		},
-		{
-			name: "data dir",
-			mutate: func(environment *coreSeekDBEnvironment) {
-				environment.values[seekdb.EnvDataDir] = ""
-			},
-			want: "data",
+			want: "library",
 		},
 	}
 	for _, test := range tests {
@@ -104,17 +97,14 @@ func (e *coreSeekDBEnvironment) clone() *coreSeekDBEnvironment {
 
 func newCoreSeekDBEnvironment(t *testing.T) *coreSeekDBEnvironment {
 	t.Helper()
-	binary := os.Getenv(seekdb.EnvBinaryPath)
-	if binary == "" {
-		t.Skip(seekdb.EnvBinaryPath + " is not set")
+	library := os.Getenv(seekdb.EnvLibrary)
+	if library == "" {
+		t.Skip(seekdb.EnvLibrary + " is not set")
 	}
 	return &coreSeekDBEnvironment{values: map[string]string{
-		seekdb.EnvBinaryPath:    binary,
-		seekdb.EnvLibraryPath:   os.Getenv(seekdb.EnvLibraryPath),
+		seekdb.EnvLibrary:       library,
 		seekdb.EnvDataDir:       filepath.Join(t.TempDir(), "seekdb-data"),
-		seekdb.EnvAddress:       reserveCoreSeekDBAddress(t),
 		seekdb.EnvDatabase:      seekdb.DefaultDatabase,
-		seekdb.EnvUser:          seekdb.DefaultUser,
 		seekdb.EnvConnectLimit:  "5s",
 		seekdb.EnvStartLimit:    "90s",
 		seekdb.EnvQueryLimit:    "15s",

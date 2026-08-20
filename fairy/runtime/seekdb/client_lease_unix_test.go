@@ -4,11 +4,8 @@ package seekdb
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -58,24 +55,21 @@ func TestEmbeddedClientLeaseRejectsSymlink(t *testing.T) {
 	}
 }
 
-func TestEmbeddedClientLeaseIsReleasedWhenProcessStartFails(t *testing.T) {
+func TestEmbeddedClientLeaseIsReleasedWhenEngineStartFails(t *testing.T) {
 	config := testRuntimeConfig(t)
-	options := testLaunchOptions(t, "block")
-	options.command = func(context.Context, Config, runtimePaths, io.Writer) *exec.Cmd {
-		return exec.Command(filepath.Join(t.TempDir(), "missing-seekdb"))
-	}
-	options.database = func(Config, string) (*sql.DB, error) {
-		return sql.OpenDB(testSQLConnector{}), nil
+	options := testLaunchOptions()
+	options.start = func(context.Context, Config, runtimePaths) (engineSession, error) {
+		return nil, errors.New("engine refused to start")
 	}
 	if _, err := open(t.Context(), config, options); err == nil {
-		t.Fatal("open() succeeded with a missing process")
+		t.Fatal("open() succeeded with a failed engine start")
 	}
 	assertEmbeddedClientLeaseReleased(t, config.DataDir)
 }
 
 func TestRuntimeCloseReleasesEmbeddedClientLease(t *testing.T) {
 	config := testRuntimeConfig(t)
-	runtime, err := open(t.Context(), config, testLaunchOptions(t, "block"))
+	runtime, err := open(t.Context(), config, testLaunchOptions())
 	if err != nil {
 		t.Fatal(err)
 	}

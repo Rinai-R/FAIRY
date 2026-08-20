@@ -61,8 +61,7 @@ gofmt -l fairy surfaces/desktop
 go test -C fairy ./... -count=1
 (cd fairy && go test ./... -race -count=1)
 (cd fairy && go vet ./...)
-FAIRY_SEEKDB_BINARY="$HOME/Library/Caches/FAIRY/seekdb/extract/usr/bin/seekdb" \
-FAIRY_SEEKDB_LIBRARY_PATH="$HOME/Library/Caches/FAIRY/seekdb/compat:/opt/homebrew/lib" \
+FAIRY_SEEKDB_LIBRARY="$HOME/Library/Caches/FAIRY/seekdb-embed/build_release/src/include/libseekdb.dylib" \
 go test -C fairy ./... -tags=integration -count=1
 FAIRY_REQUIRE_LEGACY_FREE=1 go test -C fairy ./legacy_runtime_dependencies_test.go ./architecture_test.go ./package_architecture_test.go -count=1
 git diff --check

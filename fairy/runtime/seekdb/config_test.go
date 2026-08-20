@@ -9,15 +9,11 @@ import (
 )
 
 func TestConfigFromEnv(t *testing.T) {
-	libraryOne := filepath.Join(t.TempDir(), "lib-one")
-	libraryTwo := filepath.Join(t.TempDir(), "lib-two")
+	library := filepath.Join(t.TempDir(), "libseekdb.dylib")
 	values := map[string]string{
-		EnvBinaryPath:    filepath.Join(t.TempDir(), "seekdb"),
-		EnvLibraryPath:   strings.Join([]string{libraryOne, libraryTwo}, string(filepath.ListSeparator)),
+		EnvLibrary:       library,
 		EnvDataDir:       filepath.Join(t.TempDir(), "data"),
-		EnvAddress:       "[::1]:3881",
 		EnvDatabase:      "fairy_test",
-		EnvUser:          "fairy_runtime",
 		EnvConnectLimit:  "1500ms",
 		EnvStartLimit:    "2s",
 		EnvQueryLimit:    "3s",
@@ -29,7 +25,7 @@ func TestConfigFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Address != "[::1]:3881" || config.Database != "fairy_test" || config.User != "fairy_runtime" {
+	if config.LibraryPath != library || config.Database != "fairy_test" {
 		t.Fatalf("ConfigFromEnv() = %+v", config)
 	}
 	if config.ConnectLimit != 1500*time.Millisecond || config.StartLimit != 2*time.Second || config.QueryLimit != 3*time.Second || config.ShutdownLimit != 4*time.Second {
@@ -38,21 +34,17 @@ func TestConfigFromEnv(t *testing.T) {
 	if config.MaxOpenConns != 12 || config.MaxIdleConns != 6 {
 		t.Fatalf("ConfigFromEnv() pool = %+v", config)
 	}
-	if len(config.LibraryDirs) != 2 || config.LibraryDirs[0] != libraryOne || config.LibraryDirs[1] != libraryTwo {
-		t.Fatalf("ConfigFromEnv() library dirs = %#v", config.LibraryDirs)
-	}
 }
 
 func TestConfigFromEnvDefaults(t *testing.T) {
 	values := map[string]string{
-		EnvBinaryPath: filepath.Join(t.TempDir(), "seekdb"),
-		EnvDataDir:    filepath.Join(t.TempDir(), "data"),
+		EnvDataDir: filepath.Join(t.TempDir(), "data"),
 	}
 	config, err := ConfigFromEnv(func(name string) string { return values[name] })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Address != DefaultAddress || config.Database != DefaultDatabase || config.User != DefaultUser {
+	if config.Database != DefaultDatabase {
 		t.Fatalf("ConfigFromEnv() defaults = %+v", config)
 	}
 	if config.ConnectLimit != DefaultConnectLimit || config.StartLimit != DefaultStartLimit || config.QueryLimit != DefaultQueryLimit || config.ShutdownLimit != DefaultShutdownLimit {
@@ -65,9 +57,9 @@ func TestConfigFromEnvDefaults(t *testing.T) {
 
 func TestConfigValidationRejectsUnsafeValues(t *testing.T) {
 	valid := Config{
-		BinaryPath: filepath.Join(t.TempDir(), "seekdb"),
-		DataDir:    filepath.Join(t.TempDir(), "data"), Address: DefaultAddress,
-		Database: DefaultDatabase, User: DefaultUser,
+		LibraryPath:  filepath.Join(t.TempDir(), "libseekdb.dylib"),
+		DataDir:      filepath.Join(t.TempDir(), "data"),
+		Database:     DefaultDatabase,
 		ConnectLimit: DefaultConnectLimit, StartLimit: DefaultStartLimit, QueryLimit: DefaultQueryLimit, ShutdownLimit: DefaultShutdownLimit,
 		MaxOpenConns: DefaultMaxOpenConns, MaxIdleConns: DefaultMaxIdleConns,
 	}
@@ -76,23 +68,14 @@ func TestConfigValidationRejectsUnsafeValues(t *testing.T) {
 		mutate func(*Config)
 		want   string
 	}{
-		{name: "missing binary", mutate: func(c *Config) { c.BinaryPath = "" }, want: ErrBinaryPathRequired.Error()},
-		{name: "relative binary", mutate: func(c *Config) { c.BinaryPath = "seekdb" }, want: "must be absolute"},
-		{name: "relative library", mutate: func(c *Config) { c.LibraryDirs = []string{"lib"} }, want: "must be absolute"},
-		{name: "empty library", mutate: func(c *Config) { c.LibraryDirs = []string{""} }, want: "non-empty and clean"},
-		{name: "root library", mutate: func(c *Config) { c.LibraryDirs = []string{string(filepath.Separator)} }, want: "filesystem root"},
+		{name: "relative library", mutate: func(c *Config) { c.LibraryPath = "libseekdb.dylib" }, want: "must be absolute"},
 		{name: "unclean data", mutate: func(c *Config) { c.DataDir += string(filepath.Separator) + ".." }, want: "must be clean"},
 		{name: "root data", mutate: func(c *Config) { c.DataDir = string(filepath.Separator) }, want: "filesystem root"},
-		{name: "remote address", mutate: func(c *Config) { c.Address = "192.0.2.1:2881" }, want: "loopback"},
-		{name: "hostname", mutate: func(c *Config) { c.Address = "localhost:2881" }, want: "IP literal"},
-		{name: "zero port", mutate: func(c *Config) { c.Address = "127.0.0.1:0" }, want: "between 1 and 65535"},
 		{name: "unsafe database", mutate: func(c *Config) { c.Database = "fairy-test" }, want: "portable SQL identifier"},
-		{name: "unsafe user", mutate: func(c *Config) { c.User = "root@test" }, want: "portable SQL identifier"},
-		{name: "surrounding whitespace", mutate: func(c *Config) { c.Address = " " + c.Address }, want: ErrUncleanValue.Error()},
+		{name: "surrounding whitespace", mutate: func(c *Config) { c.DataDir = " " + c.DataDir }, want: ErrUncleanValue.Error()},
 		{name: "zero timeout", mutate: func(c *Config) { c.QueryLimit = 0 }, want: "greater than zero"},
 		{name: "too many connections", mutate: func(c *Config) { c.MaxOpenConns = maximumOpenConns + 1 }, want: "between 1"},
 		{name: "idle exceeds open", mutate: func(c *Config) { c.MaxIdleConns = c.MaxOpenConns + 1 }, want: "between 0"},
-		{name: "password NUL", mutate: func(c *Config) { c.Password = "bad\x00password" }, want: "must not contain NUL"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -108,19 +91,39 @@ func TestConfigValidationRejectsUnsafeValues(t *testing.T) {
 
 func TestConfigFromEnvPreservesRequiredErrors(t *testing.T) {
 	_, err := ConfigFromEnv(func(string) string { return "" })
-	if !errors.Is(err, ErrBinaryPathRequired) {
+	if !errors.Is(err, ErrDataDirRequired) {
 		t.Fatalf("ConfigFromEnv() error = %v", err)
+	}
+}
+
+func TestConfigFromEnvRejectsDeprecatedProcessEnvironment(t *testing.T) {
+	values := map[string]string{
+		EnvDataDir:    filepath.Join(t.TempDir(), "data"),
+		EnvBinaryPath: "/usr/bin/seekdb",
+	}
+	_, err := ConfigFromEnv(func(name string) string { return values[name] })
+	if !errors.Is(err, ErrDeprecatedProcessEnv) {
+		t.Fatalf("ConfigFromEnv() error = %v", err)
+	}
+}
+
+func TestProfileGetenvDerivesDataDir(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "profile")
+	getenv := ProfileGetenv(root, func(string) string { return "" })
+	got := getenv(EnvDataDir)
+	if got != filepath.Join(root, "seekdb") {
+		t.Fatalf("ProfileGetenv() data dir = %q", got)
 	}
 }
 
 func TestDescriptorDoesNotExposePaths(t *testing.T) {
 	secretRoot := filepath.Join(t.TempDir(), "private-user-path")
-	config := Config{BinaryPath: filepath.Join(secretRoot, "seekdb"), DataDir: filepath.Join(secretRoot, "data"), Address: DefaultAddress, Database: DefaultDatabase}
+	config := Config{LibraryPath: filepath.Join(secretRoot, "libseekdb.dylib"), DataDir: filepath.Join(secretRoot, "data"), Database: DefaultDatabase}
 	descriptor := config.Descriptor()
-	if descriptor.BinaryName != "seekdb" || descriptor.Address != DefaultAddress || descriptor.Database != DefaultDatabase {
+	if descriptor.Engine != "libseekdb.dylib" || descriptor.Database != DefaultDatabase {
 		t.Fatalf("Descriptor() = %+v", descriptor)
 	}
-	if strings.Contains(descriptor.BinaryName, secretRoot) {
-		t.Fatalf("Descriptor() leaked binary path: %+v", descriptor)
+	if strings.Contains(descriptor.Engine, secretRoot) {
+		t.Fatalf("Descriptor() leaked library path: %+v", descriptor)
 	}
 }

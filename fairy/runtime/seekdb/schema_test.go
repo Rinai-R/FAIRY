@@ -1074,6 +1074,11 @@ func TestSchemaContractComparisonRejectsShapeDrift(t *testing.T) {
 	if err := compareSchemaColumns(wantColumns, slices.Clone(wantColumns)); err != nil {
 		t.Fatalf("compareSchemaColumns(equal) error = %v", err)
 	}
+	embedColumns := slices.Clone(wantColumns)
+	embedColumns[0].collation = "utf8mb4_bin"
+	if err := compareSchemaColumns(wantColumns, embedColumns); err != nil {
+		t.Fatalf("compareSchemaColumns(ascii_bin vs utf8mb4_bin) error = %v", err)
+	}
 	wrongColumns := slices.Clone(wantColumns)
 	wrongColumns[0].nullable = true
 	if err := compareSchemaColumns(wantColumns, wrongColumns); err == nil {

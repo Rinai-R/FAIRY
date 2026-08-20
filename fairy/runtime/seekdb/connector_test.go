@@ -8,27 +8,6 @@ import (
 	"time"
 )
 
-func TestMySQLConnectorIsLocalBoundedAndConservative(t *testing.T) {
-	config := testRuntimeConfig(t)
-	config.Password = "connector-private-password"
-	driverConfig, err := mysqlDriverConfig(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if driverConfig.User != config.User || driverConfig.Passwd != config.Password || driverConfig.Addr != config.Address || driverConfig.DBName != config.Database {
-		t.Fatalf("mysqlDriverConfig() identity = %+v", driverConfig)
-	}
-	if driverConfig.Net != "tcp" || driverConfig.Timeout != config.ConnectLimit || driverConfig.ReadTimeout != config.QueryLimit || driverConfig.WriteTimeout != config.QueryLimit {
-		t.Fatalf("mysqlDriverConfig() transport = %+v", driverConfig)
-	}
-	if !driverConfig.ParseTime || !driverConfig.CheckConnLiveness || !driverConfig.AllowNativePasswords {
-		t.Fatalf("mysqlDriverConfig() safe defaults = %+v", driverConfig)
-	}
-	if driverConfig.AllowAllFiles || driverConfig.AllowCleartextPasswords || driverConfig.AllowFallbackToPlaintext || driverConfig.AllowOldPasswords || driverConfig.InterpolateParams || driverConfig.MultiStatements {
-		t.Fatalf("mysqlDriverConfig() enabled unsafe option = %+v", driverConfig)
-	}
-}
-
 func TestOpenSQLDatabaseAppliesPoolLimit(t *testing.T) {
 	config := testRuntimeConfig(t)
 	config.MaxOpenConns = 7
@@ -46,7 +25,7 @@ func TestOpenSQLDatabaseAppliesPoolLimit(t *testing.T) {
 func TestRuntimeExposesSQLAndBoundedQueryContext(t *testing.T) {
 	config := testRuntimeConfig(t)
 	config.QueryLimit = 50 * time.Millisecond
-	runtime, err := open(t.Context(), config, testLaunchOptions(t, "block"))
+	runtime, err := open(t.Context(), config, testLaunchOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,12 +48,11 @@ func TestRuntimeExposesSQLAndBoundedQueryContext(t *testing.T) {
 	}
 }
 
-func TestRuntimeErrorRedactsCredential(t *testing.T) {
+func TestRuntimeErrorRedactsLibraryAndDataPaths(t *testing.T) {
 	config := testRuntimeConfig(t)
-	config.Password = "must-not-appear"
-	config.LibraryDirs = []string{"/private/seekdb-library"}
-	err := redactRuntimeError(config, errors.New("dial failed with must-not-appear from /private/seekdb-library"))
-	if strings.Contains(err.Error(), config.Password) || strings.Contains(err.Error(), config.LibraryDirs[0]) || !strings.Contains(err.Error(), "[seekdb-credential]") || !strings.Contains(err.Error(), "[seekdb-library]") {
+	config.LibraryPath = "/private/seekdb-library/libseekdb.dylib"
+	err := redactRuntimeError(config, errors.New("load failed from /private/seekdb-library/libseekdb.dylib in "+config.DataDir))
+	if strings.Contains(err.Error(), config.LibraryPath) || strings.Contains(err.Error(), config.DataDir) || !strings.Contains(err.Error(), "[seekdb-library]") || !strings.Contains(err.Error(), "[seekdb-data]") {
 		t.Fatalf("redactRuntimeError() = %v", err)
 	}
 }

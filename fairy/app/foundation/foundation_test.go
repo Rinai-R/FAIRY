@@ -36,7 +36,7 @@ type fakeRuntime struct {
 func (f *fakeRuntime) SQL() *sql.DB { return f.database }
 
 func (*fakeRuntime) Descriptor() seekdb.Descriptor {
-	return seekdb.Descriptor{BinaryName: "seekdb", Address: "127.0.0.1:2881", Database: "fairy"}
+	return seekdb.Descriptor{Engine: "libseekdb.dylib", Database: "fairy"}
 }
 
 func (f *fakeRuntime) Close(context.Context) error {
@@ -62,12 +62,10 @@ func TestOpenFoundationOrdersReadinessAndIgnoresLegacyEnvironment(t *testing.T) 
 	getenv := func(name string) string {
 		requested = append(requested, name)
 		switch name {
-		case seekdb.EnvBinaryPath:
-			return runtimeConfig.BinaryPath
+		case seekdb.EnvLibrary:
+			return runtimeConfig.LibraryPath
 		case seekdb.EnvDataDir:
 			return runtimeConfig.DataDir
-		case seekdb.EnvAddress:
-			return runtimeConfig.Address
 		case "FAIRY_DATABASE_URL", "FAIRY_DB_QUERY_TIMEOUT", "QDRANT_URL", "PGVECTOR_URL":
 			return "invalid-legacy-sentinel"
 		default:
@@ -124,7 +122,7 @@ func TestOpenFoundationOrdersReadinessAndIgnoresLegacyEnvironment(t *testing.T) 
 	if err != nil || status.Storage != "seekdb" || status.Schema.State != seekdb.SchemaCurrent || !status.SecretsReady {
 		t.Fatalf("Status() = (%#v, %v)", status, err)
 	}
-	if status.SeekDB.BinaryName != "seekdb" || strings.Contains(strings.ToLower(status.SeekDB.BinaryName), "tmp") {
+	if status.SeekDB.Engine != "libseekdb.dylib" || strings.Contains(strings.ToLower(status.SeekDB.Engine), "tmp") {
 		t.Fatalf("unsafe descriptor = %#v", status.SeekDB)
 	}
 	if _, err := opened.SQL(); err != nil {
@@ -527,8 +525,8 @@ func stubObservabilityStoreOperations() observabilityStoreOperations {
 
 func testRuntimeConfig(dataDir string) seekdb.Config {
 	return seekdb.Config{
-		BinaryPath: filepath.Join(string(filepath.Separator), "opt", "fairy", "seekdb"),
-		DataDir:    dataDir, Address: "127.0.0.1:2881", Database: seekdb.DefaultDatabase, User: seekdb.DefaultUser,
+		LibraryPath: filepath.Join(string(filepath.Separator), "opt", "fairy", "libseekdb.dylib"),
+		DataDir:     dataDir, Database: seekdb.DefaultDatabase,
 		ConnectLimit: time.Second, StartLimit: time.Second, QueryLimit: time.Second,
 		ShutdownLimit: time.Second, MaxOpenConns: 2, MaxIdleConns: 1,
 	}

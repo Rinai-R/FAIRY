@@ -7,8 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	gomysql "github.com/go-sql-driver/mysql"
-
+	"fairy/runtime/seekdb"
 	"fairy/transport/session"
 )
 
@@ -108,6 +107,5 @@ func (s *Store) currentUnixMS() int64 {
 }
 
 func isDuplicateSeekDBError(err error) bool {
-	var databaseError *gomysql.MySQLError
-	return errors.As(err, &databaseError) && databaseError.Number == 1062
+	return seekdb.IsDuplicate(err)
 }

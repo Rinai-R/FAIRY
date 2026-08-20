@@ -10,15 +10,15 @@ import (
 
 func TestOpenFailsClosedWithoutSeekDB(t *testing.T) {
 	t.Setenv("FAIRY_DATABASE_URL", "postgres://invalid-legacy-sentinel")
-	t.Setenv(seekdb.EnvBinaryPath, "")
+	t.Setenv(seekdb.EnvLibrary, "")
 	t.Setenv(seekdb.EnvDataDir, t.TempDir())
 
 	rt, err := Open(t.Context(), Options{ConfigRoot: t.TempDir()})
 	if rt != nil || err == nil {
 		t.Fatalf("Open() = (%#v, %v), want SeekDB configuration failure", rt, err)
 	}
-	if !strings.Contains(err.Error(), "SeekDB") && !strings.Contains(err.Error(), seekdb.EnvBinaryPath) && !strings.Contains(err.Error(), "binary") {
-		t.Fatalf("Open() error = %v, want SeekDB binary failure", err)
+	if !strings.Contains(err.Error(), "SeekDB") && !strings.Contains(err.Error(), seekdb.EnvLibrary) && !strings.Contains(err.Error(), seekdb.EnvDataDir) {
+		t.Fatalf("Open() error = %v, want SeekDB library or data-dir failure", err)
 	}
 	for _, forbidden := range []string{"FAIRY_DATABASE_URL", "postgres://", "pgvector", "qdrant"} {
 		if strings.Contains(strings.ToLower(err.Error()), strings.ToLower(forbidden)) {

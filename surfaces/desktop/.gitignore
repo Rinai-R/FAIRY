@@ -24,3 +24,9 @@ frontend/dist/*
 build/ios/
 build/windows/
 build/linux/
+
+# 本机构建的 SeekDB 嵌入库体积过大，不进入 git
+build/seekdb/*.dylib
+build/seekdb/*.so
+build/seekdb/*.tar.gz
+

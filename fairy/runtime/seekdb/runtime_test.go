@@ -5,9 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -15,11 +13,9 @@ import (
 	"time"
 )
 
-const helperProcessEnvironment = "FAIRY_SEEKDB_HELPER_PROCESS"
-
 func TestOpenAndCloseRuntime(t *testing.T) {
 	config := testRuntimeConfig(t)
-	options := testLaunchOptions(t, "block")
+	options := testLaunchOptions()
 	runtime, err := open(t.Context(), config, options)
 	if err != nil {
 		t.Fatal(err)
@@ -45,7 +41,7 @@ func TestOpenAndCloseRuntime(t *testing.T) {
 func TestOpenBootstrapsConfiguredApplicationDatabase(t *testing.T) {
 	config := testRuntimeConfig(t)
 	var databases []string
-	options := testLaunchOptions(t, "block")
+	options := testLaunchOptions()
 	options.database = func(_ Config, databaseName string) (*sql.DB, error) {
 		databases = append(databases, databaseName)
 		return sql.OpenDB(testSQLConnector{}), nil
@@ -68,7 +64,7 @@ func TestOpenBootstrapsConfiguredApplicationDatabase(t *testing.T) {
 
 func TestOpenReportsApplicationDatabaseBootstrapFailure(t *testing.T) {
 	config := testRuntimeConfig(t)
-	options := testLaunchOptions(t, "block")
+	options := testLaunchOptions()
 	bootstrapFailure := errors.New("create application database denied")
 	connections := 0
 	options.database = func(_ Config, _ string) (*sql.DB, error) {
@@ -87,34 +83,19 @@ func TestOpenReportsApplicationDatabaseBootstrapFailure(t *testing.T) {
 	}
 }
 
-func TestOpenReportsEarlyProcessExitWithoutPrivatePaths(t *testing.T) {
+func TestOpenRedactsPrivatePathsWhenEngineStartFails(t *testing.T) {
 	config := testRuntimeConfig(t)
 	private := config.DataDir
-	options := testLaunchOptions(t, "exit")
-	options.probe = func(context.Context, *sql.DB) error { return errors.New("not ready") }
+	options := testLaunchOptions()
+	options.start = func(context.Context, Config, runtimePaths) (engineSession, error) {
+		return nil, errors.New("engine refused " + private)
+	}
 	_, err := open(t.Context(), config, options)
-	if err == nil || !strings.Contains(err.Error(), "startup") {
+	if err == nil || !strings.Contains(err.Error(), "start SeekDB engine") {
 		t.Fatalf("open() error = %v", err)
 	}
-	if strings.Contains(err.Error(), private) || strings.Contains(err.Error(), config.BinaryPath) {
+	if strings.Contains(err.Error(), private) {
 		t.Fatalf("open() leaked private path: %v", err)
-	}
-}
-
-func TestRuntimeReportsUnexpectedCleanExit(t *testing.T) {
-	config := testRuntimeConfig(t)
-	options := testLaunchOptions(t, "clean-exit")
-	runtime, err := open(t.Context(), config, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-runtime.Done():
-	case <-time.After(2 * time.Second):
-		t.Fatal("runtime did not report the process exit")
-	}
-	if err := runtime.Err(); !errors.Is(err, ErrRuntimeExited) {
-		t.Fatalf("Err() = %v, want ErrRuntimeExited", err)
 	}
 }
 
@@ -122,7 +103,7 @@ func TestOpenStopsRuntimeOnStartupDeadline(t *testing.T) {
 	config := testRuntimeConfig(t)
 	config.StartLimit = 25 * time.Millisecond
 	config.ShutdownLimit = time.Second
-	options := testLaunchOptions(t, "block")
+	options := testLaunchOptions()
 	options.probe = func(context.Context, *sql.DB) error { return errors.New("not ready") }
 	_, err := open(t.Context(), config, options)
 	if !errors.Is(err, context.DeadlineExceeded) && (err == nil || !strings.Contains(err.Error(), context.DeadlineExceeded.Error())) {
@@ -133,7 +114,7 @@ func TestOpenStopsRuntimeOnStartupDeadline(t *testing.T) {
 func TestOpenStopsRuntimeWhenLifecycleContextCancels(t *testing.T) {
 	config := testRuntimeConfig(t)
 	ctx, cancel := context.WithCancel(t.Context())
-	options := testLaunchOptions(t, "block")
+	options := testLaunchOptions()
 	options.probe = func(context.Context, *sql.DB) error {
 		cancel()
 		return errors.New("not ready")
@@ -141,6 +122,18 @@ func TestOpenStopsRuntimeWhenLifecycleContextCancels(t *testing.T) {
 	_, err := open(ctx, config, options)
 	if !errors.Is(err, context.Canceled) && (err == nil || !strings.Contains(err.Error(), context.Canceled.Error())) {
 		t.Fatalf("open() error = %v", err)
+	}
+}
+
+func TestOpenMissingLibraryFailsClosed(t *testing.T) {
+	config := testRuntimeConfig(t)
+	config.LibraryPath = filepath.Join(t.TempDir(), "missing-libseekdb.dylib")
+	_, err := Open(t.Context(), config)
+	if err == nil {
+		t.Fatal("Open() succeeded without a SeekDB library")
+	}
+	if strings.Contains(err.Error(), "exec") || strings.Contains(err.Error(), "usr/bin/seekdb") {
+		t.Fatalf("Open() fell back to a process: %v", err)
 	}
 }
 
@@ -186,86 +179,11 @@ func TestPrepareRuntimePathsCreatesEmbeddedClientRunDirectory(t *testing.T) {
 	}
 }
 
-func TestSeekDBCommandUsesOnlyLocalNonSecretArguments(t *testing.T) {
-	config := testRuntimeConfig(t)
-	config.Address = "[::1]:3881"
-	config.LibraryDirs = []string{filepath.Join(t.TempDir(), "compat")}
-	paths := runtimePaths{
-		Base: config.DataDir,
-		Data: filepath.Join(config.DataDir, "store"),
-		Redo: filepath.Join(config.DataDir, "redo"),
-		Run:  filepath.Join(config.DataDir, "run"),
-	}
-	command := seekDBCommand(t.Context(), config, paths, io.Discard)
-	want := []string{
-		config.BinaryPath, "--nodaemon", "--embedded", "--port", "3881",
-		"--base-dir", paths.Base, "--data-dir", paths.Data, "--redo-dir", paths.Redo,
-		"--log-level", "WARN", "--use-ipv6",
-	}
-	if !slices.Equal(command.Args, want) {
-		t.Fatalf("command args = %#v, want %#v", command.Args, want)
-	}
-	for _, argument := range command.Args[1:] {
-		lower := strings.ToLower(argument)
-		for _, forbidden := range []string{"--password", "--token", "--credential"} {
-			if strings.HasPrefix(lower, forbidden) {
-				t.Fatalf("command args contain credential flag %q", argument)
-			}
-		}
-	}
-	libraryEnvironment := false
-	for _, variable := range command.Env {
-		if strings.Contains(variable, config.LibraryDirs[0]) {
-			libraryEnvironment = true
-		}
-	}
-	if !libraryEnvironment {
-		t.Fatalf("command environment does not contain the configured library directory")
-	}
-}
-
-func TestBoundedOutputKeepsTail(t *testing.T) {
-	output := newBoundedOutput(5)
-	if _, err := output.Write([]byte("abc")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := output.Write([]byte("defg")); err != nil {
-		t.Fatal(err)
-	}
-	if got := output.String(); got != "cdefg" {
-		t.Fatalf("String() = %q", got)
-	}
-}
-
-func TestSeekDBHelperProcess(t *testing.T) {
-	mode := os.Getenv(helperProcessEnvironment)
-	if mode == "" {
-		return
-	}
-	switch mode {
-	case "exit":
-		_, _ = os.Stderr.WriteString("seekdb failed under " + os.Getenv("FAIRY_SEEKDB_PRIVATE_PATH") + "\n")
-		os.Exit(7)
-	case "clean-exit":
-		time.Sleep(25 * time.Millisecond)
-		os.Exit(0)
-	case "block":
-		for {
-			time.Sleep(time.Hour)
-		}
-	default:
-		os.Exit(9)
-	}
-}
-
 func testRuntimeConfig(t *testing.T) Config {
 	t.Helper()
 	return Config{
-		BinaryPath:    os.Args[0],
 		DataDir:       filepath.Join(t.TempDir(), "seekdb-private"),
-		Address:       DefaultAddress,
 		Database:      DefaultDatabase,
-		User:          DefaultUser,
 		ConnectLimit:  time.Second,
 		StartLimit:    time.Second,
 		QueryLimit:    10 * time.Millisecond,
@@ -275,20 +193,9 @@ func testRuntimeConfig(t *testing.T) Config {
 	}
 }
 
-func testLaunchOptions(t *testing.T, mode string) launchOptions {
-	t.Helper()
+func testLaunchOptions() launchOptions {
 	return launchOptions{
-		command: func(ctx context.Context, config Config, _ runtimePaths, output io.Writer) *exec.Cmd {
-			command := exec.CommandContext(ctx, os.Args[0], "-test.run=TestSeekDBHelperProcess")
-			command.Env = append(os.Environ(),
-				helperProcessEnvironment+"="+mode,
-				"FAIRY_SEEKDB_PRIVATE_PATH="+config.DataDir,
-				"GORACE=atexit_sleep_ms=0",
-			)
-			command.Stdout = output
-			command.Stderr = output
-			return command
-		},
+		start:             func(context.Context, Config, runtimePaths) (engineSession, error) { return nopEngine{}, nil },
 		database:          func(Config, string) (*sql.DB, error) { return sql.OpenDB(testSQLConnector{}), nil },
 		probe:             probeSQL,
 		readinessInterval: 5 * time.Millisecond,

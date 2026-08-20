@@ -6,10 +6,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -116,17 +117,14 @@ func TestRealSeekDBSchemaMigrationLifecycle(t *testing.T) {
 
 func openSchemaMigrationRuntime(t *testing.T) (*Runtime, Config) {
 	t.Helper()
-	binary := os.Getenv(EnvBinaryPath)
-	if binary == "" {
-		t.Skip(EnvBinaryPath + " is not set")
+	library := os.Getenv(EnvLibrary)
+	if library == "" {
+		t.Skip(EnvLibrary + " is not set")
 	}
 	config := Config{
-		BinaryPath:    binary,
-		LibraryDirs:   filepath.SplitList(os.Getenv(EnvLibraryPath)),
-		DataDir:       filepath.Join(t.TempDir(), "seekdb-schema-data"),
-		Address:       reserveLoopbackAddress(t),
-		Database:      DefaultDatabase,
-		User:          DefaultUser,
+		LibraryPath:   library,
+		DataDir:       processIntegrationDataDir(t),
+		Database:      uniqueIntegrationDatabase(t),
 		ConnectLimit:  5 * time.Second,
 		StartLimit:    90 * time.Second,
 		QueryLimit:    15 * time.Second,
@@ -139,6 +137,29 @@ func openSchemaMigrationRuntime(t *testing.T) (*Runtime, Config) {
 		t.Fatal(err)
 	}
 	return instance, config
+}
+
+var (
+	integrationDataDirOnce sync.Once
+	integrationDataDir     string
+)
+
+func processIntegrationDataDir(t *testing.T) string {
+	t.Helper()
+	integrationDataDirOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "fairy-seekdb-embed-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		integrationDataDir = dir
+	})
+	return integrationDataDir
+}
+
+func uniqueIntegrationDatabase(t *testing.T) string {
+	t.Helper()
+	sum := sha256.Sum256([]byte(t.Name()))
+	return "db" + hex.EncodeToString(sum[:10])
 }
 
 func integrationTableMigration(revision Revision, name, table string) Migration {

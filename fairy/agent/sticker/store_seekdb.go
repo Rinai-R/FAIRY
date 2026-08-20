@@ -13,8 +13,9 @@ import (
 	"strings"
 	"time"
 
-	gomysql "github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
+
+	"fairy/runtime/seekdb"
 )
 
 const stickerSelectSQL = `
@@ -382,6 +383,5 @@ func (s *Store) contentPath(digest string) string {
 }
 
 func isDuplicateSeekDBError(err error) bool {
-	var databaseError *gomysql.MySQLError
-	return errors.As(err, &databaseError) && databaseError.Number == 1062
+	return seekdb.IsDuplicate(err)
 }

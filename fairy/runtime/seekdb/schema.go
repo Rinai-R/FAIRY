@@ -1716,7 +1716,7 @@ func compareSchemaColumns(expected, actual []schemaColumn) error {
 		return fmt.Errorf("column count = %d, want %d", len(actual), len(expected))
 	}
 	for index := range expected {
-		if actual[index] != expected[index] {
+		if !schemaColumnsEqual(expected[index], actual[index]) {
 			return fmt.Errorf("column %d = %#v, want %#v", index+1, actual[index], expected[index])
 		}
 	}

@@ -16,7 +16,7 @@ func TestSeekDBArtifactCommandFailsBeforePackagingCandidate(t *testing.T) {
 		"seekdb-artifact",
 		"--goos", "darwin",
 		"--goarch", "arm64",
-		"--archive", "/missing/seekdb.tar.gz",
+		"--library", "/missing/libseekdb.dylib",
 		"--license", "/missing/LICENSE",
 		"--notice", "/missing/NOTICE",
 	})

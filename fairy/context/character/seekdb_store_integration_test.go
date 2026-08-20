@@ -171,14 +171,14 @@ func TestRealSeekDBCharacterStoreIsAtomicAndPersistsAcrossRestart(t *testing.T) 
 
 func openCharacterSeekDBRuntime(t *testing.T) (*seekdb.Runtime, *sql.DB, seekdb.Config) {
 	t.Helper()
-	binary := os.Getenv(seekdb.EnvBinaryPath)
-	if binary == "" {
-		t.Skip(seekdb.EnvBinaryPath + " is not set")
+	library := os.Getenv(seekdb.EnvLibrary)
+	if library == "" {
+		t.Skip(seekdb.EnvLibrary + " is not set")
 	}
 	config := seekdb.Config{
-		BinaryPath: binary, LibraryDirs: filepath.SplitList(os.Getenv(seekdb.EnvLibraryPath)),
-		DataDir: filepath.Join(t.TempDir(), "seekdb-data"), Address: reserveCharacterLoopbackAddress(t),
-		Database: seekdb.DefaultDatabase, User: seekdb.DefaultUser,
+		LibraryPath: library,
+		DataDir:     filepath.Join(t.TempDir(), "seekdb-data"),
+		Database:    seekdb.DefaultDatabase,
 		ConnectLimit: 5 * time.Second, StartLimit: 90 * time.Second, QueryLimit: 15 * time.Second,
 		ShutdownLimit: 20 * time.Second, MaxOpenConns: 8, MaxIdleConns: 4,
 	}

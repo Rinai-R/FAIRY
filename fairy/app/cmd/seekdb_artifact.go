@@ -32,9 +32,9 @@ func newSeekDBArtifactCmd() *cobra.Command {
 			if _, err := catalog.Verified(goos, goarch); err != nil {
 				return err
 			}
-			for _, filename := range []string{bundle.ArchivePath, bundle.LicensePath, bundle.NoticePath} {
+			for _, filename := range []string{bundle.LibraryPath, bundle.LicensePath, bundle.NoticePath} {
 				if filename == "" || filename != strings.TrimSpace(filename) {
-					return errors.New("SeekDB archive, LICENSE, and NOTICE build input paths are required")
+					return errors.New("SeekDB library, LICENSE, and NOTICE build input paths are required")
 				}
 			}
 			return catalog.VerifyBundle(goos, goarch, bundle)
@@ -42,8 +42,8 @@ func newSeekDBArtifactCmd() *cobra.Command {
 	}
 	command.Flags().StringVar(&goos, "goos", goos, "target GOOS")
 	command.Flags().StringVar(&goarch, "goarch", goarch, "target GOARCH")
-	command.Flags().StringVar(&bundle.ArchivePath, "archive", "", "path to the fixed SeekDB release archive")
-	command.Flags().StringVar(&bundle.LicensePath, "license", "", "path to the fixed-tag SeekDB LICENSE")
-	command.Flags().StringVar(&bundle.NoticePath, "notice", "", "path to the fixed-tag SeekDB NOTICE")
+	command.Flags().StringVar(&bundle.LibraryPath, "library", "", "path to the pinned libseekdb shared library")
+	command.Flags().StringVar(&bundle.LicensePath, "license", "", "path to the pinned-commit SeekDB LICENSE")
+	command.Flags().StringVar(&bundle.NoticePath, "notice", "", "path to the pinned-commit SeekDB NOTICE")
 	return command
 }

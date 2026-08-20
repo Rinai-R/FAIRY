@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	gomysql "github.com/go-sql-driver/mysql"
+	"fairy/runtime/seekdb"
 )
 
 func TestNewSeekDBStoreValidatesAuthorityAndQueryLimit(t *testing.T) {
@@ -97,11 +97,11 @@ func TestSeekDBConversationParametersAreRejectedBeforeQuery(t *testing.T) {
 func TestSeekDBDuplicateErrorClassificationIsTyped(t *testing.T) {
 	t.Parallel()
 
-	if !isDuplicateSeekDBError(&gomysql.MySQLError{Number: 1062, Message: "duplicate"}) {
-		t.Fatal("MySQL duplicate error was not classified")
+	if !isDuplicateSeekDBError(&seekdb.Error{Number: 1062, Message: "duplicate"}) {
+		t.Fatal("SeekDB duplicate error was not classified")
 	}
-	if isDuplicateSeekDBError(&gomysql.MySQLError{Number: 1064, Message: "Duplicate entry text is not enough"}) {
-		t.Fatal("non-duplicate MySQL error was classified from message text")
+	if isDuplicateSeekDBError(&seekdb.Error{Number: 1064, Message: "Duplicate entry text is not enough"}) {
+		t.Fatal("non-duplicate SeekDB error was classified from message text")
 	}
 	if isDuplicateSeekDBError(errors.New("Error 1062: Duplicate entry")) {
 		t.Fatal("untyped error was classified from message text")

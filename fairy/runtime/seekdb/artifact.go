@@ -61,7 +61,7 @@ type RuntimeArtifact struct {
 	NoticeURL            string   `json:"noticeURL"`
 	NoticeSHA256         string   `json:"noticeSHA256"`
 	ArchiveFormat        string   `json:"archiveFormat"`
-	BinaryPath           string   `json:"binaryPath"`
+	LibraryPath          string   `json:"libraryPath"`
 	RequiredPaths        []string `json:"requiredPaths"`
 	ExternalDependencies []string `json:"externalDependencies"`
 	MinimumOSVersion     string   `json:"minimumOSVersion"`
@@ -71,7 +71,7 @@ type RuntimeArtifact struct {
 // platform package can embed SeekDB. The paths are build inputs, not runtime
 // configuration.
 type ArtifactBundle struct {
-	ArchivePath string
+	LibraryPath string
 	LicensePath string
 	NoticePath  string
 }
@@ -113,7 +113,7 @@ func (c ArtifactCatalog) Validate() error {
 	if c.ReleaseTag == "" || c.ReleaseTag != strings.TrimSpace(c.ReleaseTag) || strings.Contains(c.ReleaseTag, "/") {
 		return errors.New("SeekDB artifact catalog release tag is required and must be clean")
 	}
-	expectedReleaseURL := "https://github.com/oceanbase/seekdb/releases/tag/" + c.ReleaseTag
+	expectedReleaseURL, sourceURL, licenseURL, noticeURL := catalogReleaseURLs(c.ReleaseTag)
 	if err := validateOfficialURL("releaseURL", c.ReleaseURL, expectedReleaseURL); err != nil {
 		return err
 	}
@@ -131,13 +131,17 @@ func (c ArtifactCatalog) Validate() error {
 		}
 		if target.Artifact != nil {
 			artifact := target.Artifact
-			if !strings.HasPrefix(artifact.SourceURL, "https://github.com/oceanbase/seekdb/releases/download/"+c.ReleaseTag+"/") {
+			if isGitCommit(c.ReleaseTag) {
+				if artifact.SourceURL != sourceURL {
+					return fmt.Errorf("validate SeekDB artifact target %d: source URL release tag does not match catalog", index)
+				}
+			} else if !strings.HasPrefix(artifact.SourceURL, sourceURL) {
 				return fmt.Errorf("validate SeekDB artifact target %d: source URL release tag does not match catalog", index)
 			}
 			if artifact.ProvenanceURL != c.ReleaseURL {
 				return fmt.Errorf("validate SeekDB artifact target %d: provenance URL does not match catalog release", index)
 			}
-			if artifact.LicenseURL != "https://raw.githubusercontent.com/oceanbase/seekdb/"+c.ReleaseTag+"/LICENSE" || artifact.NoticeURL != "https://raw.githubusercontent.com/oceanbase/seekdb/"+c.ReleaseTag+"/NOTICE" {
+			if artifact.LicenseURL != licenseURL || artifact.NoticeURL != noticeURL {
 				return fmt.Errorf("validate SeekDB artifact target %d: license documents do not match catalog release", index)
 			}
 		}
@@ -192,11 +196,11 @@ func (c ArtifactCatalog) Verified(goos, goarch string) (RuntimeArtifact, error) 
 }
 
 func (a RuntimeArtifact) Verify(reader io.Reader) error {
-	return verifyArtifactContent(reader, "archive", a.SHA256, a.Size)
+	return verifyArtifactContent(reader, "library", a.SHA256, a.Size)
 }
 
 func (a RuntimeArtifact) VerifyFile(filename string) error {
-	return verifyArtifactFile(filename, "archive", a.SHA256, a.Size)
+	return verifyArtifactFile(filename, "library", a.SHA256, a.Size)
 }
 
 func (a RuntimeArtifact) VerifyLicenseFile(filename string) error {
@@ -215,7 +219,7 @@ func (c ArtifactCatalog) VerifyBundle(goos, goarch string, bundle ArtifactBundle
 		return err
 	}
 	for name, filename := range map[string]string{
-		"archive": bundle.ArchivePath,
+		"library": bundle.LibraryPath,
 		"LICENSE": bundle.LicensePath,
 		"NOTICE":  bundle.NoticePath,
 	} {
@@ -223,7 +227,7 @@ func (c ArtifactCatalog) VerifyBundle(goos, goarch string, bundle ArtifactBundle
 			return fmt.Errorf("SeekDB %s build input path is required and must be clean", name)
 		}
 	}
-	if err := artifact.VerifyFile(bundle.ArchivePath); err != nil {
+	if err := artifact.VerifyFile(bundle.LibraryPath); err != nil {
 		return err
 	}
 	if err := artifact.VerifyLicenseFile(bundle.LicensePath); err != nil {
@@ -266,7 +270,7 @@ func (a RuntimeArtifact) validate() error {
 		{"licenseSHA256", a.LicenseSHA256},
 		{"noticeSHA256", a.NoticeSHA256},
 		{"archiveFormat", a.ArchiveFormat},
-		{"binaryPath", a.BinaryPath},
+		{"libraryPath", a.LibraryPath},
 		{"minimumOSVersion", a.MinimumOSVersion},
 	}
 	for _, item := range cleanValues {
@@ -274,13 +278,17 @@ func (a RuntimeArtifact) validate() error {
 			return fmt.Errorf("SeekDB artifact %s is required and must be clean", item.name)
 		}
 	}
+	if err := validateOfficialSourceURL(a.SourceURL); err != nil {
+		return err
+	}
+	if err := validateOfficialProvenanceURL(a.ProvenanceURL); err != nil {
+		return err
+	}
 	for _, item := range []struct {
 		name   string
 		raw    string
 		prefix string
 	}{
-		{"sourceURL", a.SourceURL, "https://github.com/oceanbase/seekdb/releases/download/"},
-		{"provenanceURL", a.ProvenanceURL, "https://github.com/oceanbase/seekdb/releases/tag/"},
 		{"licenseURL", a.LicenseURL, "https://raw.githubusercontent.com/oceanbase/seekdb/"},
 		{"noticeURL", a.NoticeURL, "https://raw.githubusercontent.com/oceanbase/seekdb/"},
 	} {
@@ -304,20 +312,29 @@ func (a RuntimeArtifact) validate() error {
 	if a.Size <= 0 {
 		return errors.New("SeekDB artifact size must be greater than zero")
 	}
-	if a.ArchiveFormat != "tar.gz" && a.ArchiveFormat != "zip" {
+	switch a.ArchiveFormat {
+	case "tar.gz", "zip":
+		if !strings.HasSuffix(a.SourceURL, "."+a.ArchiveFormat) || !strings.Contains(path.Base(a.SourceURL), a.Version) {
+			return errors.New("SeekDB artifact source filename must match its version and archive format")
+		}
+	case "dylib", "so":
+		if !strings.Contains(a.SourceURL, a.Version) {
+			return errors.New("SeekDB artifact source filename must match its version and archive format")
+		}
+	default:
 		return fmt.Errorf("SeekDB artifact archive format %q is unsupported", a.ArchiveFormat)
 	}
-	if !strings.HasSuffix(a.SourceURL, "."+a.ArchiveFormat) || !strings.Contains(path.Base(a.SourceURL), a.Version) {
-		return errors.New("SeekDB artifact source filename must match its version and archive format")
+	if !isCleanArchivePath(a.LibraryPath) {
+		return errors.New("SeekDB artifact library path must be a clean relative archive path")
 	}
-	if !isCleanArchivePath(a.BinaryPath) {
-		return errors.New("SeekDB artifact binary path must be a clean relative archive path")
+	if a.LibraryPath != "libseekdb.dylib" && a.LibraryPath != "libseekdb.so" {
+		return errors.New("SeekDB artifact library path must be libseekdb.dylib or libseekdb.so")
 	}
 	if len(a.RequiredPaths) == 0 {
 		return errors.New("SeekDB artifact required paths must not be empty")
 	}
 	seenPaths := make(map[string]struct{}, len(a.RequiredPaths))
-	binaryRecorded := false
+	libraryRecorded := false
 	for _, requiredPath := range a.RequiredPaths {
 		if !isCleanArchivePath(requiredPath) {
 			return errors.New("SeekDB artifact required paths must be clean relative archive paths")
@@ -326,10 +343,10 @@ func (a RuntimeArtifact) validate() error {
 			return fmt.Errorf("SeekDB artifact required path %q is duplicated", requiredPath)
 		}
 		seenPaths[requiredPath] = struct{}{}
-		binaryRecorded = binaryRecorded || requiredPath == a.BinaryPath
+		libraryRecorded = libraryRecorded || requiredPath == a.LibraryPath
 	}
-	if !binaryRecorded {
-		return errors.New("SeekDB artifact required paths must include the binary path")
+	if !libraryRecorded {
+		return errors.New("SeekDB artifact required paths must include the library path")
 	}
 	seenDependencies := make(map[string]struct{}, len(a.ExternalDependencies))
 	for _, dependency := range a.ExternalDependencies {
@@ -401,6 +418,51 @@ func validateMinimumOSVersion(value string) error {
 		}
 	}
 	return nil
+}
+
+func catalogReleaseURLs(tag string) (releaseURL, sourceURL, licenseURL, noticeURL string) {
+	licenseURL = "https://raw.githubusercontent.com/oceanbase/seekdb/" + tag + "/LICENSE"
+	noticeURL = "https://raw.githubusercontent.com/oceanbase/seekdb/" + tag + "/NOTICE"
+	if isGitCommit(tag) {
+		return "https://github.com/oceanbase/seekdb/commit/" + tag,
+			"https://github.com/oceanbase/seekdb/archive/" + tag + ".tar.gz",
+			licenseURL,
+			noticeURL
+	}
+	return "https://github.com/oceanbase/seekdb/releases/tag/" + tag,
+		"https://github.com/oceanbase/seekdb/releases/download/" + tag + "/",
+		licenseURL,
+		noticeURL
+}
+
+func isGitCommit(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, char := range value {
+		digit := char >= '0' && char <= '9'
+		hex := char >= 'a' && char <= 'f'
+		if !digit && !hex {
+			return false
+		}
+	}
+	return true
+}
+
+func validateOfficialSourceURL(raw string) error {
+	if strings.HasPrefix(raw, "https://github.com/oceanbase/seekdb/releases/download/") ||
+		strings.HasPrefix(raw, "https://github.com/oceanbase/seekdb/archive/") {
+		return validateOfficialURL("sourceURL", raw, strings.TrimSuffix(raw, path.Base(raw)))
+	}
+	return fmt.Errorf("SeekDB artifact %s must be a versioned official HTTPS URL", "sourceURL")
+}
+
+func validateOfficialProvenanceURL(raw string) error {
+	if strings.HasPrefix(raw, "https://github.com/oceanbase/seekdb/releases/tag/") ||
+		strings.HasPrefix(raw, "https://github.com/oceanbase/seekdb/commit/") {
+		return validateOfficialURL("provenanceURL", raw, raw)
+	}
+	return fmt.Errorf("SeekDB artifact %s must be a versioned official HTTPS URL", "provenanceURL")
 }
 
 func validateOfficialURL(name, raw, prefix string) error {

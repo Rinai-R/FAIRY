@@ -13,16 +13,13 @@ import (
 
 func applySeekDBAPIEnv(t *testing.T) {
 	t.Helper()
-	binary := os.Getenv(seekdb.EnvBinaryPath)
-	if binary == "" {
-		t.Skip(seekdb.EnvBinaryPath + " is not set")
+	library := os.Getenv(seekdb.EnvLibrary)
+	if library == "" {
+		t.Skip(seekdb.EnvLibrary + " is not set")
 	}
-	t.Setenv(seekdb.EnvBinaryPath, binary)
-	t.Setenv(seekdb.EnvLibraryPath, os.Getenv(seekdb.EnvLibraryPath))
+	t.Setenv(seekdb.EnvLibrary, library)
 	t.Setenv(seekdb.EnvDataDir, filepath.Join(t.TempDir(), "seekdb-data"))
-	t.Setenv(seekdb.EnvAddress, reserveAPISeekDBAddress(t))
 	t.Setenv(seekdb.EnvDatabase, seekdb.DefaultDatabase)
-	t.Setenv(seekdb.EnvUser, seekdb.DefaultUser)
 	t.Setenv(seekdb.EnvConnectLimit, "5s")
 	t.Setenv(seekdb.EnvStartLimit, "90s")
 	t.Setenv(seekdb.EnvQueryLimit, "15s")

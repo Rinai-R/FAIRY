@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	gomysql "github.com/go-sql-driver/mysql"
+	"fairy/runtime/seekdb"
 )
 
 var (
@@ -162,14 +162,7 @@ WHERE namespace = ? AND document_key = ? AND revision = ?`,
 }
 
 func isSeekDBCreateConflict(err error) bool {
-	var databaseError *gomysql.MySQLError
-	if !errors.As(err, &databaseError) {
-		return false
-	}
-	// 1062 is a duplicate unique key. SeekDB may instead choose one
-	// concurrent gap-lock participant as the 1213 deadlock victim. For a
-	// create-only expected revision both mean another writer won the CAS.
-	return databaseError.Number == 1062 || databaseError.Number == 1213
+	return seekdb.IsDuplicate(err) || seekdb.IsLockDeadlock(err)
 }
 
 type configDocumentQuerier interface {

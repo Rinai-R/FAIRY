@@ -44,13 +44,13 @@ func TestBuiltinArtifactCatalogRecordsTargetMatrix(t *testing.T) {
 	if target.Status != ArtifactStatusCandidate || target.Artifact == nil {
 		t.Fatalf("darwin/arm64 target = %+v", target)
 	}
-	if catalog.ReleaseTag != "v1.3.0" || target.Artifact.Version != "1.3.0.0-100000092026051510" || target.Artifact.License != "Apache-2.0" {
+	if catalog.ReleaseTag != "8c2bd7064084d985e3a9c5b8368976ffef8e8394" || target.Artifact.Version != "8c2bd7064084d985e3a9c5b8368976ffef8e8394" || target.Artifact.License != "Apache-2.0" {
 		t.Fatalf("darwin/arm64 artifact = %+v", target.Artifact)
 	}
-	if len(target.Artifact.ExternalDependencies) != 5 || len(target.Artifact.RequiredPaths) != 4 {
+	if target.Artifact.LibraryPath != "libseekdb.dylib" || len(target.Artifact.ExternalDependencies) != 0 || len(target.Artifact.RequiredPaths) != 1 {
 		t.Fatalf("darwin/arm64 runtime closure = %+v", target.Artifact)
 	}
-	if target.Artifact.MinimumOSVersion != "15.6.1" {
+	if target.Artifact.MinimumOSVersion != "15.0" {
 		t.Fatalf("minimum OS = %q", target.Artifact.MinimumOSVersion)
 	}
 	if _, err := catalog.Verified("darwin", "arm64"); !errors.Is(err, ErrArtifactCandidate) {
@@ -73,11 +73,11 @@ func TestArtifactCatalogRejectsUnsafeOrAmbiguousMetadata(t *testing.T) {
 		{name: "candidate without artifact", catalog: catalogJSON(validArtifact, `{"goos":"darwin","goarch":"arm64","status":"candidate","reason":"pending"}`), want: "requires artifact"},
 		{name: "unsupported with artifact", catalog: catalogJSON(validArtifact, targetJSON("unsupported", validArtifact)), want: "must not contain artifact"},
 		{name: "bad digest", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, fixtureDigest("payload"), "abc", 1))), want: "64 lowercase"},
-		{name: "absolute binary", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, `"usr/bin/seekdb"`, `"/usr/bin/seekdb"`, 1))), want: "clean relative"},
-		{name: "parent binary", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, `"usr/bin/seekdb"`, `"../seekdb"`, 1))), want: "clean relative"},
-		{name: "NUL binary", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, `"usr/bin/seekdb"`, `"usr/bin/seekdb\u0000"`, 1))), want: "required and must be clean"},
-		{name: "binary omitted from tree", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, `["usr/bin/seekdb","etc/seekdb"]`, `["etc/seekdb"]`, 1))), want: "include the binary"},
-		{name: "parent required path", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, `"etc/seekdb"`, `"../etc/seekdb"`, 1))), want: "clean relative"},
+		{name: "absolute library", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, `"libseekdb.dylib"`, `"/usr/lib/libseekdb.dylib"`, 1))), want: "clean relative"},
+		{name: "parent library", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, `"libseekdb.dylib"`, `"../libseekdb.dylib"`, 1))), want: "clean relative"},
+		{name: "NUL library", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, `"libseekdb.dylib"`, `"libseekdb.dylib\u0000"`, 1))), want: "required and must be clean"},
+		{name: "library omitted from tree", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, `["libseekdb.dylib","LICENSE"]`, `["LICENSE"]`, 1))), want: "include the library"},
+		{name: "parent required path", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, `"LICENSE"`, `"../LICENSE"`, 1))), want: "clean relative"},
 		{name: "missing minimum OS", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, `"minimumOSVersion":"15.0"`, `"minimumOSVersion":""`, 1))), want: "required and must be clean"},
 		{name: "invalid minimum OS", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, `"minimumOSVersion":"15.0"`, `"minimumOSVersion":"macos15"`, 1))), want: "numeric components"},
 		{name: "insecure source", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, "https://github.com/oceanbase/seekdb/releases/download/v1.0.0/seekdb-1.0.0.tar.gz", "http://example.test/seekdb.tar.gz", 1))), want: "versioned official HTTPS"},
@@ -141,12 +141,12 @@ func TestArtifactCatalogVerifyBundleChecksArchiveAndLicenseDocuments(t *testing.
 	}
 	directory := t.TempDir()
 	bundle := ArtifactBundle{
-		ArchivePath: filepath.Join(directory, "seekdb.tar.gz"),
+		LibraryPath: filepath.Join(directory, "libseekdb.dylib"),
 		LicensePath: filepath.Join(directory, "LICENSE"),
 		NoticePath:  filepath.Join(directory, "NOTICE"),
 	}
 	for filename, content := range map[string]string{
-		bundle.ArchivePath: "payload",
+		bundle.LibraryPath: "payload",
 		bundle.LicensePath: "license",
 		bundle.NoticePath:  "notice",
 	} {
@@ -178,16 +178,16 @@ func fixtureRuntimeArtifact(payload string) RuntimeArtifact {
 		NoticeURL:        "https://raw.githubusercontent.com/oceanbase/seekdb/v1.0.0/NOTICE",
 		NoticeSHA256:     fixtureDigest("notice"),
 		ArchiveFormat:    "tar.gz",
-		BinaryPath:       "usr/bin/seekdb",
-		RequiredPaths:    []string{"usr/bin/seekdb", "etc/seekdb"},
+		LibraryPath:      "libseekdb.dylib",
+		RequiredPaths:    []string{"libseekdb.dylib", "LICENSE"},
 		MinimumOSVersion: "15.0",
 	}
 }
 
 func fixtureArtifact(payload string) string {
 	artifact := fixtureRuntimeArtifact(payload)
-	return fmt.Sprintf(`{"version":%q,"sourceURL":%q,"provenanceURL":%q,"sha256":%q,"size":%d,"license":%q,"licenseURL":%q,"licenseSHA256":%q,"noticeURL":%q,"noticeSHA256":%q,"archiveFormat":%q,"binaryPath":%q,"requiredPaths":[%q,%q],"externalDependencies":[],"minimumOSVersion":%q}`,
-		artifact.Version, artifact.SourceURL, artifact.ProvenanceURL, artifact.SHA256, artifact.Size, artifact.License, artifact.LicenseURL, artifact.LicenseSHA256, artifact.NoticeURL, artifact.NoticeSHA256, artifact.ArchiveFormat, artifact.BinaryPath, artifact.RequiredPaths[0], artifact.RequiredPaths[1], artifact.MinimumOSVersion)
+	return fmt.Sprintf(`{"version":%q,"sourceURL":%q,"provenanceURL":%q,"sha256":%q,"size":%d,"license":%q,"licenseURL":%q,"licenseSHA256":%q,"noticeURL":%q,"noticeSHA256":%q,"archiveFormat":%q,"libraryPath":%q,"requiredPaths":[%q,%q],"externalDependencies":[],"minimumOSVersion":%q}`,
+		artifact.Version, artifact.SourceURL, artifact.ProvenanceURL, artifact.SHA256, artifact.Size, artifact.License, artifact.LicenseURL, artifact.LicenseSHA256, artifact.NoticeURL, artifact.NoticeSHA256, artifact.ArchiveFormat, artifact.LibraryPath, artifact.RequiredPaths[0], artifact.RequiredPaths[1], artifact.MinimumOSVersion)
 }
 
 func targetJSON(status, artifact string) string {

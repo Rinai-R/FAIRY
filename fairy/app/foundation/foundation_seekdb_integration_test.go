@@ -5,7 +5,9 @@ package foundation
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net"
@@ -13,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -526,17 +529,14 @@ type foundationIntegrationEnvironment struct {
 
 func newFoundationIntegrationEnvironment(t *testing.T) *foundationIntegrationEnvironment {
 	t.Helper()
-	binary := os.Getenv(seekdb.EnvBinaryPath)
-	if binary == "" {
-		t.Skip(seekdb.EnvBinaryPath + " is not set")
+	library := os.Getenv(seekdb.EnvLibrary)
+	if library == "" {
+		t.Skip(seekdb.EnvLibrary + " is not set")
 	}
 	return &foundationIntegrationEnvironment{values: map[string]string{
-		seekdb.EnvBinaryPath:     binary,
-		seekdb.EnvLibraryPath:    os.Getenv(seekdb.EnvLibraryPath),
-		seekdb.EnvDataDir:        filepath.Join(t.TempDir(), "seekdb-data"),
-		seekdb.EnvAddress:        reserveFoundationIntegrationAddress(t),
-		seekdb.EnvDatabase:       seekdb.DefaultDatabase,
-		seekdb.EnvUser:           seekdb.DefaultUser,
+		seekdb.EnvLibrary:        library,
+		seekdb.EnvDataDir:        foundationProcessDataDir(t),
+		seekdb.EnvDatabase:       foundationUniqueDatabase(t),
 		seekdb.EnvConnectLimit:   "5s",
 		seekdb.EnvStartLimit:     "90s",
 		seekdb.EnvQueryLimit:     "15s",
@@ -550,6 +550,29 @@ func newFoundationIntegrationEnvironment(t *testing.T) *foundationIntegrationEnv
 		"FAIRY_QDRANT_URL":       "http://invalid-legacy-sentinel",
 		"QDRANT_URL":             "http://invalid-legacy-sentinel",
 	}}
+}
+
+var (
+	foundationDataDirOnce sync.Once
+	foundationDataDir     string
+)
+
+func foundationProcessDataDir(t *testing.T) string {
+	t.Helper()
+	foundationDataDirOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "fairy-foundation-seekdb-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		foundationDataDir = dir
+	})
+	return foundationDataDir
+}
+
+func foundationUniqueDatabase(t *testing.T) string {
+	t.Helper()
+	sum := sha256.Sum256([]byte(t.Name()))
+	return "db" + hex.EncodeToString(sum[:10])
 }
 
 func (e *foundationIntegrationEnvironment) getenv(name string) string {

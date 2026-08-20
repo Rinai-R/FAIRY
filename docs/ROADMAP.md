@@ -56,8 +56,7 @@ go test -C fairy -tags=live ./agent/conversation \
 使用真实本地 SeekDB，不调用真实 provider、不读取真实用户历史：
 
 ```bash
-FAIRY_SEEKDB_BINARY="$HOME/Library/Caches/FAIRY/seekdb/extract/usr/bin/seekdb" \
-FAIRY_SEEKDB_LIBRARY_PATH="$HOME/Library/Caches/FAIRY/seekdb/compat:/opt/homebrew/lib" \
+FAIRY_SEEKDB_LIBRARY="$HOME/Library/Caches/FAIRY/seekdb-embed/build_release/src/include/libseekdb.dylib" \
 go test -C fairy -tags=integration ./agent/conversation \
   -run 'SeekDB|LongSession' \
   -count=1 -v

@@ -12,8 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	mysql "github.com/go-sql-driver/mysql"
 )
 
 const (
@@ -516,8 +514,7 @@ func parseJournalString(column string, raw any) (string, error) {
 }
 
 func isMySQLError(err error, number uint16) bool {
-	var databaseError *mysql.MySQLError
-	return errors.As(err, &databaseError) && databaseError.Number == number
+	return IsErrno(err, number)
 }
 
 const createSchemaJournalSQL = `

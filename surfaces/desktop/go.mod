@@ -15,7 +15,6 @@ require (
 replace fairy => ../../fairy
 
 require (
-	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/adrg/xdg v0.5.3 // indirect
 	github.com/bytedance/gopkg v0.1.4 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect
@@ -27,7 +26,6 @@ require (
 	github.com/coder/websocket v1.8.14 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
-	github.com/go-sql-driver/mysql v1.10.0 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 // indirect

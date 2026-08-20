@@ -8,11 +8,11 @@ tasks:
       - go test ./...
 
   seekdb:test-integration:
-    desc: Run real local SeekDB runtime, persistence, and schema migration tests.
+    desc: Run real in-process SeekDB runtime, persistence, and schema migration tests.
     dir: fairy
     preconditions:
-      - sh: test -n "${FAIRY_SEEKDB_BINARY:-}"
-        msg: FAIRY_SEEKDB_BINARY must point to a real SeekDB executable.
+      - sh: test -n "${FAIRY_SEEKDB_LIBRARY:-}"
+        msg: FAIRY_SEEKDB_LIBRARY must point to a real libseekdb shared library.
     cmds:
       - go test -count=1 -tags=integration -v ./runtime/seekdb
 

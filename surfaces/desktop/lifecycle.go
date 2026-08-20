@@ -54,8 +54,8 @@ func defaultShutdownBudget() shutdownBudget {
 	}
 }
 
-func defaultOpenEdge(ctx context.Context) (ownedRuntime, error) {
-	runtime, err := edge.Open(ctx, edge.Options{})
+func defaultOpenEdge(ctx context.Context, profileDir string) (ownedRuntime, error) {
+	runtime, err := edge.Open(ctx, edge.Options{ConfigRoot: profileDir})
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +109,10 @@ func (s *CoreService) ServiceStartup(ctx context.Context, _ application.ServiceO
 	}()
 	open := s.openEdge
 	if open == nil {
-		open = defaultOpenEdge
+		profile := dir
+		open = func(ctx context.Context) (ownedRuntime, error) {
+			return defaultOpenEdge(ctx, profile)
+		}
 	}
 	runtime, err := open(ctx)
 	if err != nil {

@@ -6,33 +6,23 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
-	goruntime "runtime"
 	"strings"
 	"sync"
 	"time"
 )
 
-const (
-	defaultReadinessInterval = 50 * time.Millisecond
-	maxProcessOutputBytes    = 64 << 10
-)
+const defaultReadinessInterval = 50 * time.Millisecond
 
-var (
-	ErrRuntimeClosed = errors.New("SeekDB runtime is closed")
-	ErrRuntimeExited = errors.New("SeekDB runtime exited before readiness")
-)
+var ErrRuntimeClosed = errors.New("SeekDB runtime is closed")
 
 const seekDBBootstrapDatabase = "oceanbase"
 
 type Runtime struct {
 	config      Config
-	cmd         *exec.Cmd
+	engine      engineSession
 	db          *sql.DB
-	output      *boundedOutput
 	ctx         context.Context
 	clientLease io.Closer
 
@@ -53,16 +43,27 @@ type runtimePaths struct {
 	Run  string
 }
 
+type engineSession interface {
+	Close(context.Context) error
+}
+
 type launchOptions struct {
-	command           func(context.Context, Config, runtimePaths, io.Writer) *exec.Cmd
+	start             func(context.Context, Config, runtimePaths) (engineSession, error)
 	database          func(Config, string) (*sql.DB, error)
 	probe             func(context.Context, *sql.DB) error
 	readinessInterval time.Duration
 }
 
 func Open(ctx context.Context, config Config) (*Runtime, error) {
+	if config.LibraryPath == "" {
+		located, err := LocateLibrary()
+		if err != nil {
+			return nil, err
+		}
+		config.LibraryPath = located
+	}
 	return open(ctx, config, launchOptions{
-		command:           seekDBCommand,
+		start:             startEmbeddedEngine,
 		database:          openSQLDatabaseForName,
 		probe:             probeSQL,
 		readinessInterval: defaultReadinessInterval,
@@ -76,52 +77,42 @@ func open(ctx context.Context, config Config, options launchOptions) (*Runtime, 
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	if err := validateExecutable(config.BinaryPath); err != nil {
-		return nil, redactRuntimeError(config, err)
-	}
 	paths, err := prepareRuntimePaths(config.DataDir)
 	if err != nil {
 		return nil, redactRuntimeError(config, err)
 	}
-	if options.command == nil || options.database == nil || options.probe == nil {
-		return nil, errors.New("SeekDB launch command, database and readiness probe are required")
+	if options.start == nil || options.database == nil || options.probe == nil {
+		return nil, errors.New("SeekDB engine start, database and readiness probe are required")
 	}
 	if options.readinessInterval <= 0 {
 		return nil, errors.New("SeekDB readiness interval must be greater than zero")
 	}
 
-	output := newBoundedOutput(maxProcessOutputBytes)
+	clientLease, err := acquireSeekDBClientLease(paths)
+	if err != nil {
+		return nil, redactRuntimeError(config, fmt.Errorf("acquire SeekDB embedded client lease: %w", err))
+	}
+	engine, err := options.start(ctx, config, paths)
+	if err != nil {
+		_ = clientLease.Close()
+		return nil, redactRuntimeError(config, fmt.Errorf("start SeekDB engine: %w", err))
+	}
+
 	bootstrapDatabase := config.Database
 	if config.Database != seekDBBootstrapDatabase {
 		bootstrapDatabase = seekDBBootstrapDatabase
 	}
 	database, err := options.database(config, bootstrapDatabase)
 	if err != nil {
+		_ = engine.Close(ctx)
+		_ = clientLease.Close()
 		return nil, redactRuntimeError(config, fmt.Errorf("configure SeekDB SQL connection: %w", err))
 	}
-	clientLease, err := acquireSeekDBClientLease(paths)
-	if err != nil {
-		_ = database.Close()
-		return nil, redactRuntimeError(config, fmt.Errorf("acquire SeekDB embedded client lease: %w", err))
-	}
-	cmd := options.command(ctx, config, paths, output)
-	if cmd == nil {
-		return nil, redactRuntimeError(config, errors.Join(
-			errors.New("SeekDB launch command is nil"),
-			database.Close(), clientLease.Close(),
-		))
-	}
+
 	runtime := &Runtime{
-		config: config, cmd: cmd, db: database, output: output, ctx: ctx,
+		config: config, engine: engine, db: database, ctx: ctx,
 		clientLease: clientLease, wait: make(chan struct{}),
 	}
-	if err := cmd.Start(); err != nil {
-		return nil, redactRuntimeError(config, errors.Join(
-			fmt.Errorf("start SeekDB %s: %w", descriptorText(config), err),
-			database.Close(), runtime.releaseClientLease(),
-		))
-	}
-	go runtime.collectWait()
 
 	readyCtx, cancel := context.WithTimeout(ctx, config.StartLimit)
 	defer cancel()
@@ -144,22 +135,42 @@ func open(ctx context.Context, config Config, options launchOptions) (*Runtime, 
 			return runtime, nil
 		}
 		select {
-		case <-runtime.wait:
-			if readyCtx.Err() != nil {
-				return nil, redactRuntimeError(config, fmt.Errorf("wait for SeekDB %s readiness: %w", descriptorText(config), readyCtx.Err()))
-			}
-			startupErr := runtime.startupExitError()
-			_ = database.Close()
-			return nil, startupErr
 		case <-readyCtx.Done():
 			closeCtx, closeCancel := context.WithTimeout(context.Background(), config.ShutdownLimit)
 			_ = runtime.Close(closeCtx)
 			closeCancel()
-			return nil, redactRuntimeError(config, fmt.Errorf("wait for SeekDB %s readiness: %w", descriptorText(config), readyCtx.Err()))
+			return nil, redactRuntimeError(config, fmt.Errorf("wait for SeekDB readiness: %w", readyCtx.Err()))
 		case <-ticker.C:
 		}
 	}
 }
+
+func startEmbeddedEngine(_ context.Context, config Config, _ runtimePaths) (engineSession, error) {
+	if err := config.requireLibrary(); err != nil {
+		return nil, err
+	}
+	if err := validateLibrary(config.LibraryPath); err != nil {
+		return nil, err
+	}
+	if err := loadSeekDBLibrary(config.LibraryPath); err != nil {
+		return nil, err
+	}
+	if err := engineOpen(config.DataDir); err != nil {
+		return nil, err
+	}
+	return liveEngine{}, nil
+}
+
+type liveEngine struct{}
+
+func (liveEngine) Close(context.Context) error {
+	engineClose()
+	return nil
+}
+
+type nopEngine struct{}
+
+func (nopEngine) Close(context.Context) error { return nil }
 
 func (r *Runtime) createAndSelectDatabase(ctx context.Context, options launchOptions) error {
 	queryCtx, cancel := context.WithTimeout(ctx, r.config.QueryLimit)
@@ -176,16 +187,44 @@ func (r *Runtime) createAndSelectDatabase(ctx context.Context, options launchOpt
 	err = options.probe(probeCtx, database)
 	probeCancel()
 	if err != nil {
-		_ = database.Close()
+		if !retainEmbeddedSQL(r.engine, database) {
+			_ = database.Close()
+		}
 		return err
 	}
 	old := r.db
+	r.db = database
+	if retainEmbeddedSQL(r.engine, old) {
+		return nil
+	}
 	if err := old.Close(); err != nil {
 		_ = database.Close()
+		r.db = old
 		return err
 	}
-	r.db = database
 	return nil
+}
+
+var retainedSQL struct {
+	mu  sync.Mutex
+	dbs []*sql.DB
+}
+
+func retainSQLDatabase(database *sql.DB) {
+	if database == nil {
+		return
+	}
+	retainedSQL.mu.Lock()
+	retainedSQL.dbs = append(retainedSQL.dbs, database)
+	retainedSQL.mu.Unlock()
+}
+
+func retainEmbeddedSQL(engine engineSession, database *sql.DB) bool {
+	if _, ok := engine.(liveEngine); !ok {
+		return false
+	}
+	retainSQLDatabase(database)
+	return true
 }
 
 func (r *Runtime) Done() <-chan struct{} {
@@ -251,59 +290,39 @@ func (r *Runtime) Close(ctx context.Context) error {
 		return errors.New("SeekDB close context is required")
 	}
 	r.close.Do(func() {
-		r.closeErr = r.closeProcess(ctx)
+		r.closeErr = r.closeEngine(ctx)
 	})
 	return r.closeErr
 }
 
-func (r *Runtime) closeProcess(ctx context.Context) error {
+func (r *Runtime) closeEngine(ctx context.Context) error {
 	r.mu.Lock()
 	r.closing = true
-	process := r.cmd.Process
+	engine := r.engine
 	database := r.db
 	r.db = nil
 	r.mu.Unlock()
 	var databaseErr error
+	if retainEmbeddedSQL(engine, database) {
+		database = nil
+	}
 	if database != nil {
 		databaseErr = database.Close()
 	}
-	leaseErr := r.releaseClientLease()
-	if process == nil {
-		return errors.Join(databaseErr, leaseErr)
+	var engineErr error
+	if engine != nil {
+		engineErr = engine.Close(ctx)
 	}
-	select {
-	case <-r.wait:
-		return errors.Join(databaseErr, leaseErr)
-	default:
-	}
-	if err := interruptProcess(process); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		return errors.Join(databaseErr, leaseErr, redactRuntimeError(r.config, fmt.Errorf("interrupt SeekDB %s: %w", descriptorText(r.config), err)))
-	}
-	select {
-	case <-r.wait:
-		return errors.Join(databaseErr, leaseErr)
-	case <-ctx.Done():
-		if err := process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			return errors.Join(databaseErr, leaseErr, redactRuntimeError(r.config, fmt.Errorf("kill SeekDB %s after shutdown deadline: %w", descriptorText(r.config), err)))
-		}
-		<-r.wait
-		return errors.Join(databaseErr, leaseErr, redactRuntimeError(r.config, fmt.Errorf("SeekDB %s exceeded shutdown deadline: %w", descriptorText(r.config), ctx.Err())))
-	}
-}
-
-func (r *Runtime) collectWait() {
-	err := r.cmd.Wait()
 	leaseErr := r.releaseClientLease()
 	r.mu.Lock()
-	if r.ctx.Err() != nil {
-		err = errors.Join(err, r.ctx.Err())
-	}
-	if !r.closing && err == nil {
-		err = ErrRuntimeExited
-	}
-	r.waitErr = errors.Join(err, leaseErr)
+	r.waitErr = errors.Join(databaseErr, engineErr, leaseErr)
 	r.mu.Unlock()
-	close(r.wait)
+	select {
+	case <-r.wait:
+	default:
+		close(r.wait)
+	}
+	return errors.Join(databaseErr, engineErr, leaseErr)
 }
 
 func (r *Runtime) releaseClientLease() error {
@@ -318,83 +337,17 @@ func (r *Runtime) releaseClientLease() error {
 	return r.leaseErr
 }
 
-func (r *Runtime) startupExitError() error {
-	r.mu.Lock()
-	err := r.waitErr
-	r.mu.Unlock()
-	detail := redactProcessOutput(r.config, r.output.String())
-	if err == nil {
-		err = ErrRuntimeExited
-	}
-	if detail == "" {
-		return redactRuntimeError(r.config, fmt.Errorf("SeekDB %s startup: %w", descriptorText(r.config), err))
-	}
-	return redactRuntimeError(r.config, fmt.Errorf("SeekDB %s startup: %w: %s", descriptorText(r.config), err, detail))
-}
-
-func seekDBCommand(ctx context.Context, config Config, paths runtimePaths, output io.Writer) *exec.Cmd {
-	_, rawPort, _ := net.SplitHostPort(config.Address)
-	args := []string{
-		"--nodaemon",
-		"--embedded",
-		"--port", rawPort,
-		"--base-dir", paths.Base,
-		"--data-dir", paths.Data,
-		"--redo-dir", paths.Redo,
-		"--log-level", "WARN",
-	}
-	host, _, _ := net.SplitHostPort(config.Address)
-	if net.ParseIP(host).To4() == nil {
-		args = append(args, "--use-ipv6")
-	}
-	cmd := exec.CommandContext(ctx, config.BinaryPath, args...)
-	cmd.Dir = paths.Base
-	cmd.Stdout = output
-	cmd.Stderr = output
-	if len(config.LibraryDirs) > 0 {
-		cmd.Env = withDynamicLibraryPath(os.Environ(), config.LibraryDirs)
-	}
-	return cmd
-}
-
-func withDynamicLibraryPath(environment, directories []string) []string {
-	name := "LD_LIBRARY_PATH"
-	if goruntime.GOOS == "darwin" {
-		name = "DYLD_FALLBACK_LIBRARY_PATH"
-	} else if goruntime.GOOS == "windows" {
-		name = "PATH"
-	}
-	prefix := name + "="
-	cleaned := make([]string, 0, len(environment)+1)
-	existing := ""
-	for _, variable := range environment {
-		if strings.HasPrefix(variable, prefix) {
-			existing = strings.TrimPrefix(variable, prefix)
-			continue
-		}
-		cleaned = append(cleaned, variable)
-	}
-	search := append([]string(nil), directories...)
-	if existing != "" {
-		search = append(search, existing)
-	}
-	return append(cleaned, prefix+strings.Join(search, string(os.PathListSeparator)))
-}
-
-func validateExecutable(path string) error {
+func validateLibrary(path string) error {
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return fmt.Errorf("resolve SeekDB binary: %w", err)
+		return fmt.Errorf("resolve SeekDB library: %w", err)
 	}
 	info, err := os.Stat(resolved)
 	if err != nil {
-		return fmt.Errorf("inspect SeekDB binary: %w", err)
+		return fmt.Errorf("inspect SeekDB library: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return errors.New("SeekDB binary must be a regular file")
-	}
-	if info.Mode().Perm()&0o111 == 0 {
-		return errors.New("SeekDB binary is not executable")
+		return errors.New("SeekDB library must be a regular file")
 	}
 	return nil
 }
@@ -439,7 +392,7 @@ func ensurePrivateDirectory(path string) error {
 
 func descriptorText(config Config) string {
 	descriptor := config.Descriptor()
-	return descriptor.BinaryName + "@" + descriptor.Address + "/" + descriptor.Database
+	return descriptor.Engine + "/" + descriptor.Database
 }
 
 func redactRuntimeError(config Config, err error) error {
@@ -447,58 +400,11 @@ func redactRuntimeError(config Config, err error) error {
 		return nil
 	}
 	message := err.Error()
-	message = strings.ReplaceAll(message, config.BinaryPath, "[seekdb-binary]")
-	message = strings.ReplaceAll(message, config.DataDir, "[seekdb-data]")
-	for _, directory := range config.LibraryDirs {
-		message = strings.ReplaceAll(message, directory, "[seekdb-library]")
+	if config.LibraryPath != "" {
+		message = strings.ReplaceAll(message, config.LibraryPath, "[seekdb-library]")
 	}
-	if config.Password != "" {
-		message = strings.ReplaceAll(message, config.Password, "[seekdb-credential]")
+	if config.DataDir != "" {
+		message = strings.ReplaceAll(message, config.DataDir, "[seekdb-data]")
 	}
 	return errors.New(message)
-}
-
-func redactProcessOutput(config Config, output string) string {
-	output = strings.TrimSpace(output)
-	output = strings.ReplaceAll(output, config.BinaryPath, "[seekdb-binary]")
-	output = strings.ReplaceAll(output, config.DataDir, "[seekdb-data]")
-	for _, directory := range config.LibraryDirs {
-		output = strings.ReplaceAll(output, directory, "[seekdb-library]")
-	}
-	if config.Password != "" {
-		output = strings.ReplaceAll(output, config.Password, "[seekdb-credential]")
-	}
-	return output
-}
-
-type boundedOutput struct {
-	mu    sync.Mutex
-	limit int
-	data  []byte
-}
-
-func newBoundedOutput(limit int) *boundedOutput {
-	return &boundedOutput{limit: limit}
-}
-
-func (w *boundedOutput) Write(value []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if len(value) >= w.limit {
-		w.data = append(w.data[:0], value[len(value)-w.limit:]...)
-		return len(value), nil
-	}
-	overflow := len(w.data) + len(value) - w.limit
-	if overflow > 0 {
-		copy(w.data, w.data[overflow:])
-		w.data = w.data[:len(w.data)-overflow]
-	}
-	w.data = append(w.data, value...)
-	return len(value), nil
-}
-
-func (w *boundedOutput) String() string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return string(append([]byte(nil), w.data...))
 }

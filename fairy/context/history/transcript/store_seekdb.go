@@ -12,9 +12,8 @@ import (
 	"unicode/utf8"
 
 	historyprojection "fairy/context/history/projection"
+	"fairy/runtime/seekdb"
 	"fairy/transport/session"
-
-	gomysql "github.com/go-sql-driver/mysql"
 )
 
 const emptyPromptProjectionJSON = `{"version":1,"omissions":[]}`
@@ -481,6 +480,5 @@ func validateSeekDBIdentifier(label, value string) error {
 }
 
 func isDuplicateSeekDBError(err error) bool {
-	var databaseError *gomysql.MySQLError
-	return errors.As(err, &databaseError) && databaseError.Number == 1062
+	return seekdb.IsDuplicate(err)
 }

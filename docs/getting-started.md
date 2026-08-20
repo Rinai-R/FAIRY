@@ -8,4 +8,4 @@ Desktop 是唯一生产 runtime。它在本机启动 SeekDB、Core、Session 和
 4. 打开管理工作区查看日志、Trace 与指标；关闭管理工作区不会停止 runtime。
 5. 需要 QQ 或搜索时再安装对应插件，见 `docs/plugins.md`。
 
-不要设置 `FAIRY_DATABASE_URL`、`FAIRY_CORE_ENDPOINT` 或 `FAIRY_OPENSERP_URL`。SeekDB 与 PostgreSQL 互斥，缺少 SeekDB 时启动失败。
+不要设置 `FAIRY_DATABASE_URL`、`FAIRY_CORE_ENDPOINT` 或 `FAIRY_OPENSERP_URL`。SeekDB 以进程内共享库运行，缺少 `libseekdb` 时启动失败，不会回退到子进程或 PostgreSQL。不要设置 `FAIRY_SEEKDB_BINARY`。
