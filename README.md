@@ -9,8 +9,8 @@ FAIRY 是同一个持续存在的陪伴人格：在桌面上是用户独享的�
 构建并打开 Desktop（未签名开发包即可）：
 
 ```bash
-task -t surfaces/desktop/Taskfile.yml package
-open surfaces/desktop/bin/FAIRY.app
+task -t desktop/Taskfile.yml package
+open desktop/bin/FAIRY.app
 ```
 
 首次启动会在用户数据目录创建 SeekDB、master key（`0600`）和空的插件授权。默认没有任何插件网络权限。角色对话、记忆/知识召回、配置和观测都在同一个本地进程内完成。
@@ -18,8 +18,8 @@ open surfaces/desktop/bin/FAIRY.app
 开发时也可以：
 
 ```bash
-task -t surfaces/desktop/Taskfile.yml build
-./surfaces/desktop/bin/FAIRY
+task -t desktop/Taskfile.yml build
+./desktop/bin/FAIRY
 ```
 
 CLI `go -C fairy run . serve` 仍可用于本机 loopback 调试，但生产陪伴路径是 Desktop。
@@ -31,7 +31,7 @@ QQ 与搜索是显式安装的本地插件，参考实现在：
 - `fairy/plugin/qqonebot/`
 - `fairy/plugin/websearch/`
 
-迁移说明见 `surfaces/qq-onebot/README.md`。安装步骤、权限拒绝和故障隔离见 `docs/plugins.md`。
+迁移说明见 `docs/qq-onebot.md`。安装步骤、权限拒绝和故障隔离见 `docs/plugins.md`。
 
 ## 备份
 
@@ -57,7 +57,7 @@ go -C fairy run . doctor
 ## 验证
 
 ```bash
-gofmt -l fairy surfaces/desktop
+gofmt -l fairy desktop
 go test -C fairy ./... -count=1
 (cd fairy && go test ./... -race -count=1)
 (cd fairy && go vet ./...)

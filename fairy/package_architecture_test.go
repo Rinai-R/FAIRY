@@ -268,7 +268,7 @@ func TestRemovedTTSSurfacesDoNotReturn(t *testing.T) {
 		"createSpeech" + "Playback",
 		"audio" + "Unavailable",
 	}
-	roots := []string{".", "../web/src", "../surfaces/turnclient", "../surfaces/desktop"}
+	roots := []string{".", "../web/src", "../desktop"}
 	for _, root := range roots {
 		err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
 			if walkErr != nil {
@@ -524,7 +524,7 @@ func TestIndependentSurfacesDoNotImportCoreInternals(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, surface := range []string{"desktop", "qq-onebot", "turnclient"} {
-		directory := filepath.Join(root, "surfaces", surface)
+		directory := filepath.Join(root, surface)
 		if _, err := os.Stat(directory); err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -575,7 +575,7 @@ func surfaceImportAllowed(surface, line string) bool {
 }
 
 func TestQQSurfaceDependencyGraphExcludesCoreDatabase(t *testing.T) {
-	directory := filepath.Join("..", "surfaces", "qq-onebot")
+	directory := filepath.Join("..", "qq-onebot")
 	if _, err := os.Stat(filepath.Join(directory, "go.mod")); err != nil {
 		if os.IsNotExist(err) {
 			return

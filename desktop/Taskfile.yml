@@ -26,15 +26,15 @@ tasks:
 
   seekdb:verify-artifact:
     desc: 校验随包 libseekdb、LICENSE 与 NOTICE；候选或缺失 artifact 明确失败
-    dir: ../../fairy
+    dir: ../fairy
     cmds:
       - >-
         go run . seekdb-artifact
         --goos darwin
         --goarch arm64
-        --library ../surfaces/desktop/build/seekdb/libseekdb.dylib
-        --license ../surfaces/desktop/build/seekdb/LICENSE
-        --notice ../surfaces/desktop/build/seekdb/NOTICE
+        --library ../desktop/build/seekdb/libseekdb.dylib
+        --license ../desktop/build/seekdb/LICENSE
+        --notice ../desktop/build/seekdb/NOTICE
 
   package:
     desc: 打包显示在系统 Dock 的 macOS 桌面伴侣
@@ -47,10 +47,10 @@ tasks:
       - cp {{.BIN_DIR}}/{{.APP_NAME}} {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS/{{.APP_NAME}}
       - chmod +x {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS/{{.APP_NAME}}
       - cp build/plugin-host.defaults.json {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugin-host.defaults.json
-      - cp ../../fairy/plugin/schema/manifest.v1.json {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugin-abi/manifest.v1.json
-      - cp ../../fairy/plugin/schema/envelope.v1.json {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugin-abi/envelope.v1.json
-      - cp ../../fairy/plugin/websearch/manifest.json {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugins/web-search.manifest.json
-      - cp ../../fairy/plugin/qqonebot/manifest.json {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugins/qq-onebot.manifest.json
+      - cp ../fairy/plugin/schema/manifest.v1.json {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugin-abi/manifest.v1.json
+      - cp ../fairy/plugin/schema/envelope.v1.json {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugin-abi/envelope.v1.json
+      - cp ../fairy/plugin/websearch/manifest.json {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugins/web-search.manifest.json
+      - cp ../fairy/plugin/qqonebot/manifest.json {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugins/qq-onebot.manifest.json
       - cp build/seekdb/libseekdb.dylib {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Frameworks/libseekdb.dylib
       - cp build/seekdb/LICENSE {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/licenses/SEEKDB-LICENSE
       - cp build/seekdb/NOTICE {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/licenses/SEEKDB-NOTICE

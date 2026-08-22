@@ -416,7 +416,7 @@ func TestSeekDBRuntimeDoesNotImportProcessOrMySQLDriver(t *testing.T) {
 
 func TestDesktopSurfaceDependencyBoundary(t *testing.T) {
 	cmd := exec.Command("go", "list", "-json", ".")
-	cmd.Dir = filepath.Join("..", "surfaces", "desktop")
+	cmd.Dir = filepath.Join("..", "desktop")
 	out, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {

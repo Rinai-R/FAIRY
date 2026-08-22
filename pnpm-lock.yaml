@@ -12,7 +12,7 @@ importers:
         specifier: 1.7.0
         version: 1.7.0(@types/node@26.1.1)
 
-  surfaces/desktop/frontend:
+  desktop/frontend:
     dependencies:
       '@pixi/react':
         specifier: 8.0.5

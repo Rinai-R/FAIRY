@@ -1,6 +1,6 @@
 packages:
   - "web"
-  - "surfaces/desktop/frontend"
+  - "desktop/frontend"
 allowBuilds:
   '@fission-ai/openspec': false
   esbuild: true

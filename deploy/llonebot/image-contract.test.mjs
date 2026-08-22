@@ -152,7 +152,7 @@ test("current deployment files contain no retired PMHQ or legacy image reference
     "docker-compose.qq.yml",
     ".env.example",
     "README.md",
-    "surfaces/qq-onebot/README.md",
+    "docs/qq-onebot.md",
     "deploy/llonebot/configure.mjs",
     "deploy/llonebot/image-contract.json",
   ];

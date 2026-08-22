@@ -12,7 +12,7 @@ require (
 	golang.org/x/sys v0.45.0
 )
 
-replace fairy => ../../fairy
+replace fairy => ../fairy
 
 require (
 	github.com/adrg/xdg v0.5.3 // indirect

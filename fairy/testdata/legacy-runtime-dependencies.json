@@ -1,7 +1,7 @@
 {
   "roots": [
     ".",
-    "../surfaces"
+    "../desktop"
   ],
   "rules": {
     "postgres_driver": {
