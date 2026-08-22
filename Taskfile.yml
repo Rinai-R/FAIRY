@@ -16,6 +16,15 @@ tasks:
     cmds:
       - go test -count=1 -tags=integration -v ./runtime/seekdb
 
+  seekdb:test-integration-all:
+    desc: Run every integration-tagged Go scenario in an isolated process against real in-process SeekDB.
+    dir: fairy
+    preconditions:
+      - sh: test -n "${FAIRY_SEEKDB_LIBRARY:-}"
+        msg: FAIRY_SEEKDB_LIBRARY must point to a real libseekdb shared library.
+    cmds:
+      - runtime/seekdb/build/test-integration-all.sh
+
   build:
     desc: Build the fairy Session Core binary.
     deps:

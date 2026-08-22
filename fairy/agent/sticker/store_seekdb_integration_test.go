@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"fairy/runtime/seekdb"
+	"fairy/runtime/seekdb/seekdbtest"
 )
 
 func TestRealSeekDBStickerStorePersistsCatalogAndContentConsistency(t *testing.T) {
@@ -189,8 +190,8 @@ func openStickerSeekDB(t *testing.T) (*seekdb.Runtime, *sql.DB, seekdb.Config) {
 		t.Skip(seekdb.EnvLibrary + " is not set")
 	}
 	config := seekdb.Config{
-		LibraryPath:    library,
-		DataDir:       filepath.Join(t.TempDir(), "seekdb-sticker"),
+		LibraryPath:   library,
+		DataDir:       seekdbtest.DataDir(t),
 		Database:      seekdb.DefaultDatabase,
 		ConnectLimit:  5 * time.Second,
 		StartLimit:    90 * time.Second,

@@ -10,7 +10,6 @@ import (
 	"math"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +18,7 @@ import (
 
 	"fairy/runtime/embedding"
 	"fairy/runtime/seekdb"
+	"fairy/runtime/seekdb/seekdbtest"
 )
 
 const (
@@ -1580,8 +1580,8 @@ func openKnowledgeSeekDB(t testing.TB) (*seekdb.Runtime, *sql.DB, seekdb.Config)
 		t.Skip(seekdb.EnvLibrary + " is not set")
 	}
 	config := seekdb.Config{
-		LibraryPath:    library,
-		DataDir:       filepath.Join(t.TempDir(), "seekdb-knowledge"),
+		LibraryPath:   library,
+		DataDir:       seekdbtest.DataDir(t),
 		Database:      seekdb.DefaultDatabase,
 		ConnectLimit:  5 * time.Second,
 		StartLimit:    90 * time.Second,

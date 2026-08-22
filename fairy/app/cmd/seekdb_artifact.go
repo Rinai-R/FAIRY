@@ -32,9 +32,9 @@ func newSeekDBArtifactCmd() *cobra.Command {
 			if _, err := catalog.Verified(goos, goarch); err != nil {
 				return err
 			}
-			for _, filename := range []string{bundle.LibraryPath, bundle.LicensePath, bundle.NoticePath} {
+			for _, filename := range []string{bundle.LibraryPath, bundle.LicensePath, bundle.NoticePath, bundle.AppInfoPlistPath} {
 				if filename == "" || filename != strings.TrimSpace(filename) {
-					return errors.New("SeekDB library, LICENSE, and NOTICE build input paths are required")
+					return errors.New("SeekDB library, LICENSE, NOTICE, and app Info.plist build input paths are required")
 				}
 			}
 			return catalog.VerifyBundle(goos, goarch, bundle)
@@ -45,5 +45,6 @@ func newSeekDBArtifactCmd() *cobra.Command {
 	command.Flags().StringVar(&bundle.LibraryPath, "library", "", "path to the pinned libseekdb shared library")
 	command.Flags().StringVar(&bundle.LicensePath, "license", "", "path to the pinned-commit SeekDB LICENSE")
 	command.Flags().StringVar(&bundle.NoticePath, "notice", "", "path to the pinned-commit SeekDB NOTICE")
+	command.Flags().StringVar(&bundle.AppInfoPlistPath, "app-info", "", "path to the packaged app Info.plist")
 	return command
 }

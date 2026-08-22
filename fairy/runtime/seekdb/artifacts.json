@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "product": "seekdb",
   "releaseTag": "8c2bd7064084d985e3a9c5b8368976ffef8e8394",
   "releaseURL": "https://github.com/oceanbase/seekdb/commit/8c2bd7064084d985e3a9c5b8368976ffef8e8394",
@@ -7,14 +7,14 @@
     {
       "goos": "darwin",
       "goarch": "arm64",
-      "status": "candidate",
-      "reason": "feat/embedded-mode commit 8c2bd7064084d985e3a9c5b8368976ffef8e8394 构建的 darwin/arm64 进程内 libseekdb.dylib；OceanBase 尚未发布官方嵌入库，故保持 candidate，打包在 verified 之前明确失败。",
+      "status": "verified",
+      "reason": "由固定官方源码 commit、CLT 26.6/SDK 26.5/LLVM 19.1.7 与 deployment target 15.0 recipe 重建；Mach-O、ABI、系统动态依赖、许可证及进程内运行测试均已验证。",
       "artifact": {
         "version": "8c2bd7064084d985e3a9c5b8368976ffef8e8394",
         "sourceURL": "https://github.com/oceanbase/seekdb/archive/8c2bd7064084d985e3a9c5b8368976ffef8e8394.tar.gz",
         "provenanceURL": "https://github.com/oceanbase/seekdb/commit/8c2bd7064084d985e3a9c5b8368976ffef8e8394",
-        "sha256": "ac9e6c087705a21534971c0f86f37105fa20fe0d1334b2e80b2d52739bb6de48",
-        "size": 137952416,
+        "sha256": "03b0cf0ee49000b12033c5963d4a010f71c7ddeca547d91311606ec4b932b0b6",
+        "size": 137144656,
         "license": "Apache-2.0",
         "licenseURL": "https://raw.githubusercontent.com/oceanbase/seekdb/8c2bd7064084d985e3a9c5b8368976ffef8e8394/LICENSE",
         "licenseSHA256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
@@ -26,7 +26,32 @@
           "libseekdb.dylib"
         ],
         "externalDependencies": [],
-        "minimumOSVersion": "15.0"
+        "minimumOSVersion": "15.0",
+        "buildRecipe": {
+          "path": "fairy/runtime/seekdb/build/darwin-arm64.sh",
+          "sha256": "28fcdcf3c207c6a2746af2d39fd3b30f1618ed21a58a12eb3a75a48046575750",
+          "commandLineToolsPackageVersion": "26.6.0.0.1781586589",
+          "sdkVersion": "26.5",
+          "llvmVersion": "19.1.7",
+          "deploymentTarget": "15.0",
+          "cmakeVersion": "4.3.2",
+          "rustVersion": "1.97.1",
+          "pythonVersion": "3.14.6"
+        },
+        "machO": {
+          "installName": "@rpath/libseekdb.dylib",
+          "sdkVersion": "26.5",
+          "dynamicDependencies": [
+            "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+            "/System/Library/Frameworks/Security.framework/Versions/A/Security",
+            "/System/Library/Frameworks/SystemConfiguration.framework/Versions/A/SystemConfiguration",
+            "/usr/lib/libSystem.B.dylib",
+            "/usr/lib/libc++.1.dylib",
+            "/usr/lib/libiconv.2.dylib"
+          ],
+          "exportedSymbolCount": 93,
+          "exportedSymbolsSHA256": "e39a9e2e898c02f4c41bf8bb90c535c336ed7fbc8abc0e4c4e1e02ba0aa0cc93"
+        }
       }
     },
     {

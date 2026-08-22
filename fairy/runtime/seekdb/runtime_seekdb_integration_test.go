@@ -5,6 +5,7 @@ package seekdb
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,91 @@ import (
 	"testing"
 	"time"
 )
+
+const (
+	seekDBHostCompletionHelperEnv = "FAIRY_SEEKDB_HOST_COMPLETION_HELPER"
+	seekDBHostCompletionDataEnv   = "FAIRY_SEEKDB_HOST_COMPLETION_DATA"
+	seekDBHostCompletionMarkerEnv = "FAIRY_SEEKDB_HOST_COMPLETION_MARKER"
+)
+
+func TestRealSeekDBMigrationReturnsToHostProcess(t *testing.T) {
+	library := os.Getenv(EnvLibrary)
+	if library == "" {
+		t.Skip(EnvLibrary + " is not set")
+	}
+	if os.Getenv(seekDBHostCompletionHelperEnv) == "1" {
+		runSeekDBHostCompletionHelper(t, library)
+		return
+	}
+
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	marker := filepath.Join(root, "host-completed")
+	command := exec.Command(executable, "-test.run=^TestRealSeekDBMigrationReturnsToHostProcess$", "-test.v")
+	command.Env = append(os.Environ(),
+		seekDBHostCompletionHelperEnv+"=1",
+		seekDBHostCompletionDataEnv+"="+filepath.Join(root, "seekdb"),
+		seekDBHostCompletionMarkerEnv+"="+marker,
+	)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("SeekDB host-completion helper failed: %v\n%s", err, output)
+	}
+	completed, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("SeekDB helper exited without returning from migration and Close: %v\n%s", err, output)
+	}
+	if string(completed) != "completed\n" {
+		t.Fatalf("SeekDB helper exited before host completion; last durable checkpoint = %q\n%s", completed, output)
+	}
+}
+
+func runSeekDBHostCompletionHelper(t *testing.T, library string) {
+	dataDir := os.Getenv(seekDBHostCompletionDataEnv)
+	marker := os.Getenv(seekDBHostCompletionMarkerEnv)
+	if dataDir == "" || marker == "" {
+		t.Fatal("SeekDB host-completion helper paths are required")
+	}
+	config := Config{
+		LibraryPath:   library,
+		DataDir:       dataDir,
+		Database:      DefaultDatabase,
+		ConnectLimit:  5 * time.Second,
+		StartLimit:    90 * time.Second,
+		QueryLimit:    15 * time.Second,
+		ShutdownLimit: 20 * time.Second,
+		MaxOpenConns:  4,
+		MaxIdleConns:  2,
+	}
+	writeSeekDBHostCompletionMarker(t, marker, "starting\n")
+	instance, err := Open(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSeekDBHostCompletionMarker(t, marker, "opened\n")
+	migrations := BuiltinMigrations()
+	for index := range migrations {
+		if err := MigrateSchema(t.Context(), instance.SQL(), migrations[:index+1]); err != nil {
+			t.Fatal(err)
+		}
+		writeSeekDBHostCompletionMarker(t, marker, fmt.Sprintf("revision=%d\n", migrations[index].Revision.Number))
+	}
+	if _, err := CheckSchema(t.Context(), instance.SQL(), CurrentSchemaRevision()); err != nil {
+		t.Fatal(err)
+	}
+	closeRuntimeForIntegrationTest(t, instance, config.ShutdownLimit)
+	writeSeekDBHostCompletionMarker(t, marker, "completed\n")
+}
+
+func writeSeekDBHostCompletionMarker(t *testing.T, path, value string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestRealSeekDBPersistsCommittedTransactionAcrossRestart(t *testing.T) {
 	library := os.Getenv(EnvLibrary)

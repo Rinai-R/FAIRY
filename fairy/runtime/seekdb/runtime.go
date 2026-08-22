@@ -17,7 +17,10 @@ const defaultReadinessInterval = 50 * time.Millisecond
 
 var ErrRuntimeClosed = errors.New("SeekDB runtime is closed")
 
-const seekDBBootstrapDatabase = "oceanbase"
+const (
+	seekDBBootstrapDatabase = "oceanbase"
+	embeddedTelemetryEnv    = "TELEMETRY_ENABLED"
+)
 
 type Runtime struct {
 	config      Config
@@ -97,6 +100,9 @@ func open(ctx context.Context, config Config, options launchOptions) (*Runtime, 
 		_ = clientLease.Close()
 		return nil, redactRuntimeError(config, fmt.Errorf("start SeekDB engine: %w", err))
 	}
+	if retainEmbeddedClientLease(engine, clientLease) {
+		clientLease = nil
+	}
 
 	bootstrapDatabase := config.Database
 	if config.Database != seekDBBootstrapDatabase {
@@ -152,6 +158,9 @@ func startEmbeddedEngine(_ context.Context, config Config, _ runtimePaths) (engi
 	if err := validateLibrary(config.LibraryPath); err != nil {
 		return nil, err
 	}
+	if err := disableEmbeddedTelemetry(); err != nil {
+		return nil, err
+	}
 	if err := loadSeekDBLibrary(config.LibraryPath); err != nil {
 		return nil, err
 	}
@@ -159,6 +168,18 @@ func startEmbeddedEngine(_ context.Context, config Config, _ runtimePaths) (engi
 		return nil, err
 	}
 	return liveEngine{}, nil
+}
+
+// disableEmbeddedTelemetry is a mandatory process boundary, not a user
+// setting. SeekDB v1.3 enables bootstrap telemetry by default and, on macOS,
+// implements it by calling system("curl ..."). FAIRY embeds the engine in its
+// own process and permits no database helper process or undeclared egress, so
+// an inherited value must never be able to re-enable that upstream behavior.
+func disableEmbeddedTelemetry() error {
+	if err := os.Setenv(embeddedTelemetryEnv, "false"); err != nil {
+		return fmt.Errorf("disable embedded SeekDB telemetry: %w", err)
+	}
+	return nil
 }
 
 type liveEngine struct{}
@@ -210,6 +231,11 @@ var retainedSQL struct {
 	dbs []*sql.DB
 }
 
+var retainedClientLeases struct {
+	mu     sync.Mutex
+	leases []io.Closer
+}
+
 func retainSQLDatabase(database *sql.DB) {
 	if database == nil {
 		return
@@ -224,6 +250,26 @@ func retainEmbeddedSQL(engine engineSession, database *sql.DB) bool {
 		return false
 	}
 	retainSQLDatabase(database)
+	return true
+}
+
+// retainEmbeddedClientLease keeps the process-level shared lease alive for as
+// long as the in-process engine can execute. libseekdb cannot be unloaded or
+// restarted safely in the same process, and releasing its last client lease
+// asks the embedded observer to terminate the entire host process. A logical
+// Runtime Close therefore closes FAIRY's handle but must not release this
+// process-owned lease. Startup failures before a live engine exists still
+// release their lease in open.
+func retainEmbeddedClientLease(engine engineSession, lease io.Closer) bool {
+	if lease == nil {
+		return false
+	}
+	if _, ok := engine.(liveEngine); !ok {
+		return false
+	}
+	retainedClientLeases.mu.Lock()
+	retainedClientLeases.leases = append(retainedClientLeases.leases, lease)
+	retainedClientLeases.mu.Unlock()
 	return true
 }
 

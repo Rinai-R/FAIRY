@@ -10,10 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"fairy/runtime/seekdb/seekdbtest"
 )
 
 func TestRealSeekDBSchemaMigrationLifecycle(t *testing.T) {
@@ -139,21 +140,9 @@ func openSchemaMigrationRuntime(t *testing.T) (*Runtime, Config) {
 	return instance, config
 }
 
-var (
-	integrationDataDirOnce sync.Once
-	integrationDataDir     string
-)
-
 func processIntegrationDataDir(t *testing.T) string {
 	t.Helper()
-	integrationDataDirOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "fairy-seekdb-embed-")
-		if err != nil {
-			t.Fatal(err)
-		}
-		integrationDataDir = dir
-	})
-	return integrationDataDir
+	return seekdbtest.DataDir(t)
 }
 
 func uniqueIntegrationDatabase(t *testing.T) string {

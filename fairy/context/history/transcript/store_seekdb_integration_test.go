@@ -10,13 +10,13 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"fairy/runtime/seekdb"
+	"fairy/runtime/seekdb/seekdbtest"
 	"fairy/transport/session"
 )
 
@@ -454,8 +454,8 @@ func openTranscriptSeekDBRuntime(t *testing.T) (*seekdb.Runtime, *sql.DB, seekdb
 		t.Skip(seekdb.EnvLibrary + " is not set")
 	}
 	config := seekdb.Config{
-		LibraryPath:    library,
-		DataDir:       filepath.Join(t.TempDir(), "seekdb-data"),
+		LibraryPath:   library,
+		DataDir:       seekdbtest.DataDir(t),
 		Database:      seekdb.DefaultDatabase,
 		ConnectLimit:  5 * time.Second,
 		StartLimit:    90 * time.Second,

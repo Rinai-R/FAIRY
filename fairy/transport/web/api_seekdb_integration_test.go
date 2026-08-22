@@ -5,10 +5,10 @@ package web_test
 import (
 	"net"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"fairy/runtime/seekdb"
+	"fairy/runtime/seekdb/seekdbtest"
 )
 
 func applySeekDBAPIEnv(t *testing.T) {
@@ -18,7 +18,7 @@ func applySeekDBAPIEnv(t *testing.T) {
 		t.Skip(seekdb.EnvLibrary + " is not set")
 	}
 	t.Setenv(seekdb.EnvLibrary, library)
-	t.Setenv(seekdb.EnvDataDir, filepath.Join(t.TempDir(), "seekdb-data"))
+	t.Setenv(seekdb.EnvDataDir, seekdbtest.DataDir(t))
 	t.Setenv(seekdb.EnvDatabase, seekdb.DefaultDatabase)
 	t.Setenv(seekdb.EnvConnectLimit, "5s")
 	t.Setenv(seekdb.EnvStartLimit, "90s")

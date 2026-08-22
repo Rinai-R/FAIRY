@@ -10,12 +10,12 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"fairy/runtime/seekdb"
+	"fairy/runtime/seekdb/seekdbtest"
 )
 
 func TestRealSeekDBCharacterStoreIsAtomicAndPersistsAcrossRestart(t *testing.T) {
@@ -176,9 +176,9 @@ func openCharacterSeekDBRuntime(t *testing.T) (*seekdb.Runtime, *sql.DB, seekdb.
 		t.Skip(seekdb.EnvLibrary + " is not set")
 	}
 	config := seekdb.Config{
-		LibraryPath: library,
-		DataDir:     filepath.Join(t.TempDir(), "seekdb-data"),
-		Database:    seekdb.DefaultDatabase,
+		LibraryPath:  library,
+		DataDir:      seekdbtest.DataDir(t),
+		Database:     seekdb.DefaultDatabase,
 		ConnectLimit: 5 * time.Second, StartLimit: 90 * time.Second, QueryLimit: 15 * time.Second,
 		ShutdownLimit: 20 * time.Second, MaxOpenConns: 8, MaxIdleConns: 4,
 	}

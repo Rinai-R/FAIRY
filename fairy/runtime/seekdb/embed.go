@@ -94,18 +94,25 @@ type rowHandle = C.FairySeekdbRow
 func (h *engineHandle) Query(sqlText string) (resultHandle, error) {
 	cSQL := C.CString(sqlText)
 	defer C.free(unsafe.Pointer(cSQL))
-	var result C.FairySeekdbResult
-	if rc := C.fairy_seekdb_query(h.ptr, cSQL, &result); rc != 0 {
+	var directResult C.FairySeekdbResult
+	if rc := C.fairy_seekdb_query(h.ptr, cSQL, &directResult); rc != 0 {
 		return nil, h.sqlError()
 	}
-	if C.fairy_seekdb_field_count(h.ptr) == 0 {
+	fieldCount := C.fairy_seekdb_field_count(h.ptr)
+	// seekdb_query exposes the result twice: through its out parameter and
+	// through seekdb_store_result. The latter transfers ownership away from
+	// the connection and is the compatibility path used by the upstream C
+	// bindings. Always consume it before another query can replace the
+	// connection-owned result. Both handles normally alias the same object.
+	result := C.fairy_seekdb_store_result(h.ptr)
+	if result == nil {
+		result = directResult
+	}
+	if fieldCount == 0 {
 		if result != nil {
 			C.fairy_seekdb_result_free(result)
 		}
 		return nil, nil
-	}
-	if result == nil {
-		result = C.fairy_seekdb_store_result(h.ptr)
 	}
 	if result == nil {
 		return nil, h.sqlError()

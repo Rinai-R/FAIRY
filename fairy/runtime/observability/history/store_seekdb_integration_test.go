@@ -11,13 +11,13 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"fairy/runtime/observability"
 	"fairy/runtime/seekdb"
+	"fairy/runtime/seekdb/seekdbtest"
 )
 
 func TestRealSeekDBHistoryStorePersistsLogsTracesMetricsRetentionAndRestart(t *testing.T) {
@@ -235,25 +235,26 @@ func TestRealSeekDBHistoryEnqueueStaysIsolatedWhenPersistFails(t *testing.T) {
 
 	now := time.Now().UnixMilli()
 	if !store.EnqueueLog(observability.LogEntry{
-		Sequence: 1, TimestampUnixMS: now, Level: "info", Logger: "core", Message: "before-close",
+		Sequence: 1, TimestampUnixMS: now, Level: "info", Logger: "core", Message: "before-failure",
 	}) {
-		t.Fatal("enqueue before SeekDB close")
+		t.Fatal("enqueue before SeekDB persist failure")
 	}
 	waitHistoryCondition(t, "first SeekDB persist", func() bool {
 		logs, err := store.RecentLogs(t.Context(), 1)
-		return err == nil && len(logs) == 1 && logs[0].Message == "before-close"
+		return err == nil && len(logs) == 1 && logs[0].Message == "before-failure"
 	})
 
-	closeHistorySeekDB(t, instance, runtimeConfig.ShutdownLimit)
-	closed = true
+	if _, err := database.ExecContext(t.Context(), `DROP TABLE observability_records`); err != nil {
+		t.Fatalf("remove real SeekDB observability sink: %v", err)
+	}
 
 	started := time.Now()
 	if !store.EnqueueLog(observability.LogEntry{
-		Sequence: 2, TimestampUnixMS: now + 1, Level: "info", Logger: "core", Message: "after-close-one",
+		Sequence: 2, TimestampUnixMS: now + 1, Level: "info", Logger: "core", Message: "after-failure-one",
 	}) || !store.EnqueueLog(observability.LogEntry{
-		Sequence: 3, TimestampUnixMS: now + 2, Level: "info", Logger: "core", Message: "after-close-two",
+		Sequence: 3, TimestampUnixMS: now + 2, Level: "info", Logger: "core", Message: "after-failure-two",
 	}) {
-		t.Fatal("enqueue after SeekDB close was rejected")
+		t.Fatal("enqueue during SeekDB persist failure was rejected")
 	}
 	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
 		t.Fatalf("enqueue waited %s for a failed SeekDB persist", elapsed)
@@ -268,7 +269,7 @@ func TestRealSeekDBHistoryEnqueueStaysIsolatedWhenPersistFails(t *testing.T) {
 		t.Fatalf("unexpected persist recovery diagnostics = %d", got)
 	}
 	if _, err := store.RecentLogs(t.Context(), 1); err == nil {
-		t.Fatal("RecentLogs succeeded after SeekDB close")
+		t.Fatal("RecentLogs succeeded after the real SeekDB sink was removed")
 	}
 }
 
@@ -310,8 +311,8 @@ func openHistorySeekDB(t *testing.T) (*seekdb.Runtime, *sql.DB, seekdb.Config) {
 		t.Skip(seekdb.EnvLibrary + " is not set")
 	}
 	config := seekdb.Config{
-		LibraryPath:    library,
-		DataDir:       filepath.Join(t.TempDir(), "seekdb-history"),
+		LibraryPath:   library,
+		DataDir:       seekdbtest.DataDir(t),
 		Database:      seekdb.DefaultDatabase,
 		ConnectLimit:  5 * time.Second,
 		StartLimit:    90 * time.Second,

@@ -10,13 +10,13 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
 	"time"
 
 	"fairy/runtime/seekdb"
+	"fairy/runtime/seekdb/seekdbtest"
 )
 
 func TestRealSeekDBRuntimeStateIsConcurrentIsolatedAndPersistent(t *testing.T) {
@@ -641,8 +641,8 @@ func openRuntimeStateSeekDB(t *testing.T) (*seekdb.Runtime, *sql.DB, seekdb.Conf
 		t.Skip(seekdb.EnvLibrary + " is not set")
 	}
 	config := seekdb.Config{
-		LibraryPath:    library,
-		DataDir:       filepath.Join(t.TempDir(), "seekdb-runtime-state"),
+		LibraryPath:   library,
+		DataDir:       seekdbtest.DataDir(t),
 		Database:      seekdb.DefaultDatabase,
 		ConnectLimit:  5 * time.Second,
 		StartLimit:    90 * time.Second,

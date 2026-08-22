@@ -11,13 +11,13 @@ import (
 	"errors"
 	"net"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"fairy/runtime/seekdb"
+	"fairy/runtime/seekdb/seekdbtest"
 )
 
 func TestRealSeekDBSecretStoreEncryptsRoundTripsRotatesNonceAndEnforcesSchema(t *testing.T) {
@@ -133,8 +133,8 @@ func openSecretStoreSeekDBRuntime(t *testing.T) (*seekdb.Runtime, *sql.DB, seekd
 		t.Skip(seekdb.EnvLibrary + " is not set")
 	}
 	config := seekdb.Config{
-		LibraryPath:    library,
-		DataDir:       filepath.Join(t.TempDir(), "seekdb-data"),
+		LibraryPath:   library,
+		DataDir:       seekdbtest.DataDir(t),
 		Database:      seekdb.DefaultDatabase,
 		ConnectLimit:  5 * time.Second,
 		StartLimit:    90 * time.Second,
@@ -211,8 +211,11 @@ func assertSecretValuesColumnContract(t *testing.T, database *sql.DB) {
 		collation  string
 	}
 	want := []column{
-		{name: "namespace", columnType: "varchar(64)", nullable: "NO", collation: "ascii_bin"},
-		{name: "name", columnType: "varchar(128)", nullable: "NO", collation: "ascii_bin"},
+		// The immutable schema keeps ascii_bin semantics in its checksum, while
+		// the embedded engine adapter maps identifier columns to the binary
+		// utf8mb4 collation that SeekDB v1.3 actually loads.
+		{name: "namespace", columnType: "varchar(64)", nullable: "NO", collation: "utf8mb4_bin"},
+		{name: "name", columnType: "varchar(128)", nullable: "NO", collation: "utf8mb4_bin"},
 		{name: "key_version", columnType: "bigint unsigned", nullable: "NO"},
 		{name: "nonce", columnType: "varbinary(12)", nullable: "NO"},
 		{name: "ciphertext", columnType: "longblob", nullable: "NO"},

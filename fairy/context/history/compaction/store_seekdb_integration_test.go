@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
@@ -20,6 +19,7 @@ import (
 	historyruntime "fairy/context/history/runtime"
 	historytranscript "fairy/context/history/transcript"
 	"fairy/runtime/seekdb"
+	"fairy/runtime/seekdb/seekdbtest"
 )
 
 func TestRealSeekDBCompactionCommitsAreAtomicConcurrentAndPersistent(t *testing.T) {
@@ -1193,8 +1193,8 @@ func openCompactionSeekDB(t *testing.T) (*seekdb.Runtime, *sql.DB, seekdb.Config
 		t.Skip(seekdb.EnvLibrary + " is not set")
 	}
 	config := seekdb.Config{
-		LibraryPath:    library,
-		DataDir:       filepath.Join(t.TempDir(), "seekdb-compaction"),
+		LibraryPath:   library,
+		DataDir:       seekdbtest.DataDir(t),
 		Database:      seekdb.DefaultDatabase,
 		ConnectLimit:  5 * time.Second,
 		StartLimit:    90 * time.Second,

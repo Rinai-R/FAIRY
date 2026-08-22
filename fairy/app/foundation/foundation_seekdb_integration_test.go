@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +27,7 @@ import (
 	"fairy/runtime/model"
 	"fairy/runtime/observability"
 	"fairy/runtime/seekdb"
+	"fairy/runtime/seekdb/seekdbtest"
 	"fairy/transport/session"
 )
 
@@ -552,21 +552,9 @@ func newFoundationIntegrationEnvironment(t *testing.T) *foundationIntegrationEnv
 	}}
 }
 
-var (
-	foundationDataDirOnce sync.Once
-	foundationDataDir     string
-)
-
 func foundationProcessDataDir(t *testing.T) string {
 	t.Helper()
-	foundationDataDirOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "fairy-foundation-seekdb-")
-		if err != nil {
-			t.Fatal(err)
-		}
-		foundationDataDir = dir
-	})
-	return foundationDataDir
+	return seekdbtest.DataDir(t)
 }
 
 func foundationUniqueDatabase(t *testing.T) string {

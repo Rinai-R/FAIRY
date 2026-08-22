@@ -34,7 +34,7 @@ func resultColumnCount(resultHandle) int { return 0 }
 func resultColumnNames(resultHandle) []string {
 	return nil
 }
-func resultFree(resultHandle)            {}
+func resultFree(resultHandle) {}
 func resultFetch(resultHandle) (rowHandle, bool) {
 	return nil, false
 }

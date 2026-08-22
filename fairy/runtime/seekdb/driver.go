@@ -71,8 +71,18 @@ type embedConn struct {
 	closed bool
 }
 
-func (c *embedConn) Prepare(string) (driver.Stmt, error) {
-	return nil, errors.New("SeekDB prepared statements are interpolated by Exec/Query")
+func (c *embedConn) Prepare(query string) (driver.Stmt, error) {
+	return c.PrepareContext(context.Background(), query)
+}
+
+func (c *embedConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if query == "" {
+		return nil, errors.New("SeekDB prepared statement query is required")
+	}
+	return &embedStmt{conn: c, query: query}, nil
 }
 
 func (c *embedConn) Close() error {
@@ -141,6 +151,72 @@ func (c *embedConn) QueryContext(_ context.Context, query string, args []driver.
 
 type embedTx struct {
 	conn *embedConn
+}
+
+// embedStmt preserves database/sql's prepared-statement contract while the
+// embedded C ABI remains text-query only. Each execution interpolates the
+// current arguments through the same escaping path as direct Exec/Query.
+// database/sql keeps the owning driver connection reserved while a statement
+// execution or result set is active, so the C handle is never shared across
+// concurrent calls.
+type embedStmt struct {
+	conn   *embedConn
+	query  string
+	mu     sync.RWMutex
+	closed bool
+}
+
+func (s *embedStmt) Close() error {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *embedStmt) NumInput() int { return -1 }
+
+func (s *embedStmt) Exec(args []driver.Value) (driver.Result, error) {
+	return s.ExecContext(context.Background(), namedValues(args))
+}
+
+func (s *embedStmt) Query(args []driver.Value) (driver.Rows, error) {
+	return s.QueryContext(context.Background(), namedValues(args))
+}
+
+func (s *embedStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	query, conn, err := s.snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return conn.ExecContext(ctx, query, args)
+}
+
+func (s *embedStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	query, conn, err := s.snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return conn.QueryContext(ctx, query, args)
+}
+
+func (s *embedStmt) snapshot(ctx context.Context) (string, *embedConn, error) {
+	if err := ctx.Err(); err != nil {
+		return "", nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed || s.conn == nil {
+		return "", nil, errors.New("SeekDB prepared statement is closed")
+	}
+	return s.query, s.conn, nil
+}
+
+func namedValues(values []driver.Value) []driver.NamedValue {
+	named := make([]driver.NamedValue, len(values))
+	for index, value := range values {
+		named[index] = driver.NamedValue{Ordinal: index + 1, Value: value}
+	}
+	return named
 }
 
 func (t *embedTx) Commit() error {

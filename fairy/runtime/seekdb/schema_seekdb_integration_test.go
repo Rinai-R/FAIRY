@@ -2660,6 +2660,57 @@ INSERT INTO knowledge_entries(
 		t.Fatalf("insert source-free retrieval-ingest knowledge record: %v", err)
 	}
 
+	// The embedded libseekdb v1.3 C ABI executes EXPLAIN but exposes it as a
+	// zero-column result. Exercise the observable scope-first contract instead:
+	// more than the ANN limit's worth of vector-bearing rows are present in
+	// excluded scopes/statuses, so none may leak into the filtered candidates.
+	for index := range 6 {
+		idSuffix := strconv.Itoa(index)
+		if _, err := database.ExecContext(t.Context(), `
+INSERT INTO personal_memories(
+  id, kind, scope_kind, character_id, review_status, content, status,
+  confidence_basis_points, source_conversation_id, source_turn_id, evidence_ids,
+  embedding_space_id, embedding_content_hash, embedding, created_at_ms, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			"cognitive-personal-excluded-"+idSuffix, "relationship", "character", "other-character",
+			"ready", "不属于当前全局范围 "+idSuffix, "active", 9000, conversationID, turnID,
+			`["cognitive-turn"]`, "BAAI/bge-m3", hash[:], vector, 10, 10,
+		); err != nil {
+			t.Fatalf("insert excluded personal cognitive record %d: %v", index, err)
+		}
+
+		socialHash := sha256.Sum256([]byte("excluded social cognitive record " + idSuffix))
+		if _, err := database.ExecContext(t.Context(), `
+INSERT INTO social_memory_entries(
+  id, character_id, conversation_id, kind, situation, content, recall_cue, content_hash,
+  sender_id, sender_name, status, source_start_ms, source_end_ms, feedback_evaluation_count,
+  feedback_adopted_count, feedback_positive_count, feedback_partial_count,
+  feedback_negative_count, feedback_score_basis_points, feedback_quarantined_until_ms,
+  embedding_space_id, embedding_content_hash, embedding, created_at_ms, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, '', ?, ?, ?, 0, 0, 0, 0, 0, 0, NULL, ?, ?, ?, ?, ?)`,
+			"cognitive-social-excluded-"+idSuffix, characterID, conversationID, "behavior",
+			"不属于当前类型 "+idSuffix, "被过滤的社交事实", "被过滤的线索", socialHash[:],
+			"active", 20+index, 20+index, "BAAI/bge-m3", hash[:], vector, 10, 10,
+		); err != nil {
+			t.Fatalf("insert excluded social cognitive record %d: %v", index, err)
+		}
+
+		if _, err := database.ExecContext(t.Context(), `
+INSERT INTO knowledge_entries(
+  id, topic, statement, status, verification_basis, confidence_basis_points,
+  source_conversation_id, source_turn_id, source_url, source_title, source_content_hash,
+  source_content_type, source_fetched_at_ms, source_etag, source_last_modified,
+  reconciler_revision, evidence_text, supersedes_id, embedding_space_id,
+  embedding_content_hash, embedding, created_at_ms, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?)`,
+			"cognitive-knowledge-excluded-"+idSuffix, "未核验候选 "+idSuffix, "不属于 verified 范围",
+			"candidate", "unverified", 9000, conversationID, turnID,
+			"BAAI/bge-m3", hash[:], vector, 10, 10,
+		); err != nil {
+			t.Fatalf("insert excluded knowledge cognitive record %d: %v", index, err)
+		}
+	}
+
 	for _, search := range []struct {
 		table     string
 		predicate string
@@ -2719,14 +2770,6 @@ INSERT INTO knowledge_entries(
 		annQuery := "SELECT id FROM " + search.table + " FORCE INDEX (" + search.scalarIndex + ") WHERE " + search.where +
 			" ORDER BY cosine_distance(embedding, ?) APPROXIMATE LIMIT 5"
 		assertIntegrationANNConverges(t, database, annQuery, arguments, search.expectedID)
-		plan := integrationExplainText(t, database, "EXPLAIN "+annQuery, arguments...)
-		for _, fragment := range []string{
-			"VECTOR INDEX ADAPTIVE SCAN (PRE-FILTER)", search.scalarIndex, "range_key",
-		} {
-			if !strings.Contains(plan, fragment) {
-				t.Fatalf("ANN plan for %s lacks %q:\n%s", search.table, fragment, plan)
-			}
-		}
 	}
 
 	// A VECTOR(1024) column rejects shorter values before any retrieval logic
@@ -2829,39 +2872,6 @@ func assertIntegrationANNConverges(
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-}
-
-func integrationExplainText(t *testing.T, database *sql.DB, query string, arguments ...any) string {
-	t.Helper()
-	rows, err := database.QueryContext(t.Context(), query, arguments...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	columns, err := rows.Columns()
-	if err != nil {
-		t.Fatal(err)
-	}
-	values := make([]sql.RawBytes, len(columns))
-	destinations := make([]any, len(columns))
-	for index := range values {
-		destinations[index] = &values[index]
-	}
-	var lines []string
-	for rows.Next() {
-		if err := rows.Scan(destinations...); err != nil {
-			t.Fatal(err)
-		}
-		for _, value := range values {
-			if value != nil {
-				lines = append(lines, string(value))
-			}
-		}
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	return strings.Join(lines, "\n")
 }
 
 func assertConversationRuntimeConstraints(t *testing.T, database *sql.DB) {

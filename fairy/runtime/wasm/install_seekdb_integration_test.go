@@ -7,12 +7,12 @@ import (
 	"database/sql"
 	"net"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"fairy/plugin"
 	"fairy/runtime/seekdb"
+	"fairy/runtime/seekdb/seekdbtest"
 )
 
 func TestRealSeekDBInstallerInstallsEnablesAndRollsBackFailedUpgrade(t *testing.T) {
@@ -110,8 +110,8 @@ func openInstallSeekDB(t *testing.T) (*seekdb.Runtime, *sql.DB, seekdb.Config) {
 		t.Skip(seekdb.EnvLibrary + " is not set")
 	}
 	config := seekdb.Config{
-		LibraryPath:    library,
-		DataDir:       filepath.Join(t.TempDir(), "seekdb-install"),
+		LibraryPath:   library,
+		DataDir:       seekdbtest.DataDir(t),
 		Database:      seekdb.DefaultDatabase,
 		ConnectLimit:  5 * time.Second,
 		StartLimit:    90 * time.Second,

@@ -9,12 +9,12 @@ import (
 	"errors"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"fairy/runtime/seekdb"
+	"fairy/runtime/seekdb/seekdbtest"
 )
 
 func TestRealSeekDBIdentityStorePreservesDigestAndIdempotentBinding(t *testing.T) {
@@ -161,8 +161,8 @@ func openIdentitySeekDBRuntime(t *testing.T) (*seekdb.Runtime, *sql.DB, seekdb.C
 		t.Skip(seekdb.EnvLibrary + " is not set")
 	}
 	runtimeConfig := seekdb.Config{
-		LibraryPath:    library,
-		DataDir:       filepath.Join(t.TempDir(), "seekdb-data"),
+		LibraryPath:   library,
+		DataDir:       seekdbtest.DataDir(t),
 		Database:      seekdb.DefaultDatabase,
 		ConnectLimit:  5 * time.Second,
 		StartLimit:    90 * time.Second,

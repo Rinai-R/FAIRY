@@ -137,6 +137,16 @@ func TestOpenMissingLibraryFailsClosed(t *testing.T) {
 	}
 }
 
+func TestDisableEmbeddedTelemetryOverridesInheritedValue(t *testing.T) {
+	t.Setenv(embeddedTelemetryEnv, "true")
+	if err := disableEmbeddedTelemetry(); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv(embeddedTelemetryEnv); got != "false" {
+		t.Fatalf("%s = %q, want false", embeddedTelemetryEnv, got)
+	}
+}
+
 func TestPrepareRuntimePathsRejectsWidePermissionsAndSymlinks(t *testing.T) {
 	if os.PathSeparator == '\\' {
 		t.Skip("Windows does not enforce POSIX directory modes")

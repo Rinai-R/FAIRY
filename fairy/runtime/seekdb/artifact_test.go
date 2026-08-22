@@ -3,6 +3,7 @@ package seekdb
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -17,7 +18,7 @@ func TestBuiltinArtifactCatalogRecordsTargetMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantTargets := map[string]ArtifactStatus{
-		"darwin/arm64":  ArtifactStatusCandidate,
+		"darwin/arm64":  ArtifactStatusVerified,
 		"darwin/amd64":  ArtifactStatusUnsupported,
 		"linux/arm64":   ArtifactStatusUnsupported,
 		"linux/amd64":   ArtifactStatusUnsupported,
@@ -41,7 +42,7 @@ func TestBuiltinArtifactCatalogRecordsTargetMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if target.Status != ArtifactStatusCandidate || target.Artifact == nil {
+	if target.Status != ArtifactStatusVerified || target.Artifact == nil {
 		t.Fatalf("darwin/arm64 target = %+v", target)
 	}
 	if catalog.ReleaseTag != "8c2bd7064084d985e3a9c5b8368976ffef8e8394" || target.Artifact.Version != "8c2bd7064084d985e3a9c5b8368976ffef8e8394" || target.Artifact.License != "Apache-2.0" {
@@ -53,7 +54,17 @@ func TestBuiltinArtifactCatalogRecordsTargetMatrix(t *testing.T) {
 	if target.Artifact.MinimumOSVersion != "15.0" {
 		t.Fatalf("minimum OS = %q", target.Artifact.MinimumOSVersion)
 	}
-	if _, err := catalog.Verified("darwin", "arm64"); !errors.Is(err, ErrArtifactCandidate) {
+	if target.Artifact.BuildRecipe.Path != builtinDarwinArm64RecipePath ||
+		target.Artifact.BuildRecipe.DeploymentTarget != "15.0" ||
+		target.Artifact.BuildRecipe.CommandLineToolsPackageVersion != "26.6.0.0.1781586589" ||
+		target.Artifact.BuildRecipe.SDKVersion != "26.5" ||
+		target.Artifact.BuildRecipe.LLVMVersion != "19.1.7" {
+		t.Fatalf("build recipe = %+v", target.Artifact.BuildRecipe)
+	}
+	if target.Artifact.MachO == nil || target.Artifact.MachO.ExportedSymbolCount != 93 || len(target.Artifact.MachO.DynamicDependencies) != 6 {
+		t.Fatalf("Mach-O contract = %+v", target.Artifact.MachO)
+	}
+	if _, err := catalog.Verified("darwin", "arm64"); err != nil {
 		t.Fatalf("Verified(darwin/arm64) error = %v", err)
 	}
 	if _, err := catalog.Verified("darwin", "amd64"); !errors.Is(err, ErrArtifactUnsupported) {
@@ -68,7 +79,7 @@ func TestArtifactCatalogRejectsUnsafeOrAmbiguousMetadata(t *testing.T) {
 		catalog string
 		want    string
 	}{
-		{name: "unknown field", catalog: `{"schemaVersion":1,"product":"seekdb","releaseTag":"v1.0.0","releaseURL":"https://github.com/oceanbase/seekdb/releases/tag/v1.0.0","targets":[],"extra":true}`, want: "unknown field"},
+		{name: "unknown field", catalog: `{"schemaVersion":2,"product":"seekdb","releaseTag":"v1.0.0","releaseURL":"https://github.com/oceanbase/seekdb/releases/tag/v1.0.0","targets":[],"extra":true}`, want: "unknown field"},
 		{name: "duplicate target", catalog: catalogJSON(validArtifact, targetJSON("candidate", validArtifact), targetJSON("candidate", validArtifact)), want: "duplicated"},
 		{name: "candidate without artifact", catalog: catalogJSON(validArtifact, `{"goos":"darwin","goarch":"arm64","status":"candidate","reason":"pending"}`), want: "requires artifact"},
 		{name: "unsupported with artifact", catalog: catalogJSON(validArtifact, targetJSON("unsupported", validArtifact)), want: "must not contain artifact"},
@@ -80,6 +91,8 @@ func TestArtifactCatalogRejectsUnsafeOrAmbiguousMetadata(t *testing.T) {
 		{name: "parent required path", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, `"LICENSE"`, `"../LICENSE"`, 1))), want: "clean relative"},
 		{name: "missing minimum OS", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, `"minimumOSVersion":"15.0"`, `"minimumOSVersion":""`, 1))), want: "required and must be clean"},
 		{name: "invalid minimum OS", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, `"minimumOSVersion":"15.0"`, `"minimumOSVersion":"macos15"`, 1))), want: "numeric components"},
+		{name: "recipe target drift", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, `"deploymentTarget":"15.0"`, `"deploymentTarget":"13.0"`, 1))), want: "must match"},
+		{name: "recipe SDK drift", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, `"sdkVersion":"26.5"`, `"sdkVersion":"15.4"`, 1))), want: "must match"},
 		{name: "insecure source", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, "https://github.com/oceanbase/seekdb/releases/download/v1.0.0/seekdb-1.0.0.tar.gz", "http://example.test/seekdb.tar.gz", 1))), want: "versioned official HTTPS"},
 		{name: "latest source", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, "/download/v1.0.0/", "/download/latest/", 1))), want: "must not use latest"},
 		{name: "wrong source repository", catalog: catalogJSON(validArtifact, targetJSON("candidate", strings.Replace(validArtifact, "oceanbase/seekdb", "example/seekdb", 1))), want: "versioned official HTTPS"},
@@ -126,13 +139,16 @@ func TestArtifactCatalogVerifiedRequiresExplicitVerifiedStatus(t *testing.T) {
 
 func TestArtifactCatalogVerifyBundleChecksArchiveAndLicenseDocuments(t *testing.T) {
 	artifact := fixtureRuntimeArtifact("payload")
+	artifact.LibraryPath = "libseekdb.so"
+	artifact.RequiredPaths = []string{"libseekdb.so", "LICENSE"}
+	artifact.MachO = nil
 	catalog := ArtifactCatalog{
-		SchemaVersion: 1,
+		SchemaVersion: artifactCatalogSchemaVersion,
 		Product:       "seekdb",
 		ReleaseTag:    "v1.0.0",
 		ReleaseURL:    "https://github.com/oceanbase/seekdb/releases/tag/v1.0.0",
 		Targets: []ArtifactTarget{{
-			GOOS: "darwin", GOARCH: "arm64", Status: ArtifactStatusVerified,
+			GOOS: "linux", GOARCH: "arm64", Status: ArtifactStatusVerified,
 			Reason: "fixture", Artifact: &artifact,
 		}},
 	}
@@ -141,27 +157,38 @@ func TestArtifactCatalogVerifyBundleChecksArchiveAndLicenseDocuments(t *testing.
 	}
 	directory := t.TempDir()
 	bundle := ArtifactBundle{
-		LibraryPath: filepath.Join(directory, "libseekdb.dylib"),
-		LicensePath: filepath.Join(directory, "LICENSE"),
-		NoticePath:  filepath.Join(directory, "NOTICE"),
+		LibraryPath:      filepath.Join(directory, "libseekdb.so"),
+		LicensePath:      filepath.Join(directory, "LICENSE"),
+		NoticePath:       filepath.Join(directory, "NOTICE"),
+		AppInfoPlistPath: filepath.Join(directory, "Info.plist"),
 	}
 	for filename, content := range map[string]string{
-		bundle.LibraryPath: "payload",
-		bundle.LicensePath: "license",
-		bundle.NoticePath:  "notice",
+		bundle.LibraryPath:      "payload",
+		bundle.LicensePath:      "license",
+		bundle.NoticePath:       "notice",
+		bundle.AppInfoPlistPath: `<?xml version="1.0"?><plist><dict><key>LSMinimumSystemVersion</key><string>15.0.0</string></dict></plist>`,
 	} {
 		if err := os.WriteFile(filename, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := catalog.VerifyBundle("darwin", "arm64", bundle); err != nil {
+	if err := catalog.VerifyBundle("linux", "arm64", bundle); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(bundle.NoticePath, []byte("modified"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := catalog.VerifyBundle("darwin", "arm64", bundle); !errors.Is(err, ErrArtifactIntegrity) || !strings.Contains(err.Error(), "NOTICE") {
+	if err := catalog.VerifyBundle("linux", "arm64", bundle); !errors.Is(err, ErrArtifactIntegrity) || !strings.Contains(err.Error(), "NOTICE") {
 		t.Fatalf("VerifyBundle(modified NOTICE) error = %v", err)
+	}
+	if err := os.WriteFile(bundle.NoticePath, []byte("notice"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bundle.AppInfoPlistPath, []byte(`<?xml version="1.0"?><plist><dict><key>LSMinimumSystemVersion</key><string>13.0</string></dict></plist>`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.VerifyBundle("linux", "arm64", bundle); !errors.Is(err, ErrArtifactIntegrity) || !strings.Contains(err.Error(), "minimum OS") {
+		t.Fatalf("VerifyBundle(mismatched minimum OS) error = %v", err)
 	}
 }
 
@@ -181,13 +208,34 @@ func fixtureRuntimeArtifact(payload string) RuntimeArtifact {
 		LibraryPath:      "libseekdb.dylib",
 		RequiredPaths:    []string{"libseekdb.dylib", "LICENSE"},
 		MinimumOSVersion: "15.0",
+		BuildRecipe: BuildRecipeContract{
+			Path:                           "fairy/runtime/seekdb/build/fixture.sh",
+			SHA256:                         fixtureDigest("recipe"),
+			CommandLineToolsPackageVersion: "26.6.0.0.1781586589",
+			SDKVersion:                     "26.5",
+			LLVMVersion:                    "19.1.7",
+			DeploymentTarget:               "15.0",
+			CMakeVersion:                   "4.3.2",
+			RustVersion:                    "1.97.1",
+			PythonVersion:                  "3.14.6",
+		},
+		MachO: &MachOContract{
+			InstallName:           "@rpath/libseekdb.dylib",
+			SDKVersion:            "26.5",
+			DynamicDependencies:   []string{"/usr/lib/libSystem.B.dylib"},
+			ExportedSymbolCount:   1,
+			ExportedSymbolsSHA256: fixtureDigest("_seekdb_open\n"),
+		},
 	}
 }
 
 func fixtureArtifact(payload string) string {
 	artifact := fixtureRuntimeArtifact(payload)
-	return fmt.Sprintf(`{"version":%q,"sourceURL":%q,"provenanceURL":%q,"sha256":%q,"size":%d,"license":%q,"licenseURL":%q,"licenseSHA256":%q,"noticeURL":%q,"noticeSHA256":%q,"archiveFormat":%q,"libraryPath":%q,"requiredPaths":[%q,%q],"externalDependencies":[],"minimumOSVersion":%q}`,
-		artifact.Version, artifact.SourceURL, artifact.ProvenanceURL, artifact.SHA256, artifact.Size, artifact.License, artifact.LicenseURL, artifact.LicenseSHA256, artifact.NoticeURL, artifact.NoticeSHA256, artifact.ArchiveFormat, artifact.LibraryPath, artifact.RequiredPaths[0], artifact.RequiredPaths[1], artifact.MinimumOSVersion)
+	encoded, err := json.Marshal(artifact)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
 }
 
 func targetJSON(status, artifact string) string {
@@ -195,7 +243,7 @@ func targetJSON(status, artifact string) string {
 }
 
 func catalogJSON(_ string, targets ...string) string {
-	return fmt.Sprintf(`{"schemaVersion":1,"product":"seekdb","releaseTag":"v1.0.0","releaseURL":"https://github.com/oceanbase/seekdb/releases/tag/v1.0.0","targets":[%s]}`, strings.Join(targets, ","))
+	return fmt.Sprintf(`{"schemaVersion":2,"product":"seekdb","releaseTag":"v1.0.0","releaseURL":"https://github.com/oceanbase/seekdb/releases/tag/v1.0.0","targets":[%s]}`, strings.Join(targets, ","))
 }
 
 func fixtureDigest(payload string) string {
