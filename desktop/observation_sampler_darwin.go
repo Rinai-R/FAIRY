@@ -2,28 +2,37 @@
 
 package main
 
+/*
+#cgo LDFLAGS: -framework ApplicationServices
+#include <ApplicationServices/ApplicationServices.h>
+
+static double fairy_seconds_since_last_input(void) {
+	return CGEventSourceSecondsSinceLastEventType(
+		kCGEventSourceStateCombinedSessionState,
+		kCGAnyInputEventType
+	);
+}
+*/
+import "C"
+
 import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os/exec"
-	"regexp"
-	"strconv"
+	"math"
 	"sync"
 	"time"
 
 	"fairy/transport/session"
 )
 
-var hidIdleTimePattern = regexp.MustCompile(`"HIDIdleTime"\s*=\s*([0-9]+)`)
-
 type macOSIdleSampler struct {
 	mu            sync.Mutex
 	idleThreshold time.Duration
 	privacy       func() session.DesktopPrivacyState
-	run           func(context.Context) ([]byte, error)
+	readIdle      func(context.Context) (time.Duration, error)
 	wasIdle       bool
 	lastPrivacy   session.DesktopPrivacyState
 }
@@ -38,20 +47,14 @@ func newMacOSIdleSampler(idleThreshold time.Duration, privacy func() session.Des
 	return &macOSIdleSampler{
 		idleThreshold: idleThreshold,
 		privacy:       privacy,
-		run: func(ctx context.Context) ([]byte, error) {
-			return exec.CommandContext(ctx, "/usr/sbin/ioreg", "-c", "IOHIDSystem", "-r", "-d", "1").Output()
-		},
+		readIdle:      readMacOSIdleTime,
 	}, nil
 }
 
 func (s *macOSIdleSampler) Sample(ctx context.Context) (session.DesktopObservation, error) {
-	output, err := s.run(ctx)
+	idle, err := s.readIdle(ctx)
 	if err != nil {
 		return session.DesktopObservation{}, fmt.Errorf("reading macOS idle state: %w", err)
-	}
-	idle, err := parseMacOSHIDIdleTime(output)
-	if err != nil {
-		return session.DesktopObservation{}, err
 	}
 	now := time.Now()
 	isIdle := idle >= s.idleThreshold
@@ -90,19 +93,22 @@ func (s *macOSIdleSampler) Sample(ctx context.Context) (session.DesktopObservati
 	}, nil
 }
 
-func parseMacOSHIDIdleTime(output []byte) (time.Duration, error) {
-	match := hidIdleTimePattern.FindSubmatch(output)
-	if len(match) != 2 {
-		return 0, errors.New("macOS HID idle time is unavailable")
+func readMacOSIdleTime(ctx context.Context) (time.Duration, error) {
+	if ctx == nil {
+		return 0, errors.New("macOS idle sampler context is required")
 	}
-	nanoseconds, err := strconv.ParseUint(string(match[1]), 10, 64)
-	if err != nil {
-		return 0, errors.New("macOS HID idle time is invalid")
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
-	if nanoseconds > uint64(^uint64(0)>>1) {
-		return 0, errors.New("macOS HID idle time exceeds duration range")
+	seconds := float64(C.fairy_seconds_since_last_input())
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds < 0 {
+		return 0, errors.New("macOS idle time is unavailable")
 	}
-	return time.Duration(nanoseconds), nil
+	maxSeconds := float64(math.MaxInt64) / float64(time.Second)
+	if seconds > maxSeconds {
+		return 0, errors.New("macOS idle time exceeds duration range")
+	}
+	return time.Duration(seconds * float64(time.Second)), nil
 }
 
 func newDesktopObservationID() (string, error) {

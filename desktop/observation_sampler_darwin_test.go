@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -15,7 +16,7 @@ func TestMacOSIdleSamplerReportsReturnedWithoutSensitiveApplicationData(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	sampler.run = func(context.Context) ([]byte, error) { return []byte(`"HIDIdleTime" = 120000000000`), nil }
+	sampler.readIdle = func(context.Context) (time.Duration, error) { return 2 * time.Minute, nil }
 	first, err := sampler.Sample(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -23,7 +24,7 @@ func TestMacOSIdleSamplerReportsReturnedWithoutSensitiveApplicationData(t *testi
 	if first.Activity != session.DesktopActivityIdle || first.Lifecycle != session.DesktopLifecycleNone {
 		t.Fatalf("first = %#v", first)
 	}
-	sampler.run = func(context.Context) ([]byte, error) { return []byte(`"HIDIdleTime" = 1000000`), nil }
+	sampler.readIdle = func(context.Context) (time.Duration, error) { return time.Millisecond, nil }
 	returned, err := sampler.Sample(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -33,9 +34,15 @@ func TestMacOSIdleSamplerReportsReturnedWithoutSensitiveApplicationData(t *testi
 	}
 }
 
-func TestParseMacOSHIDIdleTimeRejectsMissingValue(t *testing.T) {
-	if _, err := parseMacOSHIDIdleTime([]byte("no idle value")); err == nil {
-		t.Fatal("missing HID idle time error = nil")
+func TestMacOSIdleSamplerPropagatesReadFailure(t *testing.T) {
+	sampler, err := newMacOSIdleSampler(time.Minute, func() session.DesktopPrivacyState { return session.DesktopPrivacyNormal })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := errors.New("idle API unavailable")
+	sampler.readIdle = func(context.Context) (time.Duration, error) { return 0, want }
+	if _, err := sampler.Sample(t.Context()); !errors.Is(err, want) {
+		t.Fatalf("Sample() error = %v, want %v", err, want)
 	}
 }
 
@@ -45,7 +52,7 @@ func TestMacOSIdleSamplerDowngradesPrivacyTransition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sampler.run = func(context.Context) ([]byte, error) { return []byte(`"HIDIdleTime" = 1000000`), nil }
+	sampler.readIdle = func(context.Context) (time.Duration, error) { return time.Millisecond, nil }
 	if _, err := sampler.Sample(context.Background()); err != nil {
 		t.Fatal(err)
 	}
