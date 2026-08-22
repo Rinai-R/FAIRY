@@ -40,7 +40,7 @@ func TestRealSeekDBPersonalRetrievalCoversANNScopeAndSwitch(t *testing.T) {
 	}
 
 	assertPersonalImmediateRecall(t, vectorStore, vectorHit.ID)
-	assertPersonalANNPlanAndConverges(t, database, vectorHit.ID)
+	assertPersonalANNConverges(t, database, vectorHit.ID)
 	assertPersonalWrongDimensionsFailClosed(t, database, runtimeConfig.QueryLimit)
 	assertPersonalProviderSwitchIsolatesSpaces(t, vectorStore, vectorHit.ID)
 	assertPersonalTextOnlyDoesNotInventVectors(t, textStore, textHit.ID, vectorHit.ID)
@@ -69,30 +69,13 @@ func assertPersonalImmediateRecall(t *testing.T, store *Store, id string) {
 	}
 }
 
-func assertPersonalANNPlanAndConverges(t *testing.T, database *sql.DB, expectedID string) {
+func assertPersonalANNConverges(t *testing.T, database *sql.DB, expectedID string) {
 	t.Helper()
 	vector := personalIntegrationVectorLiteral()
-	globalArgs := []any{vector, personalIntegrationEmbeddingSpace, vector, 5}
-	characterArgs := []any{vector, personalCharacterA, personalIntegrationEmbeddingSpace, vector, 5}
-	for name, queryAndArgs := range map[string]struct {
-		sql  string
-		args []any
-	}{
-		"global":    {personalMemorySeekDBANNGlobalSearchSQL, globalArgs},
-		"character": {personalMemorySeekDBANNCharacterSearchSQL, characterArgs},
-	} {
-		plan := explainPersonalSeekDBQuery(t, database, "EXPLAIN "+queryAndArgs.sql, queryAndArgs.args...)
-		for _, fragment := range []string{
-			"VECTOR INDEX ADAPTIVE SCAN (PRE-FILTER)",
-			"personal_memories_scope_status_idx",
-			"range_key",
-		} {
-			if !strings.Contains(plan, fragment) {
-				t.Fatalf("personal %s ANN plan lacks %q:\n%s", name, fragment, plan)
-			}
-		}
-	}
-
+	// The embedded libseekdb v1.3 C ABI executes EXPLAIN but exposes it as a
+	// zero-column result. The schema integration suite proves the observable
+	// scope-first contract with more excluded rows than the ANN limit. Here the
+	// endpoint path proves that the same filtered ANN query converges.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		var id string
@@ -184,39 +167,6 @@ func assertPersonalCharacterIsolation(t *testing.T, store *Store, otherID string
 	if personalRetrievedContain(retrieved.PersonalMemories, otherID) {
 		t.Fatalf("personal retrieve leaked other character: %#v", retrieved)
 	}
-}
-
-func explainPersonalSeekDBQuery(t *testing.T, database *sql.DB, query string, arguments ...any) string {
-	t.Helper()
-	rows, err := database.QueryContext(t.Context(), query, arguments...)
-	if err != nil {
-		t.Fatalf("explain SeekDB query: %v", err)
-	}
-	defer rows.Close()
-	columns, err := rows.Columns()
-	if err != nil {
-		t.Fatal(err)
-	}
-	values := make([]sql.RawBytes, len(columns))
-	destinations := make([]any, len(columns))
-	for index := range values {
-		destinations[index] = &values[index]
-	}
-	var lines []string
-	for rows.Next() {
-		if err := rows.Scan(destinations...); err != nil {
-			t.Fatal(err)
-		}
-		parts := make([]string, 0, len(columns))
-		for _, value := range values {
-			parts = append(parts, string(value))
-		}
-		lines = append(lines, strings.Join(parts, " | "))
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	return strings.Join(lines, "\n")
 }
 
 func BenchmarkSeekDBPersonalRetrieveContext(b *testing.B) {
