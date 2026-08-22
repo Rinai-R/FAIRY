@@ -21,7 +21,7 @@ func TestSearchAgainstMockOpenSERP(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		if r.URL.Path != "/duck/search" {
+		if r.URL.Path != "/mega/search" {
 			http.NotFound(w, r)
 			return
 		}

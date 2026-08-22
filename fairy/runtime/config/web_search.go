@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"fairy/transport/openserp"
 )
 
 const (
@@ -21,7 +23,9 @@ const (
 type WebSearchSettings struct {
 	SchemaVersion uint32 `json:"schema_version"`
 	Enabled       bool   `json:"enabled"`
-	// BaseURL is the OpenSERP HTTP origin (docker compose). Empty uses FAIRY_OPENSERP_URL or http://127.0.0.1:7000.
+	// BaseURL is the explicitly configured OpenSERP HTTP origin. The non-strict
+	// development profile may still resolve an empty value from its environment
+	// override/default; endpoint-strict never does.
 	BaseURL string `json:"base_url,omitempty"`
 }
 
@@ -51,18 +55,25 @@ func ResolveWebSearchBaseURL(raw string) string {
 	return strings.TrimRight(baseURL, "/")
 }
 
+// ResolveEndpointOpenSERPOrigin resolves the formal endpoint profile without
+// consulting process environment. The released Desktop owns this composition
+// input; FAIRY_OPENSERP_URL remains a non-strict development override only.
+func ResolveEndpointOpenSERPOrigin(raw string) string {
+	return strings.TrimRight(strings.TrimSpace(raw), "/")
+}
+
 func webSearchReady(ctx context.Context, baseURL string) bool {
+	authority, err := openserp.NewAuthority(baseURL)
+	if err != nil {
+		return false
+	}
+	defer authority.Close()
 	healthCtx, cancel := context.WithTimeout(ctx, webSearchHealthTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(healthCtx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/health", nil)
+	response, err := authority.Health(healthCtx)
 	if err != nil {
 		return false
 	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return false
-	}
-	defer response.Body.Close()
 	return response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices
 }
 
@@ -94,6 +105,14 @@ func WriteWebSearchSettings(root string, settings WebSearchSettings) error {
 		settings.SchemaVersion = 1
 	}
 	settings.BaseURL = strings.TrimSpace(settings.BaseURL)
+	if settings.BaseURL != "" {
+		authority, err := openserp.NewAuthority(settings.BaseURL)
+		if err != nil {
+			return err
+		}
+		settings.BaseURL = authority.Origin()
+		authority.Close()
+	}
 	if err := os.MkdirAll(webSearchDir(root), 0o755); err != nil {
 		return err
 	}
@@ -106,13 +125,23 @@ func WriteWebSearchSettings(root string, settings WebSearchSettings) error {
 }
 
 func (s *ConfigService) WebSearchStatus() (WebSearchStatus, error) {
+	return s.webSearchStatus(ResolveWebSearchBaseURL)
+}
+
+// EndpointWebSearchStatus reports the formal Desktop OpenSERP authority without
+// consulting FAIRY_OPENSERP_URL or proxy environment variables.
+func (s *ConfigService) EndpointWebSearchStatus() (WebSearchStatus, error) {
+	return s.webSearchStatus(ResolveEndpointOpenSERPOrigin)
+}
+
+func (s *ConfigService) webSearchStatus(resolve func(string) string) (WebSearchStatus, error) {
 	settings, err := ReadWebSearchSettings(s.root)
 	if err != nil {
 		return WebSearchStatus{}, err
 	}
-	baseURL := ResolveWebSearchBaseURL(settings.BaseURL)
+	baseURL := resolve(settings.BaseURL)
 	ready := false
-	if settings.Enabled {
+	if settings.Enabled && baseURL != "" {
 		ready = webSearchReady(context.Background(), baseURL)
 	}
 	return WebSearchStatus{
@@ -139,6 +168,16 @@ func (s *ConfigService) SetWebSearchEnabled(enabled bool) (WebSearchStatus, erro
 
 // SaveWebSearchSettings persists enabled + optional OpenSERP base URL.
 func (s *ConfigService) SaveWebSearchSettings(settings WebSearchSettings) (WebSearchStatus, error) {
+	return s.saveWebSearchSettings(settings, s.WebSearchStatus)
+}
+
+// SaveEndpointWebSearchSettings persists the formal Desktop OpenSERP origin
+// and reports readiness without consulting development environment overrides.
+func (s *ConfigService) SaveEndpointWebSearchSettings(settings WebSearchSettings) (WebSearchStatus, error) {
+	return s.saveWebSearchSettings(settings, s.EndpointWebSearchStatus)
+}
+
+func (s *ConfigService) saveWebSearchSettings(settings WebSearchSettings, status func() (WebSearchStatus, error)) (WebSearchStatus, error) {
 	if settings.SchemaVersion == 0 {
 		settings.SchemaVersion = 1
 	}
@@ -146,5 +185,5 @@ func (s *ConfigService) SaveWebSearchSettings(settings WebSearchSettings) (WebSe
 	if err := WriteWebSearchSettings(s.root, settings); err != nil {
 		return WebSearchStatus{}, err
 	}
-	return s.WebSearchStatus()
+	return status()
 }

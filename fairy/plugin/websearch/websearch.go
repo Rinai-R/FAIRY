@@ -16,7 +16,7 @@ const (
 	PluginID  = "fairy.plugin.web-search"
 	ToolName  = "web_search"
 	FetchTool = "web_fetch"
-	Engine    = "duck"
+	Engine    = "mega"
 	MaxHits   = 5
 )
 

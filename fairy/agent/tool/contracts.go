@@ -77,7 +77,7 @@ func SpecsForInteraction(webSearchEnabled bool, resolved session.Resolved) []mod
 	if webSearchEnabled {
 		tools = append(tools, model.ToolSpec{
 			Name:        WebSearch,
-			Description: "Search the public web via local OpenSERP for timely public facts (anime, games, versions, news).",
+			Description: "Search the public web via the configured OpenSERP origin for timely public facts (anime, games, versions, news).",
 			Parameters:  querySchema,
 		})
 	}

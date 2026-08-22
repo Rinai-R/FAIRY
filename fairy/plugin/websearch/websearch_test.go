@@ -196,12 +196,12 @@ func TestWebSearchPluginDoesNotImportHostNetworkOrCore(t *testing.T) {
 	}
 }
 
-func TestSearchEndpointUsesOpenSERPDuckPath(t *testing.T) {
+func TestSearchEndpointUsesOpenSERPMegaPath(t *testing.T) {
 	got, err := websearch.SearchEndpoint("http://127.0.0.1:7000/", "hello world", 3)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "http://127.0.0.1:7000/duck/search?text=hello+world&limit=3" {
+	if got != "http://127.0.0.1:7000/mega/search?text=hello+world&limit=3" {
 		t.Fatalf("SearchEndpoint() = %q", got)
 	}
 	if _, err := websearch.SearchEndpoint("http://127.0.0.1:7000", "", 3); err == nil {
@@ -216,7 +216,7 @@ func mockOpenSERP(t *testing.T, status int, hits []map[string]any) *httptest.Ser
 			w.WriteHeader(status)
 			return
 		}
-		if r.URL.Path != "/duck/search" {
+		if r.URL.Path != "/mega/search" {
 			http.NotFound(w, r)
 			return
 		}
