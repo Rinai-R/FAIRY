@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"fairy/runtime/config"
 )
@@ -34,12 +35,24 @@ func (s *ModelService) SemanticEmbedder(settings config.SemanticEmbeddingSetting
 	if !ok {
 		return nil, errors.New("semantic embedding credential is not configured")
 	}
-	return NewAPIEmbedder(APIEmbeddingOptions{
+	options := APIEmbeddingOptions{
 		Provider:   settings.Provider,
 		Endpoint:   settings.Endpoint,
 		AuthMode:   "bearer_key",
 		BearerKey:  credential.Expose(),
 		Model:      settings.Model,
 		Dimensions: settings.Dimensions,
-	})
+	}
+	if s.endpointStrict {
+		factory := s.endpointClient
+		if factory == nil {
+			factory = endpointProviderClient
+		}
+		client, err := factory(settings.Endpoint, 30*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		options.HTTPClient = client
+	}
+	return NewAPIEmbedder(options)
 }

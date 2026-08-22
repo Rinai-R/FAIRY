@@ -4,14 +4,11 @@ package conversation
 
 import (
 	"context"
-	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-	"unicode"
 
 	"fairy/agent/tool"
 	"fairy/context/social"
@@ -140,18 +137,11 @@ func newLiveModelPort(t *testing.T, persona personaLiveConfig) *model.ModelServi
 func loadPersonaLiveConfig(t *testing.T) personaLiveConfig {
 	t.Helper()
 	loadRepoDotEnv(t)
-	// Explicit live-evaluation configuration wins over the local harness. This
-	// keeps a stale desktop credential from shadowing an intentionally supplied
-	// provider and makes the quality gate reproducible in CI.
 	if cfg, ok := personaConfigFromEnv(); ok {
 		t.Logf("live model source=env model=%s", cfg.Model)
 		return cfg
 	}
-	if cfg, ok := personaConfigFromHarness(t); ok {
-		t.Logf("live model source=harness model=%s", cfg.Model)
-		return cfg
-	}
-	t.Skip("no live model credential: configure the explicit live provider or local harness")
+	t.Skip("no explicit third-party live model credential")
 	return personaLiveConfig{}
 }
 
@@ -169,64 +159,6 @@ func personaConfigFromEnv() (personaLiveConfig, bool) {
 		return personaLiveConfig{}, false
 	}
 	return cfg, true
-}
-
-func personaConfigFromHarness(t *testing.T) (personaLiveConfig, bool) {
-	t.Helper()
-	root := strings.TrimSpace(os.Getenv("FAIRY_CONFIG_ROOT"))
-	if root == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return personaLiveConfig{}, false
-		}
-		root = filepath.Join(home, "Library", "Application Support", "dev.rinai.fairy", "harness", "v1")
-	}
-	connection, err := config.ReadModelConnection(root)
-	if err != nil {
-		t.Log("harness connection unavailable")
-		return personaLiveConfig{}, false
-	}
-	dbPath := filepath.Join(root, "model", "secrets.sqlite3")
-	key, err := readLegacySQLiteModelSecret(dbPath, connection.ConnectionID)
-	if err != nil {
-		t.Log("harness credential unavailable")
-		return personaLiveConfig{}, false
-	}
-	modelName := strings.TrimSpace(os.Getenv("FAIRY_LIVE_MODEL"))
-	if modelName == "" {
-		modelName = strings.TrimSpace(os.Getenv("FAIRY_PERSONA_TEST_MODEL"))
-	}
-	if modelName == "" {
-		// Live evals default to flash for latency; shipping harness may still point at pro.
-		modelName = "deepseek-v4-flash"
-	}
-	return personaLiveConfig{
-		Protocol: connection.Protocol,
-		BaseURL:  connection.Endpoint,
-		Model:    modelName,
-		APIKey:   key,
-	}, true
-}
-
-func readLegacySQLiteModelSecret(dbPath, connectionID string) (string, error) {
-	if _, err := os.Stat(dbPath); err != nil {
-		return "", err
-	}
-	for _, r := range connectionID {
-		if !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-') {
-			return "", errors.New("connection id contains unsupported characters")
-		}
-	}
-	// Avoid adding a SQLite Go dependency (architecture forbids production sqlite).
-	out, err := exec.Command("sqlite3", dbPath, "SELECT secret FROM model_secrets WHERE connection_id = '"+connectionID+"';").Output()
-	if err != nil {
-		return "", err
-	}
-	secretValue := strings.TrimSpace(string(out))
-	if secretValue == "" {
-		return "", errors.New("empty model secret")
-	}
-	return secretValue, nil
 }
 
 func loadRepoDotEnv(t *testing.T) {

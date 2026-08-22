@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,6 +34,15 @@ func (t blockingStreamTransport) Execute(ctx context.Context, _ RequestDraft, _ 
 type overflowingStreamTransport struct {
 	events      []StreamEvent
 	sawCanceled bool
+}
+
+type lateAfterCancelTransport struct{}
+
+func (lateAfterCancelTransport) Execute(ctx context.Context, _ RequestDraft, _ string, onEvent func(StreamEvent)) error {
+	onEvent(StreamEvent{Type: "text_delta", Data: "first"})
+	<-ctx.Done()
+	onEvent(StreamEvent{Type: "completed", FinishReason: "stop"})
+	return ctx.Err()
 }
 
 func (t *overflowingStreamTransport) Execute(ctx context.Context, _ RequestDraft, _ string, onEvent func(StreamEvent)) error {
@@ -218,6 +228,68 @@ func TestModelServiceExecuteRequestUsesStoredSecretWithoutReturningIt(t *testing
 	}
 }
 
+func TestEndpointModelServiceUsesOnlySavedAuthorityAndIgnoresEnvironmentProviders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("request path = %q", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-saved-endpoint-secret" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		if got := r.Header.Get("X-Api-Key"); got != "" {
+			t.Fatalf("X-Api-Key = %q, want empty", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"端\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	t.Setenv("ALL_PROXY", "http://127.0.0.1:1")
+	t.Setenv("OPENAI_API_KEY", "sk-environment-openai-private")
+	t.Setenv("OPENAI_BASE_URL", "https://environment-openai.example/v1")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-environment-anthropic-private")
+	t.Setenv("CODEBUDDY_API_KEY", "sk-environment-codebuddy-private")
+	t.Setenv("CODEBUDDY_BASE_URL", "https://environment-codebuddy.example")
+
+	root := t.TempDir()
+	writeModelConnectionWithEndpoint(t, root, "chat_completions", endpointTestProviderURL(t, server, ""), "bearer_key")
+	service := NewEndpointModelService(root, saveModelSecret(t, "sk-saved-endpoint-secret"))
+	service.transport = SDKTransport{endpointStrict: true, endpointClient: endpointTestClientFactory(server)}
+	events, err := service.ExecuteRequest(modelServiceRequest())
+	if err != nil {
+		t.Fatalf("ExecuteRequest() error = %v", err)
+	}
+	if len(events) != 2 || events[0].Data != "端" || events[1].Type != "completed" {
+		t.Fatalf("events = %#v", events)
+	}
+}
+
+func TestEndpointModelServiceRejectsProviderRedirect(t *testing.T) {
+	var redirected atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		redirected.Store(true)
+	}))
+	t.Cleanup(target.Close)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(server.Close)
+
+	root := t.TempDir()
+	writeModelConnectionWithEndpoint(t, root, "chat_completions", endpointTestProviderURL(t, server, ""), "no_auth")
+	service := NewEndpointModelService(root, nil)
+	service.transport = SDKTransport{endpointStrict: true, endpointClient: endpointTestClientFactory(server)}
+	_, err := service.ExecuteRequest(modelServiceRequest())
+	if err == nil || !strings.Contains(err.Error(), ErrProviderRedirectDenied.Error()) {
+		t.Fatalf("ExecuteRequest() error = %v, want redirect denied", err)
+	}
+	if redirected.Load() {
+		t.Fatal("endpoint model service followed provider redirect")
+	}
+}
+
 func TestModelServiceExecuteRequestFailsWithoutStoredSecret(t *testing.T) {
 	root := t.TempDir()
 	writeModelConnection(t, root, "chat_completions")
@@ -289,6 +361,26 @@ func TestModelServiceExecuteRequestContextStreamDeliversBeforeReturn(t *testing.
 	}
 	if event := <-events; event.Type != "completed" {
 		t.Fatalf("last event = %#v", event)
+	}
+}
+
+func TestModelServiceCancellationDropsLateProviderCompletion(t *testing.T) {
+	root := t.TempDir()
+	writeModelConnectionWithEndpoint(t, root, "chat_completions", "http://model.test", "no_auth")
+	service := NewModelServiceWithTransport(root, lateAfterCancelTransport{}, nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	events := make([]StreamEvent, 0, 1)
+
+	err := service.ExecuteRequestContextStream(ctx, modelServiceRequest(), func(event StreamEvent) {
+		events = append(events, event)
+		cancel()
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ExecuteRequestContextStream() error = %v, want context.Canceled", err)
+	}
+	if len(events) != 1 || events[0].Type != "text_delta" || events[0].Data != "first" {
+		t.Fatalf("events after cancellation = %#v", events)
 	}
 }
 

@@ -8,13 +8,29 @@ import (
 )
 
 type ModelService struct {
-	root      string
-	transport Transport
-	secrets   *config.SecretStore
+	root           string
+	transport      Transport
+	secrets        *config.SecretStore
+	endpointStrict bool
+	endpointClient endpointProviderClientFactory
 }
 
 func NewModelService(root string, secrets *config.SecretStore) *ModelService {
 	return &ModelService{root: root, transport: SDKTransport{}, secrets: secrets}
+}
+
+// NewEndpointModelService constructs the formal Desktop provider boundary. It
+// still consumes the user's saved third-party connection, but its transport
+// ignores environment proxies, rejects redirects, and never selects a fallback
+// endpoint or local model service.
+func NewEndpointModelService(root string, secrets *config.SecretStore) *ModelService {
+	return &ModelService{
+		root:           root,
+		transport:      SDKTransport{endpointStrict: true, endpointClient: endpointProviderClient},
+		secrets:        secrets,
+		endpointStrict: true,
+		endpointClient: endpointProviderClient,
+	}
 }
 
 func NewModelServiceWithTransport(root string, transport Transport, secrets *config.SecretStore) *ModelService {
@@ -87,7 +103,7 @@ func (s *ModelService) ExecuteRequestContextStream(ctx context.Context, request 
 	payloadBytes := 0
 	var capacityErr error
 	transportErr := s.transport.Execute(streamCtx, draft, bearerKey, func(event StreamEvent) {
-		if capacityErr != nil {
+		if capacityErr != nil || streamCtx.Err() != nil {
 			return
 		}
 		if err := validateModelStreamEventCapacity(event); err != nil {
@@ -233,5 +249,5 @@ func resolveSecretStore(_ string, secrets *config.SecretStore) (*config.SecretSt
 	if secrets != nil {
 		return secrets, nil
 	}
-	return nil, fmt.Errorf("PostgreSQL secret store is required")
+	return nil, fmt.Errorf("model secret store is required")
 }

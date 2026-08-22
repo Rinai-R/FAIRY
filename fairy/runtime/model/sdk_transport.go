@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -18,7 +19,9 @@ import (
 
 // SDKTransport uses the official openai-go client for HTTP + SSE decoding.
 type SDKTransport struct {
-	HTTPClient *http.Client
+	HTTPClient     *http.Client
+	endpointStrict bool
+	endpointClient endpointProviderClientFactory
 }
 
 var _ Transport = SDKTransport{}
@@ -51,8 +54,22 @@ func (t SDKTransport) Execute(ctx context.Context, draft RequestDraft, bearerKey
 		// Compatible local/test servers may not want Authorization at all.
 		opts = append(opts, option.WithAPIKey(""))
 	}
-	if t.HTTPClient != nil {
-		opts = append(opts, option.WithHTTPClient(t.HTTPClient))
+	httpClient := t.HTTPClient
+	if t.endpointStrict {
+		if httpClient != nil {
+			return errors.New("endpoint-strict model transport does not accept an injected HTTP client")
+		}
+		factory := t.endpointClient
+		if factory == nil {
+			factory = endpointProviderClient
+		}
+		httpClient, err = factory(baseURL, 5*time.Minute)
+		if err != nil {
+			return err
+		}
+	}
+	if httpClient != nil {
+		opts = append(opts, option.WithHTTPClient(httpClient))
 	}
 	client := openai.NewClient(opts...)
 
@@ -65,7 +82,13 @@ func (t SDKTransport) Execute(ctx context.Context, draft RequestDraft, bearerKey
 		err = fmt.Errorf("model protocol %q is not supported", draft.Protocol)
 	}
 	if err != nil {
-		scrubbed := scrubSecret(err, bearerKey)
+		if errors.Is(err, context.Canceled) {
+			return context.Canceled
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return context.DeadlineExceeded
+		}
+		scrubbed := scrubProviderRequestError(err, bearerKey, draft.BodyJSON)
 		if errors.Is(err, ErrModelStreamCapacity) {
 			detail := strings.TrimPrefix(scrubbed.Error(), ErrModelStreamCapacity.Error())
 			detail = strings.TrimPrefix(detail, ": ")

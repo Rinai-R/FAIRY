@@ -353,21 +353,56 @@ func TestExecuteRequestRejectsEmptyURL(t *testing.T) {
 }
 
 func TestExecuteRequestDoesNotLeakKey(t *testing.T) {
+	privateInput := "private prompt 不得进入错误"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "bad key sk-test-secret", http.StatusUnauthorized)
+		http.Error(w, "bad key sk-test-secret input "+privateInput, http.StatusUnauthorized)
 	}))
 	t.Cleanup(server.Close)
+	draft := transportDraft(protocolRequestURL(server.URL, ProtocolResponses), ProtocolResponses, AuthRequirementBearerKey)
+	draft.BodyJSON = strings.Replace(draft.BodyJSON, `"content":"ping"`, `"content":"`+privateInput+`"`, 1)
 	err := SDKTransport{HTTPClient: server.Client()}.Execute(
 		context.Background(),
-		transportDraft(protocolRequestURL(server.URL, ProtocolResponses), ProtocolResponses, AuthRequirementBearerKey),
+		draft,
 		"sk-test-secret",
 		nil,
 	)
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error")
 	}
-	if strings.Contains(err.Error(), "sk-test-secret") {
-		t.Fatalf("error leaked key: %q", err.Error())
+	if strings.Contains(err.Error(), "sk-test-secret") || strings.Contains(err.Error(), privateInput) {
+		t.Fatalf("error leaked key or prompt: %q", err.Error())
+	}
+}
+
+func TestScrubProviderRequestErrorRemovesPromptAndCredentialWithoutNetwork(t *testing.T) {
+	privateInput := "private prompt 不得进入错误"
+	body := `{"model":"declared-model","instructions":"private system","input":[{"role":"user","content":"` + privateInput + `"}],"tools":[{"arguments":"private args"}]}`
+	err := scrubProviderRequestError(
+		errors.New("provider echoed sk-private private system "+privateInput+" private args"),
+		"sk-private",
+		body,
+	)
+	for _, forbidden := range []string{"sk-private", "private system", privateInput, "private args"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("scrubbed error leaked %q: %q", forbidden, err.Error())
+		}
+	}
+}
+
+func TestScrubProviderRequestErrorRemovesMaskedCredentialFragments(t *testing.T) {
+	const secret = "sk-live-provider-credential-3089"
+	err := scrubProviderRequestError(
+		errors.New(`401 Unauthorized {"message":"Authentication Fails, Your api key: ****3089 is invalid"}`),
+		secret,
+		`{"messages":[{"role":"user","content":"private prompt"}]}`,
+	)
+	for _, forbidden := range []string{secret, "3089", "sk-l"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("scrubbed error leaked credential fragment %q: %q", forbidden, err.Error())
+		}
+	}
+	if !strings.Contains(err.Error(), "401 Unauthorized") {
+		t.Fatalf("scrubbed error lost HTTP status: %q", err.Error())
 	}
 }
 

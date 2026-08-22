@@ -182,6 +182,44 @@ func TestSaveModelConnectionWritesConfigAndSecret(t *testing.T) {
 	}
 }
 
+func TestSaveModelConnectionNormalizesAndRejectsUnsafeEndpoints(t *testing.T) {
+	root := t.TempDir()
+	secrets := NewTestSecretStore()
+	status, err := SaveModelConnection(root, ModelConnectionInput{
+		Protocol:            "chat_completions",
+		Endpoint:            "HTTPS://API.Example.COM:8443/v1/",
+		Model:               "chat-model",
+		ContextWindowTokens: 8192,
+		AuthMode:            "no_auth",
+	}, nil, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Endpoint != "https://api.example.com:8443/v1" {
+		t.Fatalf("normalized endpoint = %q", status.Endpoint)
+	}
+	for _, endpoint := range []string{
+		"ftp://provider.example.test/v1",
+		"https://user:secret@provider.example.test/v1",
+		"https://provider.example.test/v1?token=secret",
+		"https://provider.example.test/v1#fragment",
+		"https://provider.example.test/v1/chat/completions",
+		"https://provider.example.test/v1/responses",
+		"https://provider.example.test/v1/embeddings",
+	} {
+		_, err := SaveModelConnection(t.TempDir(), ModelConnectionInput{
+			Protocol:            "chat_completions",
+			Endpoint:            endpoint,
+			Model:               "chat-model",
+			ContextWindowTokens: 8192,
+			AuthMode:            "no_auth",
+		}, nil, NewTestSecretStore())
+		if err == nil {
+			t.Fatalf("SaveModelConnection(%q) error = nil", endpoint)
+		}
+	}
+}
+
 func TestSaveModelConnectionPreservesExistingSecretWhenKeyOmitted(t *testing.T) {
 	root := t.TempDir()
 	apiKey := "sk-test-secret"

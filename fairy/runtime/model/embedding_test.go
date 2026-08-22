@@ -1,6 +1,9 @@
 package model
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -71,5 +74,55 @@ func TestSemanticEmbedderDoesNotFallBackToChatCredential(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), chatKey) {
 		t.Fatalf("SemanticEmbedder() leaked chat credential: %v", err)
+	}
+}
+
+func TestEndpointSemanticEmbedderUsesSavedProviderWithoutEnvironmentProxy(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/embeddings" {
+			t.Fatalf("request path = %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"data":   []map[string]any{{"index": 0, "object": "embedding", "embedding": testEmbeddingVector(3)}},
+			"model":  "embedding-model",
+			"object": "list",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+
+	root := t.TempDir()
+	secrets := config.NewTestSecretStore()
+	key := "sk-semantic-strict"
+	settings := config.SemanticEmbeddingSettings{
+		Provider:   config.SemanticEmbeddingProviderOpenAICompatible,
+		Enabled:    true,
+		Endpoint:   endpointTestProviderURL(t, server, "/v1"),
+		Model:      "embedding-model",
+		Dimensions: config.SemanticEmbeddingDimensions,
+	}
+	if _, err := config.NewConfigService(root, secrets).SaveSemanticEmbeddingSettings(settings, &key); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := config.ReadSemanticEmbeddingSettings(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewEndpointModelService(root, secrets)
+	service.endpointClient = endpointTestClientFactory(server)
+	embedder, err := service.SemanticEmbedder(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vectors, err := embedder.EmbedContext(t.Context(), []string{"saved provider only"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vectors) != 1 || len(vectors[0]) != config.SemanticEmbeddingDimensions || vectors[0][0] != 3 {
+		t.Fatalf("vectors = %d x %d, first=%v", len(vectors), len(vectors[0]), vectors[0][0])
 	}
 }

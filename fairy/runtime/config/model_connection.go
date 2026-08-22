@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -14,13 +17,16 @@ const modelConnectionPath = "model/connection.json"
 
 type ModelConnectionStatus struct {
 	Configured            bool                `json:"configured"`
+	Ready                 bool                `json:"ready"`
 	Protocol              string              `json:"protocol,omitempty"`
 	Endpoint              string              `json:"endpoint,omitempty"`
 	Model                 string              `json:"model,omitempty"`
 	ContextWindowTokens   uint64              `json:"contextWindowTokens,omitempty"`
 	AuthMode              string              `json:"authMode,omitempty"`
 	Capabilities          GatewayCapabilities `json:"capabilities,omitempty"`
+	CredentialConfigured  bool                `json:"credentialConfigured"`
 	SecretStorageMigrated bool                `json:"secretStorageMigrated"`
+	Reason                string              `json:"reason,omitempty"`
 }
 
 type ModelConnection struct {
@@ -168,7 +174,10 @@ func SaveModelConnection(root string, input ModelConnectionInput, apiKey *string
 	if err := writeModelConnection(root, connection); err != nil {
 		return ModelConnectionStatus{}, err
 	}
-	return statusFromConnection(connection), nil
+	status := statusFromConnection(connection)
+	status.Ready = true
+	status.CredentialConfigured = connection.AuthMode == "bearer_key"
+	return status, nil
 }
 
 func ClearModelConnection(root string, secrets *SecretStore) (bool, error) {
@@ -201,7 +210,7 @@ func resolveSecretStore(_ string, secrets *SecretStore) (*SecretStore, error) {
 	if secrets != nil {
 		return secrets, nil
 	}
-	return nil, errors.New("PostgreSQL secret store is required")
+	return nil, errors.New("model secret store is required")
 }
 
 func ParseModelConnectionStatus(data []byte) (ModelConnectionStatus, error) {
@@ -215,12 +224,14 @@ func ParseModelConnectionStatus(data []byte) (ModelConnectionStatus, error) {
 func statusFromConnection(connection ModelConnection) ModelConnectionStatus {
 	return ModelConnectionStatus{
 		Configured:            true,
+		Ready:                 connection.AuthMode == "no_auth",
 		Protocol:              connection.Protocol,
 		Endpoint:              connection.Endpoint,
 		Model:                 connection.Model,
 		ContextWindowTokens:   connection.ContextWindowTokens,
 		AuthMode:              connection.AuthMode,
 		Capabilities:          connection.Capabilities,
+		CredentialConfigured:  false,
 		SecretStorageMigrated: true,
 	}
 }
@@ -243,8 +254,9 @@ func ParseModelConnection(data []byte) (ModelConnection, error) {
 	if config.Protocol != "responses" && config.Protocol != "chat_completions" {
 		return ModelConnection{}, fmt.Errorf("model protocol %q is not supported", config.Protocol)
 	}
-	if config.Endpoint == "" {
-		return ModelConnection{}, errors.New("model endpoint is required")
+	endpoint, err := normalizeModelEndpoint(config.Endpoint)
+	if err != nil {
+		return ModelConnection{}, err
 	}
 	if config.Model == "" {
 		return ModelConnection{}, errors.New("model name is required")
@@ -258,7 +270,7 @@ func ParseModelConnection(data []byte) (ModelConnection, error) {
 	return ModelConnection{
 		ConnectionID:        config.ConnectionID,
 		Protocol:            config.Protocol,
-		Endpoint:            config.Endpoint,
+		Endpoint:            endpoint,
 		Model:               config.Model,
 		ContextWindowTokens: config.ContextWindowTokens,
 		AuthMode:            config.AuthMode,
@@ -273,8 +285,9 @@ func compileModelConnection(connectionID string, input ModelConnectionInput) (Mo
 	if input.Protocol != "responses" && input.Protocol != "chat_completions" {
 		return ModelConnection{}, fmt.Errorf("model protocol %q is not supported", input.Protocol)
 	}
-	if input.Endpoint == "" || strings.TrimSpace(input.Endpoint) != input.Endpoint {
-		return ModelConnection{}, errors.New("model endpoint is required")
+	endpoint, err := normalizeModelEndpoint(input.Endpoint)
+	if err != nil {
+		return ModelConnection{}, err
 	}
 	if input.Model == "" || strings.TrimSpace(input.Model) != input.Model {
 		return ModelConnection{}, errors.New("model name is required")
@@ -288,7 +301,7 @@ func compileModelConnection(connectionID string, input ModelConnectionInput) (Mo
 	return ModelConnection{
 		ConnectionID:        connectionID,
 		Protocol:            input.Protocol,
-		Endpoint:            input.Endpoint,
+		Endpoint:            endpoint,
 		Model:               input.Model,
 		ContextWindowTokens: input.ContextWindowTokens,
 		AuthMode:            input.AuthMode,
@@ -301,6 +314,46 @@ func compileModelConnection(connectionID string, input ModelConnectionInput) (Mo
 			VisionInput:           input.VisionInput,
 		},
 	}, nil
+}
+
+func normalizeModelEndpoint(raw string) (string, error) {
+	if raw == "" || strings.TrimSpace(raw) != raw {
+		return "", errors.New("model endpoint is required without surrounding whitespace")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed == nil {
+		return "", errors.New("model endpoint must be a valid HTTP(S) base URL")
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	if parsed.Scheme != "http" && parsed.Scheme != "https" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.RawPath != "" {
+		return "", errors.New("model endpoint must be an HTTP(S) base URL without userinfo, query or fragment")
+	}
+	hostname := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	if hostname == "" || strings.IndexFunc(hostname, func(r rune) bool { return r > 127 || r <= 32 }) >= 0 {
+		return "", errors.New("model endpoint host must be non-empty ASCII")
+	}
+	port := parsed.Port()
+	if port != "" {
+		value, err := strconv.Atoi(port)
+		if err != nil || value <= 0 || value > 65535 {
+			return "", errors.New("model endpoint port is invalid")
+		}
+		parsed.Host = net.JoinHostPort(hostname, port)
+	} else if strings.Contains(hostname, ":") {
+		parsed.Host = "[" + hostname + "]"
+	} else {
+		parsed.Host = hostname
+	}
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	last := ""
+	if len(segments) > 0 {
+		last = segments[len(segments)-1]
+	}
+	if last == "responses" || last == "embeddings" || len(segments) >= 2 && segments[len(segments)-2] == "chat" && last == "completions" {
+		return "", errors.New("model endpoint must be a base URL, not a protocol resource URL")
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	return parsed.String(), nil
 }
 
 func writeModelConnection(root string, connection ModelConnection) error {

@@ -169,8 +169,8 @@ func protocolURL(endpoint string, protocol Protocol) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parsing model endpoint: %w", err)
 	}
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return "", errors.New("model endpoint must include scheme and host")
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
+		return "", errors.New("model endpoint must be an HTTP(S) URL without userinfo")
 	}
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", errors.New("model endpoint must not include query or fragment")

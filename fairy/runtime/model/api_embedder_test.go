@@ -293,6 +293,27 @@ func TestAPIEmbedderErrorsDoNotLeakSecretsOrInput(t *testing.T) {
 	}
 }
 
+func TestAPIEmbedderErrorsDoNotLeakMaskedCredentialSuffix(t *testing.T) {
+	const secret = "sk-live-embedding-credential-3089"
+	client := embeddingTestClient(t, func(*http.Request) (*http.Response, error) {
+		return embeddingRawResponse(http.StatusUnauthorized, `{"error":{"message":"api key ****3089 is invalid"}}`), nil
+	})
+
+	embedder := newEmbeddingTestEmbedder(t, "bearer_key", secret, client)
+	_, err := embedder.Embed([]string{"private embedding input"})
+	if err == nil {
+		t.Fatal("Embed() error = nil, want failure")
+	}
+	for _, forbidden := range []string{secret, "3089", "sk-l"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("embedding error leaked credential fragment %q: %q", forbidden, err.Error())
+		}
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Fatalf("embedding error lost HTTP status: %q", err.Error())
+	}
+}
+
 func TestAPIEmbedderReturnsContextCancellation(t *testing.T) {
 	client := embeddingTestClient(t, func(request *http.Request) (*http.Response, error) {
 		<-request.Context().Done()
