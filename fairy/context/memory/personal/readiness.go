@@ -2,7 +2,7 @@ package personal
 
 const SemanticDatabaseStatusReady = "ready"
 
-// SemanticEmbeddingReadiness reports PostgreSQL vector projection state.
+// SemanticEmbeddingReadiness reports the local SeekDB vector projection state.
 type SemanticEmbeddingReadiness struct {
 	Dimensions     int    `json:"dimensions"`
 	DatabaseStatus string `json:"databaseStatus"`
