@@ -9,5 +9,8 @@ export {
 
 export {
     CoreSession,
-    CoreSettings
+    CoreSettings,
+    ManagementBackup,
+    ManagementWorkspaceState,
+    ManagementWorkspaceWrite
 } from "./models.js";

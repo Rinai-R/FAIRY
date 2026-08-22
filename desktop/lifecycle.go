@@ -55,11 +55,18 @@ func defaultShutdownBudget() shutdownBudget {
 }
 
 func defaultOpenEdge(ctx context.Context, profileDir string) (ownedRuntime, error) {
-	runtime, err := edge.Open(ctx, edge.Options{ConfigRoot: profileDir})
+	runtime, err := edge.OpenEndpointStrict(ctx, desktopEdgeOptions(profileDir))
 	if err != nil {
 		return nil, err
 	}
 	return edgeAdapter{runtime: runtime}, nil
+}
+
+func desktopEdgeOptions(profileDir string) edge.Options {
+	return edge.Options{
+		ConfigRoot: profileDir,
+		Profile:    edge.ProfileEndpointStrict,
+	}
 }
 
 func (s *CoreService) focusExistingInstance() {

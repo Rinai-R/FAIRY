@@ -111,7 +111,10 @@ test("management DOM, log, toast, and error fixtures never echo credentials", ()
 test("model save handler clears the password field and never logs or toasts the credential", () => {
   const source = readFileSync(new URL("./management.jsx", import.meta.url), "utf8");
   assert.match(source, /SaveManagementModel\(/);
+  assert.match(source, /SaveManagementSemantic\(/);
+  assert.match(source, /SaveManagementWebSearch\(/);
   assert.match(source, /setForm\(\(current\) => \(\{ \.\.\.current, apiKey: "" \}\)\)/);
+  assert.match(source, /setSemanticForm\(\(current\) => \(\{ \.\.\.current, apiKey: "" \}\)\)/);
   assert.match(source, /type="password"/);
   assert.match(source, /data\?\.configured \? "已配置" : "未配置"/);
   assert.match(source, /semantic\.data\?\.credentialConfigured \? "已配置" : "未配置"/);
@@ -121,6 +124,7 @@ test("model save handler clears the password field and never logs or toasts the 
   assert.doesNotMatch(source, /JSON\.stringify\((?:err|error|form|entry|data)\)/);
   assert.doesNotMatch(source, /console\.(?:log|debug|info|warn|error)\([^)]*apiKey/);
   assert.doesNotMatch(source, /setActionError\(form\.apiKey\)/);
+  assert.doesNotMatch(source, /setActionError\(semanticForm\.apiKey\)/);
   assert.doesNotMatch(source, /data\.storage\.(?:password|user|dsn)/);
   assert.doesNotMatch(source, /webSearch\.baseUrl/);
 });

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"fairy/app/edge"
+
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
@@ -65,6 +67,14 @@ func (f *fakeOwnedRuntime) snapshot() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.events...)
+}
+
+func TestDesktopEdgeOptionsAlwaysSelectEndpointStrict(t *testing.T) {
+	t.Setenv("FAIRY_RUNTIME_PROFILE", "full")
+	got := desktopEdgeOptions("/profile")
+	if got.ConfigRoot != "/profile" || got.Profile != edge.ProfileEndpointStrict {
+		t.Fatalf("desktopEdgeOptions() = %#v", got)
+	}
 }
 
 func TestServiceStartupFailsClosedWhenEdgeOpenFails(t *testing.T) {

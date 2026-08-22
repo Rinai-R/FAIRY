@@ -26,6 +26,8 @@ type scriptedManagement struct {
 	semantic      func() (edge.SemanticStatus, error)
 	saveSemantic  func(edge.SemanticWrite) (edge.SemanticStatus, error)
 	clearSemantic func() (edge.SemanticStatus, error)
+	webSearch     func() (edge.WebSearchStatus, error)
+	saveWebSearch func(edge.WebSearchWrite) (edge.WebSearchStatus, error)
 	intelligence  func(context.Context) (edge.IntelligenceSnapshot, error)
 	memories      func(string) (edge.MemoryCatalog, error)
 	createMemory  func(edge.MemoryWrite) (edge.MemoryRecord, error)
@@ -34,8 +36,6 @@ type scriptedManagement struct {
 	tombstoneKnow func(context.Context, string) error
 	plugins       func() (edge.PluginStatus, error)
 	stickers      func(context.Context) (edge.StickerPage, error)
-	qq            func() (edge.QQSettings, error)
-	saveQQ        func(edge.QQSettings) (edge.QQSettings, error)
 	conversation  func(context.Context, string, uint64, int) (edge.MessagePage, error)
 	turnRuntime   func(context.Context, string, string) (edge.TurnRuntimeView, error)
 	metrics       func(context.Context) (edge.MetricsSnapshot, error)
@@ -118,6 +118,18 @@ func (s scriptedManagement) ClearSemanticCredential() (edge.SemanticStatus, erro
 	}
 	return s.clearSemantic()
 }
+func (s scriptedManagement) WebSearch() (edge.WebSearchStatus, error) {
+	if s.webSearch == nil {
+		return edge.WebSearchStatus{}, edge.ErrManagementUnavailable
+	}
+	return s.webSearch()
+}
+func (s scriptedManagement) SaveWebSearch(write edge.WebSearchWrite) (edge.WebSearchStatus, error) {
+	if s.saveWebSearch == nil {
+		return edge.WebSearchStatus{}, edge.ErrManagementUnavailable
+	}
+	return s.saveWebSearch(write)
+}
 func (s scriptedManagement) Intelligence(ctx context.Context) (edge.IntelligenceSnapshot, error) {
 	if s.intelligence == nil {
 		return edge.IntelligenceSnapshot{}, edge.ErrManagementUnavailable
@@ -165,18 +177,6 @@ func (s scriptedManagement) Stickers(ctx context.Context) (edge.StickerPage, err
 		return edge.StickerPage{}, edge.ErrManagementUnavailable
 	}
 	return s.stickers(ctx)
-}
-func (s scriptedManagement) QQ() (edge.QQSettings, error) {
-	if s.qq == nil {
-		return edge.QQSettings{}, edge.ErrManagementUnavailable
-	}
-	return s.qq()
-}
-func (s scriptedManagement) SaveQQ(settings edge.QQSettings) (edge.QQSettings, error) {
-	if s.saveQQ == nil {
-		return edge.QQSettings{}, edge.ErrManagementUnavailable
-	}
-	return s.saveQQ(settings)
 }
 func (s scriptedManagement) Conversation(ctx context.Context, id string, before uint64, limit int) (edge.MessagePage, error) {
 	if s.conversation == nil {

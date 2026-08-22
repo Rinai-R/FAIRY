@@ -24,6 +24,8 @@ type managementHost interface {
 	Semantic() (edge.SemanticStatus, error)
 	SaveSemantic(edge.SemanticWrite) (edge.SemanticStatus, error)
 	ClearSemanticCredential() (edge.SemanticStatus, error)
+	WebSearch() (edge.WebSearchStatus, error)
+	SaveWebSearch(edge.WebSearchWrite) (edge.WebSearchStatus, error)
 	Intelligence(context.Context) (edge.IntelligenceSnapshot, error)
 	Memories(string) (edge.MemoryCatalog, error)
 	CreateMemory(edge.MemoryWrite) (edge.MemoryRecord, error)
@@ -32,8 +34,6 @@ type managementHost interface {
 	TombstoneKnowledge(context.Context, string) error
 	Plugins() (edge.PluginStatus, error)
 	Stickers(context.Context) (edge.StickerPage, error)
-	QQ() (edge.QQSettings, error)
-	SaveQQ(edge.QQSettings) (edge.QQSettings, error)
 	Conversation(context.Context, string, uint64, int) (edge.MessagePage, error)
 	TurnRuntime(context.Context, string, string) (edge.TurnRuntimeView, error)
 	Metrics(context.Context) (edge.MetricsSnapshot, error)
@@ -173,6 +173,22 @@ func (s *CoreService) ClearManagementSemanticCredential() (edge.SemanticStatus, 
 	return host.ClearSemanticCredential()
 }
 
+func (s *CoreService) ManagementWebSearch() (edge.WebSearchStatus, error) {
+	host, err := s.managementHost()
+	if err != nil {
+		return edge.WebSearchStatus{}, err
+	}
+	return host.WebSearch()
+}
+
+func (s *CoreService) SaveManagementWebSearch(write edge.WebSearchWrite) (edge.WebSearchStatus, error) {
+	host, err := s.managementHost()
+	if err != nil {
+		return edge.WebSearchStatus{}, err
+	}
+	return host.SaveWebSearch(write)
+}
+
 func (s *CoreService) ManagementIntelligence() (edge.IntelligenceSnapshot, error) {
 	host, err := s.managementHost()
 	if err != nil {
@@ -243,22 +259,6 @@ func (s *CoreService) ManagementStickers() (edge.StickerPage, error) {
 	ctx, cancel := managementQueryContext()
 	defer cancel()
 	return host.Stickers(ctx)
-}
-
-func (s *CoreService) ManagementQQ() (edge.QQSettings, error) {
-	host, err := s.managementHost()
-	if err != nil {
-		return edge.QQSettings{}, err
-	}
-	return host.QQ()
-}
-
-func (s *CoreService) SaveManagementQQ(settings edge.QQSettings) (edge.QQSettings, error) {
-	host, err := s.managementHost()
-	if err != nil {
-		return edge.QQSettings{}, err
-	}
-	return host.SaveQQ(settings)
 }
 
 func (s *CoreService) ManagementConversation(conversationID string, beforeSequence uint64, limit int) (edge.MessagePage, error) {

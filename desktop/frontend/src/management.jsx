@@ -9,7 +9,6 @@ import {
   IdCardIcon,
   ImageIcon,
   LightningBoltIcon,
-  Link2Icon,
   MixerHorizontalIcon,
   PersonIcon,
   ReaderIcon,
@@ -34,15 +33,16 @@ import {
   ManagementOverview,
   ManagementPlugins,
   ManagementProfile,
-  ManagementQQ,
   ManagementSemantic,
+  ManagementWebSearch,
   ManagementStickers,
   ManagementTrace,
   ManagementTraces,
   ManagementTurnRuntime,
   SaveManagementModel,
   SaveManagementProfile,
-  SaveManagementQQ,
+  SaveManagementSemantic,
+  SaveManagementWebSearch,
   SubscribeManagementLogs,
   TombstoneManagementKnowledge,
   TombstoneManagementMemory,
@@ -57,7 +57,6 @@ const NAV = [
   { id: "profile", label: "用户", icon: IdCardIcon },
   { id: "model", label: "模型", icon: MixerHorizontalIcon },
   { id: "stickers", label: "表情包", icon: ImageIcon },
-  { id: "integrations", label: "接入", icon: Link2Icon },
   { id: "intelligence", label: "记忆与知识", icon: LightningBoltIcon },
   { id: "plugins", label: "插件", icon: CubeIcon },
   { id: "conversation-debug", label: "对话调试", icon: ChatBubbleIcon },
@@ -220,7 +219,10 @@ function ProfileTask() {
 function ModelTask() {
   const { data, error, loading, reload } = useHost(() => ManagementModel(), []);
   const semantic = useHost(() => ManagementSemantic(), []);
-  const [form, setForm] = useState({ protocol: "openai_compatible_api", endpoint: "", model: "", contextWindowTokens: 128000, authMode: "bearer_key", visionInput: false, apiKey: "" });
+  const webSearch = useHost(() => ManagementWebSearch(), []);
+  const [form, setForm] = useState({ protocol: "responses", endpoint: "", model: "", contextWindowTokens: 128000, authMode: "bearer_key", visionInput: false, apiKey: "" });
+  const [semanticForm, setSemanticForm] = useState({ provider: "openai_compatible_api", enabled: true, endpoint: "", model: "", apiKey: "" });
+  const [webForm, setWebForm] = useState({ enabled: true, baseURL: "" });
   const [actionError, setActionError] = useState("");
   useEffect(() => {
     if (!data) return;
@@ -235,8 +237,23 @@ function ModelTask() {
       apiKey: "",
     }));
   }, [data]);
+  useEffect(() => {
+    if (!semantic.data) return;
+    setSemanticForm((current) => ({
+      ...current,
+      provider: semantic.data.provider && semantic.data.provider !== "none" ? semantic.data.provider : current.provider,
+      enabled: Boolean(semantic.data.enabled),
+      endpoint: semantic.data.endpoint || "",
+      model: semantic.data.model || "",
+      apiKey: "",
+    }));
+  }, [semantic.data]);
+  useEffect(() => {
+    if (!webSearch.data) return;
+    setWebForm({ enabled: Boolean(webSearch.data.enabled), baseURL: webSearch.data.baseUrl || "" });
+  }, [webSearch.data]);
   return (
-    <StatusBlock error={error || semantic.error} loading={loading || semantic.loading}>
+    <StatusBlock error={error || semantic.error || webSearch.error} loading={loading || semantic.loading || webSearch.loading}>
       <p className="management-note">凭据只写入宿主，成功后只显示是否已配置。</p>
       {actionError ? <p className="management-error" role="alert">{actionError}</p> : null}
       <dl className="management-dl">
@@ -276,6 +293,38 @@ function ModelTask() {
           }}>清除语义凭据</button>
         </div>
       </form>
+      <form className="management-form" onSubmit={(event) => {
+        event.preventDefault();
+        SaveManagementSemantic(semanticForm).then(() => {
+          setSemanticForm((current) => ({ ...current, apiKey: "" }));
+          setActionError("");
+          semantic.reload();
+        }).catch((err) => setActionError(hostError(err)));
+      }}>
+        <h3>第三方 Semantic Embedding</h3>
+        <p className="management-note">独立于聊天模型，只接受返回 1024 维向量的第三方服务。</p>
+        <Field label="Provider"><input value={semanticForm.provider} onChange={(event) => setSemanticForm({ ...semanticForm, provider: event.target.value })} /></Field>
+        <Field label="Base URL"><input value={semanticForm.endpoint} onChange={(event) => setSemanticForm({ ...semanticForm, endpoint: event.target.value })} /></Field>
+        <Field label="Embedding 模型"><input value={semanticForm.model} onChange={(event) => setSemanticForm({ ...semanticForm, model: event.target.value })} /></Field>
+        <Field label="Embedding API Key">
+          <input type="password" autoComplete="off" value={semanticForm.apiKey} onChange={(event) => setSemanticForm({ ...semanticForm, apiKey: event.target.value })} />
+        </Field>
+        <Field label="启用语义向量"><input type="checkbox" checked={semanticForm.enabled} onChange={(event) => setSemanticForm({ ...semanticForm, enabled: event.target.checked })} /></Field>
+        <button type="submit">保存语义 Provider</button>
+      </form>
+      <form className="management-form" onSubmit={(event) => {
+        event.preventDefault();
+        SaveManagementWebSearch(webForm).then(() => {
+          setActionError("");
+          webSearch.reload();
+        }).catch((err) => setActionError(hostError(err)));
+      }}>
+        <h3>OpenSERP</h3>
+        <p className="management-note">严格 profile 的搜索和公开网页正文只连接这一 origin。</p>
+        <Field label="OpenSERP Origin"><input value={webForm.baseURL} onChange={(event) => setWebForm({ ...webForm, baseURL: event.target.value })} /></Field>
+        <Field label="启用 Web"><input type="checkbox" checked={webForm.enabled} onChange={(event) => setWebForm({ ...webForm, enabled: event.target.checked })} /></Field>
+        <button type="submit">保存 OpenSERP</button>
+      </form>
     </StatusBlock>
   );
 }
@@ -290,30 +339,6 @@ function StickersTask() {
           <li key={item.id}><strong>{item.description || item.id}</strong><span>{item.status} · {item.mimeType}</span></li>
         ))}
       </ul>
-    </StatusBlock>
-  );
-}
-
-function IntegrationsTask() {
-  const { data, error, loading, reload } = useHost(() => ManagementQQ(), []);
-  const [allowlist, setAllowlist] = useState("");
-  const [actionError, setActionError] = useState("");
-  useEffect(() => {
-    if (data?.groupAllowlist) setAllowlist(data.groupAllowlist.join("\n"));
-  }, [data]);
-  return (
-    <StatusBlock error={error} loading={loading}>
-      {actionError ? <p className="management-error" role="alert">{actionError}</p> : null}
-      <form className="management-form" onSubmit={(event) => {
-        event.preventDefault();
-        const groupAllowlist = allowlist.split("\n").map((line) => line.trim()).filter(Boolean);
-        SaveManagementQQ({ schemaVersion: 1, groupAllowlist }).then(() => { setActionError(""); reload(); }).catch((err) => setActionError(hostError(err)));
-      }}>
-        <Field label="QQ 群允许名单">
-          <textarea rows={6} value={allowlist} onChange={(event) => setAllowlist(event.target.value)} />
-        </Field>
-        <button type="submit">保存</button>
-      </form>
     </StatusBlock>
   );
 }
@@ -376,6 +401,7 @@ function PluginsTask({ pluginInstanceId, onFilter }) {
   const upgrades = (data?.upgrades || []).filter((item) => !pluginInstanceId || item.instanceId === pluginInstanceId);
   return (
     <StatusBlock error={error} loading={loading}>
+      <p className="management-note">QQ/OneBot 只属于非严格扩展；当前端侧发行版不会读取、启动或修改其配置。</p>
       <Field label="插件实例">
         <input value={pluginInstanceId} onChange={(event) => onFilter({ pluginInstanceId: event.target.value })} placeholder="全部实例" />
       </Field>
@@ -623,7 +649,6 @@ function ManagementTask({ section, workspace, onWorkspace }) {
     case "profile": body = <ProfileTask />; break;
     case "model": body = <ModelTask />; break;
     case "stickers": body = <StickersTask />; break;
-    case "integrations": body = <IntegrationsTask />; break;
     case "intelligence": body = <IntelligenceTask />; break;
     case "plugins": body = <PluginsTask pluginInstanceId={workspace.pluginInstanceId} onFilter={onWorkspace} />; break;
     case "conversation-debug": body = <ConversationTask />; break;

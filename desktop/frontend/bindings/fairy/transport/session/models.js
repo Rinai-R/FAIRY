@@ -165,6 +165,45 @@ export class ExpressionPart {
     }
 }
 
+export class MessagePage {
+    /**
+     * Creates a new MessagePage instance.
+     * @param {Partial<MessagePage>} [$$source = {}] - The source object to create the MessagePage.
+     */
+    constructor($$source = {}) {
+        if (!("messages" in $$source)) {
+            /**
+             * @member
+             * @type {MessageRecord[]}
+             */
+            this["messages"] = [];
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | null | undefined}
+             */
+            this["nextBeforeSequence"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MessagePage instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {MessagePage}
+     */
+    static createFrom($$source = {}) {
+        const $$createField0_0 = $$createType6;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("messages" in $$parsedSource) {
+            $$parsedSource["messages"] = $$createField0_0($$parsedSource["messages"]);
+        }
+        return new MessagePage(/** @type {Partial<MessagePage>} */($$parsedSource));
+    }
+}
+
 export class MessageRecord {
     /**
      * Creates a new MessageRecord instance.
@@ -237,7 +276,7 @@ export class MessageRecord {
      * @returns {MessageRecord}
      */
     static createFrom($$source = {}) {
-        const $$createField6_0 = $$createType6;
+        const $$createField6_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("parts" in $$parsedSource) {
             $$parsedSource["parts"] = $$createField6_0($$parsedSource["parts"]);
@@ -430,9 +469,9 @@ export class VisualManifest {
      * @returns {VisualManifest}
      */
     static createFrom($$source = {}) {
-        const $$createField4_0 = $$createType7;
-        const $$createField6_0 = $$createType8;
-        const $$createField7_0 = $$createType10;
+        const $$createField4_0 = $$createType9;
+        const $$createField6_0 = $$createType10;
+        const $$createField7_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("frame" in $$parsedSource) {
             $$parsedSource["frame"] = $$createField4_0($$parsedSource["frame"]);
@@ -495,9 +534,11 @@ const $$createType1 = $Create.Nullable($$createType0);
 const $$createType2 = CharacterAppearance.createFrom;
 const $$createType3 = StickerReference.createFrom;
 const $$createType4 = $Create.Nullable($$createType3);
-const $$createType5 = ExpressionPart.createFrom;
+const $$createType5 = MessageRecord.createFrom;
 const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = VisualFrame.createFrom;
-const $$createType8 = VisualAnchor.createFrom;
-const $$createType9 = VisualState.createFrom;
-const $$createType10 = $Create.Array($$createType9);
+const $$createType7 = ExpressionPart.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = VisualFrame.createFrom;
+const $$createType10 = VisualAnchor.createFrom;
+const $$createType11 = VisualState.createFrom;
+const $$createType12 = $Create.Array($$createType11);

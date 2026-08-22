@@ -7,6 +7,7 @@ export {
     CharacterRecord,
     ExpressionKind,
     ExpressionPart,
+    MessagePage,
     MessageRecord,
     StickerReference,
     VisualAnchor,

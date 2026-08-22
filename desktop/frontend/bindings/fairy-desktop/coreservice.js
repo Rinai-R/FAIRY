@@ -8,6 +8,27 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as sticker$0 from "../fairy/agent/sticker/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as edge$0 from "../fairy/app/edge/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as character$0 from "../fairy/context/character/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as knowledge$0 from "../fairy/context/knowledge/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as personal$0 from "../fairy/context/memory/personal/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as config$0 from "../fairy/runtime/config/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as observability$0 from "../fairy/runtime/observability/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as session$0 from "../fairy/transport/session/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -15,10 +36,48 @@ import * as session$0 from "../fairy/transport/session/models.js";
 import * as $models from "./models.js";
 
 /**
+ * @param {string} characterID
+ * @param {number} revision
+ * @returns {$CancellablePromise<edge$0.CharacterRecord>}
+ */
+export function ActivateManagementCharacter(characterID, revision) {
+    return $Call.ByID(3038762027, characterID, revision).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType0($result);
+    }));
+}
+
+/**
  * @returns {$CancellablePromise<void>}
  */
 export function Cancel() {
     return $Call.ByID(1398431892);
+}
+
+/**
+ * @returns {$CancellablePromise<edge$0.ModelStatus>}
+ */
+export function ClearManagementModel() {
+    return $Call.ByID(1847262929).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType1($result);
+    }));
+}
+
+/**
+ * @returns {$CancellablePromise<edge$0.ProfileUpdate>}
+ */
+export function ClearManagementProfile() {
+    return $Call.ByID(1729818257).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType2($result);
+    }));
+}
+
+/**
+ * @returns {$CancellablePromise<edge$0.SemanticStatus>}
+ */
+export function ClearManagementSemanticCredential() {
+    return $Call.ByID(1331962937).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType3($result);
+    }));
 }
 
 /**
@@ -36,11 +95,37 @@ export function CloseHistory() {
 }
 
 /**
+ * @returns {$CancellablePromise<void>}
+ */
+export function CloseManagement() {
+    return $Call.ByID(2333417441);
+}
+
+/**
  * @returns {$CancellablePromise<$models.CoreSession>}
  */
 export function Connect() {
     return $Call.ByID(702891500).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType0($result);
+        return $$createType4($result);
+    }));
+}
+
+/**
+ * @returns {$CancellablePromise<$models.ManagementBackup>}
+ */
+export function CreateManagementBackup() {
+    return $Call.ByID(1849297427).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType5($result);
+    }));
+}
+
+/**
+ * @param {edge$0.MemoryWrite} write
+ * @returns {$CancellablePromise<edge$0.MemoryRecord>}
+ */
+export function CreateManagementMemory(write) {
+    return $Call.ByID(3634607786, write).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType6($result);
     }));
 }
 
@@ -69,6 +154,176 @@ export function HideSpeechBubble() {
 }
 
 /**
+ * @returns {$CancellablePromise<edge$0.CharacterCatalog>}
+ */
+export function ManagementCharacters() {
+    return $Call.ByID(3548151721).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType7($result);
+    }));
+}
+
+/**
+ * @param {string} conversationID
+ * @param {number} beforeSequence
+ * @param {number} limit
+ * @returns {$CancellablePromise<edge$0.MessagePage>}
+ */
+export function ManagementConversation(conversationID, beforeSequence, limit) {
+    return $Call.ByID(2239267606, conversationID, beforeSequence, limit).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType8($result);
+    }));
+}
+
+/**
+ * @returns {$CancellablePromise<edge$0.IntelligenceSnapshot>}
+ */
+export function ManagementIntelligence() {
+    return $Call.ByID(3540352306).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType9($result);
+    }));
+}
+
+/**
+ * @returns {$CancellablePromise<edge$0.KnowledgeCatalog>}
+ */
+export function ManagementKnowledge() {
+    return $Call.ByID(3408034363).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType10($result);
+    }));
+}
+
+/**
+ * @returns {$CancellablePromise<edge$0.LogSnapshot>}
+ */
+export function ManagementLogs() {
+    return $Call.ByID(1432029494).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType11($result);
+    }));
+}
+
+/**
+ * @param {string} characterID
+ * @returns {$CancellablePromise<edge$0.MemoryCatalog>}
+ */
+export function ManagementMemories(characterID) {
+    return $Call.ByID(2297955334, characterID).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType12($result);
+    }));
+}
+
+/**
+ * @returns {$CancellablePromise<edge$0.MetricsSnapshot>}
+ */
+export function ManagementMetrics() {
+    return $Call.ByID(55359046).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType13($result);
+    }));
+}
+
+/**
+ * @returns {$CancellablePromise<edge$0.ModelStatus>}
+ */
+export function ManagementModel() {
+    return $Call.ByID(1334820682).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType1($result);
+    }));
+}
+
+/**
+ * @returns {$CancellablePromise<edge$0.Overview>}
+ */
+export function ManagementOverview() {
+    return $Call.ByID(4060208362).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType14($result);
+    }));
+}
+
+/**
+ * @returns {$CancellablePromise<edge$0.PluginStatus>}
+ */
+export function ManagementPlugins() {
+    return $Call.ByID(276776827).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType15($result);
+    }));
+}
+
+/**
+ * @returns {$CancellablePromise<edge$0.ProfileSnapshot>}
+ */
+export function ManagementProfile() {
+    return $Call.ByID(3982175326).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType16($result);
+    }));
+}
+
+/**
+ * @returns {$CancellablePromise<edge$0.SemanticStatus>}
+ */
+export function ManagementSemantic() {
+    return $Call.ByID(1739934513).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType3($result);
+    }));
+}
+
+/**
+ * @returns {$CancellablePromise<edge$0.StickerPage>}
+ */
+export function ManagementStickers() {
+    return $Call.ByID(1355178829).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType17($result);
+    }));
+}
+
+/**
+ * @param {string} traceID
+ * @returns {$CancellablePromise<edge$0.TraceDetail>}
+ */
+export function ManagementTrace(traceID) {
+    return $Call.ByID(1417458654, traceID).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType18($result);
+    }));
+}
+
+/**
+ * @param {string} messageID
+ * @returns {$CancellablePromise<edge$0.TraceSearch>}
+ */
+export function ManagementTraces(messageID) {
+    return $Call.ByID(2907625815, messageID).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType19($result);
+    }));
+}
+
+/**
+ * @param {string} conversationID
+ * @param {string} turnID
+ * @returns {$CancellablePromise<edge$0.TurnRuntimeView>}
+ */
+export function ManagementTurnRuntime(conversationID, turnID) {
+    return $Call.ByID(3176782082, conversationID, turnID).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType20($result);
+    }));
+}
+
+/**
+ * @returns {$CancellablePromise<edge$0.WebSearchStatus>}
+ */
+export function ManagementWebSearch() {
+    return $Call.ByID(1126406653).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType21($result);
+    }));
+}
+
+/**
+ * @returns {$CancellablePromise<$models.ManagementWorkspaceState>}
+ */
+export function ManagementWorkspaceState() {
+    return $Call.ByID(2913384795).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType22($result);
+    }));
+}
+
+/**
  * @returns {$CancellablePromise<void>}
  */
 export function OpenControlPanel() {
@@ -76,6 +331,8 @@ export function OpenControlPanel() {
 }
 
 /**
+ * OpenHistory keeps recent messages beside the pet rather than expanding or
+ * covering the companion window with the retired chat surface.
  * @returns {$CancellablePromise<void>}
  */
 export function OpenHistory() {
@@ -90,18 +347,11 @@ export function OpenManagement() {
 }
 
 /**
- * @returns {$CancellablePromise<void>}
- */
-export function CloseManagement() {
-    return $Call.ByID(2333417441);
-}
-
-/**
  * @returns {$CancellablePromise<session$0.MessageRecord[]>}
  */
 export function RecentMessages() {
     return $Call.ByID(983675989).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType3($result);
+        return $$createType24($result);
     }));
 }
 
@@ -134,7 +384,57 @@ export function RepositionSpeechBubble() {
  */
 export function RuntimeInfo() {
     return $Call.ByID(1820803190).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType25($result);
+    }));
+}
+
+/**
+ * @param {edge$0.ModelWrite} write
+ * @returns {$CancellablePromise<edge$0.ModelStatus>}
+ */
+export function SaveManagementModel(write) {
+    return $Call.ByID(1276458717, write).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType1($result);
+    }));
+}
+
+/**
+ * @param {string} preferredName
+ * @returns {$CancellablePromise<edge$0.ProfileUpdate>}
+ */
+export function SaveManagementProfile(preferredName) {
+    return $Call.ByID(731907285, preferredName).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType2($result);
+    }));
+}
+
+/**
+ * @param {edge$0.SemanticWrite} write
+ * @returns {$CancellablePromise<edge$0.SemanticStatus>}
+ */
+export function SaveManagementSemantic(write) {
+    return $Call.ByID(4208760900, write).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType3($result);
+    }));
+}
+
+/**
+ * @param {edge$0.WebSearchWrite} write
+ * @returns {$CancellablePromise<edge$0.WebSearchStatus>}
+ */
+export function SaveManagementWebSearch(write) {
+    return $Call.ByID(2577918566, write).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType21($result);
+    }));
+}
+
+/**
+ * @param {$models.ManagementWorkspaceWrite} write
+ * @returns {$CancellablePromise<$models.ManagementWorkspaceState>}
+ */
+export function SaveManagementWorkspaceState(write) {
+    return $Call.ByID(2594999086, write).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType22($result);
     }));
 }
 
@@ -154,140 +454,60 @@ export function SetDesktopObservationPrivacy(value) {
     return $Call.ByID(2769179032, value);
 }
 
-export function ManagementOverview() {
-    return $Call.ByID(4060208362);
-}
-
-export function ManagementCharacters() {
-    return $Call.ByID(3548151721);
-}
-
-export function ActivateManagementCharacter(characterID, revision) {
-    return $Call.ByID(3038762027, characterID, revision);
-}
-
-export function ManagementProfile() {
-    return $Call.ByID(3982175326);
-}
-
-export function SaveManagementProfile(preferredName) {
-    return $Call.ByID(731907285, preferredName);
-}
-
-export function ClearManagementProfile() {
-    return $Call.ByID(1729818257);
-}
-
-export function ManagementModel() {
-    return $Call.ByID(1334820682);
-}
-
-export function SaveManagementModel(write) {
-    return $Call.ByID(1276458717, write);
-}
-
-export function ClearManagementModel() {
-    return $Call.ByID(1847262929);
-}
-
-export function ManagementSemantic() {
-    return $Call.ByID(1739934513);
-}
-
-export function SaveManagementSemantic(write) {
-    return $Call.ByID(4208760900, write);
-}
-
-export function ClearManagementSemanticCredential() {
-    return $Call.ByID(1331962937);
-}
-
-export function ManagementIntelligence() {
-    return $Call.ByID(3540352306);
-}
-
-export function ManagementMemories(characterID) {
-    return $Call.ByID(2297955334, characterID);
-}
-
-export function CreateManagementMemory(write) {
-    return $Call.ByID(3634607786, write);
-}
-
-export function TombstoneManagementMemory(id) {
-    return $Call.ByID(851241689, id);
-}
-
-export function ManagementKnowledge() {
-    return $Call.ByID(3408034363);
-}
-
-export function TombstoneManagementKnowledge(id) {
-    return $Call.ByID(991370506, id);
-}
-
-export function ManagementPlugins() {
-    return $Call.ByID(276776827);
-}
-
-export function ManagementStickers() {
-    return $Call.ByID(1355178829);
-}
-
-export function ManagementQQ() {
-    return $Call.ByID(1027493703);
-}
-
-export function SaveManagementQQ(settings) {
-    return $Call.ByID(20767110, settings);
-}
-
-export function ManagementConversation(conversationID, beforeSequence, limit) {
-    return $Call.ByID(2239267606, conversationID, beforeSequence, limit);
-}
-
-export function ManagementTurnRuntime(conversationID, turnID) {
-    return $Call.ByID(3176782082, conversationID, turnID);
-}
-
-export function ManagementMetrics() {
-    return $Call.ByID(55359046);
-}
-
-export function ManagementTraces(messageID) {
-    return $Call.ByID(2907625815, messageID);
-}
-
-export function ManagementTrace(traceID) {
-    return $Call.ByID(1417458654, traceID);
-}
-
-export function ManagementLogs() {
-    return $Call.ByID(1432029494);
-}
-
+/**
+ * @returns {$CancellablePromise<void>}
+ */
 export function SubscribeManagementLogs() {
     return $Call.ByID(3998863538);
 }
 
+/**
+ * @param {string} id
+ * @returns {$CancellablePromise<void>}
+ */
+export function TombstoneManagementKnowledge(id) {
+    return $Call.ByID(991370506, id);
+}
+
+/**
+ * @param {string} id
+ * @returns {$CancellablePromise<void>}
+ */
+export function TombstoneManagementMemory(id) {
+    return $Call.ByID(851241689, id);
+}
+
+/**
+ * @returns {$CancellablePromise<void>}
+ */
 export function UnsubscribeManagementLogs() {
     return $Call.ByID(1663243459);
 }
 
-export function CreateManagementBackup() {
-    return $Call.ByID(1849297427);
-}
-
-export function ManagementWorkspaceState() {
-    return $Call.ByID(2913384795);
-}
-
-export function SaveManagementWorkspaceState(write) {
-    return $Call.ByID(2594999086, write);
-}
-
 // Private type creation functions
-const $$createType0 = $models.CoreSession.createFrom;
-const $$createType1 = $models.CoreSettings.createFrom;
-const $$createType2 = session$0.MessageRecord.createFrom;
-const $$createType3 = $Create.Array($$createType2);
+const $$createType0 = character$0.Record.createFrom;
+const $$createType1 = config$0.ModelConnectionStatus.createFrom;
+const $$createType2 = config$0.ProfileUpdate.createFrom;
+const $$createType3 = config$0.SemanticEmbeddingStatus.createFrom;
+const $$createType4 = $models.CoreSession.createFrom;
+const $$createType5 = $models.ManagementBackup.createFrom;
+const $$createType6 = personal$0.Record.createFrom;
+const $$createType7 = character$0.Catalog.createFrom;
+const $$createType8 = session$0.MessagePage.createFrom;
+const $$createType9 = edge$0.IntelligenceSnapshot.createFrom;
+const $$createType10 = knowledge$0.Catalog.createFrom;
+const $$createType11 = observability$0.LogSnapshot.createFrom;
+const $$createType12 = personal$0.Catalog.createFrom;
+const $$createType13 = edge$0.MetricsSnapshot.createFrom;
+const $$createType14 = edge$0.Overview.createFrom;
+const $$createType15 = edge$0.PluginStatus.createFrom;
+const $$createType16 = config$0.ProfileSnapshot.createFrom;
+const $$createType17 = sticker$0.Page.createFrom;
+const $$createType18 = observability$0.MessageTraceDetail.createFrom;
+const $$createType19 = edge$0.TraceSearch.createFrom;
+const $$createType20 = edge$0.TurnRuntimeView.createFrom;
+const $$createType21 = config$0.WebSearchStatus.createFrom;
+const $$createType22 = $models.ManagementWorkspaceState.createFrom;
+const $$createType23 = session$0.MessageRecord.createFrom;
+const $$createType24 = $Create.Array($$createType23);
+const $$createType25 = $models.CoreSettings.createFrom;

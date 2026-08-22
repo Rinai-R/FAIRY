@@ -113,6 +113,195 @@ export class CoreSettings {
     }
 }
 
+export class ManagementBackup {
+    /**
+     * Creates a new ManagementBackup instance.
+     * @param {Partial<ManagementBackup>} [$$source = {}] - The source object to create the ManagementBackup.
+     */
+    constructor($$source = {}) {
+        if (!("path" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["path"] = "";
+        }
+        if (!("createdAtUnixMs" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["createdAtUnixMs"] = 0;
+        }
+        if (!("fileCount" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["fileCount"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ManagementBackup instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ManagementBackup}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ManagementBackup(/** @type {Partial<ManagementBackup>} */($$parsedSource));
+    }
+}
+
+export class ManagementWorkspaceState {
+    /**
+     * Creates a new ManagementWorkspaceState instance.
+     * @param {Partial<ManagementWorkspaceState>} [$$source = {}] - The source object to create the ManagementWorkspaceState.
+     */
+    constructor($$source = {}) {
+        if (!("section" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["section"] = "";
+        }
+        if (!("width" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["width"] = 0;
+        }
+        if (!("height" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["height"] = 0;
+        }
+        if (!("x" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["x"] = 0;
+        }
+        if (!("y" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["y"] = 0;
+        }
+        if (!("hasLayout" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["hasLayout"] = false;
+        }
+        if (!("traceId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["traceId"] = "";
+        }
+        if (!("messageId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["messageId"] = "";
+        }
+        if (!("logLevel" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["logLevel"] = "";
+        }
+        if (!("pluginInstanceId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["pluginInstanceId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ManagementWorkspaceState instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ManagementWorkspaceState}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ManagementWorkspaceState(/** @type {Partial<ManagementWorkspaceState>} */($$parsedSource));
+    }
+}
+
+export class ManagementWorkspaceWrite {
+    /**
+     * Creates a new ManagementWorkspaceWrite instance.
+     * @param {Partial<ManagementWorkspaceWrite>} [$$source = {}] - The source object to create the ManagementWorkspaceWrite.
+     */
+    constructor($$source = {}) {
+        if (!("section" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["section"] = "";
+        }
+        if (!("traceId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["traceId"] = "";
+        }
+        if (!("messageId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["messageId"] = "";
+        }
+        if (!("logLevel" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["logLevel"] = "";
+        }
+        if (!("pluginInstanceId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["pluginInstanceId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ManagementWorkspaceWrite instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ManagementWorkspaceWrite}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ManagementWorkspaceWrite(/** @type {Partial<ManagementWorkspaceWrite>} */($$parsedSource));
+    }
+}
+
 // Private type creation functions
 const $$createType0 = CoreSettings.createFrom;
 const $$createType1 = session$0.CharacterRecord.createFrom;

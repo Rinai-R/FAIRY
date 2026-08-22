@@ -22,7 +22,6 @@ func TestManagementFrontendBoundPayloadsNeverEchoCredentials(t *testing.T) {
 		"search-provider-fixture-secret",
 		"plugin-credential-fixture-secret",
 		"seekdb-private-password",
-		"qq-access-token-fixture",
 	}
 	modelSecret := secrets[0]
 	semanticSecret := secrets[1]
@@ -34,7 +33,6 @@ func TestManagementFrontendBoundPayloadsNeverEchoCredentials(t *testing.T) {
 		Fields: []observability.FieldInput{
 			{Key: "apiKey", Value: modelSecret},
 			{Key: "password", Value: secrets[4]},
-			{Key: "access_token", Value: secrets[5]},
 		},
 	})
 	host := scriptedManagement{
@@ -43,7 +41,7 @@ func TestManagementFrontendBoundPayloadsNeverEchoCredentials(t *testing.T) {
 				Bootstrap: core.BootstrapStatus{AppName: "FAIRY", CoreVersion: "dev"},
 				Storage:   api.StorageStatus{Ready: false, Mode: "production", Storage: "seekdb", Error: "dial failed with [seekdb-credential]"},
 				SecretKey: edge.SecretKeyStatus{Ready: true, Mode: "production"},
-				Model:     edge.ModelStatus{Configured: true, Protocol: "openai_compatible_api", Model: "test", AuthMode: "bearer_key"},
+				Model:     edge.ModelStatus{Configured: true, Protocol: "responses", Model: "test", AuthMode: "bearer_key"},
 				Semantic:  edge.SemanticStatus{Provider: "siliconflow", Enabled: true, Configured: true, CredentialConfigured: true},
 				WebSearch: config.WebSearchStatus{Enabled: true, Ready: true},
 			}, nil
@@ -55,7 +53,7 @@ func TestManagementFrontendBoundPayloadsNeverEchoCredentials(t *testing.T) {
 			return edge.ModelStatus{Configured: true, Protocol: write.Protocol, Model: write.Model, AuthMode: write.AuthMode}, nil
 		},
 		model: func() (edge.ModelStatus, error) {
-			return edge.ModelStatus{Configured: true, Protocol: "openai_compatible_api", Model: "test", AuthMode: "bearer_key"}, nil
+			return edge.ModelStatus{Configured: true, Protocol: "responses", Model: "test", AuthMode: "bearer_key"}, nil
 		},
 		saveSemantic: func(write edge.SemanticWrite) (edge.SemanticStatus, error) {
 			if write.APIKey != semanticSecret {
@@ -66,11 +64,11 @@ func TestManagementFrontendBoundPayloadsNeverEchoCredentials(t *testing.T) {
 		semantic: func() (edge.SemanticStatus, error) {
 			return edge.SemanticStatus{Provider: "siliconflow", Enabled: true, Configured: true, CredentialConfigured: true}, nil
 		},
-		qq: func() (edge.QQSettings, error) {
-			return edge.QQSettings{SchemaVersion: 1, GroupAllowlist: []string{"123"}}, nil
+		webSearch: func() (edge.WebSearchStatus, error) {
+			return edge.WebSearchStatus{Enabled: true, BaseURL: "https://openserp.example", Ready: true}, nil
 		},
-		saveQQ: func(settings edge.QQSettings) (edge.QQSettings, error) {
-			return settings, nil
+		saveWebSearch: func(write edge.WebSearchWrite) (edge.WebSearchStatus, error) {
+			return edge.WebSearchStatus{Enabled: write.Enabled, BaseURL: write.BaseURL, Ready: true}, nil
 		},
 		plugins: func() (edge.PluginStatus, error) {
 			return edge.PluginStatus{}, edge.ErrPluginHostUnavailable
@@ -89,9 +87,13 @@ func TestManagementFrontendBoundPayloadsNeverEchoCredentials(t *testing.T) {
 	service.edge = &fakeOwnedRuntime{host: host}
 
 	modelStatus, err := service.SaveManagementModel(edge.ModelWrite{
-		ModelConnectionInput: config.ModelConnectionInput{Protocol: "openai_compatible_api", Model: "test", AuthMode: "bearer_key"},
+		ModelConnectionInput: config.ModelConnectionInput{Protocol: "responses", Model: "test", AuthMode: "bearer_key"},
 		APIKey:               modelSecret,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	webStatus, err := service.SaveManagementWebSearch(edge.WebSearchWrite{Enabled: true, BaseURL: "https://openserp.example"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,10 +102,6 @@ func TestManagementFrontendBoundPayloadsNeverEchoCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	overview, err := service.ManagementOverview()
-	if err != nil {
-		t.Fatal(err)
-	}
-	qq, err := service.SaveManagementQQ(edge.QQSettings{SchemaVersion: 1, GroupAllowlist: []string{"123"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +121,7 @@ func TestManagementFrontendBoundPayloadsNeverEchoCredentials(t *testing.T) {
 		t.Fatalf("ManagementPlugins() error = %v", pluginErr)
 	}
 
-	payloads := []any{modelStatus, semanticStatus, overview, qq, logs, trace, pluginErr.Error()}
+	payloads := []any{modelStatus, semanticStatus, webStatus, overview, logs, trace, pluginErr.Error()}
 	for _, payload := range payloads {
 		assertNoSecretPlaintext(t, payload, secrets...)
 	}
