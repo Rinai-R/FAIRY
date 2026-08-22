@@ -21,36 +21,68 @@ var (
 	ErrPluginHostUnavailable   = errors.New("plugin host is not configured")
 )
 
+type Profile = core.Profile
+
+const (
+	ProfileFull           = core.ProfileFull
+	ProfileDesktopLite    = core.ProfileDesktopLite
+	ProfileEndpointStrict = core.ProfileEndpointStrict
+)
+
 type Options struct {
 	ConfigRoot string
 	Logger     *zap.Logger
+	Profile    Profile
+}
+
+// pluginStore is defined by the Edge consumer so profile-isolation tests can
+// prove that endpoint-strict never reads or mutates non-strict QQ state.
+type pluginStore interface {
+	Instances(context.Context) ([]plugin.InstanceRecord, error)
+	Upgrades(context.Context, string) ([]plugin.UpgradeRecord, error)
+	PutInstance(context.Context, plugin.InstanceRecord) error
+	ConfigRefs(context.Context, string) ([]plugin.ConfigRef, error)
 }
 
 // Runtime is the Desktop-owned composition root. It starts SeekDB through Core,
 // then Session, then the deny-by-default WASM host on the same process lifetime.
 type Runtime struct {
-	core     *core.Runtime
-	sessions *appsession.Service
-	facade   *appsession.Facade
-	host     *wasm.Host
-	plugins  *plugin.Store
-	logger   *zap.Logger
-	qq       *QQBridge
-	qqCancel context.CancelFunc
-	qqHTTP   *http.Server
+	core          *core.Runtime
+	sessions      *appsession.Service
+	facade        *appsession.Facade
+	host          *wasm.Host
+	plugins       pluginStore
+	logger        *zap.Logger
+	qq            any
+	qqCancel      context.CancelFunc
+	qqHTTP        *http.Server
+	openSERPClose func()
 
 	closeOnce sync.Once
 	closeErr  error
 }
 
-func Open(ctx context.Context, options Options) (*Runtime, error) {
+// OpenEndpointStrict is the production Desktop composition. It deliberately
+// skips the legacy plugin inventory and never references the Web/QQ binders,
+// so those optional integrations cannot enter the shipped dependency graph.
+func OpenEndpointStrict(ctx context.Context, options Options) (*Runtime, error) {
+	options.Profile = ProfileEndpointStrict
+	runtime, err := openRuntimeBase(ctx, options)
+	if err != nil {
+		return nil, err
+	}
+	runtime.bindOpenSERP()
+	return runtime, nil
+}
+
+func openRuntimeBase(ctx context.Context, options Options) (*Runtime, error) {
 	if ctx == nil {
 		return nil, ErrLifetimeContextRequired
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	coreRuntime, err := core.Open(core.RuntimeOptions{ConfigRoot: options.ConfigRoot, Logger: options.Logger})
+	coreRuntime, err := core.Open(coreRuntimeOptions(options))
 	if err != nil {
 		return nil, err
 	}
@@ -67,14 +99,6 @@ func Open(ctx context.Context, options Options) (*Runtime, error) {
 	sessions := newSessionService(coreRuntime.APIDependencies())
 	if sessions == nil {
 		return nil, appsession.ErrSessionUnavailable
-	}
-	database, err := coreRuntime.Foundation.SQL()
-	if err != nil {
-		return nil, err
-	}
-	pluginStore, err := plugin.NewStore(database, coreRuntime.Foundation.QueryLimit())
-	if err != nil {
-		return nil, err
 	}
 	host, err := wasm.OpenWith(ctx, wasm.Observer{
 		Spans:   coreRuntime.Messages,
@@ -96,18 +120,19 @@ func Open(ctx context.Context, options Options) (*Runtime, error) {
 		sessions: sessions,
 		facade:   appsession.NewFacade(sessions),
 		host:     host,
-		plugins:  pluginStore,
 		logger:   coreRuntime.Logger,
-	}
-	if err := runtime.bindWebPlugin(ctx); err != nil {
-		return nil, err
-	}
-	if err := runtime.bindQQPlugin(ctx); err != nil {
-		return nil, err
 	}
 	keep = true
 	keepHost = true
 	return runtime, nil
+}
+
+func coreRuntimeOptions(options Options) core.RuntimeOptions {
+	return core.RuntimeOptions{
+		ConfigRoot: options.ConfigRoot,
+		Logger:     options.Logger,
+		Profile:    options.Profile,
+	}
 }
 
 func newSessionService(deps *api.Dependencies) *appsession.Service {
@@ -162,6 +187,10 @@ func (r *Runtime) Close(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	r.closeOnce.Do(func() {
+		if r.openSERPClose != nil {
+			r.openSERPClose()
+			r.openSERPClose = nil
+		}
 		if r.qqCancel != nil {
 			r.qqCancel()
 			r.qqCancel = nil

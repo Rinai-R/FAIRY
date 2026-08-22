@@ -5,17 +5,25 @@ import (
 	"strings"
 	"testing"
 
+	"fairy/app/core"
 	"fairy/runtime/seekdb"
 )
 
-func TestOpenFailsClosedWithoutSeekDB(t *testing.T) {
+func TestCoreRuntimeOptionsPreserveExplicitEndpointStrictProfile(t *testing.T) {
+	got := coreRuntimeOptions(Options{ConfigRoot: "/profile", Profile: core.ProfileEndpointStrict})
+	if got.ConfigRoot != "/profile" || got.Profile != core.ProfileEndpointStrict {
+		t.Fatalf("coreRuntimeOptions() = %#v", got)
+	}
+}
+
+func TestOpenEndpointStrictFailsClosedWithoutSeekDB(t *testing.T) {
 	t.Setenv("FAIRY_DATABASE_URL", "postgres://invalid-legacy-sentinel")
 	t.Setenv(seekdb.EnvLibrary, "")
 	t.Setenv(seekdb.EnvDataDir, t.TempDir())
 
-	rt, err := Open(t.Context(), Options{ConfigRoot: t.TempDir()})
+	rt, err := OpenEndpointStrict(t.Context(), Options{ConfigRoot: t.TempDir()})
 	if rt != nil || err == nil {
-		t.Fatalf("Open() = (%#v, %v), want SeekDB configuration failure", rt, err)
+		t.Fatalf("OpenEndpointStrict() = (%#v, %v), want SeekDB configuration failure", rt, err)
 	}
 	if !strings.Contains(err.Error(), "SeekDB") && !strings.Contains(err.Error(), seekdb.EnvLibrary) && !strings.Contains(err.Error(), seekdb.EnvDataDir) {
 		t.Fatalf("Open() error = %v, want SeekDB library or data-dir failure", err)
@@ -27,10 +35,10 @@ func TestOpenFailsClosedWithoutSeekDB(t *testing.T) {
 	}
 }
 
-func TestOpenRequiresLifetimeContext(t *testing.T) {
-	rt, err := Open(nil, Options{ConfigRoot: t.TempDir()})
+func TestOpenEndpointStrictRequiresLifetimeContext(t *testing.T) {
+	rt, err := OpenEndpointStrict(nil, Options{ConfigRoot: t.TempDir()})
 	if rt != nil || !errors.Is(err, ErrLifetimeContextRequired) {
-		t.Fatalf("Open(nil) = (%v, %v)", rt, err)
+		t.Fatalf("OpenEndpointStrict(nil) = (%v, %v)", rt, err)
 	}
 }
 

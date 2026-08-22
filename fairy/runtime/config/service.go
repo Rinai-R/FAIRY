@@ -32,15 +32,44 @@ func NewConfigService(root string, secrets *SecretStore) *ConfigService {
 }
 
 func (s *ConfigService) ModelStatus() (ModelConnectionStatus, error) {
-	return ReadModelConnectionStatus(s.root)
-}
-
-func (s *ConfigService) SaveModelConnection(input ModelConnectionInput, apiKey *string) (ModelConnectionStatus, error) {
-	status, err := SaveModelConnection(s.root, input, apiKey, s.secrets)
+	status, err := ReadModelConnectionStatus(s.root)
 	if err != nil {
 		return ModelConnectionStatus{}, err
 	}
+	if !status.Configured {
+		status.Reason = "model_connection_required"
+		return status, nil
+	}
+	if status.AuthMode == "no_auth" {
+		status.Ready = true
+		return status, nil
+	}
+	connection, err := ReadModelConnection(s.root)
+	if err != nil {
+		return ModelConnectionStatus{}, err
+	}
+	if s.secrets == nil {
+		status.Reason = "model_secret_store_required"
+		return status, nil
+	}
+	_, ok, err := s.secrets.Load(connection.ConnectionID)
+	if err != nil {
+		return ModelConnectionStatus{}, err
+	}
+	status.CredentialConfigured = ok
+	status.Ready = ok
+	if !ok {
+		status.Reason = "model_credential_required"
+	}
 	return status, nil
+}
+
+func (s *ConfigService) SaveModelConnection(input ModelConnectionInput, apiKey *string) (ModelConnectionStatus, error) {
+	_, err := SaveModelConnection(s.root, input, apiKey, s.secrets)
+	if err != nil {
+		return ModelConnectionStatus{}, err
+	}
+	return s.ModelStatus()
 }
 
 func (s *ConfigService) ClearModelConnection() (ModelConnectionStatus, error) {
@@ -52,14 +81,6 @@ func (s *ConfigService) ClearModelConnection() (ModelConnectionStatus, error) {
 		return ModelConnectionStatus{}, err
 	}
 	return status, nil
-}
-
-func (s *ConfigService) QQOneBotSettings() (QQOneBotSettings, error) {
-	return ReadQQOneBotSettings(s.root)
-}
-
-func (s *ConfigService) SaveQQOneBotSettings(settings QQOneBotSettings) (QQOneBotSettings, error) {
-	return WriteQQOneBotSettings(s.root, settings)
 }
 
 func (s *ConfigService) SemanticEmbeddingStatus() (SemanticEmbeddingStatus, error) {

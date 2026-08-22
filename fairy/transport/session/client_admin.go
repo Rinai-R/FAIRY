@@ -8,10 +8,6 @@ import (
 	"net/url"
 )
 
-var configSections = map[string]struct{}{
-	"model": {}, "web-search": {}, "semantic-embedding": {}, "qq-onebot": {},
-}
-
 type OwnerIdentity struct {
 	Namespace       string `json:"namespace"`
 	PrincipalDigest string `json:"principalDigest"`

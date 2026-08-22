@@ -46,8 +46,8 @@ type RuntimeOptions struct {
 	Logger      *zap.Logger
 	LogStore    *observability.LogStore
 	HTTPMetrics *observability.HTTPMetrics
-	// Profile selects full vs desktop-lite labels. Empty defaults to full.
-	// Both profiles use the local SeekDB foundation; neither probes PostgreSQL.
+	// Profile selects the production composition. Empty reads
+	// FAIRY_RUNTIME_PROFILE and defaults to full.
 	Profile Profile
 	// LogEventsJSONL prints turn events to stdout (optional local debugging).
 	LogEventsJSONL bool
@@ -86,6 +86,7 @@ type Runtime struct {
 	Config             *config.ConfigService
 	ConfigReader       *config.Reader
 	Profile            *config.ProfileService
+	RuntimeProfile     Profile
 	Stickers           *sticker.Store
 	WebSearch          turn.WebSearchBackend
 	Bootstrap          *BootstrapService
@@ -186,14 +187,15 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 		return nil, fmt.Errorf("resolving config root: %w", err)
 	}
 
-	if options.Profile == "" {
-		if _, err := ProfileFromEnv(os.Getenv); err != nil {
-			return nil, err
-		}
-	} else if _, err := ParseProfile(string(options.Profile)); err != nil {
+	selectedProfile := options.Profile
+	if selectedProfile == "" {
+		selectedProfile, err = ProfileFromEnv(os.Getenv)
+	} else {
+		selectedProfile, err = ParseProfile(string(selectedProfile))
+	}
+	if err != nil {
 		return nil, err
 	}
-
 	lifetime, cancelLifetime := context.WithCancel(context.Background())
 	opened, err := openFoundation(lifetime, configRoot)
 	if err != nil {
@@ -217,7 +219,7 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 	}
 	queryLimit := opened.QueryLimit()
 	configReader := config.NewReader(configRoot)
-	modelService := model.NewModelService(configRoot, opened.Secrets)
+	modelService := modelServiceForProfile(selectedProfile, configRoot, opened.Secrets)
 	embedder := semanticEmbedder(modelService, configReader, logger.Named("semantic"))
 	memoryStore, err := personal.NewSeekDBStore(database, queryLimit, embedder)
 	if err != nil {
@@ -302,6 +304,7 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 		Config:             services.Config,
 		ConfigReader:       services.ConfigReader,
 		Profile:            services.Profile,
+		RuntimeProfile:     selectedProfile,
 		Stickers:           stickerStore,
 		WebSearch:          services.WebSearch,
 		Bootstrap: NewBootstrapService(BootstrapOptions{
@@ -349,15 +352,22 @@ func Open(options RuntimeOptions) (*Runtime, error) {
 	return rt, nil
 }
 
-func (rt *Runtime) BindWebPlugin(tools *knowledge.PluginTools) {
-	if rt == nil || tools == nil {
+func (rt *Runtime) BindWebSearch(backend turn.WebSearchBackend, documents knowledge.DocumentFetcher) {
+	if rt == nil || backend == nil {
 		return
 	}
-	rt.WebSearch = tools
-	turn.AttachWebSearch(rt.Turn, tools)
-	if rt.Retention != nil {
-		rt.Retention.BindDocuments(tools)
+	rt.WebSearch = backend
+	turn.AttachWebSearch(rt.Turn, backend)
+	if rt.Retention != nil && documents != nil {
+		rt.Retention.BindDocuments(documents)
 	}
+}
+
+func (rt *Runtime) BindWebPlugin(tools *knowledge.PluginTools) {
+	if tools == nil {
+		return
+	}
+	rt.BindWebSearch(tools, tools)
 }
 
 func (rt *Runtime) Close() error {

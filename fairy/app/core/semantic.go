@@ -9,6 +9,13 @@ import (
 	"go.uber.org/zap"
 )
 
+func modelServiceForProfile(profile Profile, root string, secrets *config.SecretStore) *model.ModelService {
+	if profile == ProfileEndpointStrict {
+		return model.NewEndpointModelService(root, secrets)
+	}
+	return model.NewModelService(root, secrets)
+}
+
 func semanticEmbedder(modelService *model.ModelService, configReader *config.Reader, logger *zap.Logger) embedding.SemanticEmbedder {
 	if configReader == nil {
 		return nil

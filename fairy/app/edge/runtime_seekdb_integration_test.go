@@ -5,10 +5,11 @@ package edge
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -17,12 +18,95 @@ import (
 	"fairy/context/memory/personal"
 	"fairy/runtime/observability"
 	"fairy/runtime/seekdb"
+	"fairy/runtime/seekdb/seekdbtest"
 	"fairy/transport/session"
 )
 
+const (
+	edgeHostCompletionHelperEnv = "FAIRY_EDGE_HOST_COMPLETION_HELPER"
+	edgeHostCompletionRootEnv   = "FAIRY_EDGE_HOST_COMPLETION_ROOT"
+	edgeHostCompletionMarkerEnv = "FAIRY_EDGE_HOST_COMPLETION_MARKER"
+)
+
+func TestEndpointStrictEdgeReturnsToHostProcess(t *testing.T) {
+	library := os.Getenv(seekdb.EnvLibrary)
+	if library == "" {
+		t.Skip(seekdb.EnvLibrary + " is not set")
+	}
+	if os.Getenv(edgeHostCompletionHelperEnv) == "1" {
+		runEndpointStrictEdgeHostCompletionHelper(t, library)
+		return
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	marker := filepath.Join(root, "host-completed")
+	command := exec.Command(executable, "-test.run=^TestEndpointStrictEdgeReturnsToHostProcess$", "-test.v")
+	command.Env = append(os.Environ(),
+		edgeHostCompletionHelperEnv+"=1",
+		edgeHostCompletionRootEnv+"="+root,
+		edgeHostCompletionMarkerEnv+"="+marker,
+		seekdb.EnvLibrary+"="+library,
+	)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("endpoint-strict Edge host-completion helper failed: %v\n%s", err, output)
+	}
+	completed, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("endpoint-strict Edge helper exited without host completion: %v\n%s", err, output)
+	}
+	if string(completed) != "completed\n" {
+		t.Fatalf("endpoint-strict Edge helper exited before host completion; last checkpoint = %q\n%s", completed, output)
+	}
+}
+
+func runEndpointStrictEdgeHostCompletionHelper(t *testing.T, library string) {
+	root := os.Getenv(edgeHostCompletionRootEnv)
+	marker := os.Getenv(edgeHostCompletionMarkerEnv)
+	if root == "" || marker == "" || library == "" {
+		t.Fatal("endpoint-strict Edge host-completion paths and library are required")
+	}
+	for name, value := range map[string]string{
+		seekdb.EnvLibrary:       library,
+		seekdb.EnvDataDir:       filepath.Join(root, "seekdb"),
+		seekdb.EnvDatabase:      seekdb.DefaultDatabase,
+		seekdb.EnvConnectLimit:  "5s",
+		seekdb.EnvStartLimit:    "90s",
+		seekdb.EnvQueryLimit:    "15s",
+		seekdb.EnvShutdownLimit: "20s",
+		seekdb.EnvMaxOpenConns:  "4",
+		seekdb.EnvMaxIdleConns:  "2",
+		seekdb.EnvBinaryPath:    "",
+		seekdb.EnvLibraryPath:   "",
+		seekdb.EnvAddress:       "",
+		seekdb.EnvUser:          "",
+	} {
+		t.Setenv(name, value)
+	}
+	writeEdgeHostCompletionMarker(t, marker, "starting\n")
+	configRoot := filepath.Join(root, "config")
+	if err := os.Mkdir(configRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyPackagedSeekDBRuntime(t.Context(), configRoot); err != nil {
+		t.Fatal(err)
+	}
+	writeEdgeHostCompletionMarker(t, marker, "completed\n")
+}
+
+func writeEdgeHostCompletionMarker(t *testing.T, path, value string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+		t.Fatal(fmt.Errorf("write Edge host-completion marker: %w", err))
+	}
+}
+
 func TestOpenComposesSeekDBCoreAndSessionFacade(t *testing.T) {
 	applyEdgeSeekDBEnvironment(t)
-	rt, err := Open(t.Context(), Options{ConfigRoot: t.TempDir()})
+	rt, err := OpenEndpointStrict(t.Context(), Options{ConfigRoot: t.TempDir(), Profile: ProfileEndpointStrict})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +154,7 @@ func TestCleanDirEdgeRuntimePersistsConversationMemoryKnowledgeAndLogs(t *testin
 	root := t.TempDir()
 	writeEdgeVisualPack(t, root, "fairy.clean-dir")
 
-	first, err := Open(t.Context(), Options{ConfigRoot: root})
+	first, err := OpenEndpointStrict(t.Context(), Options{ConfigRoot: root, Profile: ProfileEndpointStrict})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +236,7 @@ func TestCleanDirEdgeRuntimePersistsConversationMemoryKnowledgeAndLogs(t *testin
 		t.Fatal(err)
 	}
 
-	second, err := Open(t.Context(), Options{ConfigRoot: root})
+	second, err := OpenEndpointStrict(t.Context(), Options{ConfigRoot: root, Profile: ProfileEndpointStrict})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,21 +327,9 @@ func applyEdgeSeekDBEnvironment(t *testing.T) {
 	t.Setenv("FAIRY_DATABASE_URL", "postgres://invalid-legacy-sentinel")
 }
 
-var (
-	edgeDataDirOnce sync.Once
-	edgeDataDir     string
-)
-
 func edgeProcessDataDir(t *testing.T) string {
 	t.Helper()
-	edgeDataDirOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "fairy-edge-seekdb-")
-		if err != nil {
-			t.Fatal(err)
-		}
-		edgeDataDir = dir
-	})
-	return edgeDataDir
+	return seekdbtest.DataDir(t)
 }
 
 func edgeUniqueDatabase(t *testing.T) string {

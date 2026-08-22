@@ -1,3 +1,5 @@
+//go:build !endpointstrict
+
 package config
 
 import (

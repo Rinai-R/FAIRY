@@ -2,7 +2,6 @@ package edge
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -12,8 +11,6 @@ import (
 	"fairy/context/character"
 	"fairy/context/knowledge"
 	"fairy/context/memory/personal"
-	"fairy/plugin"
-	"fairy/plugin/qqonebot"
 	"fairy/runtime/config"
 	"fairy/runtime/observability"
 	"fairy/runtime/seekdb"
@@ -50,13 +47,7 @@ type (
 	MessagePage      = session.MessagePage
 )
 
-type QQSettings struct {
-	SchemaVersion  uint32   `json:"schemaVersion"`
-	GroupAllowlist []string `json:"groupAllowlist"`
-	InstanceID     string   `json:"instanceId,omitempty"`
-	Ready          bool     `json:"ready"`
-	APIBaseURL     string   `json:"apiBaseURL,omitempty"`
-}
+const SemanticEmbeddingDimensions = config.SemanticEmbeddingDimensions
 
 type Management struct {
 	runtime *Runtime
@@ -79,6 +70,7 @@ func (m *Management) coreRuntime() *core.Runtime {
 type Overview struct {
 	Bootstrap  core.BootstrapStatus `json:"bootstrap"`
 	ConfigRoot string               `json:"configRoot"`
+	Profile    string               `json:"runtimeProfile"`
 	Storage    api.StorageStatus    `json:"storage"`
 	SecretKey  SecretKeyStatus      `json:"secretKey"`
 	Model      ModelStatus          `json:"model"`
@@ -150,6 +142,11 @@ type SemanticWrite struct {
 	APIKey   string `json:"apiKey"`
 }
 
+type WebSearchWrite struct {
+	Enabled bool   `json:"enabled"`
+	BaseURL string `json:"baseURL"`
+}
+
 type MemoryWrite struct {
 	Kind                  string      `json:"kind"`
 	Scope                 MemoryScope `json:"scope"`
@@ -213,13 +210,14 @@ func (m *Management) Overview(ctx context.Context) (Overview, error) {
 	if err != nil {
 		return Overview{}, err
 	}
-	web, err := rt.Config.WebSearchStatus()
+	web, err := webSearchStatusForRuntime(rt)
 	if err != nil {
 		return Overview{}, err
 	}
 	return Overview{
 		Bootstrap:  bootstrap,
 		ConfigRoot: rt.ConfigRoot,
+		Profile:    string(rt.RuntimeProfile),
 		Storage:    storage,
 		SecretKey:  SecretKeyStatus{Ready: rt.Secret != nil && rt.Secret.Encrypted(), Mode: "production"},
 		Model:      model,
@@ -288,6 +286,11 @@ func (m *Management) SaveModel(write ModelWrite) (ModelStatus, error) {
 	if rt == nil || rt.Config == nil {
 		return ModelStatus{}, ErrManagementUnavailable
 	}
+	if rt.RuntimeProfile == core.ProfileEndpointStrict {
+		if err := config.ValidateEndpointStrictProviderURL(write.Endpoint); err != nil {
+			return ModelStatus{}, err
+		}
+	}
 	var apiKey *string
 	if write.APIKey != "" {
 		key := write.APIKey
@@ -317,6 +320,11 @@ func (m *Management) SaveSemantic(write SemanticWrite) (SemanticStatus, error) {
 	if rt == nil || rt.Config == nil {
 		return SemanticStatus{}, ErrManagementUnavailable
 	}
+	if rt.RuntimeProfile == core.ProfileEndpointStrict && strings.TrimSpace(write.Endpoint) != "" {
+		if err := config.ValidateEndpointStrictProviderURL(write.Endpoint); err != nil {
+			return SemanticStatus{}, err
+		}
+	}
 	var apiKey *string
 	if write.APIKey != "" {
 		key := write.APIKey
@@ -338,6 +346,22 @@ func (m *Management) ClearSemanticCredential() (SemanticStatus, error) {
 	return rt.Config.DeleteSemanticEmbeddingCredential()
 }
 
+func (m *Management) WebSearch() (WebSearchStatus, error) {
+	return webSearchStatusForRuntime(m.coreRuntime())
+}
+
+func (m *Management) SaveWebSearch(write WebSearchWrite) (WebSearchStatus, error) {
+	rt := m.coreRuntime()
+	if rt == nil || rt.Config == nil {
+		return WebSearchStatus{}, ErrManagementUnavailable
+	}
+	settings := config.WebSearchSettings{Enabled: write.Enabled, BaseURL: write.BaseURL}
+	if rt.RuntimeProfile == core.ProfileEndpointStrict {
+		return rt.Config.SaveEndpointWebSearchSettings(settings)
+	}
+	return rt.Config.SaveWebSearchSettings(settings)
+}
+
 func (m *Management) Intelligence(ctx context.Context) (IntelligenceSnapshot, error) {
 	rt := m.coreRuntime()
 	if rt == nil || rt.Memory == nil || rt.KnowledgeStore == nil || rt.Config == nil {
@@ -351,7 +375,7 @@ func (m *Management) Intelligence(ctx context.Context) (IntelligenceSnapshot, er
 	if err != nil {
 		return IntelligenceSnapshot{}, err
 	}
-	web, err := rt.Config.WebSearchStatus()
+	web, err := webSearchStatusForRuntime(rt)
 	if err != nil {
 		return IntelligenceSnapshot{}, err
 	}
@@ -371,6 +395,16 @@ func (m *Management) Intelligence(ctx context.Context) (IntelligenceSnapshot, er
 		SemanticEmbedding:    semantic,
 		ActiveBackgroundJobs: jobs,
 	}, nil
+}
+
+func webSearchStatusForRuntime(rt *core.Runtime) (WebSearchStatus, error) {
+	if rt == nil || rt.Config == nil {
+		return WebSearchStatus{}, ErrManagementUnavailable
+	}
+	if rt.RuntimeProfile == core.ProfileEndpointStrict {
+		return rt.Config.EndpointWebSearchStatus()
+	}
+	return rt.Config.WebSearchStatus()
 }
 
 func (m *Management) Memories(characterID string) (MemoryCatalog, error) {
@@ -516,83 +550,6 @@ func (m *Management) Stickers(ctx context.Context) (StickerPage, error) {
 		return StickerPage{}, ErrStickerStoreUnavailable
 	}
 	return rt.Stickers.List(ctx, sticker.ListInput{Limit: sticker.DefaultPageLimit})
-}
-
-func (m *Management) QQ() (QQSettings, error) {
-	if m == nil || m.runtime == nil {
-		return QQSettings{}, ErrManagementUnavailable
-	}
-	if m.runtime.plugins == nil {
-		return QQSettings{SchemaVersion: 1, GroupAllowlist: []string{}}, nil
-	}
-	records, err := m.runtime.plugins.Instances(context.Background())
-	if err != nil {
-		return QQSettings{}, err
-	}
-	record, ok := qqPluginInstance(records)
-	if !ok {
-		return QQSettings{SchemaVersion: 1, GroupAllowlist: []string{}}, nil
-	}
-	config, err := qqonebot.ParseInstanceConfig(record.ConfigDocument)
-	if err != nil {
-		return QQSettings{}, err
-	}
-	_, discovered := qqonebot.Discover([]plugin.InstanceRecord{record})
-	return QQSettings{
-		SchemaVersion:  config.SchemaVersion,
-		GroupAllowlist: config.GroupAllowlist,
-		InstanceID:     record.ID,
-		Ready:          discovered,
-		APIBaseURL:     config.APIBaseURL,
-	}, nil
-}
-
-func (m *Management) SaveQQ(settings QQSettings) (QQSettings, error) {
-	if m == nil || m.runtime == nil {
-		return QQSettings{}, ErrManagementUnavailable
-	}
-	if m.runtime.plugins == nil {
-		return QQSettings{}, ErrQQPluginNotInstalled
-	}
-	records, err := m.runtime.plugins.Instances(context.Background())
-	if err != nil {
-		return QQSettings{}, err
-	}
-	record, ok := qqPluginInstance(records)
-	if !ok {
-		return QQSettings{}, ErrQQPluginNotInstalled
-	}
-	current, err := qqonebot.ParseInstanceConfig(record.ConfigDocument)
-	if err != nil {
-		return QQSettings{}, err
-	}
-	allowlist, err := qqonebot.NormalizeAllowlist(settings.GroupAllowlist)
-	if err != nil {
-		return QQSettings{}, err
-	}
-	current.GroupAllowlist = allowlist
-	if strings.TrimSpace(settings.APIBaseURL) != "" {
-		current.APIBaseURL = strings.TrimRight(strings.TrimSpace(settings.APIBaseURL), "/")
-	}
-	current.SchemaVersion = 1
-	raw, err := json.Marshal(current)
-	if err != nil {
-		return QQSettings{}, err
-	}
-	record.ConfigDocument = raw
-	if err := m.runtime.plugins.PutInstance(context.Background(), record); err != nil {
-		return QQSettings{}, err
-	}
-	return m.QQ()
-}
-
-func qqPluginInstance(records []plugin.InstanceRecord) (plugin.InstanceRecord, bool) {
-	for _, record := range records {
-		if record.PluginID == qqonebot.PluginID {
-			return record, true
-		}
-	}
-	return plugin.InstanceRecord{}, false
 }
 
 func (m *Management) Conversation(ctx context.Context, conversationID string, beforeSequence uint64, limit int) (MessagePage, error) {

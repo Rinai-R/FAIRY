@@ -7,9 +7,10 @@ import (
 )
 
 const (
-	EnvRuntimeProfile          = "FAIRY_RUNTIME_PROFILE"
-	ProfileFull        Profile = "full"
-	ProfileDesktopLite Profile = "desktop-lite"
+	EnvRuntimeProfile             = "FAIRY_RUNTIME_PROFILE"
+	ProfileFull           Profile = "full"
+	ProfileDesktopLite    Profile = "desktop-lite"
+	ProfileEndpointStrict Profile = "endpoint-strict"
 )
 
 // Profile selects production dependency strictness.
@@ -21,10 +22,10 @@ func ParseProfile(raw string) (Profile, error) {
 		return ProfileFull, nil
 	}
 	switch Profile(value) {
-	case ProfileFull, ProfileDesktopLite:
+	case ProfileFull, ProfileDesktopLite, ProfileEndpointStrict:
 		return Profile(value), nil
 	default:
-		return "", fmt.Errorf("FAIRY_RUNTIME_PROFILE must be %q or %q", ProfileFull, ProfileDesktopLite)
+		return "", fmt.Errorf("FAIRY_RUNTIME_PROFILE must be %q, %q, or %q", ProfileFull, ProfileDesktopLite, ProfileEndpointStrict)
 	}
 }
 

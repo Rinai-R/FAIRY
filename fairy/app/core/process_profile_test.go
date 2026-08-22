@@ -1,6 +1,8 @@
 package core
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestParseProfile(t *testing.T) {
 	cases := []struct {
@@ -12,6 +14,8 @@ func TestParseProfile(t *testing.T) {
 		{raw: "full", want: ProfileFull},
 		{raw: "FULL", want: ProfileFull},
 		{raw: "desktop-lite", want: ProfileDesktopLite},
+		{raw: "endpoint-strict", want: ProfileEndpointStrict},
+		{raw: "ENDPOINT-STRICT", want: ProfileEndpointStrict},
 		{raw: "bogus", err: true},
 	}
 	for _, tc := range cases {

@@ -6,10 +6,90 @@ import (
 	"strings"
 	"testing"
 
+	"fairy/app/core"
 	"fairy/plugin"
+	"fairy/runtime/config"
 	"fairy/runtime/observability"
 	"fairy/runtime/wasm"
 )
+
+func TestWebSearchStatusUsesRuntimeProfileBoundary(t *testing.T) {
+	root := t.TempDir()
+	if err := config.WriteWebSearchSettings(root, config.WebSearchSettings{SchemaVersion: 1, Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAIRY_OPENSERP_URL", "https://environment.example")
+	service := config.NewConfigService(root, nil)
+	strict, err := webSearchStatusForRuntime(&core.Runtime{Config: service, RuntimeProfile: core.ProfileEndpointStrict})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strict.BaseURL == "https://environment.example" {
+		t.Fatalf("strict status inherited environment origin: %#v", strict)
+	}
+	full, err := webSearchStatusForRuntime(&core.Runtime{Config: service, RuntimeProfile: core.ProfileFull})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.BaseURL != "https://environment.example" {
+		t.Fatalf("full status = %#v, want development environment origin", full)
+	}
+}
+
+func TestSaveWebSearchUsesRuntimeProfileBoundary(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FAIRY_OPENSERP_URL", "https://environment.example")
+	rt := &core.Runtime{
+		Config:         config.NewConfigService(root, nil),
+		RuntimeProfile: core.ProfileEndpointStrict,
+	}
+	status, err := (&Management{runtime: &Runtime{core: rt}}).SaveWebSearch(WebSearchWrite{
+		Enabled: false,
+		BaseURL: "https://saved.example",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Enabled || status.Ready || status.BaseURL != "https://saved.example" {
+		t.Fatalf("strict saved status = %#v", status)
+	}
+}
+
+func TestEndpointStrictManagementRejectsLocalChatAndEmbeddingProviders(t *testing.T) {
+	root := t.TempDir()
+	rt := &core.Runtime{
+		Config:         config.NewConfigService(root, config.NewTestSecretStore()),
+		RuntimeProfile: core.ProfileEndpointStrict,
+	}
+	management := &Management{runtime: &Runtime{core: rt}}
+	secret := "secret-must-not-appear"
+	if _, err := management.SaveModel(ModelWrite{
+		ModelConnectionInput: config.ModelConnectionInput{
+			Protocol: "responses", Endpoint: "http://127.0.0.1:11434/v1", Model: "local-model",
+			ContextWindowTokens: 8192, AuthMode: "bearer_key",
+		},
+		APIKey: secret,
+	}); !errors.Is(err, config.ErrEndpointProviderLocal) || strings.Contains(err.Error(), secret) {
+		t.Fatalf("SaveModel(local) error = %v, want scrubbed %v", err, config.ErrEndpointProviderLocal)
+	}
+	if _, err := management.SaveSemantic(SemanticWrite{
+		Provider: config.SemanticEmbeddingProviderOpenAICompatible,
+		Enabled:  true, Endpoint: "http://localhost:8080/v1", Model: "local-embedding", APIKey: secret,
+	}); !errors.Is(err, config.ErrEndpointProviderLocal) || strings.Contains(err.Error(), secret) {
+		t.Fatalf("SaveSemantic(local) error = %v, want scrubbed %v", err, config.ErrEndpointProviderLocal)
+	}
+	model, err := config.ReadModelConnectionStatus(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	semantic, err := config.ReadSemanticEmbeddingSettings(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.Configured || semantic.Enabled || semantic.Provider != config.SemanticEmbeddingProviderNone {
+		t.Fatalf("local provider attempt mutated config: model=%#v semantic=%#v", model, semantic)
+	}
+}
 
 func TestManagementFailsClosedWithoutRuntime(t *testing.T) {
 	var management *Management
