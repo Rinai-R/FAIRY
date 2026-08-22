@@ -35,6 +35,7 @@ var targetPackages = []string{
 	"fairy/runtime/embedding",
 	"fairy/runtime/ledger",
 	"fairy/transport/desktopcapture",
+	"fairy/transport/openserp",
 	"fairy/context/history/compaction",
 	"fairy/context/history/expression",
 	"fairy/context/history/projection",
@@ -518,90 +519,49 @@ func TestObsoletePostgresPackageIsAbsent(t *testing.T) {
 	}
 }
 
-func TestIndependentSurfacesDoNotImportCoreInternals(t *testing.T) {
+func TestDesktopDoesNotImportCoreInternals(t *testing.T) {
 	root, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, surface := range []string{"desktop", "qq-onebot", "turnclient"} {
-		directory := filepath.Join(root, surface)
-		if _, err := os.Stat(directory); err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			t.Fatal(err)
+	directory := filepath.Join(root, "desktop")
+	err = filepath.WalkDir(directory, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
-		err := filepath.WalkDir(directory, func(path string, entry os.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
+		if entry.IsDir() {
+			if entry.Name() == "node_modules" || entry.Name() == "dist" || entry.Name() == "bin" {
+				return filepath.SkipDir
 			}
-			if entry.IsDir() {
-				if entry.Name() == "node_modules" || entry.Name() == "dist" || entry.Name() == "bin" {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
-				return nil
-			}
-			file, err := os.Open(path)
-			if err != nil {
-				return err
-			}
-			defer file.Close()
-			scanner := bufio.NewScanner(file)
-			for scanner.Scan() {
-				line := scanner.Text()
-				if strings.Contains(line, `"fairy/`) && !surfaceImportAllowed(surface, line) {
-					t.Errorf("independent Surface source %s imports outside the public session boundary: %s", path, strings.TrimSpace(line))
-				}
-			}
-			return scanner.Err()
-		})
+			return nil
+		}
+		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		file, err := os.Open(path)
 		if err != nil {
-			t.Fatal(err)
+			return err
 		}
+		defer file.Close()
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.Contains(line, `"fairy/`) && !desktopImportAllowed(line) {
+				t.Errorf("desktop source %s imports outside the endpoint composition boundary: %s", path, strings.TrimSpace(line))
+			}
+		}
+		return scanner.Err()
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
-func surfaceImportAllowed(surface, line string) bool {
+func desktopImportAllowed(line string) bool {
 	if strings.Contains(line, `"fairy/transport/session"`) {
 		return true
 	}
-	if surface != "desktop" {
-		return false
-	}
 	return strings.Contains(line, `"fairy/app/edge"`) || strings.Contains(line, `"fairy/runtime/observability"`)
-}
-
-func TestQQSurfaceDependencyGraphExcludesCoreDatabase(t *testing.T) {
-	directory := filepath.Join("..", "qq-onebot")
-	if _, err := os.Stat(filepath.Join(directory, "go.mod")); err != nil {
-		if os.IsNotExist(err) {
-			return
-		}
-		t.Fatal(err)
-	}
-	command := exec.CommandContext(t.Context(), "go", "list", "-deps", "-f", "{{.ImportPath}}", ".")
-	command.Dir = directory
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("list QQ Surface dependencies: %v\n%s", err, output)
-	}
-
-	forbidden := []string{
-		"fairy/runtime/database",
-		"github.com/jackc/pgx",
-		"github.com/pgvector/pgvector-go",
-		"gorm.io",
-	}
-	for _, dependency := range strings.Fields(string(output)) {
-		for _, prefix := range forbidden {
-			if dependency == prefix || strings.HasPrefix(dependency, prefix+"/") {
-				t.Errorf("QQ Surface dependency graph contains Core database package %q", dependency)
-			}
-		}
-	}
 }
 
 func TestApplicationDoesNotIntroduceDynamicWorkflowRuntime(t *testing.T) {

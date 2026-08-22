@@ -3,6 +3,7 @@
 package main
 
 /*
+#cgo CFLAGS: -mmacosx-version-min=15.0
 #cgo LDFLAGS: -framework CoreGraphics -framework ScreenCaptureKit
 #include <stdlib.h>
 

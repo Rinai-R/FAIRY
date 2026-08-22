@@ -211,13 +211,23 @@ func TestCoreDoesNotRetainTurnEventHistory(t *testing.T) {
 }
 
 func TestProductionBuildHasNoSQLite(t *testing.T) {
-	forbidden := []string{
+	sourceForbidden := []string{
 		"modernc.org/sqlite",
+		"github.com/mattn/go-sqlite3",
 		"sqlite-vec",
 		".sqlite3",
 		"PRAGMA",
 		"fts5",
 		"vec0",
+	}
+	binaryForbidden := []string{
+		"modernc.org/sqlite",
+		"github.com/mattn/go-sqlite3",
+		"sqlite-vec",
+		"sqlite3_open",
+		"sqlite3_prepare_v2",
+		"sqlite3_initialize",
+		"SQLite format 3",
 	}
 
 	cmd := exec.Command("go", "list", "-deps", "./...")
@@ -225,7 +235,7 @@ func TestProductionBuildHasNoSQLite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("go list -deps ./...: %v\n%s", err, dependencies)
 	}
-	for _, marker := range forbidden[:2] {
+	for _, marker := range sourceForbidden[:3] {
 		if strings.Contains(string(dependencies), marker) {
 			t.Fatalf("production dependency graph contains forbidden SQLite marker %q", marker)
 		}
@@ -254,7 +264,7 @@ func TestProductionBuildHasNoSQLite(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read %s: %v", path, err)
 			}
-			for _, marker := range forbidden {
+			for _, marker := range sourceForbidden {
 				if strings.Contains(string(source), marker) {
 					t.Fatalf("production source %s contains forbidden SQLite marker %q", path, marker)
 				}
@@ -274,7 +284,12 @@ func TestProductionBuildHasNoSQLite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read production binary: %v", err)
 	}
-	for _, marker := range forbidden {
+	// Do not raw-scan four-byte feature names such as vec0/fts5 here. Even
+	// stripped machine code can contain those byte sequences by chance. The
+	// source/dependency checks above retain those exact guards; the compiled
+	// artifact scan uses linker/library signatures that an actual SQLite
+	// runtime cannot avoid.
+	for _, marker := range binaryForbidden {
 		if strings.Contains(string(binary), marker) {
 			t.Fatalf("production binary contains forbidden SQLite marker %q", marker)
 		}
@@ -410,6 +425,171 @@ func TestSeekDBRuntimeDoesNotImportProcessOrMySQLDriver(t *testing.T) {
 		}
 		if imported == "github.com/go-sql-driver/mysql" {
 			t.Fatal("runtime/seekdb imports go-sql-driver/mysql; in-process SeekDB must not use SQL TCP")
+		}
+	}
+}
+
+func TestEndpointProductionDoesNotSpawnHelpersOrLoadUnregisteredLibraries(t *testing.T) {
+	productionRoots := []string{
+		"app/core",
+		"app/edge",
+		"runtime/seekdb",
+		"runtime/model",
+		filepath.Join("..", "desktop"),
+	}
+	allowedDynamicLoader := filepath.Clean(filepath.Join("runtime", "seekdb", "embed_api.c"))
+	dynamicLoaderMarkers := []string{
+		"dlopen(",
+		"dlsym(",
+		"LoadLibraryA(",
+		"LoadLibraryW(",
+		"LoadLibraryExA(",
+		"LoadLibraryExW(",
+		"syscall.LoadDLL(",
+		"windows.NewLazyDLL(",
+		"purego.Dlopen(",
+	}
+
+	for _, root := range productionRoots {
+		err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if info.IsDir() {
+				if path != root && (info.Name() == "testdata" || info.Name() == "vendor") {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			extension := strings.ToLower(filepath.Ext(path))
+			switch extension {
+			case ".go", ".c", ".cc", ".cpp", ".m", ".mm":
+			default:
+				return nil
+			}
+
+			source, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if extension == ".go" {
+				file, err := parser.ParseFile(token.NewFileSet(), path, source, parser.ImportsOnly)
+				if err != nil {
+					return err
+				}
+				for _, imported := range file.Imports {
+					importPath, err := strconv.Unquote(imported.Path.Value)
+					if err != nil {
+						return err
+					}
+					if importPath == "os/exec" {
+						t.Fatalf("endpoint production source %s imports os/exec; helper subprocesses are forbidden", path)
+					}
+				}
+			}
+
+			for _, marker := range dynamicLoaderMarkers {
+				if !strings.Contains(string(source), marker) {
+					continue
+				}
+				cleanPath := filepath.Clean(path)
+				if cleanPath != allowedDynamicLoader {
+					t.Fatalf("endpoint production source %s uses unregistered dynamic-loader marker %q", path, marker)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan endpoint production root %s: %v", root, err)
+		}
+	}
+}
+
+func TestEndpointStrictCompositionHasOnlyDeclaredNetworkAuthorities(t *testing.T) {
+	contracts := []struct {
+		path      string
+		required  []string
+		forbidden []string
+	}{
+		{
+			path: "app/core/semantic.go",
+			required: []string{
+				"profile == ProfileEndpointStrict",
+				"model.NewEndpointModelService",
+			},
+			forbidden: []string{"http.DefaultClient", "http.ProxyFromEnvironment", "os.Getenv", "exec.Command"},
+		},
+		{
+			path: "app/edge/runtime_openserp.go",
+			required: []string{
+				"config.ReadWebSearchSettings",
+				"config.ResolveEndpointOpenSERPOrigin",
+				"openserp.NewAuthority",
+			},
+			forbidden: []string{"http.DefaultClient", "http.ProxyFromEnvironment", "os.Getenv", "bindWebPlugin", "bindQQPlugin"},
+		},
+		{
+			path: "runtime/model/provider_http.go",
+			required: []string{
+				"Proxy:                 nil",
+				"DialContext:           pinned.DialContext",
+				"CheckRedirect:",
+			},
+			forbidden: []string{"http.DefaultClient", "http.DefaultTransport", "http.ProxyFromEnvironment", "os.Getenv", "exec.Command"},
+		},
+		{
+			path: "transport/openserp/authority.go",
+			required: []string{
+				"Proxy:                 nil",
+				"DialContext:           pinned.DialContext",
+				"CheckRedirect:",
+			},
+			forbidden: []string{"http.DefaultClient", "http.DefaultTransport", "http.ProxyFromEnvironment", "os.Getenv", "exec.Command"},
+		},
+	}
+
+	for _, contract := range contracts {
+		source, err := os.ReadFile(contract.path)
+		if err != nil {
+			t.Fatalf("read endpoint-strict contract %s: %v", contract.path, err)
+		}
+		text := string(source)
+		for _, marker := range contract.required {
+			if !strings.Contains(text, marker) {
+				t.Errorf("endpoint-strict contract %s is missing authority marker %q", contract.path, marker)
+			}
+		}
+		for _, marker := range contract.forbidden {
+			if strings.Contains(text, marker) {
+				t.Errorf("endpoint-strict contract %s contains forbidden network/fallback marker %q", contract.path, marker)
+			}
+		}
+	}
+
+	edgeSource, err := os.ReadFile("app/edge/runtime.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	edgeText := string(edgeSource)
+	for _, required := range []string{
+		"func OpenEndpointStrict(",
+		"options.Profile = ProfileEndpointStrict",
+		"runtime.bindOpenSERP()",
+	} {
+		if !strings.Contains(edgeText, required) {
+			t.Fatalf("endpoint-strict Edge composition is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"plugin.NewStore",
+		"bindWebPlugin",
+		"bindQQPlugin",
+	} {
+		if strings.Contains(edgeText, forbidden) {
+			t.Fatalf("endpoint-strict Edge composition references a forbidden extension: %q", forbidden)
 		}
 	}
 }

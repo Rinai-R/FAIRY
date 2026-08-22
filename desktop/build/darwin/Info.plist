@@ -12,13 +12,11 @@
         <key>CFBundleVersion</key>
             <string>0.1.0</string>
         <key>CFBundleGetInfoString</key>
-            <string>This is a comment</string>
+            <string>FAIRY 0.1.0</string>
         <key>CFBundleShortVersionString</key>
             <string>0.1.0</string>
-        <key>CFBundleIconFile</key>
-            <string>icons</string>
 	<key>LSMinimumSystemVersion</key>
-	<string>12.0.0</string>
+	<string>15.0.0</string>
 	<key>LSUIElement</key>
 	<false/>
 	<key>NSAppTransportSecurity</key>
@@ -27,8 +25,8 @@
 		<true/>
 	</dict>
 	<key>NSHighResolutionCapable</key>
-            <string>true</string>
+	<true/>
         <key>NSHumanReadableCopyright</key>
-            <string>© now, My Company</string>
+            <string>Copyright © 2026 FAIRY</string>
     </dict>
 </plist>

@@ -2,8 +2,10 @@ package main
 
 import (
 	"embed"
+	"fmt"
 	"io/fs"
 	"log"
+	"os"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -21,6 +23,13 @@ const (
 )
 
 func main() {
+	if handled, err := runPackageVerificationCommand(os.Args[1:]); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	frontend, err := fs.Sub(assets, "frontend/dist")
 	if err != nil {
 		log.Fatal(err)

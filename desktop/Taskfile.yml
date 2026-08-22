@@ -3,26 +3,38 @@ version: "3"
 vars:
   APP_NAME: FAIRY
   BIN_DIR: bin
+  MACOS_DEPLOYMENT_TARGET: "15.0"
+  WAILS_VERSION: v3.0.0-alpha2.117
+  ENDPOINT_BUILD_TAG: endpointstrict
 
 tasks:
   frontend:
     desc: 构建桌面 Surface 前端
     dir: frontend
+    deps: [bindings]
     cmds:
       - npm run build
 
   bindings:
     desc: 生成 CoreService 前端 bindings
+    preconditions:
+      - sh: test "$(wails3 version 2>&1)" = "{{.WAILS_VERSION}}"
+        msg: wails3 must be exactly {{.WAILS_VERSION}} to match the pinned desktop runtime.
     cmds:
-      - wails3 generate bindings -b -d frontend/bindings
+      - GOFLAGS="-tags={{.ENDPOINT_BUILD_TAG}}" wails3 generate bindings -b -d frontend/bindings
 
   build:
     desc: 构建 macOS 桌面伴侣二进制
-    deps: [frontend, bindings]
+    deps: [frontend]
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "{{.MACOS_DEPLOYMENT_TARGET}}"
+      CGO_CFLAGS: "-mmacosx-version-min={{.MACOS_DEPLOYMENT_TARGET}}"
+      CGO_CXXFLAGS: "-mmacosx-version-min={{.MACOS_DEPLOYMENT_TARGET}}"
+      CGO_LDFLAGS: "-mmacosx-version-min={{.MACOS_DEPLOYMENT_TARGET}}"
     cmds:
-      - go test ./...
+      - go test -mod=readonly -tags={{.ENDPOINT_BUILD_TAG}} ./...
       - mkdir -p {{.BIN_DIR}}
-      - go build -o {{.BIN_DIR}}/{{.APP_NAME}} .
+      - go build -mod=readonly -tags={{.ENDPOINT_BUILD_TAG}} -trimpath -o {{.BIN_DIR}}/{{.APP_NAME}} .
 
   seekdb:verify-artifact:
     desc: 校验随包 libseekdb、LICENSE 与 NOTICE；候选或缺失 artifact 明确失败
@@ -35,23 +47,53 @@ tasks:
         --library ../desktop/build/seekdb/libseekdb.dylib
         --license ../desktop/build/seekdb/LICENSE
         --notice ../desktop/build/seekdb/NOTICE
+        --app-info ../desktop/build/darwin/Info.plist
+
+  wasm:install-release-inventory:
+    desc: 校验正式 WASM inventory 并生成可复核的安装证据
+    dir: ../fairy
+    cmds:
+      - >-
+        go run . wasm-release-inventory
+        --inventory ../desktop/build/plugin-inventory.json
+        --root ../desktop/build
+        --output ../desktop/{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugin-release
 
   package:
     desc: 打包显示在系统 Dock 的 macOS 桌面伴侣
-    deps: [build]
     cmds:
       - task: seekdb:verify-artifact
+      - task: build
       - rm -rf {{.BIN_DIR}}/{{.APP_NAME}}.app
-      - mkdir -p {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Frameworks {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugins {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugin-abi {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/licenses
+      - mkdir -p {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Frameworks {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugin-abi {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/licenses
       - cp build/darwin/Info.plist {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Info.plist
       - cp {{.BIN_DIR}}/{{.APP_NAME}} {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS/{{.APP_NAME}}
       - chmod +x {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS/{{.APP_NAME}}
       - cp build/plugin-host.defaults.json {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugin-host.defaults.json
       - cp ../fairy/plugin/schema/manifest.v1.json {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugin-abi/manifest.v1.json
       - cp ../fairy/plugin/schema/envelope.v1.json {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugin-abi/envelope.v1.json
-      - cp ../fairy/plugin/websearch/manifest.json {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugins/web-search.manifest.json
-      - cp ../fairy/plugin/qqonebot/manifest.json {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/plugins/qq-onebot.manifest.json
       - cp build/seekdb/libseekdb.dylib {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Frameworks/libseekdb.dylib
       - cp build/seekdb/LICENSE {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/licenses/SEEKDB-LICENSE
       - cp build/seekdb/NOTICE {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/licenses/SEEKDB-NOTICE
+      - task: wasm:install-release-inventory
+      - codesign --force --sign - {{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Frameworks/libseekdb.dylib
+      - codesign --force --sign - {{.BIN_DIR}}/{{.APP_NAME}}.app
+      - codesign --verify --deep --strict --verbose=2 {{.BIN_DIR}}/{{.APP_NAME}}.app
+      - '{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS/{{.APP_NAME}} --verify-package-layout'
+      - build/verify-seekdb-runtime-darwin.sh --app {{.BIN_DIR}}/{{.APP_NAME}}.app
 
+  release:
+    desc: 可选公开发行：以 Developer ID 签名、公证、staple 并验证 macOS App（不属于端侧 package 前置条件）
+    preconditions:
+      - sh: test -n "${FAIRY_CODESIGN_IDENTITY:-}"
+        msg: FAIRY_CODESIGN_IDENTITY must name a Developer ID Application identity.
+      - sh: test -n "${FAIRY_NOTARY_PROFILE:-}"
+        msg: FAIRY_NOTARY_PROFILE must name a notarytool keychain profile.
+    cmds:
+      - task: package
+      - >-
+        build/release-darwin.sh
+        --app {{.BIN_DIR}}/{{.APP_NAME}}.app
+        --identity "${FAIRY_CODESIGN_IDENTITY}"
+        --notary-profile "${FAIRY_NOTARY_PROFILE}"
+        --output {{.BIN_DIR}}/{{.APP_NAME}}-macos-arm64.zip

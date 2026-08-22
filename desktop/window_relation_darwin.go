@@ -3,7 +3,7 @@
 package main
 
 /*
-#cgo CFLAGS: -mmacosx-version-min=10.13 -x objective-c
+#cgo CFLAGS: -mmacosx-version-min=15.0 -x objective-c
 #cgo LDFLAGS: -framework Cocoa
 
 #import <AppKit/AppKit.h>
